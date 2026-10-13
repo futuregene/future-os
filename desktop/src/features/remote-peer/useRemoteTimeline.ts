@@ -1,13 +1,13 @@
 import type { AgentMessage, SessionEntry } from "@future-os/thread-projection";
 import type { RemotePeerEvent } from "./remotePeerClient";
-import type { RunCursor } from "./replayWindow";
+import type { RemoteLiveReply } from "./remoteRunStreams";
 import { entriesToMessages } from "@future-os/thread-projection";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { requestRemotePeer } from "./remotePeerClient";
+import { fetchRunReplay, replayTailCovers, replayUnsupported } from "./remoteRunReplay";
 import { RemoteRunStreams } from "./remoteRunStreams";
 import { forgetRemoteToolTargets } from "./remoteToolTarget";
-import { applyReplayPage, newRunCursor, nextEvent } from "./replayWindow";
 
 /**
  * One entry in a remote session's history.
@@ -36,21 +36,31 @@ export interface RemoteTimeline {
    */
   messages: AgentMessage[];
   /**
-   * The reply the host is writing right now, or `null` when nothing is running.
+   * What this client is drawing from its runs' own logs, oldest first.
    *
-   * A remote conversation had no live reply at all: the transcript only learned
-   * what the host had *persisted*, so a prompt sent from this window was followed
-   * by silence until the run ended — the answer appeared whole, seconds later,
-   * with nothing in between. The host publishes its agent's events the moment they
-   * happen, so the reply is drawn from those (`remoteRunStreams`), which is what
-   * makes a remote run behave like one on this machine.
+   * Two sources feed a remote reply: the host's event pushes (how it arrives as
+   * it is written) and the run's log, read back through `get_events_since`. A run
+   * this client has read the log of is *rebuilt* from it — the projection covers
+   * the run from its beginning, so the transcript's own partial copy of that run
+   * is redundant and is hidden (`stripRunCopies`), and the reply the reader sees
+   * is this one. A run it has only ever seen pushes for is drawn against the
+   * transcript's copy instead (`foldLiveReply`): together those two are the reply
+   * — the page has the beginning, the pushes have the end.
    *
-   * Kept apart from `messages` rather than folded into it: this is a projection of
-   * events in flight, not a record, and the two are replaced by each other — the
-   * settled reply arrives in `messages` when the history is re-read at the end of
-   * the run.
+   * Empty when nothing is in flight, and normally one entry: a host answers one
+   * prompt at a time. It is briefly two when a settled reply is still waiting for
+   * its record to be readable while the next run has already started.
    */
-  live: AgentMessage | null;
+  liveReplies: RemoteLiveReply[];
+  /**
+   * A host that does not serve `get_events_since` (an older paired desktop).
+   *
+   * Advisory, and only for what it costs: every reply then falls back to the
+   * page-plus-pushes path, which the transcript draws by folding the two copies.
+   * The reader sees the same reply; what is lost is the run's own clock and the
+   * certainty that a missed frame was noticed.
+   */
+  replayUnavailable: boolean;
   /**
    * Whether the host would take a compact request for this conversation.
    *
@@ -91,16 +101,6 @@ export interface RemoteTimeline {
    */
   persistedEntryIds: ReadonlySet<string>;
 }
-
-/**
- * Default page size for an incremental replay request.  The host's own
- * generic default is 100 events, which is wasteful for token-heavy runs: a
- * single tool or thinking stream can produce hundreds of small events, and
- * 100-item pages turn one replay into several round trips.  The phone already
- * uses 1000; matching it keeps the two clients on the same side of the host's
- * wire contract.
- */
-export const REPLAY_PAGE_EVENTS = 1000;
 
 /**
  * The host's page size for a backward history read, in *user exchanges* (not
@@ -187,6 +187,13 @@ const COMPACTION_SETTLED = new Set([
   "compaction_end",
 ]);
 
+/** The host's answer to `get_state`, as far as this hook reads it. */
+interface RemoteSessionState {
+  /** The run in flight, if any: the one a mid-join has to read the log of. */
+  activeRun?: { runId?: string } | null;
+  isCompacting?: boolean;
+}
+
 interface EntriesPage {
   entries?: unknown[];
   hasMore?: boolean;
@@ -212,8 +219,6 @@ interface TimelineSnapshot {
   entries: RemoteEntry[];
   hasMore: boolean;
   persistedIds: ReadonlySet<string>;
-  /** Per-run cursors restored when this snapshot is seeded. */
-  runCursor?: RunCursor;
 }
 
 const snapshots = new Map<string, TimelineSnapshot>();
@@ -228,13 +233,28 @@ export function forgetRemoteTimeline(desktopId: string, sessionId: string): void
 }
 
 /**
- * A remote session's timeline: history on open, then live events appended.
+ * A remote session's timeline: history on open, a run's log while it streams.
  *
  * History is read once (and paged backwards on demand); live events arrive as
  * pushes. NATS Core is at-most-once, so a push can be lost — which is why
  * reopening a session re-reads history rather than trusting the stream to have
- * been complete. A gap that silently never fills is the failure worth designing
- * against here, not a duplicated line.
+ * been complete.
+ *
+ * The reply in flight is the part history cannot answer. A run's *log* is the
+ * truth about it (`get_events_since`), and reading it is what lets a client that
+ * joined mid-reply draw the whole reply — including the part it never watched
+ * arrive, and the run's own start time, which the pushes cannot carry (they begin
+ * where the client subscribed). A run's log is read at three moments, and each is
+ * a moment where the pushes alone would leave a hole:
+ *
+ * - **an open**, where the conversation's newest run may already be well along;
+ * - **a link that came back**, where pushes were lost with the socket;
+ * - **a gap the pushes themselves declare** (a host that does not trim sends one
+ *   event per index, so a jump is loss), where only the missing slice is read.
+ *
+ * A host that does not serve the command says so once; the reply is then drawn
+ * the way it was before the log existed — the page's beginning, then the pushed
+ * tail (`foldLiveReply`).
  */
 export function useRemoteTimeline(
   desktopId: string | null,
@@ -242,23 +262,23 @@ export function useRemoteTimeline(
   enabled: boolean,
 ): RemoteTimeline {
   const [entries, setEntries] = useState<RemoteEntry[]>([]);
-  const [live, setLive] = useState<AgentMessage | null>(null);
+  const [liveReplies, setLiveReplies] = useState<RemoteLiveReply[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [compacting, setCompacting] = useState(false);
+  const [replayUnavailable, setReplayUnavailable] = useState(false);
   const [persistedEntryIds, setPersistedEntryIds] = useState<ReadonlySet<string>>(() => new Set());
   /** The cursor for the next older page (`nextOffset`), or null at the start. */
   const cursorRef = useRef<number | null>(null);
-  /** Per-run cursors for gap detection and replay validation. */
-  const runCursorRef = useRef<RunCursor>(newRunCursor());
   /**
-   * The live replies of this conversation's runs, folded from the host's pushes.
+   * The live runs of this conversation: their projections, and what this client
+   * knows about how much of each run's log it holds.
    *
    * A ref rather than state: the projectors are an accumulator (each delta builds
-   * on the last), and the bubble they produce is what is rendered. Creating it
+   * on the last), and the replies they produce are what is rendered. Creating it
    * lazily keeps it per-window rather than per-hook-instance, which is the same
    * lifetime the snapshots above have.
    */
@@ -267,19 +287,110 @@ export function useRemoteTimeline(
     streamsRef.current = new RemoteRunStreams();
 
   /**
-   * The entries folded into messages, by the same projector this app uses for
-   * its own sessions — imported rather than reimplemented, because "one author
-   * line per reply" is a rule with several parts (run identity, compaction
-   * dividers, aborted turns) that only stays right in one place.
-   */
-  const messages = useMemo(() => entriesToMessages(entries), [entries]);
-  /**
-   * Guards against a slow page for a *previous* session landing after the user
-   * has already opened another one — the classic way a timeline shows one
-   * conversation's lines under another's title.
+   * Which conversation this hook is currently reading.
+   *
+   * Every async path (a page, a run's log) compares against it before writing
+   * anything: a slow read for a *previous* conversation landing after the user
+   * has opened another one is the classic way a timeline shows one conversation's
+   * lines under another's title.
    */
   const epochRef = useRef(0);
+  /** The reads in flight per run, so a burst of gaps asks once. */
+  const replayingRef = useRef(new Set<string>());
+  /** Whether the host has refused `get_events_since` (an older paired desktop). */
+  const unsupportedRef = useRef(false);
+  /**
+   * Whether the host's pushes omit event indices by design.
+   *
+   * This client declares the trimmed lane (`lean_events_v1`), whose feed drops
+   * whole event families — so a jump between indices is expected there, and
+   * reading it as loss would read the run's log on every frame. It is the host
+   * that decides, and its replay pages say so: a page that states how many source
+   * events it covered *before* trimming (`rawEvents`) is a page from a host that
+   * trims, and one reply settles the question for the connection.
+   *
+   * Until something proves it, a jump is treated as loss: an unproven gap costs
+   * one read, and a lost frame nobody looked for costs the reply.
+   */
+  const hostTrimsRef = useRef(false);
+  /**
+   * The runs this conversation has already read a whole log for.
+   *
+   * A run whose first frame arrives at an index above zero is one this window
+   * joined in flight, and its beginning is only in the log. Reading is bounded to
+   * one attempt per run per visit: a host that refuses or fails does not get
+   * asked again for every frame, and the next open (or a link that comes back)
+   * asks once more.
+   */
+  const prefixAskedRef = useRef(new Set<string>());
 
+  const publishReplies = useCallback(() => {
+    setLiveReplies(streamsRef.current?.replies() ?? []);
+  }, []);
+
+  /**
+   * Read a run's log and rebuild its reply from it.
+   *
+   * `full` asks for the run from its beginning (the only read that can cover a
+   * reply this client joined part-way through, and the only one that carries the
+   * run's own start time and a snapshot bootstrap for a long log). Otherwise the
+   * read fills a gap at a position this client already knows, which is what a
+   * lost push costs.
+   */
+  const readRunLog = useCallback(async (
+    desktop: string,
+    session: string,
+    runId: string,
+    full: boolean,
+  ): Promise<void> => {
+    const streams = streamsRef.current;
+    if (!streams || unsupportedRef.current || replayingRef.current.has(runId))
+      return;
+    const epoch = epochRef.current;
+    const isCurrent = () => epochRef.current === epoch && streamsRef.current === streams;
+    const sinceIdx = full ? -1 : (streams.cursorFor(runId)?.highWater ?? -1);
+    // A gap whose position this client does not know is a whole-run read: there
+    // is nothing to fill from.
+    const from = full || sinceIdx < 0 ? -1 : sinceIdx;
+    replayingRef.current.add(runId);
+    try {
+      const replay = await fetchRunReplay({ desktopId: desktop, sessionId: session, runId, sinceIdx: from, isCurrent });
+      if (!isCurrent())
+        return;
+      // A tail is only applied when it provably reaches the watermark it was
+      // pinned to: the cursor moves to that point, and a short feed applied there
+      // is a hole nothing would ever revisit. Refusing costs one more read.
+      if (from >= 0 && !replayTailCovers(replay, from))
+        return;
+      // A read that carries no events is not evidence about the run: it is what a
+      // host answers when there is nothing new, and what a reply that is not a
+      // log at all looks like from here. Restoring it would replace the reply
+      // this client has already folded with an empty one.
+      if (replay.projection?.events?.length === 0 || (replay.events.length === 0 && !replay.projection))
+        return;
+      // A host that states a pre-trim count on its pages is a host whose pushes
+      // are trimmed too (`remote_host::lean` is one switch for both lanes).
+      if (replay.rawEvents !== undefined)
+        hostTrimsRef.current = true;
+      streams.restore(runId, replay);
+      publishReplies();
+    }
+    catch (err) {
+      if (!isCurrent())
+        return;
+      // An older host refuses the command outright. Say so once, and draw the
+      // reply from the page plus the pushes from here on.
+      if (replayUnsupported(err)) {
+        unsupportedRef.current = true;
+        setReplayUnavailable(true);
+      }
+    }
+    finally {
+      replayingRef.current.delete(runId);
+    }
+  }, [publishReplies]);
+
+  /** Read a history page, and answer with what it carried. */
   const readPage = useCallback(async (
     side: "history" | "older",
     session: string,
@@ -343,20 +454,10 @@ export function useRemoteTimeline(
         entries: side === "history" ? parsed : [],
         hasMore: page?.hasMore === true && next !== null && next > 0,
         persistedIds: new Set(parsed.map(item => item.id)),
-        runCursor: runCursorRef.current ? new Map(runCursorRef.current) : undefined,
       });
-      // A tail read restarts the live lane: the reply being written is the
-      // transcript's *tail*, and this page is now where the record ends. Keeping
-      // what the stream had accumulated across the read would draw the same
-      // deltas twice — once from the record, once from the bubble — because a
-      // delta that arrived before the read is content the page now carries
-      // (`foldLiveReply`). The bubble goes with the projection it was built from;
-      // the page it was read for is on screen now.
-      if (side === "history") {
-        streamsRef.current?.restart();
-        setLive(null);
-      }
       setError(null);
+      if (side === "history")
+        settleRunsInPage(streamsRef.current, parsed, publishReplies);
       return parsed;
     }
     catch (err) {
@@ -371,100 +472,75 @@ export function useRemoteTimeline(
         setLoadingOlder(false);
       }
     }
-  }, []);
+  }, [publishReplies]);
 
   /**
-   * Try an incremental replay of events since the highest applied index.  Falls
-   * back to a full newest-page read if the host does not support the command or
-   * if the replay window cannot be validated.
+   * Ask the host which run is in flight, and read its log.
+   *
+   * The state read is what makes a mid-join complete: without it the client only
+   * learns of a run when a push arrives, and a long tool call pushes nothing for
+   * minutes — so a reader who opened the conversation while the host was working
+   * would see the page's partial copy of the reply and no clock on it.
    */
-  const readReplayPage = useCallback(async (
-    session: string,
-    desktop: string,
-    background = false,
-  ): Promise<RemoteEntry[]> => {
-    const cursor = runCursorRef.current;
-    const since = highestRunCursor(cursor);
-    if (since < 0)
-      return readPage("history", session, desktop, background);
-
-    const epoch = ++epochRef.current;
-    if (!background)
-      setLoading(true);
+  const reconcileActiveRun = useCallback(async (desktop: string, session: string): Promise<void> => {
+    if (unsupportedRef.current)
+      return;
+    const epoch = epochRef.current;
+    let active: string | null = null;
     try {
-      const page = await requestRemotePeer<{
-        events?: unknown[];
-        watermark?: number;
-        rawEvents?: number;
-        hasMore?: boolean;
-      }>(desktop, {
-        type: "get_events_since",
+      const state = await requestRemotePeer<RemoteSessionState>(desktop, {
+        type: "get_state",
         sessionId: session,
-        sinceIdx: since,
-        limit: REPLAY_PAGE_EVENTS,
       }, session);
-
       if (epoch !== epochRef.current)
-        return [];
-
-      const events = normaliseReplayEvents(page?.events);
-      const cursorBefore = new Map(cursor);
-      const result = applyReplayPage(
-        cursor,
-        events.map(event => ({ id: event.id, runId: event.runId ?? undefined, idx: event.idx ?? undefined })),
-        page?.watermark,
-        page?.rawEvents,
-        since,
-      );
-
-      if (result.apply === null || !result.prefixComplete) {
-        // Validation failed or prefix is incomplete: restore cursor and fall
-        // back to the newest history page.
-        runCursorRef.current = cursorBefore;
-        return readPage("history", session, desktop, background);
-      }
-
-      const parsed = events.map(event => event.entry).filter(Boolean) as RemoteEntry[];
-      setEntries((current) => {
-        const existing = new Set(current.map(item => item.id));
-        const newEntries = parsed.filter(item => !existing.has(item.id));
-        return newEntries.length > 0 ? [...current, ...newEntries] : current;
-      });
-      setPersistedEntryIds((current) => {
-        const next = new Set(current);
-        for (const item of parsed)
-          next.add(item.id);
-        return next;
-      });
-      setError(null);
-      return parsed;
+        return;
+      active = state?.activeRun?.runId ?? null;
+      // The host's own answer to "is a run in flight", which is what a window that
+      // just opened has no other way of knowing: the pushes only start arriving at
+      // whatever the run does next, and a long tool call emits nothing for minutes.
+      // Only ever *set* here — a run that ends clears it on its terminal frame,
+      // which is the frame that says so.
+      if (active)
+        setStreaming(true);
+      if (typeof state?.isCompacting === "boolean")
+        setCompacting(current => (current === state.isCompacting ? current : state.isCompacting === true));
     }
     catch {
-      // An old host answers "Unsupported command" for get_events_since; fall
-      // back to the whole newest page so the user still sees something.
-      return readPage("history", session, desktop, background);
+      // A host that cannot answer is not evidence about its runs. The pushes
+      // still carry the reply; the log read is simply skipped this time.
+      return;
     }
-    finally {
-      if (epoch === epochRef.current) {
-        setLoading(false);
-        setLoadingOlder(false);
-      }
-    }
-  }, [readPage]);
+    if (!active)
+      return;
+    // From the run's *beginning*, always, on this path: the moments that reach it
+    // are the moments the pushes' provenance is in doubt — a window that just
+    // opened, a link that was down, a record that was re-read. This client
+    // declares the trimmed lane, whose feed omits event families by design, so
+    // "how much of the run do I hold" cannot be answered by counting what arrived;
+    // and the read is bounded by the host's own snapshot bootstrap, which folds a
+    // long run into one reply.
+    await readRunLog(desktop, session, active, true);
+  }, [readRunLog]);
 
+  /**
+   * Re-read the conversation from the host: its record, then the run in flight.
+   *
+   * Used by the transcript's own Retry, and after an action that changes what the
+   * host's record holds (a compaction that committed, a run that was continued).
+   */
   const refresh = useCallback(async () => {
     if (!desktopId || !sessionId)
       return;
     cursorRef.current = null;
     await readPage("history", sessionId, desktopId);
-  }, [desktopId, sessionId, readPage]);
+    await reconcileActiveRun(desktopId, sessionId);
+  }, [desktopId, sessionId, readPage, reconcileActiveRun]);
 
   const loadOlder = useCallback(async () => {
     if (!desktopId || !sessionId || !hasMore || cursorRef.current === null)
       return;
     await readPage("older", sessionId, desktopId);
   }, [desktopId, sessionId, hasMore, readPage]);
-
   // Open: show what was read last time, then read the newest page again.
   //
   // Both halves matter. The seeded state is what makes a revisit instant — the
@@ -474,19 +550,24 @@ export function useRemoteTimeline(
   // that trusted the stream would be quietly missing it.
   useEffect(() => {
     epochRef.current += 1;
+    unsupportedRef.current = false;
+    hostTrimsRef.current = false;
+    prefixAskedRef.current.clear();
     const cached = desktopId && sessionId ? snapshots.get(snapshotKey(desktopId, sessionId)) : undefined;
     setEntries(cached?.entries ?? []);
     setPersistedEntryIds(cached?.persistedIds ?? new Set());
     cursorRef.current = cached?.cursor ?? null;
-    runCursorRef.current = cached?.runCursor ? new Map(cached.runCursor) : newRunCursor();
     setHasMore(cached?.hasMore ?? false);
     setError(null);
     setStreaming(false);
     setCompacting(false);
-    // Another conversation's reply must not be drawn under this one's title, and
-    // its projectors are deltas that only apply to the run that produced them.
+    setReplayUnavailable(false);
+    // Another conversation's replies must not be drawn under this one's title,
+    // and the projections are accumulators that only apply to the run that
+    // produced them — so the lane goes with them, cursors included: they describe
+    // how much of *those* runs this client held.
     streamsRef.current?.clear();
-    setLive(null);
+    setLiveReplies([]);
     // The catch-up read is not a first read: with something already on screen
     // there is no empty state to cover, so the spinner would only say "this is
     // provisional", which the seeded transcript already is not.
@@ -494,12 +575,18 @@ export function useRemoteTimeline(
       setLoading(false);
     if (!enabled || !desktopId || !sessionId)
       return;
-    void readPage("history", sessionId, desktopId, Boolean(cached));
+    void (async () => {
+      await readPage("history", sessionId, desktopId, Boolean(cached));
+      // Read what the host has in flight *after* the page: the transcript's own
+      // copy of that reply is what the log's read replaces, and a read that
+      // landed first would be replaced by the page.
+      await reconcileActiveRun(desktopId, sessionId);
+    })();
     // Leaving this conversation drops its fetched tool arguments. They are keyed
     // by run and call id, which never repeat, so nothing here would ever be read
     // again — and the cache would otherwise grow for the life of the window.
     return () => forgetRemoteToolTargets(desktopId, sessionId);
-  }, [enabled, desktopId, sessionId, readPage, readReplayPage]);
+  }, [enabled, desktopId, sessionId, readPage, reconcileActiveRun]);
 
   // Live: append this session's events; ignore every other session's.
   useEffect(() => {
@@ -514,8 +601,17 @@ export function useRemoteTimeline(
       // from the host rather than trusted to have stayed complete. This runs
       // before the `kind` check below, which only handles session events.
       if (kind === "resumed") {
-        if (source === desktopId)
-          void readReplayPage(sessionId, desktopId, true);
+        if (source === desktopId) {
+          // Both lanes are re-read, because they answer different questions: the
+          // page is the host's *record* (a run that started and finished while
+          // the link was down is only there), and the log is the run in flight
+          // (whose intermediate frames were what the socket dropped).
+          streamsRef.current?.restart();
+          prefixAskedRef.current.clear();
+          publishReplies();
+          void readPage("history", sessionId, desktopId, true).then(() =>
+            reconcileActiveRun(desktopId, sessionId));
+        }
         return;
       }
       if (kind !== "event" || source !== desktopId)
@@ -550,28 +646,41 @@ export function useRemoteTimeline(
       const rawData = readRaw(payload, "data");
       const streams = streamsRef.current;
       if (runId && idx !== null && rawData !== null && streams) {
-        // Track this frame's run cursor so the replay path knows how far it has
-        // reliably seen.  The projector needs the raw event anyway; the cursor is
-        // updated as a side effect of applying it.
-        nextEvent(runCursorRef.current, runId, idx);
-        setLive(streams.apply({
+        const verdict = streams.apply({
           data: rawData,
           eventId: readString(payload, "eventId") ?? `${runId}:${idx}`,
           idx,
           runId,
           timestamp: readString(payload, "timestamp") ?? "",
           type,
-        }));
+          ...(readNumber(payload, "coalescedCount") === null
+            ? {}
+            : { coalescedCount: readNumber(payload, "coalescedCount")! }),
+        }, { omitIndices: hostTrimsRef.current });
+        publishReplies();
+        // A frame that lands above index zero of a run this client has no
+        // beginning for is a run it joined in flight: the reply's first half is
+        // only in the log. (A gap *inside* a run it has been following is the
+        // other case, and only a host that does not trim can declare one — see
+        // `hostTrimsRef`.)
+        const firstHalfMissing = streams.cursorFor(runId)?.prefixComplete === false;
+        const gapInsideRun = verdict === "gap" || verdict === "overlap";
+        if ((firstHalfMissing || gapInsideRun) && !prefixAskedRef.current.has(runId)) {
+          prefixAskedRef.current.add(runId);
+          void readRunLog(desktopId, sessionId, runId, firstHalfMissing);
+        }
       }
       // The run is over: the host's journal has the reply now, so the transcript
-      // re-reads it and the live bubble steps aside. Without this the bubble stays
-      // and the settled reply lands *beside* it — the same words twice, one of them
-      // frozen mid-stream. The read is a catch-up (`background`), so no spinner
-      // replaces a reply the reader is already looking at.
+      // re-reads it and this client's own copy steps aside — once that record
+      // carries it (`settleRunsInPage`). Without this the reply stays a
+      // projection while the settled record is read *past* it, and a reply whose
+      // last words were written as the run ended could blink out of the
+      // transcript until the next open. The read is a catch-up (`background`), so
+      // no spinner replaces a reply the reader is already looking at.
       if (RUN_SETTLED.has(type)) {
         if (runId)
           streams?.settle(runId);
-        setLive(null);
+        publishReplies();
         void readPage("history", sessionId, desktopId, true);
       }
       const entry = entryFromEvent(payload, type);
@@ -591,13 +700,16 @@ export function useRemoteTimeline(
       cancelled = true;
       dispose?.();
     };
-  }, [enabled, desktopId, sessionId, readPage, readReplayPage]);
+  }, [enabled, desktopId, sessionId, readPage, reconcileActiveRun, readRunLog, publishReplies]);
+
+  const messages = useMemo(() => entriesToMessages(entries), [entries]);
 
   return useMemo(
     () => ({
       entries,
       messages,
-      live,
+      liveReplies,
+      replayUnavailable,
       canCompact: sessionId !== null && sessionId !== ""
         && entries.length > 0
         && !streaming
@@ -612,8 +724,47 @@ export function useRemoteTimeline(
       compacting,
       persistedEntryIds,
     }),
-    [entries, messages, live, sessionId, streaming, compacting, loading, loadingOlder, hasMore, error, loadOlder, refresh, persistedEntryIds],
+    [entries, messages, liveReplies, replayUnavailable, sessionId, streaming, compacting, loading, loadingOlder, hasMore, error, loadOlder, refresh, persistedEntryIds],
   );
+}
+
+/**
+ * Drop this client's copy of every run the page just made readable.
+ *
+ * A settled run's projection is the reply until the host's own record of it can
+ * be read — the agent writes the last model call as the run ends, so the record
+ * can trail the terminal frame by a moment. Once the page carries that record,
+ * the projection is a second copy of the same words, and the record is the one
+ * that carries what this lane cannot: the run's failure, its error text, and the
+ * entry id a fork branches at.
+ *
+ * The trigger is the run's own `run.status`, which the agent writes on a settled
+ * entry. A *running* status is what the mid-run snapshot carries, so it must not
+ * count — that is exactly the copy the log was read to replace.
+ */
+function settleRunsInPage(
+  streams: RemoteRunStreams | null,
+  entries: readonly RemoteEntry[],
+  publish: () => void,
+): void {
+  if (!streams)
+    return;
+  const runs = streams.knownRuns();
+  let dropped = false;
+  for (const runId of runs) {
+    if (entries.some(entry => entry.runId === runId && isSettledStatus(entry.run?.status))) {
+      streams.markRecorded(runId);
+      dropped = true;
+    }
+  }
+  if (dropped)
+    publish();
+}
+
+/** The `run.status` values the agent writes on a *settled* entry. */
+function isSettledStatus(status: string | null | undefined): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled"
+    || status === "interrupted" || status === "incomplete";
 }
 
 function readString(value: unknown, key: string): string | null {
@@ -751,70 +902,6 @@ function entryFromEvent(payload: unknown, type: string): RemoteEntry | null {
     return text ? { ...base, kind: type, role: "user", blocks: [{ kind: "text", text }] } : null;
   }
   return null;
-}
-
-function highestRunCursor(cursor: RunCursor): number {
-  let max = -1;
-  for (const entry of cursor.values()) {
-    if (entry.highWater > max)
-      max = entry.highWater;
-  }
-  return max;
-}
-
-interface ReplayEventItem {
-  id: string;
-  runId?: string | null;
-  idx?: number | null;
-  entry: RemoteEntry | null;
-}
-
-function normaliseReplayEvents(raw: unknown): ReplayEventItem[] {
-  if (!Array.isArray(raw))
-    return [];
-  return raw.flatMap((item): ReplayEventItem[] => {
-    if (typeof item !== "object" || item === null)
-      return [];
-    const record = item as Record<string, unknown>;
-    const id = typeof record.id === "string" && record.id ? record.id : null;
-    if (!id)
-      return [];
-    const runId = typeof record.runId === "string" && record.runId
-      ? record.runId
-      : typeof record.run_id === "string" && record.run_id
-        ? record.run_id
-        : null;
-    const idx = typeof record.idx === "number" && Number.isFinite(record.idx) ? record.idx : null;
-    const entry = runId && idx !== null ? replayEventToEntry(item) : null;
-    return [{ id, runId, idx, entry }];
-  });
-}
-
-function replayEventToEntry(value: unknown): RemoteEntry | null {
-  if (typeof value !== "object" || value === null)
-    return null;
-  const record = value as Record<string, unknown>;
-  const id = typeof record.id === "string" && record.id ? record.id : null;
-  const role = typeof record.role === "string" ? record.role : null;
-  if (!id || !role || (role !== "user" && role !== "assistant" && role !== "tool" && role !== "system"))
-    return null;
-  const createdAtRaw = typeof record.createdAtMs === "number"
-    ? record.createdAtMs
-    : typeof record.created_at_ms === "number"
-      ? record.created_at_ms
-      : null;
-  const blocks = Array.isArray(record.blocks)
-    ? record.blocks
-    : typeof record.data === "string"
-      ? [{ kind: "text", text: record.data }]
-      : [{ kind: "text", text: "" }];
-  return {
-    id,
-    kind: "message",
-    role,
-    createdAtMs: createdAtRaw ?? Date.now(),
-    blocks,
-  } as RemoteEntry;
 }
 
 function readJson(value: unknown, key: string): unknown {

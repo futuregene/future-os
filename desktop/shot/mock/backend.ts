@@ -42,7 +42,7 @@ import {
   workspaceFiles,
   workspaces,
 } from "./data";
-import { sessionEntries, streamRemoteRun } from "./remoteStream";
+import { replayPage, replayState, sessionEntries, streamRemoteRun } from "./remoteStream";
 
 // The console output doubles as the "what is missing" list while iterating on
 // the harness, which is why this one log call is intentional.
@@ -576,8 +576,27 @@ const handlers: Record<string, (args: any) => unknown> = {
           hasMore: false,
           nextOffset: 0,
         };
+      /**
+       * The host's state: its settings *and* the run it has in flight.
+       *
+       * `activeRun` is what a client reads to learn there is a reply already being
+       * written — the pushes alone cannot say so until a frame arrives, and a long
+       * tool call pushes nothing for minutes.
+       */
       case "get_state":
-        return remoteConversationState;
+        return { ...remoteConversationState, ...replayState(String(command.sessionId ?? "")) };
+      /**
+       * The run's log, for the client that reads it rather than guessing.
+       *
+       * Served for the fixture's in-flight run only; anything else answers an
+       * empty read, which is what a host with nothing to add says.
+       */
+      case "get_events_since":
+        return replayPage(
+          String(command.sessionId ?? ""),
+          String(command.runId ?? ""),
+          Number(command.sinceIdx ?? -1),
+        );
       /**
        * The host's own unit: one conversation, addressed by its *thread* id.
        *

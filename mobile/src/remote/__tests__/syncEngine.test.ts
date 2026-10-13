@@ -12,16 +12,24 @@ function nextRunId(): string {
   return `run-${seq}`;
 }
 
-function evt(type: string, run: string, idx: number, data = "{}"): StreamEvent {
+/**
+ * One event, as the *normalized* read returns it: the run is named, not optional.
+ *
+ * The helpers below build the fixtures for `fetchReplay`, which stands in for the
+ * shared read's result (`RunReplay`) rather than for a raw wire page — so a fixture
+ * that says which run each event belongs to is saying what the read does.
+ */
+type ReplayedEvent = StreamEvent & { runId: string };
+function evt(type: string, run: string, idx: number, data = "{}"): ReplayedEvent {
   return { type, runId: run, idx, data };
 }
-function agentStart(run: string, idx = 0): StreamEvent {
+function agentStart(run: string, idx = 0): ReplayedEvent {
   return evt("agent_start", run, idx);
 }
-function textChunk(run: string, idx: number, text: string): StreamEvent {
+function textChunk(run: string, idx: number, text: string): ReplayedEvent {
   return evt("text_chunk", run, idx, JSON.stringify({ text }));
 }
-function agentEnd(run: string, idx: number): StreamEvent {
+function agentEnd(run: string, idx: number): ReplayedEvent {
   return evt("agent_end", run, idx);
 }
 
@@ -36,6 +44,10 @@ class Journal {
       e.runId === run && e.idx != null && from === -1 ? true : (e.idx ?? -1) > from,
     );
   }
+  /** The newest index this run's journal holds — the number a read's watermark names. */
+  highest(run: string): number | undefined {
+    return this.events.filter((e) => e.runId === run && e.idx != null).at(-1)?.idx;
+  }
 }
 
 class Harness {
@@ -45,10 +57,8 @@ class Harness {
   history: ReturnType<typeof emptyTimeline> = emptyTimeline();
   /** Optional folded projection; when set, fetchReplay returns it instead. */
   projection: StreamEvent[] | null = null;
-  /** Omit the folded projection's explicit cursor (derive it from event idx). */
-  omitProjectionCursor = false;
-  /** Emit replay events with snake_case run_id (legacy desktop wire). */
-  snakeCaseReplay = false;
+  /** A projection whose cursor is missing or nonsensical, as a legacy host sends. */
+  projectionCursor: number | undefined = undefined;
   replayFailures = 0;
   /** Mark every replay reply as byte-truncated by the desktop. */
   truncateReplay = false;
@@ -102,12 +112,14 @@ class Harness {
           this.replayFailures -= 1;
           throw new Error("temporary replay failure");
         }
-        // The desktop RPC serializes replay events with camelCase runId — the
-        // real wire shape that reproduced the missing-runId ghost.
-        const runKey = this.snakeCaseReplay ? "run_id" : "runId";
+        // The *normalized* result the shared read returns: the wire's spellings
+        // (snake_case `run_id`, a payload that is not always a string) are
+        // resolved before the lane sees them, and what is left here is the shape
+        // the projection consumes.
         const events = this.journal
           .since(run, since)
-          .map((e) => ({ type: e.type, data: e.data, [runKey]: e.runId, idx: e.idx }));
+          .map((e) => ({ type: e.type, data: e.data, runId: e.runId ?? run, idx: e.idx }));
+        const watermark = this.journal.highest(run);
         // The reply is fixed from here on; hold it in flight if asked.
         if (this.replayBlocked) {
           const blocked = this.replayBlocked;
@@ -115,21 +127,30 @@ class Harness {
           await blocked;
         }
         if (this.projection) {
-          // Folded projections carry NO run_id per event (whole-run coalesced
-          // deltas) — exactly the wire shape that reproduced the ghost item.
-          const wire = this.projection.map((e) => ({ type: e.type, data: e.data, idx: e.idx }));
-          const projection = this.omitProjectionCursor
-            ? { run_id: run, events: wire }
-            : { run_id: run, cursor: wire.length - 1, events: wire };
+          // A folded projection names no run per event (`runId: ""` is what the
+          // shared read leaves for an envelope that did not) — exactly the shape
+          // that reproduced the ghost item.
+          const wire = this.projection.map((e) => ({ type: e.type, data: e.data, runId: "", idx: e.idx }));
           const result: ReplayResult = {
             events: [],
-            projection,
+            projection: {
+              runId: run,
+              cursor: this.projectionCursor ?? wire.length - 1,
+              events: wire,
+            },
+            completePrefix: true,
             ...(this.truncateReplay ? { truncated: true } : {}),
           };
           return result;
         }
         const result: ReplayResult = {
           events,
+          // What the shared read concludes: a whole-run read whose events are
+          // contiguous from zero through its watermark holds the run's beginning;
+          // a tail read never claims it.
+          completePrefix: since === -1 && !this.truncateReplay
+            && events.every((event, index) => event.idx === index)
+            && (watermark === undefined || watermark === events.length - 1),
           ...(this.truncateReplay ? { truncated: true } : {}),
         };
         return result;
@@ -407,9 +428,9 @@ describe("SyncEngine", () => {
             during = engine.cursorFor("s").get("r")?.highWater ?? -1;
             engine.restart("s", "reconnect");
           }, 0);
-          return { events: [agentStart("r"), ...Array.from({ length: 10_000 }, (_, i) => textChunk("r", i + 1, "old"))].map(ev => ({ ...ev })) };
+          return { events: [agentStart("r"), ...Array.from({ length: 10_000 }, (_, i) => textChunk("r", i + 1, "old"))].map(ev => ({ ...ev })), completePrefix: true };
         }
-        return { events: [agentStart("r"), textChunk("r", 1, "replacement")].map(ev => ({ ...ev })) };
+        return { events: [agentStart("r"), textChunk("r", 1, "replacement")].map(ev => ({ ...ev })), completePrefix: true };
       },
     });
     try {
@@ -430,7 +451,7 @@ describe("SyncEngine", () => {
     history.items = [{ kind: "message", id: "prompt", role: "user", text: "hello", runId: "r" }];
     const replay = jest.fn(async () => {
       await new Promise(resolve => setTimeout(resolve, 16_800));
-      return { events: [agentStart("r"), textChunk("r", 1, "reply"), agentEnd("r", 2)].map(event => ({ ...event })) };
+      return { events: [agentStart("r"), textChunk("r", 1, "reply"), agentEnd("r", 2)].map(event => ({ ...event })), completePrefix: true };
     });
     const engine = new SyncEngine({
       requestGetState: async () => ({ activeRun: { runId: "r" } }),
@@ -534,7 +555,7 @@ describe("SyncEngine", () => {
     const engine = new SyncEngine({
       requestGetState: async () => state,
       requestHistory: async () => emptyTimeline(),
-      fetchReplay: async () => ({ events: [] }),
+      fetchReplay: async () => ({ events: [], completePrefix: false }),
     });
     const commits = jest.fn();
     engine.subscribe(commits);
@@ -567,7 +588,7 @@ describe("SyncEngine", () => {
         ...emptyTimeline(),
         items: [{ id: "history", kind: "message", role: "user", text: "restored" }],
       }),
-      fetchReplay: async () => ({ events: [] }),
+      fetchReplay: async () => ({ events: [], completePrefix: false }),
     });
     const commits = jest.fn();
     engine.subscribe(commits);
@@ -875,21 +896,6 @@ describe("SyncEngine", () => {
     expect(assistantItems[0]).toMatchObject({ runId: run, streaming: false });
   });
 
-  test("snake_case run_id replay still normalizes (older desktops)", async () => {
-    const run = nextRunId();
-    const h = new Harness(run);
-    h.snakeCaseReplay = true;
-    // Legacy replay events carry snake_case run_id; normalizeReplayEvents must
-    // keep accepting them.
-    h.journal.add(agentStart(run, 0));
-    h.journal.add(textChunk(run, 1, "legacy"));
-    h.journal.add(agentEnd(run, 2));
-    h.engine.event("s1", textChunk(run, 1, "legacy")); // first contact, mid-run
-    await h.settle();
-    expect(h.textOf("s1")).toBe("legacy");
-    expect(h.timelineOf("s1").streaming).toBe(false);
-  });
-
   test("open reconcile on an idle session loads durable history (no active run)", async () => {
     const h = new Harness(); // no active run, no live events
     h.history = {
@@ -1019,15 +1025,24 @@ describe("SyncEngine", () => {
     expect(h.engine.runCompleteLocally("s1", run)).toBe(true);
   });
 
-  test("projection replay without an explicit cursor derives it from event idx", async () => {
+  /**
+   * A projection with no usable cursor is refused rather than mis-cursored.
+   *
+   * A legacy host can answer a folded projection without a boundary, and the
+   * cursor is what the next read resumes from: guessing it from the events would
+   * make this client claim to hold a range it was never given.
+   */
+  test("a projection without a usable cursor is refused, and the prefix is not built from it", async () => {
     const run = nextRunId();
     const h = new Harness(run);
-    h.omitProjectionCursor = true;
+    h.projectionCursor = -1;
     h.projection = [agentStart(run, 0), textChunk(run, 1, "folded"), agentEnd(run, 2)];
     h.engine.reconcile("s1", "resend", run);
     await h.settle();
-    expect(h.textOf("s1")).toBe("folded");
-    expect(h.timelineOf("s1").streaming).toBe(false);
+    // Nothing from that projection was applied, and the lane is retrying from
+    // durable state rather than carrying a cursor nobody can justify.
+    expect(h.textOf("s1")).not.toContain("folded");
+    expect(h.engine.cursorFor("s1").get(run)).toBeUndefined();
   });
 
   test("restartAll rebuilds every real lane from durable state", async () => {

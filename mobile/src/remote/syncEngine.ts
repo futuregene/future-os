@@ -43,33 +43,35 @@ import {
   dropSupersededCompactionDividers,
   foldLiveCompactionPlaceholdersIntoHistory,
   emptyTimeline,
-  normalizeReplayEvents,
   stripRunItems,
   upsertTruncationNotice,
-  type ReplayEventWire,
   type TimelineState,
 } from "./timeline";
-import { tailCoversRange } from "./replay";
+// The run cursor and the replay-window check are the host's wire contract, not
+// this client's: the desktop's remote client reads the same feed, so they live
+// in the shared package and are imported rather than restated here.
 import {
   advanceCursor,
   cursorHighWater,
   isPrefixComplete,
   newCursor,
   nextEvent,
+  tailCoversRange,
+  type ReplayEvent,
   type RunCursor,
-} from "./runCursor";
+  type RunReplay,
+} from "@future-os/thread-projection";
 import type { StreamEvent, RemoteSessionState } from "./types";
 import { retainedSize } from "./retainedSize";
 
-/** Paginated replay pages, merged by the caller (P0 H2 pagination). */
-export interface ReplayResult {
-  events: ReplayEventWire[];
-  projection?: { run_id?: string; runId?: string; cursor?: number; events?: ReplayEventWire[] } | null;
-  truncated?: boolean;
-  watermark?: number;
-  /** Source events the tail covered before a peer's lean trim removed any. */
-  rawEvents?: number;
-}
+/**
+ * Paginated replay pages, merged by the caller (P0 H2 pagination).
+ *
+ * The shape is the shared read's (`readRunReplay`), not this module's: it is
+ * what the host's `get_events_since` contract produces, and the desktop's remote
+ * client consumes the identical result.
+ */
+export type ReplayResult = RunReplay;
 
 /**
  * Everything a sync instruction may need to touch the desktop. The provider
@@ -701,17 +703,15 @@ export class SyncEngine {
     // dedup keys belonging to the superseded snapshot.
     if (since === -1 || result.projection?.events?.length) cursor.delete(runId);
     if (result.projection?.events?.length) {
-      let events = normalizeReplayEvents(result.projection.events);
       // A folded projection's run id rides on the envelope, not necessarily on
       // each event. Stamp the replayed run's id onto the events so the
       // projection's agent_start/agent_end match the same `assistant:{runId}`
       // item as the live stream — without this, agent_start builds an
       // `assistant:` ghost that no later agent_end can clear, leaving a
       // permanent run indicator.
-      events = events.map((ev) => (ev.runId ? ev : { ...ev, runId }));
-      const cursorIdx =
-        result.projection.cursor ?? events.reduce((max, ev) => Math.max(max, ev.idx ?? -1), -1);
-      const projectionRun = result.projection.runId ?? result.projection.run_id;
+      const events = withRun(result.projection.events, runId);
+      const cursorIdx = result.projection.cursor;
+      const projectionRun = result.projection.runId;
       if ((projectionRun && projectionRun !== runId) || events.some(event => event.runId !== runId)
         || !Number.isSafeInteger(cursorIdx) || cursorIdx < 0
         || (result.watermark !== undefined && cursorIdx !== result.watermark)) {
@@ -736,7 +736,7 @@ export class SyncEngine {
         },
       };
     }
-    const events = normalizeReplayEvents(result.events).map(event => event.runId ? event : { ...event, runId });
+    const events = withRun(result.events, runId);
     if (events.some(event => event.runId !== runId)) {
       this.invalidateBaseline(lane);
       throw new Error("replay_run_changed");
@@ -759,9 +759,7 @@ export class SyncEngine {
       }
     }
     if (events.length === 0) return { timeline: base, cursor };
-    const completePrefix = since === -1 && !result.truncated
-      && events.every((event, index) => event.idx === index)
-      && (result.watermark === undefined || result.watermark === events.length - 1);
+    const completePrefix = result.completePrefix;
     let next = await applyReplayEvents(since === -1 ? freshRunBase(base, runId) : base, events, {
       isCurrent,
       onEvent: ev => advanceCursor(cursor, ev.runId ?? runId, ev.idx ?? -1, completePrefix),
@@ -979,6 +977,11 @@ function freshRunBase(base: TimelineState, runId: string): TimelineState {
     ...stripRunItems(base, runId),
     seenEvents: new Set([...base.seenEvents].filter(key => !key.startsWith(`${runId}:`))),
   };
+}
+
+/** The replayed run's id, stamped onto events the envelope did not name. */
+function withRun(events: ReplayEvent[], runId: string): ReplayEvent[] {
+  return events.map(event => (event.runId ? event : { ...event, runId }));
 }
 
 function requiresFreshPrefix(reason: ReconcileReason): boolean {

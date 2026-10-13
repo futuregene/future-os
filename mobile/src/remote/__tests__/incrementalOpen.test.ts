@@ -14,10 +14,22 @@ function harness() {
   let history = emptyTimeline();
   let journal = prefix();
   const requestHistory = jest.fn(async () => history);
-  const fetchReplay = jest.fn(async (_session: string, run: string, since: number): Promise<ReplayResult> => ({
-    events: journal.filter(e => e.runId === run && e.idx! > since).map(e => ({ ...e })),
-    watermark: journal.filter(e => e.runId === run).at(-1)?.idx ?? -1,
-  }));
+  const fetchReplay = jest.fn(async (_session: string, run: string, since: number): Promise<ReplayResult> => {
+    const covered = journal.filter(e => e.runId === run && e.idx! > since);
+    // Events are normalized on the way in (`readRunReplay`), so a fixture that
+    // stands in for the read says which run each event belongs to.
+    const events = covered.map(e => ({ ...e, runId: e.runId ?? run }));
+    const watermark = journal.filter(e => e.runId === run).at(-1)?.idx ?? -1;
+    return {
+      events,
+      watermark,
+      // What the shared read concludes: a whole-run read whose events are
+      // contiguous from zero through its watermark holds the run's beginning;
+      // a tail read never claims it.
+      completePrefix: since === -1 && events.every((event, index) => event.idx === index)
+        && watermark === events.length - 1,
+    };
+  });
   const onSyncStatus = jest.fn();
   const onTiming = jest.fn();
   const engine = new SyncEngine({
@@ -209,7 +221,7 @@ test("a snapshot notification during a tail fences the old reply and survives an
   h.engine.reconcile("s", "resend", "r");
   h.journal([event("agent_start", 0), text(1, "replacement")]);
   await h.open();
-  finish({ events: [text(2, " stale")].map(e => ({ ...e })), watermark: 2 });
+  finish({ events: [text(2, " stale")].map(e => ({ ...e, runId: e.runId ?? "r" })), watermark: 2, completePrefix: false });
   await jest.advanceTimersByTimeAsync(0);
   expect(h.fetchReplay.mock.calls.map(call => call[2])).toEqual([-1, 1, -1]);
   expect(h.assistant()).toEqual([expect.objectContaining({ text: "replacement" })]);
@@ -217,7 +229,7 @@ test("a snapshot notification during a tail fences the old reply and survives an
 });
 
 test.each([
-  { label: "gap", result: { events: [text(3, "bad")], watermark: 3 } },
+  { label: "gap", result: { events: [text(3, "bad")], watermark: 3, completePrefix: false } },
   { label: "missing suffix", result: { events: [text(2, "partial")], watermark: 3 } },
   { label: "rewound watermark", result: { events: [], watermark: 0 } },
   { label: "truncation without snapshot", result: { events: [text(2, "partial")], truncated: true } },
@@ -252,8 +264,8 @@ test("a replacement projection rewinds cursor and dedup together, then accepts n
   const h = harness();
   h.journal([...prefix(), text(2, " old"), text(3, " old")]);
   await h.open();
-  h.fetchReplay.mockResolvedValueOnce({ events: [], truncated: true, projection: {
-    run_id: "r", cursor: 1, events: [event("agent_start", 0), text(1, "replacement")].map(e => ({ ...e })),
+  h.fetchReplay.mockResolvedValueOnce({ events: [], truncated: true, completePrefix: true, projection: {
+    runId: "r", cursor: 1, events: [event("agent_start", 0), text(1, "replacement")].map(e => ({ ...e, runId: e.runId ?? "r" })),
   } });
   await h.open();
   expect(h.engine.cursorFor("s").get("r")).toEqual({ highWater: 1, prefixComplete: true });
@@ -264,7 +276,7 @@ test("a replacement projection rewinds cursor and dedup together, then accepts n
 
 test("a watermarked full reply with a missing prefix cannot establish an incremental baseline", async () => {
   const h = harness();
-  h.fetchReplay.mockResolvedValueOnce({ events: [text(1, "missing start")].map(e => ({ ...e })), watermark: 1 });
+  h.fetchReplay.mockResolvedValueOnce({ events: [text(1, "missing start")].map(e => ({ ...e, runId: e.runId ?? "r" })), watermark: 1, completePrefix: false });
   await h.open();
   expect(h.engine.cursorFor("s").has("r")).toBe(false);
   expect(h.onSyncStatus).toHaveBeenLastCalledWith("s", "retrying");
@@ -275,7 +287,7 @@ test("a watermarked full reply with a missing prefix cannot establish an increme
 
 test("a legacy unwatermarked partial replay remains ineligible for warm reuse", async () => {
   const h = harness();
-  h.fetchReplay.mockResolvedValueOnce({ events: [text(5, "partial")].map(e => ({ ...e })) });
+  h.fetchReplay.mockResolvedValueOnce({ events: [text(5, "partial")].map(e => ({ ...e, runId: e.runId ?? "r" })), completePrefix: false });
   await h.open();
   expect(h.engine.cursorFor("s").get("r")?.prefixComplete).toBe(false);
   await h.open();
@@ -287,8 +299,9 @@ test.each(["wrong run", "invalid cursor", "incomplete snapshot"])("a projection 
   const h = harness();
   await h.open();
   h.fetchReplay.mockResolvedValueOnce({ events: [], watermark: invalid === "incomplete snapshot" ? 3 : 1,
+    completePrefix: true,
     projection: { runId: invalid === "wrong run" ? "other" : "r", cursor: invalid === "invalid cursor" ? -1 : 1,
-      events: prefix().map(e => ({ type: e.type, idx: e.idx, data: e.data })) },
+      events: prefix().map(e => ({ type: e.type, idx: e.idx, data: e.data, runId: e.runId ?? "r" })) },
   });
   await h.open();
   expect(h.assistant()).toEqual([expect.objectContaining({ text: "prefix" })]);
@@ -308,7 +321,7 @@ test("queued live events overlapping a warm replay are deduplicated, including a
   h.journal([...prefix(), ...tail]);
   h.active("");
   tail.forEach(e => h.engine.event("s", e));
-  finish({ events: tail.map(e => ({ ...e })), watermark: 3 });
+  finish({ events: tail.map(e => ({ ...e, runId: e.runId ?? "r" })), watermark: 3, completePrefix: false });
   await jest.advanceTimersByTimeAsync(80);
   expect(h.assistant()).toEqual([expect.objectContaining({ text: "prefix final", streaming: false, durationMs: 1200, outputTokens: 9 })]);
   expect(h.engine.cursorFor("s").get("r")?.highWater).toBe(3);

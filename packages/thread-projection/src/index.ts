@@ -48,6 +48,29 @@ export {
 } from "./approval";
 export { isRecord, pathBasename, pathExtension, singleLine, truncate } from "./utils";
 export { userMessageFromEvent, upsertUserMessage } from "./userMessage";
+export {
+  advanceCursor,
+  cursorHighWater,
+  isPrefixComplete,
+  newCursor,
+  nextEvent,
+} from "./runCursor";
+export type { CursorEvent, RunCursor, RunCursorEntry } from "./runCursor";
+export {
+  normalizeReplayEvent,
+  normalizeReplayEvents,
+  readRunReplay,
+  REPLAY_PAGE_EVENTS,
+  tailCoversRange,
+} from "./replay";
+export type {
+  ReplayEvent,
+  ReplayEventWire,
+  ReplayPage,
+  ReplayPageReader,
+  ReplayProjection,
+  RunReplay,
+} from "./replay";
 
 export { shellResult } from "./shellResult";
 export type { ShellResult, ShellAttempt, ShellStatus } from "./shellResult";

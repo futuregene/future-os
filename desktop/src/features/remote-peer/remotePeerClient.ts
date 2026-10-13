@@ -44,6 +44,32 @@ export interface RemotePeerEvent {
 }
 
 /**
+ * One event of a run, as the host's own body spells it.
+ *
+ * The wire shape of the push lane: a host publishes its agent's events as they
+ * happen, keyed by the run they belong to and numbered by `idx` within it. A body
+ * is trimmed for a client that declared the trimmed lane (`lean_events_v1`): it
+ * keeps exactly these keys plus `sessionId`, so a field added here is a field the
+ * host must keep sending.
+ */
+export interface RemoteRunEvent {
+  /** The event's JSON payload, exactly as the host sent it (a JSON string). */
+  data: string;
+  /** Run-scoped event index; the projector orders by this. */
+  idx: number;
+  /** How many source events this one stands for, when the host merged them. */
+  coalescedCount?: number;
+  /** The host's event id, which is this event's identity. */
+  eventId: string;
+  /** The host's run id — what the reply bubble is addressed by. */
+  runId: string;
+  /** ISO timestamp from the host. */
+  timestamp: string;
+  /** The host's event type (`text_chunk`, `tool_end`, …). */
+  type: string;
+}
+
+/**
  * This machine's paired hosts.
  *
  * Validated rather than trusted: a command a backend does not implement answers

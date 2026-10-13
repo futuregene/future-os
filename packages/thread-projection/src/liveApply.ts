@@ -35,6 +35,19 @@ export interface AssistantRunProjection {
   thinkingActive: boolean;
   reconnecting?: StreamRetryState;
   /**
+   * When the run started, from the run's own `agent_start` (`started_at_ms`).
+   *
+   * The *run's* clock, not this client's: a client that joins a reply already in
+   * flight receives no `agent_start` on the push lane (it is the run's first
+   * event), so without the log it can only time the reply from the moment it
+   * started watching — which reads as "0s" on a reply that has been running for
+   * minutes. Absent when the log carries no start (a legacy run, or a feed that
+   * begins mid-run).
+   */
+  startedAtMs?: number;
+  /** Wall-clock duration the run reported on `agent_end` (`duration_ms`). */
+  durationMs?: number;
+  /**
    * The stream ended before the model finished: the agent's `agent_end` carried
    * reason "incomplete", so `content` is a truncated prefix. Mirrors desktop's
    * stream `complete` flag (responseInterrupted) — both ends must treat a
@@ -129,6 +142,8 @@ interface ProjectorCheckpoint {
   usageOutputSum: number;
   sawUsageEvent: boolean;
   agentEndOutput: number;
+  startedAtMs?: number;
+  durationMs?: number;
   truncated: boolean;
   stopped: boolean;
   reconnecting?: StreamRetryState;
@@ -162,6 +177,10 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
   let usageOutputSum = 0;
   let sawUsageEvent = false;
   let agentEndOutput = 0;
+  // The run's own clock, from the log rather than from this client's arrival
+  // time: see `AssistantRunProjection.startedAtMs`.
+  let startedAtMs: number | undefined;
+  let durationMs: number | undefined;
   // Set when the agent's `agent_end` carries reason "incomplete" — the stream
   // was truncated before a genuine finish (mirrors the Rust bridge's
   // `agent_end_incomplete`).
@@ -191,6 +210,8 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
     usageOutputSum = initial.usageOutputSum;
     sawUsageEvent = initial.sawUsageEvent;
     agentEndOutput = initial.agentEndOutput;
+    startedAtMs = initial.startedAtMs;
+    durationMs = initial.durationMs;
     truncated = initial.truncated;
     stopped = initial.stopped;
     reconnecting = initial.reconnecting ? { ...initial.reconnecting } : undefined;
@@ -221,8 +242,22 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
       return;
     }
 
+    if (event.eventType === "agent_start") {
+      // Zero is not a start time (`started_at_ms` absent or never set), and the
+      // footer's elapsed readout must not count from the epoch.
+      const start = optionalNumberFromPayload(payload, ["started_at_ms", "startedAtMs"]);
+      if (start !== undefined && start > 0)
+        startedAtMs = start;
+      return;
+    }
+
     if (event.eventType === "agent_end") {
       agentEndOutput = usageOutputTokens(payload);
+      // Zero *is* a duration here (a run that finished inside the same
+      // millisecond), so absence and zero must not be conflated.
+      const elapsed = optionalNumberFromPayload(payload, ["duration_ms", "durationMs"]);
+      if (elapsed !== undefined && elapsed >= 0)
+        durationMs = elapsed;
       for (const slot of slots) {
         if (slot.type === "compaction" && slot.status === "running") {
           slot.status = "failed";
@@ -527,6 +562,8 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
       thinking: thinkingText,
       thinkingActive,
       ...(reconnecting ? { reconnecting: { ...reconnecting } } : {}),
+      ...(startedAtMs === undefined ? {} : { startedAtMs }),
+      ...(durationMs === undefined ? {} : { durationMs }),
       truncated,
       stopped,
     };
@@ -557,7 +594,7 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
       openThinkingIndex: openThinking ? slots.indexOf(openThinking) : -1,
       activeThinkingIndices: [...activeThinking].map(([id, slot]) => [id, slots.indexOf(slot)]),
       content, thinking, sawVisibleWork, activeToolCallId,
-      usageOutputSum, sawUsageEvent, agentEndOutput, truncated, stopped,
+      usageOutputSum, sawUsageEvent, agentEndOutput, startedAtMs, durationMs, truncated, stopped,
       reconnecting, lastSequence,
     }),
     get lastSequence() {
@@ -587,14 +624,19 @@ export function buildAssistantRunProjection(events: RunEvent[]): AssistantRunPro
 }
 
 function numberFromPayload(payload: unknown, keys: string[]): number {
+  return optionalNumberFromPayload(payload, keys) ?? 0;
+}
+
+/** The first numeric field of `payload`, or undefined when none is present. */
+function optionalNumberFromPayload(payload: unknown, keys: string[]): number | undefined {
   if (!isRecord(payload))
-    return 0;
+    return undefined;
   for (const key of keys) {
     const value = payload[key];
     if (typeof value === "number" && Number.isFinite(value))
       return value;
   }
-  return 0;
+  return undefined;
 }
 
 function blockIdFromPayload(payload: unknown): string | undefined {

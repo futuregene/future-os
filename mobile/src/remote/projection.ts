@@ -1,5 +1,6 @@
 import {
   compactionCheckpoints,
+  normalizeReplayEvents as normalizeSharedReplayEvents,
   createRunProjector,
   entriesToMessages,
   userMessageFromEvent,
@@ -7,6 +8,7 @@ import {
   type AgentActivityItem,
   type AgentMessage,
   type MessageSegment,
+  type ReplayEventWire,
   type RunProjector,
 } from "@future-os/thread-projection";
 import type {
@@ -331,34 +333,30 @@ function isCompactionDividerRow(item: TimelineItem): boolean {
     && item.segments[0]?.kind === "compaction";
 }
 
-/** A raw replay event as the agent's `get_events_since` returns it (snake_case). */
-export interface ReplayEventWire {
-  type?: string;
-  data?: string;
-  run_id?: string;
-  idx?: number;
-  [key: string]: unknown;
-}
+/**
+ * The wire's own spelling of a replay event, and its canonical form.
+ *
+ * Both live in the shared package now: the mapping is a fact about the host's
+ * replies, and the desktop's remote client reads the same feed. Re-exported
+ * here because this module is where mobile's callers have always found it.
+ */
+export type { ReplayEventWire } from "@future-os/thread-projection";
 
 /**
- * Normalize `get_events_since` replay events into the mobile `StreamEvent`
- * shape. The NATS live mirror and the desktop replay RPC both use camelCase
- * `runId`; legacy desktop bridges serialize snake_case `run_id` — accept both.
+ * Normalize `get_events_since` replay events into this client's `StreamEvent`
+ * shape. The shared normalizer accepts both spellings (the NATS live mirror and
+ * the desktop replay RPC use a camelCase `runId`; a legacy desktop bridge
+ * serializes snake_case `run_id`) and carries `coalescedCount` as well, so what
+ * is left here is the narrowing to the fields this lane reads.
  */
 export function normalizeReplayEvents(events: ReplayEventWire[] | undefined | null): StreamEvent[] {
-  return (events ?? [])
-    .filter((event): event is ReplayEventWire => !!event && typeof event === "object")
-    .map(event => ({
-      type: typeof event.type === "string" ? event.type : "",
-      data: typeof event.data === "string" ? event.data : "",
-      runId:
-        typeof event.runId === "string"
-          ? event.runId
-          : typeof event.run_id === "string"
-            ? event.run_id
-            : "",
-      idx: typeof event.idx === "number" ? event.idx : undefined,
-    }));
+  return normalizeSharedReplayEvents(events).map(event => ({
+    type: event.type,
+    data: event.data,
+    runId: event.runId,
+    ...(event.idx === undefined ? {} : { idx: event.idx }),
+    ...(event.coalescedCount === undefined ? {} : { coalescedCount: event.coalescedCount }),
+  }));
 }
 
 function eventData(event: StreamEvent): Record<string, unknown> {

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import type { AgentMessage, SessionEntry } from "@future-os/thread-projection";
+import type { RemoteLiveReply } from "./remoteRunStreams";
 import type { RemoteApproval } from "./useRemoteApprovals";
 import { entriesToMessages } from "@future-os/thread-projection";
 import { act } from "react";
@@ -91,7 +92,7 @@ async function mount(props: {
   /** The approval currently being answered, if any. */
   approvalPending?: string | null;
   /** The reply the host is writing, if the test is about streaming. */
-  live?: AgentMessage | null;
+  liveReplies?: RemoteLiveReply[];
   onContinueRun?: (runId: string) => void;
   onDecideApproval?: (approval: RemoteApproval, decision: "allow" | "deny") => void;
   onFork?: (sourceEntryId: string, forkable: boolean) => void;
@@ -121,7 +122,7 @@ async function mount(props: {
         error={null}
         hasMore={false}
         leftPanelExpanded
-        live={props.live ?? null}
+        liveReplies={props.liveReplies ?? []}
         loading={false}
         loadingOlder={false}
         onContinueRun={onContinueRun}
@@ -293,7 +294,7 @@ it("draws the live reply as the last row, and offers nothing to act on while it 
   };
   const view = await mount({
     entries: [entry("u1", "user", "hello"), entry("a1", "assistant", "done", "run_0")],
-    live,
+    liveReplies: [{ message: live, fromReplay: false }],
     streaming: true,
   });
 
@@ -318,8 +319,44 @@ it("draws the live reply as the last row, and offers nothing to act on while it 
  * reply arrives twice: the page's partial copy, and the events the host pushes
  * from the moment this window subscribed. The reader saw the answer twice, the
  * first copy frozen and without the streaming mark.
+ *
+ * Two rules make it one row, and which applies depends on whether the client also
+ * read the run's *log*: a reply rebuilt from the log stands in for the record's
+ * copy (the copy is hidden), while a reply built only from pushes is folded into
+ * it (the copy holds the beginning, the pushes hold the end).
  */
-it("draws a reply the transcript already carries once, not beside itself", async () => {
+it("draws a rebuilt reply instead of the transcript's copy of the same run", async () => {
+  const live: AgentMessage = {
+    id: "stream_run_1",
+    role: "assistant",
+    authorKey: "author.researchCopilot",
+    content: "the whole reply",
+    status: "streaming",
+    createdAt: new Date(1_700_000_000_000).toISOString(),
+    runId: "run_1",
+    segments: [{ id: "seg_live", kind: "text", text: "the whole reply" }],
+  };
+  const view = await mount({
+    entries: [
+      entry("u1", "user", "keep going", "run_1"),
+      entry("a1", "assistant", "half of it", "run_1"),
+    ],
+    liveReplies: [{ message: live, fromReplay: true }],
+    streaming: true,
+  });
+
+  const rows = view.rows();
+  // The prompt, then the reply — once: the record's partial copy is not drawn at
+  // all, because the log holds every word of it.
+  expect(rows).toHaveLength(2);
+  expect(rows[1]).toContain("the whole reply");
+  expect(rows[1]).not.toContain("half of it");
+  // It is the row still being written, so there is nothing on it to act on.
+  expect(view.forkButtons()).toHaveLength(0);
+  await view.unmount();
+});
+
+it("folds a pushed reply into the transcript's copy of the same run", async () => {
   const live: AgentMessage = {
     id: "stream_run_1",
     role: "assistant",
@@ -335,18 +372,47 @@ it("draws a reply the transcript already carries once, not beside itself", async
       entry("u1", "user", "keep going", "run_1"),
       entry("a1", "assistant", "half of it", "run_1"),
     ],
-    live,
+    liveReplies: [{ message: live, fromReplay: false }],
     streaming: true,
   });
 
   const rows = view.rows();
-  // The prompt, then the reply — once, carrying both halves: what the host had
-  // already persisted, and what it is writing now.
+  // The prompt, then one row carrying both halves: what the host had already
+  // persisted, and what its pushes have added since.
   expect(rows).toHaveLength(2);
   expect(rows[1]).toContain("half of it");
   expect(rows[1]).toContain("and the rest");
-  // It is the row still being written, so there is nothing on it to act on.
   expect(view.forkButtons()).toHaveLength(0);
+  await view.unmount();
+});
+
+/** A rebuilt reply of an *earlier* run does not hide the current turn's copy. */
+it("only hides the copies of the runs it rebuilt", async () => {
+  const live: AgentMessage = {
+    id: "stream_run_2",
+    role: "assistant",
+    authorKey: "author.researchCopilot",
+    content: "second answer",
+    status: "streaming",
+    createdAt: new Date(1_700_000_000_000).toISOString(),
+    runId: "run_2",
+  };
+  const view = await mount({
+    entries: [
+      entry("u1", "user", "first", "run_1"),
+      entry("a1", "assistant", "first answer", "run_1"),
+      entry("u2", "user", "second", "run_2"),
+      entry("a2", "assistant", "half of the second", "run_2"),
+    ],
+    liveReplies: [{ message: live, fromReplay: true }],
+    streaming: true,
+  });
+
+  const rows = view.rows();
+  expect(rows).toHaveLength(4);
+  expect(rows[1]).toContain("first answer");
+  expect(rows[3]).toContain("second answer");
+  expect(rows[3]).not.toContain("half of the second");
   await view.unmount();
 });
 

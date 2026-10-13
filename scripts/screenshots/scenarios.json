@@ -1268,8 +1268,8 @@
         ]
       },
       "remote-mid-flight": {
-        "note": "A conversation opened while its newest run was already going: the reply reaches the client twice — the page's partial copy of it, and the frames the host pushes from the moment the window subscribed — and is drawn once, with the page's beginning folded together with the stream's tail. The run is `rs_forest`'s own newest turn, which the fixture reports as running, so the frames carry the id that turn already names.",
-        "url": "http://localhost:5299/shot/?lang=zh",
+        "note": "A conversation opened while its newest run was already going. The reply reaches the client twice: the history page carries the part the agent has written to its journal, and the host's pushes carry the rest. The client reads the run's *log* (`get_events_since`) for the whole thing, so the reply is drawn once — from the run's own beginning, timed by the run's own start (eight minutes here, which no push can supply), and continued in place by the frames that follow.",
+        "url": "http://localhost:5299/shot/?lang=zh&remoteMidFlight=1",
         "steps": [
           {
             "wait": 1200
@@ -1284,22 +1284,19 @@
             "wait": 2000
           },
           {
-            "eval": "(() => { const rows = [...document.querySelectorAll('[data-message-id]')]; const copies = rows.filter(r => /只有这一处/.test(r.innerText || '')); if (copies.length !== 1) throw new Error('the page should carry the reply its journal has written so far, once: ' + copies.length); const last = rows[rows.length - 1]; if (last !== copies[0]) throw new Error('the turn the host is writing is not the last row'); return 'page copy: ' + (last.innerText || '').slice(0, 60); })()"
+            "eval": "(() => { const rows = [...document.querySelectorAll('[data-message-id]')]; const copies = rows.filter(r => /只有这一处/.test(r.innerText || '')); if (copies.length !== 1) throw new Error('the page should carry the reply its journal has written so far, once: ' + copies.length); if (rows[rows.length - 1] !== copies[0]) throw new Error('the turn the host is writing is not the last row'); return 'page copy: ' + (rows[rows.length - 1].innerText || '').slice(0, 60); })()"
           },
           {
-            "eval": "window.__shot.remoteMidFlight()"
-          },
-          {
-            "eval": "(() => { const deadline = Date.now() + 6000; let widest = 0; return new Promise((resolve, reject) => { const check = () => { const rows = [...document.querySelectorAll('[data-message-id]')]; const copies = rows.filter(r => /只有这一处/.test(r.innerText || '')); const tails = rows.filter(r => /我把结论写进/.test(r.innerText || '')); const last = rows[rows.length - 1]; const header = document.querySelector('header'); const running = /运行中/.test((header && header.innerText) || ''); const carrying = rows.filter(r => /只有这一处|我把结论写进/.test(r.innerText || '')).length; if (carrying > widest) widest = carrying; if (copies.length === 1 && tails.length === 1 && copies[0] === last && running) { resolve('live reply: ' + (last.innerText || '').slice(0, 80)); return; } if (Date.now() > deadline) { reject(new Error('the running reply is not one row: copies=' + copies.length + ' tails=' + tails.length + ' and it was drawn across ' + widest + ' row(s) at its widest, running=' + running + ' lastIsCopy=' + (last === copies[0]))); return; } setTimeout(check, 120); }; check(); }); })()"
+            "eval": "(() => { const deadline = Date.now() + 8000; return new Promise((resolve, reject) => { const check = () => { const rows = [...document.querySelectorAll('[data-message-id]')]; const copies = rows.filter(r => /只有这一处/.test(r.innerText || '')); const last = rows[rows.length - 1]; const header = document.querySelector('header'); const running = /运行中/.test((header && header.innerText) || ''); const text = last ? (last.innerText || '') : ''; if (copies.length === 1 && copies[0] === last && running && /另外两张图/.test(text)) { if ((text.match(/只有这一处/g) || []).length !== 1) throw new Error('the reply is drawn twice inside one row: ' + text.slice(0, 160)); /* The run's own clock, not this window's arrival: the log says 8 minutes. */ const minutes = text.match(/(\\d+)\\s*m\\b/); if (!minutes || Number(minutes[1]) < 8) throw new Error('the reply is timed from the reader\\'s arrival, not from the run: ' + text.slice(0, 160)); resolve('live row: ' + text.replace(/\\s+/g, ' ').slice(0, 120)); return; } if (Date.now() > deadline) { reject(new Error('the reply was not rebuilt from the run log: copies=' + copies.length + ' lastIsCopy=' + (last === copies[0]) + ' running=' + running + ' text=' + text.slice(0, 160))); return; } setTimeout(check, 120); }; check(); }); })()"
           },
           {
             "shot": "d-remote-mid-flight.png"
           },
           {
-            "wait": 5000
+            "eval": "window.__shot.remoteMidFlight()"
           },
           {
-            "eval": "(() => { const rows = [...document.querySelectorAll('[data-message-id]')]; const copies = rows.filter(r => /只有这一处/.test(r.innerText || '')); if (copies.length !== 1) throw new Error('the settled reply is drawn ' + copies.length + ' times'); const text = copies[0].innerText || ''; if (!/改完重跑/.test(text)) throw new Error('the settled reply lost the tail the run wrote: ' + text.slice(0, 120)); const header = document.querySelector('header'); if (/运行中/.test((header && header.innerText) || '')) throw new Error('the host is still reported as running'); if (rows.some(r => (r.getAttribute('data-message-id') || '').indexOf('stream_') === 0)) throw new Error('the live reply outlived its run'); return 'settled rows: ' + rows.length; })()"
+            "eval": "(() => { const deadline = Date.now() + 8000; return new Promise((resolve, reject) => { const check = () => { const rows = [...document.querySelectorAll('[data-message-id]')]; const copies = rows.filter(r => /我把结论写进/.test(r.innerText || '')); const last = rows[rows.length - 1]; const text = last ? (last.innerText || '') : ''; if (copies.length === 1 && copies[0] === last && /只有这一处/.test(text) && /改完重跑/.test(text)) { resolve('continued row: ' + text.replace(/\\s+/g, ' ').slice(0, 120)); return; } if (Date.now() > deadline) { reject(new Error('the pushed frames did not continue the rebuilt reply: rows=' + rows.length + ' carrying=' + copies.length + ' text=' + text.slice(0, 200))); return; } setTimeout(check, 120); }; check(); }); })()"
           },
           {
             "shot": "d-remote-mid-flight-settled.png"

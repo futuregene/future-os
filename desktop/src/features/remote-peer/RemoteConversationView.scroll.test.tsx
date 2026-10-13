@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import type { AgentMessage, SessionEntry } from "@future-os/thread-projection";
+import type { RemoteLiveReply } from "./remoteRunStreams";
 import { entriesToMessages } from "@future-os/thread-projection";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -26,7 +27,7 @@ function entry(id: string, role: "user" | "assistant", text: string): SessionEnt
 async function mount(props: {
   hasMore?: boolean;
   /** The reply the host is writing, if the test is about streaming. */
-  live?: AgentMessage | null;
+  liveReplies?: RemoteLiveReply[];
   messages: AgentMessage[];
   onFork?: (sourceEntryId: string, forkable: boolean) => void;
   onLoadOlder?: () => void;
@@ -46,7 +47,7 @@ async function mount(props: {
         error={null}
         hasMore={props.hasMore ?? false}
         leftPanelExpanded
-        live={props.live ?? null}
+        liveReplies={props.liveReplies ?? []}
         loading={false}
         loadingOlder={false}
         messages={props.messages}

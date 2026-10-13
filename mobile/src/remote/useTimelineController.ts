@@ -8,7 +8,7 @@ import { AppState } from "react-native";
 import type { RemoteClient } from "./client";
 import { fetchEventsSince } from "./replay";
 
-import type { RunCursor } from "./runCursor";
+import type { RunCursor } from "@future-os/thread-projection";
 import { SyncEngine, type ReconcileReason, type TimelineSyncStatus } from "./syncEngine";
 import { emptyTimeline, markApprovalDecision, mergeHistoryAttachments, timelineFromEntries, type TimelineState } from "./timeline";
 import type { HistoryEntry, RemoteSessionState, StreamEvent } from "./types";
