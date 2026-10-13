@@ -1,12 +1,12 @@
 import type { DesktopFilter } from "../remote/mergeSessions";
 import type { PairedDesktop } from "../remote/types";
-import { Check, ChevronDown, Monitor } from "lucide-react-native";
+import { Check, ChevronDown, Monitor, X } from "lucide-react-native";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { DialogSurface } from "../components/DialogSurface";
 import { iconGlyph } from "../remote/peerIcons";
-import { colors, radius, spacing } from "../theme/tokens";
+import { colors, layout, radius, spacing } from "../theme/tokens";
 
 /**
  * The desktop picker above the session list.
@@ -16,19 +16,21 @@ import { colors, radius, spacing } from "../theme/tokens";
  * either way. An offline desktop stays selectable: its rows are simply absent,
  * and disabling the entry would leave no way to see that it is offline rather
  * than removed.
+ *
+ * Which desktop the phone is actually connected to is deliberately not repeated
+ * on the row: the header's status dot already answers that, and a label on the
+ * one connected row made it look like a different kind of row than the rest.
  */
 export function DesktopPicker({
   filter,
   onChange,
   onManage,
   desktops,
-  activeDesktopId,
 }: {
   filter: DesktopFilter;
   onChange: (filter: DesktopFilter) => void;
   onManage: () => void;
   desktops: PairedDesktop[];
-  activeDesktopId: string | null;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -66,7 +68,20 @@ export function DesktopPicker({
         visible={open}
       >
         <DialogSurface>
-          <Text style={styles.title}>{t("desktops.pickerLabel")}</Text>
+          <View style={styles.header}>
+            <Text accessibilityRole="header" style={styles.title}>{t("desktops.pickerLabel")}</Text>
+            {/* Every row in the list commits a choice, and the sheet has no
+                outside-tap dismissal, so without this the only way out is the
+                system back gesture — which iOS does not have. */}
+            <Pressable
+              accessibilityLabel={t("common.close")}
+              accessibilityRole="button"
+              onPress={() => setOpen(false)}
+              style={({ pressed }) => [styles.closeButton, pressed && styles.pressed]}
+            >
+              <X color={colors.inkSoft} size={20} />
+            </Pressable>
+          </View>
           <ScrollView style={styles.list}>
             <Pressable
               accessibilityRole="button"
@@ -92,9 +107,6 @@ export function DesktopPicker({
                   <Text style={[styles.optionLabel, isSelected && styles.optionSelected]}>
                     {iconGlyph(desktop.icon)} {label(desktop)}
                   </Text>
-                  {desktop.desktopId === activeDesktopId
-                    ? <Text style={styles.badge}>{t("desktops.filterConnected")}</Text>
-                    : null}
                   {isSelected ? <Check color={colors.accent} size={16} /> : null}
                 </Pressable>
               );
@@ -134,7 +146,15 @@ const styles = StyleSheet.create({
   triggerIcon: { width: 24, alignItems: "center" },
   triggerLabel: { flex: 1, minWidth: 0, color: colors.inkStrong, fontSize: 15, fontWeight: "600" },
   pressed: { opacity: 0.7 },
-  title: { color: colors.inkStrong, fontSize: 18, fontWeight: "700" },
+  header: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  title: { flex: 1, minWidth: 0, color: colors.inkStrong, fontSize: 18, fontWeight: "700" },
+  closeButton: {
+    width: layout.touchTarget,
+    height: layout.touchTarget,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.pill,
+  },
   list: { maxHeight: 420 },
   option: {
     flexDirection: "row",
@@ -144,6 +164,5 @@ const styles = StyleSheet.create({
   },
   optionLabel: { flex: 1, minWidth: 0, color: colors.ink, fontSize: 15 },
   optionSelected: { color: colors.accent, fontWeight: "600" },
-  badge: { color: colors.inkMuted, fontSize: 12 },
   manage: { flex: 1, color: colors.accent, fontSize: 15 },
 });
