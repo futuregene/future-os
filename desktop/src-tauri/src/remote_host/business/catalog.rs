@@ -203,10 +203,23 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                     workspace_id: cmd.workspace_id.clone(),
                     pinned: cmd.pinned,
                 }) {
-                    Ok(_) => match crate::remote_host::catalog::workspaces() {
-                        Some((payload, _)) => reply(sink, true, payload, None).await,
-                        None => reply(sink, false, Value::Null, Some("catalog_unavailable")).await,
-                    },
+                    Ok(_) => {
+                        // This machine's own list orders its workspace groups by
+                        // this flag and draws the marker from it, and nothing in
+                        // that window made this write — so it is told to re-list,
+                        // as it is for a rename made from here. Without it the
+                        // group keeps its old place, unmarked, on the machine that
+                        // owns the workspace, while the write looks applied
+                        // everywhere else (the pinning device's own list, and
+                        // every client that reads this catalogue).
+                        crate::emit_threads_updated();
+                        match crate::remote_host::catalog::workspaces() {
+                            Some((payload, _)) => reply(sink, true, payload, None).await,
+                            None => {
+                                reply(sink, false, Value::Null, Some("catalog_unavailable")).await
+                            }
+                        }
+                    }
                     Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
                 }
             }
