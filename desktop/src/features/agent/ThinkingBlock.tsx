@@ -5,7 +5,11 @@ import { cn } from "../../lib/cn";
 import { STREAMED_BLOCK_CONTAINMENT } from "../markdown/LiveMarkdownContext";
 import { StreamingMarkdownContent } from "../markdown/MarkdownContent";
 
-/** Reasoning starts collapsed like mobile and can always be expanded in place. */
+/**
+ * Reasoning starts collapsed like mobile and can always be expanded in place.
+ * The revealed text is indented like a tool row's revealed target — one step in,
+ * with no rule of its own — so reasoning and tool work read the same way.
+ */
 export const ThinkingBlock = memo(({
   text,
   workspaceId,
@@ -36,7 +40,7 @@ export const ThinkingBlock = memo(({
         ? (
             <div
               className={cn(
-                "border-l-2 border-line-soft pl-3 text-ink-muted **:text-ink-muted",
+                "pl-6 text-ink-muted **:text-ink-muted",
                 live ? STREAMED_BLOCK_CONTAINMENT : "",
               )}
             >

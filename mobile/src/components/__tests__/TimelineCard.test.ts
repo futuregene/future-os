@@ -114,12 +114,16 @@ function countIconsNamed(host: ReactTestInstance, name: string) {
  * row's own block, and asserting on it does not depend on how many composite
  * layers the row happens to render through.
  */
-function railOf(host: ReactTestInstance): unknown {
+function blockOf(host: ReactTestInstance): ReactTestInstance | undefined {
   for (let node: ReactTestInstance | null = host; node; node = node.parent) {
     const alignSelf = (StyleSheet.flatten(node.props.style) as { alignSelf?: string } | undefined)?.alignSelf;
-    if (alignSelf && alignSelf !== "stretch") return alignSelf;
+    if (alignSelf && alignSelf !== "stretch") return node;
   }
   return undefined;
+}
+function railOf(host: ReactTestInstance): unknown {
+  const block = blockOf(host);
+  return block ? (StyleSheet.flatten(block.props.style) as { alignSelf?: string }).alignSelf : undefined;
 }
 
 const THINK_RUN = { tools: 1, thinking: 1 };
@@ -312,6 +316,13 @@ test("an unfolded step row aligns with the folded summary on the left", () => {
   }));
   for (const label of ["chat.runCompleted", "chat.thoughtCompleted"])
     expect(railOf(rowButton(label))).toBe("flex-start");
+  // A collapsed reasoning row reads exactly like the tool row beside it — glyph,
+  // words, disclosure — and carries no rule hung off its label.
+  const collapsed = StyleSheet.flatten(
+    blockOf(rowButton("chat.thoughtCompleted"))!.props.style,
+  ) as { borderRightWidth?: number; paddingRight?: number };
+  expect(collapsed.borderRightWidth).toBeUndefined();
+  expect(collapsed.paddingRight).toBeUndefined();
 });
 
 // A step row is the only way into the call behind it, so it carries a real touch
@@ -362,11 +373,17 @@ test("opening a run keeps the summary on the left and preserves its revealed con
   act(() => rowButton("chat.thoughtCompleted").props.onPress());
   const reasoning = tree.root.findAll(host => host.props.children === "why it broke")[0]!;
   expect(railOf(reasoning)).toBeUndefined();
-  expect(StyleSheet.flatten(reasoning.props.style).borderLeftWidth).toBe(2);
   // The tool row's own expanded command is left-aligned too.
   act(() => rowButton("chat.runCompleted").props.onPress());
   const command = tree.root.findAll(host => host.props.children === "ls -la")[0]!;
   expect(railOf(command)).toBeUndefined();
+  // Neither revealed body draws a rule, and the reasoning indents exactly like a
+  // tool row's revealed target: the two kinds of work read the same way.
+  const reasoningStyle = StyleSheet.flatten(reasoning.props.style) as { borderLeftWidth?: number; paddingLeft?: number };
+  const commandStyle = StyleSheet.flatten(command.props.style) as { borderLeftWidth?: number; paddingLeft?: number };
+  expect(reasoningStyle.borderLeftWidth).toBeUndefined();
+  expect(commandStyle.borderLeftWidth).toBeUndefined();
+  expect(reasoningStyle.paddingLeft).toBe(commandStyle.paddingLeft);
 });
 
 // A file tool only becomes useful when its target is visible. The target takes

@@ -63,23 +63,16 @@ export const styles = StyleSheet.create({
     paddingVertical: 2,
     gap: 2,
   },
-  // Shrink-wrap the collapsed header while keeping its leading edge aligned.
-  railThinking: {
-    alignSelf: "flex-start",
-    borderRightWidth: 2,
-    borderRightColor: colors.line,
-    paddingRight: spacing.md,
-  },
   inlineThinkingHeader: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
   },
   inlineThinkingLabel: { color: colors.inkMuted, fontSize: 13, lineHeight: 20 },
+  // The revealed reasoning sits under its label exactly like a tool row's
+  // revealed target: one step in, and with no rule of its own.
   inlineThinkingText: {
-    borderLeftWidth: 2,
-    borderLeftColor: colors.line,
-    paddingLeft: spacing.md,
+    paddingLeft: spacing.md + spacing.sm,
     color: colors.inkSoft,
     fontSize: 13,
     lineHeight: 19,
@@ -89,7 +82,8 @@ export const styles = StyleSheet.create({
     paddingVertical: 2,
     gap: 2,
   },
-  // Collapsed badges stay compact and start at the reply's left edge.
+  // A collapsed row — a tool call or a reasoning slice — stays compact and
+  // starts at the reply's left edge: glyph, words, disclosure, nothing else.
   railBlock: { alignSelf: "flex-start" },
   railRow: { justifyContent: "flex-start" },
   // Opened rows are reading content: left-aligned, and indented like the tool
