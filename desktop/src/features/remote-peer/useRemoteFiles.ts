@@ -1,6 +1,6 @@
 import type { RemoteFileEntry, RemoteFileListing } from "./remotePeerClient";
 import { save } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { errorMessage } from "../../lib/errors";
 import { downloadRemoteFile, listRemoteSessionFiles, previewRemoteFile } from "./remotePeerClient";
 import { parentOf } from "./remotePeerFiles";
@@ -20,15 +20,21 @@ export interface RemoteFilesState {
   listing: RemoteFileListing | null;
   loading: boolean;
   error: string | null;
-  /** The path being downloaded, so its own row can say so. */
-  busyPath: string | null;
+  /**
+   * The paths being downloaded right now.
+   *
+   * A set rather than one path, because the panel disables each row's *own*
+   * control from it: with a single value, starting a second download re-enabled
+   * the first row and dropped its spinner while it was still running.
+   */
+  busyPaths: ReadonlySet<string>;
   /** The name the host saved as, once a download lands. */
   saved: string | null;
   open: (path?: string) => Promise<void>;
   refresh: () => Promise<void>;
   download: (entry: RemoteFileEntry) => Promise<void>;
-  /** The path being fetched for a preview, so its own row can say so. */
-  previewingPath: string | null;
+  /** The paths being fetched for a preview, for the same reason. */
+  previewingPaths: ReadonlySet<string>;
   /** What the overlay should show, or `null` when nothing is open. */
   previewTarget: RemotePreviewTarget | null;
   /** Fetch one file into the local cache and show it. */
@@ -49,6 +55,26 @@ export interface RemotePreviewTarget {
   path: string;
 }
 
+/** No path is in flight. Shared so an idle panel keeps one stable value. */
+const NO_PATHS: ReadonlySet<string> = new Set();
+
+/**
+ * One path added to or removed from an in-flight set.
+ *
+ * A copy every time: the set on screen is never mutated, and the two calls a
+ * transfer makes (start, finish) always change it, so there is no "nothing
+ * changed" case to short-circuit — a guard for one would be a branch no test
+ * could reach.
+ */
+function withPath(current: ReadonlySet<string>, path: string, present: boolean): ReadonlySet<string> {
+  const next = new Set(current);
+  if (present)
+    next.add(path);
+  else
+    next.delete(path);
+  return next;
+}
+
 export function useRemoteFiles(
   desktopId: string,
   sessionId: string,
@@ -67,10 +93,22 @@ export function useRemoteFiles(
   const [listing, setListing] = useState<RemoteFileListing | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [busyPath, setBusyPath] = useState<string | null>(null);
+  const [busyPaths, setBusyPaths] = useState<ReadonlySet<string>>(NO_PATHS);
   const [saved, setSaved] = useState<string | null>(null);
-  const [previewingPath, setPreviewingPath] = useState<string | null>(null);
+  const [previewingPaths, setPreviewingPaths] = useState<ReadonlySet<string>>(NO_PATHS);
   const [previewTarget, setPreviewTarget] = useState<RemotePreviewTarget | null>(null);
+  /**
+   * Which preview was asked for last.
+   *
+   * Two fetches can be in flight at once — nothing stops a reader clicking a
+   * second file while the first is still coming — and the one they clicked last
+   * is the one they are looking at, so a slower earlier answer must not replace
+   * it. Bumped by a new preview and by closing the overlay, because a fetch that
+   * lands after the reader closed it would otherwise open it again.
+   */
+  const previewGenerationRef = useRef(0);
+  /** The same for a download's "saved as" line. */
+  const downloadGenerationRef = useRef(0);
 
   /**
    * Read a directory.
@@ -110,6 +148,13 @@ export function useRemoteFiles(
   // dependencies are the two it really uses, and so a view closed while the read
   // is in flight cannot set state on an unmounted component.
   useEffect(() => {
+    // Whichever way this runs — the panel closing, or the reader moving to
+    // another conversation — the fetches the *previous* one started are no
+    // longer about what is on screen, so none of their answers may land: a
+    // preview arriving late would put one machine's file under another's title,
+    // and its spinner would belong to a row that is not drawn any more.
+    previewGenerationRef.current += 1;
+    setPreviewingPaths(NO_PATHS);
     if (!enabled) {
       setListing(null);
       setError(null);
@@ -141,9 +186,18 @@ export function useRemoteFiles(
     };
   }, [desktopId, sessionId, enabled]);
 
-  /** No in-flight guard here either; see `open`. */
+  /**
+   * Download one file to a destination the user chooses.
+   *
+   * No in-flight guard, and deliberately not a *panel-wide* one: two files can
+   * be coming down at once — a slow transfer left running while the reader picks
+   * the next file is the normal case — so each row's own control is what says
+   * whether that row is busy. What this does need is to keep the answers
+   * straight, so a slow earlier download cannot label a later one.
+   */
   const download = useCallback(async (entry: RemoteFileEntry) => {
-    setBusyPath(entry.path);
+    const generation = ++downloadGenerationRef.current;
+    setBusyPaths(current => withPath(current, entry.path, true));
     setError(null);
     setSaved(null);
     try {
@@ -161,13 +215,15 @@ export function useRemoteFiles(
       });
       // The host may rename the file (a preview variant), so the name it reports
       // is the one to show.
-      setSaved(savedAs);
+      if (generation === downloadGenerationRef.current)
+        setSaved(savedAs);
     }
     catch (err) {
-      setError(errorMessage(err));
+      if (generation === downloadGenerationRef.current)
+        setError(errorMessage(err));
     }
     finally {
-      setBusyPath(null);
+      setBusyPaths(current => withPath(current, entry.path, false));
     }
   }, [desktopId, sessionId]);
 
@@ -180,7 +236,8 @@ export function useRemoteFiles(
    * cache, and the same overlay the local panel uses reads them from there.
    */
   const preview = useCallback(async (entry: RemoteFileEntry) => {
-    setPreviewingPath(entry.path);
+    const generation = ++previewGenerationRef.current;
+    setPreviewingPaths(current => withPath(current, entry.path, true));
     setError(null);
     try {
       const fetched = await previewRemoteFile({
@@ -189,19 +246,32 @@ export function useRemoteFiles(
         path: entry.path,
         name: entry.name,
       });
-      setPreviewTarget({ entry, name: fetched.name, path: fetched.path });
+      // The last file the reader asked for is the one they are looking at, so an
+      // earlier fetch that lands afterwards is dropped rather than shown.
+      if (generation === previewGenerationRef.current)
+        setPreviewTarget({ entry, name: fetched.name, path: fetched.path });
     }
     catch (err) {
-      setError(errorMessage(err));
+      if (generation === previewGenerationRef.current)
+        setError(errorMessage(err));
     }
     finally {
-      setPreviewingPath(null);
+      setPreviewingPaths(current => withPath(current, entry.path, false));
     }
   }, [desktopId, sessionId]);
 
   return {
-    busyPath,
-    closePreview: () => setPreviewTarget(null),
+    busyPaths,
+    /**
+     * Close the overlay, and give up on the fetches still running for it.
+     *
+     * Otherwise a file the reader already dismissed lands a moment later and
+     * opens itself again over whatever they moved on to.
+     */
+    closePreview: () => {
+      previewGenerationRef.current += 1;
+      setPreviewTarget(null);
+    },
     download,
     entries: listing?.entries ?? [],
     error,
@@ -211,7 +281,7 @@ export function useRemoteFiles(
     parent: listing ? parentOf(listing.path, listing.rootPath) : null,
     preview,
     previewTarget,
-    previewingPath,
+    previewingPaths,
     refresh: readRoot,
     saved,
   };

@@ -29,6 +29,7 @@ export function RemoteConversationRow({
   conversation,
   depth = 0,
   onChanged,
+  onDeletedRemote,
   onOpen,
   onOpenRename,
   onToggleSelection,
@@ -45,6 +46,8 @@ export function RemoteConversationRow({
   depth?: number;
   /** Re-read the owning host's catalogue after a row action. */
   onChanged: () => void;
+  /** This conversation was deleted on the host. */
+  onDeletedRemote: (conversation: MergedConversation) => void;
   onOpen: (conversation: MergedConversation) => void;
   onOpenRename: (conversation: MergedConversation) => void;
   /** Tick or untick this row while a batch is being assembled. */
@@ -131,6 +134,7 @@ export function RemoteConversationRow({
               conversation={conversation}
               onChanged={onChanged}
               onClose={() => setMenuOpen(false)}
+              onDeleted={() => onDeletedRemote(conversation)}
               onOpenRename={() => {
                 setMenuOpen(false);
                 onOpenRename(conversation);

@@ -582,6 +582,22 @@ const handlers: Record<string, (args: any) => unknown> = {
         };
       case "get_state":
         return remoteConversationState;
+      /**
+       * The host's own unit: one conversation, addressed by its *thread* id.
+       *
+       * Applied to the fixture, so the list stops serving the row and a capture
+       * of the panel after a delete shows what the delete actually did. Leaving
+       * it out made a deleted conversation stay in the list — the fixture
+       * disagreeing with the command rather than the screen.
+       */
+      case "delete_session": {
+        const threadId = String(command.threadId ?? "");
+        const rows = remoteSessions[args.desktopId] as Array<{ threadId?: string }> | undefined;
+        const index = rows?.findIndex(row => row.threadId === threadId) ?? -1;
+        if (rows && index >= 0)
+          rows.splice(index, 1);
+        return { deleted: true };
+      }
       // The host answers these two differently on purpose: `list_models` is the
       // picker's list and omits what the user hid, `list_settings_models` is the
       // settings page's and includes it. The fixture mirrors that split, or a

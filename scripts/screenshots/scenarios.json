@@ -1471,6 +1471,24 @@
           }
         ]
       },
+      "remote-delete": {
+        "note": "Deleting a host's conversation from its own row menu closes it here too. The row's menu is one row's action, and the column it was filling must not go on drawing a conversation the host no longer has — which is what it did before: the row left the list while the history stayed on screen, with nothing saying it was gone.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          { "wait": 1500 },
+          { "tapText": "重画森林图并核对置信区间" },
+          { "wait": 2500 },
+          { "eval": "(() => { if (!document.querySelector(\"[data-testid='remote-thread-usage']\")) throw new Error('the remote conversation is not open'); return 'open'; })()" },
+          { "eval": "(() => { const rows = [...document.querySelectorAll(\"div[class*='group/thread']\")]; const row = rows.find(r => { const b = r.querySelector('button[aria-label]'); return b && (b.getAttribute('aria-label') || '').startsWith('重画森林图并核对置信区间'); }); if (!row) throw new Error('the host row is not in the shared list'); const menu = row.querySelector(\"button[aria-label='更多操作']\"); if (!menu) throw new Error('the row has no actions menu'); menu.click(); return 'menu opened';})()" },
+          { "wait": 700 },
+          { "wait": 700 },
+          { "eval": "(() => { if (!document.querySelector(\"[role='menu']\")) throw new Error('the row menu did not open'); return 'menu open'; })()" },
+          { "tap": "删除" },
+          { "wait": 1800 },
+          { "eval": "(() => { const text = document.body.innerText; if (document.querySelector(\"[data-testid='remote-thread-usage']\")) throw new Error('the deleted conversation is still on screen'); if (text.includes('重画森林图并核对置信区间')) throw new Error('the deleted conversation is still listed'); return 'gone from the list and the column'; })()" },
+          { "shot": "d-remote-delete.png" }
+        ]
+      },
       "remote-attachment": {
         "note": "A file staged on the host: the chip names what will be sent, so the remote composer's attachment shell can be compared with the local one.",
         "url": "http://localhost:5299/shot/?lang=zh",

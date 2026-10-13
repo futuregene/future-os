@@ -69,6 +69,15 @@ interface ActivityRailProps {
    * a command per conversation there.
    */
   onDeleteRemoteConversations: (rows: MergedConversation[]) => void;
+  /**
+   * A single conversation was deleted from its own row's menu.
+   *
+   * Separate from the batch above because it is a separate action: the batch
+   * removes what a selection holds, while this is the one row the user acted
+   * on — and only the shell knows whether that row is the conversation it is
+   * currently drawing.
+   */
+  onRemoteConversationDeleted: (conversation: MergedConversation) => void;
   onDeleteThread: (thread: StoredThread) => void;
   onNewChat: (workspaceId?: string) => void;
   onOpenModels: () => void;
@@ -148,6 +157,7 @@ export function ActivityRail({
   onChange,
   onBatchDeleteThreads,
   onDeleteRemoteConversations,
+  onRemoteConversationDeleted,
   onDeleteThread,
   onNewChat,
   onOpenModels,
@@ -712,6 +722,7 @@ export function ActivityRail({
                                 collapsedWorkspaces={collapsedWorkspaces}
                                 filter={deviceFilter}
                                 onChangedRemote={() => onRemoteConversationsChanged?.()}
+                                onDeletedRemote={conversation => onRemoteConversationDeleted(conversation)}
                                 onNewChat={() => onNewChat()}
                                 onNewChatInWorkspace={(desktopId, workspaceId) =>
                                   onNewChatOnRemote?.(desktopId, workspaceId)}

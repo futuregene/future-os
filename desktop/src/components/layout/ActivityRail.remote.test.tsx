@@ -193,6 +193,34 @@ describe("the rail's remote conversations", () => {
   });
 
   /** Rename hands off to the shell's dialog, which is not the local one. */
+  /**
+   * A delete from the row's menu is reported to the shell as a *deletion*.
+   *
+   * Not just "a host action happened": the shell is what holds the open
+   * conversation, and only it can close a column that is drawing the row that
+   * just went away. Reported through `onChangedRemote` instead, the catalogue
+   * would be re-read and the history would stay on screen — which is how it was
+   * reported.
+   */
+  it("reports a conversation deleted from its own row to the shell", async () => {
+    const onRemoteConversationDeleted = vi.fn();
+    const view = await mountRail({
+      deviceFilter: { kind: "all" },
+      onRemoteConversationDeleted,
+      remoteCatalogs: [catalogRow("sess_1")],
+      remotePeers: [peer],
+    });
+
+    act(() => view.actionsButton()!.click());
+    act(() => view.item("Delete")!.click());
+    await settle();
+
+    expect(remove).toHaveBeenCalledWith("desktop_a", { sessionId: "sess_1", threadId: "sess_1_thread" });
+    expect(onRemoteConversationDeleted).toHaveBeenCalledTimes(1);
+    expect(onRemoteConversationDeleted.mock.calls[0]![0]).toMatchObject({ desktopId: "desktop_a", id: "sess_1" });
+    view.unmount();
+  });
+
   it("offers rename for a remote conversation through the shell", async () => {
     const onRenameRemoteConversation = vi.fn();
     const view = await mountRail({

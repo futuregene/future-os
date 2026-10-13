@@ -46,6 +46,7 @@ export function MergedRows({
   collapsedWorkspaces,
   filter,
   onChangedRemote,
+  onDeletedRemote,
   onNewChat,
   onNewChatInWorkspace,
   onNewWorkspace,
@@ -81,6 +82,13 @@ export function MergedRows({
   filter: DeviceFilter;
   /** Re-read a host's catalogue after one of its rows was acted on. */
   onChangedRemote: () => void;
+  /**
+   * One of the host's conversations no longer exists.
+   *
+   * Forwarded to the row rather than settled here because the rail's selection
+   * is what holds the open conversation; this list only knows its rows.
+   */
+  onDeletedRemote: (conversation: MergedConversation) => void;
   onNewChat?: () => void;
   /** Start a conversation in a workspace on another machine. */
   onNewChatInWorkspace?: (desktopId: string, workspaceId: string) => void;
@@ -183,6 +191,7 @@ export function MergedRows({
         conversation={conversation}
         key={conversation.key}
         onChanged={onChangedRemote}
+        onDeletedRemote={onDeletedRemote}
         onOpen={(row) => {
           // In selection mode a click ticks the row instead of opening it — the
           // local row's rule, from the same state.

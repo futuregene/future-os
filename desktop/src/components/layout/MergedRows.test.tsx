@@ -104,6 +104,7 @@ async function render(props: {
         filter={props.filter ?? { kind: "all" }}
         localRowMeta={new Map()}
         onChangedRemote={vi.fn()}
+        onDeletedRemote={vi.fn()}
         onNewChat={props.onNewChat}
         onNewChatInWorkspace={props.onNewChatInWorkspace}
         onNewWorkspace={props.onNewWorkspace}

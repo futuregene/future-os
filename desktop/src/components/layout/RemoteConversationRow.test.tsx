@@ -59,6 +59,7 @@ async function mount(props: {
   unread?: boolean;
 } = {}) {
   const onChanged = vi.fn();
+  const onDeletedRemote = vi.fn();
   const onOpen = vi.fn();
   const onOpenRename = vi.fn();
   const container = document.createElement("div");
@@ -70,6 +71,7 @@ async function mount(props: {
         active={false}
         conversation={props.conversation ?? conversation()}
         onChanged={onChanged}
+        onDeletedRemote={onDeletedRemote}
         onOpen={onOpen}
         onOpenRename={onOpenRename}
         peer={peer}
@@ -80,6 +82,7 @@ async function mount(props: {
   return {
     container,
     onChanged,
+    onDeletedRemote,
     onOpen,
     onOpenRename,
     action: () => container.querySelector<HTMLButtonElement>("button[aria-label='More actions']")!,
