@@ -44,9 +44,18 @@ export function prepareTaskNotifications(): Promise<void> {
 export async function notifyTaskFinished(
   session: RemoteSession,
   isCurrent: () => boolean,
+  /**
+   * The machine the conversation is on.
+   *
+   * A phone can hold conversations with the same title on several desktops, and
+   * a notification that does not say which machine ran is a notification the
+   * reader has to go and disambiguate.
+   */
+  machine?: string,
 ): Promise<void> {
   const title = i18n.t(session.status === "failed" ? "notifications.failed" : "notifications.completed");
-  const body = session.title || i18n.t("sessions.unnamed");
+  const conversation = session.title || i18n.t("sessions.unnamed");
+  const body = machine ? `${machine} · ${conversation}` : conversation;
   try {
     await prepareTaskNotifications();
     const permission = await Notifications.getPermissionsAsync();

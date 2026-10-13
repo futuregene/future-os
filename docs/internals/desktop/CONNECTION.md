@@ -265,15 +265,17 @@ kills, crashes, or tool subprocess termination all complete.
 Mobile can save pairings for multiple Desktops, entering the list from the
 desktop selector atop the session page or in Settings, scanning to add another
 Desktop, switching the current Desktop, or unpairing one individually. Every
-paired Desktop holds its own live connection (2026-10-13): the phone's *active*
-connection is the one whose conversation, timeline, drafts and outbox the UI is
-wired to, and each other Desktop keeps a handshake of its own, takes that host's
-presence heartbeats and pushed catalogue snapshots, and answers the commands its
-rows offer — a rename, a pin, a delete or a workspace's own actions are
-addressed to the machine that owns them. Their conversations and workspaces are
-merged into one list with the active Desktop's. Switching sends no unbind
-command and does not revoke other Desktops' credentials; re-pairing the same
-Desktop replaces its own record.
+paired Desktop runs its **own runtime** (2026-10-13) — its connection, catalogue,
+open conversation, drafts and outbox — and one of them is the *active* desktop,
+which is what the UI reads. Switching therefore reconnects nothing: the machine
+being moved to was already connected, catalogued and (if it had a conversation
+open) reading it, which is why a row on another machine opens as fast as one on
+the machine already in front. Each runtime takes that host's presence heartbeats
+and pushed catalogue snapshots, and answers the commands its rows offer — a
+rename, a pin, a delete or a workspace's own actions go to the machine that owns
+them. Their conversations and workspaces are merged into one list with the
+active Desktop's. Switching sends no unbind command and does not revoke other
+Desktops' credentials; re-pairing the same Desktop replaces its own record.
 
 This is "one phone to many Desktops". The existing Desktop/platform-side single
 pending/active pairing, one-time invitation, signature handshake, and per-pairId
@@ -288,9 +290,11 @@ keeps the name; unpairing deletes it with the pairing.
 
 Mobile SecureStore uses per-Desktop double-slot credentials with a single index
 atomically committing the active selection and credential slots; the old single
-pairing record is cleaned up after the index is persisted. The session
-directory and timeline reset on switch; ordinary drafts are isolated per
-Desktop; pending send/resume confirmations are isolated per pairId; only the
+pairing record is cleaned up after the index is persisted. A switch is a change
+of which runtime the UI reads — the catalogue and each conversation's timeline
+are per Desktop and stay where they are, so nothing is re-fetched and no
+connection is rebuilt; ordinary drafts are isolated per Desktop; pending
+send/resume confirmations are isolated per pairId; only the
 original pairing can migrate and recover legacy pending operations. An explicit
 user unpair only cleans that Desktop's registration and data; on receiving a
 revocation notice, invalid credentials, or corrupt credentials, the connection
@@ -440,15 +444,25 @@ before it tears the connection down, while the desktop takes the answer from the
   per Desktop, so a desktop client claiming an invitation **replaces** that
   host's current phone pairing. The UI says "replaced" rather than "invalid",
   stopping locally first and compensating the cloud revoke after.
-- On mobile, Desktops other than the active one are **live observer
-  connections**, not full runtimes: each keeps its own handshake, repairs its own
-  catalogue (a read when its transport returns, or when a heartbeat advertises a
-  revision it never applied), and answers the commands its rows offer — but a
-  conversation's timeline, drafts and outbox belong to the single active
-  connection, and starting a conversation inside a peer's workspace is not
-  offered (the outbox is the active connection's). Opening one of their rows
-  switches the active connection. Promoting the observers to full runtimes is
-  its own project.
+- On mobile, every paired Desktop holds its **own runtime** for as long as it is
+  paired — its connection, catalogue, open conversation, drafts and outbox — and
+  exactly one of them is the *active* desktop, which is what the screens read.
+  Both halves used to be the same thing: one runtime that was torn down and
+  rebuilt onto whichever desktop the user selected, so a row on another machine
+  cost a handshake before the conversation appeared and cost it again on the way
+  back. A machine that is not the active one is therefore live in the fullest
+  sense: its conversation is open, its presence is judged, and a command on its
+  rows goes down its own connection. Only the *visible-session* lane is the
+  active desktop's — a phone in front is reading one conversation, so the other
+  machines keep the low-rate notices and their timelines are settled from
+  durable history when they are read again. What is still single-slot is memory,
+  not correctness: N runtimes hold N catalogues and N open conversations.
+  Starting a conversation inside another machine's workspace remains the active
+  desktop's job, since the composer's draft lives with the machine being read.
+  Where the pieces live: `useDesktopRuntime` (one desktop),
+  `useDesktopConnection` (its connection), `usePairedDesktops` (which desktops
+  are paired and which is being read), `useAppLifecycle` (foreground/network,
+  applied to all of them at once).
 - Device identification needs a host build that reports it; an older host shows
   "unknown device".
 
@@ -769,7 +783,10 @@ receiving an explicit revocation result.
 | Recovery entries duplicated and inconsistent | First connection, onReconnected, foreground, and request-failure paths each trigger refresh; e.g. onReconnected does not refresh settings | Section 6: unified recovery coordination and per-data-domain recovery checklist |
 
 Source entries: [mobile connection](../../../mobile/src/remote/client.ts),
-[mobile lifecycle](../../../mobile/src/remote/useRemoteConnection.ts),
+[mobile lifecycle](../../../mobile/src/remote/useDesktopConnection.ts),
+[mobile lifecycles of the app](../../../mobile/src/remote/useAppLifecycle.ts),
+[one desktop's runtime](../../../mobile/src/remote/useDesktopRuntime.ts),
+[mobile pairing and selection](../../../mobile/src/remote/usePairedDesktops.ts),
 [mobile pairing HTTP](../../../mobile/src/remote/pairing.ts),
 [catalog state](../../../mobile/src/remote/useSessionCatalog.ts),
 [Desktop supervision](../../../desktop/src-tauri/src/remote/mod.rs),
@@ -809,8 +826,9 @@ conflated with the immediacy of the Desktop's local entry close.
 ### 3.3 Verification done and uncovered scope
 
 2026-09-11 ran four existing test groups on the above FutureOS baseline:
-`connectionState`, `useRemoteConnection`, `pairing`, `syncEngine` — 133 items
-passed. Additionally, loading the real client and state machine in memory and
+`connectionState`, the connection lifecycle (`useRemoteConnection` then, split
+into `useDesktopConnection`/`useAppLifecycle`/`usePairedDesktops` in
+2026-10-13), `pairing`, `syncEngine` — 133 items passed. Additionally, loading the real client and state machine in memory and
 simulating an unreturned credential request plus old-connection events
 confirmed the handoff window; no repo test script was added. These results only
 prove the covered behaviors and cannot offset the problems found in 3.1.
@@ -1409,7 +1427,8 @@ substitute for those results.
 ### 8.2 Mobile unified recovery coordination
 
 - The transport layer only reports connection recovery and orchestrates no
-  business data; `useRemoteConnection` owns the single recovery checklist, and
+  business data; `useDesktopConnection` owns the recovery checklist of *its*
+  desktop, `useAppLifecycle` decides when every runtime is asked to recover, and
   `RemoteContext` no longer maintains a second set of recovery functions.
 - An independent `RecoveryCoordinator` executes recovery serially per client
   instance: same-round sync notifications merge; a reconnect during an
