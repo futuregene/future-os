@@ -1416,6 +1416,11 @@ const rowGlyphs = (title: string, desktopId: string): number =>
 /** The glyphs drawn on a workspace heading, found by its name. */
 const headingGlyphs = (name: string, desktopId: string): number =>
   glyphsIn(button(name), desktopId);
+/** The pin markers drawn on a workspace heading, found by its name. */
+const headingPins = (name: string): number =>
+  // The icon module is mocked to its own name, so `Pin` is a host element here
+  // — the same lookup the other tests use for a mocked component.
+  button(name).findAllByType("Pin" as never).length;
 
 test("the merged list files each machine's conversations under their workspace headings", () => {
   renderMerged([
@@ -1618,6 +1623,36 @@ test("both machines' groups offer a new conversation, whichever one is connected
   // conversations, which is what moves the connection.
   renderMerged(rows, "desk-b");
   expectBoth();
+});
+
+/**
+ * A merged heading is drawn with the pin its rows report — the marker, and the
+ * item that can undo it.
+ *
+ * A group is *filed* by the pin its rows carry (`groupMergedRows`), and the
+ * heading is where the same fact is *shown*: the marker, and the "pin"/"unpin"
+ * item, are both chosen from `workspace.pinned`. A heading built without it read
+ * as an unpinned group in the one place the reader looks — no marker, and a menu
+ * that pinned an already-pinned workspace again, so a pin made in the
+ * single-machine list could not be undone in the merged one — while the group
+ * was still placed as pinned.
+ */
+test("a merged heading carries the pin its rows report, and offers to undo it", () => {
+  renderMerged([
+    mergedRow("desk-a", "a1", "Pinned plan", { workspacePinned: true }),
+    mergedRow("desk-b", "b1", "Remote plan", { workspaceId: "w9", workspaceName: "Review" }),
+  ]);
+
+  expect(headingPins("Project")).toBe(1);
+  expect(headingPins("Review")).toBe(0);
+  expect(sheetItems("Project")).toContain("sessions.unpin");
+  expect(sheetItems("Review")).toContain("sessions.pin");
+
+  // Undoing it from here addresses the machine that owns the workspace — this
+  // one's own connection for this machine's group.
+  pressWorkspaceAction("Project", "sessions.unpin");
+  expect(activeCommands.setWorkspacePinned).toHaveBeenCalledWith("w1", false);
+  expect(peerCommands.setWorkspacePinned).not.toHaveBeenCalled();
 });
 
 test("renaming and deleting a peer workspace name it on its own machine", async () => {
