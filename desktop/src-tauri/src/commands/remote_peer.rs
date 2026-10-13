@@ -326,6 +326,7 @@ mod tests {
                 remote_peer_disconnect,
                 remote_peer_unpair,
                 remote_peer_set_label,
+                remote_peer_set_visible_session,
                 remote_peer_sessions,
                 remote_peer_workspaces,
                 remote_peer_list_files,
@@ -342,6 +343,15 @@ mod tests {
                 (
                     "remote_peer_set_label",
                     serde_json::json!({ "desktopId": "d", "name": "n", "icon": 1 }),
+                ),
+                (
+                    // `session_id` is the last argument and an `Option<String>`.
+                    // A *missing* key would `visit_none()` and succeed, so only a
+                    // present wrong-typed value makes the final
+                    // `CommandArg::from_command(..)?` fail — which is what puts the
+                    // error arm on the `#[tauri::command]` attribute line.
+                    "remote_peer_set_visible_session",
+                    serde_json::json!({ "desktopId": "d", "sessionId": 1 }),
                 ),
                 ("remote_peer_sessions", serde_json::json!({})),
                 ("remote_peer_workspaces", serde_json::json!({})),
@@ -525,6 +535,57 @@ mod tests {
         .await
         .expect("request with a lane");
         assert!(routed["sessions"].is_array());
+
+        teardown().await;
+    }
+
+    /// The command is the only thing that knows which conversation the view is
+    /// on, so it is what moves the host's live lane onto it — and closing the
+    /// conversation gives the whole host back.
+    ///
+    /// Asserted on the broker's own subscription table, not merely on "no error
+    /// arrived": the command's whole effect is *which subject* the runtime
+    /// subscribes to, and an intent that was dropped on the floor would look the
+    /// same as one that took effect. It also pins the "always `Ok`" contract — a
+    /// host that is not connected, or cannot narrow, is only ever a fallback to
+    /// the wide lane, so there is nothing for the caller to handle.
+    #[tokio::test]
+    async fn the_visible_session_command_moves_the_hosts_live_lane() {
+        let (_home, fx) = start("peer-cmd-visible-session").await;
+        let desktop_id = fx.paired.creds.desktop_id.clone();
+        let noop: runtime::Emitter = std::sync::Arc::new(|_| {});
+        runtime::connect_with_emitter(&desktop_id, Some(noop))
+            .await
+            .expect("connect");
+
+        // Connected, every conversation on the host is the fallback lane.
+        let wide = format!("p.{}.evt.>", fx.pair_id);
+        fx.nats
+            .wait_for_sub(&wide, std::time::Duration::from_secs(10))
+            .await;
+
+        // Opening a conversation through the command narrows it to that one...
+        remote_peer_set_visible_session(desktop_id.clone(), Some("sess_open".into()))
+            .await
+            .expect("the set command never fails");
+        let narrow = format!("p.{}.evt.sess_open", fx.pair_id);
+        fx.nats
+            .wait_for_sub(&narrow, std::time::Duration::from_secs(10))
+            .await;
+
+        // ...and leaving it (`None`) takes the whole host back.
+        remote_peer_set_visible_session(desktop_id, None)
+            .await
+            .expect("the clear command never fails");
+        fx.nats
+            .wait_for_sub(&wide, std::time::Duration::from_secs(10))
+            .await;
+
+        // A host with no connection at all is still only an intent: recorded,
+        // answered `Ok`, and left to the wide lane to fall back on.
+        remote_peer_set_visible_session("desktop_nobody".into(), Some("sess_elsewhere".into()))
+            .await
+            .expect("an intent for an unconnected host is not a failure");
 
         teardown().await;
     }

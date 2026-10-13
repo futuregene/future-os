@@ -869,6 +869,35 @@ fn spawn_event_stream(
     visible: tokio::sync::watch::Receiver<Option<String>>,
     parts: StreamParts,
 ) -> crate::runtime::TaskHandle {
+    spawn_event_stream_capped(
+        desktop_id,
+        pair_id,
+        lane,
+        subscribed_with,
+        visible,
+        parts,
+        EVENT_BACKLOG_CAPACITY,
+    )
+}
+
+/// [`spawn_event_stream`] with the backlog ceiling as an argument.
+///
+/// Production always passes [`EVENT_BACKLOG_CAPACITY`]; the parameter exists so a
+/// test can exercise the *overflow* path without pushing 4096 sealed frames
+/// (which the fake broker delivers at the rate TCP's small-write path allows —
+/// tens of seconds). What the test then pins is the loop's reaction to a full
+/// queue, not the size of the queue, which has its own assertion
+/// (`the_batch_ceilings_are_the_mobile_clients`). The loop's behaviour is
+/// otherwise byte-for-byte the shipping one.
+fn spawn_event_stream_capped(
+    desktop_id: String,
+    pair_id: String,
+    lane: super::session::EventLane,
+    subscribed_with: Option<String>,
+    visible: tokio::sync::watch::Receiver<Option<String>>,
+    parts: StreamParts,
+    backlog_capacity: usize,
+) -> crate::runtime::TaskHandle {
     let StreamParts {
         channel,
         subscriptions:
@@ -997,7 +1026,7 @@ fn spawn_event_stream(
             });
         }
 
-        let mut backlog: Backlog<Push> = Backlog::new(EVENT_BACKLOG_CAPACITY);
+        let mut backlog: Backlog<Push> = Backlog::new(backlog_capacity);
         let mut budget = BatchBudget::new(std::time::Instant::now());
         loop {
             // Park until something arrives: an idle link must cost nothing, and
@@ -2167,4 +2196,197 @@ mod tests {
         assert!(!backlog.push("b"));
         assert_eq!(backlog.pop_front(), Some("a"));
     }
+}
+
+/// Seams the coverage tests need that the shipped test surface does not expose.
+///
+/// Three of the four behaviours pinned in `runtime_tests.rs` live inside the
+/// event-stream task or in functions private to this module, and one of them
+/// needs a body the *current* host no longer writes (a lean host that trimmed
+/// `sessionId`). Reaching them through `connect_with_emitter` would either be
+/// impossible or race a live reader, so the harness builds a session whose
+/// traffic key the test holds in the **host** direction and drives the private
+/// functions directly.
+#[cfg(test)]
+pub(crate) mod cov_harness {
+    use super::*;
+    use crate::remote::test_support::{nats_connect, FakeNats};
+    use crate::remote_peer::session::{EventLane, EventsSubscription, PeerSession, Subscriptions};
+
+    /// A matched Noise channel pair from a real `XXpsk0` handshake: the first
+    /// value is the **client** half (what a `PeerSession` holds), the second the
+    /// **host** half, so a test can seal a push with the key the client opens it
+    /// with. One `Channel` cannot open what it sealed — the send and receive keys
+    /// differ — which is why the pair, not a single channel, is returned.
+    pub(crate) fn noise_pair(
+        pair_id: &str,
+    ) -> (future_remote_crypto::Channel, future_remote_crypto::Channel) {
+        let (client_private, _) =
+            future_remote_crypto::generate_identity().expect("client identity");
+        let (host_private, _) = future_remote_crypto::generate_identity().expect("host identity");
+        let secret = [9_u8; 32];
+        let prologue = future_remote_crypto::prologue(pair_id, "desktop_cov").expect("prologue");
+        let mut initiator = future_remote_crypto::Handshake::new(
+            future_remote_crypto::Pattern::Pair,
+            true,
+            &client_private,
+            None,
+            Some(&secret),
+            &prologue,
+        )
+        .expect("initiator");
+        let mut responder = future_remote_crypto::Handshake::new(
+            future_remote_crypto::Pattern::Pair,
+            false,
+            &host_private,
+            None,
+            Some(&secret),
+            &prologue,
+        )
+        .expect("responder");
+        // The XXpsk0 legs, the same three the real handshake runs.
+        responder
+            .read(&initiator.write(b"").expect("leg 1"))
+            .expect("leg 1");
+        initiator
+            .read(&responder.write(b"").expect("leg 2"))
+            .expect("leg 2");
+        responder
+            .read(&initiator.write(b"").expect("leg 3"))
+            .expect("leg 3");
+        (
+            initiator.finish().expect("client channel"),
+            responder.finish().expect("host channel"),
+        )
+    }
+
+    /// A broker and a client connected to it, ready for a `PeerSession`.
+    pub(crate) async fn broker_and_client() -> (FakeNats, async_nats::Client) {
+        let nats = FakeNats::start().await;
+        let client = nats_connect(&nats).await;
+        (nats, client)
+    }
+
+    /// A session whose channel the test owns, so it can also hold the host half.
+    pub(crate) fn session_for(
+        pair_id: &str,
+        client: async_nats::Client,
+        channel: future_remote_crypto::Channel,
+    ) -> PeerSession {
+        PeerSession::for_test(
+            pair_id,
+            client,
+            std::sync::Arc::new(std::sync::Mutex::new(channel)),
+            "bridge_cov",
+        )
+    }
+
+    /// Seal `body` with the **host** key and deliver it on `subject`, exactly as
+    /// the host's own publisher does (`context` is the subject).
+    pub(crate) fn inject_sealed(
+        nats: &FakeNats,
+        host: &std::sync::Mutex<future_remote_crypto::Channel>,
+        subject: &str,
+        body: &serde_json::Value,
+    ) {
+        let bytes = serde_json::to_vec(body).expect("a Value always serializes");
+        let wire = host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .seal(subject, &bytes)
+            .expect("seal as the host");
+        nats.inject(subject, None, wire);
+    }
+
+    /// Subscribe and start the stream loop for a session the test owns.
+    pub(crate) async fn spawn_stream(
+        session: &PeerSession,
+        desktop_id: &str,
+        emitter: Emitter,
+    ) -> (
+        crate::runtime::TaskHandle,
+        tokio::sync::watch::Sender<Option<String>>,
+    ) {
+        let subscriptions = session.subscribe(None).await.expect("subscribe");
+        spawn_stream_with(session, subscriptions, desktop_id, emitter)
+    }
+
+    /// Start the stream loop on subscriptions the test already took, so a burst
+    /// can be buffered *before* anything drains it.
+    pub(crate) fn spawn_stream_with(
+        session: &PeerSession,
+        subscriptions: Subscriptions,
+        desktop_id: &str,
+        emitter: Emitter,
+    ) -> (
+        crate::runtime::TaskHandle,
+        tokio::sync::watch::Sender<Option<String>>,
+    ) {
+        spawn_stream_with_capacity(
+            session,
+            subscriptions,
+            desktop_id,
+            emitter,
+            BACKLOG_CAPACITY,
+        )
+    }
+
+    /// [`spawn_stream_with`] with the backlog ceiling as an argument, so the
+    /// overflow path is reachable without pushing 4096 sealed frames through the
+    /// fake broker. Production keeps [`BACKLOG_CAPACITY`]; only the size differs.
+    pub(crate) fn spawn_stream_with_capacity(
+        session: &PeerSession,
+        subscriptions: Subscriptions,
+        desktop_id: &str,
+        emitter: Emitter,
+        backlog_capacity: usize,
+    ) -> (
+        crate::runtime::TaskHandle,
+        tokio::sync::watch::Sender<Option<String>>,
+    ) {
+        let parts = StreamParts {
+            channel: session.channel_for_stream(),
+            subscriptions,
+            emitter,
+        };
+        let (sender, receiver) = tokio::sync::watch::channel(None);
+        let handle = spawn_event_stream_capped(
+            desktop_id.to_string(),
+            session.pair_id().to_string(),
+            session.event_lane(),
+            None,
+            receiver,
+            parts,
+            backlog_capacity,
+        );
+        (handle, sender)
+    }
+
+    /// A second client on the same broker, for a test that needs one connection
+    /// to stay live while another is drained.
+    pub(crate) async fn another_client(nats: &FakeNats) -> async_nats::Client {
+        nats_connect(nats).await
+    }
+
+    /// The `visibility_change` the loop awaits, for a test that owns the watch.
+    pub(crate) async fn visibility_change_for_test(
+        visible: &mut tokio::sync::watch::Receiver<Option<String>>,
+    ) -> Option<String> {
+        visibility_change(visible).await
+    }
+
+    /// The lane move the loop performs when the user opens a conversation.
+    pub(crate) async fn apply_visible_lane_for_test(
+        lane: &EventLane,
+        installed: &mut EventsSubscription,
+        events: &mut async_nats::Subscriber,
+        visible: Option<&str>,
+        desktop_id: &str,
+    ) {
+        apply_visible_lane(lane, installed, events, visible, desktop_id).await
+    }
+
+    /// The queue ceiling, so a test can overflow it without duplicating the
+    /// number (and so a change to the constant moves the test with it).
+    pub(crate) const BACKLOG_CAPACITY: usize = EVENT_BACKLOG_CAPACITY;
 }

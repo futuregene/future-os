@@ -8,12 +8,14 @@
 //! and very visible to a user.
 
 use super::creds;
+use super::runtime::cov_harness;
 use super::runtime::{
     close_socket_for_test, connect, connect_with_emitter, disconnect, ensure_connected,
     forget_connection_for_test, install_supervisor_for_test, list, live_count, pair_with_emitter,
     request, sessions, set_label, set_visible_session, spawn_supervisor, stream_count,
     supervisor_count, unpair, workspaces, Emitter, PeerEvent, PeerSummary, INJECT_CONNECTION_LOST,
 };
+use super::session::EventsSubscription;
 use super::testing::{fixture, teardown, Fixture};
 use crate::remote::test_support::{HomeGuard, MockPlatform};
 use serde_json::json;
@@ -41,6 +43,20 @@ fn counting_emitter() -> (Emitter, Arc<std::sync::Mutex<Vec<PeerEvent>>>) {
         if event.kind == "event" {
             sink.lock().unwrap().push(event);
         }
+    });
+    (emitter, seen)
+}
+
+/// A fake UI sink that records **every** kind, not only `event`.
+///
+/// `counting_emitter` filters to `event` because batching tests must not count
+/// presence ticks; the overflow contract is about the opposite direction, so
+/// this one keeps `resumed` (and anything else) visible.
+fn recording_emitter() -> (Emitter, Arc<std::sync::Mutex<Vec<PeerEvent>>>) {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    let emitter: Emitter = Arc::new(move |event: PeerEvent| {
+        sink.lock().unwrap().push(event);
     });
     (emitter, seen)
 }
@@ -1544,4 +1560,271 @@ async fn a_connection_that_vanishes_between_connect_and_request_is_reported() {
     assert!(data["workspaces"].is_array());
 
     teardown().await;
+}
+
+// ── the event-stream loop's own seams ───────────────────────────────────────
+
+/// A push whose body does not name its conversation still has to be filed under
+/// the one in the subject it arrived on.
+///
+/// A lean host *used* to trim `sessionId` out of the envelope (#999 stopped
+/// trimming it), and one that still does hands the client a body it cannot file:
+/// every UI listener filters by `sessionId`, so without the read-back the live
+/// lane goes silently dead — no bubble, no approval card, no streaming
+/// indicator — while history still renders. The push is therefore sealed by the
+/// test's own **host** key and injected raw, which is the only way to produce a
+/// body the current host no longer writes; going through `publish_event` cannot,
+/// because that path always names the session.
+#[tokio::test]
+async fn a_push_without_a_session_id_recovers_it_from_the_subject() {
+    let _home = HomeGuard::new("peer-rt-cov-backfill");
+    let pair_id = "pair_cov_backfill";
+    let (client_channel, host_channel) = cov_harness::noise_pair(pair_id);
+    let (nats, client) = cov_harness::broker_and_client().await;
+    let session = cov_harness::session_for(pair_id, client, client_channel);
+    let host = std::sync::Mutex::new(host_channel);
+    let (emitter, seen) = recording_emitter();
+    let (_stream, _visible) =
+        cov_harness::spawn_stream(&session, "desktop_cov_backfill", emitter).await;
+
+    // `subscribe()` returning only means the command was sent; injecting before
+    // the broker registers the `SUB` would race and pass without delivering.
+    nats.wait_for_sub(
+        &format!("p.{pair_id}.evt.>"),
+        std::time::Duration::from_secs(10),
+    )
+    .await;
+
+    cov_harness::inject_sealed(
+        &nats,
+        &host,
+        &format!("p.{pair_id}.evt.sess_backfill"),
+        &json!({ "type": "agent_text", "data": r#"{"text":"hi"}"# }),
+    );
+
+    wait_for("the session-less push never reached the emitter", || {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == "event")
+    })
+    .await;
+    let events = seen.lock().unwrap().clone();
+    let event = events
+        .iter()
+        .find(|event| event.kind == "event")
+        .expect("the push is an event");
+    assert_eq!(
+        event.payload["sessionId"],
+        json!("sess_backfill"),
+        "the subject's conversation must be written back onto the payload"
+    );
+    // Only the session is added: the rest of the body is the host's own, so a
+    // client that declared nothing still sees exactly what it always did.
+    assert_eq!(event.payload["type"], json!("agent_text"));
+    assert_eq!(event.payload["data"], json!(r#"{"text":"hi"}"#));
+}
+
+/// The backlog's ceiling is a contract, not a tuning knob: a burst that outruns
+/// the reader drops the **newest** pushes and answers with exactly one
+/// `resumed`, the one signal the UI treats as "what the host sent is missing".
+/// Silent truncation would end a transcript early with no alert.
+///
+/// The whole burst is buffered in the subscription *before* the stream loop
+/// starts, so the overflow is deterministic rather than a race with a live
+/// reader: nothing else drains the subscription, and the loop's first drain is
+/// what overflows.
+///
+/// The ceiling is passed in (8, not the shipping 4096) because the fake broker
+/// delivers a sealed burst no faster than TCP's small-write path allows — ~127
+/// frames/s, so a real 4096 would take half a minute. What is under test is the
+/// loop's *reaction* to a full queue; the shipping size has its own assertion in
+/// `the_batch_ceilings_are_the_mobile_clients`.
+#[tokio::test]
+async fn an_overfull_event_backlog_resumes_and_drops_the_newest() {
+    let _home = HomeGuard::new("peer-rt-cov-resumed");
+    let pair_id = "pair_cov_resumed";
+    let (client_channel, host_channel) = cov_harness::noise_pair(pair_id);
+    let (nats, client) = cov_harness::broker_and_client().await;
+    let session = cov_harness::session_for(pair_id, client, client_channel);
+    let host = std::sync::Mutex::new(host_channel);
+    let subscriptions = session.subscribe(None).await.expect("subscribe");
+    nats.wait_for_sub(
+        &format!("p.{pair_id}.evt.>"),
+        std::time::Duration::from_secs(10),
+    )
+    .await;
+
+    let capacity = 8usize;
+    let total = capacity + 4;
+    for idx in 0..total {
+        cov_harness::inject_sealed(
+            &nats,
+            &host,
+            &format!("p.{pair_id}.evt.sess_resumed"),
+            &json!({ "type": "agent_text", "data": "{}", "idx": idx }),
+        );
+        // Let the broker and the client's reader make progress as we inject, so
+        // the burst is buffered by the time the loop starts.
+        if idx % 4 == 0 {
+            tokio::task::yield_now().await;
+        }
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let (emitter, seen) = recording_emitter();
+    let (_stream, _visible) = cov_harness::spawn_stream_with_capacity(
+        &session,
+        subscriptions,
+        "desktop_cov_resumed",
+        emitter,
+        capacity,
+    );
+
+    wait_for("the overflow never produced a resumed", || {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == "resumed")
+    })
+    .await;
+    // The resync is the *last* thing the loop does for the episode, so waiting
+    // for it means every surviving push has already been emitted.
+    let events = seen.lock().unwrap().clone();
+    let resumed = events
+        .iter()
+        .filter(|event| event.kind == "resumed")
+        .count();
+    let delivered: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|event| event.kind == "event")
+        .map(|event| &event.payload)
+        .collect();
+    assert_eq!(
+        resumed, 1,
+        "one episode of dropping is one resync, not one per lost push"
+    );
+    assert_eq!(
+        delivered.len(),
+        capacity,
+        "the queue's ceiling is exactly what survives an overfull burst"
+    );
+    // The drop policy is newest-first, so the last push that arrives is the one
+    // at the ceiling; the four injected past it never surface at all.
+    assert_eq!(
+        delivered.last().expect("the capped queue drained")["idx"],
+        json!(total - 5),
+        "the newest pushes are the ones dropped"
+    );
+}
+
+/// Once every visibility sender is gone the lane can never move again, so the
+/// future must **park** rather than return a lane or spin. That is the state a
+/// test reset leaves behind (it replaces the runtime map holding the senders),
+/// and a loop that kept re-polling there would burn a core for nothing.
+#[tokio::test]
+async fn a_closed_visibility_watch_parks_instead_of_yielding_a_lane() {
+    let (sender, mut receiver) = tokio::sync::watch::channel(None::<String>);
+    drop(sender);
+
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_millis(150),
+        cov_harness::visibility_change_for_test(&mut receiver),
+    )
+    .await;
+
+    assert!(
+        outcome.is_err(),
+        "a closed watch must park forever, not hand back a lane: {outcome:?}"
+    );
+}
+
+/// A failed re-subscribe is not the connection's fault: the lane that was
+/// already installed stays, and the next reconnect rebuilds the stream. This
+/// pins the failure arm's two effects — the error is logged (the arm's only
+/// statement) and the caller's subscription is left untouched, so it keeps
+/// delivering on the lane it already had instead of being torn down.
+///
+/// The refusal is produced by draining the connection the lane would move on,
+/// which is deterministic: a probe waits until that client has stopped taking
+/// subscriptions, rather than racing a socket close against a reconnect. The
+/// installed lane is deliberately kept on a *second* connection to the same
+/// broker, so "the caller's subscription still delivers" can be asserted after
+/// the failed move.
+#[tokio::test]
+async fn a_failed_lane_move_keeps_the_installed_lane() {
+    let _home = HomeGuard::new("peer-rt-cov-lane-move");
+    let pair_id = "pair_cov_lane";
+    let (client_channel, host_channel) = cov_harness::noise_pair(pair_id);
+    let (nats, lane_client) = cov_harness::broker_and_client().await;
+    let session = cov_harness::session_for(pair_id, lane_client, client_channel);
+    let host = std::sync::Mutex::new(host_channel);
+
+    let old_subject = "p.pair_cov.evt.old".to_string();
+    let live_client = cov_harness::another_client(&nats).await;
+    let mut events = live_client
+        .subscribe(old_subject.clone())
+        .await
+        .expect("subscribe the installed lane");
+    nats.wait_for_sub(&old_subject, std::time::Duration::from_secs(10))
+        .await;
+
+    // Close the connection the lane would move on, and wait until it can no
+    // longer accept a `SUB`: that is the state a failed re-subscribe reports.
+    session
+        .close_socket()
+        .await
+        .expect("drain the lane's client");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if session
+            .client_for_test()
+            .subscribe("p.pair_cov.probe")
+            .await
+            .is_err()
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "a drained client must stop accepting subscriptions"
+        );
+        tokio::task::yield_now().await;
+    }
+
+    let lane = session.event_lane();
+    let mut installed = EventsSubscription {
+        subject: old_subject.clone(),
+        narrow: false,
+    };
+
+    cov_harness::apply_visible_lane_for_test(
+        &lane,
+        &mut installed,
+        &mut events,
+        None,
+        "desktop_cov_lane",
+    )
+    .await;
+
+    assert_eq!(
+        installed.subject, old_subject,
+        "a failed move must leave the lane that was already installed"
+    );
+    // The stream is still there: the installed subscription still receives,
+    // which a torn-down connection would not.
+    cov_harness::inject_sealed(
+        &nats,
+        &host,
+        &old_subject,
+        &json!({ "type": "agent_text", "data": "{}" }),
+    );
+    let delivered = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        futures::StreamExt::next(&mut events),
+    )
+    .await
+    .expect("the installed lane must still deliver after the failed move")
+    .expect("a message on the installed lane");
+    assert_eq!(delivered.subject.as_str(), old_subject);
 }
