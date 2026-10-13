@@ -628,6 +628,31 @@ export function useSessionCatalog(
     [applyWorkspaces, clientRef],
   );
 
+  /**
+   * Rename a workspace on the desktop. The host owns the name rules (trimming,
+   * the empty-name refusal) and answers the fresh catalogue, so the new name
+   * arrives through the same versioned snapshot a pin acknowledgement does —
+   * no optimistic write, which would have to be rolled back on a refusal and
+   * would show a name the host never accepted. A blank name is not sent at all
+   * (the dialog's Save is closed for it too), mirroring `rename` for sessions.
+   */
+  const renameWorkspace = useCallback(
+    async (workspaceId: string, name: string) => {
+      const client = clientRef.current;
+      const trimmed = name.trim();
+      if (!client || !workspaceId || !trimmed) return;
+      const epoch = catalogEpoch.current;
+      const response = await client.request<WorkspacesData>(
+        { type: "rename_workspace", workspaceId, name: trimmed }, "list",
+      );
+      if (clientRef.current !== client || catalogEpoch.current !== epoch) return;
+      if (!response.data?.version || !Array.isArray(response.data.workspaces))
+        throw new Error("Invalid workspace snapshot");
+      applyWorkspaces(response.data.workspaces, response.data.version);
+    },
+    [applyWorkspaces, clientRef],
+  );
+
   return {
     catalogSync,
     setCatalogEpoch,
@@ -656,6 +681,7 @@ export function useSessionCatalog(
     createWorkspace,
     setSessionPinned,
     setWorkspacePinned,
+    renameWorkspace,
     reset,
   };
 }

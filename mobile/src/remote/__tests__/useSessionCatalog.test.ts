@@ -983,6 +983,35 @@ describe("useSessionCatalog", () => {
     await expect(result.current.setWorkspacePinned("w", true)).rejects.toThrow("Workspace unavailable");
     expect(request).not.toHaveBeenCalled();
   });
+
+  test("rename_workspace speaks the host's command and applies the name it answers", async () => {
+    renderWorkspaceCatalog();
+    const renamed = { version: { epoch: "source", revision: 2 }, workspaces: [{ id: "w", name: "Renamed", path: "/w", pinned: false }] };
+    request.mockResolvedValueOnce({ data: renamed });
+    await act(async () => { await result.current.renameWorkspace("w", "  Renamed  "); });
+    // The wire shape is the host's: `rename_workspace` with `workspaceId` + `name`.
+    expect(request).toHaveBeenLastCalledWith(
+      { type: "rename_workspace", workspaceId: "w", name: "Renamed" }, "list",
+    );
+    expect(result.current.workspaces[0]?.name).toBe("Renamed");
+  });
+
+  test("a refused rename reports the host's reason and leaves the catalogue alone", async () => {
+    renderWorkspaceCatalog();
+    request.mockRejectedValueOnce(new Error("offline"));
+    await expect(result.current.renameWorkspace("w", "Renamed")).rejects.toThrow("offline");
+    request.mockResolvedValueOnce({ data: {} });
+    await expect(result.current.renameWorkspace("w", "Renamed")).rejects.toThrow("Invalid workspace snapshot");
+    expect(result.current.workspaces[0]?.name).toBe("Workspace");
+  });
+
+  test("a blank name never reaches the desktop, and neither does a rename without a connection", async () => {
+    render();
+    await act(async () => { await result.current.renameWorkspace("w", "   "); });
+    clientRef.current = null;
+    await act(async () => { await result.current.renameWorkspace("w", "Renamed"); });
+    expect(request).not.toHaveBeenCalled();
+  });
   test("versioned pulls and pushes converge at one commit point and report sync readiness", async () => {
     render();
     act(() => {

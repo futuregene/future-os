@@ -8,6 +8,7 @@ import {
   ListChecks,
   Minus,
   MoreHorizontal,
+  Pencil,
   Pin,
   Plus,
   Search,
@@ -30,6 +31,7 @@ import {
 import type { ReactNode } from "react";
 import { ActionMenu } from "../components/ActionMenu";
 import { useAppDialog } from "../components/useAppDialog";
+import { RenameModal } from "../features/chat/components/RenameModal";
 import { showToast } from "../features/chat/utils";
 import { useRemoteControls as useRemote } from "../remote/RemoteContext";
 import { effectiveRunStatus } from "../remote/sessionStatus";
@@ -113,10 +115,17 @@ export function SessionList({
   const { listRef, initialOffset, onLayout, onContentSizeChange, onScrollBeginDrag, onScroll } =
     useSessionListScroll<CatalogRow>(query.trim() ? null : listKey);
   const [menuWorkspace, setMenuWorkspace] = useState<(CatalogRow & { kind: "workspace" }) | null>(null);
+  /** The group whose name the rename dialog is editing, and its draft. */
+  const [renamingWorkspace, setRenamingWorkspace] =
+    useState<(CatalogRow & { kind: "workspace" }) | null>(null);
+  const [workspaceName, setWorkspaceName] = useState("");
   const [wasActive, setWasActive] = useState(active);
   if (wasActive !== active) {
     setWasActive(active);
-    if (!active) setMenuWorkspace(null);
+    if (!active) {
+      setMenuWorkspace(null);
+      setRenamingWorkspace(null);
+    }
   }
   const { collapsed, toggleWorkspaceCollapsed } = useCollapsedWorkspaces();
   const [expanded, setExpanded] = useState(savedExpanded);
@@ -289,6 +298,27 @@ export function SessionList({
   const openWorkspaceMenu = (workspace: CatalogRow & { kind: "workspace" }) => {
     if (!remote.desktopOnline || deleting) return;
     setMenuWorkspace(workspace);
+  };
+
+  /** Rename the workspace on the desktop. The draft is presented already
+   * filled with the current name; the host's accepted name comes back as the
+   * catalogue it answers with, so the group's heading follows it. */
+  const renameWorkspace = async (workspace: CatalogRow & { kind: "workspace" }, rawName: string) => {
+    const name = rawName.trim();
+    if (!name) return;
+    try {
+      await remote.renameWorkspace(workspace.workspace.id, name);
+    } catch {
+      Alert.alert(t("common.error"), t("sessions.renameWorkspaceFailed"));
+    }
+  };
+
+  const submitWorkspaceRename = async () => {
+    const workspace = renamingWorkspace;
+    const name = workspaceName.trim();
+    if (!workspace || !name) return;
+    setRenamingWorkspace(null);
+    await renameWorkspace(workspace, name);
   };
 
   const hostName = (desktopId: string | null | undefined) => {
@@ -471,6 +501,16 @@ export function SessionList({
   return (
     <View style={styles.container}>
       {Alert.dialog}
+      <RenameModal
+        generationKey={renamingWorkspace?.workspace.id}
+        onClose={() => setRenamingWorkspace(null)}
+        renameOpen={renamingWorkspace !== null}
+        renameValue={workspaceName}
+        setRenameValue={setWorkspaceName}
+        submitRename={submitWorkspaceRename}
+        t={t}
+        titleKey="sessions.renameWorkspace"
+      />
       <ActionMenu
         title={menuWorkspace?.workspace.name || t("sessions.workspace")}
         visible={menuWorkspace !== null}
@@ -501,6 +541,17 @@ export function SessionList({
                 .catch(() => Alert.alert(t("common.error")));
             },
           }] : []),
+          {
+            label: t("sessions.renameWorkspace"),
+            icon: <Pencil size={18} color={colors.inkSoft} />,
+            disabled: !remote.desktopOnline || deleting,
+            onPress: () => {
+              // Prefill with the name in force, so a small correction is an
+              // edit rather than a retype.
+              setWorkspaceName(menuWorkspace.workspace.name || "");
+              setRenamingWorkspace(menuWorkspace);
+            },
+          },
           {
             label: t("sessions.selectWorkspaceSessions"),
             icon: <ListChecks size={18} color={colors.inkSoft} />,
