@@ -8,6 +8,7 @@ import type {
   Presence,
   RemoteCredentials,
   RemoteSession,
+  RemoteWorkspace,
   SnapshotVersion,
 } from "./types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -104,6 +105,19 @@ export interface DesktopCatalogsState {
    * caller needs to know before offering the action at all.
    */
   commandsFor: (desktopId: string) => DesktopCommands | null;
+  /**
+   * Another machine's workspaces, read from that machine.
+   *
+   * Workspaces are a machine's own, like its conversations, and the connected
+   * machine's list is already in the catalogue the app renders from. This is
+   * the *other* half: the answer a phone needs when it is about to create a
+   * conversation somewhere else — which workspace may the new conversation go
+   * into *there*. Read on demand rather than mirrored, because it is asked
+   * while a dialog is open and a second continuously-synced copy of a machine's
+   * workspaces would be one more thing to keep in step. Rejects when the
+   * machine cannot answer.
+   */
+  readWorkspaces: (desktopId: string) => Promise<RemoteWorkspace[]>;
 }
 
 /**
@@ -529,6 +543,27 @@ export function useDesktopCatalogs(
     };
   }, [publish]);
 
+  /**
+   * One machine's workspaces, read down that machine's own connection.
+   *
+   * Read straight out of the answer rather than through the version gate: this
+   * is one answer to one question, not a snapshot of a catalogue this
+   * connection keeps — so rejecting it against a revision the connection never
+   * applied could only lose the answer. The machine's connection is looked up
+   * per call, like a command's, so an answer always comes from the machine as
+   * it is now.
+   */
+  const readWorkspaces = useCallback(async (desktopId: string): Promise<RemoteWorkspace[]> => {
+    const runtime = runtimesRef.current.get(desktopId);
+    if (!runtime || runtime.failed || runtime.connection !== "ready")
+      throw new Error("machine_unavailable");
+    const response = await runtime.client.request<{ workspaces?: RemoteWorkspace[] }>(
+      { type: "list_workspaces" },
+      "list",
+    );
+    return Array.isArray(response.data?.workspaces) ? response.data.workspaces : [];
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     // Captured before the effect body opens any client: the cleanup must close
@@ -598,6 +633,6 @@ export function useDesktopCatalogs(
         sessions: activeSessions ?? [],
       }]
       : entries;
-    return { catalogs, machines, refresh, reconnect, commandsFor };
-  }, [activeDesktopId, activeSessions, peers, refresh, reconnect, commandsFor]);
+    return { catalogs, machines, refresh, reconnect, commandsFor, readWorkspaces };
+  }, [activeDesktopId, activeSessions, peers, refresh, reconnect, commandsFor, readWorkspaces]);
 }

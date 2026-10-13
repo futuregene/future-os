@@ -1,5 +1,5 @@
 import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import {
   Animated,
   BackHandler,
@@ -1386,6 +1386,24 @@ const headingNames = (): string[] =>
     .filter((row: { kind: string }) => row.kind === "workspace")
     .map((row: { workspace: RemoteWorkspace }) => row.workspace.name);
 
+/**
+ * How many times a machine's glyph is drawn inside one rendered node.
+ *
+ * A source icon is the one text whose accessibility label is a machine id, and
+ * the heading's and the row's are the same element — which is exactly what
+ * makes "named once" countable.
+ */
+const glyphsIn = (node: ReactTestInstance, desktopId: string): number =>
+  node.findAllByType(Text).filter(child => child.props.accessibilityLabel === desktopId).length;
+/** The glyphs drawn for a machine anywhere on the page. */
+const sourceGlyphs = (desktopId: string): number => glyphsIn(tree.root, desktopId);
+/** The glyphs drawn on a row, found by its conversation's title. */
+const rowGlyphs = (title: string, desktopId: string): number =>
+  glyphsIn(sessionBody(title), desktopId);
+/** The glyphs drawn on a workspace heading, found by its name. */
+const headingGlyphs = (name: string, desktopId: string): number =>
+  glyphsIn(button(name), desktopId);
+
 test("the merged list files each machine's conversations under their workspace headings", () => {
   renderMerged([
     mergedRow("desk-a", "a1", "Local plan"),
@@ -1394,6 +1412,66 @@ test("the merged list files each machine's conversations under their workspace h
 
   expect(headingNames()).toEqual(["Project", "Review"]);
   expect(mergedTitles()).toEqual(["Local plan", "Remote review"]);
+});
+
+/**
+ * A machine is named on the heading that owns the group, not on every line of
+ * it.
+ *
+ * A workspace heading carries its machine's glyph, so a conversation under that
+ * heading drawing it again is the same glyph on every row of the group — and it
+ * is the width those titles need, on a rail that has none to spare. The rule is
+ * the desktop rail's, which passes the group's answer down to its rows.
+ */
+test("a workspace heading names its machine, and its conversations do not repeat it", () => {
+  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote plan", { workspaceId: "w9", workspaceName: "Review" }),
+    mergedRow("desk-b", "b2", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+  ]);
+
+  expect(headingGlyphs("Project", "desk-a")).toBe(1);
+  expect(headingGlyphs("Review", "desk-b")).toBe(1);
+  // Two conversations on that machine, in one group: the glyph stays on the
+  // heading rather than appearing three times down the group.
+  expect(rowGlyphs("Remote plan", "desk-b")).toBe(0);
+  expect(rowGlyphs("Remote review", "desk-b")).toBe(0);
+  expect(rowGlyphs("Local plan", "desk-a")).toBe(0);
+  expect(sourceGlyphs("desk-b")).toBe(1);
+});
+
+/**
+ * A conversation nothing above it names still carries its own machine's glyph.
+ *
+ * Two places have no heading over them: the conversations page, which is flat,
+ * and a pinned conversation, which is a shortcut promoted above the groups.
+ * Losing the glyph there would leave a merged row indistinguishable from one of
+ * the active machine's.
+ */
+test("a conversation with no heading above it keeps its machine's glyph", () => {
+  renderMerged(
+    [
+      mergedRow("desk-a", "c1", "Local chat", { mode: "chat", workspaceId: undefined, workspaceName: undefined }),
+      mergedRow("desk-b", "c2", "Remote chat", { mode: "chat", workspaceId: undefined, workspaceName: undefined }),
+    ],
+    "desk-a",
+    "chat",
+  );
+  expect(rowGlyphs("Remote chat", "desk-b")).toBe(1);
+
+  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote plan", { workspaceId: "w9", workspaceName: "Review" }),
+    mergedRow("desk-b", "b2", "Pinned elsewhere", {
+      workspaceId: "w9",
+      workspaceName: "Review",
+      pinned: true,
+    }),
+  ]);
+  // Above the groups: no heading carries it, so the row does.
+  expect(rowGlyphs("Pinned elsewhere", "desk-b")).toBe(1);
+  // Under the heading: it does not.
+  expect(rowGlyphs("Remote plan", "desk-b")).toBe(0);
 });
 
 /**

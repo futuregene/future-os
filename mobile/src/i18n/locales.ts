@@ -282,6 +282,8 @@ export const resources = {
         emptyConnectedHint:
           "You're connected to the desktop. Start a new conversation to begin chatting.",
         new: "New conversation",
+        chooseDevice: "Choose a device",
+        newOnDevice: "New on {{name}}",
         refresh: "Refresh",
         unpair: "Unpair device",
         unpairConfirm:
@@ -1188,6 +1190,8 @@ export const resources = {
         emptyConnectedTitle: "还没有对话",
         emptyConnectedHint: "已连接到桌面端，创建一个新对话即可开始聊天。",
         new: "新对话",
+        chooseDevice: "选择设备",
+        newOnDevice: "在 {{name}} 上新建",
         refresh: "刷新",
         unpair: "解除设备配对",
         unpairConfirm:

@@ -630,10 +630,12 @@ export function SessionList({
             {session.title || t("sessions.unnamed")}
           </Text>
           {/* In the merged list a row carries its machine's glyph — but only
-              when more than one machine is in the list: with a single desktop
-              the selector above already names it, and the glyph would repeat it
-              on every line. */}
-          {showSource && item.desktopId && icons?.get(item.desktopId) ? (
+              when more than one machine is in the list, and only when no
+              heading above it already says which machine it is: with a single
+              desktop the selector above already names it, and under a workspace
+              group the heading carries the same glyph, so the row would repeat
+              it on every line of that group's list. */}
+          {showSource && !item.groupHasSource && item.desktopId && icons?.get(item.desktopId) ? (
             <Text accessibilityLabel={item.desktopId} style={styles.sourceIcon}>
               {icons.get(item.desktopId)}
             </Text>

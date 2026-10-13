@@ -1,4 +1,5 @@
 import {
+  Check,
   ChevronLeft,
   Folder,
   MessageCircle,
@@ -13,6 +14,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  ActivityIndicator,
   Modal,
   Platform,
   Pressable,
@@ -30,12 +32,12 @@ import { DialogSurface } from "../components/DialogSurface";
 import { useAppDialog } from "../components/useAppDialog";
 import { RenameModal } from "../features/chat/components/RenameModal";
 import { useRemoteControls as useRemote } from "../remote/RemoteContext";
-import { activeMachineStatus, type MachineSummary } from "../remote/desktopStatus";
+import { activeMachineStatus, machineStatusKey, type MachineSummary } from "../remote/desktopStatus";
 import { useDesktopCatalogs } from "../remote/useDesktopCatalogs";
 import { mergeSessions, type DesktopFilter } from "../remote/mergeSessions";
 import type { DesktopCommands } from "../remote/desktopCommands";
 import { iconGlyph } from "../remote/peerIcons";
-import type { RemoteSession } from "../remote/types";
+import type { RemoteSession, RemoteWorkspace } from "../remote/types";
 import { SessionList } from "./SessionList";
 import { DesktopPicker } from "./DesktopPicker";
 import { DisconnectedScreen } from "./DisconnectedScreen";
@@ -173,9 +175,41 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   const [newOpen, setNewOpen] = useState(false);
   const [newMode, setNewMode] = useState<Tab>("chat");
   const [workspaceId, setWorkspaceId] = useState("");
-  // The new-conversation dialog has two views: the workspace picker and, from
-  // its "new workspace" row, the create form (the phone has no folder picker
-  // for the desktop, so the user types the host path).
+  /**
+   * Which view of the creation dialog is up: the machine picker, or what to
+   * create on the machine it named.
+   */
+  const [newStep, setNewStep] = useState<"device" | "target">("target");
+  /**
+   * Whether *this* dialog opened on the machine picker.
+   *
+   * Decided when it opens rather than read from the live machine list, so a
+   * machine dropping out mid-dialog cannot make the step the user is on vanish
+   * under them.
+   */
+  const [newDeviceStep, setNewDeviceStep] = useState(false);
+  /** The machine the picker named; null means the one the phone is on. */
+  const [newDeviceId, setNewDeviceId] = useState<string | null>(null);
+  /**
+   * The picked machine's workspaces, read from that machine while the phone is
+   * still on another one. Null means "whatever the connected machine has".
+   */
+  const [deviceWorkspaces, setDeviceWorkspaces] = useState<RemoteWorkspace[] | null>(null);
+  /** The machine being read or connected; the picker's spinner and lock. */
+  const [busyDevice, setBusyDevice] = useState<string | null>(null);
+  /**
+   * The dialog's generation.
+   *
+   * Moving the phone to another machine is asynchronous and the user can close
+   * the dialog while it runs, so the step that started it acts only if the
+   * dialog it belongs to is still the one on screen: an abandoned choice must
+   * not create a conversation.
+   */
+  const newDialogEpochRef = useRef(0);
+  // The new-conversation dialog has three views: the machine picker, the
+  // workspace picker, and the create-workspace form behind its "new workspace"
+  // row (the phone has no folder picker for the desktop, so the user types the
+  // host path).
   const [newWorkspaceOpen, setNewWorkspaceOpen] = useState(false);
   const [newWorkspaceName, setNewWorkspaceName] = useState("");
   const [newWorkspacePath, setNewWorkspacePath] = useState("");
@@ -201,8 +235,19 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
       setRenameTarget(null);
       setNewWorkspaceOpen(false);
       setNewWorkspaceError(null);
+      setNewDeviceStep(false);
+      setNewDeviceId(null);
+      setDeviceWorkspaces(null);
+      setBusyDevice(null);
     }
   }
+
+  useEffect(() => {
+    // The dialog goes with the screen, so a machine switch that outlives it
+    // must not open a conversation on whatever replaces this screen — the same
+    // guard `closeNew` puts on the user closing the dialog themselves.
+    if (!active) newDialogEpochRef.current += 1;
+  }, [active]);
 
   const afterSettings = (action: () => void) => {
     pendingSettingsActionRef.current = Platform.OS === "ios" ? action : null;
@@ -216,18 +261,83 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     action?.();
   };
 
-  const openNew = () => {
-    // The conversations tab has nothing left to pick — create the chat
-    // straight away instead of showing the mode dialog.
+  /**
+   * Move the phone onto `desktopId`, so the conversation about to be created
+   * belongs to that machine, and re-read what building it needs.
+   *
+   * Resolves false — after saying why — when the machine could not be reached,
+   * in which case nothing has been created and the dialog is still worth
+   * showing.
+   */
+  const adoptDevice = async (desktopId: string): Promise<boolean> => {
+    setBusyDevice(desktopId);
+    try {
+      await remote.switchDesktop(desktopId);
+      // The catalogue of a freshly connected machine starts empty — the switch
+      // drops the previous machine's — so read what the draft is built from
+      // before opening it: its models are what the new conversation defaults
+      // to, and its workspaces are what the picker offered.
+      await Promise.all([remote.refreshWorkspaces(), remote.refreshModels()]);
+      return true;
+    } catch {
+      setBusyDevice(null);
+      Alert.alert(t("desktops.switchFailed"));
+      return false;
+    }
+  };
+
+  /**
+   * Take the machine the user picked.
+   *
+   * A machine the phone is not on is read down *its own* connection before the
+   * next step, because that machine's workspaces are what the picker must
+   * offer — the connected machine's list names workspaces that machine has
+   * never heard of. The switch itself waits for the creation to be confirmed:
+   * browsing the picker must not move the phone.
+   */
+  const chooseDevice = async (desktopId: string) => {
+    if (busyDevice) return;
+    const epoch = newDialogEpochRef.current;
+    setNewDeviceId(desktopId);
     if (tab === "chat") {
-      void remote.newConversation("chat");
+      // Nothing else to pick for a chat, so the machine is the whole choice.
+      if (desktopId !== activeDesktopId && !(await adoptDevice(desktopId))) return;
+      if (newDialogEpochRef.current !== epoch) return;
+      startConversationOn("chat", "");
       return;
     }
-    setNewMode("workspace");
-    setWorkspaceId(remote.workspaces[0]?.id ?? "");
-    setNewWorkspaceOpen(false);
-    setNewWorkspaceError(null);
-    setNewOpen(true);
+    if (desktopId === activeDesktopId) {
+      selectDeviceWorkspaces(null);
+      setNewStep("target");
+      return;
+    }
+    setBusyDevice(desktopId);
+    let workspaces: RemoteWorkspace[];
+    try {
+      workspaces = await catalogs.readWorkspaces(desktopId);
+    } catch {
+      if (newDialogEpochRef.current !== epoch) return;
+      setNewDeviceId(null);
+      Alert.alert(t("common.error"));
+      return;
+    } finally {
+      setBusyDevice(null);
+    }
+    if (newDialogEpochRef.current !== epoch) return;
+    selectDeviceWorkspaces(workspaces);
+    setNewStep("target");
+  };
+
+  /**
+   * Point the dialog at one machine's workspaces, with its first one selected.
+   *
+   * A workspace id belongs to the machine it came from, so the selection is
+   * replaced rather than carried over: a conversation created in a workspace
+   * the machine has never heard of is worse than asking again.
+   */
+  const selectDeviceWorkspaces = (workspaces: RemoteWorkspace[] | null) => {
+    setDeviceWorkspaces(workspaces);
+    setWorkspaceId((workspaces ?? remote.workspaces)[0]?.id ?? "");
   };
 
   const openNewWorkspaceForm = () => {
@@ -291,12 +401,19 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
 
 
 
-  const startConversation = () => {
-    if (newMode === "workspace" && !workspaceId) return;
-    const mode = newMode;
-    const selectedWorkspaceId = workspaceId;
+  /**
+   * Open the new conversation on the machine the dialog named.
+   *
+   * The draft is local, but the conversation is not: it becomes a session on
+   * whichever machine the phone is connected to when the first message is sent.
+   * So a draft the user asked to create on another machine is opened *there*,
+   * which is the switch a merged row already makes before it opens a
+   * conversation on the machine that owns it.
+   */
+  const startConversationOn = (mode: "chat" | "workspace", selectedWorkspaceId: string) => {
     const start = () => void remote.newConversation(mode, selectedWorkspaceId);
     setNewOpen(false);
+    setBusyDevice(null);
     if (Platform.OS === "ios") {
       // Do not switch screens while the creation Modal still owns UIKit's
       // presentation controller. The destination screen may immediately need
@@ -307,9 +424,28 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     }
   };
 
+  const startConversation = async () => {
+    if (newMode === "workspace" && !workspaceId) return;
+    const epoch = newDialogEpochRef.current;
+    const deviceId = newDeviceId;
+    const mode = newMode;
+    const selectedWorkspaceId = workspaceId;
+    // The switch happens at the moment the user commits to creating something
+    // on that machine — browsing the picker must not move the phone — and a
+    // machine that cannot be reached creates nothing rather than opening a
+    // draft that would be sent to the machine the phone is still on.
+    if (deviceId && deviceId !== activeDesktopId) {
+      if (!(await adoptDevice(deviceId))) return;
+      if (newDialogEpochRef.current !== epoch) return;
+    }
+    startConversationOn(mode, selectedWorkspaceId);
+  };
+
   const closeNew = () => {
     pendingNewConversationRef.current = null;
+    newDialogEpochRef.current += 1;
     setNewOpen(false);
+    setBusyDevice(null);
     closeNewWorkspaceForm();
   };
 
@@ -425,6 +561,61 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   /** What the user calls a paired machine; its id when they have not named it. */
   const desktopLabel = (desktopId: string): string =>
     machines.find(machine => machine.desktopId === desktopId)?.label ?? desktopId;
+  /**
+   * The workspaces the dialog offers: the picked machine's own list when the
+   * phone is still on another one, else the connected machine's.
+   */
+  const workspaceOptions = deviceWorkspaces ?? remote.workspaces;
+  /**
+   * Whether this dialog may register a folder as a workspace.
+   *
+   * Creating one writes through the phone's active connection, so it belongs to
+   * the machine the phone is on: a picked machine it is not on has no form to
+   * open here, and says so by not offering the row (its own workspaces can
+   * still be chosen — they are read from that machine).
+   */
+  const canCreateWorkspaceHere = remote.capabilities?.has("workspace_create_v1") === true
+    && (newDeviceId === null || newDeviceId === activeDesktopId);
+  /**
+   * Open the creation dialog.
+   *
+   * Which machine the conversation belongs to is the first thing it asks — but
+   * only when there is something to choose: with a single machine that can take
+   * it the dialog is the one it always was, and on the conversations tab (where
+   * nothing else is ever picked) the chat is still created straight away.
+   */
+  const openNew = () => {
+    newDialogEpochRef.current += 1;
+    // More than one machine can take the conversation — the same "can this
+    // machine answer" judgement its rows' actions are offered under — so which
+    // machine it is belongs to the user rather than to whichever one happens to
+    // be connected: the dialog opens on that choice.
+    const multiple = machines.filter(machine => canCommand(machine.desktopId)).length > 1;
+    setNewDeviceStep(multiple);
+    setNewDeviceId(null);
+    setDeviceWorkspaces(null);
+    setBusyDevice(null);
+    setNewWorkspaceOpen(false);
+    setNewWorkspaceError(null);
+    if (tab === "chat") {
+      // The conversations tab has nothing left to pick — create the chat
+      // straight away without a dialog, unless the machine is that choice.
+      setNewMode("chat");
+      setWorkspaceId("");
+      if (!multiple) {
+        void remote.newConversation("chat");
+        return;
+      }
+      setNewStep("device");
+      setNewOpen(true);
+      return;
+    }
+    setNewMode("workspace");
+    setWorkspaceId(remote.workspaces[0]?.id ?? "");
+    setNewStep(multiple ? "device" : "target");
+    setNewOpen(true);
+  };
+
   const [reconnectingFromDisconnected, setReconnectingFromDisconnected] = useState(false);
   const reconnectStartedRef = useRef(false);
 
@@ -600,7 +791,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           transparent
           visible={newOpen}
         >
-          <DialogSurface footer={newWorkspaceOpen ? (
+          <DialogSurface footer={newStep === "device" ? undefined : newWorkspaceOpen ? (
             <Button
               disabled={creatingWorkspace || !newWorkspacePath.trim()}
               label={t("sessions.createWorkspaceAction")}
@@ -608,12 +799,59 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
             />
           ) : (
             <Button
-              disabled={newMode === "workspace" && !workspaceId}
+              disabled={busyDevice !== null || (newMode === "workspace" && !workspaceId)}
               label={t("sessions.new")}
-              onPress={startConversation}
+              onPress={() => void startConversation()}
             />
           )}>
-              {newWorkspaceOpen ? (
+              {newStep === "device" ? (
+                <>
+                  <View style={styles.dialogHeader}>
+                    <Text accessibilityRole="header" style={styles.dialogTitle}>{t("sessions.chooseDevice")}</Text>
+                    <Pressable accessibilityRole="button" accessibilityLabel={t("common.close")} onPress={closeNew} style={styles.settingsButton}>
+                      <X color={colors.inkMuted} size={20} />
+                    </Pressable>
+                  </View>
+                  <View style={styles.workspaceOptionsContent}>
+                    {machines.map((machine) => {
+                      const creatable = canCommand(machine.desktopId);
+                      // The machine the phone is on needs no switch, so it is
+                      // the one marked; every other row is a machine to move to.
+                      const current = machine.desktopId === activeDesktopId;
+                      return (
+                        <Pressable
+                          key={machine.desktopId}
+                          accessibilityLabel={machine.label}
+                          accessibilityRole="button"
+                          accessibilityState={{ disabled: !creatable, selected: current }}
+                          disabled={!creatable || busyDevice !== null}
+                          onPress={() => void chooseDevice(machine.desktopId)}
+                          style={[
+                            styles.workspaceOption,
+                            current && styles.workspaceOptionActive,
+                            !creatable && styles.deviceOptionUnavailable,
+                          ]}
+                        >
+                          <Text style={styles.deviceGlyph}>{iconGlyph(machine.icon)}</Text>
+                          <Text numberOfLines={1} style={styles.workspaceOptionName}>
+                            {machine.label}
+                          </Text>
+                          {busyDevice === machine.desktopId ? (
+                            <ActivityIndicator color={colors.accent} size="small" />
+                          ) : !creatable ? (
+                            // A machine that cannot take the conversation says
+                            // why instead of being quietly absent: it is still
+                            // paired, and the reader is looking for it.
+                            <Text style={styles.deviceStatus}>
+                              {t(machineStatusKey(machine.status))}
+                            </Text>
+                          ) : current ? <Check color={colors.accent} size={16} /> : null}
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </>
+              ) : newWorkspaceOpen ? (
                 <>
                   <View style={styles.dialogHeader}>
                     <Pressable accessibilityRole="button" accessibilityLabel={t("common.back")} onPress={closeNewWorkspaceForm} style={styles.settingsButton}>
@@ -657,7 +895,18 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
               ) : (
                 <>
                   <View style={styles.dialogHeader}>
-                    <Text style={styles.dialogTitle}>{t("sessions.new")}</Text>
+                    {newDeviceStep ? (
+                      <Pressable accessibilityRole="button" accessibilityLabel={t("common.back")} onPress={() => setNewStep("device")} style={styles.settingsButton}>
+                        <ChevronLeft color={colors.inkMuted} size={20} />
+                      </Pressable>
+                    ) : null}
+                    <Text numberOfLines={1} style={styles.dialogTitle}>
+                      {newDeviceStep
+                        ? t("sessions.newOnDevice", {
+                          name: desktopLabel(newDeviceId ?? activeDesktopId ?? ""),
+                        })
+                        : t("sessions.new")}
+                    </Text>
                     <Pressable accessibilityRole="button" accessibilityLabel={t("common.close")} onPress={closeNew} style={styles.settingsButton}>
                       <X color={colors.inkMuted} size={20} />
                     </Pressable>
@@ -671,7 +920,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
                         onPress={() => {
                           setNewMode(mode);
                           if (mode === "workspace" && !workspaceId)
-                            setWorkspaceId(remote.workspaces[0]?.id ?? "");
+                            setWorkspaceId(workspaceOptions[0]?.id ?? "");
                         }}
                         style={[styles.modeOption, newMode === mode && styles.modeOptionActive]}
                       >
@@ -688,7 +937,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
                   </View>
                   {newMode === "workspace" && (
                     <View style={styles.workspaceOptionsContent}>
-                      {remote.workspaces.map((workspace) => (
+                      {workspaceOptions.map((workspace) => (
                         <Pressable
                           key={workspace.id}
                           accessibilityRole="radio"
@@ -709,8 +958,10 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
                           directory the user typed — the same store write as the
                           Desktop's own create-workspace dialog. Gated on the
                           capability: an older desktop answers the command with
-                          "Unsupported command". */}
-                      {remote.capabilities?.has("workspace_create_v1") && (
+                          "Unsupported command" — and on being the machine the
+                          phone is connected to, which is where that write
+                          lands. */}
+                      {canCreateWorkspaceHere && (
                         <Pressable
                           accessibilityRole="button"
                           accessibilityLabel={t("sessions.createWorkspace")}
@@ -723,7 +974,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
                           </Text>
                         </Pressable>
                       )}
-                      {remote.workspaces.length === 0 && (
+                      {workspaceOptions.length === 0 && (
                         <Text style={styles.emptyInside}>{t("sessions.noWorkspaces")}</Text>
                       )}
                     </View>
@@ -892,6 +1143,10 @@ const styles = StyleSheet.create({
   workspaceOptionActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
   workspaceOptionName: { flex: 1, color: colors.ink, fontSize: 14, fontWeight: "600" },
   workspaceForm: { gap: spacing.xs },
+  /** A machine the reader can see but not create on, in the machine picker. */
+  deviceOptionUnavailable: { opacity: 0.6 },
+  deviceGlyph: { fontSize: 18 },
+  deviceStatus: { color: colors.inkMuted, fontSize: 13 },
   fieldLabel: { color: colors.ink, fontSize: 14, fontWeight: "600" },
   workspaceInput: {
     minHeight: layout.touchTarget,
