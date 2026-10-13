@@ -97,6 +97,18 @@ export type CatalogRow =
      * row that lost its source would be opened against the wrong machine.
      */
     desktopId?: string;
+    /**
+     * Whether a heading above this row already names its machine.
+     *
+     * A workspace group's heading carries the machine's glyph, so drawing it
+     * again on every conversation under that heading is the same glyph on every
+     * line — and it is the width those titles need. Only the rows that hang
+     * under such a heading set this: a pinned conversation is promoted above
+     * the groups, and the conversations page has no heading at all, so both
+     * keep their own glyph. The desktop rail decides this per row the same way
+     * (its `groupHasSource`).
+     */
+    groupHasSource?: boolean;
   };
 
 /** One workspace's rows on one machine, as the merged list files them. */
@@ -240,6 +252,7 @@ export function mergedRows(
     row: (typeof rows)[number],
     depth: number,
     hasChildren: boolean,
+    groupHasSource: boolean,
   ): Extract<CatalogRow, { kind: "session" }> => ({
     kind: "session" as const,
     key: row.key,
@@ -248,6 +261,7 @@ export function mergedRows(
     hasChildren,
     foldId: row.desktopId === activeDesktopId ? row.session.sessionId : row.key,
     desktopId: row.desktopId,
+    groupHasSource,
   });
   /**
    * A conversation and the forks under it, parents before children.
@@ -259,11 +273,13 @@ export function mergedRows(
    * fork stays discoverable at the top level — how that list answers the same
    * question.
    */
-  const block = (row: (typeof rows)[number], depth = 0): CatalogRow[] => {
+  const block = (row: (typeof rows)[number], depth = 0, groupHasSource = false): CatalogRow[] => {
     const forks = children.get(row.key) ?? [];
-    const head = sessionRow(row, search ? 0 : depth, !search && forks.length > 0);
+    const head = sessionRow(row, search ? 0 : depth, !search && forks.length > 0, groupHasSource);
+    // A fork sits under its conversation, which is what puts it under the same
+    // heading — and so under the same answer about who names the machine.
     if (!search && !expanded.has(head.foldId)) return [head];
-    return [head, ...forks.flatMap(fork => block(fork, depth + 1))];
+    return [head, ...forks.flatMap(fork => block(fork, depth + 1, groupHasSource))];
   };
   /** Everything under a conversation, folded ones included — a heading counts them. */
   const subtree = (row: (typeof rows)[number]): number =>
@@ -301,7 +317,7 @@ export function mergedRows(
     // search ignores folds, so a hidden conversation stays discoverable (the
     // same rule the single-machine list follows).
     if (search || !collapsed.has(id)) {
-      for (const row of group.rows) out.push(...block(row));
+      for (const row of group.rows) out.push(...block(row, 0, true));
     }
   }
   for (const row of chats) out.push(...block(row));
