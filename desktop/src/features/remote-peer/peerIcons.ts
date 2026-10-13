@@ -9,6 +9,22 @@
  *
  * The id (not the glyph) is what is stored, so the set can be re-rendered or
  * translated later without rewriting stored labels.
+ *
+ * Every glyph must be a **single RGI emoji** (`unicode.org/Public/emoji/…
+ * /emoji-test.txt`), with `U+FE0F` where Unicode gives the code point a text
+ * presentation by default. Both halves matter, and the two ways of getting it
+ * wrong are silent:
+ *
+ *  - A code point that is not an emoji at all (`U+1F5A7`, the old `server`
+ *    glyph, is the network-computers pictograph, not an emoji) has no glyph in
+ *    any emoji font, so phones drew a tofu box.
+ *  - A code point whose default presentation is *text* (`U+1F5A5`, `U+2601`)
+ *    without `U+FE0F` falls back to the monochrome text glyph, so the same
+ *    machine looked washed out here and coloured on mobile.
+ *
+ * The ids are stable and shared with mobile
+ * (`mobile/src/remote/peerIcons.ts`); the two lists must stay identical, and
+ * each side's test reads the other file to prove it.
  */
 
 export interface PeerIcon {
@@ -19,14 +35,35 @@ export interface PeerIcon {
 }
 
 export const PEER_ICONS: PeerIcon[] = [
-  { id: "desktop", glyph: "🖥", labelKey: "desktop" },
+  // What kind of machine it is.
+  { id: "desktop", glyph: "🖥️", labelKey: "desktop" },
   { id: "laptop", glyph: "💻", labelKey: "laptop" },
-  { id: "server", glyph: "🖧", labelKey: "server" },
-  { id: "cloud", glyph: "☁", labelKey: "cloud" },
+  { id: "server", glyph: "🗄️", labelKey: "server" },
+  { id: "cloud", glyph: "☁️", labelKey: "cloud" },
+  // Where it stands.
   { id: "home", glyph: "🏠", labelKey: "home" },
   { id: "office", glyph: "🏢", labelKey: "office" },
+  { id: "cafe", glyph: "☕", labelKey: "cafe" },
+  { id: "school", glyph: "🏫", labelKey: "school" },
+  { id: "factory", glyph: "🏭", labelKey: "factory" },
+  { id: "store", glyph: "🏪", labelKey: "store" },
+  // What it is for.
   { id: "rocket", glyph: "🚀", labelKey: "rocket" },
   { id: "flask", glyph: "🧪", labelKey: "flask" },
+  { id: "dev", glyph: "⚙️", labelKey: "dev" },
+  { id: "build", glyph: "🤖", labelKey: "build" },
+  { id: "sandbox", glyph: "📦", labelKey: "sandbox" },
+  { id: "data", glyph: "📊", labelKey: "data" },
+  { id: "research", glyph: "🔬", labelKey: "research" },
+  { id: "secure", glyph: "🛡️", labelKey: "secure" },
+  { id: "private", glyph: "🔒", labelKey: "private" },
+  { id: "fast", glyph: "⚡", labelKey: "fast" },
+  { id: "main", glyph: "⭐", labelKey: "main" },
+  { id: "studio", glyph: "🎬", labelKey: "studio" },
+  { id: "gaming", glyph: "🎮", labelKey: "gaming" },
+  // How it is reached.
+  { id: "remote", glyph: "🌐", labelKey: "remote" },
+  { id: "edge", glyph: "🛰️", labelKey: "edge" },
 ];
 
 /**

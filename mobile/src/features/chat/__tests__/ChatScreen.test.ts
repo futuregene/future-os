@@ -1011,5 +1011,5 @@ test("the bar carries the desktop this conversation is on, named the way the lis
   mockRemote.desktops = [{ desktopId: "desktop", pairId: "pair_1" }];
   act(() => tree.update(createElement(ChatScreen)));
   expect(tree.root.findByType(ChatTopBar).props.machine)
-    .toEqual({ glyph: "🖥", label: "desktop" });
+    .toEqual({ glyph: "🖥️", label: "desktop" });
 });
