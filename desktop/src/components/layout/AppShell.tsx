@@ -68,6 +68,7 @@ import { useHasProviders } from "./hooks/useHasProviders";
 import { useLeftPanelWidth } from "./hooks/useLeftPanelWidth";
 import { useModelSelection } from "./hooks/useModelSelection";
 import { useNewConversation } from "./hooks/useNewConversation";
+import { useRemoteDoneBell } from "./hooks/useRemoteDoneBell";
 import { useRemotePeers } from "./hooks/useRemotePeers";
 import { useRemoteStatus } from "./hooks/useRemoteStatus";
 import { useRightPanelWidth } from "./hooks/useRightPanelWidth";
@@ -202,6 +203,7 @@ function ReadyAppShell({
   const { peers: remotePeers, catalogs: remoteCatalogs, refresh: refreshRemotePeers } = useRemotePeers(true);
   useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
   useAgentDoneBell(appSettings.bellOnComplete);
+  useRemoteDoneBell(appSettings.bellOnComplete);
   const { showGate, byokMode, enableBYOK, finishInit, cancelLogin, hasAnyProvider, forceOnboarding, initPending } = useHasProviders(futureSessionStatus, initialProviders);
 
   const windowWidth = useWindowWidth();
