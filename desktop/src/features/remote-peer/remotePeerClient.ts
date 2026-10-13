@@ -163,6 +163,16 @@ export async function fetchRemoteSessions(desktopId: string): Promise<RemoteCata
         // field — this parser is field-by-field, so a host field the parser does
         // not name never reaches the merged list, and the group would never lead.
         ...(typeof row.workspacePinned === "boolean" ? { workspacePinned: row.workspacePinned } : {}),
+        // When that workspace itself was last touched on that machine: the key
+        // the host orders its own workspace list by, and therefore the group's
+        // place here. Named here for the same reason as the two above.
+        ...(typeof row.workspaceOrderedAt === "number" ? { workspaceOrderedAt: row.workspaceOrderedAt } : {}),
+        // The conversation this one was forked from, on that host. Without it a
+        // remote fork is drawn as a root — no indent and no fold toggle — while
+        // the same fork on this machine has both.
+        ...(typeof row.parentSessionId === "string" && row.parentSessionId
+          ? { parentSessionId: row.parentSessionId }
+          : {}),
         pinned: row.pinned === true,
         streaming: row.streaming === true,
         ...(typeof row.status === "string" ? { status: row.status } : {}),

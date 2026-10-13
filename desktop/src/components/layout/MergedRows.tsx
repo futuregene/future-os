@@ -55,6 +55,7 @@ export function MergedRows({
   onSelectChats,
   onSelectWorkspaceChats,
   onToggleChatSection,
+  onToggleRemoteExpanded,
   onToggleWorkspace,
   onToggleWorkspaceSection,
   peers,
@@ -65,6 +66,8 @@ export function MergedRows({
   selectionMode,
   threadById,
   localRowMeta,
+  expandedRemoteRows,
+  remoteRowMeta,
   workspaceSectionCollapsed,
 }: {
   activeKey: string | null;
@@ -105,6 +108,8 @@ export function MergedRows({
    */
   onSelectWorkspaceChats?: (groupKey: string) => void;
   onToggleChatSection: () => void;
+  /** Fold or unfold the forks of one conversation on another machine, by row key. */
+  onToggleRemoteExpanded: (key: string) => void;
   onToggleWorkspace: (key: string) => void;
   onToggleWorkspaceSection: () => void;
   /**
@@ -115,6 +120,23 @@ export function MergedRows({
    * fold toggle.
    */
   localRowMeta: Map<string, ThreadTreeRow>;
+  /**
+   * Which remote conversations have their forks on screen.
+   *
+   * Keyed by row key, and held by the rail for the same reason the local
+   * expansion is: it is one fold state over the list, and a second `useState`
+   * over the same question is how a heading and its rows come to disagree.
+   */
+  expandedRemoteRows: ReadonlySet<string>;
+  /**
+   * Where a remote conversation sits in its host's tree, keyed by row key.
+   *
+   * The remote counterpart of `localRowMeta`, and needed for the same reason: a
+   * session on another machine that was forked from one of that machine's
+   * sessions still *has* a parent, and without this its fork is drawn as a root
+   * — no indent, no fold toggle — while the same fork on this machine has both.
+   */
+  remoteRowMeta: ReadonlyMap<string, { depth: number; hasChildren: boolean }>;
   peers: RemotePeer[];
   /**
    * The batch, as it applies to a host's rows.
@@ -176,11 +198,15 @@ export function MergedRows({
       return renderLocalRow(thread, meta?.depth ?? 0, meta?.hasChildren ?? false, compact);
     }
     const selectable = remoteSelection?.selectable(conversation) === true;
+    const meta = remoteRowMeta.get(conversation.key);
     return (
       <RemoteConversationRow
         active={activeKey === conversation.key}
         compact={compact}
         conversation={conversation}
+        depth={meta?.depth ?? 0}
+        expanded={expandedRemoteRows.has(conversation.key)}
+        hasChildren={meta?.hasChildren ?? false}
         key={conversation.key}
         onChanged={onChangedRemote}
         onOpen={(row) => {
@@ -193,6 +219,7 @@ export function MergedRows({
           onOpenRemote(row);
         }}
         onOpenRename={onRenameRemote}
+        onToggleExpanded={row => onToggleRemoteExpanded(row.key)}
         onToggleSelection={conversation => remoteSelection?.toggle(conversation)}
         peer={peers.find(peer => peer.desktopId === conversation.desktopId)}
         selected={remoteSelection?.selected(conversation) === true}

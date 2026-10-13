@@ -63,16 +63,22 @@ fn read_sessions(pair_id: &str) -> Option<Value> {
     // A client that groups its merged list by workspace needs the workspace's
     // *name* — an id means nothing to a reader, and the alternative (showing the
     // peer's name for every remote group) would collapse several workspaces into
-    // one — and its *pin*, because a pinned workspace must lead the client's list
-    // exactly as it leads this one. Both ride on each session row: a client that
-    // has to ask for a separate workspace list would be asking on every poll, and
-    // a group exists only where a row does. Best-effort: a thread whose workspace
-    // row is gone still lists, under its peer's name, un-pinned.
-    let workspaces: std::collections::HashMap<String, (String, bool)> =
+    // one — its *pin*, because a pinned workspace must lead the client's list
+    // exactly as it leads this one, and *when it was last touched*, because that
+    // is the key this desktop orders its own workspace list by and the client's
+    // groups must hold their place the same way. All three ride on each session
+    // row: a client that has to ask for a separate workspace list would be asking
+    // on every poll, and a group exists only where a row does. Best-effort: a
+    // thread whose workspace row is gone still lists, under its peer's name,
+    // un-pinned, and ordered as if its place were unknown.
+    let workspaces: std::collections::HashMap<String, (String, bool, i64)> =
         crate::store::list_workspaces()
             .map(|rows| {
                 rows.into_iter()
-                    .map(|row| (row.id, (row.name, row.pinned)))
+                    .map(|row| {
+                        let ordered_at = row.last_opened_at.unwrap_or(row.updated_at);
+                        (row.id, (row.name, row.pinned, ordered_at))
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -103,11 +109,18 @@ fn read_sessions(pair_id: &str) -> Option<Value> {
             "title": t.title,
             "mode": t.mode,
             "workspaceId": t.workspace_id,
-            "workspaceName": workspace.map(|(name, _)| name.clone()),
+            "workspaceName": workspace.map(|(name, _, _)| name.clone()),
             // Whether this conversation's workspace is pinned *here*. Optional by
             // contract: a client built before this field simply orders by recency,
             // which is what it did before.
-            "workspacePinned": workspace.map(|(_, pinned)| *pinned),
+            "workspacePinned": workspace.map(|(_, pinned, _)| *pinned),
+            // When that workspace itself was last opened or touched, in the same
+            // coalesce `future_app_workspaces::list` orders its own rows by. A
+            // merged list ranks a group by *its* place rather than by its
+            // conversations' timestamps, so this is what keeps a group from
+            // moving while the user works in it. Optional by contract: without
+            // it a client orders that group last, not as if it were just used.
+            "workspaceOrderedAt": workspace.map(|(_, _, ordered_at)| *ordered_at),
             "parentSessionId": t.parent_session_id,
             "pinned": t.pinned,
             "streaming": streaming,
@@ -213,6 +226,49 @@ mod tests {
         // row's own name, not its id (see `create_thread`).
         assert_eq!(row["workspaceName"], json!("Named Workspace"));
         assert_eq!(row["workspacePinned"], json!(false));
+    }
+
+    /// A workspace group's *own* place, not its conversations'.
+    ///
+    /// The client orders a workspace group by this field and never by its rows,
+    /// so it has to be the key *this* desktop orders its own workspace list by
+    /// (`future_app_workspaces::list`: `COALESCE(last_opened_at, updated_at)`) —
+    /// and it has to stay put when a conversation inside the workspace gets a
+    /// message, which is the whole reason it is not the conversation's timestamp.
+    #[test]
+    fn sessions_snapshot_carries_the_workspaces_own_place() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-workspace-order");
+        crate::remote::test_support::init_store();
+
+        let thread = new_thread("sess-ordered", "Ordered");
+        let workspace = crate::store::get_workspace(&thread.workspace_id)
+            .expect("read the workspace")
+            .expect("the workspace create_thread made");
+        let expected = workspace.last_opened_at.unwrap_or(workspace.updated_at);
+
+        let (payload, _signature) = sessions("pair_test").expect("snapshot");
+        let row = payload["sessions"]
+            .as_array()
+            .expect("sessions array")
+            .iter()
+            .find(|row| row["sessionId"] == json!("sess-ordered"))
+            .expect("session in snapshot");
+        assert_eq!(row["workspaceOrderedAt"], json!(expected));
+
+        record_thread_message_activity(&thread.id, 9_000).expect("record activity");
+        let (payload, _signature) = sessions("pair_test").expect("snapshot");
+        let row = payload["sessions"]
+            .as_array()
+            .expect("sessions array")
+            .iter()
+            .find(|row| row["sessionId"] == json!("sess-ordered"))
+            .expect("session in snapshot");
+        assert_eq!(row["lastMessageAt"], json!(9_000));
+        assert_eq!(
+            row["workspaceOrderedAt"],
+            json!(expected),
+            "a message in the workspace must not move the workspace itself"
+        );
     }
 
     /// A pinned workspace says so on its conversations.
