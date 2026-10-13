@@ -158,6 +158,8 @@
   "workspacesRemoveConfirm": "Remove the workspace \"{{workspace}}\" from {{host}}? Its conversations there are removed with it.",
   "pasteUnreadable": "Could not read the pasted file: {{name}}",
   "pasteTooMany": "At most {{max}} files can be pasted at once",
+  "promptQueued": "Message queued — it will be sent when the desktop is reachable again.",
+  "promptPending": "A message is waiting to be sent.",
   "settingsWindowTitle": "Remote desktop settings",
   "settingsWindowMissing": "This computer is no longer paired.",
   "close": "Close",
