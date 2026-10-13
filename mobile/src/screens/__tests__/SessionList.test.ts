@@ -38,6 +38,7 @@ const mockRemote: {
   refreshModels: jest.Mock;
   openSessionOnDesktop: jest.Mock;
   newConversation: jest.Mock;
+  newConversationOn: jest.Mock;
 } = {
   sessions: [
     { sessionId: "s1", threadId: "t1", title: "First", streaming: false },
@@ -59,6 +60,7 @@ const mockRemote: {
   refreshModels: jest.fn(),
   openSessionOnDesktop: jest.fn(),
   newConversation: jest.fn(),
+  newConversationOn: jest.fn(),
 };
 const mockStorage = new Map<string, string>();
 jest.mock("@react-native-async-storage/async-storage", () => ({
@@ -228,6 +230,7 @@ beforeEach(async () => {
   activeCommands.capabilities = new Set(["workspace_pinning_v1"]);
   peerCommands.capabilities = new Set(["workspace_pinning_v1"]);
   mockRemote.newConversation.mockResolvedValue(undefined);
+  mockRemote.newConversationOn.mockResolvedValue(undefined);
   mockRemote.switchDesktop.mockResolvedValue(undefined);
   mockRemote.refreshWorkspaces.mockResolvedValue(undefined);
   mockRemote.refreshModels.mockResolvedValue(undefined);
@@ -813,8 +816,9 @@ test("new conversation uses the selected workspace and waits for sheet dismissal
   expect(mockRemote.newConversation).not.toHaveBeenCalled();
   await act(async () => { modal.props.onDismiss(); });
   expect(mockRemote.newConversation).toHaveBeenCalledWith("workspace", "w1");
-  // This machine's own group has nothing to switch to: the draft opens on the
-  // connection the reader is already using, and nothing is re-read.
+  // This machine's own group names no machine: its own verb is the open
+  // machine's, and there is nothing to move.
+  expect(mockRemote.newConversationOn).not.toHaveBeenCalled();
   expect(mockRemote.switchDesktop).not.toHaveBeenCalled();
   expect(mockRemote.refreshModels).not.toHaveBeenCalled();
   act(() => modal.props.onDismiss());
@@ -1553,24 +1557,18 @@ test("a heading on another machine offers that machine's actions", async () => {
   expect(peerCommands.setWorkspacePinned).toHaveBeenCalledWith("w9", true);
   expect(activeCommands.setWorkspacePinned).not.toHaveBeenCalled();
 
-  // Starting one there reaches that machine first: the draft belongs to the
-  // connection that will carry the first prompt into the workspace.
+  // Starting one there names that machine: the draft is built on it (the provider
+  // reads that machine's runtime out of its registry), so nothing here moves the
+  // phone first and hopes the follow-up call lands on the machine it moved to.
   act(() => button("sessions.workspaceActions:Review").props.onPress());
   await act(async () => {
     button("sessions.new").props.onPress();
     await tree.root.findByType(ActionMenu).findByType(Modal).props.onDismiss();
   });
-  expect(mockRemote.switchDesktop).toHaveBeenCalledWith("desk-b");
-  // The machine it moved onto is re-read before the draft: a freshly connected
-  // machine's catalogue starts empty, and its models are what the draft defaults
-  // to. Same as the creation dialog's own move onto another machine.
-  expect(mockRemote.refreshWorkspaces).toHaveBeenCalled();
-  expect(mockRemote.refreshModels).toHaveBeenCalled();
-  expect(mockRemote.newConversation).toHaveBeenCalledWith("workspace", "w9");
-  expect(mockRemote.switchDesktop.mock.invocationCallOrder[0]!)
-    .toBeLessThan(mockRemote.newConversation.mock.invocationCallOrder[0]!);
-  expect(mockRemote.refreshModels.mock.invocationCallOrder[0]!)
-    .toBeLessThan(mockRemote.newConversation.mock.invocationCallOrder[0]!);
+  expect(mockRemote.newConversationOn).toHaveBeenCalledWith("desk-b", "workspace", "w9");
+  expect(mockRemote.newConversation).not.toHaveBeenCalled();
+  expect(mockRemote.switchDesktop).not.toHaveBeenCalled();
+  expect(mockRemote.refreshModels).not.toHaveBeenCalled();
 
   // A machine the phone cannot reach offers nothing: the heading's ⋯ is shown
   // unavailable, as the active machine's is when its connection is down.
