@@ -72,12 +72,14 @@ export function activeMachineStatus(
  * has to see rather than a detail hidden behind the machine that happens to be
  * the active one.
  */
-export function machinesConnected(machines: readonly MachineSummary[]): {
+export interface MachinesConnected {
   all: boolean;
   any: boolean;
   connected: number;
   total: number;
-} {
+}
+
+export function machinesConnected(machines: readonly MachineSummary[]): MachinesConnected {
   const connected = machines.filter(machine => machine.status === "connected").length;
   return {
     all: machines.length > 0 && connected === machines.length,
@@ -85,4 +87,25 @@ export function machinesConnected(machines: readonly MachineSummary[]): {
     connected,
     total: machines.length,
   };
+}
+
+/**
+ * Whether the status block's own words are the set's rather than one machine's.
+ *
+ * The dot, the rows and the button below them all answer for every paired
+ * machine; a block that reported the machine whose conversation happens to be
+ * open beneath them is how a phone with two of three desktops up came to read
+ * as "no connection", directly under a list saying two of them were connected.
+ * So when some machines answer and some do not, the block says that instead.
+ *
+ * Two cases keep the ordinary copy, because there the open machine's own state
+ * *is* the phone's: nothing answering at all (it names the cause, its support
+ * code and the action for it), and a pairing this phone's machine has lost
+ * (only that connection's own words can explain an "unpair" prompt).
+ */
+export function machinesPartlyConnected(
+  counts: MachinesConnected,
+  active: ConnectionPresentation,
+): boolean {
+  return counts.total > 1 && counts.any && !counts.all && active.action !== "pairAgain";
 }

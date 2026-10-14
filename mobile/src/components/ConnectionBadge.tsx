@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import { X } from "lucide-react-native";
 import type { ConnectionPresentation } from "../remote/connectionPresentation";
 import type { MachineStatus, MachineSummary } from "../remote/desktopStatus";
-import { machineStatusKey, machinesConnected } from "../remote/desktopStatus";
+import { machineStatusKey, machinesConnected, machinesPartlyConnected } from "../remote/desktopStatus";
 import { disconnectedCopy } from "../remote/disconnectedCopy";
 import { iconGlyph } from "../remote/peerIcons";
 import { layout, radius, spacing, type Palette } from "../theme/tokens";
@@ -92,6 +92,10 @@ export function ConnectionBadge({
   // button offers to reach all of them rather than only the active one.
   const severalMachines = (machines?.length ?? 0) > 1;
   const summary = machines ? machinesConnected(machines) : null;
+  // ...and the block under the rows answers for the same set. A phone paired to
+  // three desktops, two of them up, is not "no connection" — which is what the
+  // one machine's own state says when that machine is the one that is down.
+  const partial = summary !== null && machinesPartlyConnected(summary, presentation);
   // The dot answers for every paired machine when there is a list to judge, and
   // for the one connection the app renders from when there is not.
   const state: DotState = summary && machines!.length > 0
@@ -122,15 +126,27 @@ export function ConnectionBadge({
     : presentation.customerState === "waitingDesktop"
       ? "waitingDesktop"
       : presentation.level;
-  const label = t(statusKey);
-  const reason = disconnected
-    ? t(`connection.disconnectDetails.${copy}.reason`)
-    : t(`connection.statusDetails.${detailState}.reason`);
-  const solution = disconnected
-    ? t(`connection.disconnectDetails.${copy}.solution`)
-    : t(`connection.statusDetails.${detailState}.solution`);
-  const reasonWithCode =
-    reason + (presentation.supportCode ? ` (${presentation.supportCode})` : "");
+  const label = partial ? t("connection.machinesPartial") : t(statusKey);
+  const reason = partial
+    ? t("connection.machinesSummary", {
+      connected: summary!.connected,
+      total: summary!.total,
+    })
+    : disconnected
+      ? t(`connection.disconnectDetails.${copy}.reason`)
+      : t(`connection.statusDetails.${detailState}.reason`);
+  const solution = partial
+    ? t("connection.machinesPartialHint")
+    : disconnected
+      ? t(`connection.disconnectDetails.${copy}.solution`)
+      : t(`connection.statusDetails.${detailState}.solution`);
+  // The set's own state carries no support code: there is no single failure to
+  // look up, and the rows above name which machines it is about. The open
+  // machine's code is still the phone's when nothing answers at all, where
+  // `partial` is false.
+  const reasonWithCode = partial
+    ? reason
+    : reason + (presentation.supportCode ? ` (${presentation.supportCode})` : "");
   const leftEdge = insets.left + layout.gutter;
   const rightEdge = insets.right + layout.gutter;
   const popoverWidth = Math.min(320, dimensions.width - leftEdge - rightEdge);
@@ -191,12 +207,17 @@ export function ConnectionBadge({
                       </Text>
                     </View>
                   ))}
-                  <Text accessibilityLiveRegion="polite" style={styles.machinesSummary}>
-                    {t("connection.machinesSummary", {
-                      connected: summary?.connected ?? 0,
-                      total: summary?.total ?? 0,
-                    })}
-                  </Text>
+                  {/* The count is the block's own description when only some
+                      machines answer; written here it would repeat it a line
+                      above its own reason. */}
+                  {!partial && (
+                    <Text accessibilityLiveRegion="polite" style={styles.machinesSummary}>
+                      {t("connection.machinesSummary", {
+                        connected: summary?.connected ?? 0,
+                        total: summary?.total ?? 0,
+                      })}
+                    </Text>
+                  )}
                 </View>
               )}
               <Text accessibilityLiveRegion="polite" style={[styles.title, { color: titleColor }]}>{label}</Text>

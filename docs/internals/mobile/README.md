@@ -361,6 +361,16 @@ never falls back to the machine the phone happens to be reading. Starting a
 conversation while one machine is named creates it there, and a machine that
 cannot take one does not offer the button.
 
+Whether the phone has anything to read is the phone's own question rather than
+the open machine's: while any paired desktop answers, the list stays on screen —
+even when the machine whose conversation is open is the one that is down — and
+the whole-page connecting/disconnected state appears only when none of them
+answers. The status popover's own block says the same: with some machines
+answering and some not, it reports the set ("Some desktops are not connected",
+the connected count, Reconnect all) rather than the open machine's state, and
+only when every machine answers — or none does — does that one machine's own
+copy stand.
+
 Each desktop in the list has a pencil button to rename it; the name is saved
 locally only and never synced to the Desktop or platform; clearing the name
 shows the Desktop's id again. The list is centered on wide screens with left

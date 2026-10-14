@@ -253,3 +253,72 @@ test("one machine needs no list of its own", () => {
   expect(text()).not.toContain("connection.machine.connected");
   expect(tree.root.findByType(Button).props.label).toBe("connection.reconnect");
 });
+
+test("the block under the rows answers for the set, not for the open machine", () => {
+  // The reported case: three desktops, two of them connected, and the machine
+  // whose conversation is open is the one that is down. Its own state — here an
+  // unclassified failure, LC999 — must not be laid under a row list that says
+  // two machines are connected.
+  render(
+    connectionPresentation({ phase: "failed", desktopOnline: false, error: "whatever it said" }),
+    true,
+    machines(["a", "offline"], ["b", "connected"], ["c", "connected"]),
+  );
+  open();
+
+  expect(text()).toContain("connection.machinesPartial");
+  expect(text()).toContain("connection.machinesSummary");
+  expect(text()).toContain("connection.machinesPartialHint");
+  expect(text()).not.toContain("connection.disconnected");
+  expect(text()).not.toContain("connection.disconnectDetails.failed.reason (LC999)");
+  // The count is one fact: it is the block's description rather than a caption
+  // repeated a line above it.
+  expect(text().filter(value => value === "connection.machinesSummary")).toHaveLength(1);
+  // ...and reaching every machine is still the offer, now the only one.
+  expect(tree.root.findByType(Button).props.label).toBe("connection.reconnectAll");
+});
+
+test("a machine that answers is not reported as the phone being down", () => {
+  // The other way round: the open machine is fine and a peer is not. The dot and
+  // the rows already said so, and the block must not say "connected" instead.
+  render(ready, true, machines(["a", "connected"], ["b", "offline"]));
+  open();
+
+  expect(text()).toContain("connection.machinesPartial");
+  expect(text()).not.toContain("connection.connected");
+});
+
+test("with every machine connected the block keeps the connection's own words", () => {
+  render(ready, true, machines(["a", "connected"], ["b", "connected"]));
+  open();
+
+  expect(text()).toContain("connection.connected");
+  expect(text()).not.toContain("connection.machinesPartial");
+  // The count still captions the rows it is about.
+  expect(text()).toContain("connection.machinesSummary");
+});
+
+test("with nothing answering the cause is the open machine's, code and all", () => {
+  render(
+    connectionPresentation({ phase: "failed", desktopOnline: false, error: "whatever it said" }),
+    true,
+    machines(["a", "offline"], ["b", "offline"]),
+  );
+  open();
+
+  expect(text()).toContain("connection.disconnectDetails.failed.reason (LC999)");
+  expect(text()).not.toContain("connection.machinesPartial");
+});
+
+test("an expired pairing is offered as an unpair, not as the set's state", () => {
+  render(
+    connectionPresentation({ phase: "revoked", desktopOnline: false }),
+    true,
+    machines(["a", "offline"], ["b", "connected"]),
+  );
+  open();
+
+  expect(text()).toContain("connection.pairingExpired");
+  expect(text()).not.toContain("connection.machinesPartial");
+  expect(tree.root.findByType(Button).props.label).toBe("sessions.unpair");
+});
