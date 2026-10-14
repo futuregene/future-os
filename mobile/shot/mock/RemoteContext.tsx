@@ -13,7 +13,7 @@
  * Unknown members return a no-op async function (with a console warning) so a
  * new field added to the real context never hard-fails a capture run.
  */
-import type { PropsWithChildren } from "react";
+import type { PropsWithChildren, ReactNode } from "react";
 import type {
   AvailableSkill,
   DesktopSettings,
@@ -445,6 +445,19 @@ export function useRemoteControls(): any {
   if (!value)
     throw new Error("useRemote must be used inside RemoteProvider");
   return value;
+}
+
+/**
+ * The machine a device page names.
+ *
+ * The real `DesktopScope` hands its subtree the named machine's own surface,
+ * read from that machine's runtime. The harness holds *one* machine's data (one
+ * catalogue, one settings snapshot, one `desktopId`), so this is the identity:
+ * the page renders its machine's real rows, over the demo desktop the phone is
+ * on, with no connection step in between — which is the state being captured.
+ */
+export function DesktopScope({ children }: { desktopId: string; children?: ReactNode }) {
+  return children ?? null;
 }
 
 /** Compatibility surface for consumers that render the transcript. */
