@@ -32,7 +32,6 @@ import {
   runs,
   sessionUsage,
   taskDeps,
-  taskRevisions,
   taskRuns,
   tasks,
   threads,
@@ -665,8 +664,6 @@ const handlers: Record<string, (args: any) => unknown> = {
         return { runs: taskRuns[String(command.taskId)] ?? [] };
       case "list_task_deps":
         return { deps: taskDeps[String(command.taskId)] ?? [] };
-      case "list_task_revisions":
-        return { revisions: taskRevisions[String(command.taskId)] ?? [] };
       case "skill_reco_today":
         return { today: { count: 0, skillIds: [], messageHashes: [] } };
       case "suggest_skill":
@@ -758,16 +755,6 @@ const handlers: Record<string, (args: any) => unknown> = {
   run_task_now: args => taskList.find(task => task.id === args?.id) ?? null,
   list_task_runs: args => taskRuns[args?.id] ?? [],
   list_task_deps: args => taskDeps[args?.id] ?? [],
-  list_task_revisions: args => taskRevisions[args?.id] ?? [],
-  apply_task_revision: (args) => {
-    const target = taskList.find(task => task.id === args?.id);
-    const revision = (taskRevisions[args?.id] ?? []).find(entry => entry.id === args?.revisionId);
-    if (!target || !revision)
-      throw new Error("revision not found");
-    target.prompt = revision.prompt;
-    target.promptVersion += 1;
-    return target;
-  },
 
   // ── Settings pages ─────────────────────────────────────────────────────
   clear_app_data: () => null,

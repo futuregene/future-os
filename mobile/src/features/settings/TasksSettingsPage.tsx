@@ -5,7 +5,7 @@ import { Button } from "../../components/Button";
 import { useRemoteControls } from "../../remote/RemoteContext";
 import type { DesktopSettings, RemoteModel } from "../../remote/types";
 import { modelReference } from "../../remote/types";
-import type { RemoteTaskDep, RemoteTaskDetail, RemoteTaskRevision, RemoteTaskRow, RemoteTaskRun } from "../../remote/taskTypes";
+import type { RemoteTaskDep, RemoteTaskDetail, RemoteTaskRow, RemoteTaskRun } from "../../remote/taskTypes";
 import { colors, layout, radius, spacing } from "../../theme/tokens";
 import { ResourceStatus, SettingsField, SettingsSection, settingsStyles } from "./SettingsPrimitives";
 import type { SettingsPageBack } from "./pageBack";
@@ -357,7 +357,6 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
   const [detail, setDetail] = useState<RemoteTaskDetail | null>(null);
   const [runs, setRuns] = useState<RemoteTaskRun[]>([]);
   const [deps, setDeps] = useState<RemoteTaskDep[]>([]);
-  const [revisions, setRevisions] = useState<RemoteTaskRevision[]>([]);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
   const active = useRef(true);
@@ -369,17 +368,15 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
 
   const loadDetail = useCallback(async (taskId: string) => {
-    const [nextDetail, nextRuns, nextDeps, nextRevisions] = await Promise.all([
+    const [nextDetail, nextRuns, nextDeps] = await Promise.all([
       remote.getTask(taskId),
       remote.listTaskRuns(taskId),
       remote.listTaskDeps(taskId),
-      remote.listTaskRevisions(taskId),
     ]);
     if (!active.current) return;
     setDetail(nextDetail);
     setRuns(nextRuns);
     setDeps(nextDeps);
-    setRevisions(nextRevisions);
   }, [remote]);
 
   const open = useCallback((taskId: string) => {
@@ -503,7 +500,6 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
         desktopOnline={desktopOnline}
         failed={failed}
         kind="edit"
-        revisions={revisions}
         runs={runs}
         settings={settings}
         settingsOpen={settingsOpen}
@@ -570,7 +566,7 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
  * state on every incoming snapshot.
  */
 function TaskForm({
-  kind, detail, settings, candidates = [], busy, deps = [], desktopOnline, failed, revisions = [], runs = [],
+  kind, detail, settings, candidates = [], busy, deps = [], desktopOnline, failed, runs = [],
   settingsOpen = false,
   onCancel, onCloseSettings, onCreate, onDelete, onMutate, onOpenConversation, onOpenSettings, onRetry, onSaveDraft,
 }: {
@@ -584,7 +580,6 @@ function TaskForm({
   deps?: RemoteTaskDep[];
   desktopOnline: boolean;
   failed: boolean;
-  revisions?: RemoteTaskRevision[];
   runs?: RemoteTaskRun[];
   /** Whether the form is on top (edit mode; a new task opens straight on it). */
   settingsOpen?: boolean;
@@ -668,8 +663,8 @@ function TaskForm({
         : null}
 
       {/* The task itself: its actions, then what it did. The form that changes
-          it is one level down, so a long run and version history never buries
-          the fields the way a fold at the bottom of this page did. */}
+          it is one level down, so a long run history never buries the fields
+          the way a fold at the bottom of this page did. */}
       {taskPage
         ? (
             <SettingsSection title={detail!.name}>
@@ -737,27 +732,6 @@ function TaskForm({
                     : null}
                 </View>
               ))}
-            </SettingsSection>
-          )
-        : null}
-
-      {taskPage && revisions.length > 0
-        ? (
-            <SettingsSection title={t("tasks.revisions")}>
-              {revisions.map((revision) => {
-                const active = revision.version === detail?.promptVersion;
-                return (
-                  <View key={revision.id} style={settingsStyles.card}>
-                    <Text style={settingsStyles.label}>
-                      {`v${revision.version} · ${t(`tasks.source.${revision.source}`)}${active ? ` · ${t("tasks.revisionActive")}` : revision.status === "applied" ? ` · ${t("tasks.applied")}` : ""}`}
-                    </Text>
-                    <Text style={settingsStyles.description}>{revision.reason ?? revision.promptPreview}</Text>
-                    {active
-                      ? null
-                      : <Button label={t("tasks.apply")} disabled={busy} onPress={() => void onMutate?.(() => remote.applyTaskRevision(detail!.id, revision.id))} />}
-                  </View>
-                );
-              })}
             </SettingsSection>
           )
         : null}

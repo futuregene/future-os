@@ -21,10 +21,6 @@
   "runPromptVersion": "v{{version}}",
   "runsNone": "No runs yet.",
   "openConversation": "Open",
-  "revisions": "Prompt versions",
-  "revisionsNone": "No prompt versions recorded yet.",
-  "apply": "Apply",
-  "revisionActive": "Active",
   "confidence": "confidence {{value}}%",
   "trigger": {
     "manual": "Manual",
@@ -68,12 +64,6 @@
   "join": {
     "all": "all upstreams",
     "any": "any upstream"
-  },
-  "source": {
-    "user": "Manual edit",
-    "reflection": "Reflection",
-    "rollback": "Rollback",
-    "superseded": "Earlier version"
   },
   "weekday": {
     "mon": "Mon",
@@ -145,6 +135,5 @@
   "cwdChatWorkspace": "The conversation's own temporary workspace",
   "colConversation": "Conversation type",
   "modelDefault": "Default model",
-  "thinkingDefault": "Default",
-  "revisionsNoReason": "No reason recorded."
+  "thinkingDefault": "Default"
 }
