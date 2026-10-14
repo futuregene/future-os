@@ -14,8 +14,25 @@ import { Button } from "./Button";
 /** The dot a machine's own row carries, in the same palette as the badge. */
 function statusColor(status: MachineStatus): string {
   if (status === "connected") return colors.success;
-  return status === "offline" ? colors.danger : colors.warning;
+  return status === "offline" ? colors.danger : colors.warningBright;
 }
+
+type DotState = "up" | "partial" | "down";
+
+/**
+ * The three states the dot and the title share, and the two hues they wear.
+ *
+ * The dot is the brighter amber at `partial`: `warning` is tuned for text on a
+ * light surface, and at the 8px of a dot it is close enough to the `danger` red
+ * below it that "some machines are down" reads as "all of them are" — the one
+ * distinction this dot exists to make. The title is text, so it keeps the
+ * text-tuned amber, which the dot's yellow is too light to replace.
+ */
+const stateColors: Record<DotState, { dot: string; text: string }> = {
+  up: { dot: colors.success, text: colors.success },
+  partial: { dot: colors.warningBright, text: colors.warning },
+  down: { dot: colors.danger, text: colors.danger },
+};
 
 export function ConnectionBadge({
   presentation,
@@ -68,10 +85,13 @@ export function ConnectionBadge({
   // button offers to reach all of them rather than only the active one.
   const severalMachines = (machines?.length ?? 0) > 1;
   const summary = machines ? machinesConnected(machines) : null;
-  const color = summary && machines!.length > 0
-    ? summary.all ? colors.success : summary.any ? colors.warning : colors.danger
-    : presentation.level === "connected" ? colors.success :
-      presentation.level === "connecting" ? colors.warning : colors.danger;
+  // The dot answers for every paired machine when there is a list to judge, and
+  // for the one connection the app renders from when there is not.
+  const state: DotState = summary && machines!.length > 0
+    ? summary.all ? "up" : summary.any ? "partial" : "down"
+    : presentation.level === "connected" ? "up" :
+      presentation.level === "connecting" ? "partial" : "down";
+  const { dot: dotColor, text: titleColor } = stateColors[state];
   // A connection the app still reports as healthy (or still trying) is where a
   // silently dead transport hides: those states keep the same manual reconnect
   // the failure states get, so recovering never requires unpairing first.
@@ -122,7 +142,7 @@ export function ConnectionBadge({
         onPress={open}
         style={({ pressed }) => [styles.badge, (pressed || visible) && styles.pressed]}
       >
-        <View testID="connection-dot" style={[styles.dot, { backgroundColor: color }]} />
+        <View testID="connection-dot" style={[styles.dot, { backgroundColor: dotColor }]} />
       </Pressable>
       <Modal
         transparent
@@ -150,6 +170,7 @@ export function ConnectionBadge({
                   {machines!.map(machine => (
                     <View key={machine.desktopId} style={styles.machineRow}>
                       <View
+                        testID={`machine-dot-${machine.desktopId}`}
                         style={[
                           styles.machineDot,
                           { backgroundColor: statusColor(machine.status) },
@@ -171,7 +192,7 @@ export function ConnectionBadge({
                   </Text>
                 </View>
               )}
-              <Text accessibilityLiveRegion="polite" style={[styles.title, { color }]}>{label}</Text>
+              <Text accessibilityLiveRegion="polite" style={[styles.title, { color: titleColor }]}>{label}</Text>
               <Text style={styles.hint}>{reasonWithCode}</Text>
               {solution && <Text style={styles.hint}>{solution}</Text>}
               {(reconnectable || unpairable) && (
