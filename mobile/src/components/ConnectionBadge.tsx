@@ -14,7 +14,7 @@ import { Button } from "./Button";
 /** The dot a machine's own row carries, in the same palette as the badge. */
 function statusColor(status: MachineStatus): string {
   if (status === "connected") return colors.success;
-  return status === "offline" ? colors.danger : colors.warningBright;
+  return status === "offline" ? colors.danger : colors.warningDot;
 }
 
 type DotState = "up" | "partial" | "down";
@@ -22,15 +22,17 @@ type DotState = "up" | "partial" | "down";
 /**
  * The three states the dot and the title share, and the two hues they wear.
  *
- * The dot is the brighter amber at `partial`: `warning` is tuned for text on a
- * light surface, and at the 8px of a dot it is close enough to the `danger` red
- * below it that "some machines are down" reads as "all of them are" — the one
- * distinction this dot exists to make. The title is text, so it keeps the
- * text-tuned amber, which the dot's yellow is too light to replace.
+ * The dot is yellow at `partial`: it and the title are drawn on the same light
+ * surface, but one is an 8px shape and the other a line of text, and the hues
+ * those two want are not the same. `warning` is darkened so it can be read as
+ * text; at the size of a dot that same orange is close enough to the `danger`
+ * red of the state below that "some machines are down" reads as "all of them
+ * are" — the one distinction this dot exists to make. So the dot takes the
+ * yellow, and the text keeps the amber it has contrast for.
  */
 const stateColors: Record<DotState, { dot: string; text: string }> = {
   up: { dot: colors.success, text: colors.success },
-  partial: { dot: colors.warningBright, text: colors.warning },
+  partial: { dot: colors.warningDot, text: colors.warning },
   down: { dot: colors.danger, text: colors.danger },
 };
 
