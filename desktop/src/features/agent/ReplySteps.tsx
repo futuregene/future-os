@@ -1,3 +1,4 @@
+import type { ActivityTargetResolver } from "./AgentActivityList";
 import type { StepSegment } from "./replyBlocks";
 import { Brain, ChevronDown, ChevronUp, Wrench } from "lucide-react";
 import { useState } from "react";
@@ -6,11 +7,13 @@ import { AgentActivityLine } from "./AgentActivityList";
 import { ThinkingBlock } from "./ThinkingBlock";
 
 /** A quiet summary aligned with the reading column and its revealed steps. */
-export function ReplySteps({ segments, workspaceId, workspacePath, runId }: {
+export function ReplySteps({ resolveTarget, segments, workspaceId, workspacePath, runId }: {
   segments: StepSegment[];
   workspaceId?: string | null;
   workspacePath?: string | null;
   runId?: string | null;
+  /** Where a step's target comes from when the row arrived without one. */
+  resolveTarget?: ActivityTargetResolver;
 }) {
   const { t } = useTranslation("agent");
   const [expanded, setExpanded] = useState(false);
@@ -65,7 +68,7 @@ export function ReplySteps({ segments, workspaceId, workspacePath, runId }: {
             <div className="min-w-0 space-y-1 pl-6">
               {segments.map(segment => segment.kind === "thinking"
                 ? <ThinkingBlock key={segment.id} text={segment.text} workspaceId={workspaceId} />
-                : <AgentActivityLine key={segment.id} item={segment.item} workspacePath={workspacePath} runId={runId} />)}
+                : <AgentActivityLine key={segment.id} item={segment.item} resolveTarget={resolveTarget} workspacePath={workspacePath} runId={runId} />)}
             </div>
           )
         : null}

@@ -1,18 +1,35 @@
 import type { AgentActivityItem, AgentActivityKind } from "@future-os/thread-projection";
 import { Brain, ChevronDown, ChevronUp, FileText, Pencil, TerminalSquare, TriangleAlert } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import i18n from "../../i18n";
 import { cn } from "../../lib/cn";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { relativizeWorkspacePath } from "../../lib/workspacePath";
 
+/**
+ * Where a row's target comes from when the row arrived without one.
+ *
+ * A remote transcript is read from a lean history page, which gives a shell call
+ * its identity and no arguments — the command is on the other machine and this
+ * is how it is asked for. The row asks *when the reader opens it*, which is the
+ * same moment and the same one command the phone spends: a page of a real
+ * conversation holds dozens of calls, and reading them all on open cost one
+ * round trip per call before the first line could be drawn.
+ */
+export type ActivityTargetResolver = (input: {
+  runId: string;
+  toolCallId: string;
+}) => Promise<string | null>;
+
 interface AgentActivityListProps {
   items?: AgentActivityItem[];
   workspacePath?: string | null;
   runId?: string | null;
+  /** Where a row's target comes from when the row arrived without one. */
+  resolveTarget?: ActivityTargetResolver;
 }
 
-export function AgentActivityList({ items, workspacePath, runId }: AgentActivityListProps) {
+export function AgentActivityList({ items, resolveTarget, workspacePath, runId }: AgentActivityListProps) {
   const visibleItems = items?.filter(item => item.status === "running" || item.status === "completed" || item.status === "failed") ?? [];
   if (visibleItems.length === 0)
     return null;
@@ -20,7 +37,7 @@ export function AgentActivityList({ items, workspacePath, runId }: AgentActivity
   return (
     <div className="my-4 space-y-3">
       {visibleItems.map(item => (
-        <AgentActivityLine item={item} key={item.id} workspacePath={workspacePath} runId={runId} />
+        <AgentActivityLine item={item} key={item.id} resolveTarget={resolveTarget} workspacePath={workspacePath} runId={runId} />
       ))}
     </div>
   );
@@ -32,22 +49,84 @@ interface AgentActivityLineProps {
   item: AgentActivityItem;
   workspacePath?: string | null;
   runId?: string | null;
+  resolveTarget?: ActivityTargetResolver;
 }
 
-export function AgentActivityLine({ item, workspacePath, runId }: AgentActivityLineProps) {
+export function AgentActivityLine({ item, resolveTarget, workspacePath, runId }: AgentActivityLineProps) {
   if ((item.children?.length ?? 0) > 0)
-    return <AgentActivityGroupLine item={item} workspacePath={workspacePath} runId={runId} />;
-  return <AgentActivitySingleLine item={item} workspacePath={workspacePath} runId={runId} />;
+    return <AgentActivityGroupLine item={item} resolveTarget={resolveTarget} workspacePath={workspacePath} runId={runId} />;
+  return <AgentActivitySingleLine item={item} resolveTarget={resolveTarget} workspacePath={workspacePath} runId={runId} />;
 }
 
-function AgentActivitySingleLine({ item, workspacePath, runId }: AgentActivityLineProps) {
+/** The target to draw for an item: its own, or what an expanded row fetched. */
+function shownTarget(item: AgentActivityItem, resolved: string | null): string | null {
+  const own = item.target?.trim();
+  return own ? item.target! : resolved;
+}
+
+/** A call that has to be asked for, because the row carries no target. */
+function missingCalls(item: AgentActivityItem): { runId: string | null; toolCallId: string }[] {
+  if ((item.target ?? "").trim() !== "" || !item.toolCallId)
+    return [];
+  return [{ runId: item.runId ?? null, toolCallId: item.toolCallId }];
+}
+
+/**
+ * A tool call's target, fetched when the row is opened.
+ *
+ * Nothing is asked while the row is collapsed: a lean page gives a shell call its
+ * identity and no arguments, and the command it ran is a *read* the reader pays
+ * for by opening the row — the phone's own bargain, and the reason a conversation
+ * opens on one page rather than on one request per call it happens to contain.
+ *
+ * A host that cannot answer leaves the row as it is: the label is still the truth
+ * about the call, and the fetch behind `resolveTarget` remembers a failure rather
+ * than asking again on every render or every re-open.
+ */
+function useActivityTarget(input: {
+  enabled: boolean;
+  item: AgentActivityItem;
+  resolveTarget: ActivityTargetResolver | undefined;
+  runId?: string | null;
+}): string | null {
+  const { enabled, item, resolveTarget, runId } = input;
+  const [resolved, setResolved] = useState<string | null>(null);
+  const toolCallId = item.toolCallId;
+  // The run the row belongs to is the item's own where it has one; the enclosing
+  // message's run is the fallback a projected live reply relies on.
+  const callRunId = item.runId ?? runId;
+  // Whether there is anything to ask for at all: a row the page already carries a
+  // target for has nothing to read, and the resolver exists for the calls a trim
+  // left identity-only.
+  const needsTarget = missingCalls(item).length > 0;
+
+  useEffect(() => {
+    if (!enabled || !needsTarget || !resolveTarget || !toolCallId || !callRunId)
+      return;
+    let cancelled = false;
+    void resolveTarget({ runId: callRunId, toolCallId })
+      .catch(() => null)
+      .then((value) => {
+        if (!cancelled && value)
+          setResolved(value);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, needsTarget, resolveTarget, callRunId, toolCallId]);
+
+  return shownTarget(item, resolved);
+}
+
+function AgentActivitySingleLine({ item, resolveTarget, workspacePath, runId }: AgentActivityLineProps) {
   const label = labelForActivity(item);
   const failed = item.status === "failed";
   const running = item.status === "running";
-  const displayTarget = item.target ? relativizeTarget(item.kind, item.target, workspacePath) : undefined;
   // Headers stay in the reading column; long commands and paths get their
   // own wrapping line when expanded.
   const [open, setOpen] = useState(false);
+  const target = useActivityTarget({ enabled: open, item, resolveTarget, runId });
+  const displayTarget = target ? relativizeTarget(item.kind, target, workspacePath) : undefined;
   const Chevron = open ? ChevronUp : ChevronDown;
 
   const handleInspect = useCallback(() => {
@@ -63,7 +142,7 @@ function AgentActivitySingleLine({ item, workspacePath, runId }: AgentActivityLi
   return (
     <div className="flex min-w-0 flex-col gap-1 text-[13px] leading-6 text-ink-muted">
       <div className="flex max-w-full items-center gap-2 self-start">
-        {runId || displayTarget
+        {runId || displayTarget || canBeRevealed(item, resolveTarget)
           ? (
               <button
                 type="button"
@@ -96,7 +175,7 @@ function AgentActivitySingleLine({ item, workspacePath, runId }: AgentActivityLi
         ? (
             <div
               className="min-w-0 whitespace-pre-wrap wrap-anywhere pl-6 text-left font-mono text-ink-soft"
-              title={item.detail ?? item.target}
+              title={item.detail ?? target ?? undefined}
             >
               {displayTarget}
             </div>
@@ -110,7 +189,7 @@ function AgentActivitySingleLine({ item, workspacePath, runId }: AgentActivityLi
 // no inline preview, since a truncated command reads as noise. Clicking expands
 // it into every child call as an indented, selectable sub-line. Grouping only
 // happens for completed bursts, so a group is never running or failed.
-function AgentActivityGroupLine({ item, workspacePath, runId }: AgentActivityLineProps) {
+function AgentActivityGroupLine({ item, resolveTarget, workspacePath, runId }: AgentActivityLineProps) {
   const label = labelForActivity(item);
   const children = item.children ?? [];
   const [open, setOpen] = useState(false);
@@ -132,39 +211,113 @@ function AgentActivityGroupLine({ item, workspacePath, runId }: AgentActivityLin
       </button>
       {open
         ? (
-            <div className="flex flex-col gap-1 pl-6">
-              {children.map(child => (
-                <div
-                  className="flex min-w-0 items-baseline gap-2 text-ink-soft"
-                  key={child.id}
-                >
-                  {renderActivityIcon(child.kind, false)}
-                  {runId
-                    ? (
-                        <button
-                          type="button"
-                          className="min-w-0 cursor-pointer whitespace-pre-wrap wrap-anywhere text-left font-mono hover:text-ink"
-                          title={i18n.t("agent:activity.inspectRun")}
-                          onClick={() => emitFutureEvent("inspect-tool", { runId, toolId: child.id })}
-                        >
-                          {child.target ? relativizeTarget(child.kind, child.target, workspacePath) : ""}
-                        </button>
-                      )
-                    : (
-                        <span
-                          className="min-w-0 select-text whitespace-pre-wrap wrap-anywhere text-left font-mono"
-                          title={child.detail ?? child.target}
-                        >
-                          {child.target ? relativizeTarget(child.kind, child.target, workspacePath) : ""}
-                        </span>
-                      )}
-                </div>
-              ))}
-            </div>
+            <AgentActivityChildren
+              items={children}
+              resolveTarget={resolveTarget}
+              runId={runId}
+              workspacePath={workspacePath}
+            />
           )
         : null}
     </div>
   );
+}
+
+/**
+ * An expanded burst's children, each with its own target.
+ *
+ * The burst is one gesture, so its commands are read as one: every child the
+ * group draws is already on screen the moment it opens, and asking for them one
+ * at a time would mean the reader watches each row fill in separately. The calls
+ * it asks for are the ones this page did not carry — a page that carried them
+ * (a local run, a host that does not trim) asks for nothing at all.
+ */
+function AgentActivityChildren({
+  items,
+  resolveTarget,
+  runId,
+  workspacePath,
+}: {
+  items: AgentActivityItem[];
+  resolveTarget?: ActivityTargetResolver;
+  runId?: string | null;
+  workspacePath?: string | null;
+}) {
+  const [found, setFound] = useState<ReadonlyMap<string, string>>(() => new Map());
+  // The calls this page did not carry, as `run::call` keys: the effect runs when
+  // the *set* of them changes rather than once per message re-projection, and the
+  // keys are what it splits back into the requests it makes.
+  const keys = useMemo(
+    () => items.flatMap(item => missingCalls(item)
+      .map(call => `${call.runId ?? runId ?? ""}::${call.toolCallId}`)
+      .filter(key => !key.startsWith("::"))),
+    [items, runId],
+  );
+  const key = keys.join(",");
+
+  useEffect(() => {
+    if (!resolveTarget || key === "")
+      return;
+    let cancelled = false;
+    const asked = key.split(",").map((entry) => {
+      const separator = entry.indexOf("::");
+      return { runId: entry.slice(0, separator), toolCallId: entry.slice(separator + 2) };
+    });
+    void Promise.all(asked.map(async (call): Promise<readonly [string, string] | null> => {
+      const target = await resolveTarget(call).catch(() => null);
+      return target ? [call.toolCallId, target] as const : null;
+    })).then((answers) => {
+      if (cancelled)
+        return;
+      const landed = answers.filter((answer): answer is readonly [string, string] => answer !== null);
+      if (landed.length > 0)
+        setFound(new Map(landed));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [key, resolveTarget]);
+
+  return (
+    <div className="flex flex-col gap-1 pl-6">
+      {items.map((child) => {
+        const target = shownTarget(child, child.toolCallId ? found.get(child.toolCallId) ?? null : null);
+        const shown = target ? relativizeTarget(child.kind, target, workspacePath) : "";
+        return (
+          <div
+            className="flex min-w-0 items-baseline gap-2 text-ink-soft"
+            key={child.id}
+          >
+            {renderActivityIcon(child.kind, false)}
+            {runId
+              ? (
+                  <button
+                    type="button"
+                    className="min-w-0 cursor-pointer whitespace-pre-wrap wrap-anywhere text-left font-mono hover:text-ink"
+                    title={i18n.t("agent:activity.inspectRun")}
+                    onClick={() => emitFutureEvent("inspect-tool", { runId, toolId: child.id })}
+                  >
+                    {shown}
+                  </button>
+                )
+              : (
+                  <span
+                    className="min-w-0 select-text whitespace-pre-wrap wrap-anywhere text-left font-mono"
+                    title={child.detail ?? target ?? undefined}
+                  >
+                    {shown}
+                  </span>
+                )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Whether opening this row could reveal anything, given a way to ask. */
+function canBeRevealed(item: AgentActivityItem, resolveTarget: ActivityTargetResolver | undefined): boolean {
+  return Boolean(resolveTarget && missingCalls(item).length > 0);
 }
 
 // Shell targets are the command itself, never a path, so they're left as-is;
