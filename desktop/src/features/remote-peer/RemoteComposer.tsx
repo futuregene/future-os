@@ -261,6 +261,24 @@ export function RemoteComposer({
     saveRemoteComposerDraft(desktopId, sessionId, { text, uploads });
   }, [desktopId, sessionId, text, uploads]);
 
+  /**
+   * Autofocus so the user can type immediately, which is the rule this app's own
+   * composer follows (`Composer.tsx`): on mount, when the conversation changes —
+   * the caller re-keys this composer per desktop+session, and the host+session
+   * deps repeat that here for a caller that does not — and when a run settles. A
+   * run in flight is what `streaming` reports, so the caret is not taken from
+   * whatever the reader is doing while the host answers; it comes back when the
+   * answer ends.
+   *
+   * This is what makes "New conversation" usable: for a draft the field is the
+   * only thing on the screen a prompt can be typed into, and a field without the
+   * caret swallows the first keystrokes without saying so.
+   */
+  useEffect(() => {
+    if (!streaming)
+      textareaRef.current?.focus();
+  }, [desktopId, sessionId, streaming]);
+
   // When the link comes back, try to flush any queued prompt/continuation.
   useEffect(() => {
     if (!peer?.connected)
