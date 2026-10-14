@@ -1,4 +1,4 @@
-import type { PropsWithChildren } from "react";
+import type { PropsWithChildren, ReactNode } from "react";
 import {
   createContext,
   useCallback,
@@ -237,6 +237,8 @@ type TimelineContextValue = Pick<RemoteContextValue,
 export type RemoteControls = Omit<RemoteContextValue, keyof TimelineContextValue> & { streaming: boolean };
 const RemoteContext = createContext<RemoteControls | null>(null);
 const RemoteTimelineContext = createContext<TimelineContextValue | null>(null);
+/** Every paired machine's own surface, by desktop id. See `DesktopScope`. */
+const MachineScopesContext = createContext<Map<string, RemoteControls> | null>(null);
 
 /**
  * One paired desktop's runtime, as the provider keeps it.
@@ -371,6 +373,160 @@ function machineStatusOf(entry: RuntimeEntry): MachineStatus {
 /** The runtime a machine has, or nothing while its host has not published. */
 function runtimeFor(registry: Map<string, RuntimeEntry>, desktopId: string | null | undefined) {
   return desktopId ? registry.get(desktopId) ?? null : null;
+}
+
+const noop = async () => undefined;
+
+/**
+ * The verbs of a machine the phone holds no runtime for.
+ *
+ * Each one answers nothing: a page for a machine that is not there finds no
+ * data and stays disabled, rather than reading the machine the phone *is*
+ * reading.
+ */
+const NO_MANAGEMENT = {
+  getDesktopSettings: noop as never,
+  updateDesktopSettings: noop as never,
+  listSettingsModels: noop as never,
+  listInstalledSkills: noop as never,
+  listAvailableSkills: noop as never,
+  installSkill: noop as never,
+  uninstallSkill: noop as never,
+  suggestSkill: noop as never,
+  skillRecoToday: noop as never,
+  recordSkillReco: noop as never,
+  listProviders: noop as never,
+  updateBuiltinProvider: noop as never,
+  upsertCustomProvider: noop as never,
+  deleteCustomProvider: noop as never,
+  listTasks: noop as never,
+  getTask: noop as never,
+  createTask: noop as never,
+  updateTask: noop as never,
+  deleteTask: noop as never,
+  setTaskEnabled: noop as never,
+  runTask: noop as never,
+  listTaskRuns: noop as never,
+  listTaskDeps: noop as never,
+  setTaskDep: noop as never,
+  removeTaskDep: noop as never,
+  listTaskRevisions: noop as never,
+  applyTaskRevision: noop as never,
+};
+
+/**
+ * The machine-scoped half of the remote surface: everything that belongs to one
+ * paired desktop rather than to the app around it.
+ *
+ * A function of a *machine*, not of the open one: the provider builds the
+ * surface the screens read from the machine they read, and the surface of every
+ * other paired machine from this same function (see `machineScopes`). What is
+ * left out is what no machine owns — which machines are paired, which one is
+ * being read, and pairing itself.
+ *
+ * `app` carries the app-level fallbacks a machine with no runtime falls back to:
+ * a phone that has not booted yet is "booting" rather than "connecting", and the
+ * pairing's own error is the app's to report.
+ */
+function machineSurface(
+  runtime: RuntimeEntry | null,
+  app: { phase: ConnectionPhase; error: string | null; clearError(): void },
+) {
+  const connection = runtime?.connection ?? null;
+  const presence = connection?.presence ?? null;
+  const agentAvailable = presence?.agentAvailable !== false;
+  return {
+    ...(runtime?.management ?? NO_MANAGEMENT),
+    captureConversationOperation: runtime?.captureConversationOperation ?? (() => () => false),
+    desktopSettingsRevision: runtime?.desktopSettingsRevision ?? 0,
+    skillsRevision: runtime?.skillsRevision ?? 0,
+    phase: connection?.phase ?? app.phase,
+    error: connection?.error ?? app.error,
+    presence,
+    desktopOnline: connection?.desktopOnline ?? false,
+    hasConnectedContent: connection?.hasConnectedContent ?? false,
+    catalogSync: runtime?.catalog.catalogSync ?? {
+      sessions: "idle", workspaces: "idle", models: "idle", settings: "idle",
+    },
+    agentAvailable,
+    connectionPresentation: buildConnectionPresentation({
+      phase: connection?.phase ?? app.phase,
+      desktopOnline: connection?.desktopOnline ?? false,
+      agentAvailable,
+      desktopDisconnected: presence?.disconnected,
+      desktopDisconnectReason: presence?.reason,
+      error: connection?.error ?? app.error,
+    }),
+    sessions: runtime?.catalog.sessions ?? [],
+    workspaces: runtime?.catalog.workspaces ?? [],
+    unreadSessions: runtime?.catalog.unreadSessions ?? new Set<string>(),
+    models: runtime?.catalog.models ?? [],
+    selectedSessionId: runtime?.selectedSessionId ?? "",
+    selectedTitle: runtime?.selectedTitle ?? "",
+    draft: runtime?.draft ?? false,
+    draftMode: runtime?.draftMode ?? "chat",
+    draftWorkspaceId: runtime?.draftWorkspaceId ?? "",
+    streaming: runtime?.streaming ?? false,
+    compacting: runtime?.compacting ?? false,
+    modelId: runtime?.conversation.modelId ?? "",
+    thinkingLevel: runtime?.conversation.thinkingLevel ?? "off",
+    sessionUsage: runtime?.conversation.sessionUsage ?? null,
+    refreshSessionUsage: runtime?.conversation.refreshSessionUsage ?? noop,
+    approvalTier: runtime?.catalog.approvalTier ?? "off",
+    sandboxAvailable: runtime?.catalog.sandboxAvailable ?? false,
+    busy: runtime?.busy ?? false,
+    fileTransferSupported: connection?.fileTransferSupported ?? false,
+    capabilities: connection?.capabilities ?? new Set<string>(),
+    refreshSessions: runtime?.catalog.refreshSessions ?? noop,
+    refreshWorkspaces: runtime?.catalog.refreshWorkspaces ?? noop,
+    refreshModels: runtime?.catalog.refreshModels ?? noop,
+    selectSession: runtime
+      ? runtime.conversation.selectSession
+      : async () => undefined,
+    retryTimeline: runtime?.timeline.retryTimeline ?? noop,
+    loadOlderTimeline: runtime?.timeline.loadOlderTimeline ?? (async () => false),
+    reloadTimeline: runtime?.timeline.reloadTimeline ?? (() => undefined),
+    newConversation: runtime?.conversation.newConversation ?? noop,
+    closeConversation: runtime?.closeConversation ?? (() => undefined),
+    sendMessage: runtime?.outbox.sendMessage ?? noop,
+    compactContext: runtime?.conversation.compactContext ?? (async () => {
+      throw new Error("not_connected");
+    }),
+    awaitCompactionOutcome: runtime?.timeline.awaitCompactionOutcome
+      ?? (async (_sessionId: string, _operationId: string): Promise<import("./types").CompactionOutcome> => ({ status: "timeout" })),
+    listSkills: runtime?.conversation.listSkills ?? (async () => []),
+    listSessionFiles: runtime?.conversation.listSessionFiles ?? (async () => {
+      throw new Error("not_connected");
+    }),
+    resolveToolCallTarget: runtime?.conversation.resolveToolCallTarget ?? (async () => null),
+    prepareAttachment: runtime?.conversation.prepareAttachment ?? (async () => {
+      throw new Error("not_connected");
+    }),
+    cachedAttachment: runtime?.conversation.cachedAttachment ?? (() => null),
+    downloadAttachment: runtime?.conversation.downloadAttachment ?? (async () => {
+      throw new Error("not_connected");
+    }),
+    abort: runtime?.conversation.abort ?? noop,
+    setModel: runtime?.conversation.setModel ?? noop,
+    setThinkingLevel: runtime?.conversation.setThinkingLevel ?? noop,
+    setApprovalTier: runtime?.conversation.setApprovalTier ?? noop,
+    rename: runtime?.catalog.rename ?? noop,
+    generateTitle: runtime?.catalog.generateTitle ?? (async () => {
+      throw new Error("not_connected");
+    }),
+    deleteSession: runtime?.conversation.deleteSession ?? noop,
+    deleteWorkspace: runtime?.conversation.deleteWorkspace ?? noop,
+    createWorkspace: runtime?.catalog.createWorkspace ?? (async () => {
+      throw new Error("not_connected");
+    }),
+    setSessionPinned: runtime?.catalog.setSessionPinned ?? noop,
+    setWorkspacePinned: runtime?.catalog.setWorkspacePinned ?? noop,
+    renameWorkspace: runtime?.catalog.renameWorkspace ?? noop,
+    forkConversation: runtime?.conversation.forkConversation ?? noop,
+    decideApproval: runtime?.conversation.decideApproval ?? noop,
+    clearError: connection?.clearError ?? app.clearError,
+    continueRun: runtime?.outbox.continueRun ?? noop,
+  };
 }
 
 /**
@@ -716,10 +872,6 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   }, [activeRuntime?.connection.credentials, activeRuntime?.connection.phase]);
 
   const value = useMemo<RemoteControls>(() => {
-    const runtime = activeRuntime;
-    const connection = runtime?.connection ?? null;
-    const presence = connection?.presence ?? null;
-    const agentAvailable = presence?.agentAvailable !== false;
     // A selected desktop whose runtime has not reported yet is *starting*, not
     // absent: the picker is for "which desktop", asked because there is none.
     const fallbackPhase: ConnectionPhase = pairing.booting
@@ -727,138 +879,27 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       : activeDesktopId
         ? "connecting"
         : "unpaired";
-    const connectionPresentation = buildConnectionPresentation({
-      phase: connection?.phase ?? fallbackPhase,
-      desktopOnline: connection?.desktopOnline ?? false,
-      agentAvailable,
-      desktopDisconnected: presence?.disconnected,
-      desktopDisconnectReason: presence?.reason,
-      error: connection?.error ?? pairing.error,
-    });
-    const noop = async () => undefined;
     return {
-      ...(runtime?.management ?? {
-        getDesktopSettings: noop as never,
-        updateDesktopSettings: noop as never,
-        listSettingsModels: noop as never,
-        listInstalledSkills: noop as never,
-        listAvailableSkills: noop as never,
-        installSkill: noop as never,
-        uninstallSkill: noop as never,
-        suggestSkill: noop as never,
-        skillRecoToday: noop as never,
-        recordSkillReco: noop as never,
-        listProviders: noop as never,
-        updateBuiltinProvider: noop as never,
-        upsertCustomProvider: noop as never,
-        deleteCustomProvider: noop as never,
-        listTasks: noop as never,
-        getTask: noop as never,
-        createTask: noop as never,
-        updateTask: noop as never,
-        deleteTask: noop as never,
-        setTaskEnabled: noop as never,
-        runTask: noop as never,
-        listTaskRuns: noop as never,
-        listTaskDeps: noop as never,
-        setTaskDep: noop as never,
-        removeTaskDep: noop as never,
-        listTaskRevisions: noop as never,
-        applyTaskRevision: noop as never,
+      // Everything that belongs to a machine comes from the machine the screens
+      // read; everything that belongs to the app is added here. The split is what
+      // lets the same machine surface be built for *another* machine (see
+      // `machineScopes` below) instead of being written twice.
+      ...machineSurface(activeRuntime, {
+        phase: fallbackPhase,
+        error: pairing.error,
+        clearError: pairing.clearError,
       }),
-      captureConversationOperation: runtime?.captureConversationOperation ?? (() => () => false),
-      desktopSettingsRevision: runtime?.desktopSettingsRevision ?? 0,
-      skillsRevision: runtime?.skillsRevision ?? 0,
-      phase: connection?.phase ?? fallbackPhase,
-      error: connection?.error ?? pairing.error,
       credentials,
       desktops: pairing.desktops,
       switchDesktop,
       renameDesktop: pairing.renameDesktop,
       labelDesktop: pairing.labelDesktop,
       removeDesktop,
-      presence,
-      desktopOnline: connection?.desktopOnline ?? false,
-      hasConnectedContent: connection?.hasConnectedContent ?? false,
-      catalogSync: runtime?.catalog.catalogSync ?? {
-        sessions: "idle", workspaces: "idle", models: "idle", settings: "idle",
-      },
-      agentAvailable,
-      connectionPresentation,
-      sessions: runtime?.catalog.sessions ?? [],
-      workspaces: runtime?.catalog.workspaces ?? [],
-      unreadSessions: runtime?.catalog.unreadSessions ?? new Set<string>(),
-      models: runtime?.catalog.models ?? [],
-      selectedSessionId: runtime?.selectedSessionId ?? "",
-      selectedTitle: runtime?.selectedTitle ?? "",
-      draft: runtime?.draft ?? false,
-      draftMode: runtime?.draftMode ?? "chat",
-      draftWorkspaceId: runtime?.draftWorkspaceId ?? "",
-      streaming: runtime?.streaming ?? false,
-      compacting: runtime?.compacting ?? false,
-      modelId: runtime?.conversation.modelId ?? "",
-      thinkingLevel: runtime?.conversation.thinkingLevel ?? "off",
-      sessionUsage: runtime?.conversation.sessionUsage ?? null,
-      refreshSessionUsage: runtime?.conversation.refreshSessionUsage ?? noop,
-      approvalTier: runtime?.catalog.approvalTier ?? "off",
-      sandboxAvailable: runtime?.catalog.sandboxAvailable ?? false,
-      busy: runtime?.busy ?? false,
-      fileTransferSupported: connection?.fileTransferSupported ?? false,
-      capabilities: connection?.capabilities ?? new Set<string>(),
       pair: pairing.pair,
       reconnect,
       unpair,
-      refreshSessions: runtime?.catalog.refreshSessions ?? noop,
-      refreshWorkspaces: runtime?.catalog.refreshWorkspaces ?? noop,
-      refreshModels: runtime?.catalog.refreshModels ?? noop,
-      selectSession: runtime
-        ? runtime.conversation.selectSession
-        : async () => undefined,
       openSessionOnDesktop,
       newConversationOn,
-      retryTimeline: runtime?.timeline.retryTimeline ?? noop,
-      loadOlderTimeline: runtime?.timeline.loadOlderTimeline ?? (async () => false),
-      reloadTimeline: runtime?.timeline.reloadTimeline ?? (() => undefined),
-      newConversation: runtime?.conversation.newConversation ?? noop,
-      closeConversation: runtime?.closeConversation ?? (() => undefined),
-      sendMessage: runtime?.outbox.sendMessage ?? noop,
-      compactContext: runtime?.conversation.compactContext ?? (async () => {
-        throw new Error("not_connected");
-      }),
-      awaitCompactionOutcome: runtime?.timeline.awaitCompactionOutcome
-        ?? (async (_sessionId: string, _operationId: string): Promise<import("./types").CompactionOutcome> => ({ status: "timeout" })),
-      listSkills: runtime?.conversation.listSkills ?? (async () => []),
-      listSessionFiles: runtime?.conversation.listSessionFiles ?? (async () => {
-        throw new Error("not_connected");
-      }),
-      resolveToolCallTarget: runtime?.conversation.resolveToolCallTarget ?? (async () => null),
-      prepareAttachment: runtime?.conversation.prepareAttachment ?? (async () => {
-        throw new Error("not_connected");
-      }),
-      cachedAttachment: runtime?.conversation.cachedAttachment ?? (() => null),
-      downloadAttachment: runtime?.conversation.downloadAttachment ?? (async () => {
-        throw new Error("not_connected");
-      }),
-      abort: runtime?.conversation.abort ?? noop,
-      setModel: runtime?.conversation.setModel ?? noop,
-      setThinkingLevel: runtime?.conversation.setThinkingLevel ?? noop,
-      setApprovalTier: runtime?.conversation.setApprovalTier ?? noop,
-      rename: runtime?.catalog.rename ?? noop,
-      generateTitle: runtime?.catalog.generateTitle ?? (async () => {
-        throw new Error("not_connected");
-      }),
-      deleteSession: runtime?.conversation.deleteSession ?? noop,
-      deleteWorkspace: runtime?.conversation.deleteWorkspace ?? noop,
-      createWorkspace: runtime?.catalog.createWorkspace ?? (async () => {
-        throw new Error("not_connected");
-      }),
-      setSessionPinned: runtime?.catalog.setSessionPinned ?? noop,
-      setWorkspacePinned: runtime?.catalog.setWorkspacePinned ?? noop,
-      renameWorkspace: runtime?.catalog.renameWorkspace ?? noop,
-      forkConversation: runtime?.conversation.forkConversation ?? noop,
-      decideApproval: runtime?.conversation.decideApproval ?? noop,
-      clearError: connection?.clearError ?? pairing.clearError,
-      continueRun: runtime?.outbox.continueRun ?? noop,
       catalogs,
     };
     // Field by field rather than "the runtime object": the runtime is rebuilt on
@@ -951,6 +992,44 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     unpair,
   ]);
 
+  /**
+   * Every paired machine's own surface, by desktop id — what `DesktopScope`
+   * reads.
+   *
+   * The value above is the surface of the machine the phone is reading. This is
+   * the same surface built for each machine, so a screen that names a machine
+   * (a device page) reads *that* machine: its connection state, its settings,
+   * its models, its tasks. A machine whose runtime has not reported yet gets the
+   * empty surface, never the open machine's — a page that quietly read the
+   * machine the phone happens to be on is how a write lands somewhere the user
+   * was not looking.
+   *
+   * Rebuilt whenever any machine's published state changes, because the machine
+   * a page names is usually *not* the one the phone is reading, and its own
+   * changes still have to reach that page.
+   */
+  const machineScopes = useMemo(() => {
+    const scopes = new Map<string, RemoteControls>();
+    for (const desktop of pairing.desktops) {
+      scopes.set(desktop.desktopId, {
+        ...value,
+        ...machineSurface(registryRef.current.get(desktop.desktopId) ?? null, {
+          // Not the open machine: a paired machine that has not reported yet is
+          // starting, and its errors are its own.
+          phase: "connecting",
+          error: null,
+          clearError: pairing.clearError,
+        }),
+      });
+    }
+    return scopes;
+    // `registryVersion` is not read in here: the runtimes live in a ref, and this
+    // is the signal that one of them published something new. It is load-bearing
+    // — a machine the phone is *not* reading still has to update the page that
+    // names it — so it stays, and the rule is told why.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the change signal, not a value
+  }, [pairing.clearError, pairing.desktops, registryVersion, value]);
+
   const timelineValue = useMemo<TimelineContextValue>(() => (
     activeRuntime
       ? {
@@ -982,20 +1061,24 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
   return (
     <RemoteContext.Provider value={value}>
-      <RemoteTimelineContext.Provider value={timelineValue}>
-        {pairing.desktops.map((desktop) => (
-          <DesktopRuntimeHost
-            key={`${desktop.desktopId}:${pairing.generations[desktop.desktopId] ?? 0}`}
-            desktopId={desktop.desktopId}
-            label={desktop.name ?? desktop.desktopId}
-            icon={desktop.icon}
-            active={desktop.desktopId === activeDesktopId}
-            foreground={foreground}
-            publish={publish}
-          />
-        ))}
-        {children}
-      </RemoteTimelineContext.Provider>
+      {/* One level above the timeline so a device page can read a machine other
+          than the open one; the rest of the app never sees it change. */}
+      <MachineScopesContext.Provider value={machineScopes}>
+        <RemoteTimelineContext.Provider value={timelineValue}>
+          {pairing.desktops.map((desktop) => (
+            <DesktopRuntimeHost
+              key={`${desktop.desktopId}:${pairing.generations[desktop.desktopId] ?? 0}`}
+              desktopId={desktop.desktopId}
+              label={desktop.name ?? desktop.desktopId}
+              icon={desktop.icon}
+              active={desktop.desktopId === activeDesktopId}
+              foreground={foreground}
+              publish={publish}
+            />
+          ))}
+          {children}
+        </RemoteTimelineContext.Provider>
+      </MachineScopesContext.Provider>
     </RemoteContext.Provider>
   );
 }
@@ -1007,6 +1090,32 @@ const EMPTY_TIMELINE: TimelineState = {
   streaming: false,
   liveRuns: new Map(),
 };
+
+/**
+ * Read one machine by id.
+ *
+ * Everything under this provider sees the named machine rather than the one the
+ * phone is reading: its connection, its settings, its models and providers, its
+ * tasks. A device page uses it because the page *is about that machine*, and
+ * every paired desktop keeps its own live runtime — so the machine's settings
+ * are readable there without the phone being pointed at it, and without a
+ * connection step for the user to perform.
+ *
+ * The alternative — a page that reads whichever machine happens to be the open
+ * one — can silently write to a machine the user was not looking at, which is
+ * the failure this exists to close.
+ *
+ * An id with no scope (a machine that is no longer paired) renders its children
+ * unchanged: the list that offered the id is the source of truth, and a page for
+ * a machine that has just been removed is on its way out anyway.
+ */
+export function DesktopScope({ desktopId, children }: { desktopId: string; children?: ReactNode }) {
+  const scopes = useContext(MachineScopesContext);
+  const machine = scopes?.get(desktopId);
+  return machine
+    ? <RemoteContext.Provider value={machine}>{children}</RemoteContext.Provider>
+    : children ?? null;
+}
 
 /** Navigation and controls should not subscribe to every streamed text delta. */
 export function useRemoteControls(): RemoteControls {

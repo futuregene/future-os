@@ -760,48 +760,37 @@ test("a refused icon write is reported", async () => {
 });
 
 /**
- * Settings live on the machine, and are read over the connection that machine
- * owns. A page for a device this phone is not connected to must not draw rows
- * that would read and write whichever desktop happens to be bound.
+ * A machine's settings are read and written over that machine's own connection,
+ * which it keeps while the phone reads another one (see `DesktopScope`). So a
+ * device page has no connection step to perform: the rows are there when it
+ * opens, whichever machine is the one the phone happens to be reading, and
+ * nothing about opening it moves the phone.
  */
-test("an unconnected device offers the connection instead of settings that belong to another machine", async () => {
+test("a device page reads the machine it names, with no connection step", async () => {
+  await mountDevice("other-desktop");
+  expect(link("desktopSettings.preferences")).toBeDefined();
+  expect(link("desktopSettings.models")).toBeDefined();
+  expect(link("desktops.connect")).toBeUndefined();
+  expect(texts()).not.toContain("desktops.connectHint");
+  // Reading a machine is not choosing it: which machine the phone is reading
+  // changes where a conversation is opened, not on a settings page.
+  expect(mockRemote.switchDesktop).not.toHaveBeenCalled();
+  expect(mockRemote.updateDesktopSettings).not.toHaveBeenCalled();
+});
+
+/**
+ * A machine that is not answering cannot be configured — its settings are read
+ * from it, not from a local copy — and the page says which machine and why,
+ * rather than drawing rows that would write somewhere else.
+ */
+test("a machine that is not answering disables its rows and says so", async () => {
+  mockRemote.desktopOnline = false;
   mockRemote.getDesktopSettings.mockClear();
   await mountDevice("other-desktop");
-  expect(link("desktopSettings.preferences")).toBeUndefined();
-  expect(link("desktopSettings.models")).toBeUndefined();
-  expect(texts()).toContain("desktops.connectHint");
-  // Nothing of that machine is read: its settings are not this page's to show.
+  expect(texts()).toContain("desktopSettings.offline");
+  expect(link("desktopSettings.models").props.disabled).toBe(true);
+  expect(link("desktopSettings.providers").props.disabled).toBe(true);
   expect(mockRemote.getDesktopSettings).not.toHaveBeenCalled();
-
-  // The switch makes this page's device the connected one, and the machine's
-  // own settings appear. (The mocked credentials are what `bound` reads.)
-  mockRemote.credentials = { pairId: "other", expectedDesktopId: "other-desktop" };
-  await act(async () => { tree.update(createElement(SettingsScreen, { ...props, deviceId: "other-desktop" })); });
-  expect(link("desktopSettings.models")).toBeDefined();
-  expect(texts()).not.toContain("desktops.connectHint");
-});
-
-test("connecting from the device page switches to it, and reports a refusal", async () => {
-  await mountDevice("other-desktop");
-  await act(async () => link("desktops.connect").props.onPress());
-  expect(mockRemote.switchDesktop).toHaveBeenCalledWith("other-desktop");
-
-  mockRemote.switchDesktop.mockRejectedValueOnce(new Error("unreachable"));
-  await act(async () => link("desktops.connect").props.onPress());
-  expect(texts()).toContain("desktops.switchFailed");
-});
-
-test("a second connect tap while the first is in flight connects once", async () => {
-  const pending = deferred<void>();
-  mockRemote.switchDesktop.mockReturnValueOnce(pending.promise);
-  await mountDevice("other-desktop");
-  await act(async () => { void link("desktops.connect").props.onPress(); });
-  expect(mockRemote.switchDesktop).toHaveBeenCalledTimes(1);
-  // The row is disabled while connecting, but the guard is what has to hold: a
-  // second tap must not start a second connection for the first to drop.
-  await act(async () => link("desktops.connect").props.onPress());
-  expect(mockRemote.switchDesktop).toHaveBeenCalledTimes(1);
-  await act(async () => { pending.resolve(); });
 });
 
 test("automatic review is offered only by capable desktops with a working sandbox", async () => {
