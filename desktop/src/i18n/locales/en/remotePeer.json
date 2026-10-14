@@ -94,8 +94,6 @@
   "tasksHint": "Scheduled and dependent tasks there.",
   "iconSectionHint": "Shown next to its conversations in the list.",
   "localSection": "This computer only",
-  "dangerSection": "Pairing",
-  "unpairHint": "The other desktop keeps all of its data; only this pairing is removed.",
   "conversationActions": "More actions",
   "renameTitle": "Rename conversation",
   "renameHint": "The new name is saved on the remote desktop.",
