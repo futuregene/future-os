@@ -815,11 +815,14 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           visible={menuSession !== null}
           onClose={() => setMenuSession(null)}
           actions={menuSession ? [
-            // A row on another machine acts there, and the sheet says so before
-            // the first destructive item: the point of these commands is that
-            // they are not local, and a delete that lands elsewhere without
-            // saying so is the one action a reader cannot undo.
-            ...(menuSession.desktopId && menuSession.desktopId !== activeDesktopId
+            // Every row's sheet names the machine its commands are addressed to,
+            // the one the phone is reading included: they are all that machine's
+            // commands, and a delete that lands there without the sheet saying
+            // which machine is the one action a reader cannot undo. Naming only
+            // a peer's row left the shape of a sheet depending on which machine
+            // the phone happened to be reading — the same conversation gained and
+            // lost this line as the reader moved.
+            ...(menuSession.desktopId
               ? [{
                 label: t("sessions.actionsOnDesktop", {
                   name: desktopLabel(menuSession.desktopId),
