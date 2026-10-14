@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@future-os/thread-projection";
+import type { ReplyBlock } from "./replyBlocks";
 import { GitBranch, RotateCcw, StepForward } from "lucide-react";
 import { Fragment, memo } from "react";
 import { useTranslation } from "react-i18next";
@@ -16,7 +17,7 @@ import { MessageMeta } from "./MessageMeta";
 import { AttachmentChip } from "./messages/AttachmentChip";
 import { MessageFrame } from "./messages/MessageFrame";
 import { CompactionDivider, StatusDivider } from "./messages/MessageStatus";
-import { buildReplyBlocks } from "./replyBlocks";
+import { buildReplyBlocks, replyTailBlock } from "./replyBlocks";
 import { ReplySteps } from "./ReplySteps";
 import { ThinkingBlock } from "./ThinkingBlock";
 
@@ -118,6 +119,17 @@ function MessageBlockImpl({
       )
     : null;
 
+  // The reply's rendered slices, and the one ↑/↓ lands on when the ladder stops
+  // at this turn's reply: its last slice that still has output. A reply opens
+  // with the work it ran, so the row's own top would put reasoning at the
+  // reading edge and the answer below it — the rung names this block instead,
+  // and the row marks it so a jump can measure it (`useQuestionNav`).
+  const blocks = segments ? buildReplyBlocks(segments, streaming) : null;
+  const tailBlock = blocks ? replyTailBlock(blocks) : null;
+  // The reply's final slice, whatever kind it is — what "this reply is still
+  // being written" means for a reasoning block.
+  const lastSegmentId = segments ? (segments[segments.length - 1]?.id ?? null) : null;
+
   // A reloaded compaction marker is a message carrying only a compaction
   // segment: render just the divider (no author header / bubble), matching the
   // inline divider the live path shows mid-reply.
@@ -148,55 +160,29 @@ function MessageBlockImpl({
       onLeave={() => onLeave(message.id)}
       role={isUser ? "user" : "assistant"}
     >
-      {segments
+      {segments && blocks
         ? (
             <div className="space-y-3">
-              {buildReplyBlocks(segments, streaming).map((block) => {
-                if (block.kind === "steps") {
-                  return (
-                    <ReplySteps
-                      key={block.segments[0]!.id}
-                      segments={block.segments}
-                      workspaceId={workspaceId}
-                      workspacePath={workspacePath}
-                      runId={message.runId}
-                    />
-                  );
-                }
-                const segment = block.segment;
-                if (segment.kind === "text") {
-                  return (
-                    <StreamingMarkdownContent
-                      content={segment.text}
-                      key={segment.id}
-                      live={segment.id === liveSegmentId}
-                      workspaceId={workspaceId}
-                    />
-                  );
-                }
-                if (segment.kind === "thinking") {
-                  return (
-                    <ThinkingBlock
-                      key={segment.id}
-                      live={streaming && segment === segments[segments.length - 1]}
-                      text={segment.text}
-                      workspaceId={workspaceId}
-                    />
-                  );
-                }
-                if (segment.kind === "compaction") {
-                  return (
-                    <CompactionDivider
-                      error={segment.error}
-                      key={segment.id}
-                      status={segment.status}
-                      tokensAfter={segment.tokensAfter}
-                      tokensBefore={segment.tokensBefore}
-                      trigger={segment.trigger}
-                    />
-                  );
-                }
-                return <AgentActivityLine item={segment.item} key={segment.id} workspacePath={workspacePath} runId={message.runId} />;
+              {blocks.map((block, index) => {
+                const key = blockKey(block);
+                const body = (
+                  <ReplyBlockBody
+                    block={block}
+                    lastSegmentId={lastSegmentId}
+                    liveSegmentId={liveSegmentId}
+                    message={message}
+                    streaming={streaming}
+                    workspaceId={workspaceId}
+                    workspacePath={workspacePath}
+                  />
+                );
+                // The block the ladder's reply-tail rung lands on is wrapped so
+                // its own top can be measured inside this row: the wrapper
+                // carries no style, so it reports where the block sits without
+                // moving it (`[data-reply-tail]`, read by `useQuestionNav`).
+                return index === tailBlock
+                  ? <div data-reply-tail="" key={key}>{body}</div>
+                  : <Fragment key={key}>{body}</Fragment>;
               })}
             </div>
           )
@@ -309,6 +295,86 @@ function MessageBlockImpl({
         : null}
     </MessageFrame>
   );
+}
+
+/**
+ * A stable key for a rendered reply block. A reply carries many same-kind
+ * slices, so the key is the segment id the shared projection assigned — never
+ * the kind.
+ */
+function blockKey(block: ReplyBlock): string {
+  return block.kind === "steps" ? block.segments[0]!.id : block.segment.id;
+}
+
+/**
+ * One rendered slice of a reply: folded steps, prose, reasoning, a compaction
+ * divider or an activity line.
+ *
+ * Extracted from the row's map so the one block the ↑/↓ ladder lands on can be
+ * wrapped (and therefore measured) without a second copy of this switch — the
+ * ladder's reply-tail rung names a slice, and the wrapper is how the jump finds
+ * where that slice starts.
+ */
+function ReplyBlockBody({
+  block,
+  lastSegmentId,
+  liveSegmentId,
+  message,
+  streaming,
+  workspaceId,
+  workspacePath,
+}: {
+  block: ReplyBlock;
+  /** The reply's final slice, whatever it is: what "still streaming" means. */
+  lastSegmentId: string | null;
+  /** The slice a live text block is being written into, or null when settled. */
+  liveSegmentId: string | null;
+  message: AgentMessage;
+  streaming: boolean;
+  workspaceId?: string | null;
+  workspacePath?: string | null;
+}) {
+  if (block.kind === "steps") {
+    return (
+      <ReplySteps
+        segments={block.segments}
+        workspaceId={workspaceId}
+        workspacePath={workspacePath}
+        runId={message.runId}
+      />
+    );
+  }
+  const segment = block.segment;
+  if (segment.kind === "text") {
+    return (
+      <StreamingMarkdownContent
+        content={segment.text}
+        live={segment.id === liveSegmentId}
+        workspaceId={workspaceId}
+      />
+    );
+  }
+  if (segment.kind === "thinking") {
+    return (
+      <ThinkingBlock
+        live={streaming && segment.id === lastSegmentId}
+        text={segment.text}
+        workspaceId={workspaceId}
+      />
+    );
+  }
+  if (segment.kind === "compaction") {
+    return (
+      <CompactionDivider
+        error={segment.error}
+        status={segment.status}
+        tokensAfter={segment.tokensAfter}
+        tokensBefore={segment.tokensBefore}
+        trigger={segment.trigger}
+      />
+    );
+  }
+  return <AgentActivityLine item={segment.item} workspacePath={workspacePath} runId={message.runId} />;
 }
 
 /**
