@@ -42,7 +42,6 @@ export function RemotePeerSettings({
   onBack,
   onChanged,
   onOpenTasks,
-  onUnpair,
   onUpdateLabel,
   peer,
 }: {
@@ -50,7 +49,6 @@ export function RemotePeerSettings({
   onChanged: () => void;
   /** Open that host's tasks: the editor needs the whole column. */
   onOpenTasks: () => void;
-  onUnpair: () => void;
   onUpdateLabel: (patch: { name?: string; icon?: string }) => void;
   peer: RemotePeer;
 }) {
@@ -362,14 +360,6 @@ export function RemotePeerSettings({
             onClick={onOpenTasks}
             title={t("tasks")}
           />
-        </SettingsList>
-      </SettingsSection>
-
-      <SettingsSection description={t("unpairHint")} title={t("dangerSection")}>
-        <SettingsList>
-          <SettingsRow title={t("unpair")}>
-            <Button onClick={onUnpair} size="sm" variant="danger-soft">{t("unpair")}</Button>
-          </SettingsRow>
         </SettingsList>
       </SettingsSection>
     </SettingsPage>

@@ -3,13 +3,16 @@ import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
+import { Dialog } from "../../components/ui/Dialog";
 import { TextInput } from "../../components/ui/TextInput";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
 import {
   connectRemotePeer,
   disconnectRemotePeer,
   listRemotePeers,
   pairRemotePeer,
+  unpairRemotePeer,
 } from "./remotePeerClient";
 
 /**
@@ -22,7 +25,11 @@ import {
  * there is exactly one place to look for "a conversation"; duplicating a second
  * list here would make the user pick between two answers to the same question.
  * What is unique to this section is everything about the *machines*: pairing,
- * naming, the icon, connection state, and unpairing.
+ * naming, the icon, connection state, and unpairing — which lives on the row of
+ * the machine it removes, because that is where the user is when they decide
+ * they no longer want it. (It was a row on that machine's settings page until it
+ * moved here: an action the user has to go and find on another page is one they
+ * conclude does not exist.)
  */
 export function RemoteClientSection({
   onOpenSettings,
@@ -37,9 +44,9 @@ export function RemoteClientSection({
   /** Open that machine's settings, as a page of the window the user is in. */
   onOpenSettings: (peer: RemotePeer) => void;
   /**
-   * Bumped when something outside this section changed a machine (a rename or an
-   * unpair on its settings page), so the list re-reads instead of showing what it
-   * read when the page was first opened.
+   * Bumped when something outside this section changed a machine — a rename on
+   * its settings page — so the list re-reads instead of showing what it read
+   * when the page was first opened.
    */
   refreshNonce?: number;
 }) {
@@ -48,6 +55,8 @@ export function RemoteClientSection({
   const [invitation, setInvitation] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** The machine whose unpair confirmation is open, if any. */
+  const [unpairTarget, setUnpairTarget] = useState<RemotePeer | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -77,6 +86,22 @@ export function RemoteClientSection({
     finally {
       setBusy(null);
     }
+  }
+
+  /**
+   * Unpair one machine, once the user has confirmed it.
+   *
+   * The pairing is gone locally whatever the platform says, so a revoke the
+   * platform never received is *reported* instead of being claimed as a clean
+   * removal — the row disappears either way.
+   */
+  async function handleUnpair(peer: RemotePeer) {
+    setUnpairTarget(null);
+    await run(peer.desktopId, async () => {
+      const pending = await unpairRemotePeer(peer.desktopId);
+      if (pending)
+        emitFutureEvent("toast", { message: t("unpairPendingWarning"), tone: "info" });
+    });
   }
 
   async function handlePair() {
@@ -146,12 +171,47 @@ export function RemoteClientSection({
                     onEdit={() => onOpenSettings(peer)}
                     onNewConversation={() => onStartConversation(peer.desktopId)}
                     onReconnect={() => void run(peer.desktopId, () => connectRemotePeer(peer.desktopId))}
+                    onUnpair={() => setUnpairTarget(peer)}
                     peer={peer}
                   />
                 ))}
               </div>
             )}
       </div>
+      {/*
+        * `Dialog` rather than the shared `ConfirmDeleteDialog`: its confirm button
+        * reads "Delete", and unpairing a computer deletes nothing the user made.
+        * The other machine keeps all of its data; what is removed here is one
+        * pairing, which is what this button says.
+        */}
+      {unpairTarget
+        ? (
+            <Dialog
+              description={t("unpairConfirmDesc", {
+                name: unpairTarget.name ?? unpairTarget.desktopId,
+              })}
+              footer={(
+                <>
+                  <Button onClick={() => setUnpairTarget(null)} variant="ghost">
+                    {t("cancel")}
+                  </Button>
+                  <Button
+                    disabled={busy === unpairTarget.desktopId}
+                    onClick={() => void handleUnpair(unpairTarget)}
+                    variant="danger"
+                  >
+                    {t("unpair")}
+                  </Button>
+                </>
+              )}
+              onClose={() => setUnpairTarget(null)}
+              open
+              title={t("unpairConfirmTitle")}
+            >
+              <span />
+            </Dialog>
+          )
+        : null}
     </>
   );
 }
@@ -175,6 +235,7 @@ function PeerRow({
   onEdit,
   onNewConversation,
   onReconnect,
+  onUnpair,
   peer,
 }: {
   busy: boolean;
@@ -182,6 +243,7 @@ function PeerRow({
   onEdit: () => void;
   onNewConversation: () => void;
   onReconnect: () => void;
+  onUnpair: () => void;
   peer: RemotePeer;
 }) {
   const { t } = useTranslation("remotePeer");
@@ -216,6 +278,9 @@ function PeerRow({
           ? <Button disabled={busy} onClick={onDisconnect} size="sm">{t("disconnect")}</Button>
           : <Button disabled={busy} onClick={onReconnect} size="sm" variant="primary">{t("connect")}</Button>}
         <Button disabled={busy} onClick={onEdit} size="sm" variant="ghost">{t("edit")}</Button>
+        {/* Last, and marked: it is the one action here that removes the row it
+            sits on, and the only one that is confirmed. */}
+        <Button disabled={busy} onClick={onUnpair} size="sm" variant="danger-soft">{t("unpair")}</Button>
       </div>
     </div>
   );

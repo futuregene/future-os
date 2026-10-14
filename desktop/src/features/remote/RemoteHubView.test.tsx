@@ -59,7 +59,6 @@ vi.mock("../remote-peer/RemotePeerSettings", async () => {
       onBack: () => void;
       onOpenTasks: () => void;
       onChanged: () => void;
-      onUnpair: () => void;
       onUpdateLabel: (patch: { name?: string }) => void;
       peer: { desktopId: string };
     }) =>
@@ -68,7 +67,6 @@ vi.mock("../remote-peer/RemotePeerSettings", async () => {
         { "data-child": "peer-settings", "data-peer": props.peer.desktopId },
         createElement("button", { "data-back": "1", "onClick": props.onBack }),
         createElement("button", { "data-tasks": "1", "onClick": props.onOpenTasks }),
-        createElement("button", { "data-unpair": "1", "onClick": props.onUnpair }),
         createElement("button", { "data-changed": "1", "onClick": props.onChanged }),
         createElement("button", {
           "data-rename": "1",
@@ -79,10 +77,8 @@ vi.mock("../remote-peer/RemotePeerSettings", async () => {
 });
 
 const setRemotePeerLabel = vi.fn<(desktopId: string, patch: Record<string, unknown>) => Promise<unknown>>();
-const unpairRemotePeer = vi.fn<(desktopId: string) => Promise<string | null>>();
 vi.mock("../remote-peer/remotePeerClient", () => ({
   setRemotePeerLabel: (...args: Parameters<typeof setRemotePeerLabel>) => setRemotePeerLabel(...args),
-  unpairRemotePeer: (...args: Parameters<typeof unpairRemotePeer>) => unpairRemotePeer(...args),
 }));
 
 const toasts = vi.hoisted(() => [] as Array<{ message: string; tone?: string }>);
@@ -155,7 +151,6 @@ async function openSettings(desktopId = "desk_a") {
 beforeEach(() => {
   toasts.length = 0;
   setRemotePeerLabel.mockReset().mockResolvedValue(undefined);
-  unpairRemotePeer.mockReset().mockResolvedValue(null);
   sections.host = null;
   sections.client = null;
   startWindowDrag.mockClear();
@@ -297,17 +292,6 @@ it("hands the column to a machine's tasks, and gives it back to its settings", a
   expect(container.querySelector("[data-child='peer-settings']")).not.toBeNull();
 });
 
-/** Unpairing is asked for from a machine's settings, and confirmed there. */
-it("asks before unpairing, from the settings page that requested it", async () => {
-  await mount();
-  await openSettings();
-
-  await act(async () => container.querySelector<HTMLButtonElement>("[data-unpair='1']")!.click());
-
-  expect(container.querySelector("[role='dialog']")).not.toBeNull();
-  expect(container.textContent).toContain("Unpair this desktop?");
-});
-
 /**
  * A rename is *local*: the name lives in the credential book, so nothing else
  * would show it until the next catalogue read. What this test owns is that the
@@ -337,44 +321,6 @@ it("reports a rename that could not be stored", async () => {
 });
 
 /**
- * Unpairing asks first, and a revoke the platform never took is *reported*: the
- * pairing is gone locally either way, so a clean removal would be a lie.
- */
-it("unpairs from the settings page, and reports an undelivered revoke", async () => {
-  unpairRemotePeer.mockResolvedValue("pending");
-  await mount();
-  await openSettings();
-
-  await act(async () => container.querySelector<HTMLButtonElement>("[data-unpair='1']")!.click());
-  const confirm = [...container.querySelectorAll<HTMLButtonElement>("[role='dialog'] button")]
-    .find(node => node.textContent === "Unpair")!;
-  await act(async () => confirm.click());
-  await act(async () => {
-    for (let i = 0; i < 6; i += 1) await Promise.resolve();
-  });
-
-  expect(unpairRemotePeer).toHaveBeenCalledWith("desk_a");
-  expect(toasts.some(toast => toast.message.includes("could not be reached to revoke"))).toBe(true);
-  // The settings page goes with the pairing it described.
-  expect(container.querySelector("[data-child='peer-settings']")).toBeNull();
-});
-
-/** Cancelling leaves the pairing alone, and stays on the page. */
-it("cancels an unpair without touching the pairing", async () => {
-  await mount();
-  await openSettings();
-
-  await act(async () => container.querySelector<HTMLButtonElement>("[data-unpair='1']")!.click());
-  const cancel = [...container.querySelectorAll<HTMLButtonElement>("[role='dialog'] button")]
-    .find(node => node.textContent === "Cancel")!;
-  await act(async () => cancel.click());
-
-  expect(unpairRemotePeer).not.toHaveBeenCalled();
-  expect(container.querySelector("[role='dialog']")).toBeNull();
-  expect(container.querySelector("[data-child='peer-settings']")).not.toBeNull();
-});
-
-/**
  * A setting written on the page re-reads the machine list.
  *
  * The values live on the host, so nothing local would show what was just changed
@@ -389,20 +335,4 @@ it("re-reads the machines when the settings page reports a change", async () => 
   await act(async () => container.querySelector<HTMLButtonElement>("[data-back='1']")!.click());
 
   expect((sections.client as { refreshNonce?: number }).refreshNonce).not.toBe(before);
-});
-
-/** Escape dismisses the confirmation and leaves the pairing alone. */
-it("closes the unpair confirmation on Escape without unpairing", async () => {
-  await mount();
-  await openSettings();
-  await act(async () => container.querySelector<HTMLButtonElement>("[data-unpair='1']")!.click());
-
-  await act(async () => {
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-  });
-
-  expect(unpairRemotePeer).not.toHaveBeenCalled();
-  expect(container.querySelector("[role='dialog']")).toBeNull();
-  // Still on the machine's settings, where the request came from.
-  expect(container.querySelector("[data-child='peer-settings']")).not.toBeNull();
 });
