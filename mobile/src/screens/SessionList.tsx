@@ -735,11 +735,15 @@ export function SessionList({
         visible={menuWorkspace !== null}
         onClose={() => setMenuWorkspace(null)}
         actions={menuWorkspace ? [
-          // A heading on another machine acts there, and the sheet says which
-          // machine before its first destructive item: these commands are not
-          // local, and a workspace delete that lands elsewhere without saying so
-          // is the one action a reader cannot undo.
-          ...(menuWorkspace.desktopId && menuWorkspace.desktopId !== activeDesktopId
+          // Every group's sheet names the machine these commands are addressed
+          // to, the one the phone is reading included. They are all that
+          // machine's commands — the workspace delete above all, since it is the
+          // one action a reader cannot undo — and a merged list is one list of
+          // several machines, so which group lives where is the sheet's own
+          // question to answer. Naming only a peer's group left the *shape* of a
+          // sheet depending on which machine the phone happened to be reading:
+          // the same group gained and lost this line as the reader moved.
+          ...(menuWorkspace.desktopId
             ? [{
               label: t("sessions.actionsOnDesktop", {
                 name: hostName(menuWorkspace.desktopId),
