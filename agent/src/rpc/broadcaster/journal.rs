@@ -82,6 +82,18 @@ impl SseBroadcaster {
         self.journal.lock().session_id.clone()
     }
 
+    /// Drain the writer's pending batch through a durable barrier. Run
+    /// completion calls this before asking for journal compaction: the
+    /// compactor publishes a snapshot and retires a run's raw rows, and an
+    /// event for that run still sitting in the batch would then be refused.
+    pub(crate) fn flush_journal(&self) -> anyhow::Result<()> {
+        let journal = self.journal.lock();
+        match journal.writer.as_ref() {
+            Some(writer) => writer.flush(),
+            None => Ok(()),
+        }
+    }
+
     /// Fence the event journal before session deletion. The journal mutex is
     /// also held by append for the complete transaction, so when this
     /// returns no append can recreate rows for the deleted session.
