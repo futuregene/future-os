@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, expect, it, vi } from "vitest";
+import { readLastUsedModel, readLastUsedThinkingLevel, rememberLastUsedModel, rememberLastUsedThinkingLevel } from "../../integrations/agent/agentClient";
 import { RemoteConversationSettings } from "./RemoteConversationSettings";
 import { remoteModelReference } from "./remotePeerClient";
 import { useRemoteConversationSettings } from "./useRemoteConversationSettings";
@@ -96,6 +97,10 @@ beforeEach(() => {
   releaseListen = null;
   requestMock.mockReset();
   requestMock.mockResolvedValue(undefined);
+  // The remembered pick is shared with this app's own composer (one key per
+  // device, exactly as the phone's `SecureStore` is), so it has to start empty in
+  // every test or the previous one's choice seeds this one's draft.
+  localStorage.clear();
 });
 
 it("reads the conversation's settings and the host's catalogue", async () => {
@@ -150,6 +155,96 @@ it("seeds a draft from the host's catalogue, and reads no conversation state", a
   expect(hook.current.thinkingLevel).toBe("medium");
   // No state read: there is no conversation on the host to read it from.
   expect(requestMock.mock.calls.some(call => call[0] === "get_state")).toBe(false);
+  await hook.unmount();
+});
+
+/**
+ * A draft starts where the user left off — the phone's rule.
+ *
+ * `newConversation` on the phone resolves a draft from its memory of the last
+ * choice (`loadLastModel`/`loadLastThinking`) before it looks at the catalogue,
+ * and this machine keeps the same memory for its own composer
+ * (`readLastUsedModel`/`readLastUsedThinkingLevel`, one key per device). The
+ * desktop's draft was the one place that ignored it and always started from the
+ * host's `isDefault` — so a reader who had just been working at `xhigh` on
+ * `openrouter/auto` got the catalogue's default model back at `medium`.
+ */
+it("starts a draft from the model and level the user last chose", async () => {
+  rememberLastUsedModel("openai/gpt-5");
+  rememberLastUsedThinkingLevel("xhigh");
+  requestMock.mockImplementation(async (name: string) =>
+    (name === "list_models"
+      ? [
+          { id: "gpt-5", label: "GPT-5", provider: "openai" },
+          { id: "auto", isDefault: true, label: "Auto", provider: "openrouter" },
+        ]
+      : undefined));
+
+  const hook = await mountHook({ sessionId: "" });
+
+  // The remembered model wins over the host's own default...
+  expect(hook.current.model).toBe("openai/gpt-5");
+  // ...and the remembered level over the app default.
+  expect(hook.current.thinkingLevel).toBe("xhigh");
+  await hook.unmount();
+});
+
+/** A remembered model that host no longer offers is not a choice it can run. */
+it("falls back to the host's default when the remembered model is gone", async () => {
+  rememberLastUsedModel("openai/retired");
+  requestMock.mockImplementation(async (name: string) =>
+    (name === "list_models"
+      ? [
+          { id: "gpt-5", label: "GPT-5", provider: "openai" },
+          { id: "auto", isDefault: true, label: "Auto", provider: "openrouter" },
+        ]
+      : undefined));
+
+  const hook = await mountHook({ sessionId: "" });
+  expect(hook.current.model).toBe("openrouter/auto");
+  await hook.unmount();
+});
+
+/**
+ * Picking a model or a level *is* the memory the next draft reads.
+ *
+ * The phone writes its preference on every change, including on a conversation
+ * that already exists (`setModel`/`setThinkingLevel` in
+ * `mobile/src/remote/useConversationController.ts`), and so does this app's own
+ * composer. Without the write the draft would read a memory no remote pick ever
+ * updated, and the rule would only ever replay this machine's local choices.
+ */
+it("remembers a draft's choices for the next draft", async () => {
+  requestMock.mockImplementation(async (name: string) =>
+    (name === "list_models" ? [{ id: "gpt-5", provider: "openai" }, { id: "auto", provider: "openrouter" }] : undefined));
+  const hook = await mountHook({ sessionId: "" });
+
+  await act(async () => {
+    await hook.current.setModel("openrouter/auto");
+    await hook.current.setThinkingLevel("low");
+  });
+
+  expect(readLastUsedModel()).toBe("openrouter/auto");
+  expect(readLastUsedThinkingLevel()).toBe("low");
+  await hook.unmount();
+});
+
+/** And a choice made on a conversation the host has to be told about, too. */
+it("remembers a choice made on an existing conversation", async () => {
+  requestMock.mockImplementation(async (name: string) => {
+    if (name === "get_state")
+      return { model: "openai/gpt-5", thinkingLevel: "medium" };
+    if (name === "list_models")
+      return [{ id: "gpt-5", provider: "openai" }];
+    return undefined;
+  });
+  const hook = await mountHook();
+
+  await act(async () => {
+    await hook.current.setThinkingLevel("xhigh");
+  });
+
+  expect(readLastUsedThinkingLevel()).toBe("xhigh");
   await hook.unmount();
 });
 
