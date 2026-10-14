@@ -2,9 +2,10 @@ import { createElement } from "react";
 import { AppState, Linking, StyleSheet, type AppStateStatus } from "react-native";
 import { layout } from "../../theme/tokens";
 import * as Clipboard from "expo-clipboard";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { PausedTimeline } from "../PausedTimeline";
 import { TimelineCard } from "../TimelineCard";
+import { styles as messageStyles } from "../../features/chat/messages/messageStyles";
 import type { HistoryAttachment, TimelineItem, TimelineSegment } from "../../remote/types";
 import i18n from "../../i18n";
 
@@ -364,5 +365,73 @@ describe("tool rows name the failure that happened", () => {
   test("an unknown tool name falls back to the shell treatment", () => {
     render(message({ id: "unknown-tool", segments: [row("teleport", "completed")] }));
     expect(hasText("Ran a command")).toBe(true);
+  });
+});
+
+describe("a reply's tail anchor is measured inside its own row", () => {
+  const prose = (id: string, text: string): TimelineSegment => ({ id, kind: "text", text });
+  const reasoning = (id: string): TimelineSegment => ({ id, kind: "thinking", text: "..." });
+
+  /** The reply's block list: the host view laid out with the list's own style. */
+  function blockList(): ReactTestInstance | undefined {
+    return tree.root.findAll(
+      node => typeof node.type === "string" && node.props.style === messageStyles.segmentList,
+    )[0];
+  }
+  /**
+   * The wrapper the bubble measures the anchor through: the block list's only
+   * child carrying a layout handler and no style of its own, because the anchor
+   * block is wrapped and the blocks around it are not.
+   */
+  function anchorWrapper(list: ReactTestInstance): ReactTestInstance | undefined {
+    return list.children.filter(
+      (child): child is ReactTestInstance =>
+        typeof child !== "string"
+        && typeof child.props.onLayout === "function"
+        && child.props.style === undefined,
+    )[0];
+  }
+
+  test("the block list and the anchor block chain into the row's own offset", () => {
+    const onReplyTailAnchor = jest.fn();
+    render(message({
+      id: "a1",
+      segments: [reasoning("h1"), prose("t1", "first"), prose("t2", "the answer")],
+    }), { onReplyTailAnchor });
+
+    const list = blockList()!;
+    const anchor = anchorWrapper(list)!;
+    // The last output block is the one measured, so the wrapper holds the last
+    // piece of prose and the earlier one is left alone.
+    expect(
+      anchor.findAll(node => String(node.type) === "MarkdownText").map(node => node.props.text),
+    ).toEqual(["the answer"]);
+
+    act(() => list.props.onLayout({ nativeEvent: { layout: { y: 4 } } }));
+    // Half of a position is not a position: nothing is reported until the
+    // anchor itself has been laid out too.
+    expect(onReplyTailAnchor).not.toHaveBeenCalled();
+
+    act(() => anchor.props.onLayout({ nativeEvent: { layout: { y: 260 } } }));
+    expect(onReplyTailAnchor).toHaveBeenCalledWith("a1", 264);
+  });
+
+  test("a reply with no output block reports nothing to aim at", () => {
+    const onReplyTailAnchor = jest.fn();
+    render(message({ id: "a2", segments: [reasoning("h1")] }), { onReplyTailAnchor });
+
+    const list = blockList()!;
+    act(() => list.props.onLayout({ nativeEvent: { layout: { y: 4 } } }));
+
+    expect(anchorWrapper(list)).toBeUndefined();
+    expect(onReplyTailAnchor).not.toHaveBeenCalled();
+  });
+
+  test("a reply with no segments at all has no block list to measure", () => {
+    const onReplyTailAnchor = jest.fn();
+    render(message({ id: "a3", text: "the whole reply" }), { onReplyTailAnchor });
+
+    expect(blockList()).toBeUndefined();
+    expect(onReplyTailAnchor).not.toHaveBeenCalled();
   });
 });

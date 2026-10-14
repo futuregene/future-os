@@ -399,6 +399,7 @@ export function ChatScreen() {
           onContinue={handleTimelineContinue}
           onFork={forkSupported ? handleTimelineFork : undefined}
           onResolveToolTarget={handleResolveToolTarget}
+          onReplyTailAnchor={questionNav.onReplyTailAnchor}
         />
       </View>
     ),
@@ -413,6 +414,7 @@ export function ChatScreen() {
       handleTimelineSession,
       latestAssistantId,
       onRowLayout,
+      questionNav.onReplyTailAnchor,
     ],
   );
 
