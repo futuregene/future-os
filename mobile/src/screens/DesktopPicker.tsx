@@ -15,7 +15,10 @@ import { colors, layout, radius, spacing } from "../theme/tokens";
  * list) and "one desktop" — because the list below looks otherwise identical
  * either way. An offline desktop stays selectable: its rows are simply absent,
  * and disabling the entry would leave no way to see that it is offline rather
- * than removed.
+ * than removed. Selecting one is not a dead end either: the list below then shows
+ * that machine's own state, with the action that reaches it, because showing the
+ * machine the phone happens to be reading under another machine's name is the
+ * one thing the list must never do.
  *
  * Which desktop the phone is actually connected to is deliberately not repeated
  * on the row: the header's status dot already answers that, and a label on the
