@@ -126,6 +126,8 @@
   "thinkingLevel.high": "高",
   "thinkingLevel.xhigh": "极高",
   "settingsSaveFailed": "未能修改：{{message}}",
+  "settingsReadFailed": "未能读取：{{message}}",
+  "settingsLoading": "读取中…",
   "continueRun": "继续",
   "continueFailed": "无法继续该次运行：{{message}}",
   "skillsLoading": "正在读取…",
