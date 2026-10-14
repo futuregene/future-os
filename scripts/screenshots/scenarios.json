@@ -1797,6 +1797,273 @@
             "shot": "d-remote-add-one-machine.png"
           }
         ]
+      },
+      "rail-heading-hover": {
+        "note": "A workspace heading's controls belong to *that heading*. The list around them is itself an unnamed `group` — what reveals the floating scrollbar — so a bare `group-hover:` on a heading's menu or plus was matched by the whole list: with the pointer resting on a conversation row every heading showed its controls, and moving the pointer between headings changed nothing (#1047). Asserted on the rendered opacity, because no class list says which group a modifier resolved to.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "(() => { const heads = [...document.querySelectorAll(\"div[class*='group/workspace']\")]; if (heads.length < 2) throw new Error('expected both headings drawn, saw ' + heads.length); const controls = heads.flatMap(h => [...h.querySelectorAll('button')].filter(b => (b.className || '').includes('opacity-0'))); if (controls.length !== heads.length * 2) throw new Error('expected a menu and a plus on each of ' + heads.length + ' headings, saw ' + controls.length); const on = controls.filter(b => getComputedStyle(b).opacity !== '0'); if (on.length) throw new Error('before any hover ' + on.length + ' heading controls are already visible'); return 'headings=' + heads.length + ' hidden-controls=' + controls.length; })()"
+          },
+          {
+            "hover": "重画森林图并核对置信区间"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "(() => { const heads = [...document.querySelectorAll(\"div[class*='group/workspace']\")]; const controls = heads.flatMap(h => [...h.querySelectorAll('button')].filter(b => (b.className || '').includes('opacity-0'))); const on = controls.filter(b => getComputedStyle(b).opacity !== '0'); if (on.length) throw new Error(on.length + ' of ' + controls.length + ' heading controls are revealed while the pointer is only over a conversation row: ' + on.map(b => b.getAttribute('aria-label') || b.title).join(' | ')); return 'the list area reveals nothing (' + controls.length + ' controls still hidden)'; })()"
+          },
+          {
+            "hover": "图表脚本 的操作"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "(() => { const heads = [...document.querySelectorAll(\"div[class*='group/workspace']\")]; const hovered = heads.find(h => (h.textContent || '').includes('图表脚本')); if (!hovered) throw new Error('the host workspace heading is not in the list'); const mine = [...hovered.querySelectorAll('button')].filter(b => (b.className || '').includes('opacity-0')); if (mine.length !== 2) throw new Error('the hovered heading keeps ' + mine.length + ' controls, expected its menu and its plus'); const closed = mine.filter(b => getComputedStyle(b).opacity === '0'); if (closed.length) throw new Error(closed.length + ' controls of the *hovered* heading are still hidden: ' + closed.map(b => b.getAttribute('aria-label') || b.title).join(' | ')); const others = heads.filter(h => h !== hovered).flatMap(h => [...h.querySelectorAll('button')].filter(b => (b.className || '').includes('opacity-0'))); const leaked = others.filter(b => getComputedStyle(b).opacity !== '0'); if (leaked.length) throw new Error(leaked.length + ' other headings show controls too: ' + leaked.map(b => b.getAttribute('aria-label') || b.title).join(' | ')); return 'only 图表脚本 shows its ' + mine.length + ' controls; ' + others.length + ' elsewhere stay hidden'; })()"
+          },
+          {
+            "shot": "d-rail-heading-hover.png"
+          }
+        ]
+      },
+      "review-file-hover": {
+        "note": "The same rule for a review file's chevron (#1050): the file list is wrapped in an unnamed `group`, so a bare `group-hover:` on the row's chevron was revealed from anywhere in the list. Measured: with the pointer on the second file's row, exactly that row's chevron is at opacity 1 and the first row's is 0.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 2500
+          },
+          {
+            "tap": "展开上下文面板"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => { const sel = document.querySelector('#context-panel-view'); if (!sel) throw new Error('the context panel has no view selector'); const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set; setter.call(sel, 'review'); sel.dispatchEvent(new Event('change', { bubbles: true })); return 'switched to ' + sel.value; })()"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "(() => { const rows = [...document.querySelectorAll(\"button[class*='group/file-row']\")]; if (rows.length < 2) throw new Error('expected the two review files as rows, saw ' + rows.length + ' — panel text: ' + (document.querySelector('aside')?.textContent || '').trim().slice(0, 120)); const chev = rows.map(r => r.querySelector(\"svg[class*='opacity-0']\")); if (chev.some(c => !c)) throw new Error('a file row has no reveal-on-hover chevron'); const on = chev.filter(c => getComputedStyle(c).opacity !== '0'); if (on.length) throw new Error('before any hover ' + on.length + ' chevrons are visible'); return 'rows=' + rows.length + ' rows=' + JSON.stringify(rows.map(r => (r.textContent || '').trim().slice(0, 24))); })()"
+          },
+          {
+            "hover": "figures/forest-plot.png"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "(() => { const rows = [...document.querySelectorAll(\"button[class*='group/file-row']\")]; const chev = rows.map(r => r.querySelector(\"svg[class*='opacity-0']\")); const on = chev.map((c, i) => ({ c, i })).filter(x => getComputedStyle(x.c).opacity !== '0'); if (on.length !== 1) throw new Error(on.length + ' chevrons are visible while the pointer is on one row: ' + on.map(x => (rows[x.i].textContent || '').trim().slice(0, 20)).join(' | ')); if (on[0].i !== 1) throw new Error('the visible chevron belongs to row ' + on[0].i + ', not the row under the pointer'); return 'only the hovered row shows its chevron (' + rows.length + ' rows)'; })()"
+          },
+          {
+            "shot": "d-review-file-chevron.png"
+          }
+        ]
+      },
+      "remote-draft-caret": {
+        "note": "\"New conversation\" on a paired machine puts that machine's composer on screen, and the caret has to be in it: for a draft the field is the only thing a prompt can be typed into, and a field without the caret swallows the first keystrokes without saying so (#1065). Typed as real input, so the assertion is that the text landed, not that an element claims focus.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 2500
+          },
+          {
+            "hover": "在 图表脚本 中新建对话"
+          },
+          {
+            "tap": "在 图表脚本 中新建对话"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "(() => { const active = document.activeElement; const tag = active ? active.tagName.toLowerCase() : 'none'; const label = active ? (active.getAttribute('aria-label') || active.getAttribute('placeholder') || '') : ''; if (tag !== 'textarea') throw new Error('after opening a new remote conversation the caret is on <' + tag + '> ' + label + ', not in the composer'); return 'caret in the composer: <' + tag + '> ' + label; })()"
+          },
+          {
+            "type": "键入的字符"
+          },
+          {
+            "eval": "(() => { const active = document.activeElement; const value = active && 'value' in active ? String(active.value || '') : ''; if (!value.includes('键入的字符')) throw new Error('the keystrokes did not land in the composer (value=' + JSON.stringify(value) + ')'); return 'typed text landed: ' + JSON.stringify(value); })()"
+          },
+          {
+            "shot": "d-remote-draft-caret.png"
+          }
+        ]
+      },
+      "remote-caret-settle": {
+        "note": "The other half of #1065: a run in flight is what the rule steps back for — the caret is not taken from whatever the reader is doing while the host answers — and it comes back when the answer ends. The fixture's run is continued here, so the capture covers the settle rather than the open.",
+        "url": "http://localhost:5299/shot/?lang=zh&remoteMidFlight=1",
+        "steps": [
+          {
+            "wait": 2500
+          },
+          {
+            "tapText": "重画森林图并核对置信区间"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "(() => { const t = document.querySelector('textarea'); if (!t) throw new Error('the composer is not on screen'); const running = /运行中/.test((document.querySelector('header')?.innerText) || ''); if (!running) throw new Error('the fixture is not reporting a run in flight'); t.blur(); const other = document.querySelector('main button, aside button'); if (other) other.focus(); return 'run in flight; caret moved to <' + (document.activeElement?.tagName || 'none').toLowerCase() + '>'; })()"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "(() => { const active = document.activeElement; if (active && active.tagName === 'TEXTAREA') throw new Error('the composer took the caret back while the host is still answering'); return 'the caret stayed on <' + (active?.tagName || 'none').toLowerCase() + '> while the host answered'; })()"
+          },
+          {
+            "eval": "window.__shot.remoteMidFlight()"
+          },
+          {
+            "eval": "(() => { const deadline = Date.now() + 12000; return new Promise((resolve, reject) => { const check = () => { const t = document.querySelector('textarea'); const running = /运行中/.test((document.querySelector('header')?.innerText) || ''); const active = document.activeElement; if (t && !running && active === t) { resolve('the caret came back when the run settled'); return; } if (Date.now() > deadline) { reject(new Error('the caret did not return to the composer after the run settled (running=' + running + ', active=<' + (active?.tagName || 'none').toLowerCase() + '>)')); return; } setTimeout(check, 250); }; check(); }); })()"
+          },
+          {
+            "shot": "d-remote-caret-settle.png"
+          }
+        ]
+      },
+      "remote-draft-defaults": {
+        "note": "A new conversation on a host starts at this app's own default level, never at the level the host's catalogue declares (#1066): that field is a capability marker — the agent answers `high` for every reasoning model and `off` for the rest (`agent/src/rpc/commands/providers.rs`) — not a default anybody chose. The host's answer carries exactly that marker, so a draft seeded from it would run at high effort against a real machine while the same model here runs at medium.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 2500
+          },
+          {
+            "hover": "在 图表脚本 中新建对话"
+          },
+          {
+            "tap": "在 图表脚本 中新建对话"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "(() => { const byLabel = (n) => [...document.querySelectorAll('button')].find(b => (b.getAttribute('aria-label') || '').includes(n)); const m = byLabel('该会话使用的模型'); const l = byLabel('思考等级'); if (!m || !l) throw new Error('the draft has no model/level pickers'); const mt = (m.innerText || '').trim(); const lt = (l.innerText || '').trim(); if (!mt.includes('DeepSeek V4 Pro')) throw new Error('the draft did not start at the host default model: ' + JSON.stringify(mt)); if (lt.includes('高')) throw new Error('the draft started at the level the host catalogue declares (' + JSON.stringify(lt) + '), not this app default'); if (!lt.includes('中')) throw new Error('the draft did not start at this app default level: ' + JSON.stringify(lt)); return 'draft defaults: ' + JSON.stringify(mt + ' / ' + lt) + ' (memory: ' + String(window.localStorage.getItem('futureos:last-used-thinking-level')) + ')'; })()"
+          },
+          {
+            "shot": "d-remote-draft-defaults.png"
+          }
+        ]
+      },
+      "remote-model-loading": {
+        "note": "The model control while the host is answering (#1067). It used to fall back to its own *label* — the sentence written for its tooltip — inside a `max-w-48 truncate` trigger, so every open read \"Model for this conversation (…\". It says it is reading instead, and the value replaces that when the read lands. `?remoteSlowRead=1` holds the host's answer back, because a host that answers in three milliseconds never shows the state this is about.",
+        "url": "http://localhost:5299/shot/?lang=zh&remoteSlowRead=1",
+        "steps": [
+          {
+            "wait": 2500
+          },
+          {
+            "tapText": "重画森林图并核对置信区间"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "(() => { const byLabel = (n) => [...document.querySelectorAll('button')].find(b => (b.getAttribute('aria-label') || '').includes(n)); const m = byLabel('该会话使用的模型'); if (!m) throw new Error('the open conversation has no model control'); const text = (m.innerText || '').trim(); if (text.includes('在那台电脑上')) throw new Error('while the host is answering, the control shows its own label: ' + JSON.stringify(text)); if (!text.includes('读取中')) throw new Error('while the host is answering, the control does not say it is reading: ' + JSON.stringify(text)); return 'read in flight: ' + JSON.stringify(text); })()"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "(() => { const byLabel = (n) => [...document.querySelectorAll('button')].find(b => (b.getAttribute('aria-label') || '').includes(n)); const m = byLabel('该会话使用的模型'); const text = (m.innerText || '').trim(); if (text.includes('在那台电脑上')) throw new Error('the control shows its own label: ' + JSON.stringify(text)); if (!text.includes('deepseek')) throw new Error('the host value did not replace the loading word: ' + JSON.stringify(text)); return 'read landed: ' + JSON.stringify(text); })()"
+          },
+          {
+            "shot": "d-remote-model-loading.png"
+          }
+        ]
+      },
+      "remote-draft-remembers-pick": {
+        "note": "A draft resolves its model and level the way this app's own composer does: from what the user last chose, not from the host's default (#1072). The pick is made on an existing conversation and the draft is opened afterwards, so the value can only come from that memory — a draft that reuses the previous draft's state would look the same and prove nothing.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 2500
+          },
+          {
+            "tapText": "重画森林图并核对置信区间"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "(() => { const byLabel = (n) => [...document.querySelectorAll('button')].find(b => (b.getAttribute('aria-label') || '').includes(n)); const m = byLabel('该会话使用的模型'); if (!m) throw new Error('the open conversation has no model control'); return 'existing conversation shows ' + JSON.stringify((m.innerText || '').trim()); })()"
+          },
+          {
+            "tap": "该会话使用的模型"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const items = [...document.querySelectorAll('button')].filter(b => (b.className || '').includes('px-3') && (b.className || '').includes('w-full')); const target = items.find(b => (b.textContent || '').startsWith('DeepSeek V4future')); if (!target) throw new Error('the model menu is not offering DeepSeek V4: ' + items.map(b => (b.textContent || '').trim()).join(' | ')); target.click(); return 'picked ' + (target.textContent || '').trim(); })()"
+          },
+          {
+            "wait": 1800
+          },
+          {
+            "tap": "思考等级"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "极高"
+          },
+          {
+            "wait": 1800
+          },
+          {
+            "eval": "(() => { const byLabel = (n) => [...document.querySelectorAll('button')].find(b => (b.getAttribute('aria-label') || '').includes(n)); const mt = (byLabel('该会话使用的模型').innerText || '').trim(); const lt = (byLabel('思考等级').innerText || '').trim(); if (mt !== 'DeepSeek V4' || !lt.includes('极高')) throw new Error('the change did not land on the conversation: ' + JSON.stringify(mt + ' / ' + lt)); return 'conversation now ' + JSON.stringify(mt + ' / ' + lt) + '; memory ' + JSON.stringify(String(window.localStorage.getItem('futureos:last-used-model')) + '|' + String(window.localStorage.getItem('futureos:last-used-thinking-level'))); })()"
+          },
+          {
+            "hover": "在 图表脚本 中新建对话"
+          },
+          {
+            "tap": "在 图表脚本 中新建对话"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "(() => { const byLabel = (n) => [...document.querySelectorAll('button')].find(b => (b.getAttribute('aria-label') || '').includes(n)); const mt = (byLabel('该会话使用的模型').innerText || '').trim(); const lt = (byLabel('思考等级').innerText || '').trim(); if (mt !== 'DeepSeek V4') throw new Error('the new draft did not start from the last pick: model=' + JSON.stringify(mt)); if (!lt.includes('极高')) throw new Error('the new draft did not start from the last level: level=' + JSON.stringify(lt)); return 'new draft starts at ' + JSON.stringify(mt + ' / ' + lt); })()"
+          },
+          {
+            "shot": "d-remote-draft-remembered.png"
+          }
+        ]
+      },
+      "remote-live-event-order": {
+        "note": "A row's place in the merged list is the host's to state (#1070): the event lane settles whether a conversation is *running*, and a client that stamped its own clock into `lastMessageAt` lifted that row above every one of this machine's own — then the host's next report put it back, for the length of the run. A live event is pushed for a row further down the chat section, which is where the jump was visible.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "(() => { const section = document.querySelector(\"[data-testid='merged-conversations']\"); if (!section) throw new Error('the merged chat section is not on screen'); const rows = [...section.children]; if (rows.length < 2) throw new Error('the chat section holds ' + rows.length + ' rows — nothing to reorder'); const order = rows.map(node => (node.textContent || '').trim().slice(0, 16)); if (!order.some(t => t.includes('审稿意见'))) throw new Error('the host row this asks about is not in the chat section: ' + order.join(' | ')); return JSON.stringify(order); })()"
+          },
+          {
+            "eval": "window.__shot.remoteSessionEvent('rs_reviewer')"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => { const section = document.querySelector(\"[data-testid='merged-conversations']\"); const rows = [...section.children]; const order = rows.map(node => (node.textContent || '').trim().slice(0, 16)); if (order.some(t => t.includes('审稿意见')) && order[0].includes('审稿意见')) throw new Error('the host row overtook this machine\\'s rows on the strength of a live event: ' + order.join(' | ')); return 'order unchanged after the live event: ' + JSON.stringify(order); })()"
+          },
+          {
+            "shot": "d-remote-live-event-order.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",

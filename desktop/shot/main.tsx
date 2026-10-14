@@ -12,10 +12,15 @@
  *   ?settings=key:value    seed the fake backend's app settings before boot
  *   ?streaming=id,id       report these threads as running (rail's ring)
  *   ?unread=id,id          mark these threads' finished runs unread (rail's dot)
+ *   ?remoteSlowRead=1      hold a host's reads back, so the state a reader is in
+ *                          *while* one is in flight reaches a capture (the model
+ *                          control before the host answers)
  *
- * `window.__shot` carries the two states a query parameter cannot express,
- * because they only exist *after* a screen is mounted: pushing a pending
- * approval onto the open remote conversation, and onto this machine's own.
+ * `window.__shot` carries the states a query parameter cannot express, because
+ * they only exist *after* a screen is mounted: pushing a pending approval onto
+ * the open remote conversation (and onto this machine's own), one live session
+ * event for a row already in the list, and the rest of a run the reader opened
+ * part-way through.
  */
 import React from "react";
 import ReactDOM from "react-dom/client";
@@ -74,6 +79,22 @@ seedHarnessState({
    * testing. Call it after the conversation's own read has landed.
    */
   remoteMidFlight: () => startMidFlightRun("rs_forest"),
+  /**
+   * One live event for a conversation the host's catalogue already holds.
+   *
+   * A row's *place* in the merged list is the host's to state — its catalogue
+   * carries the host's own `last_message_at`, and only the host's `state.activity`
+   * packet moves a row — so an event of its own must not reorder the list (see
+   * `useRemotePeers`). `?remoteStream=1` only pushes into the conversation a
+   * scenario opens, whose row is already the newest of its group; this emits one
+   * for a row further down, which is where a client that ranked on its own clock
+   * would be visible.
+   */
+  remoteSessionEvent: (sessionId: string, desktopId = "desktop_studio") => emit("remote-peer-event", {
+    desktopId,
+    kind: "event",
+    payload: { sessionId, type: "text_chunk", data: JSON.stringify({ text: "…" }) },
+  }),
   /** A pending approval on the host, for the open remote conversation. */
   remoteApproval: () => emit("remote-peer-event", {
     desktopId: "desktop_studio",
