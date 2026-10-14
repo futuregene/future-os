@@ -173,13 +173,43 @@ it("offers a non-reasoning model no thinking level", async () => {
   await hook.unmount();
 });
 
-/** A model that declares its own level uses it. */
-it("uses the level a model declares", async () => {
+/**
+ * A draft starts on this app's default, not on the level the host's catalogue
+ * declares for the model.
+ *
+ * That declared level is a capability marker, not a default: the agent reports
+ * `high` for every reasoning model and `off` for the rest
+ * (`agent/src/rpc/commands/providers.rs`), and this app's own composer ignores it
+ * for exactly that reason (`modelThinkingLevel`). Seeding a draft from it made
+ * every new remote conversation on a reasoning model run at high effort — the
+ * level travels with the first prompt, so the host ran it at high — while the
+ * same model started on this machine ran at medium.
+ */
+it("seeds a draft with this app's default, not the level the host declares", async () => {
   requestMock.mockImplementation(async (name: string) =>
     (name === "list_models"
       ? [{ id: "thinker", provider: "openai", reasoning: true, thinkingLevel: "high" }]
       : undefined));
   const hook = await mountHook({ sessionId: "" });
+  expect(hook.current.thinkingLevel).toBe("medium");
+  await hook.unmount();
+});
+
+/**
+ * The other half of that rule: a conversation that already exists on the host
+ * shows the level *it* is running at, whatever this app's default is. Only a
+ * draft is seeded here; overriding a real session's level would be this machine
+ * telling the host what it has.
+ */
+it("shows the host's own level for a conversation that exists", async () => {
+  requestMock.mockImplementation(async (name: string) => {
+    if (name === "get_state")
+      return { model: "openai/gpt-5", thinkingLevel: "high" };
+    if (name === "list_models")
+      return [{ id: "gpt-5", provider: "openai", reasoning: true, thinkingLevel: "high" }];
+    return undefined;
+  });
+  const hook = await mountHook();
   expect(hook.current.thinkingLevel).toBe("high");
   await hook.unmount();
 });
