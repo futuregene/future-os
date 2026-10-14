@@ -1,5 +1,29 @@
 //! Desktop-owned catalog source. Reads and revisions share one serialization
 //! point across handshake, RPC and push; publication time never creates versions.
+//!
+//! # Two things change in a session list, and they are not the same size
+//!
+//! A run that is streaming rewrites its thread's `threads.last_message_at`
+//! about once a second. That column is the list's *ordering key*, and it is the
+//! one field a client can be told about without being handed the list: the value
+//! belongs to a row the client already holds, and re-ranking from it is
+//! something the client's own sort already does. Everything else — the row set,
+//! `title`, `pinned`, `streaming`, `status`, the workspace's name/pin/place, and
+//! the array order itself — is *structure*: a client cannot patch it from a
+//! value, so a change there is worth a whole snapshot.
+//!
+//! [`sessions_catalog`] therefore returns two signatures over the same rows
+//! *and* the recency vector, so a publisher can send a whole list when the
+//! structural signature moves and a few dozen bytes when only recency did. The
+//! revision ([`bump`]) is deliberately moved by *either*, because it is the
+//! heartbeat's recovery signal: a client that missed a recency packet must be
+//! able to notice, exactly as it notices a missed snapshot.
+//!
+//! The array order is on the structural side rather than the recency side for
+//! that reason: the host's own order is what an ordinary single-machine list
+//! draws, so a row overtaking another is content, and it is re-published. Only
+//! the writes that do *not* reorder anything — the great majority of a run's
+//! seconds — cost a packet.
 use serde_json::{json, Value};
 use std::sync::{LazyLock, Mutex};
 
@@ -17,11 +41,21 @@ static CATALOG: LazyLock<Mutex<VersionedCatalog>> = LazyLock::new(|| {
 });
 fn version(payload: &mut Value, epoch: &str, previous: &mut (u64, String), key: &str) {
     let signature = payload[key].to_string();
+    let revision = bump(previous, &signature);
+    payload["version"] = json!({ "epoch": epoch, "revision": revision });
+}
+
+/// Advance a domain's revision when its content signature moved.
+///
+/// Shared by both domains so the rule cannot differ between them: the revision
+/// counts *content states*, and any caller that reads the store re-derives the
+/// signature from the store rather than from a dirty flag.
+fn bump(previous: &mut (u64, String), signature: &str) -> u64 {
     if previous.0 == 0 || previous.1 != signature {
         previous.0 += 1;
-        previous.1 = signature;
+        previous.1 = signature.to_string();
     }
-    payload["version"] = json!({ "epoch": epoch, "revision": previous.0 });
+    previous.0
 }
 pub(crate) fn epoch() -> String {
     CATALOG.lock().unwrap().epoch.clone()
@@ -42,13 +76,78 @@ pub(crate) fn revisions() -> (String, u64, u64) {
     (state.epoch.clone(), state.sessions.0, state.workspaces.0)
 }
 pub(crate) fn sessions(pair_id: &str) -> Option<(Value, String)> {
+    let catalog = sessions_catalog(pair_id)?;
+    Some((catalog.payload, catalog.signature))
+}
+
+/// The one field a recency packet may move, and the only one the structural
+/// signature drops.
+const RECENCY_FIELD: &str = "lastMessageAt";
+
+pub(crate) use crate::remote::services::SessionsCatalog;
+
+pub(crate) fn sessions_catalog(pair_id: &str) -> Option<SessionsCatalog> {
     let mut state = CATALOG.lock().unwrap();
     let mut payload = read_sessions(pair_id)?;
     let epoch = state.epoch.clone();
-    version(&mut payload, &epoch, &mut state.sessions, "sessions");
-    let signature = state.sessions.1.clone();
-    Some((payload, signature))
+    let (signature, structural) = row_signatures(&payload["sessions"]);
+    // The revision is bumped by the *whole* signature, so a recency-only change
+    // moves it too: that is what makes a dropped recency packet observable to
+    // the heartbeat's revision check.
+    let revision = bump(&mut state.sessions, &signature);
+    payload["version"] = json!({ "epoch": epoch, "revision": revision });
+    let activity = recency_vector(&payload["sessions"]);
+    Some(SessionsCatalog {
+        payload,
+        structural,
+        signature,
+        activity,
+    })
 }
+
+/// The whole-row signature and the structural one, from one walk of the rows.
+///
+/// The structural form is the rows re-serialized with the recency field
+/// stripped. Re-serializing rather than assembling a key by hand is what keeps
+/// the two signatures from disagreeing about content they both cover, and it
+/// cannot drift from the payload because it *is* the payload minus one field.
+/// It costs one JSON serialization of the same rows per read — the publisher
+/// already serializes them once to publish, so this is the same order of work,
+/// not a new one.
+fn row_signatures(sessions: &Value) -> (String, String) {
+    let signature = sessions.to_string();
+    let Some(rows) = sessions.as_array() else {
+        // Not a list: there is nothing to strip, and both signatures describe
+        // the same (malformed) shape.
+        return (signature.clone(), signature);
+    };
+    let stripped: Vec<Value> = rows
+        .iter()
+        .map(|row| {
+            let mut row = row.clone();
+            if let Some(object) = row.as_object_mut() {
+                object.remove(RECENCY_FIELD);
+            }
+            row
+        })
+        .collect();
+    (signature, Value::Array(stripped).to_string())
+}
+
+/// Every row's `(sessionId, lastMessageAt)`, for the recency packets.
+fn recency_vector(sessions: &Value) -> Vec<(String, i64)> {
+    sessions
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            let session_id = row.get("sessionId").and_then(Value::as_str)?;
+            let at = row.get(RECENCY_FIELD).and_then(Value::as_i64)?;
+            Some((session_id.to_string(), at))
+        })
+        .collect()
+}
+
 pub(crate) fn workspaces() -> Option<(Value, String)> {
     let mut state = CATALOG.lock().unwrap();
     let mut payload = read_workspaces()?;
@@ -325,6 +424,87 @@ mod tests {
             .as_array()
             .expect("sessions array")
             .is_empty());
+    }
+
+    /// The split the catalog lane is built on: a run's activity timestamp
+    /// moving is a change, but it is *not* structure.
+    ///
+    /// Asserted from both sides because both halves are load-bearing. If
+    /// recency leaked into the structural signature, the publisher would send a
+    /// whole session list per second of streaming (the measured 94–173 MB this
+    /// lane exists to remove). If recency stopped moving the *whole* signature,
+    /// the revision would stop advancing and a client that missed a recency
+    /// packet would never learn it had — which is the one thing the heartbeat's
+    /// revision check exists to notice.
+    #[test]
+    fn recency_moves_the_revision_but_not_the_structural_signature() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-signatures");
+        crate::remote::test_support::init_store();
+        let thread = new_thread("sess-sig", "Sig");
+        let revision = |catalog: &SessionsCatalog| {
+            catalog.payload["version"]["revision"]
+                .as_u64()
+                .expect("every snapshot carries a revision")
+        };
+
+        let first = sessions_catalog("pair_sig").expect("store readable");
+        // An unchanged store is not a change: re-reading it must not move the
+        // revision, or the heartbeat would ask every client to pull on every
+        // tick.
+        let again = sessions_catalog("pair_sig").expect("store readable");
+        assert_eq!(first.structural, again.structural);
+        assert_eq!(first.signature, again.signature);
+        assert_eq!(revision(&first), revision(&again));
+
+        record_thread_message_activity(&thread.id, 5_000).expect("record activity");
+        let moved = sessions_catalog("pair_sig").expect("store readable");
+        assert_eq!(
+            moved.structural, first.structural,
+            "a row's activity timestamp is ordering, not structure"
+        );
+        assert_ne!(
+            moved.signature, first.signature,
+            "recency is still content the client has to be told about"
+        );
+        assert!(
+            revision(&moved) > revision(&first),
+            "the heartbeat's revision must move, or a lost packet is invisible"
+        );
+        // The row is emitted for the patch, with the value the client orders by
+        // — the same one the whole snapshot carries.
+        assert_eq!(moved.activity, vec![("sess-sig".to_string(), 5_000)]);
+        assert_eq!(moved.payload["sessions"][0]["lastMessageAt"], json!(5_000));
+        assert_eq!(
+            moved.payload["sessions"][0]["lastMessageAt"],
+            json!(moved.activity[0].1)
+        );
+
+        // A rename is structure, so it is what a whole snapshot is for.
+        crate::store::rename_thread(crate::store::RenameThreadInput {
+            thread_id: thread.id.clone(),
+            title: "Renamed".to_string(),
+        })
+        .expect("rename");
+        let renamed = sessions_catalog("pair_sig").expect("store readable");
+        assert_ne!(renamed.structural, moved.structural);
+        assert_ne!(renamed.signature, moved.signature);
+    }
+
+    /// A session with no activity timestamp at all (a thread that has never
+    /// received a message writes `updated_at`) is still patched: the coalesce
+    /// is what the store itself orders by, and a client that keeps a stale
+    /// value would rank that row by a clock nobody else uses.
+    #[test]
+    fn activity_carries_the_same_coalesce_the_store_orders_by() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-activity-coalesce");
+        crate::remote::test_support::init_store();
+        let thread = new_thread("sess-coalesce", "Coalesce");
+
+        let catalog = sessions_catalog("pair_act").expect("store readable");
+        assert_eq!(
+            catalog.activity,
+            vec![("sess-coalesce".to_string(), thread.updated_at)]
+        );
     }
 
     #[test]

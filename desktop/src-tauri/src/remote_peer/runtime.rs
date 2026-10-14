@@ -998,6 +998,7 @@ fn spawn_event_stream_capped(
                 match state_event_kind(&message.subject, pair_id) {
                     StateEventKind::Events if narrow => (EVENT_LANE, None),
                     StateEventKind::Sessions => (CATALOG_LANE, Some("sessions")),
+                    StateEventKind::Activity => (CATALOG_LANE, Some("sessions_activity")),
                     StateEventKind::Workspaces => (CATALOG_LANE, Some("workspaces")),
                     _ => return,
                 }
@@ -1217,13 +1218,17 @@ pub(crate) fn event_session_id<'a>(subject: &'a str, pair_id: &str) -> Option<&'
 
 /// Which kind of host-wide lane a `state.>` subject names.
 ///
-/// The host publishes three things under `state.>`: the event mirror, the
-/// sessions snapshot, and the workspaces snapshot. Only `state.events` is read
-/// as an event (and only while the event lane is narrowed); the snapshots are
-/// forwarded as catalog updates.
+/// The host publishes four things under `state.>`: the event mirror, the
+/// sessions snapshot, the activity packet and the workspaces snapshot. Only
+/// `state.events` is read as an event (and only while the event lane is
+/// narrowed); the snapshots and the packet are forwarded as catalog updates.
 enum StateEventKind {
     Events,
     Sessions,
+    /// The rows whose activity timestamp moved, for a client that declared
+    /// `catalog_activity_v1`. A packet, not a snapshot: it names only the rows
+    /// that moved, so a reader must not treat the rest as absent.
+    Activity,
     Workspaces,
     Other,
 }
@@ -1233,6 +1238,8 @@ fn state_event_kind(subject: &str, pair_id: &str) -> StateEventKind {
         StateEventKind::Events
     } else if subject == format!("p.{pair_id}.state.sessions") {
         StateEventKind::Sessions
+    } else if subject == format!("p.{pair_id}.state.activity") {
+        StateEventKind::Activity
     } else if subject == format!("p.{pair_id}.state.workspaces") {
         StateEventKind::Workspaces
     } else {
@@ -2109,10 +2116,18 @@ mod tests {
             state_event_kind("p.pair_1.state.workspaces", "pair_1"),
             StateEventKind::Workspaces
         ));
+        // The activity packet is a catalog update too, and it is *not* a
+        // snapshot: a reader that confused the two would read its missing rows
+        // as a deletion.
+        assert!(matches!(
+            state_event_kind("p.pair_1.state.activity", "pair_1"),
+            StateEventKind::Activity
+        ));
         for subject in [
             "p.pair_1.state.version",
             // Another pairing's host-wide lane.
             "p.pair_10.state.events",
+            "p.pair_10.state.activity",
             // The events lane proper, which is read through its own subscription.
             "p.pair_1.evt.sess_a",
             "",

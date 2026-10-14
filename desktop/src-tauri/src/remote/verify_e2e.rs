@@ -51,10 +51,10 @@ use serde_json::{json, Value};
 
 use super::commands::{new_reply_slots, HandshakeState};
 use super::protocol::PairingCreds;
-use super::publisher::{EVENT_COALESCING_FEATURE, MAX_EVENT_BYTES};
+use super::publisher::{CATALOG_ACTIVITY_FEATURE, EVENT_COALESCING_FEATURE, MAX_EVENT_BYTES};
 use super::test_support::{
-    ensure_mock_agent, init_store, jwt, mock_agent_lock, now_secs, secure_pair, unique, FakeNats,
-    HomeGuard,
+    declare_features, ensure_mock_agent, init_store, jwt, mock_agent_lock, now_secs, pairing_creds,
+    secure_pair, unique, FakeNats, HomeGuard,
 };
 use super::transport::build_transport;
 use super::{publish_event, secure, stop, DropCounters, NatsHealth, RemoteState, SUPERVISOR};
@@ -1139,6 +1139,162 @@ fn shell_calls_in(capture: &ReplyCapture) -> Vec<(String, String, usize)> {
                 })
         })
         .collect()
+}
+
+/// The catalog lane's own measurement: what one second of a streaming run costs
+/// the wire, for a client that declared `catalog_activity_v1` and for one that
+/// did not, over a store the size of the local desktop's own.
+///
+/// The numbers are the *publisher's payload* bytes, measured off the broker tap
+/// by the shipping `spawn_catalog_publisher` — the record layer adds a fixed
+/// `HEADER_LEN + TAG_LEN` (44 B) per packet on top, which the script applies
+/// (one snapshot or one packet is one record, so the overhead is per packet, not
+/// per byte).
+///
+/// Driven by `scripts/measure/measure-catalog-activity.py`, which supplies the
+/// row count and each real run's activity-write count — the observer's own 1 s
+/// throttle replayed from that run's journal — and turns these per-write bytes
+/// into a per-run total.
+#[tokio::test]
+#[ignore = "measurement: run through scripts/measure/measure-catalog-activity.py"]
+async fn measure_catalog_activity_lane() {
+    let rows: usize = std::env::var("CATALOG_ACTIVITY_ROWS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(232);
+    let writes: usize = std::env::var("CATALOG_ACTIVITY_WRITES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(20);
+
+    let declared = measure_catalog_writes(rows, writes, true, "catalog-activity-measure").await;
+    // Separate HOME per mode, so the two runs cannot see each other's rows.
+    // `HomeGuard` serializes on a process-global lock, which is why these are
+    // awaited one after the other rather than together.
+    let undeclared = measure_catalog_writes(rows, writes, false, "catalog-legacy-measure").await;
+
+    let saving = 1.0
+        - declared["payloadBytes"].as_f64().unwrap_or_default()
+            / undeclared["payloadBytes"].as_f64().unwrap_or(1.0).max(1.0);
+    println!(
+        "CATALOG_ACTIVITY {}",
+        json!({
+            "rows": rows,
+            "writes": writes,
+            "declared": declared,
+            "undeclared": undeclared,
+            "payloadSaved": saving,
+        })
+    );
+}
+
+/// One mode of the measurement: seed `rows` conversations, then put `writes`
+/// activity writes through the real publisher, counting what it published.
+async fn measure_catalog_writes(
+    rows: usize,
+    writes: usize,
+    declared_capability: bool,
+    label: &str,
+) -> Value {
+    use super::spawn_presence_heartbeat;
+    use super::test_support::{await_publish, nats_connect_once};
+
+    let _home = HomeGuard::new(label);
+    init_store();
+    let mut target = String::new();
+    for index in 0..rows {
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some(format!("A conversation titled as a real one does {index}")),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some(unique("sess-measure")),
+        })
+        .expect("seed a conversation");
+        if index == 0 {
+            target = thread.id.clone();
+        }
+    }
+
+    let nats = FakeNats::start().await;
+    let client = nats_connect_once(&nats).await;
+    let pair = unique("pairmeasure");
+    let creds = pairing_creds(&pair);
+    let _shared = super::supervisor::shared_runtime(&creds, true, false);
+    declare_features(
+        &creds,
+        &pair,
+        if declared_capability {
+            &[CATALOG_ACTIVITY_FEATURE]
+        } else {
+            &[]
+        },
+    );
+    let handle = spawn_presence_heartbeat(client.clone(), pair.clone(), format!("bridge_{label}"));
+    let mut tap = nats.tap();
+    let sessions_subject = format!("p.{pair}.state.sessions");
+    let activity_subject = format!("p.{pair}.state.activity");
+
+    // The baseline is what a client pays once, when it connects — not per
+    // second — so it is reported separately from the streaming cost.
+    let baseline = await_publish(&mut tap, &sessions_subject, Duration::from_secs(5)).await;
+
+    // Activity timestamps advance from above every row's current activity, which
+    // is what a real run does: in this fixture that lifts the moving row to the
+    // head of the list on the first write (the row's place *is* content — an
+    // ordinary list draws the host's order), and leaves it there after. One
+    // snapshot for the overtake is therefore part of the honest per-run shape,
+    // not an artifact to hide.
+    //
+    // The base comes from the shipping recency vector rather than from a clock:
+    // `rows` conversations seeded in the same millisecond have no meaningful
+    // order among themselves, so a fixture that leaned on one would be measuring
+    // SQLite's tie order instead of the lane.
+    let mut started = crate::remote_host::catalog::sessions_catalog("")
+        .expect("store readable")
+        .activity
+        .iter()
+        .map(|(_, at)| *at)
+        .max()
+        .unwrap_or_default();
+
+    let mut sessions_packets = 0usize;
+    let mut sessions_bytes = 0usize;
+    let mut activity_packets = 0usize;
+    let mut activity_bytes = 0usize;
+    for _ in 0..writes {
+        started += 1_000;
+        crate::store::record_thread_message_activity(&target, started).expect("record activity");
+        // The test profile's catalog tick is 10 ms; this is several ticks wide,
+        // so the count below is the publisher's decision and not a sampling
+        // artifact.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        while let Ok(published) = tap.try_recv() {
+            if published.subject == sessions_subject {
+                sessions_packets += 1;
+                sessions_bytes += published.payload.len();
+            } else if published.subject == activity_subject {
+                activity_packets += 1;
+                activity_bytes += published.payload.len();
+            }
+        }
+    }
+    handle.abort();
+
+    let payload_bytes = sessions_bytes + activity_bytes;
+    json!({
+        "declared": declared_capability,
+        "rows": rows,
+        "writes": writes,
+        "baselineBytes": baseline.payload.len(),
+        "sessionsPackets": sessions_packets,
+        "sessionsPayloadBytes": sessions_bytes,
+        "activityPackets": activity_packets,
+        "activityPayloadBytes": activity_bytes,
+        "payloadBytes": payload_bytes,
+        "records": sessions_packets + activity_packets,
+    })
 }
 
 async fn run_real_traffic(broker: Broker) {

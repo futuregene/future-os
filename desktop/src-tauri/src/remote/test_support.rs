@@ -42,6 +42,56 @@ pub(crate) fn init_store() {
     crate::store::initialize_app_store().expect("store init under test HOME");
 }
 
+/// Credentials for a pairing that exists only inside the test process.
+///
+/// The per-pairing capability slots are keyed by `pair_id`, so this is what
+/// makes a `secure_ready` declaration land where the publisher reads it.
+pub(crate) fn pairing_creds(pair_id: &str) -> crate::remote::protocol::PairingCreds {
+    let expires_at = now_secs() + 3600;
+    crate::remote::protocol::PairingCreds {
+        handshake_version: 2,
+        secure: Some(
+            crate::remote::secure::PairingIdentity::new(now_secs() + 600)
+                .expect("pairing identity"),
+        ),
+        pair_id: pair_id.to_string(),
+        desktop_id: format!("desktop_{}", unique("creds")),
+        nkey_seed: nkeys::KeyPair::new_user()
+            .seed()
+            .expect("user seed")
+            .to_string(),
+        user_jwt: jwt(expires_at),
+        nats_url: "nats://127.0.0.1:1".to_string(),
+        nats_ws_url: "ws://127.0.0.1:1".to_string(),
+        jwt_expires_at: expires_at,
+    }
+}
+
+/// Declare a capability set the way a client's `secure_ready` does.
+///
+/// Through the production applier rather than by writing the flag directly: the
+/// flags live in a per-pairing slot that answers an unknown pairing with a
+/// fresh, disabled one, so a harness that skipped this step would measure the
+/// *undeclared* lane while asserting about the declared one. Caller must have
+/// installed the pairing's runtime (`supervisor::shared_runtime`, as
+/// `supervisor::start` does before `build_transport`).
+pub(crate) fn declare_features(
+    creds: &crate::remote::protocol::PairingCreds,
+    pair_id: &str,
+    features: &[&str],
+) {
+    let handshake = crate::remote::commands::HandshakeState::new(
+        creds.clone(),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        unique("bridge"),
+    );
+    let declared: Vec<String> = features
+        .iter()
+        .map(|feature| (*feature).to_string())
+        .collect();
+    crate::remote::commands::apply_declared_features(&handshake, pair_id, &declared);
+}
+
 /// Seed the Desktop projection a client's `list_sessions` would have shown: a
 /// chat thread bound to that agent session.
 ///

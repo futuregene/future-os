@@ -297,7 +297,12 @@ function handleCatalog(
     return;
   const obj = payload as Record<string, unknown>;
   const domain = obj.domain;
-  if (domain !== "sessions" && domain !== "workspaces")
+  // `sessions_activity` is a packet, not a snapshot: it names only the rows
+  // whose activity timestamp moved. Everything below applies it as such — the
+  // rows it does not mention are left exactly as they were, and a row this
+  // catalogue has never held is left for the next catalogue read (a placeholder
+  // would need a title we do not have).
+  if (domain !== "sessions" && domain !== "sessions_activity" && domain !== "workspaces")
     return;
   const version = readVersion(obj.version);
 
@@ -314,8 +319,38 @@ function handleCatalog(
   }
 
   // Domain must match the authenticated epoch.
-  if (!gate.accept(domain, version))
+  if (!gate.accept(domain === "sessions_activity" ? "sessions" : domain, version))
     return;
+
+  if (domain === "sessions_activity") {
+    const rows = obj.activity;
+    if (!Array.isArray(rows))
+      return;
+    const moved = new Map<string, number>();
+    for (const entry of rows) {
+      if (typeof entry !== "object" || entry === null)
+        continue;
+      const row = entry as Record<string, unknown>;
+      if (typeof row.sessionId === "string" && row.sessionId && typeof row.lastMessageAt === "number" && Number.isFinite(row.lastMessageAt))
+        moved.set(row.sessionId, row.lastMessageAt);
+    }
+    if (moved.size === 0)
+      return;
+    setCatalogs(current => current.map((catalog) => {
+      if (catalog.desktopId !== desktopId)
+        return catalog;
+      let changed = false;
+      const sessions = catalog.sessions.map((session) => {
+        const at = moved.get(session.sessionId);
+        if (at === undefined || session.lastMessageAt === at)
+          return session;
+        changed = true;
+        return { ...session, lastMessageAt: at };
+      });
+      return changed ? { ...catalog, sessions } : catalog;
+    }));
+    return;
+  }
 
   if (domain === "sessions") {
     const raw = obj.sessions;

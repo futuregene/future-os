@@ -135,6 +135,7 @@ describe("RemoteClient connection handoff", () => {
       onEventDecodeFailure: jest.fn(),
       onPresence: jest.fn(),
       onSessions: jest.fn(),
+      onSessionActivity: jest.fn(),
       onWorkspaces: jest.fn(),
       onFeatures: jest.fn(),
       onConnectionState: jest.fn(),
@@ -562,7 +563,12 @@ describe("RemoteClient connection handoff", () => {
     // capabilities, which is why they are beside `features` rather than in it.
     expect(declaration?.command).toEqual({
       type: "secure_ready",
-      features: ["event_coalescing_v1", "reply_gzip_v1", "lean_events_v1"],
+      features: [
+        "event_coalescing_v1",
+        "reply_gzip_v1",
+        "lean_events_v1",
+        "catalog_activity_v1",
+      ],
       deviceName: "Pixel 8",
       deviceKind: "mobile",
     });
@@ -573,6 +579,10 @@ describe("RemoteClient connection handoff", () => {
     // with no output still fails the row.
     // `reply_gzip_v1` is only truthful while the decoder sniffs the gzip magic.
     // If this ever stops holding, the declaration above must be removed too.
+    // `catalog_activity_v1` is only truthful while this client applies a packet
+    // to the rows it already holds and re-sorts from the patched value — see
+    // `useSessionCatalog`'s `applySessionActivity` and the tests beside it. A
+    // client that did not would keep a list it cannot re-order.
     const compressed = gzipSync(new TextEncoder().encode(JSON.stringify({ ok: true })));
     expect(compressed[0]).toBe(0x1f);
     expect(decodeRemoteJson<{ ok: boolean }>(compressed)).toEqual({ ok: true });
@@ -718,6 +728,7 @@ describe("dead generations clean up after themselves", () => {
       onEventDecodeFailure: jest.fn(),
       onPresence: jest.fn(),
       onSessions: jest.fn(),
+      onSessionActivity: jest.fn(),
       onWorkspaces: jest.fn(),
       onFeatures: jest.fn(),
       onConnectionState: jest.fn(),
@@ -1010,6 +1021,7 @@ describe("transfer chunks", () => {
       onPresence: jest.fn(),
       onReconnected: jest.fn(),
       onSessions: jest.fn(),
+      onSessionActivity: jest.fn(),
       onWorkspaces: jest.fn(),
     };
     client = new RemoteClient(credentials, callbacks);
@@ -1155,6 +1167,7 @@ describe("command retry policy", () => {
       onPresence: jest.fn(),
       onReconnected: jest.fn(),
       onSessions: jest.fn(),
+      onSessionActivity: jest.fn(),
       onWorkspaces: jest.fn(),
     };
     client = new RemoteClient(credentials, callbacks);
@@ -1304,6 +1317,7 @@ describe("broker status stream", () => {
       onEventDecodeFailure: jest.fn(),
       onPresence: jest.fn(),
       onSessions: jest.fn(),
+      onSessionActivity: jest.fn(),
       onWorkspaces: jest.fn(),
       onFeatures: jest.fn(),
       onConnectionState: jest.fn(),
@@ -1604,6 +1618,51 @@ describe("broker status stream", () => {
 
     expect(callbacks.onSessions).toHaveBeenCalledWith([session], version);
     expect(callbacks.onWorkspaces).toHaveBeenCalledWith([{ id: "w1", name: "W" }], version);
+  });
+
+  /**
+   * The catalog activity packet is its own lane, and it must not be mistaken for
+   * a session list.
+   *
+   * A packet names only the rows whose ordering timestamp moved, so routing it
+   * through `onSessions` would hand the catalogue a one-row list — and the
+   * consumer reads a list without the open conversation as "that conversation
+   * was deleted" and closes it.
+   */
+  test("an activity packet is reported as activity, never as a session list", async () => {
+    const live = liveSocket();
+    (wsconnect as jest.Mock).mockResolvedValue(live.connection);
+    await client.open();
+    const version = { epoch: "e", revision: 7 };
+
+    live.subscriptions.get("p.pair.state.>")!.push({
+      subject: "p.pair.state.activity",
+      data: encoder.encode(
+        JSON.stringify({ activity: [{ sessionId: "s1", lastMessageAt: 1_700 }], version }),
+      ),
+    } as never);
+    await tick();
+
+    expect(callbacks.onSessionActivity).toHaveBeenCalledWith(
+      [{ sessionId: "s1", lastMessageAt: 1_700 }],
+      version,
+    );
+    expect(callbacks.onSessions).not.toHaveBeenCalled();
+  });
+
+  test("a malformed activity packet reports no rows rather than throwing", async () => {
+    const live = liveSocket();
+    (wsconnect as jest.Mock).mockResolvedValue(live.connection);
+    await client.open();
+
+    live.subscriptions.get("p.pair.state.>")!.push({
+      subject: "p.pair.state.activity",
+      data: encoder.encode("{}"),
+    } as never);
+    await tick();
+
+    expect(callbacks.onSessionActivity).toHaveBeenCalledWith([], undefined);
+    expect(callbacks.onSessions).not.toHaveBeenCalled();
   });
 
   test("a snapshot with no payload reports an empty list, never undefined", async () => {
@@ -2018,6 +2077,7 @@ describe("lifecycle guards around a failing transport", () => {
       onEventDecodeFailure: jest.fn(),
       onPresence: jest.fn(),
       onSessions: jest.fn(),
+      onSessionActivity: jest.fn(),
       onWorkspaces: jest.fn(),
       onFeatures: jest.fn(),
       onConnectionState: jest.fn(),

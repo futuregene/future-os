@@ -138,6 +138,19 @@ impl Supervisor {
             .unwrap_or_else(|| Arc::new(AtomicBool::new(false)))
     }
 
+    /// Whether the client on `pair_id` asked for the catalog's recency packets
+    /// instead of a whole session list per second of streaming. Same per-pairing
+    /// rule as [`Supervisor::coalesce_events`].
+    pub(in crate::remote) fn catalog_activity(&self, pair_id: &str) -> Arc<AtomicBool> {
+        self.bridge_shared
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|shared| shared.pair_id == pair_id)
+            .map(|shared| shared.catalog_activity.clone())
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)))
+    }
+
     pub(in crate::remote) fn cancel_tasks(&self) {
         for (task, _) in self.tasks.lock().unwrap().drain(..) {
             task.abort();
@@ -160,6 +173,11 @@ pub(in crate::remote) struct BridgeRuntimeShared {
     pub(in crate::remote) reply_slots: commands::ReplySlots,
     pub(in crate::remote) pairing_confirmed: Arc<AtomicBool>,
     pub(in crate::remote) coalesce_events: Arc<AtomicBool>,
+    /// Whether this client may be sent recency packets instead of a whole
+    /// session list whenever a run writes its thread's activity timestamp. Lives
+    /// with the other capability flags and for the same reason: a client that
+    /// cannot apply a packet must keep receiving whole snapshots.
+    pub(in crate::remote) catalog_activity: Arc<AtomicBool>,
     /// What the connected client said it was, until a new pairing replaces it.
     ///
     /// Spans generations like the fields above, and for the same reason: a
@@ -243,6 +261,7 @@ pub(in crate::remote) fn shared_runtime(
         bridge_instance_id: format!("bridge_{}", nkeys::KeyPair::new_user().public_key()),
         drop_counters: Arc::new(DropCounters::new()),
         coalesce_events: Arc::new(AtomicBool::new(false)),
+        catalog_activity: Arc::new(AtomicBool::new(false)),
         client_identity: Arc::new(Mutex::new(None)),
         next_generation_id: Arc::new(AtomicU64::new(1)),
         handshake: Arc::new(Mutex::new(None)),

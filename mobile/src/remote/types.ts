@@ -115,6 +115,20 @@ export interface SnapshotVersion {
   revision: number;
 }
 
+/**
+ * One row of a catalog activity packet: the session, and the activity
+ * timestamp it now has.
+ *
+ * A streaming run rewrites its conversation's activity timestamp about once a
+ * second, and that value is the list's ordering key. Sending the whole session
+ * list for it cost ~95 KB per second on a desktop with a few hundred
+ * conversations; this packet carries only the rows that moved.
+ */
+export interface SessionActivity {
+  sessionId: string;
+  lastMessageAt: number;
+}
+
 /** Per-domain catalog revisions advertised on a presence heartbeat. */
 export interface CatalogRevisions {
   epoch?: string;

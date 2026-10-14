@@ -8,6 +8,35 @@ mod coalesce;
 /// asks for it.
 pub(super) const EVENT_COALESCING_FEATURE: &str = "event_coalescing_v1";
 
+/// Capability a client declares on `secure_ready` to be told a catalog row's
+/// new recency in a few dozen bytes instead of being sent the whole session
+/// list again.
+///
+/// A streaming run rewrites its thread's activity timestamp about once a
+/// second, and that timestamp is the list's ordering key — so before this
+/// capability every second of every run re-sent every session the host owns.
+/// Measured on the six heaviest completed runs, that lane cost 101.7–178.8 MB
+/// per run against a live event lane of 0.26–1.11 MB; the session list itself
+/// is ~95 KB for 232 conversations, and one row of it moved.
+///
+/// A client that does not declare it keeps receiving whole snapshots on exactly
+/// the old condition (`scripts/measure/measure-catalog-activity.py` measures
+/// both — 0.36–0.55 MB per run for one that does, −99.6%), so an older client is
+/// never silently given a list it cannot keep current.
+pub(super) const CATALOG_ACTIVITY_FEATURE: &str = "catalog_activity_v1";
+
+/// Where a recency packet goes.
+///
+/// A separate subject rather than a second shape on `state.sessions`: an older
+/// client applies every `state.sessions` payload as the *whole* list (an empty
+/// one reads as "your conversations are gone"), so a packet there would either
+/// blank its list or need the capability check to be duplicated in every
+/// reader. Under `state.` it is covered by the platform's existing wildcard
+/// permission, and a client that does not know the suffix ignores it.
+fn catalog_activity_subject(pair_id: &str) -> String {
+    format!("p.{pair_id}.state.activity")
+}
+
 /// Cap on a single event's serialized size. A huge event (e.g. a large tool
 /// result) would otherwise exceed the NATS 1MB user-JWT payload limit and be
 /// rejected by the broker — silently leaving a permanent gap in the client's
@@ -457,24 +486,44 @@ pub(super) fn spawn_catalog_publisher(
     security: secure::Transport,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        // Two independent publish channels, both change-driven. There is no
-        // periodic re-send: a dropped snapshot is reported through the
-        // presence packet's catalog revision (the heartbeat task owns that),
-        // which heals in one heartbeat instead of a 20s timer.
-        //   p.{pair}.state.sessions    — session list on signature change
+        // Three independent publish channels, all change-driven. There is no
+        // periodic re-send: a dropped packet is reported through the presence
+        // packet's catalog revision (the heartbeat task owns that), which heals
+        // in one heartbeat instead of a 20s timer.
+        //   p.{pair}.state.sessions    — whole session list, when its
+        //                                *structural* signature changes (and on
+        //                                any change at all for a client that did
+        //                                not declare `catalog_activity_v1`)
+        //   p.{pair}.state.activity    — the recency rows that moved, when only
+        //                                those moved
         //   p.{pair}.state.workspaces  — workspace list on dirty or signature change
         let mut interval = tokio::time::interval(catalog_tick());
         let mut last_sessions_sig = String::new();
+        let mut last_structural_sig = String::new();
+        // What this connection has actually been told, per session. The wire
+        // carries absolute values, so this is the filter that keeps a packet to
+        // the rows that moved — not a ledger a lost packet could corrupt. An
+        // empty base (a fresh connection) simply means the first packet carries
+        // every row.
+        let mut delivered_activity: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::new();
         let mut last_workspaces_sig = String::new();
         loop {
             interval.tick().await;
+            // Read once per tick: the declaration belongs to the connection, and
+            // a client that never made it is served the whole snapshot on every
+            // change exactly as before.
+            let activity_declared = SUPERVISOR
+                .catalog_activity(&pair_id)
+                .load(Ordering::Acquire);
 
-            // 2. Sessions snapshot (signature change only).
+            // 2. Sessions: the whole list when its structure moved, the moved
+            //    rows alone when only their recency did.
             let snapshot_pair = pair_id.clone();
             let Ok((dirty, sessions, workspaces)) = tokio::task::spawn_blocking(move || {
                 (
                     host().catalog_dirty(),
-                    build_sessions_snapshot(&snapshot_pair),
+                    host().sessions_catalog(&snapshot_pair),
                     build_workspaces_snapshot(),
                 )
             })
@@ -485,32 +534,90 @@ pub(super) fn spawn_catalog_publisher(
             // A store read that fails returns None and this tick is skipped; the
             // next tick recomputes the signature from the store, so a transient
             // failure delays a change by one tick rather than losing it.
-            if let Some((sessions_payload, sessions_sig)) = sessions {
-                if sessions_sig != last_sessions_sig {
-                    let bytes = serde_json::to_vec(&sessions_payload)
-                        .expect("a sessions Value always serializes");
-                    match secure::publish(
-                        &client,
-                        &security,
-                        format!("p.{pair_id}.state.sessions"),
-                        bytes,
-                    )
-                    .await
-                    {
-                        // Record the signature only once the snapshot actually
-                        // left the endpoint. `Ok(false)` means the secure channel
-                        // had no key yet, so the payload was dropped — the next
-                        // tick retries, which is what makes this a "retry until
-                        // delivered" publisher instead of a "send once and hope"
-                        // one.
-                        Ok(true) => last_sessions_sig = sessions_sig,
-                        Ok(false) => {}
-                        Err(e) => {
-                            if let Some(line) = HEARTBEAT_PUBLISH_EPISODE.record("state_publish", e)
-                            {
-                                eprintln!("{line}");
+            if let Some(catalog) = sessions {
+                // Sending the whole list is the *only* thing that can restore a
+                // structure the client cannot patch, so it is what a client
+                // without the declaration keeps getting.
+                let full = !activity_declared || catalog.structural != last_structural_sig;
+                if full {
+                    if catalog.signature != last_sessions_sig {
+                        let bytes = serde_json::to_vec(&catalog.payload)
+                            .expect("a sessions Value always serializes");
+                        match secure::publish(
+                            &client,
+                            &security,
+                            format!("p.{pair_id}.state.sessions"),
+                            bytes,
+                        )
+                        .await
+                        {
+                            // Record the signature only once the snapshot actually
+                            // left the endpoint. `Ok(false)` means the secure
+                            // channel had no key yet, so the payload was dropped —
+                            // the next tick retries, which is what makes this a
+                            // "retry until delivered" publisher instead of a
+                            // "send once and hope" one.
+                            Ok(true) => {
+                                last_sessions_sig = catalog.signature.clone();
+                                last_structural_sig = catalog.structural.clone();
+                                delivered_activity = catalog.activity.iter().cloned().collect();
                             }
-                            return;
+                            Ok(false) => {}
+                            Err(e) => {
+                                if let Some(line) =
+                                    HEARTBEAT_PUBLISH_EPISODE.record("state_publish", e)
+                                {
+                                    eprintln!("{line}");
+                                }
+                                return;
+                            }
+                        }
+                    }
+                } else {
+                    let updates: Vec<serde_json::Value> = catalog
+                        .activity
+                        .iter()
+                        .filter(|(session, at)| delivered_activity.get(session) != Some(at))
+                        .map(|(session, at)| {
+                            serde_json::json!({ "sessionId": session, "lastMessageAt": at })
+                        })
+                        .collect();
+                    if !updates.is_empty() {
+                        // The revision rides along for the same reason it rides
+                        // on a snapshot: it is what lets the client's gate tell a
+                        // stale or repeated packet from a newer one, and what the
+                        // heartbeat compares when one is lost.
+                        let body = serde_json::json!({
+                            "pairId": pair_id,
+                            "activity": updates,
+                            "version": catalog.payload["version"].clone(),
+                        });
+                        let bytes =
+                            serde_json::to_vec(&body).expect("an activity Value always serializes");
+                        match secure::publish(
+                            &client,
+                            &security,
+                            catalog_activity_subject(&pair_id),
+                            bytes,
+                        )
+                        .await
+                        {
+                            // Same retry rule as the snapshot: the base advances
+                            // only for what the endpoint actually sent, so a
+                            // packet the secure channel could not seal is rebuilt
+                            // on the next tick.
+                            Ok(true) => {
+                                delivered_activity = catalog.activity.iter().cloned().collect()
+                            }
+                            Ok(false) => {}
+                            Err(e) => {
+                                if let Some(line) =
+                                    HEARTBEAT_PUBLISH_EPISODE.record("state_publish", e)
+                                {
+                                    eprintln!("{line}");
+                                }
+                                return;
+                            }
                         }
                     }
                 }

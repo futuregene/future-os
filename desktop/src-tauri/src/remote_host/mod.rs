@@ -52,7 +52,9 @@ pub(crate) fn attach_events() {
     });
 }
 use crate::remote::protocol::PairingCreds;
-use crate::remote::services::{FileHost, Invitation, PairingHost, RemoteHost, StateHost};
+use crate::remote::services::{
+    FileHost, Invitation, PairingHost, RemoteHost, SessionsCatalog, StateHost,
+};
 use futures::future::BoxFuture;
 use serde_json::Value;
 impl PairingHost for DesktopHost {
@@ -84,6 +86,9 @@ impl StateHost for DesktopHost {
     }
     fn sessions(&self, pair: &str) -> Option<(Value, String)> {
         catalog::sessions(pair)
+    }
+    fn sessions_catalog(&self, pair: &str) -> Option<SessionsCatalog> {
+        catalog::sessions_catalog(pair)
     }
     fn workspaces(&self) -> Option<(Value, String)> {
         catalog::workspaces()

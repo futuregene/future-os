@@ -493,6 +493,7 @@ subjects.
 | `evt.{sessionId}` | the Desktop publishes session events |
 | `presence` | the Desktop publishes online status, bridge instance identity and the current catalog revision |
 | `state.sessions` / `state.workspaces` | the Desktop publishes catalog snapshots on change |
+| `state.activity` | the rows whose ordering timestamp moved, for a client that declared `catalog_activity_v1` |
 | `state.events` | negotiated low-rate run/approval/configuration notices (`selective_events_v1`) |
 | `xfer.up.>` | phone upload chunks and download-pull initiation |
 | `xfer.down.>` | the Desktop sends file chunks down |
@@ -698,6 +699,61 @@ It is the same declaration as the lean event lane because it is the same client
 generation: the reasoning row, the tool target and the tool outcome are exactly
 the three things that client reads differently. It is cleared on every new
 connection for the same reason.
+
+**Catalog activity packets (2026-10-14):** catalog *ordering* stopped costing a
+whole session list. A streaming run rewrites its conversation's
+`threads.last_message_at` about once a second, and that column is the list's
+ordering key — under the rule above it was a content change, so every second of
+every run re-published every conversation the host owns. Measured on the six
+heaviest completed runs through
+`scripts/measure/measure-catalog-activity.py` (the shipping publisher, a real
+store the size of this desktop's own, that run's own activity-write count
+replayed from its journal): **101.7–178.8 MB per run**, against the same runs'
+0.26–1.11 MB live event lane. The list itself is ~95 KB for 232 rows, and one
+row had moved.
+
+A client that declares `catalog_activity_v1` (both shipped clients do) is told
+those rows instead, on their own subject:
+
+| Subject suffix | Direction and purpose |
+| --- | --- |
+| `state.activity` | the rows whose `lastMessageAt` moved, under the same `version` envelope (`catalog_activity_v1`) |
+
+A separate subject rather than a second shape on `state.sessions`, because an
+older client applies every `state.sessions` payload as the *whole* list: a
+packet there would read as "every other conversation is gone". Under `state.` it
+is covered by the platform's existing wildcard permission, and a client that
+does not know the suffix ignores it.
+
+The split is between two signatures over the same rows
+(`remote_host::catalog::sessions_catalog`): the **structural** one is the rows
+with `lastMessageAt` removed, and it is what a whole snapshot is for — a row
+appeared or went away, was renamed, started or stopped streaming, was pinned, or
+moved workspace. Only the recency vector moving sends a packet. The presence
+heartbeat's revision advances for **either**, which is what keeps a dropped
+packet observable exactly as a dropped snapshot is (the client pulls the catalog
+itself), and the packet carries the same `version`, so the client's one gate
+rejects a repeated or out-of-order one. Values on the wire are absolute, not
+deltas: a client handed the newest of them is correct whether or not it saw the
+earlier ones.
+
+Three properties are priced in rather than hidden:
+
+- **A recency change that reorders rows is a structural change.** The host's own
+  array order is what an ordinary single-machine list draws (the phone's
+  `catalogRows`), so a row overtaking another is content. In practice that is the
+  run's *first* write — the prompt lifts the conversation to the head — and its
+  `streaming`/`status` flip when it settles; the ~1000–1800 writes in between are
+  packets. A second conversation streaming at the same time can interleave with
+  the first and pay one snapshot per overtake, not per second.
+- **The saving is the lane's, not a byte claim about the client.** Numbers above
+  are the publisher's payload plus the 44-byte record overhead per packet; the
+  snapshot a client pays once when it connects, and the pushes a structural
+  change still costs, are unchanged by this lane and counted on neither side.
+- **Nothing degrades silently for an older client.** A client that does not
+  declare the capability keeps receiving whole snapshots on exactly the old
+  condition, and the flag is cleared on every new connection like the other
+  capability flags.
 
 **Idle catalog traffic (2026-09-25):** catalog snapshots are published only when
 content changes. There is no periodic re-send: the presence heartbeat carries
