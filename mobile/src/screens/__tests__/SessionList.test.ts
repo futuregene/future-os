@@ -1520,6 +1520,31 @@ test("each page of the merged list holds its own kind of conversation", () => {
 });
 
 /**
+ * An empty merged list is still a merged list.
+ *
+ * The screen names a machine with the picker, and a machine that is not
+ * answering has no rows of its own. Falling back to the active machine's tree
+ * there would draw one machine's conversations under another machine's name —
+ * which is what made choosing an offline desktop look like nothing had happened
+ * — so an empty merged list shows the caller's own empty state and no rows of
+ * ours.
+ */
+test("an empty merged list draws none of the active machine's rows", () => {
+  act(() => tree.update(createElement(SessionList, {
+    tab: "chat",
+    empty: createElement(Text, null, "nothing here"),
+    onMenu,
+    onTabChange,
+    commandsFor: testCommandsFor,
+    merged: [],
+    activeDesktopId: "desk-a",
+  })));
+  // The ordinary list's three sessions are not what an empty machine's list is.
+  expect(mergedTitles()).toEqual([]);
+  expect(tree.root.findAllByType(Text).some(node => node.props.children === "nothing here")).toBe(true);
+});
+
+/**
  * A heading on another machine offers that machine's actions, and they land
  * there.
  *

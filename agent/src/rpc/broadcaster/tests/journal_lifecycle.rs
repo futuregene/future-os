@@ -201,6 +201,119 @@ fn broadcast_without_configured_journal_is_in_memory_only() {
     assert_eq!(events.len(), 1);
 }
 
+/// A settled run's raw rows are retired behind a snapshot, so a delta still
+/// queued for that run can no longer be appended. That refusal is permanent:
+/// the event used to stay in the batch and fail every later batch with it, so
+/// one late delta silently took the whole session's persistence down until the
+/// agent restarted.
+#[test]
+fn an_event_the_journal_refuses_is_dropped_without_taking_the_session_down() {
+    let directory = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(directory.path().to_path_buf());
+    let b = SseBroadcaster::new();
+    b.configure_journal("session-refused", &manager).unwrap();
+
+    b.start_run("run-settled".to_string(), 1);
+    b.broadcast(SseEvent::new("agent_end", serde_json::json!({"n": 1})));
+    assert_eq!(b.journal_commit_count(), 1, "the settled run must commit");
+
+    // What run completion does afterwards, on its own thread: publish the
+    // snapshot and retire the run's raw rows. Compaction only retires a run
+    // the store has settled, so seed that row and compact it.
+    manager.test_execute(
+        "INSERT INTO runs(session_id,run_id,status,completed_at_ms) \
+         VALUES ('session-refused','run-settled','completed',1)",
+    );
+    manager
+        .storage()
+        .unwrap()
+        .compact_run("session-refused", "run-settled")
+        .unwrap();
+
+    // The late delta this guards against. It is buffered (no reply), so a
+    // failed batch keeps it and retries it forever.
+    b.broadcast(SseEvent::new(
+        "text_chunk",
+        serde_json::json!({"text": "late"}),
+    ));
+    // A session-scoped event is durable, so it flushes the batch holding the
+    // refusal — the exact shape the incident's journal showed.
+    b.broadcast(SseEvent::new(
+        "permission_level_changed",
+        serde_json::json!({"level": "workspace"}),
+    ));
+
+    assert_eq!(
+        b.persistence_error(),
+        None,
+        "a permanently refused event must not mark the journal unhealthy"
+    );
+    assert_eq!(
+        b.session_events_since(-1).unwrap().len(),
+        1,
+        "the event after the refusal must still land"
+    );
+    assert_eq!(
+        b.read_journal("run-settled").unwrap().len(),
+        1,
+        "the refused late delta must be dropped, not appended"
+    );
+}
+
+/// `recover_storage` drains the writer before it can clear the health flag, so
+/// a refusal left in the batch used to make recovery fail too — leaving no way
+/// back but a restart.
+#[test]
+fn the_recover_path_is_not_blocked_by_a_refused_event() {
+    let directory = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(directory.path().to_path_buf());
+    let b = SseBroadcaster::new();
+    b.configure_journal("session-recover", &manager).unwrap();
+
+    b.start_run("run-settled".to_string(), 1);
+    b.broadcast(SseEvent::new("agent_end", serde_json::json!({"n": 1})));
+    manager.test_execute(
+        "INSERT INTO runs(session_id,run_id,status,completed_at_ms) \
+         VALUES ('session-recover','run-settled','completed',1)",
+    );
+    manager
+        .storage()
+        .unwrap()
+        .compact_run("session-recover", "run-settled")
+        .unwrap();
+    b.broadcast(SseEvent::new(
+        "text_chunk",
+        serde_json::json!({"text": "late"}),
+    ));
+
+    b.recover_storage()
+        .expect("a refusal in the batch must not block recovery");
+    assert!(b.persistence_error().is_none());
+}
+
+/// `flush_journal` is what run completion waits on before it asks for
+/// compaction: it must put the buffered batch in the store, so the snapshot
+/// published next cannot race a delta still in memory.
+#[test]
+fn flush_journal_puts_the_buffered_batch_in_the_store() {
+    let directory = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(directory.path().to_path_buf());
+    let b = SseBroadcaster::new();
+    b.configure_journal("session-flush", &manager).unwrap();
+    b.start_run("run-flush".to_string(), 1);
+
+    // A delta is buffered, not durable: nothing is committed yet.
+    b.broadcast(SseEvent::new(
+        "text_chunk",
+        serde_json::json!({"text": "buffered"}),
+    ));
+    assert_eq!(b.journal_commit_count(), 0, "deltas stay in the batch");
+
+    b.flush_journal().unwrap();
+    assert_eq!(b.journal_commit_count(), 1, "flushing commits the batch");
+    assert_eq!(b.read_journal("run-flush").unwrap().len(), 1);
+}
+
 #[test]
 fn attach_beyond_ring_without_journal_returns_projection() {
     let broadcaster = SseBroadcaster::new();

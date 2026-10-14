@@ -58,6 +58,15 @@ interface SessionRow {
 // unmounted when entering a chat and remounted when returning).
 let lastTab: Tab = "chat";
 
+/**
+ * The "every desktop" scope, as one shared object.
+ *
+ * A module constant rather than a fresh literal: the merged list is memoized on
+ * the scope, and a new object on every render would re-merge every machine's
+ * conversation catalogue on every render.
+ */
+const ALL_DESKTOPS: DesktopFilter = { kind: "all" };
+
 function deferPresentation(action: () => void): void {
   // Let the native action sheet finish dismissing before presenting another
   // alert. InteractionManager can remain pending during native transitions.
@@ -77,7 +86,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
    * filter that reset itself on every re-render would look like the list had a
    * mind of its own.
    */
-  const [desktopFilter, setDesktopFilter] = useState<DesktopFilter>({ kind: "all" });
+  const [desktopFilter, setDesktopFilter] = useState<DesktopFilter>(ALL_DESKTOPS);
   const activeDesktopId = remote.credentials?.expectedDesktopId ?? null;
   /**
    * Every *other* paired machine's catalogue, read from that machine's own
@@ -90,19 +99,48 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
    * row that belongs to another machine no longer costs a reconnection.
    */
   const catalogs = remote.catalogs;
+  /**
+   * The scope actually in force.
+   *
+   * A scope can name a machine that was unpaired while the list was showing it —
+   * the picker's own "manage" page is one tap away — and a list standing on a
+   * machine the picker no longer offers would be describing nothing at all. Such
+   * a scope falls back to every desktop here rather than through an effect, so no
+   * pass ever draws the list for a machine that is already gone.
+   */
+  const scopedFilter = desktopFilter.kind === "all"
+    || remote.desktops.some(desktop => desktop.desktopId === desktopFilter.desktopId)
+    ? desktopFilter
+    : ALL_DESKTOPS;
   const mergedRows = useMemo(
-    () => mergeSessions(catalogs.catalogs, desktopFilter),
-    [catalogs.catalogs, desktopFilter],
+    () => mergeSessions(catalogs.catalogs, scopedFilter),
+    [catalogs.catalogs, scopedFilter],
   );
   /**
-   * The merged view replaces the workspace tree only when it has something the
-   * tree cannot show — rows from another desktop. A user with one pairing keeps
-   * today's list exactly, because the flat view is a different information
-   * architecture (a workspace name can exist on two machines at once).
+   * The machine the picker names that the phone is not reading, if any.
+   *
+   * It is the one case the ordinary workspace tree cannot draw: its rows come
+   * from that machine's own runtime rather than from the connection the screens
+   * are wired to — and a machine that is not answering has none at all.
+   */
+  const scopedPeerId = scopedFilter.kind === "desktop" && scopedFilter.desktopId !== activeDesktopId
+    ? scopedFilter.desktopId
+    : null;
+  /**
+   * The merged view replaces the workspace tree when the list is showing another
+   * desktop, and when it holds rows the tree cannot show — a user with one
+   * pairing keeps today's list exactly, because the flat view is a different
+   * information architecture (a workspace name can exist on two machines at
+   * once).
+   *
+   * A machine the picker names is always drawn from the merged rows, even when it
+   * has none: the tree below belongs to the machine the phone is reading, and
+   * under the picker's name that is one machine's conversations presented as
+   * another's.
    */
   const showMerged = useMemo(
-    () => mergedRows.some(row => row.desktopId !== activeDesktopId),
-    [mergedRows, activeDesktopId],
+    () => scopedPeerId !== null || mergedRows.some(row => row.desktopId !== activeDesktopId),
+    [mergedRows, activeDesktopId, scopedPeerId],
   );
   const peerIcons = useMemo(() => {
     const map = new Map<string, string>();
@@ -380,6 +418,27 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   };
 
 
+  /**
+   * Create a conversation on a machine named by the user, reporting one that
+   * cannot be reached at all.
+   *
+   * `newConversation` cannot say *where*: it is the open machine's verb, and a
+   * screen's copy of it belongs to the render that drew the screen, so awaiting a
+   * move and then calling it would build the draft on the machine the phone had
+   * just left. The provider's desktop-addressed verb names the machine instead.
+   */
+  const createOn = (
+    desktopId: string,
+    mode: "chat" | "workspace",
+    selectedWorkspaceId: string,
+  ) => {
+    void remote.newConversationOn(desktopId, mode, selectedWorkspaceId)
+      .catch((error: unknown) => Alert.alert(t(
+        error instanceof Error && error.message === "desktop_unavailable"
+          ? "desktops.switchFailed"
+          : "common.error",
+      )));
+  };
 
   /**
    * Open the new conversation on the machine the dialog named.
@@ -401,14 +460,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     mode: "chat" | "workspace",
     selectedWorkspaceId: string,
   ) => {
-    const start = () => {
-      void remote.newConversationOn(desktopId, mode, selectedWorkspaceId)
-        .catch((error: unknown) => Alert.alert(t(
-          error instanceof Error && error.message === "desktop_unavailable"
-            ? "desktops.switchFailed"
-            : "common.error",
-        )));
-    };
+    const start = () => createOn(desktopId, mode, selectedWorkspaceId);
     setNewOpen(false);
     setBusyDevice(null);
     if (Platform.OS === "ios") {
@@ -583,17 +635,28 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     // machine it is belongs to the user rather than to whichever one happens to
     // be connected: the dialog opens on that choice.
     const multiple = machines.filter(machine => canCommand(machine.desktopId)).length > 1;
-    setNewDeviceStep(multiple);
-    setNewDeviceId(null);
+    // A machine the list is showing is already named by the picker, so the
+    // dialog starts on it: a conversation started from this screen belongs to the
+    // machine the screen is about, not to the one the phone happens to read. Its
+    // workspaces are read from it in the machine step, as any named machine's
+    // are.
+    const named = scopedPeerId;
+    setNewDeviceStep(multiple || named !== null);
+    setNewDeviceId(named);
     setDeviceWorkspaces(null);
     setBusyDevice(null);
     setNewWorkspaceOpen(false);
     setNewWorkspaceError(null);
     if (tab === "chat") {
-      // The conversations tab has nothing left to pick — create the chat
-      // straight away without a dialog, unless the machine is that choice.
+      // The conversations tab has nothing left to pick, so a chat is created
+      // straight away — on the machine the list is showing when it names one,
+      // and otherwise without a dialog at all unless the machine is that choice.
       setNewMode("chat");
       setWorkspaceId("");
+      if (named !== null) {
+        createOn(named, "chat", "");
+        return;
+      }
       if (!multiple) {
         void remote.newConversation("chat");
         return;
@@ -604,7 +667,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     }
     setNewMode("workspace");
     setWorkspaceId(remote.workspaces[0]?.id ?? "");
-    setNewStep(multiple ? "device" : "target");
+    setNewStep(multiple || named !== null ? "device" : "target");
     setNewOpen(true);
   };
 
@@ -686,6 +749,63 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     <Text style={styles.empty}>{t("sessions.noWorkspaces")}</Text>
   );
 
+  /**
+   * What the list says when the picker names another machine and there is
+   * nothing to draw under it.
+   *
+   * A machine that is not answering has no rows of its own, and the reader still
+   * has to be able to tell that apart from "this machine has no conversations
+   * yet" — so the state names the machine, says how it stands, and offers the one
+   * action that can change that, on that machine's own connection. Drawing the
+   * active machine's list here instead is what made picking an offline desktop
+   * look like the tap had been ignored.
+   */
+  const scopedPeerEmpty = (() => {
+    if (scopedPeerId === null) return null;
+    const machine = machines.find(item => item.desktopId === scopedPeerId);
+    const status = machine?.status ?? "offline";
+    if (status === "connected") {
+      // Answering and simply empty: the ordinary copy for this tab, whose own
+      // actions are already addressed to the machine the list is showing.
+      return tab === "workspace"
+        ? <Text style={styles.empty}>{t("sessions.noWorkspaces")}</Text>
+        : createChatEmpty;
+    }
+    return (
+      <View style={styles.emptyState}>
+        <View
+          style={[
+            styles.emptyIcon,
+            { backgroundColor: status === "offline" ? colors.dangerSoft : colors.warningSoft },
+          ]}
+        >
+          <Unplug color={status === "offline" ? colors.danger : colors.warning} size={26} />
+        </View>
+        <Text style={styles.emptyTitle}>
+          {`${iconGlyph(machine?.icon)} ${desktopLabel(scopedPeerId)}`}
+        </Text>
+        <Text style={styles.emptyHint}>{t(machineStatusKey(status))}</Text>
+        <Text style={styles.emptyHint}>{t("desktops.unreachableHint")}</Text>
+        <Button
+          compact
+          label={t("connection.reconnect")}
+          onPress={() => void remote.reconnect(scopedPeerId)}
+        />
+      </View>
+    );
+  })();
+
+  /**
+   * Whether a new conversation can be started for what the list is showing.
+   *
+   * With every desktop in view the dialog asks which machine, so the active
+   * machine's own connection is enough; with one machine named it is *that*
+   * machine's answer that decides — the same judgement its rows' actions are
+   * offered under, so the button never promises a conversation on a machine the
+   * list is describing as unreachable.
+   */
+  const canStartConversation = scopedPeerId === null ? connected : canCommand(scopedPeerId);
+
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.page}>
@@ -715,7 +835,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
         <View style={styles.deviceBar}>
           <DesktopPicker
             desktops={remote.desktops}
-            filter={desktopFilter}
+            filter={scopedFilter}
             onChange={setDesktopFilter}
             onManage={onManageDesktops}
           />
@@ -761,11 +881,11 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           icons={peerIcons}
           commandsFor={commandsFor}
           merged={showMerged ? mergedRows : undefined}
-          empty={tab === "workspace" ? workspaceEmpty : !connected ? offlineEmpty : createChatEmpty}
+          empty={scopedPeerEmpty ?? (tab === "workspace" ? workspaceEmpty : !connected ? offlineEmpty : createChatEmpty)}
           onMenu={openSessionMenu}
         />}
 
-        {connected && (
+        {canStartConversation && (
           <Pressable
             accessibilityLabel={t("sessions.new")}
             accessibilityRole="button"
@@ -807,9 +927,12 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
                   <View style={styles.workspaceOptionsContent}>
                     {machines.map((machine) => {
                       const creatable = canCommand(machine.desktopId);
-                      // The machine the phone is on needs no switch, so it is
-                      // the one marked; every other row is a machine to move to.
-                      const current = machine.desktopId === activeDesktopId;
+                      // The machine this dialog is about is the one marked — the
+                      // one the list named, else the one the phone is on, which
+                      // needs no switch and is where a conversation started from
+                      // the merged list lands. Every other row is a machine to
+                      // move to.
+                      const current = machine.desktopId === (newDeviceId ?? activeDesktopId);
                       return (
                         <Pressable
                           key={machine.desktopId}

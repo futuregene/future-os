@@ -106,7 +106,8 @@ impl SqliteStore {
 mod events;
 mod transcript;
 pub(crate) use events::{
-    decode_event_row, insert_event_record, read_compaction_event_rows, read_replay_event_rows,
+    decode_event_row, insert_event_record, is_event_rejected, read_compaction_event_rows,
+    read_replay_event_rows,
 };
 pub(crate) use transcript::{insert_transcript_entries, read_run_markers};
 

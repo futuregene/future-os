@@ -349,6 +349,15 @@ listed together — every paired desktop keeps its own live connection, so all o
 their conversations are drawn in one merged list, and a row's own actions
 (rename, pin, delete) are issued to the machine that owns it.
 
+The picker above the list says which machines the list is about: "All desktops"
+shows every paired desktop's conversations merged, and a single desktop scopes
+the list to that one. A machine that is not answering has no conversations to
+draw, so the list shows *that* machine's own state — offline, connecting or
+preparing — with a Reconnect button that reaches it over its own connection; it
+never falls back to the machine the phone happens to be reading. Starting a
+conversation while one machine is named creates it there, and a machine that
+cannot take one does not offer the button.
+
 Each desktop in the list has a pencil button to rename it; the name is saved
 locally only and never synced to the Desktop or platform; clearing the name
 shows the Desktop's id again. The list is centered on wide screens with left
