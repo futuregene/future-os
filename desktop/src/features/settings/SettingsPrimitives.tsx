@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "../../components/ui/Button";
+import { cn } from "../../lib/cn";
 
 export { Switch } from "../../components/ui/Switch";
 
@@ -99,19 +100,37 @@ export function SettingsList({ children }: { children: ReactNode }) {
 export function SettingsRow({
   children,
   description,
+  stacked,
   title,
 }: {
   children?: ReactNode;
   description?: ReactNode;
+  /**
+   * Put the control **below** the label instead of beside it.
+   *
+   * For a control that is itself as wide as the column — a grid of glyphs, not a
+   * switch. The row shape cannot hold both: the label is the only item that can
+   * give width, so it collapses to zero (the title drawn one character per line)
+   * while the control, held at its unwrapped width by `shrink-0`, runs out of
+   * the card. Both were measured on the machine icon row before this existed:
+   * the label 0px wide, the picker 247px past the card's edge.
+   */
+  stacked?: boolean;
   title: ReactNode;
 }) {
   return (
-    <div className="flex items-center gap-4 py-3.5">
+    <div className={cn("flex gap-4 py-3.5", stacked ? "flex-col" : "items-center")}>
       <div className="min-w-0 flex-1">
         <div className="text-sm font-medium text-ink">{title}</div>
         {description ? <div className="mt-0.5 text-xs leading-5 text-ink-muted">{description}</div> : null}
       </div>
-      {children ? <div className="flex shrink-0 items-center justify-end">{children}</div> : null}
+      {children
+        ? (
+            <div className={cn("flex items-center", stacked ? "min-w-0 justify-start" : "shrink-0 justify-end")}>
+              {children}
+            </div>
+          )
+        : null}
     </div>
   );
 }

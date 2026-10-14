@@ -17,10 +17,6 @@ import {
  * machine's own screen — or by the agent at the start of a run — has to be
  * followed here. Without it the picker would show what the user last chose
  * locally while the host was using something else.
- *
- * Only the conversation's own settings are here: the host's *catalogue* (its
- * models and its own app settings) moves on a different set of announcements,
- * which `remoteHostCatalog` owns.
  */
 const SETTINGS_EVENTS = new Set(["model_changed", "thinking_level_changed"]);
 
@@ -30,10 +26,27 @@ export interface RemoteConversationSettingsState {
   thinkingLevel: string | null;
   /** The host's catalogue, for the picker. Empty until it answers. */
   models: RemoteModelInfo[];
+  /**
+   * True until this conversation's settings — and, on a draft, its host's
+   * catalogue — have been read.
+   *
+   * The picker needs it to tell "not read yet" from "the host has no model":
+   * both are a `null` model, and while the read is in flight that difference is
+   * the whole of what the control can say. Without it, opening a conversation
+   * (every read starts by clearing the previous one's value) put the control's
+   * own *label* on screen for as long as the host took to answer.
+   */
+  loading: boolean;
   /** True while a change is in flight, so the picker can say so. */
   saving: boolean;
-  /** A failed read or write, for the caller to show. */
-  error: string | null;
+  /**
+   * A failed read, and a failed write — kept apart because they are different
+   * events with different reasons. A read that failed changed nothing, so the
+   * write message ("could not change …") would describe something that never
+   * happened.
+   */
+  readError: string | null;
+  writeError: string | null;
   setModel: (reference: string) => Promise<void>;
   setThinkingLevel: (level: string) => Promise<void>;
 }
@@ -68,10 +81,20 @@ export function defaultRemoteModel(models: RemoteModelInfo[]): string | null {
  * The thinking level a draft should offer for the model it resolved.
  *
  * A model that does not accept thinking controls gets `off`, because that is what
- * it will run with; a model that declares its own level uses that; otherwise the
- * agent's default. The level is sent explicitly with the first prompt either way,
- * so this is not a guess about what the host will *choose* — it is the value the
- * host will be *asked* for.
+ * it will run with; every other model gets this app's own default — the same level
+ * this app's composer starts a conversation on.
+ *
+ * Deliberately *not* the level the host's catalogue declares. That field is not a
+ * default anybody chose: the agent answers `list_models` with `high` for every
+ * reasoning model and `off` for the rest (`agent/src/rpc/commands/providers.rs`),
+ * so seeding from it ran every new remote conversation on a reasoning model at
+ * high effort while the same model started on this machine ran at medium — and the
+ * level travels with the first prompt, so the host really did run it at high. This
+ * app's own composer ignores the same field for the same reason
+ * (`modelThinkingLevel` in `integrations/agent/agentClient`).
+ *
+ * The level is sent explicitly with the first prompt either way: this is not a
+ * guess about what the host will *choose*, it is the value the host is asked for.
  */
 export function defaultRemoteThinkingLevel(
   models: RemoteModelInfo[],
@@ -81,14 +104,14 @@ export function defaultRemoteThinkingLevel(
     (model.provider ? `${model.provider}/${model.id}` : model.id) === reference);
   if (chosen && chosen.reasoning === false)
     return "off";
-  return chosen?.thinkingLevel?.trim() || DEFAULT_REMOTE_THINKING_LEVEL;
+  return DEFAULT_REMOTE_THINKING_LEVEL;
 }
 
 /**
  * A remote conversation's model and thinking level, and the writes for them.
  *
  * Optimistic on change: the picker shows the new value straight away and the
- * host's announcement is what confirms it. Waiting for a round trip to move a
+ * host's* announcement is what confirms it. Waiting for a round trip to move a
  * select leaves the control looking stuck, and the host is the authority either
  * way — if it refuses, its next `get_state` or its error puts the real value
  * back.
@@ -118,8 +141,10 @@ export function useRemoteConversationSettings(
   const [model, setModel] = useState<string | null>(null);
   const [thinkingLevel, setThinkingLevel] = useState<string | null>(null);
   const [models, setModels] = useState<RemoteModelInfo[]>([]);
+  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
+  const [writeError, setWriteError] = useState<string | null>(null);
   /**
    * Guards against a slow reply landing after the user has moved to another
    * conversation — the same hazard the timeline has, and the same fix.
@@ -127,9 +152,10 @@ export function useRemoteConversationSettings(
   const epochRef = useRef(0);
   /** Whether another reader owns this conversation's state read (see the type). */
   const handedOver = sessionState !== undefined;
+  /** The reply that reader has for *this* conversation, if it has one yet. */
   const handed = sessionState !== undefined && sessionState !== null
     && sessionState.sessionId === sessionId
-    ? parseRemoteConversationSettings(sessionState.state)
+    ? sessionState
     : null;
 
   const read = useCallback(async (
@@ -137,11 +163,13 @@ export function useRemoteConversationSettings(
     session: string,
   ): Promise<void> => {
     const epoch = ++epochRef.current;
+    setLoading(true);
     try {
       const [settings, catalogue] = await Promise.all([
         getRemoteConversationSettings(desktop, session),
         // The catalogue is per host, not per conversation: this is a cache hit
-        // for a host this window has already read from (`remoteHostCatalog`).
+        // for a host this window has already read from (`remoteHostCatalog`),
+        // and the failure path below is what the picker reports.
         hostModels(desktop).catch(() => [] as RemoteModelInfo[]),
       ]);
       if (epoch !== epochRef.current)
@@ -149,11 +177,17 @@ export function useRemoteConversationSettings(
       setModel(settings.model);
       setThinkingLevel(settings.thinkingLevel);
       setModels(catalogue);
-      setError(null);
+      setReadError(null);
     }
     catch (err) {
       if (epoch === epochRef.current)
-        setError(err instanceof Error ? err.message : String(err));
+        setReadError(err instanceof Error ? err.message : String(err));
+    }
+    finally {
+      // Guarded like every other write here: a slow reply that lands after the
+      // user moved on must not clear the *new* conversation's read state.
+      if (epoch === epochRef.current)
+        setLoading(false);
     }
   }, []);
 
@@ -161,9 +195,9 @@ export function useRemoteConversationSettings(
    * The host's catalogue, for the picker and for a draft's defaults.
    *
    * A failure is reported only for a draft: a conversation's own settings are
-   * read in `read`, which is where a failure belongs — an empty picker beside a
-   * conversation that otherwise answered is not the fault the reader needs told
-   * about.
+   * read in `read`, or read by the timeline and handed over, and an empty picker
+   * beside a conversation whose transcript already reports the failure is a
+   * second copy of one message.
    */
   const loadModels = useCallback(async (
     desktop: string,
@@ -177,7 +211,7 @@ export function useRemoteConversationSettings(
     }
     catch (err) {
       if (epoch === epochRef.current && !sessionId)
-        setError(err instanceof Error ? err.message : String(err));
+        setReadError(err instanceof Error ? err.message : String(err));
       return [];
     }
   }, [sessionId]);
@@ -189,7 +223,9 @@ export function useRemoteConversationSettings(
     setModel(null);
     setThinkingLevel(null);
     setModels([]);
-    setError(null);
+    setLoading(false);
+    setReadError(null);
+    setWriteError(null);
     if (!enabled || !desktopId)
       return;
     if (!sessionId) {
@@ -198,38 +234,54 @@ export function useRemoteConversationSettings(
       // needs, and the values chosen here travel with the first prompt. Without
       // this the model picker was empty (and so disabled) and the thinking level
       // fell back to "off", which is not a default anyone chose.
+      setLoading(true);
       void loadModels(desktopId, epoch).then((catalogue) => {
         if (epoch !== epochRef.current)
           return;
         const reference = defaultRemoteModel(catalogue);
         setModel(reference);
         setThinkingLevel(defaultRemoteThinkingLevel(catalogue, reference));
+        setLoading(false);
       });
       return;
     }
     // A conversation: its picker is drawn from the host's catalogue, which is
     // this window's cache for that host.
     void loadModels(desktopId, epoch);
-    // Its model and thinking level come from the state read — this hook's own
-    // when nobody hands one over, the timeline's when it does.
-    if (!handedOver)
+    if (!handedOver) {
+      // Nobody else is reading this conversation's state: this hook is.
       void read(desktopId, sessionId);
+      return;
+    }
+    // The timeline is reading it as this opens (it has to, for the run in
+    // flight), so the picker waits for that reply rather than paying for a
+    // second one — and stops waiting when the reply lands, answered or not.
+    setLoading(true);
   }, [enabled, desktopId, sessionId, handedOver, loadModels, read]);
 
   /**
-   * The reply another reader already read for this conversation.
+   * The reply the other reader read for this conversation.
    *
    * Applied as it arrives rather than only at open: the timeline reads the state
    * again when a link comes back, and what it read then is newer than what the
-   * picker is showing.
+   * picker is showing. A reading the host *refused* carries no state — the
+   * transcript reports that failure on its own — so the picker simply stops
+   * waiting instead of showing a control that says it is still loading for ever.
    */
   useEffect(() => {
+    // Nothing yet: the open effect has already set what the control should say
+    // while it waits (this hook's own read, or the other reader's reply).
     if (!handed)
       return;
-    if (handed.model)
-      setModel(handed.model);
-    if (handed.thinkingLevel)
-      setThinkingLevel(handed.thinkingLevel);
+    setLoading(false);
+    const state = handed.state;
+    if (!state)
+      return;
+    const settings = parseRemoteConversationSettings(state);
+    if (settings.model)
+      setModel(settings.model);
+    if (settings.thinkingLevel)
+      setThinkingLevel(settings.thinkingLevel);
   }, [handed]);
 
   // Live: follow the host's own changes for this conversation.
@@ -270,10 +322,10 @@ export function useRemoteConversationSettings(
   /**
    * The host's catalogue moved, for a conversation whose picker is drawn from it.
    *
-   * The read behind it is dropped before this runs, so the picker asks the host
-   * again rather than re-rendering the list it already has. Only the models
-   * matter here: this conversation's own model and level are announced per
-   * conversation, and the hook above is what follows those.
+   * The read behind it was dropped before this runs, so the picker asks the host
+   * again rather than re-rendering the list it already has. Only the models matter
+   * here: this conversation's own model and level are announced per conversation,
+   * and the listener above is what follows those.
    */
   useHostCatalogueInvalidation(desktopId, (domain) => {
     if (domain === "models" && enabled && desktopId)
@@ -282,15 +334,15 @@ export function useRemoteConversationSettings(
 
   const change = useCallback(async (work: () => Promise<unknown>): Promise<void> => {
     setSaving(true);
-    setError(null);
+    setWriteError(null);
     try {
       await work();
     }
     catch (err) {
       // The host still has the old value, so the picker goes back to it — and
       // the re-read happens *before* the message is set, because a successful
-      // read clears the error as part of its job. Setting the message first left
-      // the user with a value that snapped back and no reason why.
+      // read clears the read error as part of its job. Setting the message first
+      // left the user with a value that snapped back and no reason why.
       if (desktopId && sessionId) {
         try {
           await read(desktopId, sessionId);
@@ -299,7 +351,7 @@ export function useRemoteConversationSettings(
           // The restore is best effort: the message matters more than it.
         }
       }
-      setError(err instanceof Error ? err.message : String(err));
+      setWriteError(err instanceof Error ? err.message : String(err));
     }
     finally {
       setSaving(false);
@@ -356,12 +408,14 @@ export function useRemoteConversationSettings(
   }, [desktopId, sessionId, thinkingLevel, change]);
 
   return {
-    error,
+    loading,
     model,
     models,
+    readError,
     saving,
     setModel: setModelChoice,
     setThinkingLevel: setThinkingLevelChoice,
     thinkingLevel,
+    writeError,
   };
 }

@@ -183,7 +183,15 @@ export interface RemoteSessionState {
  */
 export interface RemoteSessionStateReading {
   sessionId: string;
-  state: RemoteSessionState;
+  /**
+   * The host's reply, or `null` when it could not be read.
+   *
+   * A reader is told the difference between "the host answered" and "the host
+   * did not": a consumer that waits for these settings (the picker) must stop
+   * waiting either way, and it must not take an unread state for the host's own
+   * answer — which is what an empty object would look like.
+   */
+  state: RemoteSessionState | null;
 }
 
 interface EntriesPage {
@@ -490,7 +498,7 @@ export function useRemoteTimeline(
       // Kept as read — the whole reply, not just the run: its model and thinking
       // level are what this conversation's settings are drawn from, and reading
       // them here is what keeps an open from spending two `get_state` commands.
-      setSessionState({ sessionId: session, state: state ?? {} });
+      setSessionState({ sessionId: session, state: state ?? null });
       active = state?.activeRun?.runId ?? null;
       // The host's own answer to "is a run in flight", which is what a window that
       // just opened has no other way of knowing: the pushes only start arriving at
@@ -504,7 +512,11 @@ export function useRemoteTimeline(
     }
     catch {
       // A host that cannot answer is not evidence about its runs. The pushes
-      // still carry the reply; the log read is simply skipped this time.
+      // still carry the reply; the log read is simply skipped this time. What is
+      // said, though, is that this conversation's state was *not* read: the picker
+      // waits for this reply, and a failed read it never heard about would leave
+      // the control loading for ever.
+      setSessionState({ sessionId: session, state: null });
       return;
     }
     if (!active)
