@@ -1,5 +1,6 @@
 //! Ordered event batches, durable flush barriers and persistence health.
 use super::BROADCAST_RING_CAPACITY;
+use crate::session::sqlite_store::is_event_rejected;
 
 pub(super) const EVENT_BATCH_WINDOW: std::time::Duration = std::time::Duration::from_millis(100);
 const EVENT_BATCH_MAX_EVENTS: usize = 128;
@@ -363,6 +364,65 @@ fn flush_event_batch(
                 }
             }
             true
+        }
+        // A refusal is permanent for that one event, so retrying the batch would
+        // fail it forever — and every later batch queued behind it, until the
+        // agent restarted. Retry the events singly to find the ones this journal
+        // refuses, drop those, and keep the journal live for everything else.
+        Err(error) if is_event_rejected(&error) => {
+            let refused = format!("event batch commit failed: {error:#}");
+            let mut retry = Vec::new();
+            for item in pending.drain(..) {
+                let event_id = item
+                    .event
+                    .get("event_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_owned();
+                let event_type = item
+                    .event
+                    .get("event_type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_owned();
+                match store.append_events(session_id, vec![item.event.clone()]) {
+                    Ok(()) => {
+                        #[cfg(test)]
+                        commits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if let Some(reply) = item.reply {
+                            let _ = reply.send(Ok(()));
+                        }
+                    }
+                    Err(error) if is_event_rejected(&error) => {
+                        tracing::warn!(
+                            session = %session_id,
+                            %event_id,
+                            %event_type,
+                            %error,
+                            "dropping an event this journal refuses; events after it still land"
+                        );
+                        if let Some(reply) = item.reply {
+                            let _ =
+                                reply.send(Err(format!("event batch commit failed: {error:#}")));
+                        }
+                    }
+                    // Still a storage problem: keep it for the next attempt.
+                    Err(error) => {
+                        if let Some(reply) = item.reply {
+                            let _ =
+                                reply.send(Err(format!("event batch commit failed: {error:#}")));
+                        } else {
+                            retry.push(item);
+                        }
+                    }
+                }
+            }
+            *pending = retry;
+            if pending.is_empty() {
+                return true;
+            }
+            health.fail(refused);
+            false
         }
         Err(error) => {
             let message = format!("event batch commit failed: {error:#}");
