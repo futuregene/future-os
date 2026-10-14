@@ -822,15 +822,21 @@ results. Native reruns passed:
 
 | Scope | Passed | Ignored |
 | --- | ---: | ---: |
-| Agent library | 2203 | 1 |
+| Agent library | 2206 | 1 |
 | RPC library | 148 | 0 |
 | CLI library | 963 | 0 |
 | TUI library | 2170 | 0 |
-| Desktop GUI library | 1805 | 11 |
-| Desktop headless library | 1462 | 11 |
+| Desktop GUI library | 1809 | 12 |
+| Desktop headless library | 1466 | 12 |
 | Agent CLI/startup/SQLite integration | 53 | 0 |
 | CLI binary entry and event contract | 20 | 0 |
-| AgentStatusGate and UpdatePage frontend | 30 | 0 |
+| AgentStatusGate / UpdatePage / remote replay | 56 | 0 |
+
+Merged `origin/main` (`4bd5eab3`) after committing, then reran the affected
+Agent, GUI and headless suites; their table entries are post-merge results.
+Root/GUI/headless Clippy, fmt, ESLint/typecheck and all 260 documentation checks
+passed. Updated the doctor diagnostic golden fragment too; the complete CLI
+golden corpus was not run in this pass.
 
 Fixed stale helper-argument, doctor-diagnostic and connection-gate assertions.
 RPC roots preserve Agent's `HOME -> USERPROFILE -> platform profile` order,

@@ -521,15 +521,17 @@ Windows 当前发布使用已验签的原始 NSIS EXE。格式检查、临时文
 
 | 范围 | 通过 | 忽略 |
 | --- | ---: | ---: |
-| Agent library | 2203 | 1 |
+| Agent library | 2206 | 1 |
 | RPC library | 148 | 0 |
 | CLI library | 963 | 0 |
 | TUI library | 2170 | 0 |
-| Desktop GUI library | 1805 | 11 |
-| Desktop headless library | 1462 | 11 |
+| Desktop GUI library | 1809 | 12 |
+| Desktop headless library | 1466 | 12 |
 | Agent CLI/startup/SQLite 集成 | 53 | 0 |
 | CLI 二进制入口与事件契约 | 20 | 0 |
-| AgentStatusGate 与 UpdatePage 前端 | 30 | 0 |
+| AgentStatusGate / UpdatePage / remote replay | 56 | 0 |
+
+提交后合并 `origin/main`（`4bd5eab3`），重新执行受影响的 Agent、GUI 和 headless 全套测试，表中相应结果为合并后数据。Root/GUI/headless Clippy、fmt、ESLint/typecheck 和 260 份文档检查均通过。doctor 的诊断 golden 片段也同步更新；本轮未执行整个 CLI golden corpus。
 
 修正了 helper 新版本参数、doctor 诊断和连接门禁文案的旧断言。RPC 默认根保持 Agent 的 `HOME → USERPROFILE → 平台目录` 优先级，避免 Windows 自定义 HOME 使宿主与客户端分离；安装器也拒绝驱动器相对或仅有根分隔符的覆盖路径。共享根修复后再次通过 RPC 148 例和真实宿主 9 例。GUI/headless 顺序执行，避免远程 fixture 端口冲突。日志位于忽略目录 `agent/target/phase6-macos-tests/results/`。
 

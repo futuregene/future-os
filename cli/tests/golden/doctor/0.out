@@ -5,7 +5,8 @@
 
 [31m[!!][0m [31mAgent[0m
       /tmp/cli-diff-work/homes/doctor/fake-bin/future-agent  [2m(future-agent v9.9.9-diff)[0m
-      [31mNot running — start with: future-agent[0m
+      Connection check: unable to connect to Future Agent (http://127.0.0.1:1: transport error)
+      [31mAgent unavailable — open Desktop or start `future agent`; check compatibility and instance locks[0m
 
 [32m[ok][0m [32mCLI[0m
       /tmp/cli-diff-work/homes/doctor/fake-bin/future  [2m(future v0.0.0-diff+local)[0m
