@@ -6,7 +6,8 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "react-native";
-import { colors, layout, spacing } from "../../../theme/tokens";
+import { layout, spacing } from "../../../theme/tokens";
+import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
 
 /**
  * "↑ previous question / ↓ next passage" for a long transcript.
@@ -42,6 +43,7 @@ export function QuestionNavControl({
   onNext: () => void;
   style: StyleProp<ViewStyle>;
 }) {
+  const styles = useStyles();
   return (
     <View style={[styles.stack, style]}>
       <ArrowButton
@@ -71,6 +73,8 @@ function ArrowButton({
   disabled: boolean;
   onPress: () => void;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const Glyph = icon === "up" ? ArrowUp : ArrowDown;
   return (
     <Pressable
@@ -90,7 +94,7 @@ function ArrowButton({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(theme => StyleSheet.create({
   stack: {
     position: "absolute",
     zIndex: 4,
@@ -103,10 +107,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: colors.lineSoft,
+    borderColor: theme.colors.lineSoft,
     borderRadius: layout.touchTarget / 2,
-    backgroundColor: colors.surface,
-    shadowColor: colors.inkStrong,
+    backgroundColor: theme.colors.surface,
+    shadowColor: theme.colors.inkStrong,
     shadowOpacity: 0.12,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 3 },
@@ -114,9 +118,9 @@ const styles = StyleSheet.create({
   },
   // Inert, not gone: the pair keeps its size so the enabled button never moves.
   buttonDisabled: {
-    backgroundColor: colors.surfaceSubtle,
+    backgroundColor: theme.colors.surfaceSubtle,
     shadowOpacity: 0.06,
     elevation: 2,
   },
-  pressed: { backgroundColor: colors.surfaceSubtle },
-});
+  pressed: { backgroundColor: theme.colors.surfaceSubtle },
+}));

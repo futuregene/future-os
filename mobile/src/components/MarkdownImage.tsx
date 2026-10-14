@@ -2,7 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { useTranslation } from "react-i18next";
 import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { basename, classifyMarkdownTarget, localFilePath, remoteMarkdownImageUrl } from "@future-os/markdown";
-import { colors, radius, spacing } from "../theme/tokens";
+import { radius, spacing } from "../theme/tokens";
+import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 
 export interface MarkdownImageLoader {
   /** Includes desktop/pair/session identity; paths alone are not cache keys. */
@@ -36,6 +37,7 @@ export function MarkdownImage({ src, alt, width, href, openTarget }: {
   href?: string;
   openTarget(target: string): void;
 }) {
+  const styles = useStyles();
   const loader = useContext(MarkdownImageLoaderContext);
   const basePath = useContext(MarkdownImageBasePathContext);
   const url = remoteMarkdownImageUrl(src);
@@ -62,6 +64,8 @@ function LocalImage({ alt, loader, path, width, onOpen, linked }: {
   onOpen(): void;
   linked: boolean;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const [uri, setUri] = useState(() => loader.cached(path));
   const [loading, setLoading] = useState(false);
@@ -111,6 +115,7 @@ function LocalImage({ alt, loader, path, width, onOpen, linked }: {
 }
 
 function LoadedImage({ alt, uri, width, onFailure }: { alt: string; uri: string; width?: number; onFailure?(): void }) {
+  const styles = useStyles();
   const [failed, setFailed] = useState(false);
   const [aspectRatio, setAspectRatio] = useState(1.5);
   if (failed) return <Text selectable style={styles.caption}>{alt || uri}</Text>;
@@ -134,10 +139,10 @@ function LoadedImage({ alt, uri, width, onFailure }: { alt: string; uri: string;
     }} />;
 }
 
-const styles = StyleSheet.create({
-  image: { width: "100%", marginVertical: spacing.sm, borderRadius: radius.md, backgroundColor: colors.surfaceSubtle },
-  caption: { color: colors.inkMuted },
-  link: { color: colors.accent, textDecorationLine: "underline" },
-  placeholder: { marginVertical: spacing.sm, padding: spacing.md, borderRadius: radius.md, backgroundColor: colors.surfaceSubtle },
+const useStyles = createThemedStyles(theme => StyleSheet.create({
+  image: { width: "100%", marginVertical: spacing.sm, borderRadius: radius.md, backgroundColor: theme.colors.surfaceSubtle },
+  caption: { color: theme.colors.inkMuted },
+  link: { color: theme.colors.accent, textDecorationLine: "underline" },
+  placeholder: { marginVertical: spacing.sm, padding: spacing.md, borderRadius: radius.md, backgroundColor: theme.colors.surfaceSubtle },
   loadButton: { minHeight: 44, justifyContent: "center", alignItems: "flex-start" },
-});
+}));

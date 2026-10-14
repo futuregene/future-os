@@ -10,7 +10,8 @@ import {
 import type { TFunction } from "i18next";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { RemoteSessionUsage } from "../../../remote/types";
-import { colors, layout, radius, spacing } from "../../../theme/tokens";
+import { layout, radius, spacing } from "../../../theme/tokens";
+import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
 import { formatCostCny } from "../utils";
 
 /**
@@ -35,6 +36,8 @@ export function SessionUsageSheet({
   onClose: () => void;
   t: TFunction;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const priced = usage
     ? usage.costInputCny + usage.costOutputCny + usage.costCacheReadCny + usage.costCacheWriteCny > 0
     : false;
@@ -115,12 +118,12 @@ export function SessionUsageSheet({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(theme => StyleSheet.create({
   overlay: {
     flex: 1,
     justifyContent: "flex-end",
     padding: layout.gutter,
-    backgroundColor: colors.overlay,
+    backgroundColor: theme.colors.overlay,
   },
   sheet: {
     width: "100%",
@@ -130,10 +133,10 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     padding: spacing.sm,
     borderRadius: radius.xl,
-    backgroundColor: colors.surface,
+    backgroundColor: theme.colors.surface,
   },
   header: { flexDirection: "row", alignItems: "center", paddingLeft: spacing.md, marginBottom: spacing.sm },
-  title: { flex: 1, paddingVertical: spacing.sm, color: colors.inkStrong, fontSize: 18, fontWeight: "700" },
+  title: { flex: 1, paddingVertical: spacing.sm, color: theme.colors.inkStrong, fontSize: theme.font(18), fontWeight: "700" },
   iconButton: {
     width: layout.touchTarget,
     height: layout.touchTarget,
@@ -141,21 +144,21 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderRadius: radius.pill,
   },
-  pressed: { backgroundColor: colors.surfaceSubtle },
+  pressed: { backgroundColor: theme.colors.surfaceSubtle },
   body: { gap: spacing.sm, paddingBottom: spacing.sm },
   subject: {
     paddingHorizontal: spacing.md,
   },
-  subjectTitle: { color: colors.inkStrong, fontSize: 15, fontWeight: "600" },
-  table: { borderRadius: radius.md, overflow: "hidden", borderWidth: 1, borderColor: colors.line },
+  subjectTitle: { color: theme.colors.inkStrong, fontSize: theme.font(15), fontWeight: "600" },
+  table: { borderRadius: radius.md, overflow: "hidden", borderWidth: 1, borderColor: theme.colors.line },
   row: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
-  headRow: { backgroundColor: colors.surfaceSubtle },
-  totalRow: { borderTopWidth: 1, borderTopColor: colors.line, backgroundColor: colors.surfaceSubtle },
-  headCell: { color: colors.inkMuted, fontSize: 12, fontWeight: "600" },
-  cell: { color: colors.ink, fontSize: 14 },
-  totalCell: { color: colors.inkStrong, fontSize: 14, fontWeight: "600" },
-  muted: { color: colors.inkSoft },
+  headRow: { backgroundColor: theme.colors.surfaceSubtle },
+  totalRow: { borderTopWidth: 1, borderTopColor: theme.colors.line, backgroundColor: theme.colors.surfaceSubtle },
+  headCell: { color: theme.colors.inkMuted, fontSize: theme.font(12), fontWeight: "600" },
+  cell: { color: theme.colors.ink, fontSize: theme.font(14) },
+  totalCell: { color: theme.colors.inkStrong, fontSize: theme.font(14), fontWeight: "600" },
+  muted: { color: theme.colors.inkSoft },
   grow: { flex: 1, minWidth: 0 },
   numberCell: { minWidth: 78, textAlign: "right" },
-  hint: { paddingHorizontal: spacing.md, color: colors.inkMuted, fontSize: 12, lineHeight: 18 },
-});
+  hint: { paddingHorizontal: spacing.md, color: theme.colors.inkMuted, fontSize: theme.font(12), lineHeight: theme.leading(18) },
+}));

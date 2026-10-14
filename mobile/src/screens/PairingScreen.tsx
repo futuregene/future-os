@@ -24,7 +24,8 @@ import { DialogSurface } from "../components/DialogSurface";
 import { pairingCodeFromQr } from "../remote/codec";
 import { RemoteApiError } from "../remote/connectionState";
 import { useRemote } from "../remote/RemoteContext";
-import { colors, layout, radius, spacing } from "../theme/tokens";
+import { layout, radius, spacing } from "../theme/tokens";
+import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 import { VERSION } from "../version.generated";
 import { LanguageSettings } from "../i18n/LanguageSettings";
 
@@ -83,6 +84,8 @@ export function PairingScreen({ onPaired, onBack }: {
   onPaired?(): void;
   onBack?(): void;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const dimensions = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -357,15 +360,15 @@ export function PairingScreen({ onPaired, onBack }: {
   );
 }
 
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.canvas },
+const useStyles = createThemedStyles(theme => StyleSheet.create({
+  safe: { flex: 1, backgroundColor: theme.colors.canvas },
   page: { flex: 1, width: "100%", maxWidth: layout.formMaxWidth, alignSelf: "center", paddingHorizontal: layout.gutter },
   scroll: { flexGrow: 1, paddingTop: spacing.lg, paddingBottom: spacing.lg },
   backButton: { width: layout.touchTarget, height: layout.touchTarget, flexShrink: 0, alignItems: "center", justifyContent: "center", borderRadius: radius.md },
   copy: { marginBottom: spacing.xl },
   titleRow: { minHeight: layout.touchTarget, flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  title: { flex: 1, minWidth: 0, color: colors.inkStrong, fontSize: 28, fontWeight: "700", letterSpacing: -0.5 },
-  description: { color: colors.inkSoft, fontSize: 16, lineHeight: 24, marginTop: spacing.md },
+  title: { flex: 1, minWidth: 0, color: theme.colors.inkStrong, fontSize: theme.font(28), fontWeight: "700", letterSpacing: -0.5 },
+  description: { color: theme.colors.inkSoft, fontSize: theme.font(16), lineHeight: theme.leading(24), marginTop: spacing.md },
   scanner: {
     width: "100%",
     minHeight: 280,
@@ -373,13 +376,13 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.surface,
+    borderColor: theme.colors.line,
+    backgroundColor: theme.colors.surface,
     alignItems: "center",
     justifyContent: "center",
   },
   permission: { padding: spacing.xl, alignItems: "center", gap: spacing.lg },
-  permissionText: { color: colors.inkSoft, fontSize: 15, lineHeight: 22, textAlign: "center" },
+  permissionText: { color: theme.colors.inkSoft, fontSize: theme.font(15), lineHeight: theme.leading(22), textAlign: "center" },
   scanFrame: {
     position: "absolute",
     inset: 0,
@@ -390,18 +393,18 @@ const styles = StyleSheet.create({
   },
   scanBox: {
     borderWidth: 3,
-    borderColor: colors.surface,
+    borderColor: theme.colors.surface,
     borderRadius: radius.lg,
   },
   scanHint: {
     marginTop: spacing.md,
     paddingHorizontal: spacing.md,
     textAlign: "center",
-    color: colors.surface,
-    fontSize: 15,
-    lineHeight: 22,
+    color: theme.colors.surface,
+    fontSize: theme.font(15),
+    lineHeight: theme.leading(22),
     fontWeight: "600",
-    textShadowColor: colors.overlay,
+    textShadowColor: theme.colors.overlay,
     textShadowRadius: 4,
   },
   manualButton: {
@@ -414,11 +417,11 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.md,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.surface,
+    borderColor: theme.colors.line,
+    backgroundColor: theme.colors.surface,
   },
-  manualPressed: { backgroundColor: colors.surfaceSubtle },
-  manualLabel: { flexShrink: 1, textAlign: "center", color: colors.inkSoft, fontSize: 15, fontWeight: "600" },
+  manualPressed: { backgroundColor: theme.colors.surfaceSubtle },
+  manualLabel: { flexShrink: 1, textAlign: "center", color: theme.colors.inkSoft, fontSize: theme.font(15), fontWeight: "600" },
   compactManualButton: {
     minHeight: 36,
     flexShrink: 0,
@@ -428,11 +431,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     borderRadius: radius.md,
   },
-  compactManualLabel: { color: colors.inkSoft, fontSize: 13, fontWeight: "600" },
+  compactManualLabel: { color: theme.colors.inkSoft, fontSize: theme.font(13), fontWeight: "600" },
   footer: { marginTop: "auto", paddingTop: spacing.lg, gap: spacing.sm },
   version: {
-    color: colors.inkMuted,
-    fontSize: 12,
+    color: theme.colors.inkMuted,
+    fontSize: theme.font(12),
     textAlign: "center",
     paddingTop: spacing.lg,
     paddingBottom: spacing.sm,
@@ -445,29 +448,29 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderRadius: radius.md,
-    backgroundColor: colors.inkStrong,
+    backgroundColor: theme.colors.inkStrong,
     shadowColor: "#000",
     shadowOpacity: 0.16,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
     elevation: 5,
   },
-  toastText: { color: colors.surface, fontSize: 14, fontWeight: "600", textAlign: "center" },
-  dialogTitle: { color: colors.inkStrong, fontSize: 20, fontWeight: "700" },
+  toastText: { color: theme.colors.surface, fontSize: theme.font(14), fontWeight: "600", textAlign: "center" },
+  dialogTitle: { color: theme.colors.inkStrong, fontSize: theme.font(20), fontWeight: "700" },
   codeInput: {
     minHeight: 48,
     paddingHorizontal: spacing.md,
-    color: colors.ink,
+    color: theme.colors.ink,
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: theme.colors.line,
     borderRadius: radius.md,
-    fontSize: 13,
+    fontSize: theme.font(13),
   },
   manualError: {
-    color: colors.danger,
-    fontSize: 13,
+    color: theme.colors.danger,
+    fontSize: theme.font(13),
     marginTop: -spacing.sm,
   },
   dialogActions: { flexDirection: "row", gap: spacing.md },
   dialogAction: { flex: 1 },
-});
+}));

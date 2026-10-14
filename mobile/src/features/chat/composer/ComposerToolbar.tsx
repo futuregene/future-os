@@ -2,10 +2,10 @@ import { ChevronDown, Paperclip, Send, Slash, Square } from "lucide-react-native
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import type { TFunction } from "i18next";
 import type { RemoteControls } from "../../../remote/RemoteContext";
-import { colors } from "../../../theme/tokens";
+import { useTheme } from "../../../theme/ThemeContext";
 import { useComposerCompletion } from "../useComposerCompletion";
 import { useStopRequest } from "../useStopRequest";
-import { styles } from "./composerStyles";
+import { useStyles } from "./composerStyles";
 interface Props {
   remote: RemoteControls;
   t: TFunction;
@@ -24,6 +24,8 @@ interface Props {
 }
 
 export function ComposerToolbar({ remote, t, compactToolbar, compacting, activeModelLabel, selector, setSelector, completion, editable, openAttachmentMenu, stopRequest, skillEvaluating, canSend, send }: Props) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   return (
     <View
       style={[

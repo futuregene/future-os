@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { Text, View } from "react-native";
-import { colors } from "../../../theme/tokens";
-import { styles } from "./messageStyles";
+import { useTheme } from "../../../theme/ThemeContext";
+import { useStyles } from "./messageStyles";
 
 // Inline divider marking where the agent auto-compacted the conversation
 // (history summarized to fit the context window). A hairline rule with a small
@@ -48,6 +48,8 @@ export function CompactionDivider({
 }
 
 export function StatusDivider({ label, failed = false }: { label: string; failed?: boolean; }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const color = failed ? colors.danger : colors.inkMuted;
   const lineColor = failed ? colors.dangerLine : colors.line;
   return (

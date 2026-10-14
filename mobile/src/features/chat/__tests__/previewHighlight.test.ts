@@ -5,7 +5,7 @@ import type { TFunction } from "i18next";
 import { PreviewModal } from "../components/PreviewModal";
 import type { PreviewState } from "../useFileDownload";
 import { codeRowText } from "../../../components/codePreviewRows";
-import { codeColors } from "../../../theme/tokens";
+import { lightCodeColors } from "../../../theme/tokens";
 
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 jest.mock("react-native-safe-area-context", () => ({
@@ -82,9 +82,9 @@ test("a code preview is colored and monospace without altering the source", () =
     expect(chunks.join("")).toBe(python);
     expect(rendered).toBe(paintedChunks.join(""));
     const colors = spans.map(node => StyleSheet.flatten(node.props.style)?.color);
-    expect(colors).toContain(codeColors.keyword);
-    expect(colors).toContain(codeColors.comment);
-    expect(colors).toContain(codeColors.string);
+    expect(colors).toContain(lightCodeColors.keyword);
+    expect(colors).toContain(lightCodeColors.comment);
+    expect(colors).toContain(lightCodeColors.string);
     expect(style.fontFamily).toBe(monospace);
   } finally { act(() => tree.unmount()); }
 });
@@ -127,7 +127,7 @@ test("a Makefile is highlighted with the grammar for its name", () => {
     expect(chunks.join("")).toBe(makefile);
     expect(rendered).toBe(paintedChunks.join(""));
     expect(spans.length).toBeGreaterThan(0);
-    expect(spans.some(node => StyleSheet.flatten(node.props.style)?.color === codeColors.comment)).toBe(true);
+    expect(spans.some(node => StyleSheet.flatten(node.props.style)?.color === lightCodeColors.comment)).toBe(true);
     expect(style.fontFamily).toBe(monospace);
   } finally { act(() => tree.unmount()); }
 });

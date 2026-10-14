@@ -1,11 +1,13 @@
 import { useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import { colors, layout, radius, spacing } from "../theme/tokens";
+import { layout, radius, spacing } from "../theme/tokens";
+import { createThemedStyles } from "../theme/ThemeContext";
 import type { LanguagePreference } from "./index";
 import { getLanguagePreference, setLanguagePreference, subscribeLanguagePreference } from "./preferences";
 
 export function LanguageSettings() {
+  const styles = useStyles();
   const { t } = useTranslation();
   const preference = useSyncExternalStore(subscribeLanguagePreference, getLanguagePreference);
   const [saving, setSaving] = useState(false);
@@ -47,9 +49,9 @@ export function LanguageSettings() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(theme => StyleSheet.create({
   section: { gap: spacing.sm },
-  label: { color: colors.inkMuted, fontSize: 13, fontWeight: "600" },
+  label: { color: theme.colors.inkMuted, fontSize: theme.font(13), fontWeight: "600" },
   options: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
   option: {
     minHeight: layout.touchTarget,
@@ -57,11 +59,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: theme.colors.line,
     borderRadius: radius.md,
   },
-  selected: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+  selected: { borderColor: theme.colors.accent, backgroundColor: theme.colors.accentSoft },
   dimmed: { opacity: 0.6 },
-  optionText: { color: colors.ink, fontSize: 14 },
-  error: { color: colors.danger, fontSize: 13 },
-});
+  optionText: { color: theme.colors.ink, fontSize: theme.font(14) },
+  error: { color: theme.colors.danger, fontSize: theme.font(13) },
+}));

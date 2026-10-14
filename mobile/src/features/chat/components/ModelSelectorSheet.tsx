@@ -13,7 +13,8 @@ import type { TFunction } from "i18next";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRemote } from "../../../remote/RemoteContext";
 import { modelReference, type ThinkingLevel } from "../../../remote/types";
-import { colors, layout, radius, spacing } from "../../../theme/tokens";
+import { layout, radius, spacing } from "../../../theme/tokens";
+import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
 
 type Remote = ReturnType<typeof useRemote>;
 
@@ -30,6 +31,8 @@ export function ModelSelectorSheet({
   remote: Remote;
   t: TFunction;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   // The composer keeps the IME up when the sheet opens (the picker is opened
   // from the composer toolbar, not from a dismiss-first panel), and a RN Modal
@@ -135,12 +138,12 @@ export function ModelSelectorSheet({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(theme => StyleSheet.create({
   selectorOverlay: {
     flex: 1,
     justifyContent: "flex-end",
     padding: layout.gutter,
-    backgroundColor: colors.overlay,
+    backgroundColor: theme.colors.overlay,
   },
   selectorMenu: {
     width: "100%",
@@ -150,7 +153,7 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     padding: spacing.sm,
     borderRadius: radius.xl,
-    backgroundColor: colors.surface,
+    backgroundColor: theme.colors.surface,
   },
   selectorHeader: { flexDirection: "row", alignItems: "center", paddingLeft: spacing.md, marginBottom: spacing.sm },
   closeButton: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center", borderRadius: radius.pill },
@@ -158,8 +161,8 @@ const styles = StyleSheet.create({
   selectorTitle: {
     flex: 1,
     paddingVertical: spacing.sm,
-    color: colors.inkStrong,
-    fontSize: 18,
+    color: theme.colors.inkStrong,
+    fontSize: theme.font(18),
     fontWeight: "700",
   },
   selectorOption: {
@@ -171,9 +174,9 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     borderRadius: radius.md,
   },
-  selectorOptionSelected: { backgroundColor: colors.accentSoft },
+  selectorOptionSelected: { backgroundColor: theme.colors.accentSoft },
   selectorOptionPressed: { opacity: 0.72 },
   selectorOptionCopy: { minWidth: 0, flex: 1 },
-  selectorOptionLabel: { flexShrink: 1, color: colors.ink, fontSize: 15, fontWeight: "600" },
-  selectorOptionMeta: { marginTop: 2, color: colors.inkMuted, fontSize: 12 },
-});
+  selectorOptionLabel: { flexShrink: 1, color: theme.colors.ink, fontSize: theme.font(15), fontWeight: "600" },
+  selectorOptionMeta: { marginTop: 2, color: theme.colors.inkMuted, fontSize: theme.font(12) },
+}));

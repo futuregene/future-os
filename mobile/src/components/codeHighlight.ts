@@ -68,7 +68,7 @@ import "prismjs/components/prism-graphql";
 import "prismjs/components/prism-elm";
 // `prism-objectivec` extends the C grammar, which is loaded above.
 import "prismjs/components/prism-objectivec";
-import { codeColors } from "../theme/tokens";
+import { lightCodeColors, type CodePalette } from "../theme/tokens";
 
 /** Prism grammar per file suffix for in-app code previews. This mirrors the
  * phone's text route (`remote/fileTypes.ts`): every code-ish suffix the phone
@@ -272,29 +272,41 @@ const aliases: Record<string, string> = {
   rs: "rust", golang: "go", kt: "kotlin", "c++": "cpp", "c#": "csharp",
   dockerfile: "docker", ps1: "powershell", text: "plain", txt: "plain",
 };
-const tokenColors: Record<string, string> = {
-  comment: codeColors.comment, prolog: codeColors.comment, doctype: codeColors.comment,
-  keyword: codeColors.keyword, builtin: codeColors.keyword, tag: codeColors.keyword,
-  boolean: codeColors.literal, number: codeColors.literal, constant: codeColors.literal,
-  string: codeColors.string, char: codeColors.string, regex: codeColors.string,
-  "attr-value": codeColors.string, inserted: codeColors.string,
-  function: codeColors.function, "class-name": codeColors.function,
-  property: codeColors.property, "attr-name": codeColors.property, variable: codeColors.property,
-  // Types Prism emits for the config / template languages the previews add
-  // (CSS-family selectors, ini / .properties keys, batch commands, HCL types,
-  // Ruby's string-literal, PHP's `<?php` delimiter). Without them those files
-  // tokenize into spans that all render uncolored.
-  selector: codeColors.keyword, section: codeColors.keyword, "section-name": codeColors.keyword,
-  key: codeColors.property, value: codeColors.string, "string-literal": codeColors.string,
-  command: codeColors.function, type: codeColors.keyword, delimiter: codeColors.operator,
-  operator: codeColors.operator, punctuation: codeColors.operator,
-  deleted: codeColors.keyword,
-};
+const tokenColorsCache = new WeakMap<CodePalette, Record<string, string>>();
+function tokenColorsFor(codeColors: CodePalette): Record<string, string> {
+  const cached = tokenColorsCache.get(codeColors);
+  if (cached) return cached;
+  const tokenColors: Record<string, string> = {
+    comment: codeColors.comment, prolog: codeColors.comment, doctype: codeColors.comment,
+    keyword: codeColors.keyword, builtin: codeColors.keyword, tag: codeColors.keyword,
+    boolean: codeColors.literal, number: codeColors.literal, constant: codeColors.literal,
+    string: codeColors.string, char: codeColors.string, regex: codeColors.string,
+    "attr-value": codeColors.string, inserted: codeColors.string,
+    function: codeColors.function, "class-name": codeColors.function,
+    property: codeColors.property, "attr-name": codeColors.property, variable: codeColors.property,
+    // Types Prism emits for the config / template languages the previews add
+    // (CSS-family selectors, ini / .properties keys, batch commands, HCL types,
+    // Ruby's string-literal, PHP's `<?php` delimiter). Without them those files
+    // tokenize into spans that all render uncolored.
+    selector: codeColors.keyword, section: codeColors.keyword, "section-name": codeColors.keyword,
+    key: codeColors.property, value: codeColors.string, "string-literal": codeColors.string,
+    command: codeColors.function, type: codeColors.keyword, delimiter: codeColors.operator,
+    operator: codeColors.operator, punctuation: codeColors.operator,
+    deleted: codeColors.keyword,
+  };
+  tokenColorsCache.set(codeColors, tokenColors);
+  return tokenColors;
+}
 
 /** Whole-block tokenization preserves multiline strings/comments. Bound both
  * regex input and native Text spans; oversized/unknown code stays selectable.
- * Never emit HTML: entities, indentation and source text remain untouched. */
-export function highlightCode(code: string, language?: string): CodeToken[] | null {
+ * Never emit HTML: entities, indentation and source text remain untouched.
+ *
+ * The palette is a parameter because a block is drawn on one theme's surface or
+ * the other; the default keeps a caller that only needs token boundaries (and
+ * the tests) palette-free. */
+export function highlightCode(code: string, language?: string, codeColors: CodePalette = lightCodeColors): CodeToken[] | null {
+  const tokenColors = tokenColorsFor(codeColors);
   if (!language || code.length > 30_000) return null;
   const name = language.trim().toLowerCase();
   const normalized = Object.hasOwn(aliases, name) ? aliases[name]! : name;

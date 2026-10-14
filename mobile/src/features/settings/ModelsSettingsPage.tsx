@@ -4,8 +4,9 @@ import { Pressable, SectionList, StyleSheet, Switch, Text, TextInput, View } fro
 import { useTranslation } from "react-i18next";
 import { useRemoteControls } from "../../remote/RemoteContext";
 import { modelReference, type DesktopSettings, type RemoteModel } from "../../remote/types";
-import { colors, spacing } from "../../theme/tokens";
-import { ResourceStatus, SettingsSwitch, settingsStyles } from "./SettingsPrimitives";
+import { spacing } from "../../theme/tokens";
+import { createThemedStyles, useTheme } from "../../theme/ThemeContext";
+import { ResourceStatus, SettingsSwitch, useSettingsStyles } from "./SettingsPrimitives";
 import { useDesktopResource } from "./useDesktopResource";
 
 /** One provider and the models it contributes to the visibility list. */
@@ -33,6 +34,9 @@ function GroupHeader({ description, disabled, expanded, foldDisabled, title, val
   onChange(visible: boolean): void;
   onFold(): void;
 }) {
+  const settingsStyles = useSettingsStyles();
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   return <View style={[settingsStyles.row, styles.group]}>
     <Pressable accessibilityLabel={title} accessibilityRole="button"
@@ -54,6 +58,9 @@ export function ModelsSettingsPage({ settings, disabled, onChange }: {
   disabled: boolean;
   onChange(patch: Partial<DesktopSettings>): void;
 }) {
+  const settingsStyles = useSettingsStyles();
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const remote = useRemoteControls();
   const resource = useDesktopResource(remote.listSettingsModels, remote.desktopSettingsRevision, remote.desktopOnline);
@@ -142,10 +149,10 @@ export function ModelsSettingsPage({ settings, disabled, onChange }: {
   />;
 }
 
-const styles = StyleSheet.create({
-  group: { backgroundColor: colors.surfaceSubtle },
+const useStyles = createThemedStyles(theme => StyleSheet.create({
+  group: { backgroundColor: theme.colors.surfaceSubtle },
   groupLabel: { alignItems: "center", flex: 1, flexDirection: "row", gap: spacing.sm, minWidth: 0 },
   groupText: { flex: 1, minWidth: 0, gap: spacing.xs },
-  groupTitle: { color: colors.ink, flexShrink: 1, fontSize: 15, fontWeight: "600" },
+  groupTitle: { color: theme.colors.ink, flexShrink: 1, fontSize: theme.font(15), fontWeight: "600" },
   model: { marginStart: spacing.lg },
-});
+}));

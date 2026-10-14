@@ -1,12 +1,14 @@
 import { useEffect, useState, type PropsWithChildren, type ReactNode } from "react";
 import { Keyboard, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { colors, layout, radius, spacing } from "../theme/tokens";
+import { layout, radius, spacing } from "../theme/tokens";
+import { createThemedStyles } from "../theme/ThemeContext";
 
 /** Contents of a transparent Modal: safe-area aware and scrollable even with
  * large text, a landscape viewport, or an open keyboard. Modal lifecycle stays
  * with the caller so native presentation sequencing is unchanged. */
 export function DialogSurface({ children, footer }: PropsWithChildren<{ footer?: ReactNode }>) {
+  const styles = useStyles();
   const insets = useSafeAreaInsets();
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   useEffect(() => {
@@ -62,8 +64,8 @@ export function DialogSurface({ children, footer }: PropsWithChildren<{ footer?:
   );
 }
 
-const styles = StyleSheet.create({
-  overlay: { flex: 1, backgroundColor: colors.overlay },
+const useStyles = createThemedStyles(theme => StyleSheet.create({
+  overlay: { flex: 1, backgroundColor: theme.colors.overlay },
   viewport: { flex: 1 },
   // Callers opt into a pinned footer; other forms/settings keep their existing
   // whole-card scrolling. Flex shrink gives the body the remaining height.
@@ -84,6 +86,6 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     gap: spacing.lg,
     borderRadius: radius.xl,
-    backgroundColor: colors.surface,
+    backgroundColor: theme.colors.surface,
   },
-});
+}));

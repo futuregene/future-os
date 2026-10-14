@@ -4,11 +4,13 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { ArrowLeft } from "lucide-react-native";
 import { LanguageSettings } from "../../i18n/LanguageSettings";
+import { AppearanceSettings } from "../../theme/AppearanceSettings";
 import { PEER_ICONS, iconGlyph } from "../../remote/peerIcons";
 import { useRemoteControls } from "../../remote/RemoteContext";
 import type { DesktopSettings, RemoteBuiltinProvider, RemoteCustomProvider } from "../../remote/types";
 import { VERSION } from "../../version.generated";
-import { colors, layout, radius, spacing } from "../../theme/tokens";
+import { layout, radius, spacing } from "../../theme/tokens";
+import { createThemedStyles, useTheme } from "../../theme/ThemeContext";
 import { CustomProviderPage } from "./CustomProviderPage";
 import { FollowAccountPage } from "./FollowAccountPage";
 import { ModelsSettingsPage } from "./ModelsSettingsPage";
@@ -17,7 +19,7 @@ import { ProvidersSettingsPage } from "./ProvidersSettingsPage";
 import { SkillsSettingsPage } from "./SkillsSettingsPage";
 import { TasksSettingsPage } from "./TasksSettingsPage";
 import type { SettingsPageBack } from "./pageBack";
-import { ResourceStatus, SettingsField, SettingsLink, SettingsSection, SettingsSwitch, settingsStyles } from "./SettingsPrimitives";
+import { ResourceStatus, SettingsField, SettingsLink, SettingsSection, SettingsSwitch, createSettingsStyles, useSettingsStyles } from "./SettingsPrimitives";
 import { useDesktopResource } from "./useDesktopResource";
 
 export type SettingsScreenHandle = { goBack(): void };
@@ -30,7 +32,7 @@ const MAX_NAME_LENGTH = 40;
  * desktop dialog's single-level tabs cannot express.
  */
 type SettingsRoute =
-  | { name: "home" | "preferences" | "models" | "skills" | "tasks" | "language" | "providers" | "followAccount" }
+  | { name: "home" | "preferences" | "models" | "skills" | "tasks" | "language" | "appearance" | "providers" | "followAccount" }
   | { name: "providerKey"; provider: RemoteBuiltinProvider }
   | { name: "providerForm"; provider: RemoteCustomProvider | null };
 
@@ -75,6 +77,9 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
   onOpenConversation?(sessionId: string): void;
   ref?: Ref<SettingsScreenHandle>;
 }) {
+  const settingsStyles = useSettingsStyles();
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const remote = useRemoteControls();
@@ -226,6 +231,10 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
         return <ScrollView contentContainerStyle={settingsStyles.content}>
           <SettingsSection title={t("desktopSettings.thisPhone")}><View style={settingsStyles.card}><LanguageSettings /></View></SettingsSection>
         </ScrollView>;
+      case "appearance":
+        return <ScrollView contentContainerStyle={settingsStyles.content}>
+          <SettingsSection title={t("desktopSettings.thisPhone")}><View style={settingsStyles.card}><AppearanceSettings /></View></SettingsSection>
+        </ScrollView>;
       // Not scoped to the paired desktop: following the account needs no
       // connection, so this level stays usable while the desktop is offline.
       case "followAccount":
@@ -272,6 +281,7 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
   function renderPhoneHome() {
     return <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
       <SettingsSection title={t("desktopSettings.thisPhone")}>
+        <SettingsLink label={t("appearance.title")} onPress={() => push({ name: "appearance" })} />
         <SettingsLink label={t("language.title")} onPress={() => push({ name: "language" })} />
         {/* Deliberately never disabled: following the official account needs no
             desktop connection, unlike every other row that used to be here. */}
@@ -395,21 +405,21 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
   </View>;
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(theme => StyleSheet.create({
   column: { flex: 1, width: "100%", maxWidth: layout.formMaxWidth, alignSelf: "center", paddingTop: spacing.sm },
   header: { flexDirection: "row", alignItems: "center", gap: spacing.sm, minHeight: 56, paddingHorizontal: layout.gutter, marginBottom: spacing.md },
   heading: { flex: 1, minWidth: 0 },
-  title: { flex: 1, color: colors.inkStrong, fontSize: 22, fontWeight: "700" },
+  title: { flex: 1, color: theme.colors.inkStrong, fontSize: theme.font(22), fontWeight: "700" },
   headerButton: { width: layout.touchTarget, height: layout.touchTarget, borderRadius: radius.md, alignItems: "center", justifyContent: "center" },
-  pressed: { backgroundColor: colors.surfaceSubtle },
-  deviceScope: { flexDirection: "row", alignItems: "flex-start", gap: spacing.md, marginHorizontal: layout.gutter, padding: spacing.md, borderRadius: radius.lg, backgroundColor: colors.accentSoft },
-  deviceIcon: { width: 36, height: 36, borderRadius: radius.md, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface },
-  deviceGlyph: { fontSize: 20 },
-  deviceName: { color: colors.inkStrong, fontSize: 14, fontWeight: "600", marginBottom: spacing.xs },
-  version: { ...settingsStyles.description, textAlign: "center" },
-  notice: { color: colors.inkMuted, padding: layout.gutter, fontSize: 13 },
-  approval: { minHeight: layout.touchTarget, justifyContent: "center", padding: spacing.sm, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface },
-  approvalSelected: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+  pressed: { backgroundColor: theme.colors.surfaceSubtle },
+  deviceScope: { flexDirection: "row", alignItems: "flex-start", gap: spacing.md, marginHorizontal: layout.gutter, padding: spacing.md, borderRadius: radius.lg, backgroundColor: theme.colors.accentSoft },
+  deviceIcon: { width: 36, height: 36, borderRadius: radius.md, alignItems: "center", justifyContent: "center", backgroundColor: theme.colors.surface },
+  deviceGlyph: { fontSize: theme.font(20) },
+  deviceName: { color: theme.colors.inkStrong, fontSize: theme.font(14), fontWeight: "600", marginBottom: spacing.xs },
+  version: { ...createSettingsStyles(theme).description, textAlign: "center" },
+  notice: { color: theme.colors.inkMuted, padding: layout.gutter, fontSize: theme.font(13) },
+  approval: { minHeight: layout.touchTarget, justifyContent: "center", padding: spacing.sm, borderWidth: 1, borderColor: theme.colors.line, borderRadius: radius.md, backgroundColor: theme.colors.surface },
+  approvalSelected: { borderColor: theme.colors.accent, backgroundColor: theme.colors.accentSoft },
   // One row of icons per device, wrapping for the narrowest phone: the same set
   // the desktop app offers, so a device looks the same in both clients.
   iconGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
@@ -419,10 +429,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: theme.colors.line,
     borderRadius: radius.md,
-    backgroundColor: colors.surface,
+    backgroundColor: theme.colors.surface,
   },
-  iconOptionSelected: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
-  iconGlyph: { fontSize: 20 },
-});
+  iconOptionSelected: { borderColor: theme.colors.accent, backgroundColor: theme.colors.accentSoft },
+  iconGlyph: { fontSize: theme.font(20) },
+}));

@@ -12,7 +12,8 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Search, X } from "lucide-react-native";
-import { colors, layout, radius, spacing } from "../theme/tokens";
+import { layout, radius, spacing } from "../theme/tokens";
+import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 
 export interface MenuAction {
   label: string;
@@ -48,6 +49,8 @@ export function ActionMenu({ title, visible, actions, onClose, onBack, search }:
   onBack?(): void;
   search?: MenuSearch;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const [expandedTitle, setExpandedTitle] = useState<string | null>(null);
   if (expandedTitle !== null && (!visible || expandedTitle !== title)) setExpandedTitle(null);
@@ -154,13 +157,13 @@ export function ActionMenu({ title, visible, actions, onClose, onBack, search }:
   );
 }
 
-const styles = StyleSheet.create({
-  overlay: { flex: 1, justifyContent: "flex-end", padding: layout.gutter, backgroundColor: colors.overlay },
-  menu: { width: "100%", maxWidth: layout.formMaxWidth, alignSelf: "center", maxHeight: "85%", overflow: "hidden", padding: spacing.sm, borderRadius: radius.xl, backgroundColor: colors.surface },
+const useStyles = createThemedStyles(theme => StyleSheet.create({
+  overlay: { flex: 1, justifyContent: "flex-end", padding: layout.gutter, backgroundColor: theme.colors.overlay },
+  menu: { width: "100%", maxWidth: layout.formMaxWidth, alignSelf: "center", maxHeight: "85%", overflow: "hidden", padding: spacing.sm, borderRadius: radius.xl, backgroundColor: theme.colors.surface },
   header: { flexDirection: "row", alignItems: "center", paddingLeft: spacing.md, marginBottom: spacing.sm },
   titleButton: { flex: 1, minWidth: 0, minHeight: layout.touchTarget, justifyContent: "center", paddingVertical: spacing.sm },
-  title: { color: colors.inkStrong, fontSize: 18, fontWeight: "700" },
-  fullTitle: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm, color: colors.inkSoft, fontSize: 14, lineHeight: 21 },
+  title: { color: theme.colors.inkStrong, fontSize: theme.font(18), fontWeight: "700" },
+  fullTitle: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm, color: theme.colors.inkSoft, fontSize: theme.font(14), lineHeight: theme.leading(21) },
   close: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center" },
   search: {
     flexDirection: "row",
@@ -169,23 +172,23 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
     paddingLeft: spacing.md,
     borderRadius: radius.lg,
-    backgroundColor: colors.surfaceSubtle,
+    backgroundColor: theme.colors.surfaceSubtle,
   },
-  searchInput: { flex: 1, minWidth: 0, minHeight: 44, paddingHorizontal: spacing.sm, paddingVertical: spacing.sm, fontSize: 14, color: colors.ink },
+  searchInput: { flex: 1, minWidth: 0, minHeight: 44, paddingHorizontal: spacing.sm, paddingVertical: spacing.sm, fontSize: theme.font(14), color: theme.colors.ink },
   searchClear: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
   options: { gap: spacing.xs, paddingBottom: spacing.sm },
   option: { minHeight: 56, flexDirection: "row", alignItems: "center", gap: spacing.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.md },
   // The group's own row: a label, not a choice, so it is lighter than an option
   // and carries no touch target of its own.
   groupHeading: { minHeight: 32, flexDirection: "row", alignItems: "center", gap: spacing.md, marginTop: spacing.sm, paddingHorizontal: spacing.md },
-  headingLabel: { flexShrink: 1, color: colors.inkSoft, fontSize: 13, fontWeight: "700" },
+  headingLabel: { flexShrink: 1, color: theme.colors.inkSoft, fontSize: theme.font(13), fontWeight: "700" },
   // Start a nested row where its heading's label starts — the option's inset
   // plus the heading's icon column (18) and gap — so the tree's levels line up
   // the way they do in the session list. See `option` and `groupHeading`.
   nested: { paddingLeft: spacing.md + 18 + spacing.md },
-  label: { flexShrink: 1, color: colors.ink, fontSize: 15, fontWeight: "600" },
-  cancel: { color: colors.inkMuted, fontSize: 15 },
-  danger: { color: colors.danger },
-  pressed: { backgroundColor: colors.surfaceSubtle },
+  label: { flexShrink: 1, color: theme.colors.ink, fontSize: theme.font(15), fontWeight: "600" },
+  cancel: { color: theme.colors.inkMuted, fontSize: theme.font(15) },
+  danger: { color: theme.colors.danger },
+  pressed: { backgroundColor: theme.colors.surfaceSubtle },
   disabled: { opacity: 0.4 },
-});
+}));

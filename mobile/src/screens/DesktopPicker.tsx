@@ -6,7 +6,8 @@ import { useTranslation } from "react-i18next";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { DialogSurface } from "../components/DialogSurface";
 import { iconGlyph } from "../remote/peerIcons";
-import { colors, layout, radius, spacing } from "../theme/tokens";
+import { layout, radius, spacing } from "../theme/tokens";
+import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 
 /**
  * The desktop picker above the session list.
@@ -35,6 +36,8 @@ export function DesktopPicker({
   onManage: () => void;
   desktops: PairedDesktop[];
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const label = (desktop: PairedDesktop) => desktop.name ?? desktop.desktopId;
@@ -131,7 +134,7 @@ export function DesktopPicker({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(theme => StyleSheet.create({
   trigger: {
     flex: 1,
     minWidth: 0,
@@ -142,15 +145,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: spacing.sm,
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: theme.colors.line,
     borderRadius: radius.md,
     paddingHorizontal: spacing.sm,
   },
   triggerIcon: { width: 24, alignItems: "center" },
-  triggerLabel: { flex: 1, minWidth: 0, color: colors.inkStrong, fontSize: 15, fontWeight: "600" },
+  triggerLabel: { flex: 1, minWidth: 0, color: theme.colors.inkStrong, fontSize: theme.font(15), fontWeight: "600" },
   pressed: { opacity: 0.7 },
   header: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  title: { flex: 1, minWidth: 0, color: colors.inkStrong, fontSize: 18, fontWeight: "700" },
+  title: { flex: 1, minWidth: 0, color: theme.colors.inkStrong, fontSize: theme.font(18), fontWeight: "700" },
   closeButton: {
     width: layout.touchTarget,
     height: layout.touchTarget,
@@ -165,7 +168,7 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     paddingVertical: spacing.md,
   },
-  optionLabel: { flex: 1, minWidth: 0, color: colors.ink, fontSize: 15 },
-  optionSelected: { color: colors.accent, fontWeight: "600" },
-  manage: { flex: 1, color: colors.accent, fontSize: 15 },
-});
+  optionLabel: { flex: 1, minWidth: 0, color: theme.colors.ink, fontSize: theme.font(15) },
+  optionSelected: { color: theme.colors.accent, fontWeight: "600" },
+  manage: { flex: 1, color: theme.colors.accent, fontSize: theme.font(15) },
+}));

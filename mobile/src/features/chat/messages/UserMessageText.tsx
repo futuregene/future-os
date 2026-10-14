@@ -2,7 +2,7 @@ import { useTranslation } from "react-i18next";
 import { Linking, Text } from "react-native";
 import { AppAlert as Alert } from "../../../components/appAlerts";
 import { splitUserTextSegments } from "../../../components/userTextSegments";
-import { styles } from "./messageStyles";
+import { useStyles } from "./messageStyles";
 
 /**
  * User messages render as plain text (never markdown — the user's `*`/`#`/`1.`
@@ -18,6 +18,7 @@ export function UserMessageText({ text, onOpenFile, onOpenSession }: {
   /** Opens the conversation a `#` reference points at (see the composer menu). */
   onOpenSession?(sessionId: string): void;
 }) {
+  const styles = useStyles();
   const { t } = useTranslation();
   return (
     <Text selectable style={[styles.messageText, styles.userText]}>

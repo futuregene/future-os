@@ -37,7 +37,8 @@ import { useRemoteControls as useRemote } from "../remote/RemoteContext";
 import type { DesktopCommands } from "../remote/desktopCommands";
 import { effectiveRunStatus } from "../remote/sessionStatus";
 import type { RemoteSession } from "../remote/types";
-import { colors, layout, radius, spacing } from "../theme/tokens";
+import { layout, radius, spacing } from "../theme/tokens";
+import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 import { catalogRows, mergedRows as sessionTreeMergedRows, type CatalogRow } from "./sessionTree";
 import { useCollapsedWorkspaces } from "./useCollapsedWorkspaces";
 import { useSessionListScroll } from "./useSessionListScroll";
@@ -150,6 +151,8 @@ export function SessionList({
   /** The row's own machine accompanies it, so the action knows where to go. */
   onMenu: (session: RemoteSession, desktopId: string | null) => void;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const remote = useRemote();
   const Alert = useAppDialog(active);
   const { t } = useTranslation();
@@ -983,7 +986,7 @@ export function SessionList({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(theme => StyleSheet.create({
   container: { flex: 1 },
   // The swipeable page: the list keeps its own layout inside it, and the
   // transform that slides it is the only thing this view adds.
@@ -1004,7 +1007,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     padding: spacing.xs,
     borderRadius: radius.md,
-    backgroundColor: colors.surfaceSubtle,
+    backgroundColor: theme.colors.surfaceSubtle,
   },
   tab: {
     flex: 1,
@@ -1015,9 +1018,9 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     borderRadius: radius.sm,
   },
-  tabActive: { backgroundColor: colors.surface },
-  tabText: { textAlign: "center", color: colors.inkSoft, fontSize: 14, fontWeight: "600" },
-  tabTextActive: { color: colors.accent, fontWeight: "700" },
+  tabActive: { backgroundColor: theme.colors.surface },
+  tabText: { textAlign: "center", color: theme.colors.inkSoft, fontSize: theme.font(14), fontWeight: "600" },
+  tabTextActive: { color: theme.colors.accent, fontWeight: "700" },
   toolActions: {
     marginLeft: "auto",
     flexDirection: "row",
@@ -1031,7 +1034,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingLeft: spacing.md,
     borderRadius: radius.lg,
-    backgroundColor: colors.surfaceSubtle,
+    backgroundColor: theme.colors.surfaceSubtle,
   },
   searchInput: {
     flex: 1,
@@ -1039,8 +1042,8 @@ const styles = StyleSheet.create({
     minHeight: 44,
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.sm,
-    fontSize: 14,
-    color: colors.ink,
+    fontSize: theme.font(14),
+    color: theme.colors.ink,
   },
   manage: {
     width: 44,
@@ -1049,7 +1052,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: colors.lineSoft,
+    borderColor: theme.colors.lineSoft,
   },
   list: { paddingHorizontal: layout.gutter, paddingTop: spacing.xs, paddingBottom: 96 },
   empty: {
@@ -1060,13 +1063,13 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xl,
     paddingBottom: 96,
   },
-  noResults: { color: colors.inkMuted, fontSize: 14 },
+  noResults: { color: theme.colors.inkMuted, fontSize: theme.font(14) },
   workspace: {
     minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     paddingRight: spacing.xs,
-    backgroundColor: colors.canvas,
+    backgroundColor: theme.colors.canvas,
     borderRadius: radius.md,
     marginTop: spacing.sm,
     marginBottom: spacing.xs,
@@ -1084,10 +1087,10 @@ const styles = StyleSheet.create({
     paddingLeft: spacing.sm,
     borderRadius: radius.md,
   },
-  workspaceName: { flex: 1, color: colors.inkSoft, fontSize: 13, fontWeight: "700" },
-  count: { color: colors.inkMuted, fontSize: 12, fontVariant: ["tabular-nums"] },
+  workspaceName: { flex: 1, color: theme.colors.inkSoft, fontSize: theme.font(13), fontWeight: "700" },
+  count: { color: theme.colors.inkMuted, fontSize: theme.font(12), fontVariant: ["tabular-nums"] },
   row: { minHeight: layout.touchTarget, marginBottom: spacing.xs, flexDirection: "row", alignItems: "center", borderRadius: radius.md },
-  rowPressed: { backgroundColor: colors.surfaceSubtle },
+  rowPressed: { backgroundColor: theme.colors.surfaceSubtle },
   iconButton: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
   // 16px wide (not 44) so the title column matches the desktop rail; the 44x44
   // touch target comes from the Pressable's hitSlop instead.
@@ -1108,22 +1111,22 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     borderRadius: radius.md,
   },
-  title: { flex: 1, color: colors.ink, fontSize: 15, lineHeight: 22 },
+  title: { flex: 1, color: theme.colors.ink, fontSize: theme.font(15), lineHeight: theme.leading(22) },
   unreadTitle: { fontWeight: "600" },
-  pressed: { backgroundColor: colors.surfaceSubtle },
-  selected: { backgroundColor: colors.accentSoft },
+  pressed: { backgroundColor: theme.colors.surfaceSubtle },
+  selected: { backgroundColor: theme.colors.accentSoft },
   checkbox: {
     width: 18,
     height: 18,
     borderRadius: radius.sm,
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: theme.colors.line,
     alignItems: "center",
     justifyContent: "center",
   },
-  checkboxChecked: { backgroundColor: colors.accent, borderColor: colors.accent },
+  checkboxChecked: { backgroundColor: theme.colors.accent, borderColor: theme.colors.accent },
   dot: { width: 7, height: 7, borderRadius: radius.pill },
-  sourceIcon: { fontSize: 13, marginLeft: spacing.xs },
+  sourceIcon: { fontSize: theme.font(13), marginLeft: spacing.xs },
   selectionBar: {
     flex: 1,
     minWidth: 0,
@@ -1133,12 +1136,12 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
     paddingHorizontal: spacing.xs,
     borderRadius: radius.md,
-    backgroundColor: colors.accentSoft,
+    backgroundColor: theme.colors.accentSoft,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.lineSoft,
+    borderBottomColor: theme.colors.lineSoft,
   },
   selectAll: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
-  selectionCount: { flex: 1, minWidth: 0, color: colors.inkSoft, fontSize: 13, fontVariant: ["tabular-nums"] },
-  actionText: { flexShrink: 1, color: colors.accent, fontSize: 13, fontWeight: "600" },
+  selectionCount: { flex: 1, minWidth: 0, color: theme.colors.inkSoft, fontSize: theme.font(13), fontVariant: ["tabular-nums"] },
+  actionText: { flexShrink: 1, color: theme.colors.accent, fontSize: theme.font(13), fontWeight: "600" },
   disabled: { opacity: 0.4 },
-});
+}));

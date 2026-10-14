@@ -19,7 +19,8 @@ import { codeLanguageForFile, codeStyleForFile, codeTokenRows, highlightCode } f
 import { MarkdownText } from "../../../components/MarkdownText";
 import { JsonPreview } from "../../../components/JsonPreview";
 import type { HistoryAttachment } from "../../../remote/types";
-import { colors, layout, radius, spacing } from "../../../theme/tokens";
+import { layout, radius, spacing } from "../../../theme/tokens";
+import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
 import type { PreviewState } from "../files/useChatFiles";
 import type { ActiveDownload, FileOperation } from "../utils";
 import { ZoomableImage } from "./ZoomableImage";
@@ -98,6 +99,7 @@ export function PreviewModal({
   openLinkedFile: (path: string) => Promise<void>;
   t: TFunction;
 }) {
+  const styles = useStyles();
   const top = previews.length - 1;
   const insets = useSafeAreaInsets();
   // The expanded menu is owned here rather than inside the layer that opened
@@ -193,6 +195,8 @@ function PreviewLayer({
   popPreview: () => void;
   t: TFunction;
 }) {
+  const styles = useStyles();
+  const { codeColors, colors } = useTheme();
   const [headerHeight, setHeaderHeight] = useState(60);
   // Highlight here rather than in `useChatFiles`: the plain-text route serves
   // both code files and prose (`.txt`, `.log`), so only the file name knows
@@ -206,8 +210,8 @@ function PreviewLayer({
   const language = useMemo(() => codeLanguageForFile(fileName), [fileName]);
   const codeStyle = useMemo(() => codeStyleForFile(fileName), [fileName]);
   const tokens = useMemo(
-    () => (previewText === undefined ? null : highlightCode(previewText, language ?? undefined)),
-    [language, previewText],
+    () => (previewText === undefined ? null : highlightCode(previewText, language ?? undefined, codeColors)),
+    [codeColors, language, previewText],
   );
   // The body is paged into bounded chunks whether or not there is a grammar.
   // A single `<Text>` holding the whole file is the one thing that cannot scale
@@ -371,8 +375,8 @@ function PreviewLayer({
 // Matches the chat's code blocks (`MarkdownText`).
 const monospace = Platform.select({ ios: "Menlo", default: "monospace" });
 
-const styles = StyleSheet.create({
-  previewSafe: { flex: 1, backgroundColor: colors.surface },
+const useStyles = createThemedStyles(theme => StyleSheet.create({
+  previewSafe: { flex: 1, backgroundColor: theme.colors.surface },
   // The padded box's only child, and a normal flex child on purpose: the padding
   // above moves this box and therefore everything the layers draw (see
   // `previewSurfaceInsets`).
@@ -382,7 +386,7 @@ const styles = StyleSheet.create({
   // them because every layer paints the surface color: the text of the document
   // underneath is transparent, so without this the two documents' lines and
   // headers draw over each other.
-  previewLayer: { ...StyleSheet.absoluteFill, backgroundColor: colors.surface },
+  previewLayer: { ...StyleSheet.absoluteFill, backgroundColor: theme.colors.surface },
   previewBody: { flex: 1, minHeight: 0 },
   previewHeader: {
     minHeight: 60,
@@ -391,12 +395,12 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
     paddingHorizontal: spacing.sm,
     borderBottomWidth: 1,
-    borderBottomColor: colors.lineSoft,
+    borderBottomColor: theme.colors.lineSoft,
   },
   iconButton: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center", borderRadius: radius.md },
-  pressed: { backgroundColor: colors.surfaceSubtle },
+  pressed: { backgroundColor: theme.colors.surfaceSubtle },
   disabled: { opacity: 0.4 },
-  previewTitle: { flex: 1, minWidth: 0, color: colors.inkStrong, fontSize: 16, fontWeight: "700" },
+  previewTitle: { flex: 1, minWidth: 0, color: theme.colors.inkStrong, fontSize: theme.font(16), fontWeight: "700" },
   menuOverlay: { ...StyleSheet.absoluteFill, alignItems: "flex-end", padding: spacing.sm },
   menu: {
     width: "100%",
@@ -404,14 +408,14 @@ const styles = StyleSheet.create({
     flexShrink: 1,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.surface,
+    borderColor: theme.colors.line,
+    backgroundColor: theme.colors.surface,
     boxShadow: "0 4px 16px rgba(15, 23, 42, 0.15)",
     overflow: "hidden",
   },
   menuContent: { padding: spacing.xs },
   menuAction: { minHeight: layout.touchTarget, flexDirection: "row", alignItems: "center", gap: spacing.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.sm },
-  menuLabel: { flexShrink: 1, color: colors.ink, fontSize: 15 },
+  menuLabel: { flexShrink: 1, color: theme.colors.ink, fontSize: theme.font(15) },
   previewMarkdown: { padding: spacing.lg },
   // No padding here: the document itself scrolls, so its gutter lives in the
   // markdown list's content container. Padding on this static parent instead
@@ -423,13 +427,13 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
     padding: spacing.md,
     borderRadius: radius.md,
-    color: colors.warning,
-    backgroundColor: colors.warningSoft,
-    fontSize: 12,
+    color: theme.colors.warning,
+    backgroundColor: theme.colors.warningSoft,
+    fontSize: theme.font(12),
   },
-  previewText: { color: colors.ink, fontSize: 14, lineHeight: 21 },
+  previewText: { color: theme.colors.ink, fontSize: theme.font(14), lineHeight: theme.leading(21) },
   // Code files get the monospace metrics the chat's code blocks use, so columns
   // line up in the colored spans; prose (`.txt`, `.log`) keeps the proportional
   // `previewText` it had before.
-  previewCode: { color: colors.ink, fontFamily: monospace, fontSize: 13, lineHeight: 20 },
-});
+  previewCode: { color: theme.colors.ink, fontFamily: monospace, fontSize: theme.font(13), lineHeight: theme.leading(20) },
+}));

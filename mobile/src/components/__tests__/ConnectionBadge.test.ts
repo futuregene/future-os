@@ -5,7 +5,7 @@ import { ConnectionBadge } from "../ConnectionBadge";
 import { Button } from "../Button";
 import { connectionPresentation } from "../../remote/connectionPresentation";
 import type { MachineSummary } from "../../remote/desktopStatus";
-import { colors } from "../../theme/tokens";
+import { lightColors } from "../../theme/tokens";
 
 let mockDimensions = { width: 320, height: 640, scale: 1, fontScale: 1 };
 jest.mock("react-native", () => {
@@ -194,40 +194,40 @@ const machines = (...statuses: [string, MachineSummary["status"]][]): MachineSum
 
 test("the dot is green only when every machine is connected", () => {
   render(ready, true, machines(["a", "connected"], ["b", "connected"]));
-  expect(dotColor()).toBe(colors.success);
+  expect(dotColor()).toBe(lightColors.success);
 
   render(ready, true, machines(["a", "connected"], ["b", "offline"]));
   // Yellow, not the text-tuned amber: that one is orange enough at this size to
   // be taken for the red the state below wears, and "one machine is down" must
   // not read as "all".
-  expect(dotColor()).toBe(colors.warningDot);
+  expect(dotColor()).toBe(lightColors.warningDot);
 
   render(ready, true, machines(["a", "offline"], ["b", "connecting"]));
-  expect(dotColor()).toBe(colors.danger);
+  expect(dotColor()).toBe(lightColors.danger);
 
   // With no pairing the dot goes back to answering for the one connection the
   // app renders from.
   render(ready, true, []);
-  expect(dotColor()).toBe(colors.success);
+  expect(dotColor()).toBe(lightColors.success);
 });
 
 test("the partial dot is yellow while the title under it stays readable", () => {
   render(ready, true, machines(["a", "connected"], ["b", "offline"]));
   open();
 
-  expect(dotColor()).toBe(colors.warningDot);
+  expect(dotColor()).toBe(lightColors.warningDot);
   // The title is a line of text on a light surface, where yellow has no contrast
   // left to read it by: it keeps the darker amber for the same state.
-  expect(titleColor()).toBe(colors.warning);
+  expect(titleColor()).toBe(lightColors.warning);
 });
 
 test("a machine's own row wears the badge's palette", () => {
   render(ready, true, machines(["a", "connected"], ["b", "connecting"], ["c", "offline"]));
   open();
 
-  expect(machineDotColor("a")).toBe(colors.success);
-  expect(machineDotColor("b")).toBe(colors.warningDot);
-  expect(machineDotColor("c")).toBe(colors.danger);
+  expect(machineDotColor("a")).toBe(lightColors.success);
+  expect(machineDotColor("b")).toBe(lightColors.warningDot);
+  expect(machineDotColor("c")).toBe(lightColors.danger);
 });
 
 test("a merged list names every machine and its own state, and reconnects them all", () => {
