@@ -1,14 +1,15 @@
 import { StyleSheet } from "react-native";
-import { chatTypography, colors, layout, radius, spacing } from "../../../theme/tokens";
+import { layout, radius, spacing } from "../../../theme/tokens";
+import { createThemedStyles } from "../../../theme/ThemeContext";
 
-export const styles = StyleSheet.create({
+export const useStyles = createThemedStyles(theme => StyleSheet.create({
   message: {
     maxWidth: "92%",
     borderRadius: radius.lg,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },
-  userMessage: { alignSelf: "flex-end", backgroundColor: colors.accent },
+  userMessage: { alignSelf: "flex-end", backgroundColor: theme.colors.accent },
   userBlock: { alignItems: "flex-end", gap: spacing.xs },
   attachmentRow: {
     maxWidth: "88%",
@@ -25,27 +26,27 @@ export const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs,
     borderWidth: 1,
-    borderColor: colors.lineSoft,
+    borderColor: theme.colors.lineSoft,
     borderRadius: radius.md,
-    backgroundColor: colors.surface,
+    backgroundColor: theme.colors.surface,
   },
-  attachmentChipPressed: { backgroundColor: colors.surfaceSubtle },
-  attachmentName: { flexShrink: 1, color: colors.inkSoft, fontSize: 12 },
+  attachmentChipPressed: { backgroundColor: theme.colors.surfaceSubtle },
+  attachmentName: { flexShrink: 1, color: theme.colors.inkSoft, fontSize: theme.font(12) },
   assistantMessage: { alignSelf: "stretch", paddingHorizontal: spacing.xs },
-  messageText: { color: colors.ink, ...chatTypography },
-  userText: { color: colors.surface },
-  userMention: { color: colors.surface, fontWeight: "600" },
-  userLink: { color: colors.surface, fontWeight: "600", textDecorationLine: "underline" },
+  messageText: { color: theme.colors.ink, ...theme.chat },
+  userText: { color: theme.colors.surface },
+  userMention: { color: theme.colors.surface, fontWeight: "600" },
+  userLink: { color: theme.colors.surface, fontWeight: "600", textDecorationLine: "underline" },
   terminationNotice: {
     marginTop: spacing.md,
   },
   terminationNoticeText: {
-    color: colors.inkSoft,
-    fontSize: 14,
-    lineHeight: 24,
+    color: theme.colors.inkSoft,
+    fontSize: theme.font(14),
+    lineHeight: theme.leading(24),
     marginTop: spacing.sm,
   },
-  stoppedNoticeText: { color: colors.inkMuted },
+  stoppedNoticeText: { color: theme.colors.inkMuted },
   // Always-visible actions and stats share the reply's left edge with its timer.
   messageFooter: {
     alignSelf: "flex-start",
@@ -68,14 +69,14 @@ export const styles = StyleSheet.create({
     alignItems: "center",
     gap: spacing.sm,
   },
-  inlineThinkingLabel: { color: colors.inkMuted, fontSize: 13, lineHeight: 20 },
+  inlineThinkingLabel: { color: theme.colors.inkMuted, fontSize: theme.font(13), lineHeight: theme.leading(20) },
   // The revealed reasoning sits under its label exactly like a tool row's
   // revealed target: one step in, and with no rule of its own.
   inlineThinkingText: {
     paddingLeft: spacing.md + spacing.sm,
-    color: colors.inkSoft,
-    fontSize: 13,
-    lineHeight: 19,
+    color: theme.colors.inkSoft,
+    fontSize: theme.font(13),
+    lineHeight: theme.leading(19),
     marginTop: 2,
   },
   inlineTool: {
@@ -124,10 +125,10 @@ export const styles = StyleSheet.create({
   },
   inlineToolChild: {
     flexShrink: 1,
-    color: colors.inkSoft,
+    color: theme.colors.inkSoft,
     fontFamily: "monospace",
-    fontSize: 12,
-    lineHeight: 18,
+    fontSize: theme.font(12),
+    lineHeight: theme.leading(18),
   },
   compactionDivider: {
     flexDirection: "row",
@@ -135,9 +136,9 @@ export const styles = StyleSheet.create({
     gap: spacing.sm,
     paddingVertical: 4,
   },
-  compactionLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.line },
-  compactionLabel: { color: colors.inkMuted, fontSize: 12 },
-  messageDuration: { color: colors.inkMuted, fontSize: 12 },
+  compactionLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: theme.colors.line },
+  compactionLabel: { color: theme.colors.inkMuted, fontSize: theme.font(12) },
+  messageDuration: { color: theme.colors.inkMuted, fontSize: theme.font(12) },
   recoveryRow: {
     flexDirection: "row",
     gap: spacing.sm,
@@ -163,22 +164,22 @@ export const styles = StyleSheet.create({
     gap: spacing.sm,
     marginTop: spacing.sm,
   },
-  runDot: { width: 14, height: 14, borderRadius: radius.pill, backgroundColor: colors.generating },
-  runDuration: { color: colors.inkMuted, fontSize: 12 },
+  runDot: { width: 14, height: 14, borderRadius: radius.pill, backgroundColor: theme.colors.generating },
+  runDuration: { color: theme.colors.inkMuted, fontSize: theme.font(12) },
   secondaryCard: {
     borderLeftWidth: 2,
-    borderLeftColor: colors.line,
+    borderLeftColor: theme.colors.line,
     paddingLeft: spacing.md,
     paddingVertical: spacing.xs,
   },
   cardHeader: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  cardLabel: { color: colors.inkSoft, fontSize: 13, fontWeight: "600" },
-  secondaryText: { color: colors.inkSoft, fontSize: 13, lineHeight: 19, marginTop: spacing.sm },
+  cardLabel: { color: theme.colors.inkSoft, fontSize: theme.font(13), fontWeight: "600" },
+  secondaryText: { color: theme.colors.inkSoft, fontSize: theme.font(13), lineHeight: theme.leading(19), marginTop: spacing.sm },
   tool: { paddingHorizontal: spacing.xs, paddingVertical: spacing.xs },
   // The header is one line again now that the target dropped below it, so its
   // glyph, label and chevron centre against each other instead of top-aligning.
   toolHeader: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  toolText: { color: colors.inkMuted, fontSize: 13, lineHeight: 20 },
+  toolText: { color: theme.colors.inkMuted, fontSize: theme.font(13), lineHeight: theme.leading(20) },
   // The target under a tool row — a file name or a shell command — indents to
   // the label it belongs to and wraps at full width: a phone cannot truncate a
   // name into uselessness, and the row is no longer shrink-wrapped so there is
@@ -186,43 +187,43 @@ export const styles = StyleSheet.create({
   toolDetailText: {
     marginTop: 2,
     paddingLeft: spacing.md + spacing.sm,
-    color: colors.inkSoft,
+    color: theme.colors.inkSoft,
     fontFamily: "monospace",
-    fontSize: 12,
-    lineHeight: 18,
+    fontSize: theme.font(12),
+    lineHeight: theme.leading(18),
   },
   notice: { flexDirection: "row", gap: spacing.sm, padding: spacing.md, borderRadius: radius.md },
-  warningNotice: { backgroundColor: colors.warningSoft },
-  dangerNotice: { backgroundColor: colors.dangerSoft },
-  noticeText: { flex: 1, fontSize: 13, lineHeight: 19 },
+  warningNotice: { backgroundColor: theme.colors.warningSoft },
+  dangerNotice: { backgroundColor: theme.colors.dangerSoft },
+  noticeText: { flex: 1, fontSize: theme.font(13), lineHeight: theme.leading(19) },
   approval: {
     padding: spacing.lg,
     gap: spacing.sm,
     borderRadius: radius.lg,
-    backgroundColor: colors.surface,
+    backgroundColor: theme.colors.surface,
     borderWidth: 1,
-    borderColor: colors.line,
-    shadowColor: colors.inkStrong,
+    borderColor: theme.colors.line,
+    shadowColor: theme.colors.inkStrong,
     shadowOpacity: 0.08,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 4 },
     elevation: 3,
   },
   approvalHeader: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  approvalDot: { width: 8, height: 8, borderRadius: radius.pill, backgroundColor: colors.warning },
-  approvalTitle: { flex: 1, color: colors.ink, fontSize: 16, fontWeight: "600", lineHeight: 22 },
-  approvalSummary: { color: colors.inkSoft, fontSize: 14, lineHeight: 20 },
+  approvalDot: { width: 8, height: 8, borderRadius: radius.pill, backgroundColor: theme.colors.warning },
+  approvalTitle: { flex: 1, color: theme.colors.ink, fontSize: theme.font(16), fontWeight: "600", lineHeight: theme.leading(22) },
+  approvalSummary: { color: theme.colors.inkSoft, fontSize: theme.font(14), lineHeight: theme.leading(20) },
   approvalDetailLabel: {
     marginTop: spacing.xs,
-    color: colors.inkSoft,
-    fontSize: 11,
+    color: theme.colors.inkSoft,
+    fontSize: theme.font(11),
     fontWeight: "600",
     textTransform: "uppercase",
   },
   approvalDetail: {
     padding: spacing.md,
     borderRadius: radius.md,
-    backgroundColor: colors.surfaceSubtle,
+    backgroundColor: theme.colors.surfaceSubtle,
     gap: 2,
   },
   approvalCommandToggle: {
@@ -230,9 +231,9 @@ export const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
-  approvalPath: { color: colors.ink, fontFamily: "monospace", fontSize: 12, lineHeight: 18 },
+  approvalPath: { color: theme.colors.ink, fontFamily: "monospace", fontSize: theme.font(12), lineHeight: theme.leading(18) },
   approvalError: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
-  approvalErrorText: { flex: 1, color: colors.danger, fontSize: 12, lineHeight: 18 },
+  approvalErrorText: { flex: 1, color: theme.colors.danger, fontSize: theme.font(12), lineHeight: theme.leading(18) },
   approvalActions: {
     flexDirection: "row",
     alignItems: "center",
@@ -242,4 +243,4 @@ export const styles = StyleSheet.create({
   },
   approvalActionLeft: { flex: 1 },
   approvalActionRight: { flex: 1 },
-});
+}));

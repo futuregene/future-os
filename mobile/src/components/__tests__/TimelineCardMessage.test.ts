@@ -5,11 +5,14 @@ import * as Clipboard from "expo-clipboard";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { PausedTimeline } from "../PausedTimeline";
 import { TimelineCard } from "../TimelineCard";
-import { styles as messageStyles } from "../../features/chat/messages/messageStyles";
+import { useStyles } from "../../features/chat/messages/messageStyles";
+import { lightTheme } from "../../theme/theme";
 import type { HistoryAttachment, TimelineItem, TimelineSegment } from "../../remote/types";
 import i18n from "../../i18n";
 
 jest.mock("../MarkdownText", () => ({ MarkdownText: "MarkdownText" }));
+/** The sheet the rendered components use, in the default (light) theme. */
+const messageStyles = useStyles.forTheme(lightTheme);
 jest.mock("lucide-react-native", () => Object.fromEntries(
   ["AlertTriangle", "Brain", "Check", "ChevronDown", "ChevronUp", "CircleAlert", "Copy",
     "FileText", "GitBranch", "Paperclip", "Pencil", "TerminalSquare", "TriangleAlert", "Wrench", "X"]

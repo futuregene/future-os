@@ -14,6 +14,23 @@ export const resources = {
         updateDesktop:
           "Update FutureOS Desktop to browse skills. You can still type a skill command.",
       },
+      appearance: {
+        title: "Appearance",
+        theme: "Theme",
+        themeMode: {
+          system: "Follow system",
+          light: "Light",
+          dark: "Dark",
+        },
+        fontSize: "Text size",
+        fontSizeName: {
+          small: "Small",
+          medium: "Medium",
+          large: "Large",
+          xlarge: "Extra large",
+        },
+        saveFailed: "Could not save the appearance setting. Please try again.",
+      },
       language: {
         title: "Language",
         system: "Follow system",
@@ -954,6 +971,23 @@ export const resources = {
         loadFailed: "技能加载失败，请重试。",
         updateDesktop:
           "请更新 FutureOS 桌面端以浏览技能，仍可手动输入技能命令。",
+      },
+      appearance: {
+        title: "外观",
+        theme: "主题",
+        themeMode: {
+          system: "跟随系统",
+          light: "浅色",
+          dark: "深色",
+        },
+        fontSize: "字体大小",
+        fontSizeName: {
+          small: "小",
+          medium: "中",
+          large: "大",
+          xlarge: "特大",
+        },
+        saveFailed: "无法保存外观设置，请重试。",
       },
       language: {
         title: "语言",

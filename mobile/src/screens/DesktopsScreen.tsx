@@ -17,7 +17,8 @@ import { useAppDialog } from "../components/useAppDialog";
 import { DesktopScope, useRemoteControls } from "../remote/RemoteContext";
 import { SettingsScreen, type SettingsScreenHandle } from "../features/settings/SettingsScreen";
 import type { PairedDesktop } from "../remote/types";
-import { colors, layout, radius, spacing } from "../theme/tokens";
+import { layout, radius, spacing } from "../theme/tokens";
+import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 
 const label = (desktop: PairedDesktop) => desktop.name ?? desktop.desktopId;
 
@@ -46,6 +47,8 @@ export function DesktopsScreen({ onBack, onAdd, onOpenConversation }: {
   /** Open a session in the chat, from a device page's task runs. */
   onOpenConversation?(sessionId: string): void;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const Alert = useAppDialog();
   const remote = useRemoteControls();
@@ -243,8 +246,8 @@ export function DesktopsScreen({ onBack, onAdd, onOpenConversation }: {
   );
 }
 
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.canvas },
+const useStyles = createThemedStyles(theme => StyleSheet.create({
+  safe: { flex: 1, backgroundColor: theme.colors.canvas },
   // One centered column keeps the list readable on tablets and desktop-sized
   // windows instead of stretching the cards edge to edge.
   column: {
@@ -259,8 +262,8 @@ const styles = StyleSheet.create({
   topbar: { flexDirection: "row", alignItems: "center", gap: spacing.sm, minHeight: 56, marginBottom: spacing.md },
   scroll: { flexGrow: 1, paddingBottom: spacing.sm, gap: spacing.md },
   header: { gap: spacing.sm, paddingBottom: spacing.md },
-  title: { flex: 1, color: colors.inkStrong, fontSize: 22, fontWeight: "700" },
-  description: { color: colors.inkSoft, fontSize: 15, lineHeight: 23 },
+  title: { flex: 1, color: theme.colors.inkStrong, fontSize: theme.font(22), fontWeight: "700" },
+  description: { color: theme.colors.inkSoft, fontSize: theme.font(15), lineHeight: theme.leading(23) },
   card: {
     flexDirection: "row",
     alignItems: "center",
@@ -269,20 +272,20 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     minHeight: 80,
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: theme.colors.line,
     borderRadius: radius.lg,
-    backgroundColor: colors.surface,
+    backgroundColor: theme.colors.surface,
   },
   select: { flex: 1, minWidth: 0, minHeight: 64, flexDirection: "row", alignItems: "center", gap: spacing.sm, borderRadius: radius.md },
-  desktopIcon: { width: 36, height: 44, alignItems: "center", justifyContent: "center", borderRadius: radius.md, backgroundColor: colors.surfaceSubtle },
-  desktopGlyph: { fontSize: 20 },
+  desktopIcon: { width: 36, height: 44, alignItems: "center", justifyContent: "center", borderRadius: radius.md, backgroundColor: theme.colors.surfaceSubtle },
+  desktopGlyph: { fontSize: theme.font(20) },
   iconButton: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center", borderRadius: radius.md },
-  pressed: { backgroundColor: colors.surfaceSubtle },
+  pressed: { backgroundColor: theme.colors.surfaceSubtle },
   identity: { flex: 1, minWidth: 0, gap: spacing.xs },
-  name: { color: colors.inkStrong, fontSize: 16, fontWeight: "600" },
-  nameFallback: { color: colors.ink, fontWeight: "500" },
-  id: { color: colors.inkMuted, fontSize: 12 },
-  empty: { color: colors.inkSoft, fontSize: 15, textAlign: "center", paddingVertical: spacing.xl },
+  name: { color: theme.colors.inkStrong, fontSize: theme.font(16), fontWeight: "600" },
+  nameFallback: { color: theme.colors.ink, fontWeight: "500" },
+  id: { color: theme.colors.inkMuted, fontSize: theme.font(12) },
+  empty: { color: theme.colors.inkSoft, fontSize: theme.font(15), textAlign: "center", paddingVertical: spacing.xl },
   footer: { marginTop: "auto", paddingTop: spacing.lg, gap: spacing.md },
-  error: { color: colors.danger, fontSize: 14, textAlign: "center" },
-});
+  error: { color: theme.colors.danger, fontSize: theme.font(14), textAlign: "center" },
+}));

@@ -3213,6 +3213,125 @@
           }
         ]
       },
+      "appearance": {
+        "_comment": "Appearance is this phone's own setting (theme + text size), so it lives behind the phone settings row rather than on a paired desktop. The scenario proves the two things a screenshot cannot: that the scheme choice repaints the app, and that the text size repaints every screen — not just the sheet that set it.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "设置"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "外观"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  const labels = [...document.querySelectorAll('[role=radio]')].map(node => node.getAttribute('aria-label'));\n  for (const wanted of ['跟随系统', '浅色', '深色', '小', '中', '大', '特大']) {\n    if (!labels.includes(wanted)) throw new Error('the appearance page is missing ' + wanted + ': ' + JSON.stringify(labels));\n  }\n  // Each size chip is set at the size it picks, so the choice reads as a size.\n  const chipSize = label => getComputedStyle(document.querySelector(`[role=radio][aria-label=\"${label}\"]`).firstElementChild).fontSize;\n  const sizes = ['小', '中', '大', '特大'].map(chipSize);\n  if (new Set(sizes).size !== 4) throw new Error('the size chips are not all different: ' + JSON.stringify(sizes));\n  return 'appearance options ok: ' + JSON.stringify(sizes);\n})()"
+          },
+          {
+            "shot": "m-appearance-light.png"
+          },
+          {
+            "eval": "document.querySelector('[role=radio][aria-label=\"深色\"]').click(); 'dark'"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => {\n  const painted = colour => [...document.querySelectorAll('div')].some(node => getComputedStyle(node).backgroundColor === colour);\n  if (!painted('rgb(11, 18, 32)')) throw new Error('the dark canvas was not painted');\n  if (!painted('rgb(21, 30, 46)')) throw new Error('the dark surface was not painted');\n  const stored = window.localStorage.getItem('future.mobile.appearance');\n  if (!stored || !stored.includes('\"themeMode\":\"dark\"')) throw new Error('the scheme was not stored: ' + stored);\n  return 'dark painted and stored';\n})()"
+          },
+          {
+            "shot": "m-appearance-dark.png"
+          },
+          {
+            "eval": "document.querySelector('[role=radio][aria-label=\"特大\"]').click(); 'xlarge'"
+          },
+          {
+            "wait": 1000
+          },
+          {
+            "eval": "document.querySelector('[aria-label=\"返回\"]').click(); 'back'"
+          },
+          {
+            "wait": 1000
+          },
+          {
+            "eval": "document.querySelector('[aria-label=\"返回\"]').click(); 'back'"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => {\n  // The screens behind the sheet are rebuilt, not only the chips in it: a\n  // colour or size frozen at mount would leave the app on the old theme.\n  const dark = [...document.querySelectorAll('div')].filter(node => getComputedStyle(node).backgroundColor === 'rgb(21, 30, 46)');\n  if (dark.length === 0) throw new Error('the session list is not on the dark surface');\n  const stored = JSON.parse(window.localStorage.getItem('future.mobile.appearance'));\n  if (stored.fontSize !== 'xlarge') throw new Error('the text size was not stored: ' + JSON.stringify(stored));\n  return 'list repainted: ' + JSON.stringify(stored);\n})()"
+          },
+          {
+            "shot": "m-appearance-dark-list-xlarge.png"
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 3000
+          },
+          {
+            "eval": "(() => {\n  const body = [...document.querySelectorAll('div')].find(node => node.children.length === 0 && (node.textContent || '').includes('整理两篇文献的结论对比表'));\n  if (!body) throw new Error('the conversation did not open');\n  const style = getComputedStyle(body);\n  // 15 design points at the largest text size (15 x 1.35, rounded).\n  if (style.fontSize !== '20px') throw new Error('message text is not at the largest size: ' + style.fontSize);\n  if (style.color !== 'rgb(230, 236, 246)') throw new Error('message text is not the dark ink: ' + style.color);\n  const bubble = [...document.querySelectorAll('div')].find(node => getComputedStyle(node).backgroundColor === 'rgb(96, 165, 250)');\n  if (!bubble) throw new Error('the user bubble is not painted with the dark accent');\n  return 'chat scales and stays dark';\n})()"
+          },
+          {
+            "shot": "m-appearance-dark-chat-xlarge.png"
+          },
+          {
+            "eval": "(() => {\n  const back = [...document.querySelectorAll('[role=button]')].find(node => (node.getAttribute('aria-label') || '').includes('返回'));\n  if (!back) throw new Error('no way back out of the conversation');\n  back.click();\n  return 'chat closed';\n})()"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "设置"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "外观"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "document.querySelector('[role=radio][aria-label=\"跟随系统\"]').click(); 'follow system'"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "document.querySelector('[role=radio][aria-label=\"中\"]').click(); 'medium'"
+          },
+          {
+            "wait": 1000
+          },
+          {
+            "eval": "(() => {\n  const stored = window.localStorage.getItem('future.mobile.appearance');\n  if (!stored || JSON.parse(stored).themeMode !== 'system' || JSON.parse(stored).fontSize !== 'medium') {\n    throw new Error('the appearance was left changed: ' + stored);\n  }\n  return 'profile left on the default appearance';\n})()"
+          }
+        ]
+      },
       "connection-popover": {
         "_comment": "A badge that reads 已连接 must still offer a manual reconnect. Opened by a programmatic click on the trigger (an emulated tap lands ~58px lower in this harness), and the assertion reads the popover's button labels, so a missing action fails the capture instead of quietly shipping an empty bubble.",
         "steps": [

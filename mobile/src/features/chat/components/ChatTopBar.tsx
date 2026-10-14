@@ -1,6 +1,7 @@
 import { ArrowLeft, FolderOpen, ReceiptText } from "lucide-react-native";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import { colors, layout, radius, spacing } from "../../../theme/tokens";
+import { layout, radius, spacing } from "../../../theme/tokens";
+import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
 
 export function ChatTopBar({
   title,
@@ -42,6 +43,8 @@ export function ChatTopBar({
   filesOpen: boolean;
   onFiles: () => void;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   return (
     <View style={styles.topbar}>
       <Pressable
@@ -110,15 +113,15 @@ export function ChatTopBar({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(theme => StyleSheet.create({
   topbar: {
     minHeight: 60,
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: colors.lineSoft,
-    backgroundColor: colors.surface,
+    borderBottomColor: theme.colors.lineSoft,
+    backgroundColor: theme.colors.surface,
   },
   iconButton: {
     width: layout.touchTarget,
@@ -127,7 +130,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderRadius: radius.md,
   },
-  pressed: { backgroundColor: colors.surfaceSubtle },
+  pressed: { backgroundColor: theme.colors.surfaceSubtle },
   titleWrap: { flex: 1, minWidth: 0, alignItems: "center" },
   // One line for "where this conversation is": machine, then workspace or chat
   // section. The machine keeps its width up to a cap and the rest truncates —
@@ -135,8 +138,8 @@ const styles = StyleSheet.create({
   // reader just came from, and a line truncating *both* halves reads as a row
   // that did not fit.
   contextLine: { flexDirection: "row", alignItems: "center", justifyContent: "center", maxWidth: "100%", marginTop: 2 },
-  machine: { color: colors.inkMuted, fontSize: 12, flexShrink: 0, maxWidth: "70%" },
-  contextSeparator: { color: colors.inkMuted, fontSize: 12, marginHorizontal: 4 },
-  context: { color: colors.inkSoft, fontSize: 12, flexShrink: 1 },
-  title: { color: colors.inkStrong, fontSize: 16, fontWeight: "700", maxWidth: "90%" },
-});
+  machine: { color: theme.colors.inkMuted, fontSize: theme.font(12), flexShrink: 0, maxWidth: "70%" },
+  contextSeparator: { color: theme.colors.inkMuted, fontSize: theme.font(12), marginHorizontal: 4 },
+  context: { color: theme.colors.inkSoft, fontSize: theme.font(12), flexShrink: 1 },
+  title: { color: theme.colors.inkStrong, fontSize: theme.font(16), fontWeight: "700", maxWidth: "90%" },
+}));

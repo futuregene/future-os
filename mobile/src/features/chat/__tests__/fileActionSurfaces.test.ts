@@ -5,7 +5,7 @@ import type { TFunction } from "i18next";
 import { NativeFileActionSheet } from "../components/NativeFileActionSheet";
 import { PreviewModal, previewLayerKey } from "../components/PreviewModal";
 import { MarkdownText } from "../../../components/MarkdownText";
-import { colors } from "../../../theme/tokens";
+import { lightColors } from "../../../theme/tokens";
 import type { ActiveDownload, FileAction, FileOperation } from "../utils";
 import type { PreviewState } from "../useFileDownload";
 
@@ -241,7 +241,7 @@ describe("preview stack", () => {
     // The layers are absolutely positioned siblings, and the documents' text is
     // transparent, so an unpainted layer lets the covered document's header and
     // every line of its body draw over the top document's.
-    expect(layers().map(layer => StyleSheet.flatten(layer.props.style).backgroundColor)).toEqual([colors.surface, colors.surface]);
+    expect(layers().map(layer => StyleSheet.flatten(layer.props.style).backgroundColor)).toEqual([lightColors.surface, lightColors.surface]);
   });
 
   test("the reader's surface clears the Android status bar", () => {

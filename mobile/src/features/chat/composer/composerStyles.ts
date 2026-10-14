@@ -1,12 +1,13 @@
 import { INPUT_MIN_HEIGHT } from "./composerMetrics";
 import { StyleSheet } from "react-native";
-import { chatTypography, colors, layout, radius, spacing } from "../../../theme/tokens";
+import { layout, radius, spacing } from "../../../theme/tokens";
+import { createThemedStyles } from "../../../theme/ThemeContext";
 import { COMPOSER_FADE_CLEARANCE } from "../utils";
 
-export const styles = StyleSheet.create({
+export const useStyles = createThemedStyles(theme => StyleSheet.create({
   composerDock: {
     flexShrink: 0,
-    backgroundColor: colors.surface,
+    backgroundColor: theme.colors.surface,
   },
   composerFade: {
     position: "absolute",
@@ -22,9 +23,9 @@ export const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
     borderRadius: radius.md,
-    color: colors.warning,
-    backgroundColor: colors.warningSoft,
-    fontSize: 12,
+    color: theme.colors.warning,
+    backgroundColor: theme.colors.warningSoft,
+    fontSize: theme.font(12),
     textAlign: "center",
   },
   dockedApproval: {
@@ -39,10 +40,10 @@ export const styles = StyleSheet.create({
   },
   composer: {
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: theme.colors.line,
     borderRadius: radius.lg,
-    backgroundColor: colors.surface,
-    shadowColor: colors.inkStrong,
+    backgroundColor: theme.colors.surface,
+    shadowColor: theme.colors.inkStrong,
     shadowOpacity: 0.05,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 3 },
@@ -61,9 +62,9 @@ export const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs,
     borderWidth: 1,
-    borderColor: colors.lineSoft,
+    borderColor: theme.colors.lineSoft,
     borderRadius: radius.md,
-    backgroundColor: colors.surfaceSubtle,
+    backgroundColor: theme.colors.surfaceSubtle,
   },
   pendingAttachmentCopy: { maxWidth: 155, flexShrink: 1 },
   removeAttachment: {
@@ -72,18 +73,18 @@ export const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  pendingAttachmentName: { color: colors.ink, fontSize: 12, fontWeight: "600" },
-  pendingAttachmentSize: { color: colors.inkMuted, fontSize: 10 },
+  pendingAttachmentName: { color: theme.colors.ink, fontSize: theme.font(12), fontWeight: "600" },
+  pendingAttachmentSize: { color: theme.colors.inkMuted, fontSize: theme.font(10) },
   attachmentWarning: {
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.xs,
-    color: colors.warning,
-    fontSize: 11,
+    color: theme.colors.warning,
+    fontSize: theme.font(11),
   },
   inputMeasure: { position: "absolute", top: 0, left: 0, right: 0, opacity: 0 },
   inputText: {
-    color: colors.ink,
-    ...chatTypography,
+    color: theme.colors.ink,
+    ...theme.chat,
     includeFontPadding: false,
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
@@ -127,11 +128,11 @@ export const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     borderRadius: radius.sm,
   },
-  selectorTriggerPressed: { backgroundColor: colors.surfaceSubtle },
+  selectorTriggerPressed: { backgroundColor: theme.colors.surfaceSubtle },
   selectorText: {
     flexShrink: 1,
-    color: colors.inkSoft,
-    fontSize: 12,
+    color: theme.colors.inkSoft,
+    fontSize: theme.font(12),
     fontWeight: "600",
   },
   attachmentButton: {
@@ -150,15 +151,15 @@ export const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderRadius: radius.md,
-    backgroundColor: colors.accent,
+    backgroundColor: theme.colors.accent,
   },
-  stopButton: { backgroundColor: colors.danger, overflow: "hidden" },
+  stopButton: { backgroundColor: theme.colors.danger, overflow: "hidden" },
   stopStatus: {
-    color: colors.inkSoft,
-    fontSize: 12,
+    color: theme.colors.inkSoft,
+    fontSize: theme.font(12),
     paddingHorizontal: spacing.lg,
     paddingBottom: spacing.sm,
   },
-  sendDisabled: { backgroundColor: colors.accentDisabled },
+  sendDisabled: { backgroundColor: theme.colors.accentDisabled },
   sendPressed: { opacity: 0.78 },
-});
+}));

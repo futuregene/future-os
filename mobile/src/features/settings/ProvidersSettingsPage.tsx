@@ -4,7 +4,7 @@ import { ScrollView, Text, View } from "react-native";
 import { Button } from "../../components/Button";
 import { useRemoteControls } from "../../remote/RemoteContext";
 import type { RemoteBuiltinProvider, RemoteCustomProvider } from "../../remote/types";
-import { ResourceStatus, SettingsLink, SettingsSection, settingsStyles } from "./SettingsPrimitives";
+import { ResourceStatus, SettingsLink, SettingsSection, useSettingsStyles } from "./SettingsPrimitives";
 import { useDesktopResource } from "./useDesktopResource";
 
 /** The account provider is signed in from the desktop; never editable here. */
@@ -33,6 +33,7 @@ export function ProvidersSettingsPage({ onOpenBuiltin, onOpenCustom }: {
   onOpenBuiltin(provider: RemoteBuiltinProvider): void;
   onOpenCustom(provider: RemoteCustomProvider | null): void;
 }) {
+  const settingsStyles = useSettingsStyles();
   const { t } = useTranslation();
   const remote = useRemoteControls();
   const [showAllBuiltin, setShowAllBuiltin] = useState(false);

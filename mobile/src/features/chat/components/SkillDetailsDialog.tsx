@@ -3,7 +3,8 @@ import { useTranslation } from "react-i18next";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { DialogSurface } from "../../../components/DialogSurface";
 import type { RemoteSkill } from "../../../remote/types";
-import { colors, layout, radius, spacing } from "../../../theme/tokens";
+import { layout, radius, spacing } from "../../../theme/tokens";
+import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
 
 /**
  * One skill's full description, opened from the `/` menu's info button.
@@ -14,6 +15,8 @@ import { colors, layout, radius, spacing } from "../../../theme/tokens";
  * rather than the picker: the picker unmounts as soon as the slash token does.
  */
 export function SkillDetailsDialog({ skill, onClose }: { skill: RemoteSkill | null; onClose: () => void }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t, i18n } = useTranslation();
   if (!skill) return null;
   const useZh = i18n.language.startsWith("zh");
@@ -38,11 +41,11 @@ export function SkillDetailsDialog({ skill, onClose }: { skill: RemoteSkill | nu
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(theme => StyleSheet.create({
   header: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
-  title: { flex: 1, minWidth: 0, paddingVertical: spacing.sm, color: colors.inkStrong, fontSize: 18, fontWeight: "700" },
+  title: { flex: 1, minWidth: 0, paddingVertical: spacing.sm, color: theme.colors.inkStrong, fontSize: theme.font(18), fontWeight: "700" },
   close: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center", borderRadius: radius.pill },
-  pressed: { backgroundColor: colors.surfaceSubtle },
-  command: { fontSize: 13, color: colors.inkMuted },
-  description: { fontSize: 14, lineHeight: 21, color: colors.inkSoft },
-});
+  pressed: { backgroundColor: theme.colors.surfaceSubtle },
+  command: { fontSize: theme.font(13), color: theme.colors.inkMuted },
+  description: { fontSize: theme.font(14), lineHeight: theme.leading(21), color: theme.colors.inkSoft },
+}));

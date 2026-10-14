@@ -8,7 +8,7 @@ import {
   highlightCode,
 } from "../codeHighlight";
 import { codePreviewRows } from "../codePreviewRows";
-import { codeColors } from "../../theme/tokens";
+import { lightCodeColors } from "../../theme/tokens";
 
 describe("native code highlighting", () => {
   test.each([
@@ -45,7 +45,7 @@ describe("native code highlighting", () => {
 
   test("the screenshot's incomplete TSX attribute still colors its string", () => {
     expect(highlightCode('underlineColorAndroid="transparent"', " TSX "))
-      .toContainEqual({ text: '"transparent"', color: codeColors.string });
+      .toContainEqual({ text: '"transparent"', color: lightCodeColors.string });
   });
 
   test("keeps Unicode, entities, CRLF, indentation and trailing blank lines verbatim", () => {
@@ -83,7 +83,7 @@ describe("native code highlighting", () => {
       expect(result[index]!.map(token => token.text).join(""))
         .toBe(row.text.endsWith("\n") ? row.text.slice(0, -1) : row.text);
     }
-    expect(result[1]!.every(token => token.color === codeColors.comment)).toBe(true);
+    expect(result[1]!.every(token => token.color === lightCodeColors.comment)).toBe(true);
     expect(codeTokenRows(null, rows)).toEqual(rows.map(() => null));
   });
 });

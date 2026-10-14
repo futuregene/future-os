@@ -4,7 +4,7 @@ import { Alert, BackHandler, Modal, StyleSheet, Text } from "react-native";
 import { Button } from "../../components/Button";
 import { PEER_ICONS } from "../../remote/peerIcons";
 import type { PairedDesktop } from "../../remote/types";
-import { colors } from "../../theme/tokens";
+import { lightColors } from "../../theme/tokens";
 import { DesktopsScreen } from "../DesktopsScreen";
 
 const mockRemote: {
@@ -124,7 +124,7 @@ test("draws the machine in use plainly, saying which it is only to assistive tec
   expect(tree.root.findAllByType("Check" as never)).toHaveLength(0);
   // The highlight is gone with the mark: no row is painted as the current one.
   expect(tree.root.findAll(
-    (node) => StyleSheet.flatten(node.props.style)?.backgroundColor === colors.accentSoft,
+    (node) => StyleSheet.flatten(node.props.style)?.backgroundColor === lightColors.accentSoft,
   )).toHaveLength(0);
 });
 

@@ -20,7 +20,8 @@ import type { StyleProp, TextStyle } from "react-native";
 import { Animated, FlatList, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { AppAlert as Alert } from "./appAlerts";
 import { useStreamingText } from "./useStreamingText";
-import { chatTypography, colors, radius, spacing } from "../theme/tokens";
+import { radius, spacing } from "../theme/tokens";
+import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 import { MarkdownImage, MarkdownImageBasePathContext, resolveMarkdownPath } from "./MarkdownImage";
 import { MathFormula } from "./MathFormula";
 
@@ -45,26 +46,26 @@ type OpenTarget = (target: string) => void;
  * carries, or they silently lose their tail. */
 const TABLE_INLINE_ROW_LIMIT = 20;
 
-function renderInline(nodes: InlineNode[], openTarget: OpenTarget, parentKey: string): ReactNode[] {
+function renderInline(nodes: InlineNode[], openTarget: OpenTarget, parentKey: string, styles: MarkdownStyles): ReactNode[] {
   return nodes.map((node, index) => {
     const key = `${parentKey}:in${index}`;
     switch (node.type) {
       case "strong":
         return (
           <Text key={key} style={styles.bold}>
-            {renderInline(node.children, openTarget, key)}
+            {renderInline(node.children, openTarget, key, styles)}
           </Text>
         );
       case "italic":
         return (
           <Text key={key} style={styles.italic}>
-            {renderInline(node.children, openTarget, key)}
+            {renderInline(node.children, openTarget, key, styles)}
           </Text>
         );
       case "delete":
         return (
           <Text key={key} style={styles.strike}>
-            {renderInline(node.children, openTarget, key)}
+            {renderInline(node.children, openTarget, key, styles)}
           </Text>
         );
       case "code":
@@ -80,10 +81,10 @@ function renderInline(nodes: InlineNode[], openTarget: OpenTarget, parentKey: st
       case "link": {
         const target = classifyMarkdownTarget(node.href);
         if (target.kind === "blocked" || target.kind === "document-anchor")
-          return <Text key={key}>{renderInline(node.children, openTarget, key)}</Text>;
+          return <Text key={key}>{renderInline(node.children, openTarget, key, styles)}</Text>;
         return (
           <Text key={key} onPress={() => openTarget(node.href)} style={styles.link}>
-            {renderInline(node.children, openTarget, key)}
+            {renderInline(node.children, openTarget, key, styles)}
           </Text>
         );
       }
@@ -103,7 +104,7 @@ function renderInline(nodes: InlineNode[], openTarget: OpenTarget, parentKey: st
         if (reference.targetType !== "file") return label;
         return (
           <Text key={key} onPress={() => openTarget(reference.targetId)} style={styles.link}>
-            {node.children ? renderInline(node.children, openTarget, key) : label}
+            {node.children ? renderInline(node.children, openTarget, key, styles) : label}
           </Text>
         );
       }
@@ -148,11 +149,12 @@ function InlineContent({ nodes, openTarget, textStyle, heading = false, align }:
   heading?: boolean;
   align?: "center" | "left" | "right";
 }) {
+  const styles = useStyles();
   const alignStyle = align ? { textAlign: align } : undefined;
   return inlineRuns(nodes).map((run, index) => {
     if ("nodes" in run) return (
       <Text key={index} selectable accessibilityRole={heading ? "header" : undefined} style={[textStyle, alignStyle]}>
-        {renderInline(run.nodes, openTarget, `run${index}`)}
+        {renderInline(run.nodes, openTarget, `run${index}`, styles)}
       </Text>
     );
     return <MarkdownImage key={index} alt={run.image.alt} src={run.image.src} width={run.image.width} href={run.href} openTarget={openTarget} />;
@@ -166,11 +168,13 @@ function InlineContent({ nodes, openTarget, textStyle, heading = false, align }:
 const collapsedCodeLines = 16;
 
 function CodeSource({ code, language }: { code: string; language?: string }) {
+  const styles = useStyles();
+  const { codeColors } = useTheme();
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const large = code.length > 10000 || code.split("\n", 18).length > 16;
   const rows = useMemo(() => large ? codePreviewRows(code) : [], [code, large]);
-  const tokens = useMemo(() => highlightCode(code, language), [code, language]);
+  const tokens = useMemo(() => highlightCode(code, language, codeColors), [code, language, codeColors]);
   const rowTokens = useMemo(() => codeTokenRows(tokens, rows), [tokens, rows]);
   // Wrapping (never a horizontal scroll view) keeps a phone-width block
   // readable; an explicit toggle, not a nested vertical viewport, is what makes
@@ -216,6 +220,7 @@ function renderListItem(
   start: number,
   openTarget: OpenTarget,
   parentKey: string,
+  styles: MarkdownStyles,
 ) {
   const key = `${parentKey}:item${itemIndex}`;
   return (
@@ -233,7 +238,7 @@ function renderListItem(
         ) : null}
         {item.blocks?.length ? (
           <View style={styles.nestedBlocks}>
-            {renderBlocks(item.blocks, openTarget, `${key}:blocks`)}
+            {renderBlocks(item.blocks, openTarget, `${key}:blocks`, styles)}
           </View>
         ) : null}
       </View>
@@ -246,7 +251,11 @@ function renderBlock(
   openTarget: OpenTarget,
   key: string,
   isLast: boolean,
+  styles: MarkdownStyles,
 ): ReactNode {
+  // Heading sizes scale with the reader's text size like the sheet's own styles,
+  // so they are indexed out of it rather than held in a module constant.
+  const headingSizes = [styles.h1, styles.h2, styles.h3, styles.h4, styles.h5, styles.h6];
   // A block's own alignment (`<p align>`, `<h3 align>` from raw HTML): text
   // centers via `textAlign`, and a narrower-than-container image centers via the
   // wrapper's `alignItems`. A centered block also keeps its usual bottom margin;
@@ -280,14 +289,14 @@ function renderBlock(
     case "blockquote":
       return (
         <View key={key} style={[styles.quote, isLast ? styles.noBottom : null]}>
-          {renderBlocks(node.children, openTarget, `${key}:quote`)}
+          {renderBlocks(node.children, openTarget, `${key}:quote`, styles)}
         </View>
       );
     case "list":
       return (
         <View key={key} style={[styles.list, isLast ? styles.noBottom : null]}>
           {node.items.map((item, index) =>
-            renderListItem(item, index, node.ordered, node.start ?? 1, openTarget, key),
+            renderListItem(item, index, node.ordered, node.start ?? 1, openTarget, key, styles),
           )}
         </View>
       );
@@ -322,13 +331,15 @@ function renderBlocks(
   nodes: MarkdownNode[],
   openTarget: OpenTarget,
   parentKey: string,
+  styles: MarkdownStyles,
 ): ReactNode[] {
   return nodes.map((node, index) =>
-    renderBlock(node, openTarget, `${parentKey}:b${index}`, index === nodes.length - 1),
+    renderBlock(node, openTarget, `${parentKey}:b${index}`, index === nodes.length - 1, styles),
   );
 }
 
 function MarkdownTable({ node, openTarget }: { node: TableNode; openTarget: OpenTarget }) {
+  const styles = useStyles();
   const { t } = useTranslation();
   const [width, setWidth] = useState(0);
   const [expanded, setExpanded] = useState(false);
@@ -374,6 +385,7 @@ const MarkdownTableRow = memo(function MarkdownTableRow({ cells, alignments, cel
   header?: boolean;
   striped?: boolean;
 }) {
+  const styles = useStyles();
   return (
     <View style={[styles.tableRow, header ? styles.tableHead : styles.tableBodyRow, striped && styles.tableRowZebra]}>
       {cells.map((cell, index) => (
@@ -399,6 +411,7 @@ const MarkdownBlock = memo(function MarkdownBlock({ node, openTarget, isLast, an
   animate: boolean;
 }) {
   const [opacity] = useState(() => new Animated.Value(animate ? 0 : 1));
+  const styles = useStyles();
   const appeared = useRef(false);
   useEffect(() => {
     if (!animate || appeared.current) {
@@ -414,10 +427,11 @@ const MarkdownBlock = memo(function MarkdownBlock({ node, openTarget, isLast, an
     return () => animation.stop();
   }, [animate, opacity]);
   // Only new blocks fade once. Updating a token never fades the whole message.
-  return <Animated.View style={{ opacity }}>{renderBlock(node, openTarget, "block", isLast)}</Animated.View>;
+  return <Animated.View style={{ opacity }}>{renderBlock(node, openTarget, "block", isLast, styles)}</Animated.View>;
 });
 
 export function MarkdownText({ text, onOpenFile, imageBasePath, mode = "message", streaming = false }: MarkdownTextProps) {
+  const styles = useStyles();
   const { t } = useTranslation();
   const [project] = useState(createStreamingMarkdownParser);
   const reveal = useStreamingText(text, mode === "message" && streaming);
@@ -476,16 +490,12 @@ export function MarkdownText({ text, onOpenFile, imageBasePath, mode = "message"
 }
 
 const monospace = Platform.select({ ios: "Menlo", default: "monospace" });
-const headingSizes: TextStyle[] = [
-  { fontSize: 24, lineHeight: 32 },
-  { fontSize: 21, lineHeight: 29 },
-  { fontSize: 19, lineHeight: 27 },
-  { fontSize: 17, lineHeight: 25 },
-  { fontSize: 16, lineHeight: 24 },
-  { fontSize: 15, lineHeight: 22 },
-];
 
-const styles = StyleSheet.create({
+/** The markdown sheet, named because the module-level block renderers take it as
+ * an argument: they are plain functions, so they cannot call `useStyles`. */
+type MarkdownStyles = ReturnType<typeof useStyles>;
+
+const useStyles = createThemedStyles(theme => StyleSheet.create({
   // The last block of a message drops its bottom margin — the surrounding
   // bubble/segment layout owns outer spacing.
   noBottom: { marginBottom: 0 },
@@ -495,57 +505,64 @@ const styles = StyleSheet.create({
   // parent instead leaves a blank strip under the header once text scrolls.
   previewContent: { padding: spacing.lg, minWidth: 0, maxWidth: "100%", alignSelf: "stretch" },
   blockSpacing: { marginBottom: spacing.sm },
-  bodyText: { color: colors.ink, ...chatTypography },
-  paragraph: { color: colors.ink, ...chatTypography, marginBottom: spacing.sm },
+  bodyText: { color: theme.colors.ink, ...theme.chat },
+  paragraph: { color: theme.colors.ink, ...theme.chat, marginBottom: spacing.sm },
   heading: {
-    color: colors.inkStrong,
+    color: theme.colors.inkStrong,
     fontWeight: "700",
   },
+  // Heading levels 1-6, in the order `headingSizes` builds them.
+  h1: { fontSize: theme.font(24), lineHeight: theme.leading(32) },
+  h2: { fontSize: theme.font(21), lineHeight: theme.leading(29) },
+  h3: { fontSize: theme.font(19), lineHeight: theme.leading(27) },
+  h4: { fontSize: theme.font(17), lineHeight: theme.leading(25) },
+  h5: { fontSize: theme.font(16), lineHeight: theme.leading(24) },
+  h6: { fontSize: theme.font(15), lineHeight: theme.leading(22) },
   bold: { fontWeight: "700" },
   italic: { fontStyle: "italic" },
   strike: { textDecorationLine: "line-through" },
   inlineCode: {
-    color: colors.ink,
-    backgroundColor: colors.surfaceSubtle,
+    color: theme.colors.ink,
+    backgroundColor: theme.colors.surfaceSubtle,
     fontFamily: monospace,
-    fontSize: 13,
+    fontSize: theme.font(13),
     paddingHorizontal: 4,
     paddingVertical: 1,
     borderRadius: radius.sm,
     overflow: "hidden",
   },
-  link: { color: colors.accent, textDecorationLine: "underline" },
+  link: { color: theme.colors.accent, textDecorationLine: "underline" },
   fileChip: {
-    color: colors.accent,
-    backgroundColor: colors.surfaceSubtle,
+    color: theme.colors.accent,
+    backgroundColor: theme.colors.surfaceSubtle,
     borderRadius: radius.sm,
     paddingHorizontal: 5,
     paddingVertical: 2,
     overflow: "hidden",
   },
-  rule: { height: 1, marginVertical: spacing.md, backgroundColor: colors.line },
+  rule: { height: 1, marginVertical: spacing.md, backgroundColor: theme.colors.line },
   codeContainer: {
     maxWidth: "100%",
     borderRadius: radius.md,
     overflow: "hidden",
-    backgroundColor: colors.surfaceSubtle,
+    backgroundColor: theme.colors.surfaceSubtle,
   },
   codeToolbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   codeCopy: { padding: spacing.md, minHeight: 44, justifyContent: "center" },
-  codeToggle: { padding: spacing.sm, minHeight: 44, alignItems: "center", justifyContent: "center", borderTopWidth: 1, borderTopColor: colors.lineSoft },
-  codeLanguage: { color: colors.inkMuted, fontSize: 12, paddingHorizontal: spacing.md, paddingTop: spacing.sm },
+  codeToggle: { padding: spacing.sm, minHeight: 44, alignItems: "center", justifyContent: "center", borderTopWidth: 1, borderTopColor: theme.colors.lineSoft },
+  codeLanguage: { color: theme.colors.inkMuted, fontSize: theme.font(12), paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   code: {
     padding: spacing.md,
-    color: colors.ink,
+    color: theme.colors.ink,
     fontFamily: monospace,
-    fontSize: 13,
-    lineHeight: 20,
+    fontSize: theme.font(13),
+    lineHeight: theme.leading(20),
   },
   quote: {
     marginBottom: spacing.md,
     paddingLeft: spacing.md,
     borderLeftWidth: 3,
-    borderLeftColor: colors.accent,
+    borderLeftColor: theme.colors.accent,
   },
   list: { marginBottom: spacing.md },
   listRow: { flexDirection: "row", alignItems: "flex-start", marginBottom: spacing.xs },
@@ -554,11 +571,11 @@ const styles = StyleSheet.create({
     flexShrink: 0,
     textAlign: "right",
     marginRight: spacing.xs,
-    color: colors.ink,
-    ...chatTypography,
+    color: theme.colors.ink,
+    ...theme.chat,
   },
   listItemBody: { flex: 1, minWidth: 0 },
-  listItemText: { color: colors.ink, ...chatTypography },
+  listItemText: { color: theme.colors.ink, ...theme.chat },
   nestedBlocks: { marginTop: spacing.xs },
   checkbox: {
     width: 18,
@@ -568,34 +585,34 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: colors.inkMuted,
+    borderColor: theme.colors.inkMuted,
     borderRadius: radius.sm,
   },
-  checkboxChecked: { backgroundColor: colors.accent, borderColor: colors.accent },
-  checkMark: { color: colors.surface, fontSize: 12, fontWeight: "700", lineHeight: 14 },
+  checkboxChecked: { backgroundColor: theme.colors.accent, borderColor: theme.colors.accent },
+  checkMark: { color: theme.colors.surface, fontSize: theme.font(12), fontWeight: "700", lineHeight: theme.leading(14) },
   table: {
     borderWidth: 1,
-    borderColor: colors.lineSoft,
+    borderColor: theme.colors.lineSoft,
     borderRadius: radius.md,
     overflow: "hidden",
   },
   tableRow: { flexDirection: "row" },
-  tableHead: { backgroundColor: colors.surfaceSubtle },
-  tableBodyRow: { borderTopWidth: 1, borderTopColor: colors.lineSoft },
-  tableRowZebra: { backgroundColor: colors.surfaceSubtle },
+  tableHead: { backgroundColor: theme.colors.surfaceSubtle },
+  tableBodyRow: { borderTopWidth: 1, borderTopColor: theme.colors.lineSoft },
+  tableRowZebra: { backgroundColor: theme.colors.surfaceSubtle },
   tableRowsToggle: { minHeight: 44, justifyContent: "center", paddingHorizontal: spacing.sm },
-  tableRowsHint: { color: colors.accent, fontSize: 12 },
+  tableRowsHint: { color: theme.colors.accent, fontSize: theme.font(12) },
   tableCell: { paddingHorizontal: spacing.sm, paddingVertical: spacing.sm },
   th: {
-    color: colors.inkStrong,
+    color: theme.colors.inkStrong,
     fontWeight: "700",
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: theme.font(14),
+    lineHeight: theme.leading(20),
   },
   td: {
-    color: colors.inkSoft,
-    fontSize: 14,
-    lineHeight: 20,
+    color: theme.colors.inkSoft,
+    fontSize: theme.font(14),
+    lineHeight: theme.leading(20),
   },
-  cellBorderLeft: { borderLeftWidth: 1, borderLeftColor: colors.lineSoft },
-});
+  cellBorderLeft: { borderLeftWidth: 1, borderLeftColor: theme.colors.lineSoft },
+}));

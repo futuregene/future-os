@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { AppState, StyleSheet, type AppStateStatus } from "react-native";
-import { colors } from "../../theme/tokens";
+import { lightColors } from "../../theme/tokens";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { TimelineCard } from "../TimelineCard";
 import type { TimelineCardProps } from "../TimelineCard";
@@ -295,7 +295,7 @@ test("a failed run is not tinted", () => {
   const counts = tree.root.findAll(node => node.props.children === "×2" || node.props.children === "×1");
   expect(counts).not.toHaveLength(0);
   for (const text of counts)
-    expect(StyleSheet.flatten(text.props.style).color).toBe(colors.inkMuted);
+    expect(StyleSheet.flatten(text.props.style).color).toBe(lightColors.inkMuted);
 });
 
 // The summary shares the reply's leading edge while remaining a compact row.

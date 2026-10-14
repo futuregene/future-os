@@ -1,7 +1,8 @@
 import { X } from "lucide-react-native";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
-import { colors, layout, radius, spacing } from "../theme/tokens";
+import { layout, radius, spacing } from "../theme/tokens";
+import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 import { friendlyError } from "./errorMessage";
 
 /**
@@ -15,6 +16,8 @@ import { friendlyError } from "./errorMessage";
  * deleting. Connection lifecycle errors belong to the shared status page.
  */
 export function ErrorBanner({ message, onDismiss }: { message: string; onDismiss?: () => void }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   return (
     <View accessibilityLiveRegion="polite" style={styles.banner}>
@@ -33,7 +36,7 @@ export function ErrorBanner({ message, onDismiss }: { message: string; onDismiss
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(theme => StyleSheet.create({
   banner: {
     flexDirection: "row",
     alignItems: "center",
@@ -43,10 +46,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     borderRadius: radius.md,
-    backgroundColor: colors.dangerSoft,
+    backgroundColor: theme.colors.dangerSoft,
     borderWidth: 1,
-    borderColor: colors.dangerLine,
+    borderColor: theme.colors.dangerLine,
   },
-  text: { flex: 1, color: colors.danger, fontSize: 13, lineHeight: 18 },
+  text: { flex: 1, color: theme.colors.danger, fontSize: theme.font(13), lineHeight: theme.leading(18) },
   dismiss: { width: layout.touchTarget, minHeight: layout.touchTarget, alignItems: "center", justifyContent: "center" },
-});
+}));

@@ -28,7 +28,10 @@ const config: ExpoConfig = {
   // iOS requires an opaque, full-bleed 1024px source. The desktop icon keeps
   // transparent padding for its own use, so use the mobile-specific crop here.
   icon: "./assets/icon.png",
-  userInterfaceStyle: "light",
+  // The phone's own setting decides the scheme; the app follows it and offers a
+  // manual override inside (src/theme). `light` here would pin the whole app to
+  // one scheme, including the assets the OS picks (splash, keyboard, dialogs).
+  userInterfaceStyle: "automatic",
   plugins: [
     "./plugins/withIosShareExtension",
     // Expo CLI cannot add this automatically to a dynamic TypeScript config.
@@ -71,9 +74,11 @@ const config: ExpoConfig = {
         // into the booting spinner with no visible seam. Android 12+ requires a
         // splash icon (it defaults to the launcher icon if none is set), so we
         // pass a fully transparent image — visually a bare background on both
-        // platforms, no logo.
+        // platforms, no logo. `dark` is the same screen for a phone in dark
+        // mode, matching `darkColors.canvas`.
         backgroundColor: "#f6f7f9",
         image: "./assets/splash.png",
+        dark: { backgroundColor: "#0b1220", image: "./assets/splash.png" },
       },
     ],
     [

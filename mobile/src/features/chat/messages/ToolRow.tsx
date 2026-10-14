@@ -3,8 +3,8 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, Text, View } from "react-native";
 import type { TimelineToolRow } from "../../../remote/types";
-import { colors } from "../../../theme/tokens";
-import { styles } from "./messageStyles";
+import { useTheme } from "../../../theme/ThemeContext";
+import { useStyles } from "./messageStyles";
 import type { ToolTargetResolver } from "./types";
 import { ROW_HIT_SLOP, toolKind, ToolGlyph, toolLabel, failedToolLabel, toolDetail } from "./messageUtils";
 import type { ToolKind } from "./messageUtils";
@@ -37,6 +37,8 @@ export function ToolRow({
   opened: boolean;
   resolveTarget?: ToolTargetResolver;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   // A command the page omitted, fetched when the row is opened. Kept for this
@@ -144,6 +146,8 @@ function ToolChildRow({
   child: TimelineToolRow;
   resolveTarget?: ToolTargetResolver;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const [fetchedTarget, setFetchedTarget] = useState<string | null>(null);
   const [fetching, setFetching] = useState(false);

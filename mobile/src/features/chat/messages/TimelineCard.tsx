@@ -6,9 +6,9 @@ import { Pressable, Text, View } from "react-native";
 import { friendlyRunError, friendlyRunErrorTitle } from "../../../components/errorMessage";
 import { MarkdownText } from "../../../components/MarkdownText";
 import { canRecoverMessage } from "../../../remote/recovery";
-import { colors } from "../../../theme/tokens";
+import { useTheme } from "../../../theme/ThemeContext";
 import { Button } from "../../../components/Button";
-import { styles } from "./messageStyles";
+import { useStyles } from "./messageStyles";
 import type { TimelineCardProps } from "./types";
 import { RunIndicator, formatDuration } from "./messageUtils";
 import { useCopyState } from "./useCopyState";
@@ -29,6 +29,8 @@ function TimelineCardView({
   onResolveToolTarget,
   onReplyTailAnchor,
 }: TimelineCardProps) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t, i18n } = useTranslation();
   const { copied, copy } = useCopyState();
   /**

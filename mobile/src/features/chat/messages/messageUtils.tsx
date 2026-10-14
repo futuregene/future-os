@@ -4,8 +4,9 @@ import { useTranslation } from "react-i18next";
 import { AppState, Text, View } from "react-native";
 import { TimelineVisibleContext } from "../../../components/PausedTimeline";
 import { basename } from "../../../remote/localPath";
-import { colors, spacing } from "../../../theme/tokens";
-import { styles } from "./messageStyles";
+import { spacing } from "../../../theme/tokens";
+import { useTheme } from "../../../theme/ThemeContext";
+import { useStyles } from "./messageStyles";
 
 // Same shape as the desktop footer (desktop/src/lib/date.ts formatDuration): "5s"
 // under a minute, "1m 25s" above — so phone and desktop read identically.
@@ -24,6 +25,7 @@ export function formatDuration(durationMs: number): string {
 export const ROW_HIT_SLOP = { top: spacing.sm, bottom: spacing.sm } as const;
 
 export function RunIndicator({ startedAt }: { startedAt?: number; }) {
+  const styles = useStyles();
   const { t } = useTranslation();
   const visible = useContext(TimelineVisibleContext);
   const [now, setNow] = useState(() => Date.now());
@@ -60,6 +62,7 @@ export function toolKind(name: string): ToolKind {
 }
 
 export function ToolGlyph({ kind, failed = false }: { kind: ToolKind; failed?: boolean; }) {
+  const { colors } = useTheme();
   const props = { color: colors.inkMuted, size: 14 };
   if (failed) return <TriangleAlert {...props} />;
   switch (kind) {

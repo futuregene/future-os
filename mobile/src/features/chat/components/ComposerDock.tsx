@@ -8,7 +8,7 @@ import { PendingApprovalCard } from "../messages/PendingApprovalCard";
 import type { RemoteControls } from "../../../remote/RemoteContext";
 import { deleteTemporaryAttachment } from "../../../remote/files";
 import type { MobileAttachment, RemoteSkill, SessionReferenceMap, SessionReferenceTarget, TimelineItem } from "../../../remote/types";
-import { colors } from "../../../theme/tokens";
+import { useTheme } from "../../../theme/ThemeContext";
 import { formatBytes } from "../utils";
 import { useComposerCompletion } from "../useComposerCompletion";
 import { sessionMentionGroups } from "../sessionMention";
@@ -18,7 +18,7 @@ import { useStopRequest } from "../useStopRequest";
 import { SkillDetailsDialog } from "./SkillDetailsDialog";
 import { SkillSuggestionCard } from "./SkillSuggestionCard";
 import { ComposerToolbar } from "../composer/ComposerToolbar";
-import { styles } from "../composer/composerStyles";
+import { useStyles } from "../composer/composerStyles";
 import { SkillPicker, skillPickerHeight } from "./SkillPicker";
 import { SessionPicker, sessionPickerHeight } from "./SessionPicker";
 import { FloatingTimelineButton } from "./FloatingTimelineButton";
@@ -98,6 +98,8 @@ function ComposerDockView({
   onInstallSkill?: () => void;
   onDismissSkill?: () => void;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const [contentHeight, setContentHeight] = useState(INPUT_MIN_HEIGHT);
   // The skill whose description is open. Owned here rather than by the picker,
   // which is unmounted as soon as the composer loses its slash token.

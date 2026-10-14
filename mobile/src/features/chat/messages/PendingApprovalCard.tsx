@@ -4,10 +4,10 @@ import { useTranslation } from "react-i18next";
 import { Pressable, Text, View } from "react-native";
 import { approvalCommand, approvalDeletes, approvalPaths, escalationTitleKey, parseAction } from "@future-os/thread-projection";
 import type { ApprovalPayload } from "../../../remote/types";
-import { colors } from "../../../theme/tokens";
+import { useTheme } from "../../../theme/ThemeContext";
 import { Button } from "../../../components/Button";
 import { approvalDecisionDisabled } from "../../../components/approvalState";
-import { styles } from "./messageStyles";
+import { useStyles } from "./messageStyles";
 
 // Localized title/summary per approval kind — the agent ships English, so map
 // by kind exactly like the desktop ApprovalPrompt, falling back to the wire
@@ -39,6 +39,8 @@ export function PendingApprovalCard({
   error,
   onDecision,
 }: PendingApprovalCardProps) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const [commandExpanded, setCommandExpanded] = useState(false);
   const action = parseAction(payload.action);

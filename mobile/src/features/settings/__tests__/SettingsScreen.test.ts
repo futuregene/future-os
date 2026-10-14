@@ -3,7 +3,8 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { ScrollView, SectionList, StyleSheet, Switch, Text, TextInput } from "react-native";
 import { Button } from "../../../components/Button";
 import { SettingsScreen, type SettingsScreenHandle } from "../SettingsScreen";
-import { SettingsLink, SettingsSwitch, settingsStyles } from "../SettingsPrimitives";
+import { SettingsLink, SettingsSwitch, useSettingsStyles } from "../SettingsPrimitives";
+import { lightTheme } from "../../../theme/theme";
 import type { DesktopSettings, InstalledSkill, PairedDesktop, ProvidersView } from "../../../remote/types";
 import { PEER_ICONS } from "../../../remote/peerIcons";
 
@@ -333,12 +334,27 @@ test("the phone's own screen holds no device settings", async () => {
   expect(text).not.toContain("desktopSettings.boundDesktop: Work computer");
 });
 
+test("the appearance level is reachable from the phone's own screen", async () => {
+  await remountPhone();
+  await act(async () => link("appearance.title").props.onPress());
+  const radioLabels = tree.root
+    .findAll(node => node.props.accessibilityRole === "radio" && typeof node.props.onPress === "function")
+    .map(node => node.props.accessibilityLabel);
+  // Both settings are phone-local, so they live on the phone's own screen —
+  // and both are one tap from it, not buried under the device's page.
+  expect(radioLabels).toEqual([
+    "appearance.themeMode.system", "appearance.themeMode.light", "appearance.themeMode.dark",
+    "appearance.fontSizeName.small", "appearance.fontSizeName.medium", "appearance.fontSizeName.large", "appearance.fontSizeName.xlarge",
+  ]);
+  expect(radioLabels).not.toContain("desktopSettings.boundDesktop: Work computer");
+});
+
 test("subpages use the shared back control and rounded card styling", async () => {
   await remountPhone();
   const back = () => tree.root.findAll(node => node.props.accessibilityLabel === "common.back" && typeof node.props.onPress === "function")[0]!;
   const title = tree.root.findAllByType(Text).find(node => node.props.children === "sessions.settings")!;
   expect(StyleSheet.flatten(title.props.style)).toMatchObject({ fontSize: 22, fontWeight: "700" });
-  expect(settingsStyles.row).toMatchObject({ borderRadius: 16, minHeight: 52 });
+  expect(useSettingsStyles.forTheme(lightTheme).row).toMatchObject({ borderRadius: 16, minHeight: 52 });
   await act(async () => link("language.title").props.onPress());
   act(() => back().props.onPress());
   expect(link("desktopSettings.followAccount")).toBeDefined();

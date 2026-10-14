@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Animated, PanResponder, StyleSheet, View } from "react-native";
-import { colors } from "../../../theme/tokens";
+import { createThemedStyles } from "../../../theme/ThemeContext";
 
 /** Zoom bounds. 1 is "fit the frame"; the ceiling is generous enough to read a
  * dense screenshot on a phone without letting a stray pinch fly off to nothing. */
@@ -281,6 +281,7 @@ export function ZoomableImage({ uri, accessibilityLabel }: {
   uri: string;
   accessibilityLabel?: string;
 }) {
+  const styles = useStyles();
   const [zoom] = useState(() => createZoomController());
 
   return (
@@ -304,7 +305,7 @@ export function ZoomableImage({ uri, accessibilityLabel }: {
   );
 }
 
-const styles = StyleSheet.create({
-  frame: { flex: 1, width: "100%", backgroundColor: colors.surfaceSubtle, overflow: "hidden" },
+const useStyles = createThemedStyles(theme => StyleSheet.create({
+  frame: { flex: 1, width: "100%", backgroundColor: theme.colors.surfaceSubtle, overflow: "hidden" },
   image: { flex: 1, width: "100%", height: "100%" },
-});
+}));

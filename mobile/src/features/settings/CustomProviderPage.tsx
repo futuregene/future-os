@@ -11,8 +11,9 @@ import {
   type RemoteCustomProvider,
   type RemoteProviderModel,
 } from "../../remote/types";
-import { colors, radius, spacing } from "../../theme/tokens";
-import { SettingsField, SettingsSwitch, settingsStyles } from "./SettingsPrimitives";
+import { radius, spacing } from "../../theme/tokens";
+import { createThemedStyles, useTheme } from "../../theme/ThemeContext";
+import { SettingsField, SettingsSwitch, useSettingsStyles } from "./SettingsPrimitives";
 
 /** Mirrors the desktop form defaults for a freshly added model. */
 const DEFAULT_CONTEXT_WINDOW = "128000";
@@ -109,6 +110,9 @@ export function CustomProviderPage({ provider, onDone }: {
   /** Leave the page once the desktop confirmed the write (save or delete). */
   onDone(): void;
 }) {
+  const settingsStyles = useSettingsStyles();
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const remote = useRemoteControls();
   const editing = provider !== null;
@@ -381,14 +385,14 @@ export function CustomProviderPage({ provider, onDone }: {
   </>;
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(theme => StyleSheet.create({
   stack: { gap: spacing.md },
   modelsHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   addModel: { minHeight: 32, justifyContent: "center", paddingHorizontal: spacing.sm, borderRadius: radius.sm },
-  addModelLabel: { color: colors.accent, fontSize: 13, fontWeight: "600" },
-  model: { borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, overflow: "hidden" },
+  addModelLabel: { color: theme.colors.accent, fontSize: theme.font(13), fontWeight: "600" },
+  model: { borderWidth: 1, borderColor: theme.colors.line, borderRadius: radius.md, overflow: "hidden" },
   modelHeader: { minHeight: 52, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md, padding: spacing.md },
-  modelBody: { padding: spacing.md, borderTopWidth: 1, borderTopColor: colors.line, backgroundColor: colors.surfaceSubtle },
+  modelBody: { padding: spacing.md, borderTopWidth: 1, borderTopColor: theme.colors.line, backgroundColor: theme.colors.surfaceSubtle },
   priceGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
   priceCell: { flexGrow: 1, flexBasis: "45%" },
-});
+}));

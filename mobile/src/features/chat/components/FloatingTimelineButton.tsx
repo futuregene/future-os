@@ -7,7 +7,8 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "react-native";
-import { colors, layout, radius, spacing } from "../../../theme/tokens";
+import { layout, radius, spacing } from "../../../theme/tokens";
+import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
 
 export function FloatingTimelineButton({
   label,
@@ -22,6 +23,8 @@ export function FloatingTimelineButton({
   onPress: () => void;
   style: StyleProp<ViewStyle>;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   return (
     <Pressable
       accessibilityLabel={label}
@@ -37,7 +40,7 @@ export function FloatingTimelineButton({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(theme => StyleSheet.create({
   button: {
     position: "absolute",
     alignSelf: "center",
@@ -49,15 +52,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     borderWidth: 1,
-    borderColor: colors.lineSoft,
+    borderColor: theme.colors.lineSoft,
     borderRadius: radius.pill,
-    backgroundColor: colors.surface,
-    shadowColor: colors.inkStrong,
+    backgroundColor: theme.colors.surface,
+    shadowColor: theme.colors.inkStrong,
     shadowOpacity: 0.08,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 3 },
     elevation: 3,
   },
   pressed: { opacity: 0.72 },
-  label: { color: colors.inkSoft, fontSize: 13, fontWeight: "600" },
-});
+  label: { color: theme.colors.inkSoft, fontSize: theme.font(13), fontWeight: "600" },
+}));

@@ -4,11 +4,12 @@ import { useTranslation } from "react-i18next";
 import { ActionMenu, type MenuAction } from "../components/ActionMenu";
 import { useRemoteControls } from "../remote/RemoteContext";
 import type { RemoteSession, RemoteWorkspace } from "../remote/types";
-import { colors } from "../theme/tokens";
+import { useTheme } from "../theme/ThemeContext";
 import { shareSessionGroups } from "./shareSessionGroups";
 import { useShareIntake } from "./useShareIntake";
 
 export function ShareIntakeMenu() {
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const remote = useRemoteControls();
   const { pending, dismiss, chooseDestination } = useShareIntake();

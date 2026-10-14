@@ -4,8 +4,9 @@ import { ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { Button } from "../../components/Button";
 import { useRemoteControls } from "../../remote/RemoteContext";
 import type { RemoteBuiltinProvider } from "../../remote/types";
-import { colors, spacing } from "../../theme/tokens";
-import { SettingsField, settingsStyles } from "./SettingsPrimitives";
+import { spacing } from "../../theme/tokens";
+import { useTheme } from "../../theme/ThemeContext";
+import { SettingsField, useSettingsStyles } from "./SettingsPrimitives";
 
 /** Marker left in a catalog base URL that the user must replace (Azure et al.). */
 const BASE_URL_PLACEHOLDER = "YOUR_RESOURCE";
@@ -26,6 +27,8 @@ export function ProviderKeyPage({ provider, onSaved }: {
   /** Leave the page once the desktop confirmed the write. */
   onSaved(): void;
 }) {
+  const settingsStyles = useSettingsStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const remote = useRemoteControls();
   // A key is never sent back to a phone, so the field always starts empty.

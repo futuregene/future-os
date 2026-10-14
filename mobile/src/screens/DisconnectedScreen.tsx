@@ -4,7 +4,8 @@ import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import { Button } from "../components/Button";
 import { useRemote } from "../remote/RemoteContext";
 import { disconnectedCopy } from "../remote/disconnectedCopy";
-import { colors, spacing } from "../theme/tokens";
+import { spacing } from "../theme/tokens";
+import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 
 export function DisconnectedScreen({
   reconnecting = false,
@@ -15,6 +16,8 @@ export function DisconnectedScreen({
   onReconnect(): void;
   onUnpair(): void;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const remote = useRemote();
   const presentation = remote.connectionPresentation;
@@ -68,12 +71,12 @@ export function DisconnectedScreen({
   );
 }
 
-const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: colors.surface, justifyContent: "center" },
+const useStyles = createThemedStyles(theme => StyleSheet.create({
+  page: { flex: 1, backgroundColor: theme.colors.surface, justifyContent: "center" },
   content: { alignItems: "center", padding: spacing.xl, gap: spacing.md },
   iconSlot: { height: 40, alignItems: "center", justifyContent: "center" },
-  title: { color: colors.danger, fontSize: 18, fontWeight: "600" },
-  reconnectingTitle: { color: colors.warning },
+  title: { color: theme.colors.danger, fontSize: theme.font(18), fontWeight: "600" },
+  reconnectingTitle: { color: theme.colors.warning },
   details: {
     alignSelf: "stretch",
     minHeight: 42,
@@ -82,5 +85,5 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
   actionSlot: { minHeight: 48, alignItems: "center", justifyContent: "center" },
-  hint: { color: colors.inkMuted, textAlign: "center", fontSize: 14 },
-});
+  hint: { color: theme.colors.inkMuted, textAlign: "center", fontSize: theme.font(14) },
+}));
