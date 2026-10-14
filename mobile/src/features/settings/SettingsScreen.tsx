@@ -27,12 +27,25 @@ export type SettingsScreenHandle = { goBack(): void };
 const MAX_NAME_LENGTH = 40;
 
 /**
+ * Every settings level whose header names itself through `desktopSettings.<name>`.
+ *
+ * A value and not only a type, because a level whose title key is missing does
+ * not fail loudly — it renders the key itself in the header, which is how
+ * `appearance` first shipped. A test holds the two translations to this list.
+ */
+export const TITLED_SETTINGS_PAGES = [
+  "preferences", "models", "skills", "tasks", "language", "appearance", "providers", "followAccount",
+] as const;
+
+type TitledSettingsPage = (typeof TITLED_SETTINGS_PAGES)[number];
+
+/**
  * One screen level. Nested provider editors are levels too, so the system back
  * gesture and the header arrow always pop exactly one step — the same rule the
  * desktop dialog's single-level tabs cannot express.
  */
 type SettingsRoute =
-  | { name: "home" | "preferences" | "models" | "skills" | "tasks" | "language" | "appearance" | "providers" | "followAccount" }
+  | { name: "home" | TitledSettingsPage }
   | { name: "providerKey"; provider: RemoteBuiltinProvider }
   | { name: "providerForm"; provider: RemoteCustomProvider | null };
 
