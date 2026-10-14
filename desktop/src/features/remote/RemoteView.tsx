@@ -173,7 +173,7 @@ export function RemoteHostSection({
 
   return (
     <>
-      <div className="space-y-6">
+      <div className="space-y-4">
         {isPaired && !pairingCode
           ? (
               <div className="rounded-lg border border-line-soft bg-surface-subtle p-4">

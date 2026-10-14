@@ -117,7 +117,7 @@ export function RemoteHubView({
       onToggleLeftPanel={onToggleLeftPanel}
       title={t("title")}
     >
-      <div className="space-y-6">
+      <div className="space-y-4">
         <p className="text-sm text-ink-muted" data-testid="remote-hub-lead">{t("lead")}</p>
 
         <Direction
