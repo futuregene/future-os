@@ -22,6 +22,10 @@ export const colors = {
   warning: "#b45309",
   warningSoft: "#fffbeb",
   warningLine: "#fde68a",
+  // The amber an indicator dot wears: `warning` is tuned for text on a light
+  // surface, and at the 8px of a status dot it reads as the `danger` red beside
+  // it — the one distinction such a dot exists to make.
+  warningBright: "#f59e0b",
   info: "#1d4ed8",
   infoSoft: "#eff6ff",
   infoLine: "#bfdbfe",
