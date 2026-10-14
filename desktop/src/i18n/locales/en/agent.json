@@ -48,7 +48,7 @@
     "searchFailed": "Search incomplete. Close and reopen search to retry.",
     "searchResults": "{{current}} / {{total}} results",
     "questionPrevious": "Previous question",
-    "questionNext": "Next question",
+    "nextPassage": "Next passage",
     "defaultTitle": "FutureOS",
     "agentDoneNoText": "The assistant finished but returned no text.",
     "noFinalReply": "The model ended generation without a final reply",
