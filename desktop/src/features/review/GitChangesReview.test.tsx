@@ -103,6 +103,43 @@ describe("workingTreeReview", () => {
     expect(container.textContent).not.toContain("b-only");
   });
 
+  /**
+   * A file row's chevron belongs to *that row*, not to the list it sits in.
+   *
+   * The list around these rows is an unnamed `group` — that is what reveals the
+   * floating scrollbar on hover — and a bare `group-hover:` is matched by *any*
+   * ancestor with `group`. Measured in a real browser (headless Chrome on the
+   * harness, two files): with the pointer on the second file's header row, the
+   * first row's chevron was at opacity 1 as well, and every row's chevron
+   * appeared as soon as the pointer was anywhere in the list.
+   *
+   * Asserted on classes because jsdom applies no styles: what decides this is
+   * which named group a `group-hover:` modifier points at, and an unnamed one in
+   * here is the bug itself.
+   */
+  it("reveals a file's chevron with that row, not with the list it sits in", async () => {
+    const two = review({
+      files: [gitFile({ path: "src/a.ts" }), gitFile({ path: "src/b.ts" })],
+    });
+    await mount(createElement(WorkingTreeReview, { review: two }));
+
+    const rows = fileHeaders();
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      // The row is the named group the chevron keys off…
+      expect(row.className).toContain("group/file-row");
+      const chevron = row.querySelector("svg[class*='opacity-0']");
+      expect(chevron).not.toBeNull();
+      expect(chevron!.getAttribute("class")).toContain("group-hover/file-row:opacity-100");
+      expect(chevron!.getAttribute("class")).toContain("group-focus-visible/file-row:opacity-100");
+      // …and the bug, in one line: a bare `group-hover:` is revealed by *any*
+      // ancestor `group`, and the scroll area wrapping this list is one.
+      expect(chevron!.getAttribute("class")).not.toContain("group-hover:");
+    }
+    // Nothing inside the list may key off the area's own group at all.
+    expect(container.querySelectorAll("section [class*='group-hover:']")).toHaveLength(0);
+  });
+
   it("expands and collapses every file from the header toggle, relabelling itself", async () => {
     const many = review({ files: [gitFile({ path: "a.ts" }), gitFile({ path: "b.ts" }), gitFile({ path: "c.ts" })] });
     await mount(createElement(WorkingTreeReview, { review: many }));
