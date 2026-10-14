@@ -32,6 +32,12 @@ pub(super) async fn build_transport(
     // pairing — is served the legacy lane instead of inheriting the previous
     // client's request.
     coalesce.store(false, Ordering::Release);
+    // The catalog's recency packets are the same kind of permission: they
+    // replace a whole session list with a few dozen bytes, which only a client
+    // that applies packets can be served.
+    SUPERVISOR
+        .catalog_activity(pair_id)
+        .store(false, Ordering::Release);
     // Same rule for the reply encoding: an older client has no gzip magic-byte
     // detection and would fail to parse a compressed reply, so the permission
     // must not outlive the connection that asked for it.

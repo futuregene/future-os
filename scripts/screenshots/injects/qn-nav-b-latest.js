@@ -8,7 +8,7 @@
 //
 // Mock-up overlay for the demo sheet (see qn-nav-a-stacked.js): the button is
 // fabricated in the browser, not shipped.
-const down = document.querySelector('[aria-label="下一个提问"]');
+const down = document.querySelector('[aria-label="下一段"]');
 const stack = down && down.parentElement;
 
 if (!down || !stack) throw new Error('question nav control not found');

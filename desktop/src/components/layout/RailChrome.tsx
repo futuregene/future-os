@@ -100,7 +100,7 @@ export function RailHeaderButton({
   label: string;
   onClick: () => void;
   /**
-   * Hidden until the pointer is over the heading.
+   * Hidden until the pointer is over the workspace heading it belongs to.
    *
    * A *section* heading shows its controls outright ("new workspace", "new
    * chat" are how the section is filled, and a list with nothing in it has to
@@ -111,6 +111,15 @@ export function RailHeaderButton({
    * the remote one from this component without it — so the same glyph sat
    * permanently visible in one heading and hidden in the next one down. The
    * difference is now a prop rather than a copy.
+   *
+   * It keys off the heading's *named* group (`group/workspace`), not the unnamed
+   * one, and expects to be drawn inside a workspace heading. The rail's list area
+   * is itself an unnamed `group` — that is what the floating scrollbar reveals
+   * on — so a bare `group-hover:` here matched that whole area, and every
+   * heading's controls appeared the moment the pointer was anywhere over the
+   * list. A caller that is not inside a workspace heading gets a permanently
+   * hidden control, which is the failure to want: it is visible at once, instead
+   * of quietly revealing half the rail.
    */
   revealOnHover?: boolean;
 }) {
@@ -119,7 +128,7 @@ export function RailHeaderButton({
       aria-label={label}
       className={cn(
         "inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft",
-        revealOnHover && "opacity-0 group-hover:opacity-100",
+        revealOnHover && "opacity-0 group-hover/workspace:opacity-100",
       )}
       onClick={onClick}
       title={label}
@@ -174,7 +183,11 @@ export function RailGroupHeader({
   return (
     <div
       className={cn(
-        "group flex h-7 w-full items-center gap-1 rounded-md px-2 text-left transition-colors hover:bg-surface-subtle",
+        // The heading's group is *named*: its controls (this menu, the "new
+        // conversation" plus) are revealed by hovering this heading, and an
+        // unnamed `group` here would also be matched by the rail's list area,
+        // whose own unnamed group the floating scrollbar keys off.
+        "group/workspace flex h-7 w-full items-center gap-1 rounded-md px-2 text-left transition-colors hover:bg-surface-subtle",
       )}
     >
       <RailDisclosure collapsed={collapsed} label={collapsed ? collapsedLabel : expandedLabel} onToggle={onToggle} />

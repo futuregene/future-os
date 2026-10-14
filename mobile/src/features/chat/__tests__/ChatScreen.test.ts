@@ -13,11 +13,12 @@ import { SessionFilesPanel } from "../components/SessionFilesPanel";
 import { SessionUsageSheet } from "../components/SessionUsageSheet";
 import { RenameModal } from "../components/RenameModal";
 import { ChatScreen } from "../ChatScreen";
+import { JUMP_VIEW_OFFSET } from "../useQuestionNav";
 import { ComposerDock } from "../components/ComposerDock";
 import type { PendingSuggestion } from "../useSkillRecommendation";
 import { FloatingTimelineButton } from "../components/FloatingTimelineButton";
 import type { TimelineSyncStatus } from "../../../remote/syncEngine";
-import type { RemoteSession, RemoteSessionUsage, RemoteWorkspace } from "../../../remote/types";
+import type { RemoteSession, RemoteSessionUsage, RemoteWorkspace, TimelineItem } from "../../../remote/types";
 
 const mockRemote = {
   credentials: { expectedDesktopId: "desktop" },
@@ -848,6 +849,64 @@ describe("ChatScreen wiring", () => {
     expect(mockSendApi.retryMessage).toHaveBeenCalledWith(item);
     act(() => card.props.onContinue(item));
     expect(mockSendApi.continueMessage).toHaveBeenCalledWith(item);
+  });
+
+  test("a reply's measured tail anchor reaches the press that lands on it", () => {
+    // The bubble measures where its last output slice sits inside its own row
+    // and reports it here; the walk turns that number into the jump's lift. A
+    // reporter that stopped forwarding would land every press on the reply's
+    // first slice without any test of the walk itself noticing.
+    const original = mockRemote.timeline;
+    try {
+      mockRemote.timeline = {
+        items: [
+          { id: "q1", kind: "message", role: "user", text: "older question" },
+          { id: "a1", kind: "message", role: "assistant", text: "older answer" },
+          { id: "q2", kind: "message", role: "user", text: "question" },
+          { id: "a2", kind: "message", role: "assistant", text: "answer" },
+        ],
+      };
+      act(() => screen.update(createElement(ChatScreen)));
+
+      const list = () => view().findByType(FlatList);
+      const scrollToIndex = jest.spyOn(
+        list().instance as FlatList<TimelineItem>,
+        "scrollToIndex",
+      ).mockImplementation(() => {});
+
+      // The row laid itself out before the press: that is the bubble's report.
+      const card = view().findAllByType("TimelineCard" as never);
+      const answer = card.find(node => node.props.item.id === "a1")!;
+      act(() => answer.props.onReplyTailAnchor("a1", 240));
+
+      // The reader dragged up to the older question, so ↓ offers that question's
+      // answer — the rung this anchor belongs to.
+      act(() => list().props.onScrollBeginDrag({
+        nativeEvent: {
+          contentOffset: { x: 0, y: 1_360 },
+          contentSize: { width: 320, height: 2_000 },
+          layoutMeasurement: { width: 320, height: 600 },
+        },
+      }));
+      act(() => list().props.viewabilityConfigCallbackPairs[0].onViewableItemsChanged({
+        viewableItems: [{ index: 3, key: "q1", isViewable: true }],
+        changed: [],
+      }));
+      const down = view().findAll(node =>
+        node.props.accessibilityLabel === "chat.nextPassage"
+        && typeof node.props.onPress === "function")[0];
+      expect(down).toBeDefined();
+      act(() => down!.props.onPress());
+
+      expect(scrollToIndex).toHaveBeenCalledWith({
+        index: 2,
+        viewPosition: 1,
+        viewOffset: JUMP_VIEW_OFFSET + 240,
+        animated: false,
+      });
+    } finally {
+      mockRemote.timeline = original;
+    }
   });
 
   test("fork stays hidden on a host that does not advertise it, and reaches the controller when it does", () => {

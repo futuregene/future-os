@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@future-os/thread-projection";
 import type { RemotePeer } from "./remotePeerClient";
+import type { RemoteLiveReply } from "./remoteRunStreams";
 import type { RemoteApproval } from "./useRemoteApprovals";
 import { ArrowDown, Check, History, ReceiptText, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -14,10 +15,42 @@ import { QuestionNavControl } from "../agent/QuestionNavControl";
 import { useComposerInset } from "../agent/useComposerInset";
 import { useQuestionNav } from "../agent/useQuestionNav";
 import { useStickyAutoScroll } from "../agent/useStickyAutoScroll";
-import { foldLiveReply } from "./foldLiveReply";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
 import { useRemoteActivityTargets, withRemoteTargets } from "./remoteActivityTargets";
+import { foldLiveReply, stripRunCopies } from "./remoteLiveReplies";
 import { setRemotePeerVisibleSession } from "./remotePeerClient";
+
+/**
+ * What the transcript draws: the host's record, with the runs this client rebuilt
+ * from their logs drawn *instead of* their copies in it.
+ *
+ * `liveReplies` carries both kinds of row — see `remoteLiveReplies` for the two
+ * rules and when each applies — so the assembly lives here rather than in the
+ * hook: it is a rendering decision, and everything downstream is the same
+ * component a local conversation uses.
+ */
+function renderedTranscript(
+  transcript: AgentMessage[],
+  liveReplies: RemoteLiveReply[],
+  targets: ReturnType<typeof useRemoteActivityTargets>,
+): AgentMessage[] {
+  if (liveReplies.length === 0)
+    return transcript;
+  const rebuilt = new Set(
+    liveReplies
+      .filter(reply => reply.fromReplay && reply.message.runId)
+      .map(reply => reply.message.runId as string),
+  );
+  let rows = stripRunCopies(transcript, rebuilt);
+  for (const reply of liveReplies) {
+    const withTargets = withRemoteTargets([reply.message], targets)[0] ?? reply.message;
+    // A rebuilt reply stands in for the record's copy of the same run; one the
+    // pushes only built half of is folded into that copy instead, so the two read
+    // as the one reply they are.
+    rows = reply.fromReplay ? [...rows, withTargets] : foldLiveReply(rows, withTargets);
+  }
+  return rows;
+}
 
 /**
  * A remote conversation: the session's transcript plus a composer that sends to
@@ -43,7 +76,7 @@ export function RemoteConversationView({
   error,
   hasMore,
   leftPanelExpanded,
-  live,
+  liveReplies,
   loading,
   loadingOlder,
   messages,
@@ -68,14 +101,17 @@ export function RemoteConversationView({
   composer: React.ReactNode;
   messages: AgentMessage[];
   /**
-   * The reply the host is writing right now, drawn after the transcript.
+   * The replies this client is drawing on top of the host's record, oldest first.
    *
-   * The same `MessageBlock` and the same shape a local run's live reply has, so a
-   * reader watching another machine answer sees what they would see here: the
-   * text as it arrives, inline tool rows that resolve in place, reasoning, and the
-   * elapsed timer.
+   * Each is the same `MessageBlock` and the same shape a local run's live reply
+   * has, so a reader watching another machine answer sees what they would see
+   * here: the text as it arrives, inline tool rows that resolve in place,
+   * reasoning, and the elapsed timer. `fromReplay` says whether the reply was
+   * rebuilt from the run's log — in which case the record's own copy of that run
+   * is hidden, so the answer is drawn once — or built only from the pushes, which
+   * are then folded into that copy.
    */
-  live: AgentMessage | null;
+  liveReplies: RemoteLiveReply[];
   error: string | null;
   hasMore: boolean;
   /** The panel toggle, as on this app's own conversation header. */
@@ -114,24 +150,15 @@ export function RemoteConversationView({
   const targets = useRemoteActivityTargets(desktopId, sessionId, messages);
   const transcript = withRemoteTargets(messages, targets);
   /**
-   * The reply being written, run through the same tool-target fetch as history.
+   * What is drawn: the record, plus the replies this client built itself.
    *
-   * A live reply gets its targets from the pushed events, so this is a no-op for
-   * it in practice — but it is the same list the viewport keys on, and leaving the
-   * live reply out of it would make the transcript's own rendered form differ
-   * between a reply in flight and the same reply a second later.
-   *
-   * Drawn once, too: a conversation opened while its newest exchange is still
-   * running carries a partial copy of that reply in the transcript (the host's
-   * page, which the agent writes to mid-run) *and* the reply the host is writing,
-   * and the two are folded into one row (`foldLiveReply`).
+   * Both the reply being written and the record it came from go through the same
+   * tool-target fetch — a rebuilt reply carries its calls' arguments from the log,
+   * but a pushed one may not, and the viewport keys on what is actually drawn.
    */
   const rendered = useMemo(
-    () => foldLiveReply(
-      transcript,
-      live ? (withRemoteTargets([live], targets)[0] ?? null) : null,
-    ),
-    [transcript, targets, live],
+    () => renderedTranscript(transcript, liveReplies, targets),
+    [transcript, liveReplies, targets],
   );
 
   /**
@@ -261,12 +288,6 @@ export function RemoteConversationView({
             header is for the conversation, and a figure that changes every turn
             draws the eye away from it. */}
         <div className="flex items-center gap-2">
-          <QuestionNavControl
-            hasNext={hasNextQuestion}
-            hasPrevious={hasPreviousQuestion}
-            onNext={goToNextQuestion}
-            onPrevious={goToPreviousQuestion}
-          />
           <IconButton
             aria-haspopup="dialog"
             // The local header's own size and spacing (`ThreadHeader`): the button
@@ -423,20 +444,32 @@ The same two layers this app's own conversation uses (`AgentThread`):
 
             {/* Reading history is not a fight with the view: once the reader has
                 scrolled away, following stops and this is how they come back. */}
-            {showJumpToLatest
-              ? (
-                  <button
-                    aria-label={t("jumpToLatest")}
-                    className="pointer-events-auto mx-auto flex items-center gap-1 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"
-                    onClick={scrollToLatest}
-                    title={t("jumpToLatest")}
-                    type="button"
-                  >
-                    <ArrowDown className="size-3.5" />
-                    {t("jumpToLatest")}
-                  </button>
-                )
-              : null}
+            <div className="mx-auto flex w-full max-w-3xl items-center justify-between gap-3">
+              {showJumpToLatest
+                ? (
+                    <button
+                      aria-label={t("jumpToLatest")}
+                      className="pointer-events-auto mx-auto flex items-center gap-1 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"
+                      onClick={scrollToLatest}
+                      title={t("jumpToLatest")}
+                      type="button"
+                    >
+                      <ArrowDown className="size-3.5" />
+                      {t("jumpToLatest")}
+                    </button>
+                  )
+                : <div />}
+              {/* The same corner this app's own conversation puts it in: a
+                  remote transcript is read the same way, and a control that
+                  moves between the two views is a control the reader has to
+                  find twice. */}
+              <QuestionNavControl
+                hasNext={hasNextQuestion}
+                hasPrevious={hasPreviousQuestion}
+                onNext={goToNextQuestion}
+                onPrevious={goToPreviousQuestion}
+              />
+            </div>
 
             {composer}
           </div>

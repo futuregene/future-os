@@ -1,7 +1,8 @@
 import { formatJsonForPreview, rawJsonLines, tokenizeJsonLine } from "@future-os/json-preview";
 import { useMemo } from "react";
 import { FlatList, StyleSheet, Text, View } from "react-native";
-import { colors, spacing } from "../theme/tokens";
+import { spacing } from "../theme/tokens";
+import { createThemedStyles } from "../theme/ThemeContext";
 
 export { formatJsonForPreview, tokenizeJsonLine } from "@future-os/json-preview";
 
@@ -20,6 +21,7 @@ export function JsonPreview({
   invalidMessage,
   tooComplexMessage,
 }: JsonPreviewProps) {
+  const styles = useStyles();
   const validationError = useMemo(() => {
     if (sourceTruncated) return null;
     try {
@@ -71,25 +73,25 @@ export function JsonPreview({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(theme => StyleSheet.create({
   content: { padding: spacing.md, paddingBottom: spacing.xl },
   notices: { gap: spacing.sm, marginBottom: spacing.md },
-  notice: { color: colors.inkMuted, fontSize: 13, lineHeight: 19 },
-  error: { color: colors.danger, fontSize: 13, lineHeight: 19 },
+  notice: { color: theme.colors.inkMuted, fontSize: theme.font(13), lineHeight: theme.leading(19) },
+  error: { color: theme.colors.danger, fontSize: theme.font(13), lineHeight: theme.leading(19) },
   row: { flexDirection: "row", alignItems: "flex-start", minHeight: 21 },
   lineNumber: {
     width: 44,
     paddingRight: spacing.sm,
-    color: colors.inkSoft,
+    color: theme.colors.inkSoft,
     fontFamily: "monospace",
-    fontSize: 12,
-    lineHeight: 21,
+    fontSize: theme.font(12),
+    lineHeight: theme.leading(21),
     textAlign: "right",
   },
-  code: { flex: 1, color: colors.ink, fontFamily: "monospace", fontSize: 13, lineHeight: 21 },
-  plain: { color: colors.ink },
-  key: { color: "#1d4ed8" },
-  string: { color: "#047857" },
-  number: { color: "#b45309" },
-  literal: { color: "#7c3aed" },
-});
+  code: { flex: 1, color: theme.colors.ink, fontFamily: "monospace", fontSize: theme.font(13), lineHeight: theme.leading(21) },
+  plain: { color: theme.colors.ink },
+  key: { color: theme.codeColors.jsonKey },
+  string: { color: theme.codeColors.jsonString },
+  number: { color: theme.codeColors.jsonNumber },
+  literal: { color: theme.codeColors.jsonLiteral },
+}));

@@ -205,8 +205,9 @@ class LiveLane {
         }
         const events = this.journal()
           .filter(event => (event.idx ?? -1) > since && (event.idx ?? -1) <= watermark)
-          .map(event => ({ type: event.type, data: event.data, runId: event.runId, idx: event.idx }));
-        return { events, watermark };
+          .map(event => ({ type: event.type, data: event.data, runId: event.runId ?? _runId, idx: event.idx }));
+        // A tail: the run's beginning is whatever the caller already held.
+        return { events, watermark, completePrefix: false };
       },
     });
     this.engine.subscribe(commit => { this.timeline = commit.timeline; });

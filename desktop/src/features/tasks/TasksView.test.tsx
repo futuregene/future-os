@@ -125,9 +125,9 @@ afterEach(() => {
  * Route each command to a canned answer. `list_tasks` is served from a mutable
  * array so a mutation can be observed the way the real backend would report it.
  */
-function backend(tasks: TaskView[], runs: TaskRunView[] = [run()], revisions: unknown[] = [defaultRevision()]) {
+function backend(tasks: TaskView[], runs: TaskRunView[] = [run()]) {
   mocks.invokeCommand.mockImplementation(
-    async (command: string, args?: Record<string, unknown>) => backendFor(tasks, command, args, runs, revisions),
+    async (command: string, args?: Record<string, unknown>) => backendFor(tasks, command, args, runs),
   );
 }
 
@@ -137,7 +137,6 @@ function backendFor(
   command: string,
   args?: Record<string, unknown>,
   runs: TaskRunView[] = [run()],
-  revisions: unknown[] = [defaultRevision()],
 ) {
   switch (command) {
     case "list_tasks":
@@ -153,8 +152,6 @@ function backendFor(
       return args?.id === "tsk_1"
         ? [{ upstreamTaskId: "tsk_up", upstreamName: "upstream", on: "success", satisfied: false }]
         : [];
-    case "list_task_revisions":
-      return args?.id === "tsk_1" ? revisions : [];
     default:
       return undefined;
   }
@@ -173,34 +170,13 @@ function calls() {
   }));
 }
 
-/** A stored prompt version with its source. */
-function revision(overrides: Record<string, unknown> = {}) {
-  return {
-    id: "rev_2",
-    version: 2,
-    prompt: "newer prompt",
-    source: "reflection",
-    status: "active",
-    reason: "shorter",
-    confidence: 0.8,
-    sourceRunId: null,
-    createdAt: 2,
-    ...overrides,
-  };
-}
-
-function defaultRevision() {
-  return revision();
-}
-
 async function renderView(
   tasks: TaskView[] = [task()],
   onOpenThread = vi.fn(),
   modelOptions: AgentModelOption[] = MODELS,
-  revisions: unknown[] = [defaultRevision()],
   runs: TaskRunView[] = [run()],
 ) {
-  backend(tasks, runs, revisions);
+  backend(tasks, runs);
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -377,7 +353,7 @@ describe("tasksView", () => {
     expect(container.textContent).toContain("store unreadable");
   });
 
-  it("opens a task's detail with runs, dependencies and prompt versions", async () => {
+  it("opens a task's detail with runs and dependencies", async () => {
     const { container, onOpenThread } = await renderView();
     await openDetail(container);
 
@@ -389,10 +365,6 @@ describe("tasksView", () => {
     expect(container.textContent).toContain("all good");
     await click(buttonByText(container, "Open"));
     expect(onOpenThread).toHaveBeenCalledWith("thr_1");
-    // Prompt versions are listed with their source; a version an older build
-    // accepted from its suggestion pass still reads as such.
-    expect(container.textContent).toContain("v2");
-    expect(container.textContent).toContain("Reflection");
   });
 
   // The detail is opened to see what the task did, so the run ledger leads and
@@ -402,7 +374,6 @@ describe("tasksView", () => {
       [task()],
       vi.fn(),
       MODELS,
-      [defaultRevision()],
       [run({ resultSummary: "all good" })],
     );
     await click(rows(container)[0]);
@@ -410,7 +381,6 @@ describe("tasksView", () => {
     const text = container.textContent ?? "";
     expect(text).toContain("Runs");
     expect(text).toContain("all good");
-    expect(text).toContain("Prompt versions");
     // Folded, not just scrolled past: none of the definition is in the DOM.
     expect(text).not.toContain("summarize yesterday");
     expect(text).not.toContain("upstream");
@@ -689,21 +659,10 @@ describe("tasksView", () => {
     expect(mocks.invokeCommand).not.toHaveBeenCalledWith("delete_task", { id: "tsk_1" });
   });
 
-  it("applies a stored prompt version", async () => {
-    const { container } = await renderView();
-    await click(rows(container)[0]);
-    mocks.invokeCommand.mockClear();
-    await click(buttonByText(container, "Apply"));
-    expect(mocks.invokeCommand).toHaveBeenCalledWith("apply_task_revision", {
-      id: "tsk_1",
-      revisionId: "rev_2",
-    });
-  });
-
   // Runs are the page's history: consecutive ones used to share a box split by a
   // hairline, so a run that ended in a paragraph ran into the next header.
   it("gives each run its own card", async () => {
-    const { container } = await renderView([task()], vi.fn(), MODELS, [defaultRevision()], [
+    const { container } = await renderView([task()], vi.fn(), MODELS, [
       run({ id: "trn_2", resultSummary: "the newer run", startedAt: 1_700_000_120_000 }),
       run({ id: "trn_1", resultSummary: "the older run", startedAt: 1_700_000_000_000 }),
     ]);
@@ -1133,7 +1092,6 @@ describe("tasksView", () => {
       [task()],
       vi.fn(),
       MODELS,
-      [defaultRevision()],
       [run({ threadId: null, sessionDeleted: true, resultSummary: "the saved answer" })],
     );
     await click(rows(container)[0]);

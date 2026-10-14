@@ -4,6 +4,33 @@ use anyhow::{bail, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
+/// An event this journal will never accept: the same value would be refused on
+/// every retry. The writer must drop these rather than keep them, because a
+/// single unappendable event left in a batch fails every later batch with it —
+/// which used to wedge the whole session until the agent restarted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // read through `is_event_rejected`, never matched directly
+pub(crate) struct EventRejected(pub(crate) String);
+
+impl std::fmt::Display for EventRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for EventRejected {}
+
+/// Permanent refusal, as opposed to a storage error a retry may clear.
+pub(crate) fn is_event_rejected(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<EventRejected>().is_some()
+}
+
+/// `bail!` for the deterministic refusals below, so the writer can tell them
+/// apart from a transient SQLite failure without matching on message text.
+fn reject(message: &str) -> anyhow::Error {
+    anyhow::Error::new(EventRejected(message.to_owned()))
+}
+
 pub(crate) struct StoredEventRow {
     session_id: String,
     run_id: String,
@@ -202,7 +229,7 @@ pub(crate) fn insert_event_record(db: &Connection, session: &str, mut value: Val
     let run = value
         .get("run_id")
         .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("missing event run identity"))?
+        .ok_or_else(|| reject("missing event run identity"))?
         .to_owned();
     let session_scoped = run.is_empty()
         && value
@@ -216,19 +243,19 @@ pub(crate) fn insert_event_record(db: &Connection, session: &str, mut value: Val
             .get("epoch")
             .and_then(Value::as_i64)
             .filter(|epoch| *epoch >= 0)
-            .ok_or_else(|| anyhow::anyhow!("missing event epoch"))?
+            .ok_or_else(|| reject("missing event epoch"))?
     };
     let idx = value
         .get(if session_scoped { "session_idx" } else { "idx" })
         .and_then(Value::as_i64)
         .filter(|idx| *idx >= 0)
-        .ok_or_else(|| anyhow::anyhow!("missing event sequence"))?;
+        .ok_or_else(|| reject("missing event sequence"))?;
     if value
         .get("session_id")
         .and_then(Value::as_str)
         .is_some_and(|id| !id.is_empty() && id != session)
     {
-        bail!("event session identity mismatch");
+        return Err(reject("event session identity mismatch"));
     }
     value["session_id"] = Value::String(session.to_owned());
     let identity = if session_scoped {
@@ -249,7 +276,7 @@ pub(crate) fn insert_event_record(db: &Connection, session: &str, mut value: Val
         |r| r.get(0),
     )?;
     if compacted {
-        bail!("cannot append to a compacted settled run");
+        return Err(reject("cannot append to a compacted settled run"));
     }
     let existing: Option<StoredEventRow> = db.query_row(
         "SELECT session_id,run_id,epoch,idx,event_id,payload,sequence FROM run_events WHERE session_id=?1 AND run_id=?2 AND idx=?3 AND epoch=?4",
@@ -260,12 +287,12 @@ pub(crate) fn insert_event_record(db: &Connection, session: &str, mut value: Val
         if decode_event_row::<Value>(existing)? == value {
             return Ok(());
         }
-        bail!("conflicting event identity");
+        return Err(reject("conflicting event identity"));
     }
     let stored_event_id = (event_id != identity).then_some(event_id);
     let object = value
         .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("event payload must be an object"))?;
+        .ok_or_else(|| reject("event payload must be an object"))?;
     object.remove("session_id");
     object.remove("run_id");
     object.remove("event_id");

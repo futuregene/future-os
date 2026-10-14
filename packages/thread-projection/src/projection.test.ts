@@ -67,7 +67,17 @@ describe("entriesToTurns — exchanges", () => {
       { id: "seg_a1_0", kind: "thinking", text: "considering" },
       {
         id: "seg_a1_1",
-        item: { detail: "/repo/a.md", id: "t1", kind: "read", status: "completed", target: "/repo/a.md" },
+        item: {
+          detail: "/repo/a.md",
+          id: "t1",
+          kind: "read",
+          status: "completed",
+          target: "/repo/a.md",
+          // A row's own identity and its run — what it fetches its arguments
+          // back by when a lean page omits them.
+          toolCallId: "t1",
+          runId: "r1",
+        },
         kind: "activity",
       },
       { id: "seg_a1_2", kind: "text", text: "it is a file" },

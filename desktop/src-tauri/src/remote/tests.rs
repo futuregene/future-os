@@ -248,8 +248,9 @@ mod contract_tests {
 #[cfg(test)]
 mod runtime_tests {
     use super::test_support::{
-        await_publish, await_publish_matching, init_store, jwt, nats_connect, nats_connect_once,
-        now_secs, sign_in, unique, FakeNats, HomeGuard, MockPlatform,
+        await_publish, await_publish_matching, declare_features, init_store, jwt, nats_connect,
+        nats_connect_once, now_secs, pairing_creds, sign_in, unique, FakeNats, HomeGuard,
+        MockPlatform,
     };
     use super::*;
     use serde_json::json;
@@ -2121,6 +2122,198 @@ mod runtime_tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         handle.abort();
         std::fs::remove_dir_all(&workspace_dir).ok();
+    }
+
+    /// One second of a streaming run, told to a client that declared
+    /// `catalog_activity_v1`: the moved row in a few dozen bytes, never the
+    /// whole session list.
+    ///
+    /// This is the catalog lane's entire reason to exist. A run rewrites its
+    /// thread's activity timestamp about once a second, and before this lane
+    /// that re-sent every session the host owns — measured at 94–173 MB per run
+    /// on the three heaviest completed runs (a ~95 KB list, 232 rows, once a
+    /// second), against the same runs' 0.26–1.11 MB live event lane.
+    #[tokio::test]
+    async fn a_declared_client_is_told_the_moved_row_not_the_whole_list() {
+        let _home = HomeGuard::new("remote-catalog-activity");
+        init_store();
+        let nats = FakeNats::start().await;
+        let client = nats_connect_once(&nats).await;
+        let pair = unique("pairactivity");
+        // A directory with more than the one row that moves: the ratio this test
+        // asserts is the whole point of the lane, and a single-conversation
+        // fixture cannot show it (the packet has a fixed envelope either way).
+        let mut target = String::new();
+        for index in 0..20 {
+            let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+                mode: "chat".to_string(),
+                title: Some(format!("Streaming {index}")),
+                workspace_id: None,
+                workspace_path: None,
+                workspace_name: None,
+                agent_session_id: Some(unique("sessactivity")),
+            })
+            .expect("seed a conversation");
+            if index == 0 {
+                target = thread.id.clone();
+            }
+        }
+        let target_session = crate::store::get_thread(&target)
+            .expect("read the moving thread")
+            .expect("the moving thread exists")
+            .agent_session_id
+            .expect("the fixture binds a session");
+
+        let creds = pairing_creds(&pair);
+        let _shared = shared_runtime(&creds, true, false);
+        declare_features(&creds, &pair, &[CATALOG_ACTIVITY_FEATURE]);
+
+        let handle =
+            spawn_presence_heartbeat(client.clone(), pair.clone(), "bridge_activity".into());
+        let mut tap = nats.tap();
+        let sessions_subject = format!("p.{pair}.state.sessions");
+        let activity_subject = format!("p.{pair}.state.activity");
+
+        // The baseline is the whole list, as it has to be: it is what carries
+        // the row set, the titles and the streaming flags.
+        let baseline = await_publish(&mut tap, &sessions_subject, Duration::from_secs(5)).await;
+        let baseline_bytes = baseline.payload.len();
+        assert_eq!(
+            baseline.json()["sessions"].as_array().map(Vec::len),
+            Some(20)
+        );
+        assert!(
+            baseline_bytes > 4_000,
+            "the baseline must be a real snapshot, got {baseline_bytes} B"
+        );
+
+        // The writes start above every row's current activity, which is what a
+        // run's own timestamps do (the row is the newest thing in the list as
+        // soon as it speaks). Taken from the shipping recency vector rather than
+        // from a clock: twenty conversations seeded in the same millisecond have
+        // no meaningful order among themselves, so a fixture that leaned on one
+        // would be asserting about SQLite's tie order.
+        let mut at = crate::remote_host::catalog::sessions_catalog("")
+            .expect("store readable")
+            .activity
+            .iter()
+            .map(|(_, at)| *at)
+            .max()
+            .expect("the fixture seeded rows");
+
+        // The first write lifts the row to the head of the list. The host's own
+        // order is content — an ordinary single-machine list draws it — so that
+        // one write is a whole list in *both* modes, and it is drained here so
+        // the assertions below are about the steady state that follows.
+        at += 1_000;
+        crate::store::record_thread_message_activity(&target, at).expect("record activity");
+        let overtake = await_publish(&mut tap, &sessions_subject, Duration::from_secs(5)).await;
+        assert_eq!(
+            overtake.json()["sessions"]
+                .as_array()
+                .and_then(|rows| rows.first())
+                .and_then(|row| row["sessionId"].as_str()),
+            Some(target_session.as_str()),
+            "the write must move the row to the head of the list"
+        );
+
+        // Every write after it moves the value alone — exactly what the
+        // observer's 1s throttle emits while text streams.
+        at += 1_000;
+        crate::store::record_thread_message_activity(&target, at).expect("record activity");
+
+        let patch = await_publish(&mut tap, &activity_subject, Duration::from_secs(5)).await;
+        let body = patch.json();
+        assert_eq!(body["pairId"], json!(pair));
+        let updates = body["activity"]
+            .as_array()
+            .expect("the packet carries the moved rows");
+        assert_eq!(
+            updates.len(),
+            1,
+            "only the row that moved may ride the packet: {body}"
+        );
+        assert_eq!(updates[0]["lastMessageAt"], json!(at));
+        assert!(
+            body["version"]["revision"].as_u64().unwrap_or(0) > 0,
+            "a packet carries the revision its reader gates on: {body}"
+        );
+        // The saving, as bytes: a packet is the row that moved plus an
+        // envelope, not the list.
+        assert!(
+            patch.payload.len() * 10 < baseline_bytes,
+            "one moved row cost {} B against a {baseline_bytes} B snapshot",
+            patch.payload.len()
+        );
+
+        // And the list itself was not re-sent. A second whole snapshot here is
+        // precisely the traffic this capability removes, so its absence is
+        // asserted rather than assumed.
+        let quiet_until = std::time::Instant::now() + Duration::from_millis(300);
+        loop {
+            let remaining = quiet_until.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining, tap.recv()).await {
+                Ok(Ok(published)) => assert_ne!(
+                    published.subject, sessions_subject,
+                    "a declared client must not be re-sent the session list for activity"
+                ),
+                Ok(Err(_)) | Err(_) => break,
+            }
+        }
+
+        handle.abort();
+    }
+
+    /// The other half of the same contract: a client that did *not* declare the
+    /// capability keeps the whole snapshot on every change, because nothing else
+    /// can tell it that a row moved. Silent degradation is the one outcome this
+    /// lane may not have.
+    #[tokio::test]
+    async fn an_undeclared_client_still_receives_the_whole_list() {
+        let _home = HomeGuard::new("remote-catalog-activity-legacy");
+        init_store();
+        let nats = FakeNats::start().await;
+        let client = nats_connect_once(&nats).await;
+        let pair = unique("pairlegacy");
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("Streaming".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some(unique("sesslegacy")),
+        })
+        .expect("seed the streaming conversation");
+
+        let creds = pairing_creds(&pair);
+        let _shared = shared_runtime(&creds, true, false);
+        // A declaration is authoritative and always written, so this is the
+        // state an older client leaves behind (`build_transport` clears it, and
+        // `secure_ready` never sets it).
+        declare_features(&creds, &pair, &[]);
+
+        let handle = spawn_presence_heartbeat(client.clone(), pair.clone(), "bridge_legacy".into());
+        let mut tap = nats.tap();
+        let sessions_subject = format!("p.{pair}.state.sessions");
+
+        let first = await_publish(&mut tap, &sessions_subject, Duration::from_secs(5)).await;
+        assert_eq!(first.json()["sessions"].as_array().map(Vec::len), Some(1));
+
+        crate::store::record_thread_message_activity(&thread.id, 7_000).expect("record activity");
+
+        // The whole list again, carrying the new timestamp: the only way an
+        // older client can learn the row moved.
+        let second = await_publish(&mut tap, &sessions_subject, Duration::from_secs(5)).await;
+        assert_ne!(
+            second.payload, first.payload,
+            "the change must reach a client that cannot patch it"
+        );
+        assert_eq!(second.json()["sessions"][0]["lastMessageAt"], json!(7_000));
+
+        handle.abort();
     }
 
     /// The idle-directory contract, which replaced the "re-send every unchanged

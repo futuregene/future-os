@@ -42,6 +42,20 @@ async function click(button: Element) {
   await act(async () => (button as HTMLButtonElement).click());
 }
 
+/**
+ * The body a row reveals: the line below its header. Walk out from the header
+ * until a block ends with something other than the header itself (the tool row
+ * nests its header one level deeper than the reasoning row does).
+ */
+function revealedBody(header: Element): Element {
+  for (let row: Element | null = header.parentElement; row; row = row.parentElement) {
+    const last = row.lastElementChild;
+    if (last && last !== header && !last.contains(header))
+      return last;
+  }
+  throw new Error("no revealed body below this header");
+}
+
 afterEach(async () => {
   act(() => root?.unmount());
   root = undefined;
@@ -87,6 +101,15 @@ it("expands steps in timeline order on the left and keeps each detail independen
   expect(children.textContent).toContain("Full reasoning content");
   expect(children.textContent).toContain("file.ts");
   expect(children.querySelector(".wrap-anywhere.text-left")).not.toBeNull();
+  // Reasoning is revealed the way a tool row's target is: the same indent, and
+  // no rule of its own — the header carries the label and its chevron.
+  const reasoning = revealedBody(headers[0]!);
+  const target = revealedBody(headers[1]!);
+  expect(reasoning.textContent).toContain("Full reasoning content");
+  expect(target.textContent).toContain("file.ts");
+  expect(reasoning.classList.contains("border-l-2")).toBe(false);
+  expect(reasoning.classList.contains("pl-6")).toBe(true);
+  expect(target.classList.contains("pl-6")).toBe(true);
   await click(button);
   expect(container.textContent).not.toContain("Full reasoning content");
   expect(container.textContent).not.toContain("file.ts");

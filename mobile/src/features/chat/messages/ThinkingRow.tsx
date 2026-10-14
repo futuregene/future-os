@@ -2,8 +2,8 @@ import { Brain, ChevronDown, ChevronUp } from "lucide-react-native";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, Text, View } from "react-native";
-import { colors } from "../../../theme/tokens";
-import { styles } from "./messageStyles";
+import { useTheme } from "../../../theme/ThemeContext";
+import { useStyles } from "./messageStyles";
 import { ROW_HIT_SLOP } from "./messageUtils";
 
 /**
@@ -16,14 +16,17 @@ import { ROW_HIT_SLOP } from "./messageUtils";
  *
  * The glyph matches the desktop's thinking activity glyph (Brain), so an
  * expanded reasoning row and a tool row are the same shape: icon, then words.
- * Like a tool row, its collapsed header starts at the reply's left edge;
- * the expanded body keeps its existing reading layout — see ToolRow.
+ * Like a tool row, its collapsed header starts at the reply's left edge and
+ * carries no rule; its revealed text indents under the label the same way a
+ * revealed target does — see ToolRow.
  */
 export function ThinkingRow({ text, streaming, opened }: {
   text: string;
   streaming?: boolean;
   opened: boolean;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   // A lean feed carries no body at all: the row is then a status label, not a
@@ -50,7 +53,7 @@ export function ThinkingRow({ text, streaming, opened }: {
     </>
   );
   return (
-    <View style={[styles.inlineThinking, !open && styles.railThinking]}>
+    <View style={[styles.inlineThinking, !open && styles.railBlock]}>
       {hasBody ? (
         <Pressable
           accessibilityRole="button"

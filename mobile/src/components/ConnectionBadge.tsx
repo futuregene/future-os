@@ -5,16 +5,38 @@ import { useTranslation } from "react-i18next";
 import { X } from "lucide-react-native";
 import type { ConnectionPresentation } from "../remote/connectionPresentation";
 import type { MachineStatus, MachineSummary } from "../remote/desktopStatus";
-import { machineStatusKey, machinesConnected } from "../remote/desktopStatus";
+import { machineStatusKey, machinesConnected, machinesPartlyConnected } from "../remote/desktopStatus";
 import { disconnectedCopy } from "../remote/disconnectedCopy";
 import { iconGlyph } from "../remote/peerIcons";
-import { colors, layout, radius, spacing } from "../theme/tokens";
+import { layout, radius, spacing, type Palette } from "../theme/tokens";
+import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 import { Button } from "./Button";
 
 /** The dot a machine's own row carries, in the same palette as the badge. */
-function statusColor(status: MachineStatus): string {
+function statusColor(status: MachineStatus, colors: Palette): string {
   if (status === "connected") return colors.success;
-  return status === "offline" ? colors.danger : colors.warning;
+  return status === "offline" ? colors.danger : colors.warningDot;
+}
+
+type DotState = "up" | "partial" | "down";
+
+/**
+ * The three states the dot and the title share, and the two hues they wear.
+ *
+ * The dot is yellow at `partial`: it and the title are drawn on the same light
+ * surface, but one is an 8px shape and the other a line of text, and the hues
+ * those two want are not the same. `warning` is darkened so it can be read as
+ * text; at the size of a dot that same orange is close enough to the `danger`
+ * red of the state below that "some machines are down" reads as "all of them
+ * are" — the one distinction this dot exists to make. So the dot takes the
+ * yellow, and the text keeps the amber it has contrast for.
+ */
+function stateColors(colors: Palette): Record<DotState, { dot: string; text: string }> {
+  return {
+    up: { dot: colors.success, text: colors.success },
+    partial: { dot: colors.warningDot, text: colors.warning },
+    down: { dot: colors.danger, text: colors.danger },
+  };
 }
 
 export function ConnectionBadge({
@@ -41,6 +63,8 @@ export function ConnectionBadge({
    */
   machines?: MachineSummary[];
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const dimensions = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -68,10 +92,17 @@ export function ConnectionBadge({
   // button offers to reach all of them rather than only the active one.
   const severalMachines = (machines?.length ?? 0) > 1;
   const summary = machines ? machinesConnected(machines) : null;
-  const color = summary && machines!.length > 0
-    ? summary.all ? colors.success : summary.any ? colors.warning : colors.danger
-    : presentation.level === "connected" ? colors.success :
-      presentation.level === "connecting" ? colors.warning : colors.danger;
+  // ...and the block under the rows answers for the same set. A phone paired to
+  // three desktops, two of them up, is not "no connection" — which is what the
+  // one machine's own state says when that machine is the one that is down.
+  const partial = summary !== null && machinesPartlyConnected(summary, presentation);
+  // The dot answers for every paired machine when there is a list to judge, and
+  // for the one connection the app renders from when there is not.
+  const state: DotState = summary && machines!.length > 0
+    ? summary.all ? "up" : summary.any ? "partial" : "down"
+    : presentation.level === "connected" ? "up" :
+      presentation.level === "connecting" ? "partial" : "down";
+  const { dot: dotColor, text: titleColor } = stateColors(colors)[state];
   // A connection the app still reports as healthy (or still trying) is where a
   // silently dead transport hides: those states keep the same manual reconnect
   // the failure states get, so recovering never requires unpairing first.
@@ -95,15 +126,27 @@ export function ConnectionBadge({
     : presentation.customerState === "waitingDesktop"
       ? "waitingDesktop"
       : presentation.level;
-  const label = t(statusKey);
-  const reason = disconnected
-    ? t(`connection.disconnectDetails.${copy}.reason`)
-    : t(`connection.statusDetails.${detailState}.reason`);
-  const solution = disconnected
-    ? t(`connection.disconnectDetails.${copy}.solution`)
-    : t(`connection.statusDetails.${detailState}.solution`);
-  const reasonWithCode =
-    reason + (presentation.supportCode ? ` (${presentation.supportCode})` : "");
+  const label = partial ? t("connection.machinesPartial") : t(statusKey);
+  const reason = partial
+    ? t("connection.machinesSummary", {
+      connected: summary!.connected,
+      total: summary!.total,
+    })
+    : disconnected
+      ? t(`connection.disconnectDetails.${copy}.reason`)
+      : t(`connection.statusDetails.${detailState}.reason`);
+  const solution = partial
+    ? t("connection.machinesPartialHint")
+    : disconnected
+      ? t(`connection.disconnectDetails.${copy}.solution`)
+      : t(`connection.statusDetails.${detailState}.solution`);
+  // The set's own state carries no support code: there is no single failure to
+  // look up, and the rows above name which machines it is about. The open
+  // machine's code is still the phone's when nothing answers at all, where
+  // `partial` is false.
+  const reasonWithCode = partial
+    ? reason
+    : reason + (presentation.supportCode ? ` (${presentation.supportCode})` : "");
   const leftEdge = insets.left + layout.gutter;
   const rightEdge = insets.right + layout.gutter;
   const popoverWidth = Math.min(320, dimensions.width - leftEdge - rightEdge);
@@ -122,7 +165,7 @@ export function ConnectionBadge({
         onPress={open}
         style={({ pressed }) => [styles.badge, (pressed || visible) && styles.pressed]}
       >
-        <View testID="connection-dot" style={[styles.dot, { backgroundColor: color }]} />
+        <View testID="connection-dot" style={[styles.dot, { backgroundColor: dotColor }]} />
       </Pressable>
       <Modal
         transparent
@@ -150,9 +193,10 @@ export function ConnectionBadge({
                   {machines!.map(machine => (
                     <View key={machine.desktopId} style={styles.machineRow}>
                       <View
+                        testID={`machine-dot-${machine.desktopId}`}
                         style={[
                           styles.machineDot,
-                          { backgroundColor: statusColor(machine.status) },
+                          { backgroundColor: statusColor(machine.status, colors) },
                         ]}
                       />
                       <Text numberOfLines={1} style={styles.machineName}>
@@ -163,15 +207,20 @@ export function ConnectionBadge({
                       </Text>
                     </View>
                   ))}
-                  <Text accessibilityLiveRegion="polite" style={styles.machinesSummary}>
-                    {t("connection.machinesSummary", {
-                      connected: summary?.connected ?? 0,
-                      total: summary?.total ?? 0,
-                    })}
-                  </Text>
+                  {/* The count is the block's own description when only some
+                      machines answer; written here it would repeat it a line
+                      above its own reason. */}
+                  {!partial && (
+                    <Text accessibilityLiveRegion="polite" style={styles.machinesSummary}>
+                      {t("connection.machinesSummary", {
+                        connected: summary?.connected ?? 0,
+                        total: summary?.total ?? 0,
+                      })}
+                    </Text>
+                  )}
                 </View>
               )}
-              <Text accessibilityLiveRegion="polite" style={[styles.title, { color }]}>{label}</Text>
+              <Text accessibilityLiveRegion="polite" style={[styles.title, { color: titleColor }]}>{label}</Text>
               <Text style={styles.hint}>{reasonWithCode}</Text>
               {solution && <Text style={styles.hint}>{solution}</Text>}
               {(reconnectable || unpairable) && (
@@ -196,7 +245,7 @@ export function ConnectionBadge({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(theme => StyleSheet.create({
   badge: {
     width: layout.touchTarget,
     height: layout.touchTarget,
@@ -205,28 +254,28 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderRadius: radius.pill,
   },
-  pressed: { backgroundColor: colors.surfaceSubtle },
+  pressed: { backgroundColor: theme.colors.surfaceSubtle },
   dot: { width: 8, height: 8, borderRadius: 4 },
   overlay: { flex: 1 },
   popover: {
     position: "absolute",
     borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.surface,
+    borderColor: theme.colors.line,
+    backgroundColor: theme.colors.surface,
     boxShadow: "0 4px 16px rgba(15, 23, 42, 0.15)",
     overflow: "hidden",
   },
   header: { flexDirection: "row", alignItems: "center", paddingLeft: spacing.lg },
-  heading: { flex: 1, color: colors.inkSoft, fontSize: 13, fontWeight: "600" },
+  heading: { flex: 1, color: theme.colors.inkSoft, fontSize: theme.font(13), fontWeight: "600" },
   close: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center" },
   content: { paddingHorizontal: spacing.lg, paddingBottom: spacing.lg, gap: spacing.sm },
   machines: { gap: spacing.xs },
   machineRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   machineDot: { width: 8, height: 8, borderRadius: 4 },
-  machineName: { flex: 1, minWidth: 0, color: colors.ink, fontSize: 14 },
-  machineState: { color: colors.inkMuted, fontSize: 13 },
-  machinesSummary: { color: colors.inkMuted, fontSize: 12 },
-  title: { fontSize: 15, fontWeight: "600" },
-  hint: { color: colors.inkSoft, fontSize: 14, lineHeight: 21 },
-});
+  machineName: { flex: 1, minWidth: 0, color: theme.colors.ink, fontSize: theme.font(14) },
+  machineState: { color: theme.colors.inkMuted, fontSize: theme.font(13) },
+  machinesSummary: { color: theme.colors.inkMuted, fontSize: theme.font(12) },
+  title: { fontSize: theme.font(15), fontWeight: "600" },
+  hint: { color: theme.colors.inkSoft, fontSize: theme.font(14), lineHeight: theme.leading(21) },
+}));

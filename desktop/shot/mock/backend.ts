@@ -32,7 +32,6 @@ import {
   runs,
   sessionUsage,
   taskDeps,
-  taskRevisions,
   taskRuns,
   tasks,
   threads,
@@ -42,7 +41,7 @@ import {
   workspaceFiles,
   workspaces,
 } from "./data";
-import { sessionEntries, streamRemoteRun } from "./remoteStream";
+import { replayPage, replayState, sessionEntries, streamRemoteRun } from "./remoteStream";
 
 // The console output doubles as the "what is missing" list while iterating on
 // the harness, which is why this one log call is intentional.
@@ -576,8 +575,27 @@ const handlers: Record<string, (args: any) => unknown> = {
           hasMore: false,
           nextOffset: 0,
         };
+      /**
+       * The host's state: its settings *and* the run it has in flight.
+       *
+       * `activeRun` is what a client reads to learn there is a reply already being
+       * written — the pushes alone cannot say so until a frame arrives, and a long
+       * tool call pushes nothing for minutes.
+       */
       case "get_state":
-        return remoteConversationState;
+        return { ...remoteConversationState, ...replayState(String(command.sessionId ?? "")) };
+      /**
+       * The run's log, for the client that reads it rather than guessing.
+       *
+       * Served for the fixture's in-flight run only; anything else answers an
+       * empty read, which is what a host with nothing to add says.
+       */
+      case "get_events_since":
+        return replayPage(
+          String(command.sessionId ?? ""),
+          String(command.runId ?? ""),
+          Number(command.sinceIdx ?? -1),
+        );
       /**
        * The host's own unit: one conversation, addressed by its *thread* id.
        *
@@ -646,8 +664,6 @@ const handlers: Record<string, (args: any) => unknown> = {
         return { runs: taskRuns[String(command.taskId)] ?? [] };
       case "list_task_deps":
         return { deps: taskDeps[String(command.taskId)] ?? [] };
-      case "list_task_revisions":
-        return { revisions: taskRevisions[String(command.taskId)] ?? [] };
       case "skill_reco_today":
         return { today: { count: 0, skillIds: [], messageHashes: [] } };
       case "suggest_skill":
@@ -739,16 +755,6 @@ const handlers: Record<string, (args: any) => unknown> = {
   run_task_now: args => taskList.find(task => task.id === args?.id) ?? null,
   list_task_runs: args => taskRuns[args?.id] ?? [],
   list_task_deps: args => taskDeps[args?.id] ?? [],
-  list_task_revisions: args => taskRevisions[args?.id] ?? [],
-  apply_task_revision: (args) => {
-    const target = taskList.find(task => task.id === args?.id);
-    const revision = (taskRevisions[args?.id] ?? []).find(entry => entry.id === args?.revisionId);
-    if (!target || !revision)
-      throw new Error("revision not found");
-    target.prompt = revision.prompt;
-    target.promptVersion += 1;
-    return target;
-  },
 
   // ── Settings pages ─────────────────────────────────────────────────────
   clear_app_data: () => null,

@@ -2,7 +2,7 @@ import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
 import { AccessibilityInfo, Animated, FlatList, Image, Linking, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
 import * as Clipboard from "expo-clipboard";
-import { codeColors } from "../../theme/tokens";
+import { lightCodeColors } from "../../theme/tokens";
 import { AppAlert as Alert } from "../appAlerts";
 import { act, create } from "react-test-renderer";
 import { MarkdownText } from "../MarkdownText";
@@ -262,7 +262,7 @@ describe("MarkdownText layout and fidelity", () => {
     const source = text.findAllByType(Text).filter(node => typeof node.props.children === "string")
       .map(node => node.props.children).join("");
     expect(source).toContain("const");
-    expect(text.findAllByType(Text).some(node => StyleSheet.flatten(node.props.style)?.color === codeColors.keyword)).toBe(true);
+    expect(text.findAllByType(Text).some(node => StyleSheet.flatten(node.props.style)?.color === lightCodeColors.keyword)).toBe(true);
     expect(text.props.selectable).toBe(true);
     // Wrapping is the native Text behaviour once nothing pins a fixed width.
     expect(text.props.numberOfLines).toBeUndefined();
@@ -276,7 +276,7 @@ describe("MarkdownText layout and fidelity", () => {
     const root = render('```tsx\nunderlineColorAndroid="trans');
     act(() => renderer.update(createElement(MarkdownText, { text: '```tsx\nunderlineColorAndroid="transparent"\n```' })));
     expect(root.findAllByType(Text).some(node => node.props.children === '"transparent"'
-      && StyleSheet.flatten(node.props.style)?.color === codeColors.string)).toBe(true);
+      && StyleSheet.flatten(node.props.style)?.color === lightCodeColors.string)).toBe(true);
   });
 
   test("copying a large highlighted block yields the unmodified source", async () => {
@@ -292,7 +292,7 @@ describe("MarkdownText layout and fidelity", () => {
       expect(copy).toHaveBeenCalledWith(code);
       const toggle = root.findAll(node => node.props.accessibilityLabel === "chat.expandCode" && typeof node.props.onPress === "function")[0]!;
       act(() => toggle.props.onPress());
-      expect(root.findAllByType(Text).some(node => StyleSheet.flatten(node.props.style)?.color === codeColors.keyword)).toBe(true);
+      expect(root.findAllByType(Text).some(node => StyleSheet.flatten(node.props.style)?.color === lightCodeColors.keyword)).toBe(true);
     } finally { copy.mockRestore(); }
   });
 

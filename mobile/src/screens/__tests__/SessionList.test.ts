@@ -1,5 +1,5 @@
 import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import {
   Animated,
   BackHandler,
@@ -18,6 +18,7 @@ import { RenameModal } from "../../features/chat/components/RenameModal";
 import type { RemoteSession, RemoteWorkspace } from "../../remote/types";
 import { SessionList } from "../SessionList";
 import { ActionMenu } from "../../components/ActionMenu";
+import type { DesktopCommands } from "../../remote/desktopCommands";
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView", useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 
 const mockRemote: {
@@ -32,8 +33,12 @@ const mockRemote: {
   setWorkspacePinned: jest.Mock;
   renameWorkspace: jest.Mock;
   selectSession: jest.Mock;
+  switchDesktop: jest.Mock;
+  refreshWorkspaces: jest.Mock;
+  refreshModels: jest.Mock;
   openSessionOnDesktop: jest.Mock;
   newConversation: jest.Mock;
+  newConversationOn: jest.Mock;
 } = {
   sessions: [
     { sessionId: "s1", threadId: "t1", title: "First", streaming: false },
@@ -50,8 +55,12 @@ const mockRemote: {
   setWorkspacePinned: jest.fn(),
   renameWorkspace: jest.fn(),
   selectSession: jest.fn(),
+  switchDesktop: jest.fn(),
+  refreshWorkspaces: jest.fn(),
+  refreshModels: jest.fn(),
   openSessionOnDesktop: jest.fn(),
   newConversation: jest.fn(),
+  newConversationOn: jest.fn(),
 };
 const mockStorage = new Map<string, string>();
 jest.mock("@react-native-async-storage/async-storage", () => ({
@@ -90,18 +99,56 @@ jest.mock("lucide-react-native", () =>
 jest.mock("../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote }));
 jest.mock("react-i18next", () => ({
   useTranslation: () => ({
-    t: (key: string, options?: { title?: string; count?: number }) =>
+    // The options a string is given are part of what it says, and the machine a
+    // sheet names is one of them: a sheet that names the wrong machine must be
+    // a failing expectation, not an invisible one.
+    t: (key: string, options?: { title?: string; count?: number; name?: string }) =>
       options?.title
         ? `${key}:${options.title}`
         : options?.count !== undefined
           ? `${key}:${options.count}`
-          : key,
+          : options?.name
+            ? `${key}:${options.name}`
+            : key,
   }),
 }));
 
 let tree: ReactTestRenderer;
 const onMenu = jest.fn();
 const onTabChange = jest.fn();
+
+/**
+ * What each machine answers, as the list sees it.
+ *
+ * Every action a row offers is a command to the machine that owns it, so the
+ * list is handed one object per machine rather than reaching into the remote
+ * context: the active one (the rows that carry no source, or `desk-a` in the
+ * merged tests) and `desk-b`, the machine a merged test's rows come from.
+ */
+function machineCommands(capabilities: string[] = []) {
+  return {
+    capabilities: new Set(capabilities),
+    renameSession: jest.fn(async (_sessionId: string, _name: string) => {}),
+    generateTitle: jest.fn(async (_sessionId: string, _language: string) => "Generated"),
+    setSessionPinned: jest.fn(async (_sessionId: string, _threadId: string, _pinned: boolean) => {}),
+    deleteSession: jest.fn(async (_sessionId: string, _threadId: string) => {}),
+    renameWorkspace: jest.fn(async (_workspaceId: string, _name: string) => {}),
+    setWorkspacePinned: jest.fn(async (_workspaceId: string, _pinned: boolean) => {}),
+    deleteWorkspace: jest.fn(async (_workspaceId: string) => {}),
+  } satisfies DesktopCommands;
+}
+const activeCommands = machineCommands(["workspace_pinning_v1"]);
+const peerCommands = machineCommands(["workspace_pinning_v1"]);
+/** Machines that answer at all; empty means the phone reached none of them. */
+let machinesAnswer = true;
+/** Machines specifically withheld — a peer this phone cannot reach. */
+const unreachableMachines = new Set<string>();
+const testCommandsFor = (desktopId: string | null): DesktopCommands | null =>
+  !machinesAnswer || (desktopId !== null && unreachableMachines.has(desktopId))
+    ? null
+    : desktopId && desktopId !== "desk-a"
+      ? peerCommands
+      : activeCommands;
 // Slide-out/settle animations resolve immediately here; the tab actually
 // changing is what these tests are about.
 const finishedAnimation = {
@@ -123,7 +170,13 @@ function swipeHarness(tab: "workspace" | "chat") {
   let rendered!: ReactTestRenderer;
   act(() => {
     rendered = create(
-      createElement(SessionList, { tab, empty: null, onMenu, onTabChange: tabChange }),
+      createElement(SessionList, {
+        tab,
+        empty: null,
+        onMenu,
+        onTabChange: tabChange,
+        commandsFor: testCommandsFor,
+      }),
     );
   });
   const handlers = pan.mock.calls.at(-1)![0];
@@ -177,15 +230,24 @@ const rowInset = (title: string) =>
   StyleSheet.flatten(sessionBody(title).parent!.props.style).paddingLeft;
 beforeEach(async () => {
   jest.clearAllMocks();
-  mockRemote.desktopOnline = true;
-  mockRemote.capabilities = new Set(["workspace_pinning_v1"]);
-  mockRemote.deleteSession.mockResolvedValue(undefined);
-  mockRemote.setWorkspacePinned.mockResolvedValue(undefined);
-  mockRemote.renameWorkspace.mockResolvedValue(undefined);
+  machinesAnswer = true;
+  unreachableMachines.clear();
+  activeCommands.capabilities = new Set(["workspace_pinning_v1"]);
+  peerCommands.capabilities = new Set(["workspace_pinning_v1"]);
   mockRemote.newConversation.mockResolvedValue(undefined);
+  mockRemote.newConversationOn.mockResolvedValue(undefined);
+  mockRemote.switchDesktop.mockResolvedValue(undefined);
+  mockRemote.refreshWorkspaces.mockResolvedValue(undefined);
+  mockRemote.refreshModels.mockResolvedValue(undefined);
   mockRemote.openSessionOnDesktop.mockResolvedValue(undefined);
   await act(async () => {
-    tree = create(createElement(SessionList, { tab: "chat", empty: null, onMenu, onTabChange }));
+    tree = create(createElement(SessionList, {
+      tab: "chat",
+      empty: null,
+      onMenu,
+      onTabChange,
+      commandsFor: testCommandsFor,
+    }));
     // Let the persisted-folds read land inside act() so it cannot update the
     // tree after the test body has finished.
     await Promise.resolve();
@@ -206,9 +268,15 @@ test("session titles use a compact single line without reducing touch targets", 
 
 test("explicit row action opens rename/pin/delete menu; offline management is disabled", () => {
   act(() => button("sessions.actions:First").props.onPress());
-  expect(onMenu).toHaveBeenCalledWith(mockRemote.sessions[0]);
-  mockRemote.desktopOnline = false;
-  act(() => tree.update(createElement(SessionList, { tab: "chat", empty: null, onMenu, onTabChange })));
+  expect(onMenu).toHaveBeenCalledWith(mockRemote.sessions[0], null);
+  machinesAnswer = false;
+  act(() => tree.update(createElement(SessionList, {
+      tab: "chat",
+      empty: null,
+      onMenu,
+      onTabChange,
+      commandsFor: testCommandsFor,
+    })));
   expect(button("sessions.actions:First").props.disabled).toBe(true);
   expect(button("sessions.select").props.disabled).toBe(true);
 });
@@ -300,8 +368,14 @@ test("selection replaces the toolbar and can be cancelled even after going offli
   expect(button("sessions.conversations")).toBeUndefined();
   expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
   act(() => button("First").props.onPress());
-  mockRemote.desktopOnline = false;
-  act(() => tree.update(createElement(SessionList, { tab: "chat", empty: null, onMenu, onTabChange })));
+  machinesAnswer = false;
+  act(() => tree.update(createElement(SessionList, {
+      tab: "chat",
+      empty: null,
+      onMenu,
+      onTabChange,
+      commandsFor: testCommandsFor,
+    })));
   expect(button("chat.cancel").props.disabled).toBe(false);
   expect(button("sessions.deleteSelected").props.disabled).toBe(true);
   act(() => button("chat.cancel").props.onPress());
@@ -325,7 +399,7 @@ test("cancelling deletion does not send any requests", () => {
   const modal = activeDialog();
   act(() => modal.findAllByType(Button).find(node => node.props.variant === "secondary")!.props.onPress());
   act(() => modal.props.onDismiss());
-  expect(mockRemote.deleteSession).not.toHaveBeenCalled();
+  expect(activeCommands.deleteSession).not.toHaveBeenCalled();
 });
 
 test("a successful batch exits selection and duplicate confirmation cannot delete twice", async () => {
@@ -335,24 +409,24 @@ test("a successful batch exits selection and duplicate confirmation cannot delet
   const modal = activeDialog();
   const confirm = modal.findAllByType(Button).find(node => node.props.variant === "danger")!;
   act(() => { confirm.props.onPress(); confirm.props.onPress(); });
-  expect(mockRemote.deleteSession).not.toHaveBeenCalled();
+  expect(activeCommands.deleteSession).not.toHaveBeenCalled();
   await act(async () => { modal.props.onDismiss(); modal.props.onDismiss(); });
-  expect(mockRemote.deleteSession).toHaveBeenCalledTimes(1);
+  expect(activeCommands.deleteSession).toHaveBeenCalledTimes(1);
   expect(button("sessions.select")).toBeDefined();
 });
 
 test("batch deletion confirms exact visible selection, preserves hidden children, and retains failures for retry", async () => {
-  mockRemote.deleteSession.mockImplementation(async (id: string) => {
+  activeCommands.deleteSession.mockImplementation(async (id: string, _threadId: string) => {
     if (id === "s2") throw new Error("offline");
   });
   act(() => button("sessions.select").props.onPress());
   // A collapsed child must never be implicitly selected by Select visible.
   act(() => button("sessions.selectVisible").props.onPress());
   act(() => button("sessions.deleteSelected").props.onPress());
-  expect(mockRemote.deleteSession).not.toHaveBeenCalled();
+  expect(activeCommands.deleteSession).not.toHaveBeenCalled();
   expect(dialogText()).toEqual(expect.arrayContaining(["sessions.deleteSelected", "sessions.deleteSelectedConfirm:2"]));
   await act(async () => { confirmAlert(); });
-  expect(mockRemote.deleteSession.mock.calls).toEqual([
+  expect(activeCommands.deleteSession.mock.calls).toEqual([
     ["s1", "t1"],
     ["s2", "t2"],
   ]);
@@ -363,7 +437,13 @@ test("batch deletion confirms exact visible selection, preserves hidden children
 
 test("select visible skips pinned chats, which carry no checkbox", () => {
   mockRemote.sessions = mockRemote.sessions.map(session => ({ ...session, pinned: session.sessionId === "s2" }));
-  act(() => tree.update(createElement(SessionList, { tab: "chat", empty: null, onMenu, onTabChange })));
+  act(() => tree.update(createElement(SessionList, {
+      tab: "chat",
+      empty: null,
+      onMenu,
+      onTabChange,
+      commandsFor: testCommandsFor,
+    })));
   act(() => button("sessions.select").props.onPress());
   act(() => button("sessions.selectVisible").props.onPress());
   // Only the unpinned chat joined the batch; the pinned shortcut above it did not.
@@ -395,7 +475,13 @@ function renderWorkspaceTab(): void {
     { sessionId: "c1", threadId: "tc1", title: "Chat", streaming: false },
   ];
   act(() => {
-    tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu, onTabChange }));
+    tree.update(createElement(SessionList, {
+      tab: "workspace",
+      empty: null,
+      onMenu,
+      onTabChange,
+      commandsFor: testCommandsFor,
+    }));
   });
 }
 
@@ -410,17 +496,27 @@ function renderChatTab(): void {
     { sessionId: "child", threadId: "tc", title: "Child", parentSessionId: "s1", streaming: false },
   ];
   mockRemote.workspaces = [];
-  act(() => tree.update(createElement(SessionList, { tab: "chat", empty: null, onMenu, onTabChange })));
+  act(() => tree.update(createElement(SessionList, {
+      tab: "chat",
+      empty: null,
+      onMenu,
+      onTabChange,
+      commandsFor: testCommandsFor,
+    })));
+}
+
+/** Open a workspace heading's sheet and take one of its actions. */
+function pressWorkspaceAction(heading: string, action: string): void {
+  act(() => button(`sessions.workspaceActions:${heading}`).props.onPress());
+  const menu = tree.root.findByType(ActionMenu);
+  expect(menu.props.actions.map((item: { label: string }) => item.label)).toContain(action);
+  act(() => button(action).props.onPress());
+  act(() => menu.findByType(Modal).props.onDismiss());
 }
 
 /** Select a real app sheet row and finish its iOS dismissal before navigation. */
 function pressWorkspaceMenu(action: string): void {
-  act(() => button("sessions.workspaceActions:Project").props.onPress());
-  const menu = tree.root.findByType(ActionMenu);
-  expect(menu.props.actions.map((item: { label: string }) => item.label)).toContain(action);
-  const modal = menu.findByType(Modal);
-  act(() => button(action).props.onPress());
-  act(() => modal.props.onDismiss());
+  pressWorkspaceAction("Project", action);
 }
 
 function activeDialog() {
@@ -461,7 +557,13 @@ test.each(["workspace", "chat"] as const)("%s parents fold with +/−, not the w
       { ...common, sessionId: "glyph-parent", threadId: "glyph-thread", title: "Glyph parent" },
       { ...common, sessionId: "glyph-child", threadId: "glyph-thread-child", title: "Glyph child", parentSessionId: "glyph-parent" },
     ];
-    act(() => tree.update(createElement(SessionList, { tab, empty: null, onMenu, onTabChange })));
+    act(() => tree.update(createElement(SessionList, {
+      tab,
+      empty: null,
+      onMenu,
+      onTabChange,
+      commandsFor: testCommandsFor,
+    })));
 
     const parentRow = sessionBody("Glyph parent").parent!;
     expect(iconsIn(parentRow, "Plus")).toHaveLength(1);
@@ -479,7 +581,13 @@ test.each(["workspace", "chat"] as const)("%s parents fold with +/−, not the w
   finally {
     mockRemote.sessions = originalSessions;
     mockRemote.workspaces = originalWorkspaces;
-    act(() => tree.update(createElement(SessionList, { tab, empty: null, onMenu, onTabChange })));
+    act(() => tree.update(createElement(SessionList, {
+      tab,
+      empty: null,
+      onMenu,
+      onTabChange,
+      commandsFor: testCommandsFor,
+    })));
   }
 });
 
@@ -487,7 +595,13 @@ test("a child in one workspace does not enlarge other workspace session gutters"
   renderWorkspaceTab();
   mockRemote.workspaces = [...mockRemote.workspaces, { id: "w2", name: "Other", path: "/tmp/other" }];
   mockRemote.sessions = [...mockRemote.sessions, { sessionId: "w2a", threadId: "t2a", title: "Independent", mode: "workspace", workspaceId: "w2", streaming: false }];
-  act(() => tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu, onTabChange })));
+  act(() => tree.update(createElement(SessionList, {
+      tab: "workspace",
+      empty: null,
+      onMenu,
+      onTabChange,
+      commandsFor: testCommandsFor,
+    })));
   expect(rowInset("Independent")).toBe(ROW_INSET);
   act(() => button("sessions.expandChildren").props.onPress());
   expect(rowInset("Independent")).toBe(ROW_INSET);
@@ -506,7 +620,13 @@ test.each(["workspace", "chat"] as const)("a parent's title column is its rows' 
       { ...common, sessionId: "align-parent", threadId: "align-thread", title: "Align parent" },
       { ...common, sessionId: "align-child", threadId: "align-thread-child", title: "Align child", parentSessionId: "align-parent" },
     ];
-    act(() => tree.update(createElement(SessionList, { tab, empty: null, onMenu, onTabChange })));
+    act(() => tree.update(createElement(SessionList, {
+      tab,
+      empty: null,
+      onMenu,
+      onTabChange,
+      commandsFor: testCommandsFor,
+    })));
     act(() => button("sessions.expandChildren").props.onPress());
 
     const parentInset = rowInset("Align parent");
@@ -528,7 +648,13 @@ test.each(["workspace", "chat"] as const)("a parent's title column is its rows' 
   finally {
     mockRemote.sessions = originalSessions;
     mockRemote.workspaces = originalWorkspaces;
-    act(() => tree.update(createElement(SessionList, { tab, empty: null, onMenu, onTabChange })));
+    act(() => tree.update(createElement(SessionList, {
+      tab,
+      empty: null,
+      onMenu,
+      onTabChange,
+      commandsFor: testCommandsFor,
+    })));
   }
 });
 
@@ -544,7 +670,13 @@ test("the workspace header's name sits on its rows' title column", () => {
 test.each(["workspace", "chat"] as const)("independent %s sessions keep their gutter when a neighboring tree changes", tab => {
   const originalSessions = mockRemote.sessions;
   const originalWorkspaces = mockRemote.workspaces;
-  const update = () => act(() => tree.update(createElement(SessionList, { tab, empty: null, onMenu, onTabChange })));
+  const update = () => act(() => tree.update(createElement(SessionList, {
+      tab,
+      empty: null,
+      onMenu,
+      onTabChange,
+      commandsFor: testCommandsFor,
+    })));
   try {
     mockRemote.workspaces = [{ id: "gutter-workspace", name: "Gutter project", path: "/tmp/gutter" }];
     const common = { mode: tab, workspaceId: "gutter-workspace", streaming: false };
@@ -603,7 +735,7 @@ test("workspace menu offers the workspace actions and disables them offline", ()
     "sessions.deleteWorkspace",
   ]);
   act(() => button("chat.cancel").props.onPress());
-  mockRemote.desktopOnline = false;
+  machinesAnswer = false;
   renderWorkspaceTab();
   expect(button("sessions.workspaceActions:Project").props.disabled).toBe(true);
 });
@@ -624,16 +756,16 @@ test("the workspace menu renames the group through a filled dialog and reports a
   // The box closes, then submits on dismissal — the same hedge the session
   // rename uses, so UIKit is never presenting two surfaces at once.
   act(() => button("chat.save").props.onPress());
-  expect(mockRemote.renameWorkspace).not.toHaveBeenCalled();
+  expect(activeCommands.renameWorkspace).not.toHaveBeenCalled();
   await act(async () => {
     tree.root.findByType(RenameModal).findByType(Modal).props.onDismiss();
     await Promise.resolve();
   });
-  expect(mockRemote.renameWorkspace).toHaveBeenCalledWith("w1", "Renamed");
+  expect(activeCommands.renameWorkspace).toHaveBeenCalledWith("w1", "Renamed");
   expect(tree.root.findByType(RenameModal).props.renameOpen).toBe(false);
 
   // A refused rename says so, instead of leaving the draft looking saved.
-  mockRemote.renameWorkspace.mockRejectedValueOnce(new Error("offline"));
+  activeCommands.renameWorkspace.mockRejectedValueOnce(new Error("offline"));
   act(() => button("sessions.workspaceActions:Project").props.onPress());
   const reopened = tree.root.findByType(ActionMenu).findByType(Modal);
   act(() => button("sessions.renameWorkspace").props.onPress());
@@ -645,7 +777,7 @@ test("the workspace menu renames the group through a filled dialog and reports a
 });
 
 test("old desktops do not offer unsupported workspace pin commands", () => {
-  mockRemote.capabilities.clear();
+  activeCommands.capabilities.clear();
   renderWorkspaceTab();
   act(() => button("sessions.workspaceActions:Project").props.onPress());
   const actions = tree.root.findByType(ActionMenu).props.actions.map((action: { label: string }) => action.label);
@@ -655,21 +787,27 @@ test("old desktops do not offer unsupported workspace pin commands", () => {
   // unconditionally, so every desktop that answers this list supports it.
   expect(actions).toContain("sessions.renameWorkspace");
   expect(actions).toContain("sessions.new");
-  expect(mockRemote.setWorkspacePinned).not.toHaveBeenCalled();
+  expect(activeCommands.setWorkspacePinned).not.toHaveBeenCalled();
 });
 
 test("the workspace menu pins a group and offers unpin once it is pinned", async () => {
   renderWorkspaceTab();
   pressWorkspaceMenu("sessions.pin");
-  expect(mockRemote.setWorkspacePinned).toHaveBeenCalledWith("w1", true);
+  expect(activeCommands.setWorkspacePinned).toHaveBeenCalledWith("w1", true);
 
   mockRemote.workspaces = [{ ...mockRemote.workspaces[0]!, pinned: true }];
-  act(() => tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu, onTabChange })));
+  act(() => tree.update(createElement(SessionList, {
+      tab: "workspace",
+      empty: null,
+      onMenu,
+      onTabChange,
+      commandsFor: testCommandsFor,
+    })));
   pressWorkspaceMenu("sessions.unpin");
-  expect(mockRemote.setWorkspacePinned).toHaveBeenLastCalledWith("w1", false);
+  expect(activeCommands.setWorkspacePinned).toHaveBeenLastCalledWith("w1", false);
 
   // A refused pin reports the failure instead of leaving the row moved.
-  mockRemote.setWorkspacePinned.mockRejectedValueOnce(new Error("offline"));
+  activeCommands.setWorkspacePinned.mockRejectedValueOnce(new Error("offline"));
   pressWorkspaceMenu("sessions.unpin");
   await act(async () => {});
   expect(dialogText()).toEqual(expect.arrayContaining(["common.error"]));
@@ -683,6 +821,11 @@ test("new conversation uses the selected workspace and waits for sheet dismissal
   expect(mockRemote.newConversation).not.toHaveBeenCalled();
   await act(async () => { modal.props.onDismiss(); });
   expect(mockRemote.newConversation).toHaveBeenCalledWith("workspace", "w1");
+  // This machine's own group names no machine: its own verb is the open
+  // machine's, and there is nothing to move.
+  expect(mockRemote.newConversationOn).not.toHaveBeenCalled();
+  expect(mockRemote.switchDesktop).not.toHaveBeenCalled();
+  expect(mockRemote.refreshModels).not.toHaveBeenCalled();
   act(() => modal.props.onDismiss());
   expect(mockRemote.newConversation).toHaveBeenCalledTimes(1);
 });
@@ -706,15 +849,24 @@ test("deleting a workspace confirms with its session count and calls the desktop
   jest.useFakeTimers();
   try {
     renderWorkspaceTab();
-    mockRemote.deleteWorkspace.mockResolvedValue(undefined);
+    activeCommands.deleteWorkspace.mockResolvedValue(undefined);
+    // A batch assembled over the workspace before it was removed: the host takes
+    // its conversations with it, so those ticks must go too — a selection that
+    // survives would offer to delete conversations the host no longer has.
+    act(() => button("sessions.select").props.onPress());
+    act(() => button("sessions.selectVisible").props.onPress());
+    expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:1").length).toBeGreaterThan(0);
     pressWorkspaceMenu("sessions.deleteWorkspace");
     expect(dialogText()).toEqual(expect.arrayContaining(["sessions.deleteWorkspace", "sessions.deleteWorkspaceConfirm:Project"]));
     await act(async () => {
       confirmAlert();
       confirmAlert(); // A second tap while the request is in flight must not re-fire.
     });
-    expect(mockRemote.deleteWorkspace).toHaveBeenCalledTimes(1);
-    expect(mockRemote.deleteWorkspace).toHaveBeenCalledWith("w1");
+    expect(activeCommands.deleteWorkspace).toHaveBeenCalledTimes(1);
+    expect(activeCommands.deleteWorkspace).toHaveBeenCalledWith("w1");
+    // Everything the workspace held — the folded child included — left the batch
+    // with it.
+    expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:0").length).toBeGreaterThan(0);
   } finally {
     jest.useRealTimers();
   }
@@ -723,7 +875,13 @@ test("deleting a workspace confirms with its session count and calls the desktop
 test("promoted workspace pins stay visible and openable but are left out of workspace selection", () => {
   renderWorkspaceTab();
   mockRemote.sessions = mockRemote.sessions.map(session => ({ ...session, pinned: session.sessionId === "w1b" }));
-  act(() => tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu, onTabChange })));
+  act(() => tree.update(createElement(SessionList, {
+      tab: "workspace",
+      empty: null,
+      onMenu,
+      onTabChange,
+      commandsFor: testCommandsFor,
+    })));
   const rows = tree.root.findByType(FlatList).props.data;
   expect(rows.map((row: { key: string }) => row.key)).toEqual(["w1b", "workspace:w1", "w1a"]);
   expect(rows[1].count).toBe(2);
@@ -747,7 +905,7 @@ test("a failed workspace delete surfaces the workspace error instead of the gene
   jest.useFakeTimers();
   try {
     renderWorkspaceTab();
-    mockRemote.deleteWorkspace.mockRejectedValue(new Error("offline"));
+    activeCommands.deleteWorkspace.mockRejectedValue(new Error("offline"));
     pressWorkspaceMenu("sessions.deleteWorkspace");
     await act(async () => {
       confirmAlert();
@@ -765,9 +923,23 @@ test("a workspace menu cannot outlive the screen that opened it", () => {
   // Leaving the list (entering a chat, or a pairing change) unmounts the page
   // but the menu it opened lives in a native Modal: it has to be torn down with
   // the screen rather than left floating over whatever comes next.
-  act(() => tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu, onTabChange, active: false })));
+  act(() => tree.update(createElement(SessionList, {
+      tab: "workspace",
+      empty: null,
+      onMenu,
+      onTabChange,
+      commandsFor: testCommandsFor,
+      active: false,
+    })));
   expect(tree.root.findByType(ActionMenu).props.visible).toBe(false);
-  act(() => tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu, onTabChange, active: true })));
+  act(() => tree.update(createElement(SessionList, {
+      tab: "workspace",
+      empty: null,
+      onMenu,
+      onTabChange,
+      commandsFor: testCommandsFor,
+      active: true,
+    })));
   expect(tree.root.findByType(ActionMenu).props.visible).toBe(false);
 });
 
@@ -818,15 +990,21 @@ test("a batch tap with nothing selected, or while offline, sends nothing", () =>
   // that no request was sent would miss a confirmation that should never have
   // been offered — the mutant that drops this guard survives that assertion.
   act(() => button("sessions.deleteSelected").props.onPress());
-  expect(mockRemote.deleteSession).not.toHaveBeenCalled();
+  expect(activeCommands.deleteSession).not.toHaveBeenCalled();
   expect(visibleDialog()).toBe(false);
   act(() => button("First").props.onPress());
-  mockRemote.desktopOnline = false;
-  act(() => tree.update(createElement(SessionList, { tab: "chat", empty: null, onMenu, onTabChange })));
+  machinesAnswer = false;
+  act(() => tree.update(createElement(SessionList, {
+      tab: "chat",
+      empty: null,
+      onMenu,
+      onTabChange,
+      commandsFor: testCommandsFor,
+    })));
   act(() => button("sessions.deleteSelected").props.onPress());
-  expect(mockRemote.deleteSession).not.toHaveBeenCalled();
+  expect(activeCommands.deleteSession).not.toHaveBeenCalled();
   expect(visibleDialog()).toBe(false);
-  mockRemote.desktopOnline = true;
+  machinesAnswer = true;
 });
 
 test("selecting a row inside a workspace group works the same as in a chat list", () => {
@@ -842,7 +1020,13 @@ test("a workspace select-all with nothing to select is inert", () => {
   renderWorkspaceTab();
   // Every session in the group is a promoted pin, which carries no checkbox.
   mockRemote.sessions = mockRemote.sessions.map(session => ({ ...session, pinned: true }));
-  act(() => tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu, onTabChange })));
+  act(() => tree.update(createElement(SessionList, {
+      tab: "workspace",
+      empty: null,
+      onMenu,
+      onTabChange,
+      commandsFor: testCommandsFor,
+    })));
   pressWorkspaceMenu("sessions.selectWorkspaceSessions");
   // The shortcut must not open an empty batch: the toolbar would then offer a
   // delete with nothing selected.
@@ -852,13 +1036,19 @@ test("a workspace select-all with nothing to select is inert", () => {
 
 test("a workspace menu does not open while the desktop is unreachable", () => {
   renderWorkspaceTab();
-  mockRemote.desktopOnline = false;
-  act(() => tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu, onTabChange })));
+  machinesAnswer = false;
+  act(() => tree.update(createElement(SessionList, {
+      tab: "workspace",
+      empty: null,
+      onMenu,
+      onTabChange,
+      commandsFor: testCommandsFor,
+    })));
   act(() => button("sessions.workspaceActions:Project").props.onPress());
   // Pin/rename/delete are all desktop writes; opening the sheet on a dead link
   // would offer actions that cannot run.
   expect(tree.root.findByType(ActionMenu).props.visible).toBe(false);
-  mockRemote.desktopOnline = true;
+  machinesAnswer = true;
 });
 
 test("a workspace cannot be deleted twice while the first request is in flight", async () => {
@@ -869,18 +1059,18 @@ test("a workspace cannot be deleted twice while the first request is in flight",
       let resolve!: () => void;
       return { promise: new Promise<void>(done => { resolve = done; }), resolve: () => resolve() };
     })();
-    mockRemote.deleteWorkspace.mockReturnValue(pending.promise);
+    activeCommands.deleteWorkspace.mockReturnValue(pending.promise);
     pressWorkspaceMenu("sessions.deleteWorkspace");
     await act(async () => { confirmAlert(); });
-    expect(mockRemote.deleteWorkspace).toHaveBeenCalledTimes(1);
+    expect(activeCommands.deleteWorkspace).toHaveBeenCalledTimes(1);
     // A tap on the workspace menu that began before the delete disabled it must
     // not queue a second destructive request.
     act(() => button("sessions.workspaceActions:Project").props.onPress());
-    expect(mockRemote.deleteWorkspace).toHaveBeenCalledTimes(1);
+    expect(activeCommands.deleteWorkspace).toHaveBeenCalledTimes(1);
     await act(async () => { pending.resolve(); });
   } finally {
     jest.useRealTimers();
-    mockRemote.deleteWorkspace.mockResolvedValue(undefined);
+    activeCommands.deleteWorkspace.mockResolvedValue(undefined);
   }
 });
 
@@ -889,7 +1079,7 @@ test("a double tap on the delete confirmation cannot queue the batch twice", asy
   // The desktop is slow to answer, so the first delete is still unresolved when
   // the second confirmation is confirmed.
   let resolveFirst!: () => void;
-  mockRemote.deleteSession.mockReturnValueOnce(
+  activeCommands.deleteSession.mockReturnValueOnce(
     new Promise<void>(done => { resolveFirst = () => done(); }),
   );
   act(() => button("sessions.select").props.onPress());
@@ -901,15 +1091,15 @@ test("a double tap on the delete confirmation cannot queue the batch twice", asy
     button("sessions.deleteSelected").props.onPress();
   });
   await act(async () => { confirmAlert(); });
-  expect(mockRemote.deleteSession).toHaveBeenCalledTimes(1);
+  expect(activeCommands.deleteSession).toHaveBeenCalledTimes(1);
   // The second confirmation is still on screen; confirming it must not delete
   // the same conversations again — a thread the desktop already removed would
   // answer with an error the user would see for an action that had succeeded.
   await act(async () => { confirmAlert(); });
-  expect(mockRemote.deleteSession).toHaveBeenCalledTimes(1);
+  expect(activeCommands.deleteSession).toHaveBeenCalledTimes(1);
   await act(async () => { resolveFirst(); await Promise.resolve(); });
-  expect(mockRemote.deleteSession).toHaveBeenCalledTimes(1);
-  mockRemote.deleteSession.mockResolvedValue(undefined);
+  expect(activeCommands.deleteSession).toHaveBeenCalledTimes(1);
+  activeCommands.deleteSession.mockResolvedValue(undefined);
 });
 
 test("a double tap on the workspace confirmation deletes it once", async () => {
@@ -917,7 +1107,7 @@ test("a double tap on the workspace confirmation deletes it once", async () => {
   try {
     renderWorkspaceTab();
     let resolveDelete!: () => void;
-    mockRemote.deleteWorkspace.mockReturnValueOnce(
+    activeCommands.deleteWorkspace.mockReturnValueOnce(
       new Promise<void>(done => { resolveDelete = () => done(); }),
     );
     // Two confirmations are queued for the same workspace: the menu can be
@@ -926,16 +1116,16 @@ test("a double tap on the workspace confirmation deletes it once", async () => {
     pressWorkspaceMenu("sessions.deleteWorkspace");
     pressWorkspaceMenu("sessions.deleteWorkspace");
     await act(async () => { confirmAlert(); });
-    expect(mockRemote.deleteWorkspace).toHaveBeenCalledTimes(1);
+    expect(activeCommands.deleteWorkspace).toHaveBeenCalledTimes(1);
     // The first request is still in flight and the second confirmation is on
     // screen; confirming it must not queue the same destructive request again.
     await act(async () => { confirmAlert(); });
-    expect(mockRemote.deleteWorkspace).toHaveBeenCalledTimes(1);
+    expect(activeCommands.deleteWorkspace).toHaveBeenCalledTimes(1);
     await act(async () => { resolveDelete(); await Promise.resolve(); });
-    expect(mockRemote.deleteWorkspace).toHaveBeenCalledTimes(1);
+    expect(activeCommands.deleteWorkspace).toHaveBeenCalledTimes(1);
   } finally {
     jest.useRealTimers();
-    mockRemote.deleteWorkspace.mockResolvedValue(undefined);
+    activeCommands.deleteWorkspace.mockResolvedValue(undefined);
   }
 });
 
@@ -949,7 +1139,7 @@ test("a stale workspace delete item cannot queue a second confirmation while the
   try {
     renderWorkspaceTab();
     let resolveDelete!: () => void;
-    mockRemote.deleteWorkspace.mockReturnValueOnce(
+    activeCommands.deleteWorkspace.mockReturnValueOnce(
       new Promise<void>(done => { resolveDelete = () => done(); }),
     );
 
@@ -961,8 +1151,8 @@ test("a stale workspace delete item cannot queue a second confirmation while the
     act(() => { press(); flush(); });
     expect(visibleDialogs()).toBe(1);
     await act(async () => { confirmAlert(); });
-    expect(mockRemote.deleteWorkspace).toHaveBeenCalledTimes(1);
-    expect(mockRemote.deleteWorkspace).toHaveBeenCalledWith("w1");
+    expect(activeCommands.deleteWorkspace).toHaveBeenCalledTimes(1);
+    expect(activeCommands.deleteWorkspace).toHaveBeenCalledWith("w1");
     // The request really is in flight, so the guard's read at round 2 is a live
     // `true`; a delete that had already settled would make round 2 vacuous.
     expect(button("sessions.workspaceActions:Project").props.disabled).toBe(true);
@@ -972,7 +1162,7 @@ test("a stale workspace delete item cannot queue a second confirmation while the
     // only move if the stale confirmation were then tapped — is what fails when
     // the guard is dropped: round 2 would put a second confirmation on screen.
     expect(visibleDialogs()).toBe(0);
-    expect(mockRemote.deleteWorkspace).toHaveBeenCalledTimes(1);
+    expect(activeCommands.deleteWorkspace).toHaveBeenCalledTimes(1);
 
     // Control, with the same captured pair: settle the delete, so the ref reads
     // false again, and drive it a third time. A confirmation *is* queued now —
@@ -982,10 +1172,10 @@ test("a stale workspace delete item cannot queue a second confirmation while the
     expect(button("sessions.workspaceActions:Project").props.disabled).toBe(false);
     act(() => { press(); flush(); });
     expect(visibleDialogs()).toBe(1);
-    expect(mockRemote.deleteWorkspace).toHaveBeenCalledTimes(1);
+    expect(activeCommands.deleteWorkspace).toHaveBeenCalledTimes(1);
   } finally {
     jest.useRealTimers();
-    mockRemote.deleteWorkspace.mockResolvedValue(undefined);
+    activeCommands.deleteWorkspace.mockResolvedValue(undefined);
   }
 });
 
@@ -997,21 +1187,21 @@ test("a workspace cannot be deleted twice while the first request is in flight",
       let resolve!: () => void;
       return { promise: new Promise<void>(done => { resolve = done; }), resolve: () => resolve() };
     })();
-    mockRemote.deleteWorkspace.mockReturnValue(pending.promise);
+    activeCommands.deleteWorkspace.mockReturnValue(pending.promise);
     // Two requests reach the queue (the menu is re-openable, and a slow desktop
     // leaves the first one pending), so a second confirmation is on screen while
     // the first delete is still in flight.
     pressWorkspaceMenu("sessions.deleteWorkspace");
     pressWorkspaceMenu("sessions.deleteWorkspace");
     await act(async () => { confirmAlert(); });
-    expect(mockRemote.deleteWorkspace).toHaveBeenCalledTimes(1);
+    expect(activeCommands.deleteWorkspace).toHaveBeenCalledTimes(1);
     await act(async () => { confirmAlert(); });
     // The second confirmation must not queue another destructive request.
-    expect(mockRemote.deleteWorkspace).toHaveBeenCalledTimes(1);
+    expect(activeCommands.deleteWorkspace).toHaveBeenCalledTimes(1);
     await act(async () => { pending.resolve(); });
   } finally {
     jest.useRealTimers();
-    mockRemote.deleteWorkspace.mockResolvedValue(undefined);
+    activeCommands.deleteWorkspace.mockResolvedValue(undefined);
   }
 });
 
@@ -1023,21 +1213,21 @@ test("a queued second batch confirmation cannot delete while the first is in fli
       let resolve!: () => void;
       return { promise: new Promise<void>(done => { resolve = done; }), resolve: () => resolve() };
     })();
-    mockRemote.deleteSession.mockReturnValue(pending.promise);
+    activeCommands.deleteSession.mockReturnValue(pending.promise);
     act(() => button("sessions.select").props.onPress());
     act(() => button("First").props.onPress());
     act(() => button("sessions.deleteSelected").props.onPress());
     act(() => button("sessions.deleteSelected").props.onPress());
     await act(async () => { confirmAlert(); });
-    expect(mockRemote.deleteSession).toHaveBeenCalledTimes(1);
+    expect(activeCommands.deleteSession).toHaveBeenCalledTimes(1);
     await act(async () => { confirmAlert(); });
     // A batch delete is a sequence of desktop writes; a second confirmation
     // while the first runs would interleave them and delete twice.
-    expect(mockRemote.deleteSession).toHaveBeenCalledTimes(1);
+    expect(activeCommands.deleteSession).toHaveBeenCalledTimes(1);
     await act(async () => { pending.resolve(); });
   } finally {
     jest.useRealTimers();
-    mockRemote.deleteSession.mockResolvedValue(undefined);
+    activeCommands.deleteSession.mockResolvedValue(undefined);
   }
 });
 
@@ -1056,7 +1246,7 @@ test("a second tap on the same batch-delete confirm cannot start a second round"
       let resolve!: () => void;
       return { promise: new Promise<void>(done => { resolve = done; }), resolve: () => resolve() };
     })();
-    mockRemote.deleteSession.mockReturnValue(pending.promise);
+    activeCommands.deleteSession.mockReturnValue(pending.promise);
     act(() => button("sessions.select").props.onPress());
     act(() => button("First").props.onPress());
     act(() => button("sessions.deleteSelected").props.onPress());
@@ -1064,14 +1254,14 @@ test("a second tap on the same batch-delete confirm cannot start a second round"
     const press = modal.findAllByType(Button).find(node => node.props.variant === "danger")!.props.onPress;
     const flush = modal.props.onDismiss;
     act(() => { press(); flush(); });
-    expect(mockRemote.deleteSession).toHaveBeenCalledTimes(1);
+    expect(activeCommands.deleteSession).toHaveBeenCalledTimes(1);
     // Same captured closures, second round: the request is still in flight.
     await act(async () => { press(); flush(); });
-    expect(mockRemote.deleteSession).toHaveBeenCalledTimes(1);
+    expect(activeCommands.deleteSession).toHaveBeenCalledTimes(1);
     await act(async () => { pending.resolve(); });
   } finally {
     jest.useRealTimers();
-    mockRemote.deleteSession.mockResolvedValue(undefined);
+    activeCommands.deleteSession.mockResolvedValue(undefined);
   }
 });
 
@@ -1089,7 +1279,7 @@ test("a refused workspace conversation reports the failure instead of a stale sc
 test("a long press on a row opens the menu only outside selection mode", () => {
   renderChatTab();
   act(() => sessionBody("First").props.onLongPress());
-  expect(onMenu).toHaveBeenCalledWith(mockRemote.sessions[0]);
+  expect(onMenu).toHaveBeenCalledWith(mockRemote.sessions[0], null);
   onMenu.mockClear();
   act(() => button("sessions.select").props.onPress());
   // Inside the batch a long press is a no-op: the row already has a checkbox.
@@ -1140,6 +1330,7 @@ test("a merged row from another desktop is opened on that desktop", () => {
     empty: null,
     onMenu,
     onTabChange,
+    commandsFor: testCommandsFor,
     merged,
     activeDesktopId: "desk-a",
     icons: new Map([["desk-a", "🖥️"], ["desk-b", "💻"]]),
@@ -1171,12 +1362,14 @@ function renderMerged(
     session: RemoteSession;
   }[],
   activeDesktopId = "desk-a",
+  tab: "workspace" | "chat" = "workspace",
 ): void {
   act(() => tree.update(createElement(SessionList, {
-    tab: "chat",
+    tab,
     empty: null,
     onMenu,
     onTabChange,
+    commandsFor: testCommandsFor,
     merged,
     activeDesktopId,
     icons: new Map([["desk-a", "🖥️"], ["desk-b", "💻"]]),
@@ -1188,10 +1381,11 @@ const mergedRow = (
   sessionId: string,
   title: string,
   extra: Partial<RemoteSession> = {},
+  lastMessageAt = 1,
 ) => ({
   key: `${desktopId}::${sessionId}`,
   desktopId,
-  lastMessageAt: 1,
+  lastMessageAt,
   session: {
     sessionId,
     threadId: `t-${sessionId}`,
@@ -1214,29 +1408,472 @@ const headingNames = (): string[] =>
     .filter((row: { kind: string }) => row.kind === "workspace")
     .map((row: { workspace: RemoteWorkspace }) => row.workspace.name);
 
+/**
+ * How many times a machine's glyph is drawn inside one rendered node.
+ *
+ * A source icon is the one text whose accessibility label is a machine id, and
+ * the heading's and the row's are the same element — which is exactly what
+ * makes "named once" countable.
+ */
+const glyphsIn = (node: ReactTestInstance, desktopId: string): number =>
+  node.findAllByType(Text).filter(child => child.props.accessibilityLabel === desktopId).length;
+/** The glyphs drawn for a machine anywhere on the page. */
+const sourceGlyphs = (desktopId: string): number => glyphsIn(tree.root, desktopId);
+/** The glyphs drawn on a row, found by its conversation's title. */
+const rowGlyphs = (title: string, desktopId: string): number =>
+  glyphsIn(sessionBody(title), desktopId);
+/** The glyphs drawn on a workspace heading, found by its name. */
+const headingGlyphs = (name: string, desktopId: string): number =>
+  glyphsIn(button(name), desktopId);
+/** The pin markers drawn on a workspace heading, found by its name. */
+const headingPins = (name: string): number =>
+  // The icon module is mocked to its own name, so `Pin` is a host element here
+  // — the same lookup the other tests use for a mocked component.
+  button(name).findAllByType("Pin" as never).length;
+
 test("the merged list files each machine's conversations under their workspace headings", () => {
   renderMerged([
     mergedRow("desk-a", "a1", "Local plan"),
     mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
-    // A conversation in no workspace belongs to no heading: one section for
-    // every machine's chats, which is where a reader looks for them.
-    mergedRow("desk-b", "b2", "Remote chat", { mode: "chat", workspaceId: undefined, workspaceName: undefined }),
   ]);
 
   expect(headingNames()).toEqual(["Project", "Review"]);
-  expect(mergedTitles()).toEqual(["Local plan", "Remote review", "Remote chat"]);
+  expect(mergedTitles()).toEqual(["Local plan", "Remote review"]);
 });
 
-test("a heading on another machine offers no actions of its own", () => {
+/**
+ * A machine is named on the heading that owns the group, not on every line of
+ * it.
+ *
+ * A workspace heading carries its machine's glyph, so a conversation under that
+ * heading drawing it again is the same glyph on every row of the group — and it
+ * is the width those titles need, on a rail that has none to spare. The rule is
+ * the desktop rail's, which passes the group's answer down to its rows.
+ */
+test("a workspace heading names its machine, and its conversations do not repeat it", () => {
+  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote plan", { workspaceId: "w9", workspaceName: "Review" }),
+    mergedRow("desk-b", "b2", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+  ]);
+
+  expect(headingGlyphs("Project", "desk-a")).toBe(1);
+  expect(headingGlyphs("Review", "desk-b")).toBe(1);
+  // Two conversations on that machine, in one group: the glyph stays on the
+  // heading rather than appearing three times down the group.
+  expect(rowGlyphs("Remote plan", "desk-b")).toBe(0);
+  expect(rowGlyphs("Remote review", "desk-b")).toBe(0);
+  expect(rowGlyphs("Local plan", "desk-a")).toBe(0);
+  expect(sourceGlyphs("desk-b")).toBe(1);
+});
+
+/**
+ * A conversation nothing above it names still carries its own machine's glyph.
+ *
+ * Two places have no heading over them: the conversations page, which is flat,
+ * and a pinned conversation, which is a shortcut promoted above the groups.
+ * Losing the glyph there would leave a merged row indistinguishable from one of
+ * the active machine's.
+ */
+test("a conversation with no heading above it keeps its machine's glyph", () => {
+  renderMerged(
+    [
+      mergedRow("desk-a", "c1", "Local chat", { mode: "chat", workspaceId: undefined, workspaceName: undefined }),
+      mergedRow("desk-b", "c2", "Remote chat", { mode: "chat", workspaceId: undefined, workspaceName: undefined }),
+    ],
+    "desk-a",
+    "chat",
+  );
+  expect(rowGlyphs("Remote chat", "desk-b")).toBe(1);
+
+  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote plan", { workspaceId: "w9", workspaceName: "Review" }),
+    mergedRow("desk-b", "b2", "Pinned elsewhere", {
+      workspaceId: "w9",
+      workspaceName: "Review",
+      pinned: true,
+    }),
+  ]);
+  // Above the groups: no heading carries it, so the row does.
+  expect(rowGlyphs("Pinned elsewhere", "desk-b")).toBe(1);
+  // Under the heading: it does not.
+  expect(rowGlyphs("Remote plan", "desk-b")).toBe(0);
+});
+
+/**
+ * A page holds its own kind of conversation, exactly as the single-machine list
+ * does: the workspaces page the ones that live in a workspace, the conversations
+ * page the ones that live in none. Filing both on both pages put a machine's
+ * chats under the workspace groups — where the list has no such section — and
+ * made the two pages the same list.
+ */
+test("each page of the merged list holds its own kind of conversation", () => {
+  const rows = [
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-a", "c1", "Local chat", { mode: "chat", workspaceId: undefined, workspaceName: undefined }),
+    // A host older than the field: no `mode` at all, which is a chat.
+    mergedRow("desk-b", "b2", "Remote chat", { mode: undefined, workspaceId: undefined, workspaceName: undefined }),
+  ];
+  renderMerged(rows, "desk-a", "workspace");
+  expect(headingNames()).toEqual(["Project"]);
+  expect(mergedTitles()).toEqual(["Local plan"]);
+
+  renderMerged(rows, "desk-a", "chat");
+  expect(headingNames()).toEqual([]);
+  expect(mergedTitles()).toEqual(["Local chat", "Remote chat"]);
+});
+
+/**
+ * An empty merged list is still a merged list.
+ *
+ * The screen names a machine with the picker, and a machine that is not
+ * answering has no rows of its own. Falling back to the active machine's tree
+ * there would draw one machine's conversations under another machine's name —
+ * which is what made choosing an offline desktop look like nothing had happened
+ * — so an empty merged list shows the caller's own empty state and no rows of
+ * ours.
+ */
+test("an empty merged list draws none of the active machine's rows", () => {
+  act(() => tree.update(createElement(SessionList, {
+    tab: "chat",
+    empty: createElement(Text, null, "nothing here"),
+    onMenu,
+    onTabChange,
+    commandsFor: testCommandsFor,
+    merged: [],
+    activeDesktopId: "desk-a",
+  })));
+  // The ordinary list's three sessions are not what an empty machine's list is.
+  expect(mergedTitles()).toEqual([]);
+  expect(tree.root.findAllByType(Text).some(node => node.props.children === "nothing here")).toBe(true);
+});
+
+/**
+ * A heading on another machine offers that machine's actions, and they land
+ * there.
+ *
+ * Rename, pin and delete are commands to the machine that owns the workspace —
+ * the one this phone holds a connection to for that machine's rows — so the
+ * sheet is willing to offer them, and says which machine they address before its
+ * first destructive item. Starting a conversation is that machine's too: the
+ * queue is the active connection's, so the sheet switches the phone to the
+ * machine that will run it instead of leaving the item out.
+ */
+test("a heading on another machine offers that machine's actions", async () => {
   renderMerged([
     mergedRow("desk-a", "a1", "Local plan"),
     mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
   ]);
 
-  // Rename, pin and delete are commands to the desktop this phone is talking to,
-  // which has never heard of that workspace.
-  expect(button("sessions.workspaceActions:Project")).toBeDefined();
-  expect(button("sessions.workspaceActions:Review")).toBeUndefined();
+  // The sheet is the same sheet wherever the group's workspace lives: one item
+  // set, not the active machine's with "new conversation" in it and a peer's
+  // without. Everything else about that action is below; the pin is here to
+  // prove the other items still address the peer's own connection.
+  act(() => button("sessions.workspaceActions:Review").props.onPress());
+  expect(tree.root.findByType(ActionMenu).props.actions.map((a: { label: string }) => a.label))
+    .toEqual([
+      // A machine the reader has not renamed is named by its id: the sheet says
+      // which machine these commands address, and an unnamed one is called what
+      // the picker calls it.
+      "sessions.actionsOnDesktop:desk-b",
+      "sessions.new",
+      "sessions.pin",
+      "sessions.renameWorkspace",
+      "sessions.selectWorkspaceSessions",
+      "sessions.deleteWorkspace",
+    ]);
+  await act(async () => {
+    button("sessions.pin").props.onPress();
+    await tree.root.findByType(ActionMenu).findByType(Modal).props.onDismiss();
+  });
+  expect(peerCommands.setWorkspacePinned).toHaveBeenCalledWith("w9", true);
+  expect(activeCommands.setWorkspacePinned).not.toHaveBeenCalled();
+
+  // Starting one there names that machine: the draft is built on it (the provider
+  // reads that machine's runtime out of its registry), so nothing here moves the
+  // phone first and hopes the follow-up call lands on the machine it moved to.
+  act(() => button("sessions.workspaceActions:Review").props.onPress());
+  await act(async () => {
+    button("sessions.new").props.onPress();
+    await tree.root.findByType(ActionMenu).findByType(Modal).props.onDismiss();
+  });
+  expect(mockRemote.newConversationOn).toHaveBeenCalledWith("desk-b", "workspace", "w9");
+  expect(mockRemote.newConversation).not.toHaveBeenCalled();
+  expect(mockRemote.switchDesktop).not.toHaveBeenCalled();
+  expect(mockRemote.refreshModels).not.toHaveBeenCalled();
+
+  // A machine the phone cannot reach offers nothing: the heading's ⋯ is shown
+  // unavailable, as the active machine's is when its connection is down.
+  unreachableMachines.add("desk-b");
+  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+  ]);
+  expect(button("sessions.workspaceActions:Review").props.disabled).toBe(true);
+  expect(button("sessions.workspaceActions:Project").props.disabled).toBe(false);
+  unreachableMachines.clear();
+});
+
+/**
+ * The item list a group's sheet holds, by its heading's name.
+ *
+ * Read as one string per item so a difference between two groups' sheets is
+ * visible as the two lists side by side.
+ */
+const sheetItems = (heading: string): string[] => {
+  act(() => button(`sessions.workspaceActions:${heading}`).props.onPress());
+  const items = tree.root
+    .findByType(ActionMenu)
+    .props.actions.map((action: { label: string }) => action.label);
+  act(() => tree.root.findByType(ActionMenu).findByType(Modal).props.onDismiss());
+  return items;
+};
+
+/**
+ * Every group offers "new conversation", whichever machine the phone is on.
+ *
+ * The sheet used to hold it only for the machine the connection was on, so the
+ * same list gave two answers: the group the reader had just come back from had
+ * the item, every other group did not — and opening a conversation on the other
+ * machine moved it across, because that is what switches the connection.
+ */
+test("both machines' groups offer a new conversation, whichever one is connected", () => {
+  const rows = [
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+  ];
+  const expectBoth = () => {
+    expect(sheetItems("Project")).toContain("sessions.new");
+    expect(sheetItems("Review")).toContain("sessions.new");
+  };
+
+  renderMerged(rows, "desk-a");
+  expectBoth();
+  // The same two groups after the reader opened one of the other machine's
+  // conversations, which is what moves the connection.
+  renderMerged(rows, "desk-b");
+  expectBoth();
+});
+
+/**
+ * Every group's sheet names the machine that owns it, the phone's own included.
+ *
+ * A group's commands are the machine that owns the workspace — rename, pin and
+ * delete, and the conversation a new one starts there — so the sheet says which
+ * machine they address on its first line. Naming only a peer's group left the
+ * *shape* of a sheet depending on which machine the phone happened to be
+ * reading: the same group gained and lost the line as the reader moved between
+ * machines, and the reader's own group then read as a different kind of sheet
+ * from its neighbour's.
+ */
+test("every group's sheet names its machine, the reader's own included", () => {
+  const rows = [
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+  ];
+  const expectBothNames = () => {
+    // This machine's as the reader named it, the peer's by its id — which is
+    // what the picker above the list calls it too.
+    expect(sheetItems("Project")[0]).toBe("sessions.actionsOnDesktop:Studio");
+    expect(sheetItems("Review")[0]).toBe("sessions.actionsOnDesktop:desk-b");
+  };
+
+  renderMerged(rows, "desk-a");
+  expectBothNames();
+  // And the same two sheets after the reader opened one of the other machine's
+  // conversations, which is what moves the connection: a sheet does not change
+  // shape because the phone moved.
+  renderMerged(rows, "desk-b");
+  expectBothNames();
+});
+
+/**
+ * A merged heading is drawn with the pin its rows report — the marker, and the
+ * item that can undo it.
+ *
+ * A group is *filed* by the pin its rows carry (`groupMergedRows`), and the
+ * heading is where the same fact is *shown*: the marker, and the "pin"/"unpin"
+ * item, are both chosen from `workspace.pinned`. A heading built without it read
+ * as an unpinned group in the one place the reader looks — no marker, and a menu
+ * that pinned an already-pinned workspace again, so a pin made in the
+ * single-machine list could not be undone in the merged one — while the group
+ * was still placed as pinned.
+ */
+test("a merged heading carries the pin its rows report, and offers to undo it", () => {
+  renderMerged([
+    mergedRow("desk-a", "a1", "Pinned plan", { workspacePinned: true }),
+    mergedRow("desk-b", "b1", "Remote plan", { workspaceId: "w9", workspaceName: "Review" }),
+  ]);
+
+  expect(headingPins("Project")).toBe(1);
+  expect(headingPins("Review")).toBe(0);
+  expect(sheetItems("Project")).toContain("sessions.unpin");
+  expect(sheetItems("Review")).toContain("sessions.pin");
+
+  // Undoing it from here addresses the machine that owns the workspace — this
+  // one's own connection for this machine's group.
+  pressWorkspaceAction("Project", "sessions.unpin");
+  expect(activeCommands.setWorkspacePinned).toHaveBeenCalledWith("w1", false);
+  expect(peerCommands.setWorkspacePinned).not.toHaveBeenCalled();
+});
+
+test("renaming and deleting a peer workspace name it on its own machine", async () => {
+  renderMerged([
+    mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+  ]);
+
+  pressWorkspaceAction("Review", "sessions.renameWorkspace");
+  const dialog = tree.root.findByType(RenameModal);
+  // Prefilled with the name in force, then named on the machine that owns it —
+  // by the workspace's own id, not the list's machine-qualified fold key.
+  expect(dialog.props.renameValue).toBe("Review");
+  act(() => dialog.props.setRenameValue("Reviewed"));
+  await act(async () => {
+    await tree.root.findByType(RenameModal).props.submitRename();
+  });
+  expect(peerCommands.renameWorkspace).toHaveBeenCalledWith("w9", "Reviewed");
+  expect(activeCommands.renameWorkspace).not.toHaveBeenCalled();
+
+  pressWorkspaceAction("Review", "sessions.deleteWorkspace");
+  await act(async () => { confirmAlert(); });
+  expect(peerCommands.deleteWorkspace).toHaveBeenCalledWith("w9");
+  expect(activeCommands.deleteWorkspace).not.toHaveBeenCalled();
+});
+
+test("every conversation row offers its own machine's actions", () => {
+  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+  ]);
+
+  // The row says which machine its actions address: the phone runs one
+  // connection, so a rename here is a command to the desktop that owns the
+  // conversation, and it is offered whenever that machine can take one.
+  act(() => button("sessions.actions:Remote review").props.onPress());
+  expect(onMenu).toHaveBeenCalledWith(
+    expect.objectContaining({ sessionId: "b1" }),
+    "desk-b",
+  );
+  expect(button("sessions.actions:Remote review").props.disabled).toBe(false);
+
+  // A machine the phone has not reached cannot answer: the row shows the action
+  // as unavailable rather than sending a command that would fail.
+  unreachableMachines.add("desk-b");
+  renderMerged([mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" })]);
+  expect(button("sessions.actions:Remote review").props.disabled).toBe(true);
+  unreachableMachines.clear();
+});
+
+/**
+ * One batch can hold several machines' conversations, and each delete goes to
+ * the machine that owns its row.
+ *
+ * A selection is keyed by row, not by session id: the same session id exists on
+ * two machines, and a batch keyed by id would tick one machine's row when the
+ * user ticked the other's.
+ */
+test("a batch deletes each machine's conversations through its own connection", async () => {
+  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+  ]);
+  act(() => button("sessions.select").props.onPress());
+  act(() => button("sessions.selectVisible").props.onPress());
+  expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:2").length).toBeGreaterThan(0);
+  expect(button("Remote review").props.accessibilityRole).toBe("checkbox");
+
+  act(() => button("sessions.deleteSelected").props.onPress());
+  const sheet = tree.root.findAllByType(Modal).find(node => node.props.visible)!;
+  act(() => sheet.findAllByType(Button).find(node => node.props.variant === "danger")!.props.onPress());
+  await act(async () => { sheet.props.onDismiss(); });
+
+  expect(activeCommands.deleteSession).toHaveBeenCalledWith("a1", "t-a1");
+  expect(peerCommands.deleteSession).toHaveBeenCalledWith("b1", "t-b1");
+  expect(peerCommands.deleteSession).toHaveBeenCalledTimes(1);
+});
+
+test("a machine that cannot answer keeps its rows selected for retry", async () => {
+  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+  ]);
+  act(() => button("sessions.select").props.onPress());
+  act(() => button("sessions.selectVisible").props.onPress());
+  expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:2").length).toBeGreaterThan(0);
+
+  // The other machine drops after the batch was assembled. The reachable one's
+  // rows are still deleted — the batch is offered while one of its machines
+  // answers — and the unreachable one's keep their ticks, so the retry is one
+  // tap rather than a re-selection.
+  unreachableMachines.add("desk-b");
+  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+  ]);
+  act(() => button("sessions.deleteSelected").props.onPress());
+  const sheet = tree.root.findAllByType(Modal).find(node => node.props.visible)!;
+  act(() => sheet.findAllByType(Button).find(node => node.props.variant === "danger")!.props.onPress());
+  await act(async () => { sheet.props.onDismiss(); });
+
+  expect(activeCommands.deleteSession).toHaveBeenCalledWith("a1", "t-a1");
+  expect(peerCommands.deleteSession).not.toHaveBeenCalled();
+  expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:1").length).toBeGreaterThan(0);
+  expect(dialogText()).toEqual(
+    expect.arrayContaining(["common.error", "sessions.deletePartialFailure:1"]),
+  );
+  unreachableMachines.clear();
+});
+
+test("selecting a heading's conversations takes only that machine's", async () => {
+  // Two machines call the workspace the same thing, and both have a "w9": the
+  // group's own machine is what decides which rows a "select all" takes, so one
+  // heading cannot pull in the other machine's conversations.
+  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan", { workspaceId: "w9", workspaceName: "Review" }),
+    mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+  ]);
+  expect(headingNames()).toEqual(["Review", "Review"]);
+
+  // The heading's own ⋯: both machines call the workspace "Review", so the
+  // peer's is the second one on screen (the active machine's leads).
+  const headingMenus = tree.root.findAll(node =>
+    node.props.accessibilityLabel === "sessions.workspaceActions:Review"
+    && typeof node.props.onPress === "function");
+  expect(headingMenus).toHaveLength(2);
+  act(() => headingMenus[1]!.props.onPress());
+  const menu = tree.root.findByType(ActionMenu);
+  const selectAll = menu.props.actions.find(
+    (action: { label: string }) => action.label === "sessions.selectWorkspaceSessions",
+  );
+  expect(selectAll.disabled).toBe(false);
+  act(() => button("sessions.selectWorkspaceSessions").props.onPress());
+  await act(async () => { menu.findByType(Modal).props.onDismiss(); });
+
+  expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:1").length).toBeGreaterThan(0);
+  expect(button("Remote review").props.accessibilityState.checked).toBe(true);
+  act(() => button("chat.cancel").props.onPress());
+});
+
+test("a batch with no machine left to answer offers no confirmation", () => {  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+  ]);
+  act(() => button("sessions.select").props.onPress());
+  act(() => button("sessions.selectVisible").props.onPress());
+  machinesAnswer = false;
+  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+  ]);
+
+  // The button is disabled, and a tap that began before the disable still
+  // reaches the handler — which must not put a confirmation on screen for a
+  // delete no machine could carry out.
+  expect(button("sessions.deleteSelected").props.disabled).toBe(true);
+  act(() => button("sessions.deleteSelected").props.onPress());
+  expect(tree.root.findAllByType(Modal).some(node => node.props.visible)).toBe(false);
+  machinesAnswer = true;
 });
 
 test("two machines' same-named workspace folds one at a time", () => {
@@ -1270,6 +1907,134 @@ test("a row's own machine is named only when several machines are in the list", 
 
   // One machine: the selector above the list already names it, and every row
   // repeating its glyph would take the width the title needs.
-  renderMerged([mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" })], "desk-b");
+  renderMerged(
+    [mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" })],
+    "desk-b",
+  );
   expect(glyphs()).toEqual([]);
+});
+
+/** The `+`/`−` in front of a conversation, in list order. */
+const foldToggles = () =>
+  tree.root.findAll(node =>
+    typeof node.props.onPress === "function"
+    && (node.props.accessibilityLabel === "sessions.expandChildren"
+      || node.props.accessibilityLabel === "sessions.collapseChildren"),
+  );
+
+/**
+ * A row in these tests' own workspace.
+ *
+ * Workspace folds are persisted (in storage and in a module-level cache), so a
+ * fold another test performed would hide this test's rows; a workspace of its
+ * own is what keeps a tree assertion about order and indent independent of
+ * which tests ran before it. `lastMessageAt` is explicit because a fork is
+ * *newer* than the conversation it came from by construction — the fixture that
+ * hid the desktop's version of this bug had it older.
+ */
+const forkRow = (
+  desktopId: string,
+  sessionId: string,
+  title: string,
+  extra: Partial<RemoteSession> = {},
+  lastMessageAt = 1,
+) => mergedRow(
+  desktopId,
+  sessionId,
+  title,
+  { workspaceId: "w-forks", workspaceName: "Forks", ...extra },
+  lastMessageAt,
+);
+
+/**
+ * The merged list draws a conversation's forks under it — on either machine.
+ *
+ * A merged list is not a list of roots: these rows carry the same parent here
+ * as they do in the single-machine list, and drawing them flat lost the tree —
+ * a fork could not be told from a conversation of its own, and a conversation
+ * with thirty forks could not be folded away. Asserted by order and indent
+ * rather than by "the row is somewhere on screen": a fork's own last message is
+ * newer than its conversation's, so a list that ranked rows by time put the
+ * fork above the row it came from, and pressing `+` looked like it did nothing
+ * because the row had been on screen all along.
+ */
+test("the merged list draws each machine's forks under the conversation they came from", () => {
+  renderMerged([
+    forkRow("desk-a", "a1", "Local parent", {}, 5),
+    forkRow("desk-b", "b1", "Remote parent", {}, 4),
+    forkRow("desk-a", "a2", "Local fork", { parentSessionId: "a1" }, 9),
+    forkRow("desk-b", "b2", "Remote fork", { parentSessionId: "b1" }, 8),
+  ]);
+
+  // Folded by default, exactly as in the single-machine list: the two
+  // conversations, each with the `+` that unfolds its own forks.
+  expect(mergedTitles()).toEqual(["Local parent", "Remote parent"]);
+  expect(rowInset("Local parent")).toBe(ROW_INSET);
+  expect(foldToggles()).toHaveLength(2);
+
+  act(() => foldToggles()[0]!.props.onPress());
+  expect(mergedTitles()).toEqual(["Local parent", "Local fork", "Remote parent"]);
+
+  act(() => foldToggles()[1]!.props.onPress());
+  expect(mergedTitles()).toEqual(["Local parent", "Local fork", "Remote parent", "Remote fork"]);
+  // One level in, so a fork's title starts on the column the conversation's
+  // title does — the geometry both lists and the desktop app use.
+  expect(rowInset("Local fork")).toBe(ROW_INSET + TOGGLE_WIDTH + TOGGLE_GAP);
+  expect(rowInset("Remote fork")).toBe(ROW_INSET + TOGGLE_WIDTH + TOGGLE_GAP);
+});
+
+/**
+ * A fork belongs to the machine that issued its conversation's id.
+ *
+ * A session id is unique per machine, not globally: two machines can each hold
+ * a conversation called `m1`, and both can have a fork of it. The tree is built
+ * one machine at a time for the same reason a row is addressed by
+ * `(machine, id)` — building it over the merged rows as one list handed one
+ * machine's fork to the other's conversation, and the fold follows: unfolding
+ * the peer's conversation leaves this machine's shut, exactly as the merged
+ * list's workspace headings keep one machine's fold off another's.
+ */
+test("a fork is not adopted by another machine's conversation with the same id", () => {
+  renderMerged([
+    forkRow("desk-a", "m1", "Local one", {}, 5),
+    forkRow("desk-b", "m1", "Remote one", {}, 4),
+    forkRow("desk-a", "m2", "Local fork", { parentSessionId: "m1" }, 3),
+    forkRow("desk-b", "m2", "Remote fork", { parentSessionId: "m1" }, 2),
+  ]);
+
+  // Each machine's `m1` carries exactly its own fork.
+  const rowFolds = (title: string) =>
+    ["Plus", "Minus"].flatMap(name =>
+      sessionBody(title).parent!.findAll(node => node.type === name));
+  expect(rowFolds("Local one")).toHaveLength(1);
+  expect(rowFolds("Remote one")).toHaveLength(1);
+  expect(mergedTitles()).toEqual(["Local one", "Remote one"]);
+
+  act(() => foldToggles()[1]!.props.onPress());
+  expect(mergedTitles()).toEqual(["Local one", "Remote one", "Remote fork"]);
+  act(() => foldToggles()[0]!.props.onPress());
+  expect(mergedTitles()).toEqual(["Local one", "Local fork", "Remote one", "Remote fork"]);
+});
+
+/**
+ * A fork follows its conversation into the section it was filed in.
+ *
+ * A pinned conversation is a shortcut promoted above the groups, and its forks
+ * are part of it: filed by the fork's own fields they would sit under the
+ * workspace heading, away from the `+` the reader just pressed, while the same
+ * list on one machine shows them directly underneath. A fork is a
+ * conversation's, so it takes that conversation's section — here and on the
+ * desktop app alike.
+ */
+test("a fork stays beside a pinned conversation in the shortcut section", () => {
+  renderMerged([
+    forkRow("desk-a", "p1", "Pinned parent", { pinned: true }, 5),
+    forkRow("desk-a", "p2", "Fork of pinned", { parentSessionId: "p1" }, 9),
+    forkRow("desk-b", "q1", "Remote parent", {}, 4),
+  ]);
+
+  expect(mergedTitles()).toEqual(["Pinned parent", "Remote parent"]);
+  act(() => button("sessions.expandChildren").props.onPress());
+  expect(mergedTitles()).toEqual(["Pinned parent", "Fork of pinned", "Remote parent"]);
+  expect(rowInset("Fork of pinned")).toBe(ROW_INSET + TOGGLE_WIDTH + TOGGLE_GAP);
 });

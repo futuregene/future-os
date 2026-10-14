@@ -660,3 +660,49 @@ it("offers select-chats on a host's workspace heading, scoping the batch to it",
   expect(view.text()).toContain("1 selected");
   view.unmount();
 });
+
+/**
+ * A heading's controls are revealed by *that heading*, not by the list around it.
+ *
+ * The list area is itself an unnamed `group` — that is what reveals the floating
+ * scrollbar on hover — so a bare `group-hover:` on a heading's controls matched
+ * the whole area: measured in a real browser, the pointer resting on a
+ * conversation row showed the actions menu and the "new conversation" plus of
+ * every heading at once ("all the headings look hovered"), and moving the
+ * pointer between headings never changed which of them had controls.
+ *
+ * Asserted on classes because jsdom applies no styles: what decides this is which
+ * named group a `group-hover:` modifier points at, and an unnamed one in here is
+ * the bug itself — nothing in this list may be revealed by the area's own group.
+ */
+it("reveals a heading's controls with that heading, not with the list it sits in", async () => {
+  const view = await mountRail({
+    deviceFilter: { kind: "all" },
+    remoteCatalogs: [catalogRow("sess_ws", {
+      mode: "workspace",
+      workspaceId: "ws_9",
+      workspaceName: "Remote project",
+    })],
+    remotePeers: [peer],
+    threads: [thread("t_1", { mode: "workspace", workspaceId: "ws_1" })],
+    workspaces: [storedWorkspace("ws_1", "Local project")],
+  });
+  const content = view.container.querySelector<HTMLElement>("[data-activity-rail-content='true']")!;
+  // Both headings are drawn, so the rule is asserted on both kinds.
+  expect(content.querySelector("[data-testid='local-group-heading']")).not.toBeNull();
+  expect(content.querySelector("[data-testid='merged-group-heading']")).not.toBeNull();
+
+  // Every control the list keeps hidden until a heading is hovered: one actions
+  // menu and one "new conversation" plus on each heading.
+  const revealControls = [...content.querySelectorAll<HTMLButtonElement>("button[class*='opacity-0']")];
+  expect(revealControls).toHaveLength(4);
+  for (const control of revealControls) {
+    expect(control.className).toContain("group-hover/workspace:opacity-100");
+    // The bug, in one line: a bare `group-hover:` is revealed by *any* ancestor
+    // `group`, and the list area wrapping this content is one.
+    expect(control.className).not.toContain("group-hover:");
+  }
+  // And nothing inside the list may key off the area's own group at all.
+  expect(content.querySelectorAll("[class*='group-hover:']")).toHaveLength(0);
+  view.unmount();
+});

@@ -151,6 +151,71 @@
           }
         ]
       },
+      "thread-question-nav": {
+        "_comment": "桌面端会话右下角的上下按钮（与手机端同一套行为）：↑ 永远落在**用户提问**上（两个提问之间的回答直接跳过），↓ 落在下面最近的一级（提问或回答都算），读出来就是会话本身的顺序：提问、回答、提问……落点统一是目标那一行的顶边贴到视口顶边下方 16px；落到回答上时，再按该行内标记 [data-reply-tail] 的那一段输出（它最后一段输出）抬起，所以读边是那段输出，而不是行首的思考/工具行。“读者在读哪一行”按行的**中点**是否在视口内判断：会话末尾上一轮的最后一行常常只剩一条边贴在顶边，若把那条边当成读者所在，刚打开会话按第一次 ↑ 就会越过当前这一轮的提问（因此中点规则有专门的单测）。桌面端滚动是正向的，所以这里连方向一起断言（手机端 harness 的 inverted 几何与真机相反，只能断言语义）。本场景：刚打开（停在会话底部）→ ↑ 落到正在读这一轮的提问 → 再 ↑ 跳过中间那条回答落到更早的提问 → ↓ 落到那条回答的**最后一段输出**上 → ↓ 落到它的下一条提问 → ↓ 到最新一轮回复，此时 ↓ 变灰（下面没有了）。",
+        "steps": [
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => { const c = document.querySelector('[data-chat-scroll]'); const b = c.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - b.top); const rows = [...c.querySelectorAll('[data-message-id]')]; const middle = el => (el.getBoundingClientRect().top + el.getBoundingClientRect().bottom) / 2; const here = rows.find(el => middle(el) >= b.top && middle(el) <= b.bottom) ?? rows.find(el => el.getBoundingClientRect().bottom > b.top + 1); const on = label => { const el = document.querySelector('[aria-label=\"' + label + '\"]'); return el ? !el.disabled : false; }; return { reader: here.dataset.messageId, readerTop: rel(here), text: (here.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 20), anchors: rows.filter(el => el.querySelector('[data-reply-tail]')).map(el => el.dataset.messageId), up: on('上一个问题'), down: on('下一段') }; })()"
+          },
+          {
+            "eval": "(() => { const el = document.querySelector('[aria-label=\"上一个问题\"]'); if (!el) throw new Error('the nav button is missing'); if (el.disabled) throw new Error('the 上一个问题 button is disabled here'); el.click(); return 'clicked 上一个问题'; })()"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => { const c = document.querySelector('[data-chat-scroll]'); const b = c.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - b.top); const rows = [...c.querySelectorAll('[data-message-id]')]; const row = rows.find(el => el.getBoundingClientRect().bottom > b.top + 1); const top = rel(row); if (row.dataset.messageId !== 'm_e4') throw new Error(`landed on ${row.dataset.messageId}, expected m_e4`); if (Math.abs(top - 16) > 2) throw new Error(`landed ${top}px below the viewport top edge, expected 16`); const text = (row.textContent || '').trim(); if (!text.includes('你')) throw new Error('landed on a reply, not on a prompt: ' + text.slice(0, 30)); return { id: row.dataset.messageId, top }; })()"
+          },
+          {
+            "eval": "(() => { const el = document.querySelector('[aria-label=\"上一个问题\"]'); if (!el) throw new Error('the nav button is missing'); if (el.disabled) throw new Error('the 上一个问题 button is disabled here'); el.click(); return 'clicked 上一个问题'; })()"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => { const c = document.querySelector('[data-chat-scroll]'); const b = c.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - b.top); const rows = [...c.querySelectorAll('[data-message-id]')]; const row = rows.find(el => el.getBoundingClientRect().bottom > b.top + 1); const top = rel(row); if (row.dataset.messageId !== 'm_e1') throw new Error(`landed on ${row.dataset.messageId}, expected m_e1`); if (Math.abs(top - 16) > 2) throw new Error(`landed ${top}px below the viewport top edge, expected 16`); const text = (row.textContent || '').trim(); if (!text.includes('你')) throw new Error('landed on a reply, not on a prompt: ' + text.slice(0, 30)); return { id: row.dataset.messageId, top }; })()"
+          },
+          {
+            "eval": "(() => { const el = document.querySelector('[aria-label=\"上一个问题\"]'); if (!el) throw new Error('the nav button is missing'); if (el.disabled === false) throw new Error('上一个问题 must be disabled here'); return '上一个问题 is disabled'; })()"
+          },
+          {
+            "eval": "(() => { const el = document.querySelector('[aria-label=\"下一段\"]'); if (!el) throw new Error('the nav button is missing'); if (el.disabled) throw new Error('the 下一段 button is disabled here'); el.click(); return 'clicked 下一段'; })()"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => { const c = document.querySelector('[data-chat-scroll]'); const b = c.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - b.top); const rows = [...c.querySelectorAll('[data-message-id]')]; const row = rows.find(el => el.getBoundingClientRect().bottom > b.top + 1); const anchor = row.querySelector('[data-reply-tail]'); if (!anchor) throw new Error(`the landed row ${row.dataset.messageId} marked no [data-reply-tail] block`); const top = rel(anchor); if (Math.abs(top - 16) > 2) throw new Error(`the reply's last output sits ${top}px below the viewport top edge, expected 16`); if (rel(row) >= top) throw new Error('the reply was not lifted: the reader got its reasoning rows, not its answer'); return { anchorTop: top, id: row.dataset.messageId, rowTop: rel(row), text: (anchor.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 24) }; })()"
+          },
+          {
+            "eval": "(() => { const el = document.querySelector('[aria-label=\"下一段\"]'); if (!el) throw new Error('the nav button is missing'); if (el.disabled) throw new Error('the 下一段 button is disabled here'); el.click(); return 'clicked 下一段'; })()"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => { const c = document.querySelector('[data-chat-scroll]'); const b = c.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - b.top); const rows = [...c.querySelectorAll('[data-message-id]')]; const row = rows.find(el => el.getBoundingClientRect().bottom > b.top + 1); const top = rel(row); if (row.dataset.messageId !== 'm_e4') throw new Error(`landed on ${row.dataset.messageId}, expected m_e4`); if (Math.abs(top - 16) > 2) throw new Error(`landed ${top}px below the viewport top edge, expected 16`); const text = (row.textContent || '').trim(); if (!text.includes('你')) throw new Error('landed on a reply, not on a prompt: ' + text.slice(0, 30)); return { id: row.dataset.messageId, top }; })()"
+          },
+          {
+            "eval": "(() => { const el = document.querySelector('[aria-label=\"下一段\"]'); if (!el) throw new Error('the nav button is missing'); if (el.disabled) throw new Error('the 下一段 button is disabled here'); el.click(); return 'clicked 下一段'; })()"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => { const el = document.querySelector('[aria-label=\"下一段\"]'); if (!el) throw new Error('the nav button is missing'); if (el.disabled === false) throw new Error('下一段 must be disabled here'); return '下一段 is disabled'; })()"
+          },
+          {
+            "eval": "(() => { const c = document.querySelector('[data-chat-scroll]'); const b = c.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - b.top); const rows = [...c.querySelectorAll('[data-message-id]')]; const middle = el => (el.getBoundingClientRect().top + el.getBoundingClientRect().bottom) / 2; const here = rows.find(el => middle(el) >= b.top && middle(el) <= b.bottom) ?? rows.find(el => el.getBoundingClientRect().bottom > b.top + 1); const on = label => { const el = document.querySelector('[aria-label=\"' + label + '\"]'); return el ? !el.disabled : false; }; return { reader: here.dataset.messageId, readerTop: rel(here), text: (here.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 20), anchors: rows.filter(el => el.querySelector('[data-reply-tail]')).map(el => el.dataset.messageId), up: on('上一个问题'), down: on('下一段') }; })()"
+          },
+          {
+            "shot": "d-question-nav.png"
+          }
+        ]
+      },
       "inline-image": {
         "steps": [
           {
@@ -701,7 +766,7 @@
             "wait": 900
           },
           {
-            "eval": "(() => { const t = document.body.innerText; if (!t.includes('运行记录')) throw new Error('the run history is not on the opened page'); if (!t.includes('提示词版本')) throw new Error('the version list is not on the opened page'); if (document.querySelector('dl')) throw new Error('a definition list is rendered while folded'); ['工作目录', '本周新增或改动', '全部到齐'].forEach(k => { if (t.includes(k)) throw new Error('the definition is not folded: ' + k + ' is visible'); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (!toggle) throw new Error('the settings disclosure is missing'); if (toggle.getAttribute('aria-expanded') !== 'false') throw new Error('the settings start expanded'); const runs = [...document.querySelectorAll('h3')].find(h => (h.textContent || '').trim() === '运行记录'); if (!runs) throw new Error('the run history heading is missing'); if (toggle.compareDocumentPosition(runs) & Node.DOCUMENT_POSITION_PRECEDING) throw new Error('the settings fold is below the run history'); })()"
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('运行记录')) throw new Error('the run history is not on the opened page'); if (t.includes('提示词版本')) throw new Error('the prompt-version list is on the app page; history belongs to the CLI'); if (document.querySelector('dl')) throw new Error('a definition list is rendered while folded'); ['工作目录', '本周新增或改动', '全部到齐'].forEach(k => { if (t.includes(k)) throw new Error('the definition is not folded: ' + k + ' is visible'); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (!toggle) throw new Error('the settings disclosure is missing'); if (toggle.getAttribute('aria-expanded') !== 'false') throw new Error('the settings start expanded'); const runs = [...document.querySelectorAll('h3')].find(h => (h.textContent || '').trim() === '运行记录'); if (!runs) throw new Error('the run history heading is missing'); if (toggle.compareDocumentPosition(runs) & Node.DOCUMENT_POSITION_PRECEDING) throw new Error('the settings fold is below the run history'); })()"
           },
           {
             "shot": "d-tasks-detail.png"
@@ -714,18 +779,6 @@
           },
           {
             "eval": "(() => { const t = document.body.innerText; if (!document.querySelector('dl')) throw new Error('the unfolded definition has no settings list'); ['工作目录', '本周新增或改动', '全部到齐'].forEach(k => { if (!t.includes(k)) throw new Error('the unfolded definition is missing ' + k); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (toggle.getAttribute('aria-expanded') !== 'true') throw new Error('the disclosure did not report itself open'); })()"
-          },
-          {
-            "eval": "(() => { const scrollers = [...document.querySelectorAll('div,main,section')].filter(el => el.scrollHeight > el.clientHeight + 40 && /auto|scroll/.test(getComputedStyle(el).overflowY)); if (!scrollers.length) throw new Error('no scroll container'); const target = scrollers.sort((a, b) => b.scrollHeight - a.scrollHeight)[0]; target.scrollTop = target.scrollHeight; return target.scrollTop;})()"
-          },
-          {
-            "wait": 600
-          },
-          {
-            "eval": "(() => { const rows = [...document.querySelectorAll('li')].map(li => (li.textContent || '').trim()).filter(t => t.startsWith('v')); if (!rows.length) throw new Error('no prompt-version rows rendered'); const joined = rows.join(' | '); if (!joined.includes('更早的版本')) throw new Error('a superseded version is not labelled: ' + joined); if (!joined.includes('反省')) throw new Error('a reflection version is not labelled: ' + joined); })()"
-          },
-          {
-            "shot": "d-tasks-detail-versions.png"
           }
         ]
       },
@@ -1268,8 +1321,8 @@
         ]
       },
       "remote-mid-flight": {
-        "note": "A conversation opened while its newest run was already going: the reply reaches the client twice — the page's partial copy of it, and the frames the host pushes from the moment the window subscribed — and is drawn once, with the page's beginning folded together with the stream's tail. The run is `rs_forest`'s own newest turn, which the fixture reports as running, so the frames carry the id that turn already names.",
-        "url": "http://localhost:5299/shot/?lang=zh",
+        "note": "A conversation opened while its newest run was already going. The reply reaches the client twice: the history page carries the part the agent has written to its journal, and the host's pushes carry the rest. The client reads the run's *log* (`get_events_since`) for the whole thing, so the reply is drawn once — from the run's own beginning, timed by the run's own start (eight minutes here, which no push can supply), and continued in place by the frames that follow.",
+        "url": "http://localhost:5299/shot/?lang=zh&remoteMidFlight=1",
         "steps": [
           {
             "wait": 1200
@@ -1284,22 +1337,19 @@
             "wait": 2000
           },
           {
-            "eval": "(() => { const rows = [...document.querySelectorAll('[data-message-id]')]; const copies = rows.filter(r => /只有这一处/.test(r.innerText || '')); if (copies.length !== 1) throw new Error('the page should carry the reply its journal has written so far, once: ' + copies.length); const last = rows[rows.length - 1]; if (last !== copies[0]) throw new Error('the turn the host is writing is not the last row'); return 'page copy: ' + (last.innerText || '').slice(0, 60); })()"
+            "eval": "(() => { const rows = [...document.querySelectorAll('[data-message-id]')]; const copies = rows.filter(r => /只有这一处/.test(r.innerText || '')); if (copies.length !== 1) throw new Error('the page should carry the reply its journal has written so far, once: ' + copies.length); if (rows[rows.length - 1] !== copies[0]) throw new Error('the turn the host is writing is not the last row'); return 'page copy: ' + (rows[rows.length - 1].innerText || '').slice(0, 60); })()"
           },
           {
-            "eval": "window.__shot.remoteMidFlight()"
-          },
-          {
-            "eval": "(() => { const deadline = Date.now() + 6000; let widest = 0; return new Promise((resolve, reject) => { const check = () => { const rows = [...document.querySelectorAll('[data-message-id]')]; const copies = rows.filter(r => /只有这一处/.test(r.innerText || '')); const tails = rows.filter(r => /我把结论写进/.test(r.innerText || '')); const last = rows[rows.length - 1]; const header = document.querySelector('header'); const running = /运行中/.test((header && header.innerText) || ''); const carrying = rows.filter(r => /只有这一处|我把结论写进/.test(r.innerText || '')).length; if (carrying > widest) widest = carrying; if (copies.length === 1 && tails.length === 1 && copies[0] === last && running) { resolve('live reply: ' + (last.innerText || '').slice(0, 80)); return; } if (Date.now() > deadline) { reject(new Error('the running reply is not one row: copies=' + copies.length + ' tails=' + tails.length + ' and it was drawn across ' + widest + ' row(s) at its widest, running=' + running + ' lastIsCopy=' + (last === copies[0]))); return; } setTimeout(check, 120); }; check(); }); })()"
+            "eval": "(() => { const deadline = Date.now() + 8000; return new Promise((resolve, reject) => { const check = () => { const rows = [...document.querySelectorAll('[data-message-id]')]; const copies = rows.filter(r => /只有这一处/.test(r.innerText || '')); const last = rows[rows.length - 1]; const header = document.querySelector('header'); const running = /运行中/.test((header && header.innerText) || ''); const text = last ? (last.innerText || '') : ''; if (copies.length === 1 && copies[0] === last && running && /另外两张图/.test(text)) { if ((text.match(/只有这一处/g) || []).length !== 1) throw new Error('the reply is drawn twice inside one row: ' + text.slice(0, 160)); /* The run's own clock, not this window's arrival: the log says 8 minutes. */ const minutes = text.match(/(\\d+)\\s*m\\b/); if (!minutes || Number(minutes[1]) < 8) throw new Error('the reply is timed from the reader\\'s arrival, not from the run: ' + text.slice(0, 160)); resolve('live row: ' + text.replace(/\\s+/g, ' ').slice(0, 120)); return; } if (Date.now() > deadline) { reject(new Error('the reply was not rebuilt from the run log: copies=' + copies.length + ' lastIsCopy=' + (last === copies[0]) + ' running=' + running + ' text=' + text.slice(0, 160))); return; } setTimeout(check, 120); }; check(); }); })()"
           },
           {
             "shot": "d-remote-mid-flight.png"
           },
           {
-            "wait": 5000
+            "eval": "window.__shot.remoteMidFlight()"
           },
           {
-            "eval": "(() => { const rows = [...document.querySelectorAll('[data-message-id]')]; const copies = rows.filter(r => /只有这一处/.test(r.innerText || '')); if (copies.length !== 1) throw new Error('the settled reply is drawn ' + copies.length + ' times'); const text = copies[0].innerText || ''; if (!/改完重跑/.test(text)) throw new Error('the settled reply lost the tail the run wrote: ' + text.slice(0, 120)); const header = document.querySelector('header'); if (/运行中/.test((header && header.innerText) || '')) throw new Error('the host is still reported as running'); if (rows.some(r => (r.getAttribute('data-message-id') || '').indexOf('stream_') === 0)) throw new Error('the live reply outlived its run'); return 'settled rows: ' + rows.length; })()"
+            "eval": "(() => { const deadline = Date.now() + 8000; return new Promise((resolve, reject) => { const check = () => { const rows = [...document.querySelectorAll('[data-message-id]')]; const copies = rows.filter(r => /我把结论写进/.test(r.innerText || '')); const last = rows[rows.length - 1]; const text = last ? (last.innerText || '') : ''; if (copies.length === 1 && copies[0] === last && /只有这一处/.test(text) && /改完重跑/.test(text)) { resolve('continued row: ' + text.replace(/\\s+/g, ' ').slice(0, 120)); return; } if (Date.now() > deadline) { reject(new Error('the pushed frames did not continue the rebuilt reply: rows=' + rows.length + ' carrying=' + copies.length + ' text=' + text.slice(0, 200))); return; } setTimeout(check, 120); }; check(); }); })()"
           },
           {
             "shot": "d-remote-mid-flight-settled.png"
@@ -2304,7 +2354,7 @@
             "wait": 600
           },
           {
-            "eval": "(() => { const stack = document.querySelector('[aria-label=\"下一个提问\"]').parentElement; return [...stack.children].map(el => { const r = el.getBoundingClientRect(); return [(el.getAttribute('aria-label') || el.textContent || '').slice(0, 4), Math.round(r.left), Math.round(r.right), Math.round(r.width), Math.round(r.height)]; }); })()"
+            "eval": "(() => { const stack = document.querySelector('[aria-label=\"下一段\"]').parentElement; return [...stack.children].map(el => { const r = el.getBoundingClientRect(); return [(el.getAttribute('aria-label') || el.textContent || '').slice(0, 4), Math.round(r.left), Math.round(r.right), Math.round(r.width), Math.round(r.height)]; }); })()"
           },
           {
             "shot": "m-qn-nav.png"
@@ -2312,7 +2362,7 @@
         ]
       },
       "qn-jump-states": {
-        "_comment": "一个场景跑三遍，只有注入不同：不动 / 按 ↑ / 按 ↓。提问的落点数值断言在 qn-align-check，这里只出画面。",
+        "_comment": "一个场景跑三遍，只有注入不同：不动 / 按 ↑ / 按 ↓。提问的落点数值断言在 qn-align-check，这里只出画面。↑ 永远落在提问上（跳过回答），↓ 落在下面最近的一级（提问或回答）。",
         "variantsTitle": "提问导航：滚动后出现 · 按 ↑ 之后 · 按 ↓ 之后（内容对齐方式相同）",
         "url": "http://localhost:8099/?multiTurn=1",
         "variants": [
@@ -2325,7 +2375,7 @@
             "inject": "injects/qn-state-up.js"
           },
           {
-            "label": "③ 按 ↓：下一个提问，同样是顶部对齐",
+            "label": "③ 按 ↓：下一段内容，同样是顶部对齐",
             "inject": "injects/qn-state-down.js"
           }
         ],
@@ -2370,7 +2420,7 @@
             "wait": 1000
           },
           {
-            "eval": "(() => { const read = label => { const el = document.querySelector(`[aria-label=\"${label}\"]`); return el ? (el.getAttribute('aria-disabled') === 'true' ? 'disabled' : 'enabled') : 'missing'; }; const stack = document.querySelector('[aria-label=\"下一个提问\"]'); return { up: read('上一个提问'), down: read('下一个提问'), buttons: stack ? stack.parentElement.children.length : 0 }; })()"
+            "eval": "(() => { const read = label => { const el = document.querySelector(`[aria-label=\"${label}\"]`); return el ? (el.getAttribute('aria-disabled') === 'true' ? 'disabled' : 'enabled') : 'missing'; }; const stack = document.querySelector('[aria-label=\"下一段\"]'); return { up: read('上一个提问'), down: read('下一段'), buttons: stack ? stack.parentElement.children.length : 0 }; })()"
           },
           {
             "shot": "m-qn-jump.png"
@@ -2378,7 +2428,7 @@
         ]
       },
       "qn-reply-tail": {
-        "_comment": "按 ↑ 的落点：提问「开头」贴列表顶边下方 12px，回答「结尾」贴底边上方 12px。滚动离开最新后按 ↑ 落到正在读的这一轮的提问（回答的收尾在它下面，没有跳到上一轮）。像素落点在 RNW inverted 下不可靠，只断言语义。",
+        "_comment": "↑ 与 ↓ 共用一个阶梯、读法不同：↑ 只落在**提问**上（两个提问之间的回答直接跳过，所以每次按都是上一个用户输入），↓ 落在下面最近的一级（提问或回答都算），读出来就是会话本身的顺序：输入、输出、输入、输出……落点统一是那一行的**开头**贴到列表顶边下方 12px；回答再按气泡量出来的行内偏移抬起，抬起后落在视口顶边的是这一轮最后那段输出（正文，或它结束于的工具调用），开头那些思考/工具行留在上方。列表最新那一行不再特殊：它和别的行一样按开头落点，会话真正的底部就在它下面一屏（右下角的「回到最新」在那里）。本场景按两次 ↑ 再按两次 ↓，看的就是这串顺序与落点。harness 的 inverted 几何与真机相反（见 memory「在 worktree 里验证移动端 UI」），所以这里只断言语义、不看落点像素；方向以真机为准，位移量可用同一串步骤跑新旧两版比较 scrollTop。",
         "url": "http://localhost:8099/?multiTurn=1",
         "steps": [
           {
@@ -2423,7 +2473,7 @@
         ]
       },
       "qn-page-up": {
-        "_comment": "到已载入历史顶部再按 ↑：先拉出更早的一页对话，然后落在新一页最老的那一轮。用 ?multiTurnOlder=1 让 mock 多一页可拉。",
+        "_comment": "到已载入历史顶部再按 ↑：先拉出更早的一页对话，然后落在新一页最老的那一轮（提问）。用 ?multiTurnOlder=1 让 mock 多一页可拉。注意页序：远端的一页是**会话顺序**（主机把自己倒序的扫描反过来再回），所以落点是这一页的第一个 id；mock 早期按最新在前返回，等于替真机验了一个相反的落点，现已与主机一致。",
         "url": "http://localhost:8099/?multiTurn=1&multiTurnOlder=1",
         "steps": [
           {
@@ -3103,6 +3153,7 @@
         ]
       },
       "desktops": {
+        "_comment": "The paired list: a description of the machines, each row carrying only the two actions that are about that machine (configure, unpair). The machine in use is deliberately not marked here — the highlight and the check mark read as a third control beside those two actions — and a tap on a row does nothing at all, which the steps below measure. Reached from the desktop picker above the session list; the settings screen no longer lists machines at all.",
         "steps": [
           {
             "wait": 900
@@ -3114,17 +3165,83 @@
             "wait": 1200
           },
           {
-            "tap": "已配对的桌面端"
+            "tap": "桌面选择"
           },
           {
-            "wait": 2200
+            "wait": 1500
+          },
+          {
+            "tap": "管理已配对的桌面…"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "(() => {\n  // Two machines, each with its own two actions and nothing else: the row\n  // used to carry a highlight and a check mark for the machine in use, which\n  // beside those two actions read as a third control on a row that cannot be\n  // pressed at all (see DesktopsScreen).\n  const rows = [...document.querySelectorAll('[aria-label]')].filter(el =>\n    ['实验室的 MacBook Pro', '办公室主机'].includes(el.getAttribute('aria-label')));\n  if (rows.length !== 2) throw new Error('the list does not carry both machines by name: ' + rows.length);\n  for (const row of rows) {\n    const card = row.parentElement;\n    if (getComputedStyle(card).backgroundColor === 'rgb(232, 240, 255)') throw new Error('the card is still painted as the current machine');\n    const actions = [...card.querySelectorAll('[role=button]')];\n    if (actions.length !== 2) throw new Error('a machine offers ' + actions.length + ' actions, not the two it has');\n    const glyphs = card.querySelectorAll('svg').length;\n    if (glyphs !== 2) throw new Error('the row draws ' + glyphs + ' glyphs, not its two actions');\n  }\n  return 'two descriptions, two actions each, nothing marked';\n})()"
           },
           {
             "shot": "m-desktops-list.png"
+          },
+          {
+            "eval": "(() => {\n  // A row is not a chooser: tapping a machine's name on this page used to bind\n  // it and leave for the session list. Switching is asked for where a\n  // conversation is opened, so a tap here has to do nothing at all.\n  const row = [...document.querySelectorAll('[aria-label]')]\n    .find(el => el.getAttribute('aria-label') === '办公室主机');\n  if (!row) throw new Error('the other machine is not on the list');\n  row.click();\n  return 'tapped 办公室主机';\n})()"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  const text = document.body.innerText;\n  if (!text.includes('已配对的桌面端')) throw new Error('the tap left the paired list: ' + text.slice(0, 200));\n  if (text.includes('工作区') && !text.includes('已配对的桌面端')) throw new Error('the tap went to the session list');\n  return 'still on the paired list';\n})()"
+          }
+        ]
+      },
+      "desktop-settings": {
+        "_comment": "One paired desktop's page: what it is called here, and everything that is read from or written to it — over that machine's own connection, so there is no \"connect to this desktop\" step to take first. The settings screen must not offer any of this, which is what this scenario opens with.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "桌面选择"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "管理已配对的桌面…"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "桌面端设置"
+          },
+          {
+            "wait": 1800
+          },
+          {
+            "eval": "(() => {\n  const text = document.body.innerText;\n  // The machine's own page names it, offers its label fields, and lists the\n  // settings that live on it. Every one of these used to be on the phone's\n  // settings screen; none of them may come back there.\n  for (const wanted of ['实验室的 MacBook Pro', '设备标识', '名称', '图标', '该桌面端的设置', '自动化与审批', '模型可见性', '提供商与模型', '技能管理', '任务设置']) {\n    if (!text.includes(wanted)) throw new Error('the device page is missing ' + wanted + ': ' + text.slice(0, 300));\n  }\n  // And no connection step: every paired machine keeps its own live runtime,\n  // so its settings are read over that machine's own connection. The row that\n  // used to ask to \"connect to this desktop\" first is gone.\n  if (text.includes('连接该桌面端')) throw new Error('the page still asks to connect first: ' + text.slice(0, 300));\n  const grid = [...document.querySelectorAll('[role=radio]')];\n  if (grid.length < 20) throw new Error('the icon grid is not on the page: ' + grid.length);\n  return grid.length + ' icons, no connection step';\n})()"
+          },
+          {
+            "shot": "m-device-settings.png"
+          },
+          {
+            "eval": "(() => {\n  // Picking an icon writes it through the phone's label store and the page\n  // reads it back: a picker that stores an id nothing reads looks identical.\n  const option = [...document.querySelectorAll('[role=radio]')].find(el => el.getAttribute('aria-label') === '发布机');\n  if (!option) throw new Error('the rocket icon is missing from the grid');\n  option.click();\n  return 'picked the rocket';\n})()"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => {\n  const option = [...document.querySelectorAll('[role=radio]')].find(el => el.getAttribute('aria-label') === '发布机');\n  const picked = getComputedStyle(option).backgroundColor;\n  if (picked !== 'rgb(232, 240, 255)') throw new Error('the picked icon is not marked: ' + picked);\n  return picked;\n})()"
           }
         ]
       },
       "settings": {
+        "_comment": "The phone's own settings — and only that: a machine's settings (models, providers, skills, tasks) live on its own page in the paired list, so this screen must not carry a single device row.",
         "steps": [
           {
             "wait": 900
@@ -3142,7 +3259,132 @@
             "wait": 2200
           },
           {
+            "eval": "(() => {\n  const text = document.body.innerText;\n  for (const wanted of ['手机本机', '语言', '微信公众号', '检查更新']) {\n    if (!text.includes(wanted)) throw new Error('the phone settings are missing ' + wanted);\n  }\n  for (const gone of ['当前桌面端', '模型可见性', '任务设置', '技能管理']) {\n    if (text.includes(gone)) throw new Error('a device setting is still on the phone screen: ' + gone);\n  }\n  return 'phone-only settings';\n})()"
+          },
+          {
             "shot": "m-settings.png"
+          }
+        ]
+      },
+      "appearance": {
+        "_comment": "Appearance is this phone's own setting (theme + text size), so it lives behind the phone settings row rather than on a paired desktop. The scenario proves the two things a screenshot cannot: that the scheme choice repaints the app, and that the text size repaints every screen — not just the sheet that set it.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "设置"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "外观"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  const labels = [...document.querySelectorAll('[role=radio]')].map(node => node.getAttribute('aria-label'));\n  for (const wanted of ['跟随系统', '浅色', '深色', '小', '中', '大', '特大']) {\n    if (!labels.includes(wanted)) throw new Error('the appearance page is missing ' + wanted + ': ' + JSON.stringify(labels));\n  }\n  // Each size chip is set at the size it picks, so the choice reads as a size.\n  const chipSize = label => getComputedStyle(document.querySelector(`[role=radio][aria-label=\"${label}\"]`).firstElementChild).fontSize;\n  const sizes = ['小', '中', '大', '特大'].map(chipSize);\n  if (new Set(sizes).size !== 4) throw new Error('the size chips are not all different: ' + JSON.stringify(sizes));\n  return 'appearance options ok: ' + JSON.stringify(sizes);\n})()"
+          },
+          {
+            "eval": "(() => {\n  // The header is built from `desktopSettings.<level>`, so a level whose\n  // title key is missing paints the key itself instead of failing loudly.\n  const header = document.querySelector('[role=heading]');\n  if (!header) throw new Error('the appearance level has no header');\n  const title = (header.textContent || '').trim();\n  if (title !== '外观') throw new Error('the appearance header is not its title: ' + title);\n  // Each group shows exactly the stored choice, and nothing at all is stored\n  // until the reader chooses: the default is to follow the phone, at the\n  // size the app was designed at.\n  const stored = JSON.parse(window.localStorage.getItem('future.mobile.appearance') || 'null') || { themeMode: 'system', fontSize: 'medium' };\n  const themeLabel = { system: '跟随系统', light: '浅色', dark: '深色' }[stored.themeMode];\n  const sizeLabel = { small: '小', medium: '中', large: '大', xlarge: '特大' }[stored.fontSize];\n  const accent = 'rgb(37, 99, 235)';\n  const chosen = [...document.querySelectorAll('[role=radio]')]\n    .filter(node => getComputedStyle(node).borderColor === accent)\n    .map(node => node.getAttribute('aria-label'));\n  if (JSON.stringify(chosen) !== JSON.stringify([themeLabel, sizeLabel])) {\n    throw new Error('the checked choices do not match the stored appearance ' + JSON.stringify(stored) + ': ' + JSON.stringify(chosen));\n  }\n  return 'header and checked appearance ok';\n})()"
+          },
+          {
+            "shot": "m-appearance-light.png"
+          },
+          {
+            "eval": "document.querySelector('[role=radio][aria-label=\"深色\"]').click(); 'dark'"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => {\n  const painted = colour => [...document.querySelectorAll('div')].some(node => getComputedStyle(node).backgroundColor === colour);\n  if (!painted('rgb(11, 18, 32)')) throw new Error('the dark canvas was not painted');\n  if (!painted('rgb(21, 30, 46)')) throw new Error('the dark surface was not painted');\n  const stored = window.localStorage.getItem('future.mobile.appearance');\n  if (!stored || !stored.includes('\"themeMode\":\"dark\"')) throw new Error('the scheme was not stored: ' + stored);\n  return 'dark painted and stored';\n})()"
+          },
+          {
+            "shot": "m-appearance-dark.png"
+          },
+          {
+            "eval": "document.querySelector('[role=radio][aria-label=\"特大\"]').click(); 'xlarge'"
+          },
+          {
+            "wait": 1000
+          },
+          {
+            "eval": "document.querySelector('[aria-label=\"返回\"]').click(); 'back'"
+          },
+          {
+            "wait": 1000
+          },
+          {
+            "eval": "document.querySelector('[aria-label=\"返回\"]').click(); 'back'"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => {\n  // The screens behind the sheet are rebuilt, not only the chips in it: a\n  // colour or size frozen at mount would leave the app on the old theme.\n  const dark = [...document.querySelectorAll('div')].filter(node => getComputedStyle(node).backgroundColor === 'rgb(21, 30, 46)');\n  if (dark.length === 0) throw new Error('the session list is not on the dark surface');\n  const stored = JSON.parse(window.localStorage.getItem('future.mobile.appearance'));\n  if (stored.fontSize !== 'xlarge') throw new Error('the text size was not stored: ' + JSON.stringify(stored));\n  return 'list repainted: ' + JSON.stringify(stored);\n})()"
+          },
+          {
+            "shot": "m-appearance-dark-list-xlarge.png"
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 3000
+          },
+          {
+            "eval": "(() => {\n  const body = [...document.querySelectorAll('div')].find(node => node.children.length === 0 && (node.textContent || '').includes('整理两篇文献的结论对比表'));\n  if (!body) throw new Error('the conversation did not open');\n  const style = getComputedStyle(body);\n  // 15 design points at the largest text size (15 x 1.35, rounded).\n  if (style.fontSize !== '20px') throw new Error('message text is not at the largest size: ' + style.fontSize);\n  if (style.color !== 'rgb(230, 236, 246)') throw new Error('message text is not the dark ink: ' + style.color);\n  const bubble = [...document.querySelectorAll('div')].find(node => getComputedStyle(node).backgroundColor === 'rgb(96, 165, 250)');\n  if (!bubble) throw new Error('the user bubble is not painted with the dark accent');\n  return 'chat scales and stays dark';\n})()"
+          },
+          {
+            "shot": "m-appearance-dark-chat-xlarge.png"
+          },
+          {
+            "eval": "(() => {\n  const back = [...document.querySelectorAll('[role=button]')].find(node => (node.getAttribute('aria-label') || '').includes('返回'));\n  if (!back) throw new Error('no way back out of the conversation');\n  back.click();\n  return 'chat closed';\n})()"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "设置"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "外观"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "document.querySelector('[role=radio][aria-label=\"跟随系统\"]').click(); 'follow system'"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "document.querySelector('[role=radio][aria-label=\"中\"]').click(); 'medium'"
+          },
+          {
+            "wait": 1000
+          },
+          {
+            "eval": "(() => {\n  const stored = window.localStorage.getItem('future.mobile.appearance');\n  if (!stored || JSON.parse(stored).themeMode !== 'system' || JSON.parse(stored).fontSize !== 'medium') {\n    throw new Error('the appearance was left changed: ' + stored);\n  }\n  return 'profile left on the default appearance';\n})()"
           }
         ]
       },
@@ -3336,10 +3578,22 @@
             "wait": 1200
           },
           {
-            "tap": "设置"
+            "tap": "桌面选择"
           },
           {
-            "wait": 1600
+            "wait": 1500
+          },
+          {
+            "tap": "管理已配对的桌面…"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "桌面端设置"
+          },
+          {
+            "wait": 1800
           },
           {
             "tap": "任务设置"
@@ -3367,10 +3621,22 @@
             "wait": 1200
           },
           {
-            "tap": "设置"
+            "tap": "桌面选择"
           },
           {
-            "wait": 1600
+            "wait": 1500
+          },
+          {
+            "tap": "管理已配对的桌面…"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "桌面端设置"
+          },
+          {
+            "wait": 1800
           },
           {
             "tap": "任务设置"
@@ -3410,10 +3676,22 @@
             "wait": 1200
           },
           {
-            "tap": "设置"
+            "tap": "桌面选择"
           },
           {
-            "wait": 1600
+            "wait": 1500
+          },
+          {
+            "tap": "管理已配对的桌面…"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "桌面端设置"
+          },
+          {
+            "wait": 1800
           },
           {
             "tap": "任务设置"
@@ -3434,7 +3712,7 @@
             "wait": 600
           },
           {
-            "eval": "(() => { const t = document.body.innerText; ['运行记录', '提示词版本'].forEach(k => { if (!t.includes(k)) throw new Error('the opened page is missing ' + k); }); if (!t.includes('写入 reports/weekly-2026-10-05.md')) throw new Error('the run summary is missing'); if (document.querySelectorAll('input').length) throw new Error('the form is rendered while folded'); })()"
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('运行记录')) throw new Error('the opened page is missing 运行记录'); if (t.includes('提示词版本')) throw new Error('the prompt-version list is on the phone page; history belongs to the CLI'); if (!t.includes('写入 reports/weekly-2026-10-05.md')) throw new Error('the run summary is missing'); if (document.querySelectorAll('input').length) throw new Error('the form is rendered while folded'); })()"
           },
           {
             "wait": 600
@@ -3457,10 +3735,22 @@
             "wait": 1200
           },
           {
-            "tap": "设置"
+            "tap": "桌面选择"
           },
           {
-            "wait": 1600
+            "wait": 1500
+          },
+          {
+            "tap": "管理已配对的桌面…"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "桌面端设置"
+          },
+          {
+            "wait": 1800
           },
           {
             "tap": "任务设置"
@@ -3501,10 +3791,22 @@
             "wait": 1200
           },
           {
-            "tap": "设置"
+            "tap": "桌面选择"
           },
           {
-            "wait": 1600
+            "wait": 1500
+          },
+          {
+            "tap": "管理已配对的桌面…"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "桌面端设置"
+          },
+          {
+            "wait": 1800
           },
           {
             "tap": "任务设置"
@@ -3539,10 +3841,22 @@
             "wait": 1200
           },
           {
-            "tap": "设置"
+            "tap": "桌面选择"
           },
           {
-            "wait": 1600
+            "wait": 1500
+          },
+          {
+            "tap": "管理已配对的桌面…"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "桌面端设置"
+          },
+          {
+            "wait": 1800
           },
           {
             "tap": "任务设置"
@@ -3567,6 +3881,62 @@
           },
           {
             "shot": "m-settings-tasks-create-bottom.png"
+          }
+        ]
+      },
+      "desktop-settings-other": {
+        "_comment": "The settings page of the machine the phone is *not* reading — the case that used to open with \"Connect to this desktop\" and no rows. Each row opens its own machine's page (the second row first, then the first), neither asks for a connection, and closing one returns to the paired list rather than navigating away, which is what a tap on a row used to do.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "桌面选择"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "管理已配对的桌面…"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "(() => {\n  const actions = [...document.querySelectorAll('[role=button][aria-label=\"桌面端设置\"]')];\n  if (actions.length !== 2) throw new Error('expected one settings action per machine: ' + actions.length);\n  actions[1].click();\n  return 'opened the second machine per pair';\n})()"
+          },
+          {
+            "wait": 1800
+          },
+          {
+            "eval": "(() => {\n  const text = document.body.innerText;\n  // The machine the phone is not reading is the page that used to open\n  // with \"Connect to this desktop\" and no rows at all.\n  for (const wanted of ['办公室主机', '设备标识', '名称', '图标', '该桌面端的设置', '自动化与审批', '模型可见性', '提供商与模型', '技能管理', '任务设置']) {\n    if (!text.includes(wanted)) throw new Error('the other machine page is missing ' + wanted + ': ' + text.slice(0, 300));\n  }\n  if (text.includes('连接该桌面端')) throw new Error('the page still asks to connect first: ' + text.slice(0, 300));\n  return 'its own settings, with no connection step';\n})()"
+          },
+          {
+            "shot": "m-device-settings-other.png"
+          },
+          {
+            "eval": "(() => {\n  // The settings page is a full-screen modal over the list, and both have a\n  // 返回 control: the page's own is the last one in the document.\n  const backs = [...document.querySelectorAll('[role=button][aria-label=\"返回\"]')];\n  if (backs.length !== 2) throw new Error('expected the page and the list to each offer a back control: ' + backs.length);\n  backs[backs.length - 1].click();\n  return 'closed the machine page';\n})()"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  const text = document.body.innerText;\n  if (!text.includes('已配对的桌面端')) throw new Error('closing the page did not return to the paired list: ' + text.slice(0, 200));\n  // Nothing navigated away on its own: the machine whose page was open is not\n  // the one the phone reads, and opening its page is not a way to switch.\n  if (text.includes('工作区') || text.includes('全部桌面')) throw new Error('the phone ended up on the session list: ' + text.slice(0, 200));\n  return 'back on the paired list';\n})()"
+          },
+          {
+            "eval": "(() => {\n  // The other row opens the other machine: each row's action is about the\n  // machine that row names, and the page it opens says which one.\n  const actions = [...document.querySelectorAll('[role=button][aria-label=\"桌面端设置\"]')];\n  if (actions.length !== 2) throw new Error('expected one settings action per machine: ' + actions.length);\n  actions[0].click();\n  return 'opened the first machine per pair';\n})()"
+          },
+          {
+            "wait": 1800
+          },
+          {
+            "eval": "(() => {\n  const text = document.body.innerText;\n  if (!text.includes('实验室的 MacBook Pro')) throw new Error('the first machine page does not name it: ' + text.slice(0, 300));\n  if (text.includes('连接该桌面端')) throw new Error('the page still asks to connect first: ' + text.slice(0, 300));\n  return 'the first machine names itself too';\n})()"
           }
         ]
       }

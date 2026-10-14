@@ -139,6 +139,12 @@ pub(super) fn apply_declared_features(
             .any(|feature| feature == super::publisher::EVENT_COALESCING_FEATURE),
         Ordering::Release,
     );
+    super::SUPERVISOR.catalog_activity(pair_id).store(
+        features
+            .iter()
+            .any(|feature| feature == super::publisher::CATALOG_ACTIVITY_FEATURE),
+        Ordering::Release,
+    );
     // The lean feed is read from two layers (see `remote_host::lean`), so it is
     // recorded in one place instead of an `Arc` per declaration site.
     crate::remote_host::lean::set_enabled(crate::remote_host::lean::feature_declared(features));

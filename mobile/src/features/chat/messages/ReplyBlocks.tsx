@@ -4,8 +4,8 @@ import { useTranslation } from "react-i18next";
 import { Pressable, Text, View } from "react-native";
 import { MarkdownText } from "../../../components/MarkdownText";
 import type { TimelineSegment } from "../../../remote/types";
-import { colors } from "../../../theme/tokens";
-import { styles } from "./messageStyles";
+import { useTheme } from "../../../theme/ThemeContext";
+import { useStyles } from "./messageStyles";
 import type { ToolTargetResolver } from "./types";
 import { ToolRow } from "./ToolRow";
 import { ThinkingRow } from "./ThinkingRow";
@@ -47,6 +47,43 @@ function stepRunKind(segment: StepSegment): StepRunKind {
 type ReplyBlock =
   | { kind: "segment"; segment: TimelineSegment; }
   | { kind: "steps"; segments: StepSegment[]; };
+
+/**
+ * Whether a rendered block still carries output for a jump to stand on: prose,
+ * or a tool call — the same two slice kinds the question ladder counts as
+ * output. A folded run counts when any of its slices is a tool call; folded
+ * reasoning alone is a pause, not output.
+ */
+function isOutputBlock(block: ReplyBlock): boolean {
+  return block.kind === "segment"
+    ? block.segment.kind === "text" || block.segment.kind === "tool"
+    : block.segments.some(segment => segment.kind === "tool");
+}
+
+/**
+ * The block a reply's tail rung lands on: the reply's *last* block that still
+ * carries output, or null when nothing on screen is output (a reply that is so
+ * far only reasoning, or one whose prose the compaction replaced).
+ *
+ * A press that reaches an answer is the reader asking for the answer, and an
+ * exchange opens with the work: activity rows first, then the prose they led
+ * to. Landing on the row's start therefore puts the reasoning the reader did
+ * not ask for at the reading edge and pushes the output itself a screenful
+ * below it. The anchor is that output — the last of it in the reply — and
+ * whatever follows it (folded reasoning, a divider, the footer) stays below
+ * the reading edge. A reply that ends on a pause thus anchors on the output
+ * before the pause, the same way the ladder skips a reply that folded
+ * entirely into thinking.
+ *
+ * null keeps the landing on the row's own start: a row with no output at all
+ * has nothing better to aim at.
+ */
+export function replyTailBlock(blocks: readonly ReplyBlock[]): number | null {
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    if (isOutputBlock(blocks[index]!)) return index;
+  }
+  return null;
+}
 
 /**
  * Fold a reply's inline slices into render blocks. A phone has no room for the
@@ -153,6 +190,8 @@ export function StepRunBlock({
   segments: StepSegment[];
   onResolveToolTarget?: ToolTargetResolver;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const counts = stepRunCounts(segments);
@@ -226,6 +265,7 @@ export function SegmentBlock({
   onOpenFile?(path: string): void;
   onResolveToolTarget?: ToolTargetResolver;
 }) {
+  const styles = useStyles();
   if (segment.kind === "text") {
     return <MarkdownText text={segment.text} onOpenFile={onOpenFile} streaming={streaming} />;
   }

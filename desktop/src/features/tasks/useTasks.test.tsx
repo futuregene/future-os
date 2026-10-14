@@ -169,16 +169,6 @@ describe("useTasks", () => {
       await hook.api().runNow("tsk_1");
     });
     expect(mocks.invokeCommand).toHaveBeenNthCalledWith(1, "run_task_now", { id: "tsk_1" });
-
-    mocks.invokeCommand.mockClear();
-    mocks.invokeCommand.mockResolvedValue(task({ prompt: "p2", promptVersion: 2 }));
-    await act(async () => {
-      await hook.api().applyRevision("tsk_1", "rev_1");
-    });
-    expect(mocks.invokeCommand).toHaveBeenNthCalledWith(1, "apply_task_revision", {
-      id: "tsk_1",
-      revisionId: "rev_1",
-    });
     hook.unmount();
   });
 
@@ -220,8 +210,6 @@ describe("useTasks", () => {
       id: "tsk_1",
       upstreamTaskId: "tsk_up",
     });
-    await hook.api().listRevisions("tsk_1");
-    expect(mocks.invokeCommand).toHaveBeenLastCalledWith("list_task_revisions", { id: "tsk_1" });
     hook.unmount();
   });
 

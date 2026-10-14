@@ -588,8 +588,8 @@ Frank 等报的是**结合潜能与冒险比例之间的 Pearson 相关**，不�
 /**
  * The page above `?multiTurn=1`'s loaded slice, served when the scenario asks
  * for older history (`?multiTurnOlder=1`): one older exchange, so a capture
- * can watch ↑ pull it in and land on it. The ids are the ones
- * `loadOlderTimeline` resolves with — the oldest is the jump's target.
+ * can watch ↑ pull it in and land on it. Listed in conversation order, the way
+ * `loadOlderTimeline` resolves it — the page's first row is the jump's target.
  */
 export const multiTurnOlderEntries = [
   {
@@ -751,7 +751,3 @@ export const demoTaskDeps = [
   { upstreamTaskId: "tsk_lit_watch", upstreamName: "文献监控", on: "completed", satisfied: true },
 ];
 
-export const demoTaskRevisions = [
-  { id: "rev_w4", version: 4, source: "reflection", status: "active", reason: "上一版没写明输出路径，结果无处可查。", confidence: 0.82, createdAt: Date.now() - 2 * 24 * 60 * 60_000, promptPreview: "（当前生效版本）补上文件路径要求。" },
-  { id: "rev_w3", version: 3, source: "user", status: "superseded", reason: null, confidence: null, createdAt: Date.now() - 9 * 24 * 60 * 60_000, promptPreview: "读 notes/ 里本周新增或改动的文件。" },
-];

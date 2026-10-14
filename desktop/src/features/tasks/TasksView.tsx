@@ -2,7 +2,7 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { TaskBackend } from "./taskBackend";
 import type { TaskDepView, TaskInput, TaskView } from "./useTasks";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ChevronDown, ChevronLeft, ChevronRight, FolderOpen, Play, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, FolderOpen, Play, Plus, Trash2 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
@@ -204,7 +204,7 @@ function summarizeTrigger(
   }
 }
 
-/** Left-nav "Tasks" panel: list, edit, runs, revisions. */
+/** Left-nav "Tasks" panel: list, edit, runs. */
 export function TasksView({
   backend,
   leftPanelExpanded,
@@ -909,17 +909,14 @@ function TaskDetail({
   // configured (see the section's comment).
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [runs, setRuns] = useState<Awaited<ReturnType<typeof store.listRuns>>>([]);
-  const [revisions, setRevisions] = useState<Awaited<ReturnType<typeof store.listRevisions>>>([]);
   const [deps, setDeps] = useState<Awaited<ReturnType<typeof store.listDeps>>>([]);
 
   const refresh = useCallback(async () => {
-    const [nextRuns, nextRevisions, nextDeps] = await Promise.all([
+    const [nextRuns, nextDeps] = await Promise.all([
       store.listRuns(task.id),
-      store.listRevisions(task.id),
       store.listDeps(task.id),
     ]);
     setRuns(nextRuns);
-    setRevisions(nextRevisions);
     setDeps(nextDeps);
   }, [store, task.id]);
 
@@ -927,10 +924,10 @@ function TaskDetail({
     void refresh();
   }, [refresh]);
 
-  // The runs and versions of a task change while it is on screen (a run
-  // finishing, a prompt version being applied). The host announces those with
-  // the same "threads-updated" event the sidebar listens to, so the detail
-  // re-reads its three lists rather than showing a ledger frozen at open time.
+  // The runs and dependencies of a task change while it is on screen (a run
+  // finishing, an edge satisfied). The host announces those with the same
+  // "threads-updated" event the sidebar listens to, so the detail re-reads its
+  // two lists rather than showing a ledger frozen at open time.
   useTauriEvent("threads-updated", () => {
     void refresh();
   });
@@ -1119,53 +1116,6 @@ function TaskDetail({
                     </div>
                   </li>
                 ))}
-              </ul>
-            )}
-      </section>
-
-      <section className="space-y-3">
-        <h3 className="pl-3.5 text-xs font-medium text-ink-soft">{t("revisions")}</h3>
-        {revisions.length === 0
-          ? <p className="pl-3.5 text-xs text-ink-muted">{t("revisionsNone")}</p>
-          : (
-              <ul className="divide-y divide-line-soft overflow-hidden rounded-md border border-line-soft">
-                {revisions.map((revision) => {
-                  const active = revision.version === task.promptVersion;
-                  return (
-                    // Version rows follow the same two-line shape as runs and
-                    // dependencies: a fixed column would drift as soon as one
-                    // locale's source label is wider than the other's.
-                    <li key={revision.id} className="space-y-1.5 px-3.5 py-3">
-                      <div className="flex items-center gap-2 text-xs">
-                        <span className="text-ink-muted">
-                          v
-                          {revision.version}
-                        </span>
-                        <span aria-hidden className="text-line">·</span>
-                        <span className="text-ink">{t(`source.${revision.source}`)}</span>
-                        {active
-                          ? <span className="text-ink-muted">{t("revisionActive")}</span>
-                          : null}
-                        <span className="min-w-0 flex-1" />
-                        {active
-                          ? null
-                          : (
-                              <Button
-                                leftIcon={<RotateCcw className="size-3" />}
-                                size="xs"
-                                variant="ghost"
-                                onClick={() => void store.applyRevision(task.id, revision.id).then(refresh)}
-                              >
-                                {t("apply")}
-                              </Button>
-                            )}
-                      </div>
-                      <p className="text-[11px] text-ink-muted">
-                        {revision.reason ?? t("revisionsNoReason")}
-                      </p>
-                    </li>
-                  );
-                })}
               </ul>
             )}
       </section>

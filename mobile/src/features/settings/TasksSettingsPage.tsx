@@ -5,9 +5,10 @@ import { Button } from "../../components/Button";
 import { useRemoteControls } from "../../remote/RemoteContext";
 import type { DesktopSettings, RemoteModel } from "../../remote/types";
 import { modelReference } from "../../remote/types";
-import type { RemoteTaskDep, RemoteTaskDetail, RemoteTaskRevision, RemoteTaskRow, RemoteTaskRun } from "../../remote/taskTypes";
-import { colors, layout, radius, spacing } from "../../theme/tokens";
-import { ResourceStatus, SettingsField, SettingsSection, settingsStyles } from "./SettingsPrimitives";
+import type { RemoteTaskDep, RemoteTaskDetail, RemoteTaskRow, RemoteTaskRun } from "../../remote/taskTypes";
+import { layout, radius, spacing } from "../../theme/tokens";
+import { createThemedStyles } from "../../theme/ThemeContext";
+import { ResourceStatus, SettingsField, SettingsSection, useSettingsStyles } from "./SettingsPrimitives";
 import type { SettingsPageBack } from "./pageBack";
 import { useDesktopResource } from "./useDesktopResource";
 
@@ -312,6 +313,8 @@ function Choice({ label, selected, disabled, onPress }: {
   disabled: boolean;
   onPress(): void;
 }) {
+  const settingsStyles = useSettingsStyles();
+  const styles = useStyles();
   return (
     <Pressable
       accessibilityRole="radio"
@@ -342,6 +345,8 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
    */
   onBackLevel?(handle: SettingsPageBack | null): void;
 }) {
+  const settingsStyles = useSettingsStyles();
+  const styles = useStyles();
   const { t, i18n } = useTranslation();
   const remote = useRemoteControls();
   const tasks = useDesktopResource(remote.listTasks, 0, desktopOnline);
@@ -357,7 +362,6 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
   const [detail, setDetail] = useState<RemoteTaskDetail | null>(null);
   const [runs, setRuns] = useState<RemoteTaskRun[]>([]);
   const [deps, setDeps] = useState<RemoteTaskDep[]>([]);
-  const [revisions, setRevisions] = useState<RemoteTaskRevision[]>([]);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
   const active = useRef(true);
@@ -369,17 +373,15 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
 
   const loadDetail = useCallback(async (taskId: string) => {
-    const [nextDetail, nextRuns, nextDeps, nextRevisions] = await Promise.all([
+    const [nextDetail, nextRuns, nextDeps] = await Promise.all([
       remote.getTask(taskId),
       remote.listTaskRuns(taskId),
       remote.listTaskDeps(taskId),
-      remote.listTaskRevisions(taskId),
     ]);
     if (!active.current) return;
     setDetail(nextDetail);
     setRuns(nextRuns);
     setDeps(nextDeps);
-    setRevisions(nextRevisions);
   }, [remote]);
 
   const open = useCallback((taskId: string) => {
@@ -503,7 +505,6 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
         desktopOnline={desktopOnline}
         failed={failed}
         kind="edit"
-        revisions={revisions}
         runs={runs}
         settings={settings}
         settingsOpen={settingsOpen}
@@ -570,7 +571,7 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
  * state on every incoming snapshot.
  */
 function TaskForm({
-  kind, detail, settings, candidates = [], busy, deps = [], desktopOnline, failed, revisions = [], runs = [],
+  kind, detail, settings, candidates = [], busy, deps = [], desktopOnline, failed, runs = [],
   settingsOpen = false,
   onCancel, onCloseSettings, onCreate, onDelete, onMutate, onOpenConversation, onOpenSettings, onRetry, onSaveDraft,
 }: {
@@ -584,7 +585,6 @@ function TaskForm({
   deps?: RemoteTaskDep[];
   desktopOnline: boolean;
   failed: boolean;
-  revisions?: RemoteTaskRevision[];
   runs?: RemoteTaskRun[];
   /** Whether the form is on top (edit mode; a new task opens straight on it). */
   settingsOpen?: boolean;
@@ -602,6 +602,8 @@ function TaskForm({
   /** Write the draft's dependency edges (edit mode; create goes through `onCreate`). */
   onSaveDraft?(draft: Draft): Promise<void>;
 }) {
+  const settingsStyles = useSettingsStyles();
+  const styles = useStyles();
   const { t } = useTranslation();
   const remote = useRemoteControls();
   const models = useDesktopResource(remote.listSettingsModels, 0, desktopOnline);
@@ -668,8 +670,8 @@ function TaskForm({
         : null}
 
       {/* The task itself: its actions, then what it did. The form that changes
-          it is one level down, so a long run and version history never buries
-          the fields the way a fold at the bottom of this page did. */}
+          it is one level down, so a long run history never buries the fields
+          the way a fold at the bottom of this page did. */}
       {taskPage
         ? (
             <SettingsSection title={detail!.name}>
@@ -737,27 +739,6 @@ function TaskForm({
                     : null}
                 </View>
               ))}
-            </SettingsSection>
-          )
-        : null}
-
-      {taskPage && revisions.length > 0
-        ? (
-            <SettingsSection title={t("tasks.revisions")}>
-              {revisions.map((revision) => {
-                const active = revision.version === detail?.promptVersion;
-                return (
-                  <View key={revision.id} style={settingsStyles.card}>
-                    <Text style={settingsStyles.label}>
-                      {`v${revision.version} · ${t(`tasks.source.${revision.source}`)}${active ? ` · ${t("tasks.revisionActive")}` : revision.status === "applied" ? ` · ${t("tasks.applied")}` : ""}`}
-                    </Text>
-                    <Text style={settingsStyles.description}>{revision.reason ?? revision.promptPreview}</Text>
-                    {active
-                      ? null
-                      : <Button label={t("tasks.apply")} disabled={busy} onPress={() => void onMutate?.(() => remote.applyTaskRevision(detail!.id, revision.id))} />}
-                  </View>
-                );
-              })}
             </SettingsSection>
           )
         : null}
@@ -1123,16 +1104,16 @@ function modelKey(model: RemoteModel): string {
   return model.provider ? `${model.provider}/${model.id}` : model.id;
 }
 
-const styles = StyleSheet.create({
-  choice: { minHeight: layout.touchTarget, justifyContent: "center", paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface },
-  choiceSelected: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+const useStyles = createThemedStyles(theme => StyleSheet.create({
+  choice: { minHeight: layout.touchTarget, justifyContent: "center", paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderWidth: 1, borderColor: theme.colors.line, borderRadius: radius.md, backgroundColor: theme.colors.surface },
+  choiceSelected: { borderColor: theme.colors.accent, backgroundColor: theme.colors.accentSoft },
   stack: { gap: spacing.md },
-  taskCard: { gap: spacing.sm, padding: spacing.lg, borderWidth: 1, borderColor: colors.line, borderRadius: radius.lg, backgroundColor: colors.surface },
+  taskCard: { gap: spacing.sm, padding: spacing.lg, borderWidth: 1, borderColor: theme.colors.line, borderRadius: radius.lg, backgroundColor: theme.colors.surface },
   cardHeader: { flexDirection: "row", alignItems: "center", gap: spacing.md },
-  cardTitle: { flex: 1, minWidth: 0, color: colors.inkStrong, fontSize: 15, fontWeight: "600" },
-  runCard: { gap: spacing.sm, padding: spacing.lg, borderWidth: 1, borderColor: colors.line, borderRadius: radius.lg, backgroundColor: colors.surface },
-  runHeading: { color: colors.ink, fontSize: 13, fontWeight: "600" },
-  runSummary: { color: colors.inkSoft, fontSize: 13, lineHeight: 20 },
-  runLink: { color: colors.accent, fontSize: 13, fontWeight: "600" },
-  depCard: { gap: spacing.xs, padding: spacing.md, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface },
-});
+  cardTitle: { flex: 1, minWidth: 0, color: theme.colors.inkStrong, fontSize: theme.font(15), fontWeight: "600" },
+  runCard: { gap: spacing.sm, padding: spacing.lg, borderWidth: 1, borderColor: theme.colors.line, borderRadius: radius.lg, backgroundColor: theme.colors.surface },
+  runHeading: { color: theme.colors.ink, fontSize: theme.font(13), fontWeight: "600" },
+  runSummary: { color: theme.colors.inkSoft, fontSize: theme.font(13), lineHeight: theme.leading(20) },
+  runLink: { color: theme.colors.accent, fontSize: theme.font(13), fontWeight: "600" },
+  depCard: { gap: spacing.xs, padding: spacing.md, borderWidth: 1, borderColor: theme.colors.line, borderRadius: radius.md, backgroundColor: theme.colors.surface },
+}));

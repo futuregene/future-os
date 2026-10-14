@@ -1,19 +1,25 @@
 /**
  * Per-run integrity cursor for gap detection and prefix completeness.
  *
- * The mobile client receives streaming events over core NATS (at-most-once).
- * Under jitter, events may arrive out of order or be silently dropped — and a
- * client that joins a run mid-flight sees its tail only, with no guarantee the
- * prefix will ever arrive.
+ * A remote client receives a run's events over core NATS (at-most-once). Under
+ * jitter, events may arrive out of order or be silently dropped — and a client
+ * that joins a run mid-flight sees its tail only, with no guarantee the prefix
+ * will arrive before it is needed.
  *
  * Each cursor entry tracks two facts the timeline cache needs:
  *   highWater       — highest idx applied in order for this run
  *   prefixComplete  — whether the cache provably contains [0, highWater]
  *
  * prefixComplete is the anti-H3/H5 invariant: a run whose first seen event is
- * idx 0, or that was established by a full replay (history + reconcile from
- * -1), is prefix-complete; a run whose first seen event has idx > 0 is not,
- * and the context layer must reconcile it from -1 before it can be trusted.
+ * idx 0, or that was established by a full replay (`get_events_since` from
+ * -1), is prefix-complete; a run whose first seen event has idx > 0 is not, and
+ * the client must reconcile it from -1 before it can be trusted.
+ *
+ * Both remote clients keep this cursor — the phone
+ * (`mobile/src/remote/syncEngine.ts`) and the desktop's remote client
+ * (`desktop/src/features/remote-peer`). It lives here because "how far a run's
+ * log has been applied, and whether its beginning is provably present" is a fact
+ * about the host's wire contract, not about either client's rendering.
  *
  * Pure functions — no side effects, fully unit-testable.
  */
@@ -54,8 +60,8 @@ export function newCursor(): RunCursor {
  *   content is already applied and the merge hides where that head ends.
  * - idx > high-water + 1 otherwise → "gap" (fromIdx = current high-water).
  *
- * `coalescedCount` marks an event the desktop merged from several source
- * events: its `idx` is the END of that range and its content covers all of it,
+ * `coalescedCount` marks an event a host merged from several source events
+ * (`event_coalescing_v1`): its `idx` is the END of that range and its content covers all of it,
  * so the jump is declared rather than lost and is applied without a gap.
  */
 export function nextEvent(
@@ -88,11 +94,11 @@ export function nextEvent(
     return { kind: "apply", idx };
   }
   if (covered.start <= entry.highWater) return { kind: "overlap", fromIdx: entry.highWater };
-  // A feed that omits indices on purpose — the client declared a trimmed lane —
-  // advances over the hole instead of treating it as loss. Reconciling cannot
-  // recover slices the peer is not sending, so a gap verdict here would retry
-  // the same unrecoverable range forever (the phone shows a sync notice it can
-  // never clear).
+  // A feed that omits indices on purpose — the client declared a trimmed lane
+  // (`lean_events_v1`) — advances over the hole instead of treating it as loss.
+  // Reconciling cannot recover slices the peer is not sending, so a gap verdict
+  // here would retry the same unrecoverable range forever (the phone shows a
+  // sync notice it can never clear).
   if (options?.omitIndices) {
     cursor.set(runId, { ...entry, highWater: idx });
     return { kind: "apply", idx };

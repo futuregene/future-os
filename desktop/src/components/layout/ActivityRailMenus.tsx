@@ -105,7 +105,10 @@ export function WorkspaceHeaderMenu({
         aria-haspopup="menu"
         aria-label={t("activityRail.workspaceActions", { name: workspace.name })}
         className={cn(
-          "inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition hover:bg-surface hover:text-ink-soft group-hover:opacity-100",
+          // Revealed by the workspace heading this menu belongs to — a *named*
+          // group, so the rail's enclosing list area (whose own unnamed group
+          // the floating scrollbar keys off) cannot reveal it too.
+          "inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition hover:bg-surface hover:text-ink-soft group-hover/workspace:opacity-100",
           open && "opacity-100",
         )}
         onClick={(event) => {

@@ -89,9 +89,15 @@ flowchart LR
 ### 2.2.1 移动端多 Desktop 配对（2026-09-12）
 
 移动端可保存多个 Desktop 的配对，在会话页顶部的桌面选择器或设置中进入列表，
-扫码添加其他 Desktop、切换当前 Desktop，或单独解除某个配对。每次只连接并操作
-当前选中的 Desktop，不汇总后台 Desktop 的会话。切换不发送解绑命令，也不撤销
-其他 Desktop 的凭证；重新配对同一 Desktop 则替换它自己的记录。
+扫码添加其他 Desktop、切换当前 Desktop，或单独解除某个配对。每个已配对的
+Desktop 各自运行**自己的运行时**（2026-10-13）——连接、目录、已打开的对话、草稿
+与发件箱——其中一个是**活动 Desktop**，也就是界面正在读的那一个。因此切换不重连
+任何东西：要切过去的那台机器本来就已连上、目录已就绪，若它有对话打开也一直在读它，
+所以别的机器上的行和眼前这台的行一样快地打开。每个运行时各自接收该宿主的 presence
+心跳与推送的目录快照，并应答自己那些行所提供的命令——重命名、置顶、删除以及工作区
+自身的操作都发给拥有它的那台机器。它们与活动 Desktop 的会话、工作区合并成同一个
+列表。切换不发送解绑命令，也不撤销其他 Desktop 的凭证；重新配对同一 Desktop 则替换
+它自己的记录。
 
 这是“一手机对多 Desktop”。既有 Desktop/平台侧单个 pending/active 配对、一次性
 邀请、签名握手和按 pairId 授权的规则均保持不变（Desktop 作为**被连**的一端仍然
@@ -102,7 +108,8 @@ Android/iOS 联调仍需单独验证。
 Desktop）；未命名时列表回退显示 Desktop id。凭证刷新会保留该名称，解除配对时随之删除。
 
 移动端 SecureStore 使用按 Desktop 分项存储的双槽凭证，单一索引原子提交活动选择
-与凭证槽位；旧单配对记录在索引落盘后再清理。会话目录和时间线在切换时重置，
+与凭证槽位；旧单配对记录在索引落盘后再清理。切换只是“界面改读哪一个运行时”：
+目录与每个对话的时间线都按 Desktop 各自持有、原地保留，因此不重取、也不重建连接；
 普通草稿按 Desktop 隔离，待确认发送/续跑按 pairId 隔离；只有原配对能迁移和恢复
 旧版待确认操作。用户显式解除配对只清理对应 Desktop 的登记与数据；收到撤销通知、凭证失效或凭证损坏时停止连接并清空该 Desktop 的镜像业务状态，但保留本地 Desktop 登记。界面显示红色“配对已失效”，只有用户确认“解除配对”才删除登记，避免把历史操作表现成系统丢失信息。
 
@@ -181,10 +188,15 @@ workspace 文件树、Reset/Debug 属于本地事实，远端会话不提供入�
 先用 `get_prompt_receipt` 核对、运行结束或失败会像本地一样响同一个完成铃、会话内可
 逐条跳转提问、会话列表可搜索、预览图片可缩放平移。
 
-两侧曾用不同手段达到同一个目的的地方，现在改用同一套机制。链路恢复时用
-`get_events_since` 重放漏掉的那一段，只保留「整页重读」作为兜底：早于该命令的宿主会
-回 `Unsupported command`，而在至多一次的通道上无法校验的重放窗口（出现空洞或重叠）
-重读比硬补更安全。落盘的 prompt/继续请求同样在重发前先核对 `get_prompt_receipt`，因此
+两侧曾用不同手段达到同一个目的的地方，现在改用同一套机制。两端都用
+`get_events_since` 读「这条 run 自己的事件日志」——打开会话时（状态读会在任何帧到达
+之前就告知哪条 run 在跑）、链路恢复时、以及推送自己声明出空洞时（只有不裁剪的通道
+才看得出空洞）——回复以这份日志重建的结果绘制：记录里同一 run 的那份局部副本被隐藏，
+计时用的是 run 自己的起始时间。历史页读取保留下来，用来回答日志答不了的那部分：
+链路断开期间**开始又结束**的 run 只存在于记录里。早于该命令的宿主会回
+`Unsupported command`，客户端报一次之后本条连接就不再询问，改为用「记录的开头 + 推送
+的尾巴」拼成一条来绘制——也就是这条日志出现之前的老行为。落盘的 prompt/继续请求同样
+在重发前先核对 `get_prompt_receipt`，因此
 重试不会变成第二次执行。**仍存的一处差异是机制而非缺口**：手机怀疑某条链路已经失败时，
 会在那条链路上先发一次 `get_presence` 再决定是否断开，桌面端则直接读它本就持有的
 `presence` 订阅。
@@ -194,8 +206,17 @@ workspace 文件树、Reset/Debug 属于本地事实，远端会话不提供入�
 - 宿主侧仍是**单槽位**：同一账号下该 Desktop 只有一个 pending/active 配对，因此
   一个桌面客户端领走邀请会**替换**该宿主当前的手机配对。界面按“替换”而非“失效”
   表述，先本地停止再补偿云端撤销。
-- 移动端除当前活动 Desktop 之外的其他 Desktop 仍是**只读目录观察者**（轮询快照
-  喂混排列表）；点开某台的行会切换活动连接。把观察者提升为完整运行时应单独立项。
+- 移动端每个已配对的 Desktop 都持有**自己的运行时**（连接、目录、已打开的对话、草稿与
+  发件箱），只要它还在配对中；其中恰好一个是**活动 Desktop**，也就是界面正在读的那一个。
+  这两件事原来是一回事：只有一个运行时，选择另一台机器时先拆掉再重建，于是点开别的机器
+  上的行要先握手、切回来还要再握手。现在非活动机器同样是完全活的：对话是打开的、presence
+  照常判定、它那些行的命令走它自己的连接。唯一仍属于活动 Desktop 的是**可见会话**这条通道
+  ——手机在前台只读一个对话，其余机器保留低频通知，它们的时间线在再次被读时由权威历史收敛。
+  仍然是单份的是内存而不是正确性：N 个运行时持有 N 份目录与 N 个已打开的对话。在对端机器的
+  工作区里新建对话依旧由活动 Desktop 承担，因为输入框草稿属于正在阅读的那台机器。
+  代码位置：`useDesktopRuntime`（一个 Desktop）、`useDesktopConnection`（它的连接）、
+  `usePairedDesktops`（哪些 Desktop 已配对、正在读哪一个）、`useAppLifecycle`
+  （前后台与网络，一次判定应用到全部）。
 - 对端设备识别需要宿主版本支持；旧宿主不报，界面显示“未知设备”。
 
 **代码位置。** 客户端角色在 `desktop/src-tauri/src/remote_peer/`（配对、凭证簿、
@@ -219,6 +240,8 @@ workspace 文件树、Reset/Debug 属于本地事实，远端会话不提供入�
 | `evt.{sessionId}` | Desktop 发布会话事件 |
 | `presence` | Desktop 发布在线状态与桥接实例身份 |
 | `state.sessions` / `state.workspaces` | Desktop 发布目录快照 |
+| `state.activity` | 只发排序时间戳变动的行；声明了 `catalog_activity_v1` 的客户端才收得到 |
+| `state.events` | 协商后的低频运行/审批/配置通知（`selective_events_v1`） |
 | `xfer.up.>` | 手机上传分块以及发起下载拉取 |
 | `xfer.down.>` | Desktop 下发文件分块 |
 
@@ -250,7 +273,7 @@ NATS Core 是至多一次投递。已有实时事件必须由权威日志回放�
 | 连接健康没有覆盖业务健康 | 心跳在线、连接 ready 不证明 Agent 可用或当前时间线已同步 | 第 6 节：传输、对端、Agent 与数据同步分开建模 |
 | 恢复入口重复且内容不一致 | 初次连接、onReconnected、前台及请求失败路径各自触发刷新；例如 onReconnected 不刷新 settings | 第 6 节：统一恢复协调与数据域恢复清单 |
 
-源码入口：[手机连接](../../../mobile/src/remote/client.ts)、[手机生命周期](../../../mobile/src/remote/useRemoteConnection.ts)、[手机配对 HTTP](../../../mobile/src/remote/pairing.ts)、[目录状态](../../../mobile/src/remote/useSessionCatalog.ts)、[Desktop 监督](../../../desktop/src-tauri/src/remote/mod.rs)、[Desktop 命令及握手](../../../desktop/src-tauri/src/remote/commands.rs)。服务端跨仓库入口为 `future-server/platform/service/src/routes/remote.rs`。
+源码入口：[手机连接](../../../mobile/src/remote/client.ts)、[手机侧生命周期](../../../mobile/src/remote/useDesktopConnection.ts)、[应用级生命周期](../../../mobile/src/remote/useAppLifecycle.ts)、[单台 Desktop 的运行时](../../../mobile/src/remote/useDesktopRuntime.ts)、[配对与选择](../../../mobile/src/remote/usePairedDesktops.ts)、[手机配对 HTTP](../../../mobile/src/remote/pairing.ts)、[目录状态](../../../mobile/src/remote/useSessionCatalog.ts)、[Desktop 监督](../../../desktop/src-tauri/src/remote/mod.rs)、[Desktop 命令及握手](../../../desktop/src-tauri/src/remote/commands.rs)。服务端跨仓库入口为 `future-server/platform/service/src/routes/remote.rs`。
 
 **风险判断与本次优先级：** 现有证据不要求推翻扫码流程或改变业务授权。应优先修复主动停止后迟到结果可能重新安装连接的竞态，因为它直接关系到用户能否可靠关闭入口；该风险来自源码交错分析，尚未完成运行复现，不能表述为已证实可被利用的安全漏洞。旧连接提前失效已模拟复现，握手互相覆盖、请求无期限及旧状态回写需要一并按客户端契约修复，主要影响连接连续性和状态准确性。服务端事务与领取响应丢失主要是失败时的一致性和体验问题，本次接受重新扫码并暂缓改造。云端撤销窗口涉及授权失效时效，应单独记录和验证，不与 Desktop 本地关闭入口的即时性混为一谈。
 
@@ -271,7 +294,7 @@ NATS Core 是至多一次投递。已有实时事件必须由权威日志回放�
 
 ### 3.3 已做验证与未覆盖范围
 
-2026-09-11 在上述 FutureOS 基线上运行四组现有测试：`connectionState`、`useRemoteConnection`、`pairing`、`syncEngine`，共 133 项通过。另通过在内存中加载实际客户端和状态机、模拟未返回的凭证请求及旧连接事件，确认交接空窗；未新增仓库测试脚本。这些结果只证明被覆盖的行为，不能抵消第 3.1 节发现的问题。
+2026-09-11 在上述 FutureOS 基线上运行四组现有测试：`connectionState`、连接生命周期（当时为 `useRemoteConnection`，2026-10-13 拆为 `useDesktopConnection`/`useAppLifecycle`/`usePairedDesktops`）、`pairing`、`syncEngine`，共 133 项通过。另通过在内存中加载实际客户端和状态机、模拟未返回的凭证请求及旧连接事件，确认交接空窗；未新增仓库测试脚本。这些结果只证明被覆盖的行为，不能抵消第 3.1 节发现的问题。
 
 未运行：真实 Android/iOS 生命周期故障测试、真实 Desktop/Agent 退出故障注入、真实 NATS/平台中断与 JWT 过期联调、生产部署安全配置验证。后续每次实现必须记录对应提交及验证范围，不复用本次通过数作为新版本保证。
 
@@ -499,7 +522,7 @@ Desktop 新增的 `~/.future/remote_pending_revokes.json` 只记录配对 ID 与
 
 ### 8.2 手机统一恢复协调
 
-- 传输层只报告连接恢复，不编排业务数据；`useRemoteConnection` 拥有唯一恢复清单，`RemoteContext` 不再维护第二套恢复函数。
+- 传输层只报告连接恢复，不编排业务数据；`useDesktopConnection` 拥有*自己那台* Desktop 的恢复清单，`useAppLifecycle` 决定何时让每个运行时恢复，`RemoteContext` 不再维护第二套恢复函数。
 - 独立 `RecoveryCoordinator` 按客户端实例串行执行恢复：同一轮同步通知合并；正在拉取时又发生重连，安排一次后续恢复，避免将旧链路上的拉取误当作新链路恢复完成。
 - 前台/网络恢复记录协调器版本，再调用传输恢复。传输已经报告重连时等待该轮恢复；健康连接只完成探测时，由生命周期入口补充一次状态恢复。即使重连回调中的刷新已经完成，也不会重复拉取。
 - 每轮开始检查访问代次、当前客户端和 ready 状态；解绑或替换客户端后，旧任务不能开始后续一轮，新客户端也不必等待旧请求结束。已发出的目录请求仍由各数据域的客户端/代次/请求顺序校验阻止迟到回写。

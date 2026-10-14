@@ -2,12 +2,13 @@ import { CatalogVersionGate } from "./catalogVersion";
 import type {
   SnapshotVersion,
   CatalogRevisions,
+  RemoteSession,
+  RemoteWorkspace,
+  SessionActivity,
+  SessionsData,
   StreamEvent,
   ModelsData,
   RemoteModel,
-  RemoteSession,
-  RemoteWorkspace,
-  SessionsData,
   WorkspacesData,
 } from "./types";
 import { useCallback, useEffect, useRef, useState, type MutableRefObject, type SetStateAction } from "react";
@@ -217,6 +218,46 @@ export function useSessionCatalog(
       return true;
     },
     [selectedRef, markSync, onFinished, rememberRun, setTitleOverrides],
+  );
+
+  /**
+   * Apply a catalog activity packet: the rows whose ordering timestamp moved.
+   *
+   * Only the rows this catalogue already holds are touched, and only their
+   * `lastMessageAt`. A packet is not a snapshot — it cannot add, remove or
+   * rename a row — so it must not go through `applySessionSnapshot`, which
+   * reads its list as the whole catalogue and would therefore treat the other
+   * rows' absence as a deletion. A session the catalogue has not learned about
+   * yet is left for the structural snapshot the host pushes when it appears.
+   *
+   * The version gate is the same one snapshots use: the host bumps the revision
+   * for a packet exactly as it does for a snapshot, which is what makes a lost
+   * packet visible on the next presence heartbeat (the client then pulls the
+   * catalogue itself) and rejects a repeated or out-of-order one.
+   */
+  const applySessionActivity = useCallback(
+    (activity: SessionActivity[], version?: SnapshotVersion): boolean => {
+      if (!versionGate.current.accept("sessions", version)) return false;
+      if (activity.length === 0) return true;
+      const moved = new Map<string, number>();
+      for (const row of activity) {
+        if (typeof row?.sessionId === "string" && Number.isSafeInteger(row.lastMessageAt))
+          moved.set(row.sessionId, row.lastMessageAt);
+      }
+      if (moved.size === 0) return true;
+      setSessions((current) => {
+        let changed = false;
+        const next = current.map((session) => {
+          const at = moved.get(session.sessionId);
+          if (at === undefined || session.lastMessageAt === at) return session;
+          changed = true;
+          return { ...session, lastMessageAt: at };
+        });
+        return changed ? next : current;
+      });
+      return true;
+    },
+    [],
   );
 
   const readSessions = useCallback(async () => {
@@ -668,6 +709,7 @@ export function useSessionCatalog(
     titleOverrides,
     setTitleOverrides,
     applySessionSnapshot,
+    applySessionActivity,
     observeRunEvent,
     refreshSessions,
     noteCatalogRevisions,

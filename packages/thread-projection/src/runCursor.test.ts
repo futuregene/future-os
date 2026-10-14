@@ -1,10 +1,11 @@
+import { describe, expect, test } from "vitest";
 import {
   advanceCursor,
   cursorHighWater,
   isPrefixComplete,
   newCursor,
   nextEvent,
-} from "../runCursor";
+} from "./runCursor";
 
 describe("runCursor", () => {
   test("consecutive idx → apply and advance", () => {

@@ -264,11 +264,18 @@ kills, crashes, or tool subprocess termination all complete.
 
 Mobile can save pairings for multiple Desktops, entering the list from the
 desktop selector atop the session page or in Settings, scanning to add another
-Desktop, switching the current Desktop, or unpairing one individually. Only the
-currently selected Desktop is connected and operated at a time, without
-aggregating background Desktops' sessions. Switching sends no unbind command
-and does not revoke other Desktops' credentials; re-pairing the same Desktop
-replaces its own record.
+Desktop, switching the current Desktop, or unpairing one individually. Every
+paired Desktop runs its **own runtime** (2026-10-13) — its connection, catalogue,
+open conversation, drafts and outbox — and one of them is the *active* desktop,
+which is what the UI reads. Switching therefore reconnects nothing: the machine
+being moved to was already connected, catalogued and (if it had a conversation
+open) reading it, which is why a row on another machine opens as fast as one on
+the machine already in front. Each runtime takes that host's presence heartbeats
+and pushed catalogue snapshots, and answers the commands its rows offer — a
+rename, a pin, a delete or a workspace's own actions go to the machine that owns
+them. Their conversations and workspaces are merged into one list with the
+active Desktop's. Switching sends no unbind command and does not revoke other
+Desktops' credentials; re-pairing the same Desktop replaces its own record.
 
 This is "one phone to many Desktops". The existing Desktop/platform-side single
 pending/active pairing, one-time invitation, signature handshake, and per-pairId
@@ -283,9 +290,11 @@ keeps the name; unpairing deletes it with the pairing.
 
 Mobile SecureStore uses per-Desktop double-slot credentials with a single index
 atomically committing the active selection and credential slots; the old single
-pairing record is cleaned up after the index is persisted. The session
-directory and timeline reset on switch; ordinary drafts are isolated per
-Desktop; pending send/resume confirmations are isolated per pairId; only the
+pairing record is cleaned up after the index is persisted. A switch is a change
+of which runtime the UI reads — the catalogue and each conversation's timeline
+are per Desktop and stay where they are, so nothing is re-fetched and no
+connection is rebuilt; ordinary drafts are isolated per Desktop; pending
+send/resume confirmations are isolated per pairId; only the
 original pairing can migrate and recover legacy pending operations. An explicit
 user unpair only cleans that Desktop's registration and data; on receiving a
 revocation notice, invalid credentials, or corrupt credentials, the connection
@@ -413,13 +422,18 @@ through question by question, its list can be searched, and a preview image zoom
 and pans.
 
 Where the two clients reached the same end by different means, they now use the
-same mechanism. A link that comes back replays the missed range with
-`get_events_since`; one whole-page history read stays as the fallback, because a
-host that predates the command answers `Unsupported command`, and a replay window
-that cannot be validated — a gap or an overlap, on an at-most-once lane — is
-safer to re-read than to patch. A stored prompt or continuation is likewise
-checked against `get_prompt_receipt` before it is sent again, so a retry is not a
-second run. **One difference remains, and it is mechanism, not a gap**: when the
+same mechanism. Both read a run's own log with `get_events_since` — at an open
+(the state read names the run in flight before any frame happens to arrive), when
+a link comes back, and when a push declares a gap the feed can see — and a reply
+rebuilt from that log is what the transcript draws, with the record's partial copy
+of the same run hidden and the run's own start time on the reply. The page read
+stays, for the part the log cannot answer: a run that started *and* finished while
+the link was down is only in the record. A host that predates the command answers
+`Unsupported command`, and the client says so once and falls back for the rest of
+the connection to drawing the reply from the record's beginning plus the pushed
+tail — folded into one row, which is what it did before the log existed. A stored
+prompt or continuation is likewise checked against `get_prompt_receipt` before it
+is sent again, so a retry is not a second run. **One difference remains, and it is mechanism, not a gap**: when the
 phone suspects a socket has failed it probes that same socket with `get_presence`
 before it tears the connection down, while the desktop takes the answer from the
 `presence` subscription it already holds.
@@ -430,13 +444,25 @@ before it tears the connection down, while the desktop takes the answer from the
   per Desktop, so a desktop client claiming an invitation **replaces** that
   host's current phone pairing. The UI says "replaced" rather than "invalid",
   stopping locally first and compensating the cloud revoke after.
-- On mobile, Desktops other than the active one are still **read-only
-  connections** rather than full runtimes: each holds its own handshake, and
-  takes the host's presence heartbeats and pushed catalogue snapshots, so the
-  merged list and the status popover are live — but a conversation's timeline,
-  drafts and outbox belong to the single active connection. Opening one of their
-  rows switches the active connection. Promoting the observers to full runtimes
-  is its own project.
+- On mobile, every paired Desktop holds its **own runtime** for as long as it is
+  paired — its connection, catalogue, open conversation, drafts and outbox — and
+  exactly one of them is the *active* desktop, which is what the screens read.
+  Both halves used to be the same thing: one runtime that was torn down and
+  rebuilt onto whichever desktop the user selected, so a row on another machine
+  cost a handshake before the conversation appeared and cost it again on the way
+  back. A machine that is not the active one is therefore live in the fullest
+  sense: its conversation is open, its presence is judged, and a command on its
+  rows goes down its own connection. Only the *visible-session* lane is the
+  active desktop's — a phone in front is reading one conversation, so the other
+  machines keep the low-rate notices and their timelines are settled from
+  durable history when they are read again. What is still single-slot is memory,
+  not correctness: N runtimes hold N catalogues and N open conversations.
+  Starting a conversation inside another machine's workspace remains the active
+  desktop's job, since the composer's draft lives with the machine being read.
+  Where the pieces live: `useDesktopRuntime` (one desktop),
+  `useDesktopConnection` (its connection), `usePairedDesktops` (which desktops
+  are paired and which is being read), `useAppLifecycle` (foreground/network,
+  applied to all of them at once).
 - Device identification needs a host build that reports it; an older host shows
   "unknown device".
 
@@ -467,6 +493,7 @@ subjects.
 | `evt.{sessionId}` | the Desktop publishes session events |
 | `presence` | the Desktop publishes online status, bridge instance identity and the current catalog revision |
 | `state.sessions` / `state.workspaces` | the Desktop publishes catalog snapshots on change |
+| `state.activity` | the rows whose ordering timestamp moved, for a client that declared `catalog_activity_v1` |
 | `state.events` | negotiated low-rate run/approval/configuration notices (`selective_events_v1`) |
 | `xfer.up.>` | phone upload chunks and download-pull initiation |
 | `xfer.down.>` | the Desktop sends file chunks down |
@@ -673,6 +700,61 @@ generation: the reasoning row, the tool target and the tool outcome are exactly
 the three things that client reads differently. It is cleared on every new
 connection for the same reason.
 
+**Catalog activity packets (2026-10-14):** catalog *ordering* stopped costing a
+whole session list. A streaming run rewrites its conversation's
+`threads.last_message_at` about once a second, and that column is the list's
+ordering key — under the rule above it was a content change, so every second of
+every run re-published every conversation the host owns. Measured on the six
+heaviest completed runs through
+`scripts/measure/measure-catalog-activity.py` (the shipping publisher, a real
+store the size of this desktop's own, that run's own activity-write count
+replayed from its journal): **101.7–178.8 MB per run**, against the same runs'
+0.26–1.11 MB live event lane. The list itself is ~95 KB for 232 rows, and one
+row had moved.
+
+A client that declares `catalog_activity_v1` (both shipped clients do) is told
+those rows instead, on their own subject:
+
+| Subject suffix | Direction and purpose |
+| --- | --- |
+| `state.activity` | the rows whose `lastMessageAt` moved, under the same `version` envelope (`catalog_activity_v1`) |
+
+A separate subject rather than a second shape on `state.sessions`, because an
+older client applies every `state.sessions` payload as the *whole* list: a
+packet there would read as "every other conversation is gone". Under `state.` it
+is covered by the platform's existing wildcard permission, and a client that
+does not know the suffix ignores it.
+
+The split is between two signatures over the same rows
+(`remote_host::catalog::sessions_catalog`): the **structural** one is the rows
+with `lastMessageAt` removed, and it is what a whole snapshot is for — a row
+appeared or went away, was renamed, started or stopped streaming, was pinned, or
+moved workspace. Only the recency vector moving sends a packet. The presence
+heartbeat's revision advances for **either**, which is what keeps a dropped
+packet observable exactly as a dropped snapshot is (the client pulls the catalog
+itself), and the packet carries the same `version`, so the client's one gate
+rejects a repeated or out-of-order one. Values on the wire are absolute, not
+deltas: a client handed the newest of them is correct whether or not it saw the
+earlier ones.
+
+Three properties are priced in rather than hidden:
+
+- **A recency change that reorders rows is a structural change.** The host's own
+  array order is what an ordinary single-machine list draws (the phone's
+  `catalogRows`), so a row overtaking another is content. In practice that is the
+  run's *first* write — the prompt lifts the conversation to the head — and its
+  `streaming`/`status` flip when it settles; the ~1000–1800 writes in between are
+  packets. A second conversation streaming at the same time can interleave with
+  the first and pay one snapshot per overtake, not per second.
+- **The saving is the lane's, not a byte claim about the client.** Numbers above
+  are the publisher's payload plus the 44-byte record overhead per packet; the
+  snapshot a client pays once when it connects, and the pushes a structural
+  change still costs, are unchanged by this lane and counted on neither side.
+- **Nothing degrades silently for an older client.** A client that does not
+  declare the capability keeps receiving whole snapshots on exactly the old
+  condition, and the flag is cleared on every new connection like the other
+  capability flags.
+
 **Idle catalog traffic (2026-09-25):** catalog snapshots are published only when
 content changes. There is no periodic re-send: the presence heartbeat carries
 `catalogVersion` (`{epoch, sessions, workspaces}`), and a client whose applied
@@ -757,7 +839,10 @@ receiving an explicit revocation result.
 | Recovery entries duplicated and inconsistent | First connection, onReconnected, foreground, and request-failure paths each trigger refresh; e.g. onReconnected does not refresh settings | Section 6: unified recovery coordination and per-data-domain recovery checklist |
 
 Source entries: [mobile connection](../../../mobile/src/remote/client.ts),
-[mobile lifecycle](../../../mobile/src/remote/useRemoteConnection.ts),
+[mobile lifecycle](../../../mobile/src/remote/useDesktopConnection.ts),
+[mobile lifecycles of the app](../../../mobile/src/remote/useAppLifecycle.ts),
+[one desktop's runtime](../../../mobile/src/remote/useDesktopRuntime.ts),
+[mobile pairing and selection](../../../mobile/src/remote/usePairedDesktops.ts),
 [mobile pairing HTTP](../../../mobile/src/remote/pairing.ts),
 [catalog state](../../../mobile/src/remote/useSessionCatalog.ts),
 [Desktop supervision](../../../desktop/src-tauri/src/remote/mod.rs),
@@ -797,8 +882,9 @@ conflated with the immediacy of the Desktop's local entry close.
 ### 3.3 Verification done and uncovered scope
 
 2026-09-11 ran four existing test groups on the above FutureOS baseline:
-`connectionState`, `useRemoteConnection`, `pairing`, `syncEngine` — 133 items
-passed. Additionally, loading the real client and state machine in memory and
+`connectionState`, the connection lifecycle (`useRemoteConnection` then, split
+into `useDesktopConnection`/`useAppLifecycle`/`usePairedDesktops` in
+2026-10-13), `pairing`, `syncEngine` — 133 items passed. Additionally, loading the real client and state machine in memory and
 simulating an unreturned credential request plus old-connection events
 confirmed the handoff window; no repo test script was added. These results only
 prove the covered behaviors and cannot offset the problems found in 3.1.
@@ -1397,7 +1483,8 @@ substitute for those results.
 ### 8.2 Mobile unified recovery coordination
 
 - The transport layer only reports connection recovery and orchestrates no
-  business data; `useRemoteConnection` owns the single recovery checklist, and
+  business data; `useDesktopConnection` owns the recovery checklist of *its*
+  desktop, `useAppLifecycle` decides when every runtime is asked to recover, and
   `RemoteContext` no longer maintains a second set of recovery functions.
 - An independent `RecoveryCoordinator` executes recovery serially per client
   instance: same-round sync notifications merge; a reconnect during an

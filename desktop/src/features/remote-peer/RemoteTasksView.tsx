@@ -17,9 +17,8 @@ import { remoteTaskBackend } from "./remoteTaskBackend";
  * room for either half.
  *
  * The editor is literally the local one (`TasksView`) pointed at the host
- * through a backend, so a fix to the form, the dependency editor or the
- * revision list lands on both — which is the point of pointing it rather than
- * writing a second one.
+ * through a backend, so a fix to the form or the dependency editor lands on
+ * both — which is the point of pointing it rather than writing a second one.
  */
 export function RemoteTasksView({
   leftPanelExpanded,

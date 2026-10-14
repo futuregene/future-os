@@ -18,7 +18,7 @@ import type { AlbumImage } from "future-file-handler";
 import type { AlbumSource } from "../../remote/files";
 import type { MobileAttachment } from "../../remote/types";
 import { useCommittedRef } from "../../lib/useCommittedRef";
-import { colors } from "../../theme/tokens";
+import { useTheme } from "../../theme/ThemeContext";
 import { AlbumPickerModal } from "./components/AlbumPickerModal";
 import { showToast } from "./utils";
 
@@ -38,6 +38,7 @@ export function useAttachmentPicker(
   t: TFunction,
   operation: { scope?: string | object; captureOperation?: () => () => boolean; } = {},
 ): AttachmentPickerApi {
+  const { colors } = useTheme();
   const [menuOpen, setMenuOpen] = useState(false);
   const [album, setAlbum] = useState<{ images: AlbumImage[] | null; error: string | null; } | null>(
     null,

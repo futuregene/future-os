@@ -12,7 +12,11 @@ const history = timelineFromEntries([
 const replay: ReplayResult = { events: [
   { type: "agent_start", runId: "r", idx: 0, data: "{}" },
   { type: "text_chunk", runId: "r", idx: 1, data: JSON.stringify({ text: "latest" }) },
-] };
+],
+  // A whole-run read whose events are contiguous from zero: the shared read's own
+  // conclusion, which the lane keeps rather than re-derives.
+  completePrefix: true,
+};
 
 beforeEach(() => jest.useFakeTimers());
 afterEach(() => jest.useRealTimers());
@@ -129,10 +133,10 @@ test("warm opens retain content and stale replay cannot clear a newer sync indic
     expect(engine.timelineFor("s")).toBe(cached);
     await engine.open("s");
     await jest.advanceTimersByTimeAsync(0);
-    older.resolve({ events: [], watermark: 1 });
+    older.resolve({ events: [], watermark: 1, completePrefix: false });
     await jest.advanceTimersByTimeAsync(0);
     expect(onSyncStatus.mock.calls).toEqual([["s", "syncing"], ["s", "syncing"]]);
-    newer.resolve({ events: [], watermark: 1 });
+    newer.resolve({ events: [], watermark: 1, completePrefix: false });
     await jest.advanceTimersByTimeAsync(0);
     expect(onSyncStatus).toHaveBeenLastCalledWith("s", "idle");
   } finally { engine.clear(); }

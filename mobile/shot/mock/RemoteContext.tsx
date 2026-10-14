@@ -13,7 +13,7 @@
  * Unknown members return a no-op async function (with a console warning) so a
  * new field added to the real context never hard-fails a capture run.
  */
-import type { PropsWithChildren } from "react";
+import type { PropsWithChildren, ReactNode } from "react";
 import type {
   AvailableSkill,
   DesktopSettings,
@@ -22,6 +22,7 @@ import type {
   HistoryEntry,
   InstalledSkill,
   MobileAttachment,
+  PairedDesktop,
   RemoteCredentials,
   RemoteModel,
   RemoteSessionUsage,
@@ -46,7 +47,6 @@ import {
   demoSkills,
   demoTaskDeps,
   demoTaskDetail,
-  demoTaskRevisions,
   demoTaskRuns,
   demoTasks,
   demoUnpricedSessionUsage,
@@ -86,6 +86,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [draft, setDraft] = useState(false);
   const [desktopId, setDesktopId] = useState(demoDesktops[0]?.desktopId ?? "");
+  // The phone's own labels for its desktops (name and icon): stored state here
+  // so the device page and the list it sits on move together, as they do once
+  // the real store answers.
+  const [desktops, setDesktops] = useState<PairedDesktop[]>(demoDesktops);
   const [sessionPins, setSessionPins] = useState<Record<string, boolean>>({});
   const [workspacePins, setWorkspacePins] = useState<Record<string, boolean>>({});
   const [usageOverride, setUsageOverride] = useState<RemoteSessionUsage | null>(null);
@@ -147,9 +151,17 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     [baseTimeline, selectedSessionId],
   );
 
+  // Switching desktops moves the whole pairing, as the real `switchDesktop`
+  // does: screens read `credentials.pairId` to tell which machine is current,
+  // and the settings modal is keyed by it. The real app reconnects nothing —
+  // every paired desktop keeps its own runtime — so a switch here is the
+  // pointer this state holds; the harness has one catalogue, not one per
+  // machine, which is what its `catalogs` below reflects.
+  const pairedDesktop = desktops.find(desktop => desktop.desktopId === desktopId);
   const credentials: RemoteCredentials = {
     ...demoCredentials,
     expectedDesktopId: desktopId,
+    pairId: pairedDesktop?.pairId ?? demoCredentials.pairId,
   };
 
   const value = withFallback({
@@ -157,7 +169,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     phase: "ready",
     error: null,
     credentials,
-    desktops: demoDesktops,
+    desktops,
     presence: {
       online: true,
       pairId: credentials.pairId,
@@ -188,6 +200,26 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     ),
     unreadSessions: new Set<string>(["sess_dopamine_review"]),
     models: demoModels,
+    /**
+     * Every *other* machine's catalogue, as the merged list reads it.
+     *
+     * The real provider reads these from the runtime each paired desktop has;
+     * the harness has one machine's data, so this is the open machine's own
+     * entry and no peers — the list then renders its workspace tree exactly as
+     * it does on a phone paired to one desktop.
+     */
+    catalogs: {
+      catalogs: [{
+        desktopId,
+        label: pairedDesktop?.name ?? desktopId,
+        sessions,
+      }],
+      machines: [] as { desktopId: string; label: string; active: boolean; status: string }[],
+      refresh: async () => {},
+      reconnect: () => {},
+      commandsFor: () => null,
+      readWorkspaces: async () => demoWorkspaces,
+    },
     skillsRevision: 0,
     desktopSettingsRevision: 0,
 
@@ -206,9 +238,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     loadOlderTimeline: async (): Promise<false | string[]> => {
       if (!withOlder || olderLoaded) return false;
       setOlderLoaded(true);
-      // Newest first within the page, matching the remote contract: the
-      // oldest id is last, and it is the row the page-up jump lands on.
-      return multiTurnOlderEntries.map(entry => entry.id).reverse();
+      // In conversation order, matching the remote contract: the *host* reverses
+      // its own descending scan before replying, so a backward page is
+      // oldest-first and its first id is the row the page-up jump lands on.
+      return multiTurnOlderEntries.map(entry => entry.id);
     },
     streaming: baseTimeline.streaming,
     compacting: scriptedCompaction ? baseTimeline.compacting === true : new URLSearchParams(window.location.search).get("compacting") === "1",
@@ -253,6 +286,13 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setUsageOverride(demoRefreshedSessionUsage);
     },
     newConversation: async () => setDraft(true),
+    // Creating on a machine that was named outright. The harness holds one
+    // desktop's catalogue, so the machine is what moves and the draft opens there
+    // — the same two things the real provider does (see `newConversationOn`).
+    newConversationOn: async (desktopId: string) => {
+      if (desktopId) setDesktopId(desktopId);
+      setDraft(true);
+    },
     closeConversation: () => {
       setDraft(false);
       setSelectedSessionId("");
@@ -262,6 +302,15 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     // the full-feed fixture with the shipping target derivation.
     resolveToolCallTarget: async (toolCallId: string) => leanTargetForToolCall(toolCallId),
     switchDesktop: async (id: string) => setDesktopId(id),
+    // Local-only labels, like the real store: a blank value clears the field.
+    renameDesktop: async (id: string, name: string) => setDesktops(current => current.map(item =>
+      item.desktopId === id ? { desktopId: item.desktopId, pairId: item.pairId, ...(name.trim() ? { name: name.trim() } : {}), ...(item.icon ? { icon: item.icon } : {}) } : item)),
+    labelDesktop: async (id: string, patch: { name?: string; icon?: string }) => setDesktops(current => current.map((item) => {
+      if (item.desktopId !== id) return item;
+      const name = patch.name === undefined ? item.name : patch.name.trim() || undefined;
+      const icon = patch.icon === undefined ? item.icon : patch.icon || undefined;
+      return { desktopId: item.desktopId, pairId: item.pairId, ...(name ? { name } : {}), ...(icon ? { icon } : {}) };
+    })),
     setSessionPinned: async (sessionId: string, _threadId: string, pinned: boolean) =>
       setSessionPins(current => ({ ...current, [sessionId]: pinned })),
     setWorkspacePinned: async (workspaceId: string, pinned: boolean) =>
@@ -306,13 +355,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     getTask: async () => demoTaskDetail,
     listTaskRuns: async () => demoTaskRuns,
     listTaskDeps: async () => demoTaskDeps,
-    listTaskRevisions: async () => demoTaskRevisions,
     createTask: async () => demoTaskDetail,
     updateTask: async () => demoTaskDetail,
     deleteTask: async () => undefined,
     setTaskEnabled: async () => demoTaskDetail,
     runTask: async () => demoTaskDetail,
-    applyTaskRevision: async () => demoTaskDetail,
     listInstalledSkills: async (): Promise<InstalledSkill[]> => demoInstalledSkills,
     listAvailableSkills: async (): Promise<AvailableSkill[]> => demoAvailableSkills,
     installSkill: async () => undefined,
@@ -396,6 +443,19 @@ export function useRemoteControls(): any {
   if (!value)
     throw new Error("useRemote must be used inside RemoteProvider");
   return value;
+}
+
+/**
+ * The machine a device page names.
+ *
+ * The real `DesktopScope` hands its subtree the named machine's own surface,
+ * read from that machine's runtime. The harness holds *one* machine's data (one
+ * catalogue, one settings snapshot, one `desktopId`), so this is the identity:
+ * the page renders its machine's real rows, over the demo desktop the phone is
+ * on, with no connection step in between — which is the state being captured.
+ */
+export function DesktopScope({ children }: { desktopId: string; children?: ReactNode }) {
+  return children ?? null;
 }
 
 /** Compatibility surface for consumers that render the transcript. */

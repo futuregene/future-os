@@ -163,7 +163,7 @@ it("says null for a cleared choice rather than leaving the key out", async () =>
   expect("modelId" in task).toBe(true);
 });
 
-it("unwraps the host's envelopes for runs, dependencies and revisions", async () => {
+it("unwraps the host's envelopes for runs and dependencies", async () => {
   request.mockImplementation(async (_desktop, command) => {
     if (command.type === "list_task_runs") {
       return {
@@ -189,21 +189,6 @@ it("unwraps the host's envelopes for runs, dependencies and revisions", async ()
     if (command.type === "list_task_deps") {
       return { deps: [{ upstreamTaskId: "u1", upstreamName: "Build", on: "completed", satisfied: true }] };
     }
-    if (command.type === "list_task_revisions") {
-      return {
-        revisions: [{
-          id: "rev1",
-          version: 4,
-          source: "agent",
-          status: "pending",
-          reason: "why",
-          confidence: 0.5,
-          createdAt: 99,
-          prompt: "the whole prompt",
-          promptPreview: "the whole…",
-        }],
-      };
-    }
     return undefined;
   });
 
@@ -217,16 +202,6 @@ it("unwraps the host's envelopes for runs, dependencies and revisions", async ()
   expect(await backend.listDeps("t1")).toEqual([
     { upstreamTaskId: "u1", upstreamName: "Build", on: "completed", satisfied: true },
   ]);
-
-  // The whole prompt is what the editor shows; the preview is for narrow rows.
-  expect((await backend.listRevisions("t1"))[0]!.prompt).toBe("the whole prompt");
-});
-
-/** A revision whose prompt is missing falls back to the preview rather than blank. */
-it("falls back to the revision preview when the host sends no prompt", async () => {
-  request.mockResolvedValue({ revisions: [{ id: "r", version: 1, promptPreview: "preview only" }] });
-  const [revision] = await remoteTaskBackend("desktop_a").listRevisions("t1");
-  expect(revision!.prompt).toBe("preview only");
 });
 
 /** Malformed entries are dropped, not rendered as empty rows. */
@@ -236,8 +211,6 @@ it("drops entries the host sent in a shape it does not use", async () => {
       return { runs: ["nonsense", 7, { id: "ok" }] };
     if (command.type === "list_task_deps")
       return { deps: [null, { upstreamTaskId: "u" }] };
-    if (command.type === "list_task_revisions")
-      return { revisions: [42, { id: "rev", prompt: "p" }] };
     return undefined;
   });
 
@@ -246,21 +219,10 @@ it("drops entries the host sent in a shape it does not use", async () => {
   expect(await backend.listDeps("t1")).toEqual([
     { upstreamTaskId: "u", upstreamName: "", on: "", satisfied: false },
   ]);
-  expect((await backend.listRevisions("t1")).map(revision => revision.id)).toEqual(["rev"]);
 });
 
 /** A host that answers nothing for the list is empty, not a crash. */
 it("reads an absent list as empty", async () => {
   request.mockResolvedValue(undefined);
   expect(await remoteTaskBackend("desktop_a").list()).toEqual([]);
-});
-
-it("applies a revision through the host's own write", async () => {
-  request.mockResolvedValue(detail());
-  await remoteTaskBackend("desktop_a").applyRevision("t1", "rev1");
-  expect(request).toHaveBeenCalledWith(
-    "desktop_a",
-    { type: "apply_task_revision", taskId: "t1", revisionId: "rev1" },
-    "list",
-  );
 });

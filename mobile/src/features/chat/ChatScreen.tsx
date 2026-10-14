@@ -1,4 +1,4 @@
-import { styles } from "./chatStyles";
+import { useStyles } from "./chatStyles";
 import { useMinimumVisible } from "./useMinimumVisible";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -40,6 +40,7 @@ import { newestFirst } from "./timelineListModel";
 const SYNC_NOTICE_MIN_MS = 750;
 
 export function ChatScreen() {
+  const styles = useStyles();
   const { t, i18n } = useTranslation();
   const remote = useRemote();
   const controls = useRemoteControls();
@@ -399,6 +400,7 @@ export function ChatScreen() {
           onContinue={handleTimelineContinue}
           onFork={forkSupported ? handleTimelineFork : undefined}
           onResolveToolTarget={handleResolveToolTarget}
+          onReplyTailAnchor={questionNav.onReplyTailAnchor}
         />
       </View>
     ),
@@ -413,6 +415,7 @@ export function ChatScreen() {
       handleTimelineSession,
       latestAssistantId,
       onRowLayout,
+      questionNav.onReplyTailAnchor,
     ],
   );
 

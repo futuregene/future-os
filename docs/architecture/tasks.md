@@ -219,16 +219,16 @@ CLI `edit --prompt`, desktop edits and mobile edits retain the replaced prompt a
 - **Backfill:** if the current version was never recorded, the first edit records it before the new version. This fills older v1 gaps without a migration.
 - **Sources:** `user`, `rollback`, `reflection` (historical rows only), and `superseded` for a replaced version whose original source is unknown.
 - **One active version:** `store.insert_revision` supersedes earlier active rows in the same write.
-- **Apply:** `prompt apply` and both clients call `tasks::accept_revision`, recording a new `rollback` version and retaining the replaced version as superseded. Applying the active version is a no-op. The mobile command shares the desktop implementation.
+- **Apply:** `prompt apply` (CLI) calls `tasks::accept_revision`, recording a new `rollback` version and retaining the replaced version as superseded. Applying the active version is a no-op. The desktop and mobile UIs once carried their own Apply button; they no longer read the revision list at all (§11), so rolling a prompt back is a CLI/skill operation.
 
 ### 7a. Removed: reflection-based prompt proposals
 
 Automatic post-run reflection, proposed prompt rewrites, proposal cards and acceptance controls, CLI `--reflection` and the proposal portion of `prompt log` have all been removed.
 
 - `store::MIGRATIONS` Exec steps remove `tasks.reflection`, `kind='reflection'` run rows and `status='proposed'` revision rows. Removing old running reflection rows also prevents a permanent `has_running_run` block.
-- Keep accepted historical `source='reflection'` active/superseded rows: they are real prompt history. Both clients retain that source label, and Rust retains a read-only constant.
+- Keep accepted historical `source='reflection'` active/superseded rows: they are real prompt history, so `prompt log` still names that source; Rust retains a read-only constant.
 - `kernel::LEGACY_PROPOSED_STATUS` skips old proposals when deciding whether the current version was recorded. New code never writes that status.
-- Wire/UI cleanup removed `pendingProposals`, revision `sourceRunId`, CLI list/show `reflection`, and proposal-specific translation keys. Mobile retains `prompt` and `promptPreview` for version summaries; applying versions still uses the desktop implementation.
+- Wire/UI cleanup removed `pendingProposals`, revision `sourceRunId`, CLI list/show `reflection`, and proposal-specific translation keys. The app UIs no longer read the revision list at all (§11); `prompt log|apply` is the only reader of it again. The desktop host still answers `list_task_revisions`/`apply_task_revision` over its remote protocol, because paired clients of older builds may still ask.
 
 ## 8. Hosts: `Notifier`, not an Executor trait
 
@@ -300,11 +300,11 @@ There is no automated skill/CLI version guard: skills are a separate repository 
 
 ## 11. UI
 
-- **Desktop:** Tasks appears after Skills and before phone control in both ActivityRail states. Its panel has a list, editor, run ledger and prompt versions/apply controls. This is a two-column task view; it omits the conversation's right context panel.
-- **Detail order:** show run results and prompt versions first. Settings, prompt and dependencies are lower-frequency definition work, reached through Edit. A new task opens its form immediately because it has no history.
+- **Desktop:** Tasks appears after Skills and before phone control in both ActivityRail states. Its panel has a list, editor and run ledger. This is a two-column task view; it omits the conversation's right context panel.
+- **Detail order:** show run results first. Settings, prompt and dependencies are lower-frequency definition work, reached through Edit. A new task opens its form immediately because it has no history.
 - **Desktop definition:** a Settings disclosure renders definition nodes only while open, rather than putting a long form below a scrolling history.
-- **Mobile definition:** Settings pushes a separate `TaskForm` layer (`settingsOpen`), hiding runs/versions while editing. Back and successful Save return to detail; failed Save preserves the form/draft for retry. A separate layer avoids placing a multi-screen form after run history.
-- **Mobile entry:** “Task settings” in the Settings stack, gated by `tasks_v1`. Lists omit prompt bodies to meet wire budgets; detail fetches them separately and shows runs, dependency state and version application.
+- **Mobile definition:** Settings pushes a separate `TaskForm` layer (`settingsOpen`), hiding runs while editing. Back and successful Save return to detail; failed Save preserves the form/draft for retry. A separate layer avoids placing a multi-screen form after run history.
+- **Mobile entry:** “Task settings” in the Settings stack, gated by `tasks_v1`. Lists omit prompt bodies to meet wire budgets; detail fetches them separately and shows runs and dependency state.
 - **Mobile dependency editing:** separately gated by `task_deps_v1`, `set_task_dep` and `remove_task_dep`. Older desktop hosts expose read-only dependencies and an upgrade hint. Newer hosts support the same dependency-trigger block as desktop, with edge conditions, add/remove and multi-upstream joins.
 - **Both dependency editors:** appear for Dependency mode and remain visible for existing upstream edges. Draft the whole edge set and reconcile on Save. Candidate tasks exclude deleted tasks and the current task; a new task has no current ID. Backend cycle rejection supplies the shared error; clients need not fetch the entire graph. New edges default to success.
 
@@ -312,11 +312,11 @@ Both forms default new tasks to **chat conversations**, requiring a directory on
 
 **Immediate runs:** desktop/mobile Run now writes `pending_request_at`, then calls `tasks::wake()`. The tick loop remains the sole claimer but wakes immediately rather than waiting for the 30-second interval. Start/end `threads-updated` events refresh the list and open detail so they do not stay at Queued.
 
-**Prompt versions:** show all versions as `v<number> · source`, marking the active version and omitting its Apply button. Runs describe execution results; versions describe the prompt used. Each run has its own card with status, kind, version, time and Open conversation; a long summary does not run into the next card's header.
+**Prompt versions are not a client feature.** Both app UIs hide the history and offer no rollback: the version in force is a CLI/skill concern (`prompt log|apply|revert`), and a client that showed a list could only mislead about which version a run used. Edits through either client still record a version server-side, so the CLI sees the same history (§7). Each run still has its own card with status, kind, version, time and Open conversation; a long summary does not run into the next card's header.
 
 Desktop opens the run's thread. Mobile opens `run.sessionId` when available, closes Settings through `SessionsScreen`, then selects that conversation. Older desktop hosts lacking this field have no mobile conversation link. Chat is a separate top-level screen rather than part of a mobile navigation library.
 
-Prompt versions follow the run ledger. Desktop's Settings disclosure precedes versions; mobile keeps definition editing on its own page. The task page registers list → detail → settings with `SettingsPageBack` (`features/settings/pageBack.ts`): Android back and the header arrow pop one layer, preserving list/detail state rather than returning directly to the Settings home.
+The run ledger follows the task's actions. Desktop's Settings disclosure precedes the ledger; mobile keeps definition editing on its own page. The task page registers list → detail → settings with `SettingsPageBack` (`features/settings/pageBack.ts`): Android back and the header arrow pop one layer, preserving list/detail state rather than returning directly to the Settings home.
 
 ## 12. Out of scope
 

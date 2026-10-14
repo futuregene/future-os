@@ -17,7 +17,7 @@ test("cache eviction includes closure-owned projector text even with an empty di
     payload: JSON.stringify({ text: "x".repeat(100000) }) });
   expect(projector.estimatedBytes()).toBeGreaterThan(200000);
   expect(projector.fork().estimatedBytes()).toBe(projector.estimatedBytes());
-  const engine = new SyncEngine({ requestGetState: async () => ({}), requestHistory: async () => emptyTimeline(), fetchReplay: async () => ({ events: [] }) });
+  const engine = new SyncEngine({ requestGetState: async () => ({}), requestHistory: async () => emptyTimeline(), fetchReplay: async () => ({ events: [], completePrefix: false }) });
   try {
     await new Promise<void>(resolve => {
       const unsubscribe = engine.subscribe(() => { unsubscribe(); resolve(); });

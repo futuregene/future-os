@@ -2,20 +2,45 @@ import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { ScrollView, SectionList, StyleSheet, Switch, Text, TextInput } from "react-native";
 import { Button } from "../../../components/Button";
-import { SettingsScreen, type SettingsScreenHandle } from "../SettingsScreen";
-import { SettingsLink, SettingsSwitch, settingsStyles } from "../SettingsPrimitives";
-import type { DesktopSettings, InstalledSkill, ProvidersView } from "../../../remote/types";
+import { SettingsScreen, TITLED_SETTINGS_PAGES, type SettingsScreenHandle } from "../SettingsScreen";
+import { resources } from "../../../i18n/locales";
+import { SettingsLink, SettingsSwitch, useSettingsStyles } from "../SettingsPrimitives";
+import { lightTheme } from "../../../theme/theme";
+import type { DesktopSettings, InstalledSkill, PairedDesktop, ProvidersView } from "../../../remote/types";
+import { PEER_ICONS } from "../../../remote/peerIcons";
 
 let stored: DesktopSettings;
 let installed: InstalledSkill[];
 /** UI language the mocked `useTranslation` reports; flipped by language tests. */
 let mockLanguage = "en";
+/** The paired desktops the mocked context reports, in their stored order. */
+const pairedDesktops = (): PairedDesktop[] => [
+  { pairId: "other", desktopId: "other-desktop", name: "Other computer" },
+  { pairId: "pair", desktopId: "desktop", name: "Work computer" },
+];
+/**
+ * Apply a label the way the real store does: the name and the icon are
+ * independent, and an empty value clears its field rather than storing "".
+ */
+function relabel(desktopId: string, patch: { name?: string; icon?: string }): void {
+  mockRemote.desktops = mockRemote.desktops.map((item) => {
+    if (item.desktopId !== desktopId) return item;
+    const name = patch.name === undefined ? item.name : patch.name;
+    const icon = patch.icon === undefined ? item.icon : patch.icon;
+    return {
+      desktopId: item.desktopId,
+      pairId: item.pairId,
+      ...(name ? { name } : {}),
+      ...(icon ? { icon } : {}),
+    };
+  });
+}
 const mockRemote = {
   credentials: { pairId: "pair", expectedDesktopId: "desktop" },
-  desktops: [
-    { pairId: "other", desktopId: "other-desktop", name: "Other computer" },
-    { pairId: "pair", desktopId: "desktop", name: "Work computer" },
-  ],
+  // Typed as the real thing: a desktop row carries the label the user gave it
+  // (name, icon), and an untyped literal here silently loses the right to set
+  // them — which a test that writes an icon cannot do without.
+  desktops: pairedDesktops(),
   desktopOnline: true,
   capabilities: new Set(["desktop_settings_v1", "skill_management_v1", "tasks_v1"]),
   desktopSettingsRevision: 0,
@@ -25,6 +50,9 @@ const mockRemote = {
   getDesktopSettings: jest.fn(async () => ({ ...stored })),
   updateDesktopSettings: jest.fn(async (patch: Partial<DesktopSettings>) => { stored = { ...stored, ...patch }; return stored; }),
   setApprovalTier: jest.fn(async () => {}),
+  switchDesktop: jest.fn(async () => {}),
+  renameDesktop: jest.fn(async (desktopId: string, name: string) => relabel(desktopId, { name })),
+  labelDesktop: jest.fn(async (desktopId: string, patch: { name?: string; icon?: string }) => relabel(desktopId, patch)),
   listSettingsModels: jest.fn(async () => [{ id: "same", provider: "one" }, { id: "same", provider: "two" }]),
   listProviders: jest.fn(async () => providers),
   listInstalledSkills: jest.fn(async () => [...installed]),
@@ -35,8 +63,8 @@ const mockRemote = {
 jest.mock("../../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote }));
 jest.mock("../../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }));
 jest.mock("../TasksSettingsPage", () => ({ TasksSettingsPage: (props: { desktopOnline: boolean; settings: unknown }) => { tasksPageProps = props as never; return null; } }));
-jest.mock("lucide-react-native", () => ({ ArrowLeft: "ArrowLeft", Monitor: "Monitor", ChevronDown: "ChevronDown", ChevronRight: "ChevronRight" }));
-jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
+jest.mock("lucide-react-native", () => ({ ArrowLeft: "ArrowLeft", Monitor: "Monitor", Check: "Check", ChevronDown: "ChevronDown", ChevronRight: "ChevronRight" }));
+jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView", useSafeAreaInsets: () => ({ top: 24, bottom: 34, left: 0, right: 0 }) }));
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string, options?: { name?: string }) => options?.name ? `${key}: ${options.name}` : key, i18n: { get language() { return mockLanguage; } } }) }));
 
 let tree: ReactTestRenderer;
@@ -48,6 +76,14 @@ let tasksPageProps: {
   onOpenConversation?(sessionId: string): void;
 } | null = null;
 const props = { onClose: jest.fn(), onCheckUpdate: jest.fn(), checkingUpdate: false };
+/**
+ * The same stack opened for one paired desktop.
+ *
+ * Every desktop-scoped level (preferences, models, providers, skills, tasks)
+ * now lives under a device page, so this is the surface most of this file
+ * drives; `props` without a `deviceId` is the phone's own screen.
+ */
+const deviceProps = { ...props, deviceId: "desktop" };
 const link = (label: string) => tree.root.findAllByType(SettingsLink).find(node => node.props.label === label)!;
 const button = (label: string) => tree.root.findAllByType(Button).find(node => node.props.label === label)!;
 const toggle = (label: string) => tree.root.findAllByType(SettingsSwitch).find(node => node.props.label === label)!;
@@ -69,6 +105,8 @@ beforeEach(async () => {
   stored = { autoTitleFirstTurn: true, autoUpgradeSkills: true, autoConnectRemote: false, hiddenModels: ["one/same", "other/hidden"] };
   installed = [{ id: "skill", name: "Skill", description: "", version: "1.0.0" }];
   mockLanguage = "en";
+  mockRemote.desktops = pairedDesktops();
+  mockRemote.credentials = { pairId: "pair", expectedDesktopId: "desktop" };
   mockRemote.desktopOnline = true;
   mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1", "tasks_v1"]);
   tasksPageProps = null;
@@ -85,13 +123,22 @@ beforeEach(async () => {
     ],
     custom: [],
   };
-  await act(async () => { tree = create(createElement(SettingsScreen, props)); });
+  await act(async () => { tree = create(createElement(SettingsScreen, deviceProps)); });
 });
 afterEach(() => act(() => tree.unmount()));
 
-test("groups scrollable desktop settings separately from phone preferences and saves to desktop", async () => {
+test("the device page configures the desktop, and keeps the phone's own rows out", async () => {
   expect(tree.root.findAllByType(ScrollView).length).toBeGreaterThan(0);
-  expect(tree.root.findAllByType(Text).map(node => node.props.children)).toContain("desktopSettings.currentDesktop");
+  const keys = () => tree.root.findAllByType(Text).map(node => node.props.children);
+  // What this device is called here, and what it does, are two sections of one
+  // page: the first is the phone's own label, the second is read from the
+  // machine.
+  expect(keys()).toContain("desktops.identity");
+  expect(keys()).toContain("desktops.deviceSettings");
+  // The phone's own settings are a different screen now: device settings must
+  // not smuggle in rows that write locally.
+  expect(link("language.title")).toBeUndefined();
+  expect(link("update.check")).toBeUndefined();
   expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(0);
   expect(tree.root.findAllByType(Button)).toHaveLength(0);
   await openPreferences();
@@ -106,19 +153,19 @@ test("reloads a desktop-originated change", async () => {
   await openPreferences();
   stored.autoConnectRemote = true;
   mockRemote.desktopSettingsRevision++;
-  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  await act(async () => tree.update(createElement(SettingsScreen, deviceProps)));
   expect(toggle("desktopSettings.autoConnectRemote").props.value).toBe(true);
 });
 
 test("offline and old desktops cannot write new preferences", async () => {
   mockRemote.desktopOnline = false;
-  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  await act(async () => tree.update(createElement(SettingsScreen, deviceProps)));
   expect(link("desktopSettings.models").props.disabled).toBe(true);
   await openPreferences();
   expect(toggle("desktopSettings.autoTitleFirstTurn").props.disabled).toBe(true);
   mockRemote.desktopOnline = true;
   mockRemote.capabilities.clear();
-  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  await act(async () => tree.update(createElement(SettingsScreen, deviceProps)));
   expect(toggle("desktopSettings.autoTitleFirstTurn").props.disabled).toBe(true);
   act(() => tree.root.findAll(node => node.props.accessibilityLabel === "common.back" && typeof node.props.onPress === "function")[0]!.props.onPress());
   expect(link("desktopSettings.skills").props.disabled).toBe(true);
@@ -127,7 +174,7 @@ test("offline and old desktops cannot write new preferences", async () => {
 
 test("visibility groups models under a foldable provider heading", async () => {
   mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1", "provider_management_v1"]);
-  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  await act(async () => tree.update(createElement(SettingsScreen, deviceProps)));
   await act(async () => link("desktopSettings.models").props.onPress());
   expect(tree.root.findAllByType(SectionList)).toHaveLength(1);
   expect(mockRemote.listSettingsModels).toHaveBeenCalled();
@@ -160,7 +207,7 @@ test("a keyless provider stays listed: the desktop already scoped the model list
     { id: "same", provider: "one" },
     { id: "llama", provider: "local" },
   ]);
-  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  await act(async () => tree.update(createElement(SettingsScreen, deviceProps)));
   await act(async () => link("desktopSettings.models").props.onPress());
   await flush();
   expect(headings()).toEqual(["Local Ollama", "One"]);
@@ -216,7 +263,7 @@ test("skill text follows the system language, borrowing the catalogue's translat
   expect(text()).not.toContain("Generate and edit images.");
   // The page stays open, so a re-render is enough to read the new language.
   mockLanguage = "en";
-  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  await act(async () => tree.update(createElement(SettingsScreen, deviceProps)));
   expect(text()).toEqual(expect.arrayContaining(["future-image", "Generate and edit images.", "Local skill."]));
   expect(text()).not.toContain("生成、编辑与分析图像");
   expect(text()).not.toContain("本地技能");
@@ -226,7 +273,7 @@ test("failed reads leave mutations disabled instead of inventing mobile defaults
   await openPreferences();
   mockRemote.getDesktopSettings.mockRejectedValueOnce(new Error("offline"));
   mockRemote.desktopSettingsRevision++;
-  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  await act(async () => tree.update(createElement(SettingsScreen, deviceProps)));
   await flush();
   expect(toggle("desktopSettings.autoTitleFirstTurn").props.disabled).toBe(true);
   expect(tree.root.findAllByType(Text).map(node => node.props.children)).toContain("desktopSettings.loadFailed");
@@ -235,18 +282,47 @@ test("failed reads leave mutations disabled instead of inventing mobile defaults
   expect(tree.root.findAllByType(Button)).toHaveLength(0);
 });
 
-test("settings identifies its paired desktop without device selection or unpair actions", async () => {
+test("the device page names the machine it configures, and offers no unpair action", async () => {
   const labels = tree.root.findAllByType(SettingsLink).map(node => node.props.label);
   expect(labels).not.toContain("desktops.title");
   expect(labels).not.toContain("sessions.unpair");
-  const scope = () => tree.root.findAllByType(Text).find(node => node.props.children === "desktopSettings.boundDesktop: Work computer");
-  expect(scope()).toBeDefined();
-  expect(scope()!.props.numberOfLines).toBeUndefined();
+  // The page *is* this machine, so its header says which one — truncated rather
+  // than wrapped, because a long label must not push the levels down.
+  const heading = () => tree.root.findAllByType(Text).find(node => node.props.children === "Work computer");
+  expect(heading()).toBeDefined();
+  expect(heading()!.props.numberOfLines).toBe(1);
+  // One level down the header names the level instead, so the machine comes
+  // back as the banner above it.
   await openPreferences();
-  expect(scope()).toBeDefined();
+  expect(heading()).toBeUndefined();
+  expect(strings()).toContain("desktopSettings.boundDesktop: Work computer");
 });
 
-test("phone preferences stay separate and update checking remains available", async () => {
+/**
+ * The banner names the machine these pages write to, so it wears that machine's
+ * own icon: the fixed monitor glyph here was the same gap the device list had,
+ * where picking an icon had no visible effect anywhere.
+ */
+test("the scoped banner wears the bound desktop's own icon", async () => {
+  await openPreferences();
+  expect(strings()).toContain(PEER_ICONS[0]!.glyph);
+  mockRemote.desktops = [
+    { pairId: "other", desktopId: "other-desktop", name: "Other computer" },
+    { pairId: "pair", desktopId: "desktop", name: "Work computer", icon: "rocket" },
+  ];
+  await act(async () => tree.update(createElement(SettingsScreen, deviceProps)));
+  expect(strings()).toContain("🚀");
+});
+
+test("the phone's own screen holds no device settings", async () => {
+  await remountPhone();
+  // Every machine-scoped row moved to that machine's page: this screen must
+  // stay usable with nothing paired.
+  expect(link("desktopSettings.preferences")).toBeUndefined();
+  expect(link("desktopSettings.models")).toBeUndefined();
+  expect(link("desktopSettings.providers")).toBeUndefined();
+  expect(link("desktopSettings.skills")).toBeUndefined();
+  expect(link("desktopSettings.tasks")).toBeUndefined();
   act(() => link("update.check").props.onPress());
   expect(props.onCheckUpdate).toHaveBeenCalledTimes(1);
   await act(async () => tree.update(createElement(SettingsScreen, { ...props, checkingUpdate: true })));
@@ -259,14 +335,58 @@ test("phone preferences stay separate and update checking remains available", as
   expect(text).not.toContain("desktopSettings.boundDesktop: Work computer");
 });
 
+test("every titled settings level has a header in both languages", () => {
+  // A level whose title key is missing does not fail loudly: the header renders
+  // the key itself (`desktopSettings.appearance`), which is how the appearance
+  // page first shipped. The header is built from `desktopSettings.<name>`, so
+  // hold that key to the shipped translations rather than to a mock's echo.
+  for (const page of TITLED_SETTINGS_PAGES) {
+    for (const language of ["en", "zh"] as const) {
+      const title = translations(language)[`desktopSettings.${page}`];
+      expect({ page, language, title }).toEqual({ page, language, title: expect.any(String) });
+      expect(title).not.toBe(`desktopSettings.${page}`);
+      expect(title).not.toBe("");
+    }
+  }
+});
+
+function translations(language: "en" | "zh"): Record<string, string> {
+  const flat: Record<string, string> = {};
+  const walk = (value: object, prefix = "") => {
+    for (const [key, entry] of Object.entries(value)) {
+      const path = prefix ? `${prefix}.${key}` : key;
+      if (typeof entry === "string") flat[path] = entry;
+      else if (entry && typeof entry === "object") walk(entry, path);
+    }
+  };
+  walk(resources[language].translation);
+  return flat;
+}
+
+test("the appearance level is reachable from the phone's own screen", async () => {
+  await remountPhone();
+  await act(async () => link("appearance.title").props.onPress());
+  const radioLabels = tree.root
+    .findAll(node => node.props.accessibilityRole === "radio" && typeof node.props.onPress === "function")
+    .map(node => node.props.accessibilityLabel);
+  // Both settings are phone-local, so they live on the phone's own screen —
+  // and both are one tap from it, not buried under the device's page.
+  expect(radioLabels).toEqual([
+    "appearance.themeMode.system", "appearance.themeMode.light", "appearance.themeMode.dark",
+    "appearance.fontSizeName.small", "appearance.fontSizeName.medium", "appearance.fontSizeName.large", "appearance.fontSizeName.xlarge",
+  ]);
+  expect(radioLabels).not.toContain("desktopSettings.boundDesktop: Work computer");
+});
+
 test("subpages use the shared back control and rounded card styling", async () => {
+  await remountPhone();
   const back = () => tree.root.findAll(node => node.props.accessibilityLabel === "common.back" && typeof node.props.onPress === "function")[0]!;
   const title = tree.root.findAllByType(Text).find(node => node.props.children === "sessions.settings")!;
   expect(StyleSheet.flatten(title.props.style)).toMatchObject({ fontSize: 22, fontWeight: "700" });
-  expect(settingsStyles.row).toMatchObject({ borderRadius: 16, minHeight: 52 });
-  await openPreferences();
+  expect(useSettingsStyles.forTheme(lightTheme).row).toMatchObject({ borderRadius: 16, minHeight: 52 });
+  await act(async () => link("language.title").props.onPress());
   act(() => back().props.onPress());
-  expect(link("desktopSettings.preferences")).toBeDefined();
+  expect(link("desktopSettings.followAccount")).toBeDefined();
   expect(props.onClose).not.toHaveBeenCalled();
   act(() => back().props.onPress());
   expect(props.onClose).toHaveBeenCalledTimes(1);
@@ -281,11 +401,11 @@ test("preferences auto-load without a persistent refresh button", async () => {
 });
 
 test("the official-account entry stays reachable while the desktop is offline", async () => {
-  // Every other row on "This phone" is gated on the desktop connection; following
-  // an account needs no connection, so a regression that adds a `disabled` here
-  // would strand the entry exactly when the user has no desktop at hand.
-  // Inspect the Pressable the row renders — that is what decides whether a tap
-  // goes through — rather than the SettingsLink element's own props.
+  // Following an account needs no connection, so a regression that adds a
+  // `disabled` here would strand the entry exactly when the user has no desktop
+  // at hand. Inspect the Pressable the row renders — that is what decides
+  // whether a tap goes through — rather than the SettingsLink element's props.
+  await remountPhone();
   const row = () => tree.root.findAll(node =>
     node.props.accessibilityLabel === "desktopSettings.followAccount"
     && node.props.accessibilityRole === "button")[0]!;
@@ -304,11 +424,18 @@ test("the official-account entry stays reachable while the desktop is offline", 
 });
 
 const texts = () => tree.root.findAllByType(Text).map(node => node.props.children);
+/** The string children only: a text node may hold an interpolated element. */
+const strings = () => texts().filter((child): child is string => typeof child === "string");
 const radio = (tier: string) => tree.root.findAll(node =>
   node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === tier)[0]!;
 /** Fresh mount: `useDesktopResource` only re-reads when its inputs change, so a
  * test that needs a *failed* read has to remount rather than `update`. */
 async function remount() {
+  act(() => tree.unmount());
+  await act(async () => { tree = create(createElement(SettingsScreen, deviceProps)); });
+}
+/** Fresh mount of the phone's own screen, which is what `props` describes. */
+async function remountPhone() {
   act(() => tree.unmount());
   await act(async () => { tree = create(createElement(SettingsScreen, props)); });
 }
@@ -350,7 +477,7 @@ test("a preference switch cannot write while the desktop is unreachable", async 
   mockRemote.desktopOnline = false;
   // The page is already mounted; a disconnect re-renders it rather than
   // remounting, which is the state a tap racing the disconnect sees.
-  await act(async () => { tree.update(createElement(SettingsScreen, props)); });
+  await act(async () => { tree.update(createElement(SettingsScreen, deviceProps)); });
   expect(toggle("desktopSettings.autoTitleFirstTurn").props.disabled).toBe(true);
   // A tap that races the disconnect must not queue a write the desktop will
   // apply once it reconnects.
@@ -361,7 +488,7 @@ test("a preference switch cannot write while the desktop is unreachable", async 
 test("an approval tier cannot be written while the desktop is unreachable", async () => {
   await openPreferences();
   mockRemote.desktopOnline = false;
-  await act(async () => { tree.update(createElement(SettingsScreen, props)); });
+  await act(async () => { tree.update(createElement(SettingsScreen, deviceProps)); });
   // The tier radios stay tappable (the page explains the offline state), so
   // the guard — not a disabled prop — is what stops the write.
   await act(async () => radio("approvalTier.sandbox").props.onPress());
@@ -560,7 +687,7 @@ test("task management is gated by the desktop's capability and opens the page", 
 
   // An older desktop that never declared tasks_v1 cannot open the page.
   mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1"]);
-  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  await act(async () => tree.update(createElement(SettingsScreen, deviceProps)));
   expect(link("desktopSettings.tasks").props.disabled).toBe(true);
   expect(tree.root.findAllByType(Text).map(node => node.props.children)).toContain("desktopSettings.updateDesktop");
 
@@ -568,7 +695,7 @@ test("task management is gated by the desktop's capability and opens the page", 
   // connection state and the desktop's settings (the task form's model list is
   // the user's enabled models) it needs.
   mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1", "tasks_v1"]);
-  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  await act(async () => tree.update(createElement(SettingsScreen, deviceProps)));
   await act(async () => link("desktopSettings.tasks").props.onPress());
   expect(tasksPageProps).toMatchObject({ desktopOnline: true });
   expect(tasksPageProps!.settings).toBeDefined();
@@ -584,7 +711,7 @@ test("asks the open page to leave a level before popping the route", async () =>
   // The stack's `goBack` is the handle the modal's back gesture calls, so the
   // test drives the same entry point the phone does.
   const handle: { current: SettingsScreenHandle | null } = { current: null };
-  await act(async () => tree.update(createElement(SettingsScreen, { ...props, ref: handle })));
+  await act(async () => tree.update(createElement(SettingsScreen, { ...deviceProps, ref: handle })));
   await act(async () => link("desktopSettings.tasks").props.onPress());
 
   // The page registers how to leave its own level; here it reports that it
@@ -605,18 +732,120 @@ test("asks the open page to leave a level before popping the route", async () =>
 
 test("task management is unavailable while the desktop is offline", async () => {
   mockRemote.desktopOnline = false;
-  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  await act(async () => tree.update(createElement(SettingsScreen, deviceProps)));
   expect(link("desktopSettings.tasks").props.disabled).toBe(true);
+});
+
+/** The device page's identity field. */
+const nameField = () => tree.root.findAllByType(TextInput).find(node => node.props.accessibilityLabel === "desktops.name")!;
+/** The identity grid's option for one icon. */
+const iconOption = (label: string) => tree.root.findAll(node =>
+  node.props.accessibilityLabel === label && node.props.accessibilityRole === "radio")[0]!;
+/** Re-render the way the provider re-renders its consumers after a label write:
+ * in the app, `labelDesktop` refreshes the desktop list in context state, and
+ * the page reads the device back. The mocked context holds no state of its own,
+ * so the refresh is spelled out here. */
+async function refresh() {
+  await act(async () => { tree.update(createElement(SettingsScreen, deviceProps)); });
+}
+/** Fresh mount of one paired device's page. */
+async function mountDevice(deviceId: string) {
+  act(() => tree.unmount());
+  await act(async () => { tree = create(createElement(SettingsScreen, { ...props, deviceId })); });
+}
+
+test("the device page writes the name the user types, on the done key and on leaving the field", async () => {
+  await act(async () => nameField().props.onChangeText("Studio"));
+  await act(async () => nameField().props.onSubmitEditing());
+  expect(mockRemote.renameDesktop).toHaveBeenCalledWith("desktop", "Studio");
+  // One write for one edit: the done key dismisses the keyboard, which blurs the
+  // field as well.
+  expect(mockRemote.renameDesktop).toHaveBeenCalledTimes(1);
+  await act(async () => nameField().props.onBlur());
+  expect(mockRemote.renameDesktop).toHaveBeenCalledTimes(1);
+});
+
+test("an unchanged name writes nothing and a blank one clears the label", async () => {
+  await act(async () => nameField().props.onChangeText("Work computer"));
+  await act(async () => nameField().props.onBlur());
+  expect(mockRemote.renameDesktop).not.toHaveBeenCalled();
+  // Blank means "no name": the device goes back to being listed by its id.
+  await act(async () => nameField().props.onChangeText("   "));
+  await act(async () => nameField().props.onBlur());
+  expect(mockRemote.renameDesktop).toHaveBeenCalledWith("desktop", "");
+  expect(mockRemote.desktops[1]!.name).toBeUndefined();
+});
+
+test("a refused name write is reported, and the field goes back to the stored name", async () => {
+  mockRemote.renameDesktop.mockRejectedValueOnce(new Error("storage full"));
+  await act(async () => nameField().props.onChangeText("Studio"));
+  await act(async () => nameField().props.onSubmitEditing());
+  expect(texts()).toContain("desktops.actionFailed");
+  // The field must never show a name the store does not have.
+  expect(nameField().props.value).toBe("Work computer");
+});
+
+test("the icon is picked on the device page, and picking it again clears it", async () => {
+  await act(async () => iconOption("desktops.icons.rocket").props.onPress());
+  expect(mockRemote.labelDesktop).toHaveBeenCalledWith("desktop", { icon: "rocket" });
+  await refresh();
+  expect(iconOption("desktops.icons.rocket").props.accessibilityState.checked).toBe(true);
+  // Toggle: there is no "none" entry in the grid, so the way back to the
+  // default is picking the icon the device is already wearing.
+  await act(async () => iconOption("desktops.icons.rocket").props.onPress());
+  expect(mockRemote.labelDesktop).toHaveBeenLastCalledWith("desktop", { icon: "" });
+  await refresh();
+  expect(iconOption("desktops.icons.rocket").props.accessibilityState.checked).toBe(false);
+});
+
+test("a refused icon write is reported", async () => {
+  mockRemote.labelDesktop.mockRejectedValueOnce(new Error("storage full"));
+  await act(async () => iconOption("desktops.icons.rocket").props.onPress());
+  expect(texts()).toContain("desktops.actionFailed");
+});
+
+/**
+ * A machine's settings are read and written over that machine's own connection,
+ * which it keeps while the phone reads another one (see `DesktopScope`). So a
+ * device page has no connection step to perform: the rows are there when it
+ * opens, whichever machine is the one the phone happens to be reading, and
+ * nothing about opening it moves the phone.
+ */
+test("a device page reads the machine it names, with no connection step", async () => {
+  await mountDevice("other-desktop");
+  expect(link("desktopSettings.preferences")).toBeDefined();
+  expect(link("desktopSettings.models")).toBeDefined();
+  expect(link("desktops.connect")).toBeUndefined();
+  expect(texts()).not.toContain("desktops.connectHint");
+  // Reading a machine is not choosing it: which machine the phone is reading
+  // changes where a conversation is opened, not on a settings page.
+  expect(mockRemote.switchDesktop).not.toHaveBeenCalled();
+  expect(mockRemote.updateDesktopSettings).not.toHaveBeenCalled();
+});
+
+/**
+ * A machine that is not answering cannot be configured — its settings are read
+ * from it, not from a local copy — and the page says which machine and why,
+ * rather than drawing rows that would write somewhere else.
+ */
+test("a machine that is not answering disables its rows and says so", async () => {
+  mockRemote.desktopOnline = false;
+  mockRemote.getDesktopSettings.mockClear();
+  await mountDevice("other-desktop");
+  expect(texts()).toContain("desktopSettings.offline");
+  expect(link("desktopSettings.models").props.disabled).toBe(true);
+  expect(link("desktopSettings.providers").props.disabled).toBe(true);
+  expect(mockRemote.getDesktopSettings).not.toHaveBeenCalled();
 });
 
 test("automatic review is offered only by capable desktops with a working sandbox", async () => {
   await openPreferences();
   expect(tree.root.findAllByProps({ accessibilityLabel: "approvalTier.auto" })).toHaveLength(0);
   mockRemote.capabilities.add("auto_approval_v1");
-  await act(async () => { tree.update(createElement(SettingsScreen, props)); });
+  await act(async () => { tree.update(createElement(SettingsScreen, deviceProps)); });
   await act(async () => radio("approvalTier.auto").props.onPress());
   expect(mockRemote.setApprovalTier).toHaveBeenCalledWith("auto");
   mockRemote.sandboxAvailable = false;
-  await act(async () => { tree.update(createElement(SettingsScreen, props)); });
+  await act(async () => { tree.update(createElement(SettingsScreen, deviceProps)); });
   expect(tree.root.findAllByProps({ accessibilityLabel: "approvalTier.auto" })).toHaveLength(0);
 });

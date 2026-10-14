@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
-import { colors, layout, radius, spacing } from "../theme/tokens";
+import { layout, radius, spacing } from "../theme/tokens";
+import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 
 interface ButtonProps {
   label: string;
@@ -21,6 +22,8 @@ export function Button({
   compact = false,
   onPress,
 }: ButtonProps) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const inactive = disabled || loading;
   return (
     <Pressable
@@ -49,7 +52,7 @@ export function Button({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(theme => StyleSheet.create({
   base: {
     minHeight: 48,
     paddingVertical: spacing.sm,
@@ -64,16 +67,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
   },
   primary: {
-    backgroundColor: colors.accent,
-    borderColor: colors.accent,
+    backgroundColor: theme.colors.accent,
+    borderColor: theme.colors.accent,
   },
   secondary: {
-    backgroundColor: colors.surface,
-    borderColor: colors.line,
+    backgroundColor: theme.colors.surface,
+    borderColor: theme.colors.line,
   },
   danger: {
-    backgroundColor: colors.dangerSoft,
-    borderColor: colors.dangerLine,
+    backgroundColor: theme.colors.dangerSoft,
+    borderColor: theme.colors.dangerLine,
   },
   ghost: {
     backgroundColor: "transparent",
@@ -89,20 +92,20 @@ const styles = StyleSheet.create({
   label: {
     flexShrink: 1,
     textAlign: "center",
-    fontSize: 15,
+    fontSize: theme.font(15),
     fontWeight: "600",
   },
   primaryLabel: {
-    color: colors.surface,
+    color: theme.colors.surface,
   },
   secondaryLabel: {
-    color: colors.ink,
+    color: theme.colors.ink,
   },
   dangerLabel: {
-    color: colors.danger,
+    color: theme.colors.danger,
   },
   ghostLabel: {
-    color: colors.inkSoft,
+    color: theme.colors.inkSoft,
   },
   pressed: {
     opacity: 0.78,
@@ -110,4 +113,4 @@ const styles = StyleSheet.create({
   disabled: {
     opacity: 0.5,
   },
-});
+}));
