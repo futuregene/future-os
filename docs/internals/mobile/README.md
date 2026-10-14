@@ -347,7 +347,10 @@ launch, and the phone carries one conversation runtime: opening a conversation
 on another desktop switches which machine that is. The sessions themselves are
 listed together — every paired desktop keeps its own live connection, so all of
 their conversations are drawn in one merged list, and a row's own actions
-(rename, pin, delete) are issued to the machine that owns it.
+(rename, pin, delete) are issued to the machine that owns it — which its action
+sheet names on its first line, for every conversation and every workspace group
+in the merged list, the machine the phone is reading included, so a sheet does
+not change shape as the phone moves between machines.
 
 The picker above the list says which machines the list is about: "All desktops"
 shows every paired desktop's conversations merged, and a single desktop scopes
