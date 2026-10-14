@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@future-os/thread-projection";
+import type { ActivityTargetResolver } from "../agent/AgentActivityList";
 import type { RemotePeer } from "./remotePeerClient";
 import type { RemoteLiveReply } from "./remoteRunStreams";
 import type { RemoteApproval } from "./useRemoteApprovals";
@@ -16,9 +17,10 @@ import { useComposerInset } from "../agent/useComposerInset";
 import { useQuestionNav } from "../agent/useQuestionNav";
 import { useStickyAutoScroll } from "../agent/useStickyAutoScroll";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
-import { useRemoteActivityTargets, withRemoteTargets } from "./remoteActivityTargets";
 import { foldLiveReply, stripRunCopies } from "./remoteLiveReplies";
 import { setRemotePeerVisibleSession } from "./remotePeerClient";
+import { withRemoteRunNotices } from "./remoteRunNotices";
+import { fetchRemoteToolTarget } from "./remoteToolTarget";
 
 /**
  * What the transcript draws: the host's record, with the runs this client rebuilt
@@ -32,7 +34,6 @@ import { setRemotePeerVisibleSession } from "./remotePeerClient";
 function renderedTranscript(
   transcript: AgentMessage[],
   liveReplies: RemoteLiveReply[],
-  targets: ReturnType<typeof useRemoteActivityTargets>,
 ): AgentMessage[] {
   if (liveReplies.length === 0)
     return transcript;
@@ -43,11 +44,12 @@ function renderedTranscript(
   );
   let rows = stripRunCopies(transcript, rebuilt);
   for (const reply of liveReplies) {
-    const withTargets = withRemoteTargets([reply.message], targets)[0] ?? reply.message;
     // A rebuilt reply stands in for the record's copy of the same run; one the
     // pushes only built half of is folded into that copy instead, so the two read
-    // as the one reply they are.
-    rows = reply.fromReplay ? [...rows, withTargets] : foldLiveReply(rows, withTargets);
+    // as the one reply they are. Its own host-reported reason travels with it:
+    // the projection is not the record, so nothing else would supply one.
+    const noted = withRemoteRunNotices([reply.message])[0] ?? reply.message;
+    rows = reply.fromReplay ? [...rows, noted] : foldLiveReply(rows, noted);
   }
   return rows;
 }
@@ -64,8 +66,9 @@ function renderedTranscript(
  * conversation that is a column of "assistant", most of them empty.
  *
  * What the projector cannot supply is a tool call's target: the host's history
- * page is byte-budgeted and strips a shell call's arguments, so those are fetched
- * back and filled in before rendering (`useRemoteActivityTargets`).
+ * page is byte-budgeted and strips a shell call's arguments, so the row fetches
+ * the one command it is missing when the reader opens it
+ * (`resolveActivityTarget`).
  */
 export function RemoteConversationView({
   approvals,
@@ -147,18 +150,29 @@ export function RemoteConversationView({
 }) {
   const { t } = useTranslation("remotePeer");
   const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const targets = useRemoteActivityTargets(desktopId, sessionId, messages);
-  const transcript = withRemoteTargets(messages, targets);
+  /**
+   * One tool call's command or path, read from the host when a row is opened.
+   *
+   * A row asks for its own target — not the transcript for all of them — so a
+   * conversation costs the page it opens on plus whatever the reader actually
+   * looks at, which is the phone's own bargain. The read itself is cached and
+   * deduplicated per call (`fetchRemoteToolTarget`), so re-opening a row, or a
+   * reply that is drawn twice while it settles, is not a second request.
+   */
+  const resolveActivityTarget = useCallback<ActivityTargetResolver>(
+    input => fetchRemoteToolTarget({ desktopId, sessionId, ...input }),
+    [desktopId, sessionId],
+  );
+  const transcript = useMemo(() => withRemoteRunNotices(messages), [messages]);
   /**
    * What is drawn: the record, plus the replies this client built itself.
    *
-   * Both the reply being written and the record it came from go through the same
-   * tool-target fetch — a rebuilt reply carries its calls' arguments from the log,
-   * but a pushed one may not, and the viewport keys on what is actually drawn.
+   * The viewport keys on what is actually drawn, so it settles when a reply's
+   * text arrives or a run is rebuilt from its log.
    */
   const rendered = useMemo(
-    () => renderedTranscript(transcript, liveReplies, targets),
-    [transcript, liveReplies, targets],
+    () => renderedTranscript(transcript, liveReplies),
+    [transcript, liveReplies],
   );
 
   /**
@@ -406,6 +420,7 @@ The same two layers this app's own conversation uses (`AgentThread`):
                     // host reported a run in flight, which put a cursor on the previous
                     // answer and left the new one invisible.
                     message={message}
+                    resolveActivityTarget={resolveActivityTarget}
                   />
                 );
               })}

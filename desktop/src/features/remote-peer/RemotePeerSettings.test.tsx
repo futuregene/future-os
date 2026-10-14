@@ -85,13 +85,11 @@ function answerHost(overrides: Partial<Record<string, unknown>> = {}): void {
 async function mount(props: {
   onChanged?: () => void;
   onOpenTasks?: () => void;
-  onUnpair?: () => void;
   onUpdateLabel?: (patch: { name?: string; icon?: string }) => void;
   peer?: RemotePeer;
 } = {}) {
   const onChanged = props.onChanged ?? vi.fn();
   const onOpenTasks = props.onOpenTasks ?? vi.fn();
-  const onUnpair = props.onUnpair ?? vi.fn();
   const onUpdateLabel = props.onUpdateLabel ?? vi.fn();
   const container = document.createElement("div");
   document.body.append(container);
@@ -102,7 +100,6 @@ async function mount(props: {
         onBack={vi.fn()}
         onChanged={onChanged}
         onOpenTasks={onOpenTasks}
-        onUnpair={onUnpair}
         onUpdateLabel={onUpdateLabel}
         peer={props.peer ?? peer()}
       />,
@@ -113,7 +110,6 @@ async function mount(props: {
     container,
     onChanged,
     onOpenTasks,
-    onUnpair,
     onUpdateLabel,
     input: () => container.querySelector<HTMLInputElement>("input")!,
     switchFor: (label: string) => container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`),
@@ -251,6 +247,29 @@ it("renames the machine locally, without sending the name anywhere", async () =>
   await view.unmount();
 });
 
+/**
+ * The icon row puts its control below the label rather than beside it.
+ *
+ * The picker is two dozen glyphs — wider than this column — and beside a label it
+ * took every pixel of it: the label was drawn one character per line and the grid
+ * ran out of the card. jsdom lays nothing out, so what is asserted here is the
+ * shape (this row stacks, the rows around it do not); the widths are measured in
+ * the screenshot harness, on the same row.
+ */
+it("stacks the icon picker under its label instead of beside it", async () => {
+  const view = await mount();
+
+  const picker = view.container.querySelector("[data-testid='icon-picker']")!;
+  const row = picker.parentElement!.parentElement!;
+  expect(row.className).toContain("flex-col");
+  // Left-aligned with the label it sits under, not pushed to the row's right edge.
+  expect(picker.parentElement!.className).toContain("justify-start");
+  // And its neighbours keep the row shape: a switch stays on the right of its label.
+  expect(row.previousElementSibling!.className).toContain("items-center");
+  expect(row.previousElementSibling!.className).not.toContain("flex-col");
+  await view.unmount();
+});
+
 /** The skills panel is handed to the page, and told whether the host is reachable. */
 it("reaches the skills page, and tells it whether the host is connected", async () => {
   const connected = await mount();
@@ -274,14 +293,19 @@ it("reports a failed read of the host's settings", async () => {
   await view.unmount();
 });
 
-it("unpairs through the caller", async () => {
+/**
+ * Unpairing is deliberately *not* here, and the absence is asserted.
+ *
+ * It used to be the last section of this page — a page the user has to open
+ * first, about the machine they have decided to stop using. It is now on that
+ * machine's row in the list (see RemotePeersView), and putting a second copy
+ * back here is the easy mistake: this page already talks about the pairing
+ * everywhere, so nothing on screen would look out of place.
+ */
+it("offers no way to unpair — that belongs to the machine's row", async () => {
   const view = await mount();
-  const unpair = [...view.container.querySelectorAll("button")]
-    .find(node => node.textContent === "Unpair")!;
 
-  await act(async () => unpair.click());
-
-  expect(view.onUnpair).toHaveBeenCalled();
+  expect(view.text()).not.toContain("Unpair");
   await view.unmount();
 });
 

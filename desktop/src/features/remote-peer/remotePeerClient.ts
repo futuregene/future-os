@@ -741,6 +741,25 @@ export interface RemoteConversationSettings {
 }
 
 /**
+ * A conversation's settings, read out of a host's `get_state` reply.
+ *
+ * Exported because the reply has two readers: this module's own read, and the
+ * remote timeline, which reads the *same* command for the run in flight and hands
+ * its reply over rather than each hook asking the host again (see
+ * `RemoteSessionStateReading`).
+ */
+export function parseRemoteConversationSettings(
+  raw: unknown,
+): RemoteConversationSettings {
+  const record = typeof raw === "object" && raw !== null ? raw as Record<string, unknown> : {};
+  return {
+    model: typeof record.model === "string" && record.model ? record.model : null,
+    thinkingLevel:
+      typeof record.thinkingLevel === "string" && record.thinkingLevel ? record.thinkingLevel : null,
+  };
+}
+
+/**
  * Read a conversation's model and thinking level.
  *
  * Their own read rather than part of the timeline: these are settings the host
@@ -756,10 +775,34 @@ export async function getRemoteConversationSettings(
     { type: "get_state", sessionId },
     sessionId,
   );
-  return {
-    model: typeof raw?.model === "string" && raw.model ? raw.model : null,
-    thinkingLevel: typeof raw?.thinkingLevel === "string" && raw.thinkingLevel ? raw.thinkingLevel : null,
-  };
+  return parseRemoteConversationSettings(raw);
+}
+
+/** A host's own app settings, as far as this app reads them. */
+export interface RemoteDesktopSettings {
+  /**
+   * Whether that machine wants its conversations to get skill recommendations.
+   *
+   * A *host* setting, not one of this machine's: it is what decides whether a card
+   * is offered for a conversation that lives there.
+   */
+  skillRecommend: boolean;
+}
+
+/**
+ * Read a host's own app settings.
+ *
+ * One command for the whole machine rather than for one of its conversations, so
+ * it is read once per connection and dropped when the host says it moved
+ * (`app_settings_changed`) — see `remoteHostCatalog`.
+ */
+export async function getRemoteDesktopSettings(desktopId: string): Promise<RemoteDesktopSettings> {
+  const raw = await requestRemotePeer<Record<string, unknown>>(
+    desktopId,
+    { type: "get_desktop_settings" },
+    "list",
+  );
+  return { skillRecommend: raw?.skillRecommend === true };
 }
 
 /**

@@ -564,6 +564,71 @@ describe("useRemoteTimeline run state", () => {
  * `persistedEntryIds` is what separates an id the host can resolve in its store * from one that only names a frame on the wire — the difference between a fork
  * that branches and one that is refused.
  */
+/**
+ * The state read the timeline makes, exposed for the conversation's own settings.
+ *
+ * The timeline has to read `get_state` — it is what tells a client that joined
+ * mid-run which log to read — and the conversation's model and thinking level
+ * ride the same reply. Exposing it is what keeps the settings picker from asking
+ * the host the same question a second time on every open, which is one command
+ * more than the phone spends on the same conversation (its `onSessionState`
+ * splits exactly these fields out of the reconcile read).
+ */
+describe("useRemoteTimeline session state", () => {
+  it("exposes the reply it read, with the conversation it is about", async () => {
+    stateReply = { activeRun: null, model: "openai/gpt-5", thinkingLevel: "high" };
+    requestMock.mockResolvedValue(page([]));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+
+    expect(hook.current.sessionState).toEqual({
+      sessionId: "sess_1",
+      state: { activeRun: null, model: "openai/gpt-5", thinkingLevel: "high" },
+    });
+    hook.unmount();
+  });
+
+  /** A host that has not answered yet has said nothing, and nothing is passed on. */
+  it("exposes nothing while the read is in flight", async () => {
+    let answered: ((value: unknown) => void) | null = null;
+    stateReply = new Promise((resolve) => {
+      answered = resolve;
+    });
+    requestMock.mockResolvedValue(page([]));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+
+    expect(hook.current.sessionState).toBeNull();
+    await act(async () => answered?.({ model: "openai/gpt-5" }));
+    await settle();
+    expect(hook.current.sessionState?.state).toEqual({ model: "openai/gpt-5" });
+    hook.unmount();
+  });
+
+  /**
+   * Another conversation must not inherit the last one's read.
+   *
+   * The reply names the conversation it is about, and it is dropped *before* the
+   * new one's own read answers: the settings that read feeds would otherwise show
+   * the previous conversation's model under the new one's title.
+   */
+  it("drops it when another conversation is opened", async () => {
+    stateReply = { model: "openai/gpt-5", thinkingLevel: "high" };
+    let session = "sess_1";
+    requestMock.mockResolvedValue(page([]));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", session, true));
+    await settle();
+    expect(hook.current.sessionState?.sessionId).toBe("sess_1");
+
+    session = "sess_2";
+    hook.rerender();
+    expect(hook.current.sessionState).toBeNull();
+    await settle();
+    expect(hook.current.sessionState?.sessionId).toBe("sess_2");
+    hook.unmount();
+  });
+});
+
 describe("useRemoteTimeline persisted entry ids", () => {
   it("counts history entries as persisted and a live push as not", async () => {
     requestMock.mockResolvedValue(page([entry("e1", "user", "hi")]));

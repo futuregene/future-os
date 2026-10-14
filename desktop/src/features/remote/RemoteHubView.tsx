@@ -4,12 +4,10 @@ import type { RemoteStatus } from "../remote/remoteClient";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
-import { Button } from "../../components/ui/Button";
-import { Dialog } from "../../components/ui/Dialog";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { startWindowDrag } from "../../lib/windowDrag";
-import { setRemotePeerLabel, unpairRemotePeer } from "../remote-peer/remotePeerClient";
+import { setRemotePeerLabel } from "../remote-peer/remotePeerClient";
 import { RemotePeerSettings } from "../remote-peer/RemotePeerSettings";
 import { RemoteClientSection } from "../remote-peer/RemotePeersView";
 import { RemoteTasksView } from "../remote-peer/RemoteTasksView";
@@ -77,11 +75,10 @@ export function RemoteHubView({
   const [settingsFor, setSettingsFor] = useState<RemotePeer | null>(null);
   /** The machine whose tasks are open, if any. They need the whole column. */
   const [tasksFor, setTasksFor] = useState<RemotePeer | null>(null);
-  const [unpairTarget, setUnpairTarget] = useState<RemotePeer | null>(null);
   /**
-   * Bumped whenever something outside the machine list changed it (a rename or
-   * an unpair), so the list re-reads when the user comes back instead of showing
-   * what it read when the page was first opened.
+   * Bumped whenever something outside the machine list changed it — a rename on
+   * a machine's settings page — so the list re-reads when the user comes back
+   * instead of showing what it read when the page was first opened.
    */
   const [refreshNonce, setRefreshNonce] = useState(0);
 
@@ -104,25 +101,21 @@ export function RemoteHubView({
 
   if (settingsFor) {
     return (
-      <>
-        <RemotePeerSettings
-          onBack={() => setSettingsFor(null)}
-          onChanged={() => setRefreshNonce(nonce => nonce + 1)}
-          onOpenTasks={() => setTasksFor(settingsFor)}
-          onUnpair={() => setUnpairTarget(settingsFor)}
-          onUpdateLabel={(patch) => {
-            void setRemotePeerLabel(settingsFor.desktopId, patch)
-              // The page describes the machine from the peer it was opened with;
-              // the name and icon live in the local credential book, so the page
-              // has to be told what it just became.
-              .then(() => setSettingsFor(current => (current ? { ...current, ...patch } : current)))
-              .then(() => setRefreshNonce(nonce => nonce + 1))
-              .catch(reportLabelFailure);
-          }}
-          peer={settingsFor}
-        />
-        {unpairDialog()}
-      </>
+      <RemotePeerSettings
+        onBack={() => setSettingsFor(null)}
+        onChanged={() => setRefreshNonce(nonce => nonce + 1)}
+        onOpenTasks={() => setTasksFor(settingsFor)}
+        onUpdateLabel={(patch) => {
+          void setRemotePeerLabel(settingsFor.desktopId, patch)
+            // The page describes the machine from the peer it was opened with;
+            // the name and icon live in the local credential book, so the page
+            // has to be told what it just became.
+            .then(() => setSettingsFor(current => (current ? { ...current, ...patch } : current)))
+            .then(() => setRefreshNonce(nonce => nonce + 1))
+            .catch(reportLabelFailure);
+        }}
+        peer={settingsFor}
+      />
     );
   }
 
@@ -132,7 +125,7 @@ export function RemoteHubView({
       onToggleLeftPanel={onToggleLeftPanel}
       title={t("title")}
     >
-      <div className="space-y-6">
+      <div className="space-y-4">
         <p className="text-sm text-ink-muted" data-testid="remote-hub-lead">{t("lead")}</p>
 
         <Direction
@@ -161,55 +154,8 @@ export function RemoteHubView({
           />
         </Direction>
       </div>
-      {unpairDialog()}
     </Shell>
   );
-
-  /**
-   * Unpairing removes the pairing, so it asks first — and it is asked for from a
-   * machine's settings page, which is why the confirmation is built here (the
-   * page below it changes either way).
-   */
-  function unpairDialog() {
-    if (!unpairTarget)
-      return null;
-    return (
-      <Dialog
-        description={tPeer("unpairConfirmDesc", { name: unpairTarget.name ?? unpairTarget.desktopId })}
-        footer={(
-          <>
-            <Button onClick={() => setUnpairTarget(null)} variant="ghost">{tPeer("cancel")}</Button>
-            <Button
-              onClick={() => {
-                const target = unpairTarget;
-                setUnpairTarget(null);
-                // The pairing is gone locally whatever the platform says, so the
-                // settings page for it closes and the list is re-read; a revoke
-                // the platform never received comes back as a warning string and
-                // is reported rather than claimed as a clean removal.
-                void unpairRemotePeer(target.desktopId)
-                  .then((pending) => {
-                    setSettingsFor(null);
-                    setRefreshNonce(nonce => nonce + 1);
-                    if (pending)
-                      emitFutureEvent("toast", { message: tPeer("unpairPendingWarning"), tone: "info" });
-                  })
-                  .catch(reportLabelFailure);
-              }}
-              variant="danger"
-            >
-              {tPeer("unpair")}
-            </Button>
-          </>
-        )}
-        onClose={() => setUnpairTarget(null)}
-        open
-        title={tPeer("unpairConfirmTitle")}
-      >
-        <span />
-      </Dialog>
-    );
-  }
 }
 
 /**

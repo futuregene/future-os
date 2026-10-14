@@ -18,12 +18,30 @@ const connectRemotePeer = vi.fn<(desktopId: string) => Promise<unknown>>();
 const disconnectRemotePeer = vi.fn<(desktopId: string) => Promise<unknown>>();
 const listRemotePeers = vi.fn<() => Promise<RemotePeer[]>>();
 const pairRemotePeer = vi.fn<(invitation: string) => Promise<unknown>>();
+const unpairRemotePeer = vi.fn<(desktopId: string) => Promise<string | null>>();
 vi.mock("./remotePeerClient", () => ({
   connectRemotePeer: (...args: Parameters<typeof connectRemotePeer>) => connectRemotePeer(...args),
   disconnectRemotePeer: (...args: Parameters<typeof disconnectRemotePeer>) => disconnectRemotePeer(...args),
   listRemotePeers: () => listRemotePeers(),
   pairRemotePeer: (...args: Parameters<typeof pairRemotePeer>) => pairRemotePeer(...args),
+  unpairRemotePeer: (...args: Parameters<typeof unpairRemotePeer>) => unpairRemotePeer(...args),
 }));
+// A revoke the platform never took comes back as a warning string, which the
+// section says out loud rather than swallowing: captured here so that claim can
+// be asserted.
+const toasts = vi.hoisted(() => [] as Array<{ message: string; tone?: string }>);
+vi.mock("../../lib/futureEvents", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/futureEvents")>();
+  return {
+    ...actual,
+    emitFutureEvent: (name: string, detail: unknown) => {
+      if (name === "toast")
+        toasts.push(detail as { message: string; tone?: string });
+      else
+        actual.emitFutureEvent(name as never, detail as never);
+    },
+  };
+});
 // LeftPanelTitlebarToggle → useIsFullscreen reads the Tauri window API, which is
 // irrelevant (and absent) under jsdom.
 vi.mock("@tauri-apps/api/window", () => ({
@@ -49,6 +67,19 @@ function peer(overrides: Partial<RemotePeer> = {}): RemotePeer {
     pairId: "pair_1",
     ...overrides,
   };
+}
+
+/**
+ * The row that folds the pairing form, by what it says.
+ *
+ * It is the row itself that is found, not just any `aria-expanded` control: the
+ * section is rendered on its own here, but a `Button` or a dialog could carry
+ * the attribute too, and reading the wrong one would make the assertions below
+ * pass without touching the form.
+ */
+function addRowButton(container: HTMLElement): HTMLButtonElement {
+  return [...container.querySelectorAll<HTMLButtonElement>("button[aria-expanded]")]
+    .find(node => (node.textContent || "").trim() === "Add a desktop")!;
 }
 
 async function mount() {
@@ -79,20 +110,43 @@ async function mount() {
     button: (label: string) => [...container.querySelectorAll("button")]
       .find(node => node.textContent === label),
     /**
-     * A computer's own row control.
+     * The row that folds the pairing form.
+     *
+     * The form is folded to start (the machines below are the card's content),
+     * so every pairing test opens this first — which is also what a user does.
+     * `aria-expanded` is the row's own statement of which way it is, and it is
+     * what these assertions read rather than a class name.
+     */
+    addRow: () => addRowButton(container),
+    /** Open the pairing form if it is folded, so the box is on screen. */
+    openForm: async () => {
+      const row = addRowButton(container);
+      if (row.getAttribute("aria-expanded") === "false")
+        await act(async () => row.click());
+      return row;
+    },
+    /**
+     * A computer's own row control, on the first row that carries it.
      *
      * Scoped to the row because two different controls answer to "Connect" (the
-     * pairing form and an offline computer) and to "Unpair" (the row and its
-     * confirmation dialog) — taking the first match would exercise the wrong one
-     * and pass while doing nothing.
+     * pairing form and an offline computer) and to "Unpair" (a machine's row and
+     * its confirmation dialog) — taking the first match would exercise the wrong
+     * one and pass while doing nothing.
      */
     rowButton: (label: string) => [...container.querySelectorAll<HTMLButtonElement>("[data-testid='peer-row'] button")]
+      .find(node => node.textContent === label),
+    /** The same control on one numbered row: each machine has its own. */
+    rowButtonIn: (row: number, label: string) => [...(container.querySelectorAll("[data-testid='peer-row']")[row]
+      ?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
       .find(node => node.textContent === label),
     /** A control inside the open dialog. */
     dialogButton: (label: string) => [...container.querySelectorAll<HTMLButtonElement>("[role=\'dialog\'] button")]
       .find(node => node.textContent === label),
     text: () => container.textContent ?? "",
     type: async (value: string) => {
+      const row = addRowButton(container);
+      if (row.getAttribute("aria-expanded") === "false")
+        await act(async () => row.click());
       const input = container.querySelector<HTMLInputElement>("input")!;
       await act(async () => {
         const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
@@ -116,10 +170,12 @@ async function settle(): Promise<void> {
 
 beforeEach(() => {
   document.body.innerHTML = "";
+  toasts.length = 0;
   connectRemotePeer.mockReset().mockResolvedValue(undefined);
   disconnectRemotePeer.mockReset().mockResolvedValue(undefined);
   listRemotePeers.mockReset().mockResolvedValue([peer()]);
   pairRemotePeer.mockReset().mockResolvedValue(undefined);
+  unpairRemotePeer.mockReset().mockResolvedValue(null);
 });
 
 it("offers a new conversation on a reachable host, and names it", async () => {
@@ -146,7 +202,31 @@ it("opens a machine's settings in a window instead of inline", async () => {
   expect(view.onOpenSettings).toHaveBeenCalledWith(expect.objectContaining({ desktopId: "desktop_a" }));
   // Nothing is stacked here: no settings page, and the list is still the page.
   expect(view.container.querySelector("[data-testid='peer-settings']")).toBeNull();
-  expect(view.input()).toBeTruthy();
+  expect(view.rowButton("Settings")).toBeTruthy();
+  await view.unmount();
+});
+
+/**
+ * The pairing form is folded away until it is wanted.
+ *
+ * It sat open above the machines at 158px — a fifth of the page — with two
+ * sentences about a text box, on a page whose content is the machines the user
+ * already has. The row states what is behind it, and the box keeps its name when
+ * the label that used to be beside it is gone.
+ */
+it("folds the pairing form away, and names the box when it is opened", async () => {
+  const view = await mount();
+
+  expect(view.addRow().getAttribute("aria-expanded")).toBe("false");
+  expect(view.input()).toBeNull();
+
+  await act(async () => view.addRow().click());
+  expect(view.addRow().getAttribute("aria-expanded")).toBe("true");
+  expect(view.input().getAttribute("aria-label")).toBe("Add a desktop");
+
+  // And back: the row is the only way in and the only way out.
+  await act(async () => view.addRow().click());
+  expect(view.input()).toBeNull();
   await view.unmount();
 });
 
@@ -172,7 +252,7 @@ it("withholds the new conversation button while disconnected", async () => {
 
 // ── pairing a new computer ──────────────────────────────────────────────────
 
-it("pairs from a pasted link, then clears the box", async () => {
+it("pairs from a pasted link, and keeps the box empty after it", async () => {
   const view = await mount();
   await view.type("futureos://remote/pair?code=abc");
 
@@ -180,6 +260,9 @@ it("pairs from a pasted link, then clears the box", async () => {
   await view.settle();
 
   expect(pairRemotePeer).toHaveBeenCalledWith("futureos://remote/pair?code=abc");
+  // The rows are the page again, and the box behind the closed row is empty:
+  // keeping a single-use link would invite a second press that cannot work.
+  await act(async () => view.addRow().click());
   expect(view.input().value).toBe("");
   await view.unmount();
 });
@@ -199,6 +282,7 @@ it("keeps the link and reports the reason when pairing fails", async () => {
 
 it("will not pair an empty link", async () => {
   const view = await mount();
+  await view.openForm();
   expect(view.button("Connect")!.hasAttribute("disabled")).toBe(true);
   await view.unmount();
 });
@@ -286,6 +370,56 @@ it("asks the shell to reconnect every machine", async () => {
   await view.unmount();
 });
 
+// ── unpairing a paired computer ─────────────────────────────────────────────
+
+/**
+ * Unpairing is asked for from the row of the computer it removes.
+ *
+ * It used to be a button on that computer's own settings page — a page the user
+ * has to go and open, about the machine they have decided to stop using, which is
+ * not where the decision is made. On the list they are already looking at, it is
+ * one button per machine.
+ */
+it("asks before unpairing, and removes the machine whose row asked", async () => {
+  // The list answers with both machines, then with only the one that is left:
+  // what is on screen after the confirmation has to be what survived it.
+  listRemotePeers
+    .mockResolvedValueOnce([
+      peer({ desktopId: "desktop_a", name: "Studio iMac" }),
+      peer({ desktopId: "desktop_b", name: "Mac mini" }),
+    ])
+    .mockResolvedValue([peer({ desktopId: "desktop_a", name: "Studio iMac" })]);
+  const view = await mount();
+
+  await act(async () => view.rowButtonIn(1, "Unpair")!.click());
+
+  // The question names the machine the row named: every row offers "Unpair", and
+  // asking about one while removing another is the failure that hides here.
+  const dialog = view.container.querySelector("[role='dialog']")?.textContent ?? "";
+  expect(dialog).toContain("Unpair this desktop?");
+  expect(dialog).toContain("Mac mini");
+  expect(unpairRemotePeer).not.toHaveBeenCalled();
+
+  await act(async () => view.dialogButton("Unpair")!.click());
+  await view.settle();
+
+  expect(unpairRemotePeer).toHaveBeenCalledWith("desktop_b");
+  expect(view.text()).not.toContain("Mac mini");
+  await view.unmount();
+});
+
+/** Cancelling leaves the pairing alone. */
+it("cancels an unpair without touching the pairing", async () => {
+  const view = await mount();
+
+  await act(async () => view.rowButton("Unpair")!.click());
+  await act(async () => view.dialogButton("Cancel")!.click());
+
+  expect(unpairRemotePeer).not.toHaveBeenCalled();
+  expect(view.container.querySelector("[role='dialog']")).toBeNull();
+  await view.unmount();
+});
+
 /**
  * A machine the user turned off is listed as switched off — not as a fault, and
  * not with the socket error its own disconnect left behind — and its row offers
@@ -314,4 +448,37 @@ it("tells a machine still being reached from one that failed", async () => {
   const failed = await mount();
   expect(failed.text()).toContain("Offline");
   await failed.unmount();
+});
+
+/**
+ * The pairing is gone locally whatever the platform says, so a revoke the
+ * platform never took is reported instead of being claimed as a clean removal.
+ */
+it("reports a revoke the platform never took", async () => {
+  unpairRemotePeer.mockResolvedValue("pending");
+  const view = await mount();
+
+  await act(async () => view.rowButton("Unpair")!.click());
+  await act(async () => view.dialogButton("Unpair")!.click());
+  await view.settle();
+
+  expect(unpairRemotePeer).toHaveBeenCalledWith("desktop_a");
+  expect(toasts.some(toast => toast.message.includes("could not be reached to revoke"))).toBe(true);
+  await view.unmount();
+});
+
+/** Escape dismisses the question and leaves the pairing alone. */
+it("closes the confirmation on Escape without unpairing", async () => {
+  const view = await mount();
+
+  await act(async () => view.rowButton("Unpair")!.click());
+  expect(view.container.querySelector("[role='dialog']")).not.toBeNull();
+
+  await act(async () => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  });
+
+  expect(unpairRemotePeer).not.toHaveBeenCalled();
+  expect(view.container.querySelector("[role='dialog']")).toBeNull();
+  await view.unmount();
 });

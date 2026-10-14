@@ -17,10 +17,19 @@ const listRemotePeers = vi.fn<() => Promise<RemotePeer[]>>();
 const fetchRemoteSessions = vi.fn<(desktopId: string) => Promise<unknown>>();
 const connectAllRemotePeers = vi.fn<() => Promise<RemotePeer[]>>();
 const connectRemotePeer = vi.fn<(desktopId: string) => Promise<RemotePeer>>();
+// The host-catalogue reads the poll warms as a connection is established
+// (`remoteHostCatalog`); none of the assertions here is about them, but a mock
+// that omitted them would take the whole refresh down with it.
+const listRemoteModels = vi.fn(async () => []);
+const getRemoteDesktopSettings = vi.fn(async () => ({ skillRecommend: false }));
 vi.mock("../../../features/remote-peer/remotePeerClient", () => ({
   connectAllRemotePeers: () => connectAllRemotePeers(),
   connectRemotePeer: (...args: Parameters<typeof connectRemotePeer>) => connectRemotePeer(...args),
   fetchRemoteSessions: (...args: Parameters<typeof fetchRemoteSessions>) => fetchRemoteSessions(...args),
+  getRemoteDesktopSettings: () => getRemoteDesktopSettings(),
+  listRemoteAvailableSkills: () => Promise.resolve([]),
+  listRemoteInstalledSkills: () => Promise.resolve([]),
+  listRemoteModels: () => listRemoteModels(),
   listRemotePeers: () => listRemotePeers(),
   listRemoteWorkspaces: () => Promise.resolve([]),
 }));

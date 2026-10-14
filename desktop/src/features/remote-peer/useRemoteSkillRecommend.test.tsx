@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, expect, it, vi } from "vitest";
+import { forgetHostCatalogue } from "./remoteHostCatalog";
 import { useRemoteSkillCatalog } from "./useRemoteSkillCatalog";
 import { useRemoteSkillRecommend } from "./useRemoteSkillRecommend";
 
@@ -50,6 +51,10 @@ async function settle(): Promise<void> {
 beforeEach(() => {
   document.body.innerHTML = "";
   invoke.mockReset();
+  // Both reads are cached per host for as long as this window is open
+  // (`remoteHostCatalog`), so one test's answer would otherwise be the next
+  // one's — and the read it asserts would never happen at all.
+  forgetHostCatalogue("desktop_a");
 });
 
 /** Both directions of the host's catalogue, in the shape the card needs. */

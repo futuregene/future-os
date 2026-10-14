@@ -1,9 +1,13 @@
 import type { RemotePeer } from "./remotePeerClient";
+import { ChevronDown } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
+import { Dialog } from "../../components/ui/Dialog";
 import { TextInput } from "../../components/ui/TextInput";
+import { cn } from "../../lib/cn";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
 import { peersConnected, peerStatus, peerStatusKey, peerStatusTone } from "./peerStatus";
 import {
@@ -11,6 +15,7 @@ import {
   disconnectRemotePeer,
   listRemotePeers,
   pairRemotePeer,
+  unpairRemotePeer,
 } from "./remotePeerClient";
 
 /**
@@ -23,7 +28,11 @@ import {
  * there is exactly one place to look for "a conversation"; duplicating a second
  * list here would make the user pick between two answers to the same question.
  * What is unique to this section is everything about the *machines*: pairing,
- * naming, the icon, connection state, and unpairing.
+ * naming, the icon, connection state, and unpairing — which lives on the row of
+ * the machine it removes, because that is where the user is when they decide
+ * they no longer want it. (It was a row on that machine's settings page until it
+ * moved here: an action the user has to go and find on another page is one they
+ * conclude does not exist.)
  */
 export function RemoteClientSection({
   onOpenSettings,
@@ -39,6 +48,7 @@ export function RemoteClientSection({
   /** Open that machine's settings, as a page of the window the user is in. */
   onOpenSettings: (peer: RemotePeer) => void;
   /**
+  /**
    * Bring every paired machine up, the stopped ones included.
    *
    * Owned by the shell because the liveness pass is the shell's: this section
@@ -47,9 +57,9 @@ export function RemoteClientSection({
    */
   onReconnectAll: () => Promise<void>;
   /**
-   * Bumped when something outside this section changed a machine (a rename or an
-   * unpair on its settings page), so the list re-reads instead of showing what it
-   * read when the page was first opened.
+   * Bumped when something outside this section changed a machine — a rename on
+   * its settings page — so the list re-reads instead of showing what it read
+   * when the page was first opened.
    */
   refreshNonce?: number;
 }) {
@@ -58,6 +68,16 @@ export function RemoteClientSection({
   const [invitation, setInvitation] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** The machine whose unpair confirmation is open, if any. */
+  const [unpairTarget, setUnpairTarget] = useState<RemotePeer | null>(null);
+  /**
+   * Whether the pairing form is unfolded.
+   *
+   * Folded to start: the machines below are what the card is for, and the form
+   * is one errand per machine. See where it is rendered for the widths this
+   * buys back.
+   */
+  const [addOpen, setAddOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -104,6 +124,22 @@ export function RemoteClientSection({
     }
   }
 
+  /**
+   * Unpair one machine, once the user has confirmed it.
+   *
+   * The pairing is gone locally whatever the platform says, so a revoke the
+   * platform never received is *reported* instead of being claimed as a clean
+   * removal — the row disappears either way.
+   */
+  async function handleUnpair(peer: RemotePeer) {
+    setUnpairTarget(null);
+    await run(peer.desktopId, async () => {
+      const pending = await unpairRemotePeer(peer.desktopId);
+      if (pending)
+        emitFutureEvent("toast", { message: t("unpairPendingWarning"), tone: "info" });
+    });
+  }
+
   async function handlePair() {
     const link = invitation.trim();
     if (!link)
@@ -115,6 +151,9 @@ export function RemoteClientSection({
       // The link is single-use: keeping it in the box would invite the user to
       // press the button again and get a confusing failure.
       setInvitation("");
+      // Paired: the machine it added is now a row below, which is what the user
+      // came to see — so the form folds away behind the row it came from.
+      setAddOpen(false);
       await refresh();
     }
     catch (err) {
@@ -127,34 +166,56 @@ export function RemoteClientSection({
 
   return (
     <>
-      <div className="space-y-6">
+      <div className="space-y-4">
         {/* The paragraph that explains this direction lives on the hub, which
                   renders it as this section's subtitle. Rendering it here too put
-                  the same sentence on screen twice. */}
-        <div className="rounded-lg border border-line-soft bg-surface-subtle p-4">
-          <label className="text-sm font-medium text-ink" htmlFor="peer-invitation">
-            {t("addTitle")}
-          </label>
-          <p className="mt-1 text-xs leading-5 text-ink-muted">{t("addHint")}</p>
-          <div className="mt-3 flex items-center gap-2">
-            <TextInput
-              id="peer-invitation"
-              onChange={event => setInvitation(event.target.value)}
-              placeholder="futureos://remote/pair?…"
-              value={invitation}
+                  the same sentence on screen twice.
+
+                  The form itself is folded away. Pairing is one errand per machine;
+                  the machines the user already has are what this card is for, and the
+                  open form stood above them at 158px — a fifth of the page — with two
+                  sentences of prose about a text box. The row says what is behind it,
+                  and the instructions are read when the box is actually in front of
+                  the user. */}
+        <div className="rounded-lg border border-line-soft bg-surface-subtle">
+          <button
+            aria-expanded={addOpen}
+            className="flex w-full items-center gap-3 p-4 text-left"
+            onClick={() => setAddOpen(open => !open)}
+            type="button"
+          >
+            <span className="min-w-0 flex-1 text-sm font-medium text-ink">{t("addTitle")}</span>
+            <ChevronDown
+              aria-hidden
+              className={cn("size-4 shrink-0 text-ink-muted transition-transform", addOpen && "rotate-180")}
             />
-            <Button
-              disabled={!invitation.trim() || busy !== null}
-              onClick={() => void handlePair()}
-              size="sm"
-              variant="primary"
-            >
-              {busy === "__pair__" ? t("adding") : t("add")}
-            </Button>
-          </div>
-          {/* Replacing the phone pairing on the other machine is a real
-                consequence of this action, so it is stated before, not after. */}
-          <p className="mt-2 text-xs leading-5 text-ink-muted">{t("slotWarning")}</p>
+          </button>
+          {addOpen
+            ? (
+                <div className="px-4 pb-4">
+                  <p className="text-xs leading-5 text-ink-muted">{t("addHint")}</p>
+                  <div className="mt-3 flex items-center gap-2">
+                    <TextInput
+                      aria-label={t("addTitle")}
+                      onChange={event => setInvitation(event.target.value)}
+                      placeholder="futureos://remote/pair?…"
+                      value={invitation}
+                    />
+                    <Button
+                      disabled={!invitation.trim() || busy !== null}
+                      onClick={() => void handlePair()}
+                      size="sm"
+                      variant="primary"
+                    >
+                      {busy === "__pair__" ? t("adding") : t("add")}
+                    </Button>
+                  </div>
+                  {/* Replacing the phone pairing on the other machine is a real
+                        consequence of this action, so it is stated before, not after. */}
+                  <p className="mt-2 text-xs leading-5 text-ink-muted">{t("slotWarning")}</p>
+                </div>
+              )
+            : null}
         </div>
 
         {error ? <p className="text-xs text-danger">{error}</p> : null}
@@ -196,12 +257,47 @@ export function RemoteClientSection({
                     onEdit={() => onOpenSettings(peer)}
                     onNewConversation={() => onStartConversation(peer.desktopId)}
                     onReconnect={() => void run(peer.desktopId, () => connectRemotePeer(peer.desktopId))}
+                    onUnpair={() => setUnpairTarget(peer)}
                     peer={peer}
                   />
                 ))}
               </div>
             )}
       </div>
+      {/*
+        * `Dialog` rather than the shared `ConfirmDeleteDialog`: its confirm button
+        * reads "Delete", and unpairing a computer deletes nothing the user made.
+        * The other machine keeps all of its data; what is removed here is one
+        * pairing, which is what this button says.
+        */}
+      {unpairTarget
+        ? (
+            <Dialog
+              description={t("unpairConfirmDesc", {
+                name: unpairTarget.name ?? unpairTarget.desktopId,
+              })}
+              footer={(
+                <>
+                  <Button onClick={() => setUnpairTarget(null)} variant="ghost">
+                    {t("cancel")}
+                  </Button>
+                  <Button
+                    disabled={busy === unpairTarget.desktopId}
+                    onClick={() => void handleUnpair(unpairTarget)}
+                    variant="danger"
+                  >
+                    {t("unpair")}
+                  </Button>
+                </>
+              )}
+              onClose={() => setUnpairTarget(null)}
+              open
+              title={t("unpairConfirmTitle")}
+            >
+              <span />
+            </Dialog>
+          )
+        : null}
     </>
   );
 }
@@ -217,6 +313,7 @@ function PeerRow({
   onEdit,
   onNewConversation,
   onReconnect,
+  onUnpair,
   peer,
 }: {
   busy: boolean;
@@ -224,6 +321,7 @@ function PeerRow({
   onEdit: () => void;
   onNewConversation: () => void;
   onReconnect: () => void;
+  onUnpair: () => void;
   peer: RemotePeer;
 }) {
   const { t } = useTranslation("remotePeer");
@@ -264,6 +362,9 @@ function PeerRow({
           ? <Button disabled={busy} onClick={onDisconnect} size="sm">{t("disconnect")}</Button>
           : <Button disabled={busy} onClick={onReconnect} size="sm" variant="primary">{t("connect")}</Button>}
         <Button disabled={busy} onClick={onEdit} size="sm" variant="ghost">{t("edit")}</Button>
+        {/* Last, and marked: it is the one action here that removes the row it
+            sits on, and the only one that is confirmed. */}
+        <Button disabled={busy} onClick={onUnpair} size="sm" variant="danger-soft">{t("unpair")}</Button>
       </div>
     </div>
   );
