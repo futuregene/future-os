@@ -38,14 +38,18 @@ export type QuestionRung =
  * The list is inverted, so `viewPosition: 1` puts a row's *start* just under
  * the viewport's top edge while `viewPosition: 0` puts its *end* just above the
  * bottom edge: the mirror swaps which edge `scrollToIndex` aligns. A rung lands
- * by its **start** — a question is read forward from there, and so is an
- * answer: a press that reaches the previous answer is the reader going back to
- * read it, and an answer taller than the screen arrived at by its end leaves
- * the half they wanted to start from above the viewport, reachable only by
- * dragging. (Landing a reply by the row *below* it — what this used to do,
- * aligning that row to the top edge — put the answer above the viewport
- * entirely: the reader saw the next question at the top and the answer they
- * asked for was gone.)
+ * by its **start** — a question is read forward from there, and an answer is
+ * entered from the same edge. (Landing a reply by the row *below* it — what
+ * this used to do, aligning that row to the top edge — put the answer above the
+ * viewport entirely: the reader saw the next question at the top and the answer
+ * they asked for was gone.)
+ *
+ * A reply's *start* is not quite where its press stops. An exchange opens with
+ * the work the reader asked for and closes with the output it produced, so the
+ * walk lifts the row to the reply's last output slice — which only the bubble
+ * can measure (see `replyTailBlock`). This function still answers for the row;
+ * `useQuestionNav` applies the lift, and a reply nobody has measured yet keeps
+ * the plain start landing.
  *
  * The transcript's own newest row is the one exception, and lands by its
  * **end**, because that end *is* the tail: the place the list rests at, and the

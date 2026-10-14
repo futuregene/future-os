@@ -163,7 +163,7 @@ describe("useQuestionNav", () => {
     });
   });
 
-  test("↑ lands the previous answer at its start, under the top edge", () => {
+  test("↑ lands the previous answer at its start while the row has no anchor", () => {
     act(() => {
       result.current.onScroll(scrollEvent(600));
     });
@@ -173,14 +173,102 @@ describe("useQuestionNav", () => {
 
     act(() => result.current.goToPrevious());
 
-    // A reply lands the way a question does: the reader coming back up to an
-    // answer wants to read it from its first line, not from its last.
+    // A reply the bubble has not measured yet has no tail to aim at: the jump
+    // falls back to the row's own start, and the measurement that follows
+    // re-issues it (see the anchor tests below).
     expect(list.scrollToIndex).toHaveBeenCalledWith({
       index: 2,
       viewPosition: 1,
       viewOffset: JUMP_VIEW_OFFSET,
       animated: false,
     });
+  });
+
+  test("↑ lands the previous answer on its last output, once it is measured", () => {
+    act(() => {
+      result.current.onScroll(scrollEvent(600));
+    });
+    reportRows(1);
+    act(() => result.current.onReplyTailAnchor("answer-1", 240));
+
+    act(() => result.current.goToPrevious());
+
+    // The row is lifted by the anchor's own offset, so the reply's last output
+    // — not the reasoning rows it opened with — takes the reading edge.
+    expect(list.scrollToIndex).toHaveBeenCalledWith({
+      index: 2,
+      viewPosition: 1,
+      viewOffset: JUMP_VIEW_OFFSET + 240,
+      animated: false,
+    });
+  });
+
+  test("↓ onto a reply is lifted by its anchor the same way", () => {
+    act(() => result.current.onScroll(scrollEvent(600)));
+    // The top edge is at the oldest question: ↓ walks back down the ladder.
+    reportRows(3);
+    expect(result.current.next).toEqual({ kind: "replyTail", index: 2 });
+    act(() => result.current.onReplyTailAnchor("answer-1", 96));
+
+    act(() => result.current.goToNext());
+
+    expect(list.scrollToIndex).toHaveBeenCalledWith({
+      index: 2,
+      viewPosition: 1,
+      viewOffset: JUMP_VIEW_OFFSET + 96,
+      animated: false,
+    });
+  });
+
+  test("a jump onto an unmeasured reply is re-issued when the row is measured", () => {
+    act(() => result.current.onScroll(scrollEvent(600)));
+    reportRows(1);
+    act(() => result.current.goToPrevious());
+    expect(list.scrollToIndex).toHaveBeenLastCalledWith({
+      index: 2,
+      viewPosition: 1,
+      viewOffset: JUMP_VIEW_OFFSET,
+      animated: false,
+    });
+
+    act(() => result.current.onReplyTailAnchor("answer-1", 240));
+
+    // The row landed and was measured: the jump is re-issued against the
+    // anchor rather than waiting out its realign window.
+    expect(list.scrollToIndex).toHaveBeenCalledTimes(2);
+    expect(list.scrollToIndex).toHaveBeenLastCalledWith({
+      index: 2,
+      viewPosition: 1,
+      viewOffset: JUMP_VIEW_OFFSET + 240,
+      animated: false,
+    });
+  });
+
+  test("a measurement for another row does not drag the reader back", () => {
+    act(() => result.current.onScroll(scrollEvent(600)));
+    reportRows(1);
+    act(() => result.current.goToPrevious());
+    expect(list.scrollToIndex).toHaveBeenCalledTimes(1);
+
+    // A reply elsewhere re-lays out (a late image, a settled slice): that is
+    // not this jump's business, and the reader is not pulled off their landing.
+    act(() => result.current.onReplyTailAnchor("answer-2", 800));
+
+    expect(list.scrollToIndex).toHaveBeenCalledTimes(1);
+  });
+
+  test("a drag ends the window in which a measurement is taken up", () => {
+    act(() => result.current.onScroll(scrollEvent(600)));
+    reportRows(1);
+    act(() => result.current.goToPrevious());
+    expect(list.scrollToIndex).toHaveBeenCalledTimes(1);
+
+    // The reader took the viewport by hand: their position is theirs again, so
+    // the row's own measurement no longer re-issues anything.
+    act(() => result.current.onScrollBeginDrag());
+    act(() => result.current.onReplyTailAnchor("answer-1", 240));
+
+    expect(list.scrollToIndex).toHaveBeenCalledTimes(1);
   });
 
   test("the press after a landed rung steps on instead of re-aligning it", () => {

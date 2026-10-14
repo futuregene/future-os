@@ -81,6 +81,14 @@ export interface QuestionNavApi {
   visible: boolean;
   goToPrevious: () => void;
   goToNext: () => void;
+  /**
+   * Where a reply's tail anchor sits inside its own row, reported by the bubble
+   * that renders it (see `replyTailBlock`). A jump still in flight for that row
+   * is re-issued against the fresh measurement: a row the list had not laid out
+   * yet lands on its start first, and this is what turns that landing into the
+   * one the press asked for.
+   */
+  onReplyTailAnchor: (itemId: string, offset: number) => void;
   onScroll: (event: NativeSyntheticEvent<NativeScrollEvent>) => void;
   /**
    * The reader took the viewport by hand: the ladder walk restarts from where
@@ -114,14 +122,21 @@ function topOf(viewableItems: ViewToken[]): number | null {
  *
  * Every landing is a `scrollToIndex` against the list's own measured frames,
  * and which edge takes the reading position is the rung's own answer: a rung
- * lands its *start* below the viewport's top edge — a question or an answer,
- * both read forward from there — except the transcript's newest row, whose
- * *end* is the tail and lands above the bottom edge instead (see
- * `rungLanding`).
+ * lands its *start* below the viewport's top edge, except the transcript's
+ * newest row, whose *end* is the tail and lands above the bottom edge instead
+ * (see `rungLanding`).
  *
- * The anchor comes from what the list reports as viewable — partly and fully
- * visible rows — rather than from row geometry: a row's `onLayout` `y` is
- * relative to its own parent, the virtualized cell, so it says nothing about
+ * An *answer* aims past its own start at its last output slice, which is the
+ * thing the ladder promises to stop on: the row is lifted by that slice's
+ * measured offset inside it, so the press brings the answer's work — not the
+ * reasoning rows it opened with — to the reading edge (see `replyTailBlock` in
+ * the bubble, which reports the offset, and `onReplyTailAnchor` here, which
+ * consumes it). A row the list has not laid out yet has no offset to lift by
+ * and lands on its start first; the measurement then re-issues the jump.
+ *
+ * Where the reader *is* comes from what the list reports as viewable — partly
+ * and fully visible rows — rather than from row geometry: a row's `onLayout` `y`
+ * is relative to its own parent, the virtualized cell, so it says nothing about
  * where the row sits in the transcript. ↑ is offered whether or not the reader
  * has scrolled: a conversation opens at its tail, where the question of the
  * turn on screen is one press away. ↓ is the direction that needs the tail off
@@ -191,6 +206,22 @@ export function useQuestionNav({
   const topRef = useRef<number | null>(null);
   const offsetRef = useRef(0);
   const jumpRef = useRef<{ landing: RungLanding; attempts: number } | null>(null);
+  /**
+   * The landing whose anchor may still be measured, or null once the jump has
+   * had its chance to be re-issued against one. A row that is already measured
+   * lands right the first time; one that is not lands on its start, and the
+   * measurement that follows lifts it. Bounded deliberately: a row that re-lays
+   * out later (a late image, a streaming slice) must not drag the reader back to
+   * a jump they have since left.
+   */
+  const anchorPendingRef = useRef<RungLanding | null>(null);
+  /**
+   * The measured tail anchor of every reply the list has laid out, by item id.
+   * A property of the message rather than of the reading session: it survives a
+   * session switch, and a row measured once is exact the next time a press
+   * lands on it.
+   */
+  const anchorsRef = useRef(new Map<string, number>());
   /** The rung the last press landed on, or null while the reader is free. */
   const cursorRef = useRef<QuestionRung | null>(null);
   const pendingPageRef = useRef(false);
@@ -248,6 +279,7 @@ export function useQuestionNav({
     topRef.current = null;
     pendingPageRef.current = false;
     cursorRef.current = null;
+    anchorPendingRef.current = null;
     sync();
   }, [sessionId, sync]);
 
@@ -256,6 +288,7 @@ export function useQuestionNav({
   useEffect(() => {
     if (!atLatest) return;
     cursorRef.current = null;
+    anchorPendingRef.current = null;
     sync();
   }, [atLatest, sync]);
 
@@ -290,9 +323,25 @@ export function useQuestionNav({
   ]);
 
   /**
+   * The tail anchor measured for a landing's row, or 0 when it has none (a
+   * question, a notice row, a reply the list has not laid out yet).
+   */
+  const anchorOf = useCallback((landing: RungLanding): number => {
+    const item = itemsRef.current[landing.index];
+    if (item === undefined) return 0;
+    return anchorsRef.current.get(item.id) ?? 0;
+  }, []);
+
+  /**
    * Scroll a rung's landing into place. A start goes just under the viewport's
    * top edge; an end just above its bottom edge — both by `JUMP_*_INSET`, and
    * both because the inverted list's `viewPosition` counts from the far edge.
+   *
+   * A start landing is lifted by its row's measured tail anchor: the press
+   * asked for the reply's last output, not for the row's first slice, and the
+   * anchor is how far into the row that output sits. A reply the list has not
+   * measured reports no anchor and keeps the row's start — see
+   * `onReplyTailAnchor`, which re-issues the jump once the measurement arrives.
    */
   const align = useCallback(
     (landing: RungLanding) => {
@@ -300,32 +349,77 @@ export function useQuestionNav({
         index: landing.index,
         viewPosition: landing.edge === "top" ? 1 : 0,
         viewOffset:
-          landing.edge === "top" ? JUMP_VIEW_OFFSET : JUMP_BOTTOM_INSET,
+          landing.edge === "top"
+            ? JUMP_VIEW_OFFSET + anchorOf(landing)
+            : JUMP_BOTTOM_INSET,
         animated: false,
       });
     },
-    [listRef],
+    [anchorOf, listRef],
+  );
+
+  const onReplyTailAnchor = useCallback(
+    (itemId: string, offset: number) => {
+      const anchors = anchorsRef.current;
+      if (anchors.get(itemId) === offset) return;
+      anchors.set(itemId, offset);
+      const landing = anchorPendingRef.current;
+      if (landing === null) return;
+      if (itemsRef.current[landing.index]?.id !== itemId) return;
+      // The row of a jump in flight has just been measured: re-issue the jump
+      // so the anchor, and not the row's start, takes the reading edge.
+      align(landing);
+    },
+    [align],
+  );
+
+  /**
+   * One more landing pass, then the jump stops listening for measurements:
+   * whatever was measured by then is what the landing keeps, and a row that
+   * re-lays out afterwards is its own business rather than the reader's.
+   */
+  const settleJump = useCallback(
+    (landing: RungLanding) => {
+      if (realignTimerRef.current !== null) clearTimeout(realignTimerRef.current);
+      realignTimerRef.current = setTimeout(() => {
+        realignTimerRef.current = null;
+        anchorPendingRef.current = null;
+        align(landing);
+      }, REALIGN_MS);
+    },
+    [align],
+  );
+
+  /**
+   * Start a landing: scroll, remember it for the anchor re-issue and for a
+   * failed scroll, and schedule the re-issue every landing gets — a row outside
+   * the measured window is estimated first and exact a moment later.
+   */
+  const land = useCallback(
+    (landing: RungLanding) => {
+      jumpRef.current = { landing, attempts: 0 };
+      anchorPendingRef.current = landing;
+      align(landing);
+      settleJump(landing);
+    },
+    [align, settleJump],
   );
 
   const jumpTo = useCallback(
     (rung: QuestionRung | null) => {
       if (rung === null || listRef.current === null) return;
-      const landing = rungLanding(rung);
-      if (realignTimerRef.current !== null) clearTimeout(realignTimerRef.current);
       onTakeOverRef.current();
       // The press is remembered: the next one steps off this rung even when the
       // row it landed on fills the screen and the viewport cannot say which end
       // of it the reader is at.
       cursorRef.current = rung;
-      jumpRef.current = { landing, attempts: 0 };
-      align(landing);
-      realignTimerRef.current = setTimeout(() => align(landing), REALIGN_MS);
+      land(rungLanding(rung));
       // What the two buttons offer next follows the walk, not the viewport the
       // jump has just left: the rung behind the reader is the one they came
       // from.
       sync();
     },
-    [align, listRef, sync],
+    [land, listRef, sync],
   );
 
   /**
@@ -353,15 +447,12 @@ export function useQuestionNav({
         const index = itemsNow.findIndex(item => item.id === oldest);
         if (index < 0) return;
         const landing: RungLanding = { index, edge: "top" };
-        jumpRef.current = { landing, attempts: 0 };
-        align(landing);
-        if (realignTimerRef.current !== null) clearTimeout(realignTimerRef.current);
-        realignTimerRef.current = setTimeout(() => align(landing), REALIGN_MS);
+        land(landing);
       })
       .catch(() => {
         pendingPageRef.current = false;
       });
-  }, [align]);
+  }, [land]);
 
   const goToPrevious = useCallback(() => {
     if (nav.sessionId !== sessionId) return;
@@ -402,13 +493,11 @@ export function useQuestionNav({
         offset: Math.max(0, averageItemLength * index),
         animated: false,
       });
-      if (realignTimerRef.current !== null) clearTimeout(realignTimerRef.current);
-      realignTimerRef.current = setTimeout(
-        () => align(jump.landing),
-        REALIGN_MS,
-      );
+      // The row is still unmeasured, so the anchor is still worth waiting for:
+      // this only restarts the window in which a measurement is taken up.
+      settleJump(jump.landing);
     },
-    [align, listRef],
+    [listRef, settleJump],
   );
 
   const onScroll = useCallback(
@@ -424,9 +513,12 @@ export function useQuestionNav({
   );
 
   // The reader's own drag: the walk restarts from where their finger left the
-  // transcript instead of continuing a jump sequence they have departed from.
+  // transcript instead of continuing a jump sequence they have departed from,
+  // and a jump still waiting on a measurement stops waiting — the viewport is
+  // the reader's again.
   const onScrollBeginDrag = useCallback(() => {
     cursorRef.current = null;
+    anchorPendingRef.current = null;
     sync();
   }, [sync]);
 
@@ -443,6 +535,7 @@ export function useQuestionNav({
     visible: hasPrevious || current.next !== null,
     goToPrevious,
     goToNext,
+    onReplyTailAnchor,
     onScroll,
     onScrollBeginDrag,
     onScrollToIndexFailed,
