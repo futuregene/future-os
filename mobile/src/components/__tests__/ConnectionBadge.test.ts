@@ -197,9 +197,10 @@ test("the dot is green only when every machine is connected", () => {
   expect(dotColor()).toBe(colors.success);
 
   render(ready, true, machines(["a", "connected"], ["b", "offline"]));
-  // A yellow of its own, not the text-tuned amber: at this size that one is the
-  // red the state below wears, and "one machine is down" must not read as "all".
-  expect(dotColor()).toBe(colors.warningBright);
+  // Yellow, not the text-tuned amber: that one is orange enough at this size to
+  // be taken for the red the state below wears, and "one machine is down" must
+  // not read as "all".
+  expect(dotColor()).toBe(colors.warningDot);
 
   render(ready, true, machines(["a", "offline"], ["b", "connecting"]));
   expect(dotColor()).toBe(colors.danger);
@@ -214,9 +215,9 @@ test("the partial dot is yellow while the title under it stays readable", () => 
   render(ready, true, machines(["a", "connected"], ["b", "offline"]));
   open();
 
-  expect(dotColor()).toBe(colors.warningBright);
-  // The title is a line of text on a light surface, where the dot's yellow has
-  // no contrast left: it keeps the darker amber for the same state.
+  expect(dotColor()).toBe(colors.warningDot);
+  // The title is a line of text on a light surface, where yellow has no contrast
+  // left to read it by: it keeps the darker amber for the same state.
   expect(titleColor()).toBe(colors.warning);
 });
 
@@ -225,7 +226,7 @@ test("a machine's own row wears the badge's palette", () => {
   open();
 
   expect(machineDotColor("a")).toBe(colors.success);
-  expect(machineDotColor("b")).toBe(colors.warningBright);
+  expect(machineDotColor("b")).toBe(colors.warningDot);
   expect(machineDotColor("c")).toBe(colors.danger);
 });
 
