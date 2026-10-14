@@ -32,7 +32,7 @@ import { DialogSurface } from "../components/DialogSurface";
 import { useAppDialog } from "../components/useAppDialog";
 import { RenameModal } from "../features/chat/components/RenameModal";
 import { useRemoteControls as useRemote } from "../remote/RemoteContext";
-import { activeMachineStatus, machineStatusKey, type MachineSummary } from "../remote/desktopStatus";
+import { activeMachineStatus, machineStatusKey, machinesConnected, type MachineSummary } from "../remote/desktopStatus";
 import { mergeSessions, type DesktopFilter } from "../remote/mergeSessions";
 import type { DesktopCommands } from "../remote/desktopCommands";
 import { iconGlyph } from "../remote/peerIcons";
@@ -609,6 +609,24 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   const desktopLabel = (desktopId: string): string =>
     machines.find(machine => machine.desktopId === desktopId)?.label ?? desktopId;
   /**
+   * How the whole set of paired machines stands.
+   *
+   * `any` is the phone's own availability, and `scopeAnswers` says whether the
+   * machine the list is *showing* is one of the ones answering. The list area and
+   * the whole-page states below belong to the phone, and the phone holds several
+   * desktops: one machine answering is enough for the merged list to be worth
+   * drawing, while the machine whose conversation happens to be open is only one
+   * of them. Reading those states from that one machine is how a reader with two
+   * of three desktops up was handed a red "no connection" page over a list that
+   * had rows to show.
+   */
+  const machineCounts = machinesConnected(machines);
+  const scopeAnswers = scopedPeerId !== null
+    ? peerReady.has(scopedPeerId)
+    : scopedFilter.kind === "desktop"
+      ? connected
+      : machineCounts.any;
+  /**
    * The workspaces the dialog offers: the picked machine's own list when the
    * phone is still on another one, else the connected machine's.
    */
@@ -636,8 +654,13 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     // More than one machine can take the conversation — the same "can this
     // machine answer" judgement its rows' actions are offered under — so which
     // machine it is belongs to the user rather than to whichever one happens to
-    // be connected: the dialog opens on that choice.
-    const multiple = machines.filter(machine => canCommand(machine.desktopId)).length > 1;
+    // be connected: the dialog opens on that choice. The machine the phone reads
+    // counts even when it cannot take one: a peer answering while it is down is
+    // still a question of *which* machine, because a draft built on a machine
+    // that is not answering is a draft addressed to nobody.
+    const takesWork = machines.filter(machine => canCommand(machine.desktopId));
+    const only = takesWork.length === 1 ? takesWork[0]?.desktopId ?? null : null;
+    const multiple = takesWork.length > 1 || (only !== null && only !== activeDesktopId);
     // A machine the list is showing is already named by the picker, so the
     // dialog starts on it: a conversation started from this screen belongs to the
     // machine the screen is about, not to the one the phone happens to read. Its
@@ -706,7 +729,21 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   };
   const standaloneConnecting =
     reconnectingFromDisconnected || (!remote.hasConnectedContent && connecting);
-  const showStandaloneStatus = connection.level === "disconnected" || standaloneConnecting;
+  /**
+   * Whether a machine other than the open one is answering.
+   *
+   * The whole-page state is the phone's own, and the phone holds several
+   * desktops: one machine answering means the list below has rows to draw and
+   * the reader has somewhere to work, so it cannot claim there is nothing to
+   * connect to. A machine still connecting is not that machine: nothing is
+   * readable from it yet, and the phone's own state is what the page reports.
+   */
+  const anotherMachineAnswers = machines.some(
+    machine => machine.desktopId !== activeDesktopId && machine.status === "connected",
+  );
+  const showStandaloneStatus =
+    !anotherMachineAnswers
+    && (connection.level === "disconnected" || standaloneConnecting);
 
   const offlineEmpty = (
     <View style={styles.emptyState}>
@@ -746,6 +783,9 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     </View>
   );
 
+  // The workspace tree is the open machine's own, so its empty state answers for
+  // that machine rather than for the set: saying "no workspaces" under one
+  // machine's tree because *another* machine is up would name the wrong machine.
   const workspaceEmpty = !connected ? (
     offlineEmpty
   ) : (
@@ -807,7 +847,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
    * offered under, so the button never promises a conversation on a machine the
    * list is describing as unreachable.
    */
-  const canStartConversation = scopedPeerId === null ? connected : canCommand(scopedPeerId);
+  const canStartConversation = scopedPeerId === null ? scopeAnswers : canCommand(scopedPeerId);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -887,7 +927,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           icons={peerIcons}
           commandsFor={commandsFor}
           merged={showMerged ? mergedRows : undefined}
-          empty={scopedPeerEmpty ?? (tab === "workspace" ? workspaceEmpty : !connected ? offlineEmpty : createChatEmpty)}
+          empty={scopedPeerEmpty ?? (tab === "workspace" ? workspaceEmpty : !scopeAnswers ? offlineEmpty : createChatEmpty)}
           onMenu={openSessionMenu}
         />}
 

@@ -157,6 +157,9 @@ export const resources = {
         connected: "Connected",
         connecting: "Connecting",
         machinesSummary: "{{connected}} of {{total}} desktops connected",
+        machinesPartial: "Some desktops are not connected",
+        machinesPartialHint:
+          "Make sure the desktops that are not connected are online, then reconnect",
         reconnectAll: "Reconnect all",
         machine: {
           connected: "Connected",
@@ -1093,6 +1096,8 @@ export const resources = {
         connected: "已连接",
         connecting: "正在连接",
         machinesSummary: "{{total}} 个桌面端中已连接 {{connected}} 个",
+        machinesPartial: "部分桌面端未连接",
+        machinesPartialHint: "请确认未连接的桌面端在线后重新连接",
         reconnectAll: "重新连接全部",
         machine: {
           connected: "已连接",

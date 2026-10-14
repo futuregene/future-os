@@ -74,7 +74,13 @@ jest.mock("react-native", () => {
 });
 jest.mock("../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote, useRemote: () => mockRemote }));
 const mockCatalogs = {
-  catalogs: [] as { desktopId: string; label: string; sessions: never[] }[],
+  // A machine's catalogue as the merged list reads it: rows with the machine
+  // that owns them, so the tests can say which machine's rows are on screen.
+  catalogs: [] as {
+    desktopId: string;
+    label: string;
+    sessions: { sessionId: string; threadId: string; title: string; streaming: boolean }[];
+  }[],
   machines: [] as MachineSummary[],
   refresh: jest.fn(async () => {}),
   reconnect: jest.fn(async () => {}),
@@ -1106,5 +1112,173 @@ describe("the machine the picker names", () => {
       mockRemote.desktops = paired;
       act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
     }
+  });
+});
+
+/**
+ * The phone holds several desktops and only some of them answer.
+ *
+ * The machine whose conversation is open being one of the ones that are down
+ * must not become the *phone's* own state: with another machine answering there
+ * is a merged list to draw and a conversation to start, and the reader who
+ * picked a desktop — or picked none — is looking for what those machines have.
+ * Writing the whole-page state from that one machine is how a reader with two of
+ * three desktops up was handed a red "no connection" page.
+ */
+describe("several desktops, only some answering", () => {
+  const peer = {
+    desktopId: "desktop_2",
+    label: "Office",
+    active: false,
+    status: "connected" as const,
+  };
+  const elsewhere = {
+    sessionId: "elsewhere",
+    threadId: "t-elsewhere",
+    title: "Elsewhere",
+    streaming: false,
+  };
+  const platform = Platform.OS;
+
+  beforeEach(() => {
+    mockRemote.connectionPresentation = {
+      level: "disconnected",
+      titleKey: "connection.disconnected",
+      hintKey: "connection.failedHint",
+    };
+    mockRemote.phase = "failed";
+    mockRemote.error = "whatever the transport said";
+    mockRemote.desktopOnline = false;
+    mockCatalogs.machines = [peer];
+    mockCatalogs.commandsFor = jest.fn(() => ({ capabilities: new Set<string>() }));
+  });
+  afterEach(() => {
+    Platform.OS = platform;
+    mockCatalogs.machines = [];
+    mockCatalogs.catalogs = [];
+    mockCatalogs.commandsFor = jest.fn(() => null);
+    mockRemote.connectionPresentation = {
+      level: "connected",
+      titleKey: "connection.connected",
+      hintKey: "connection.offlineHint",
+    };
+    mockRemote.phase = "connected";
+    mockRemote.error = null;
+    mockRemote.desktopOnline = true;
+  });
+
+  const rerender = () =>
+    act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
+  const nameDesktop = (desktopId: string) =>
+    act(() => tree.root.findByType(DesktopPicker).props.onChange({ kind: "desktop", desktopId }));
+  const rows = () =>
+    tree.root.findByType(SessionList).props.merged.map((row: { desktopId: string }) => row.desktopId);
+  /** Render the empty state the list was handed, so its own copy can be read. */
+  const renderEmpty = () => {
+    let renderer: ReactTestRenderer | null = null;
+    act(() => { renderer = create(tree.root.findByType(SessionList).props.empty as ReactElement); });
+    const rendered = renderer as unknown as ReactTestRenderer;
+    return {
+      texts: rendered.root.findAllByType(Text).map(node => String(node.props.children)),
+      root: rendered.root,
+      unmount: () => act(() => rendered.unmount()),
+    };
+  };
+  /** A machine's row in the new-conversation dialog, by the name it carries. */
+  const dialogRow = (label: string) =>
+    tree.root.findAll(node =>
+      node.props.accessibilityLabel === label && typeof node.props.onPress === "function",
+    )[0]!;
+
+  test("a machine that answers keeps the list instead of the phone's red page", () => {
+    mockCatalogs.catalogs = [{ desktopId: "desktop_2", label: "Office", sessions: [elsewhere] }];
+    rerender();
+    act(() => tree.root.findByType(SessionList).props.onTabChange("chat"));
+
+    // The rows are the machine that answers: the one the phone reads has none to
+    // give, and it is not the phone that is down.
+    expect(moduleDisconnected()).toBeUndefined();
+    expect(rows()).toEqual(["desktop_2"]);
+    // The badge is judged on the same two machines the list is.
+    expect(tree.root.findByType(ConnectionBadge).props.machines).toHaveLength(2);
+  });
+
+  test("picking a machine that answers shows that machine's list, not a disconnect", () => {
+    mockCatalogs.catalogs = [];
+    rerender();
+    act(() => tree.root.findByType(SessionList).props.onTabChange("chat"));
+    nameDesktop("desktop_2");
+
+    expect(moduleDisconnected()).toBeUndefined();
+    expect(rows()).toEqual([]);
+    // Answering and simply empty: the ordinary copy for this tab, with the
+    // button that starts one on the machine the list names.
+    const empty = renderEmpty();
+    expect(empty.texts).toContain("sessions.emptyConnectedTitle");
+    expect(empty.texts).not.toContain("desktops.unreachableHint");
+    expect(empty.texts).not.toContain("connection.disconnected");
+    empty.unmount();
+  });
+
+  test("picking the machine that is down describes that machine, keeping the picker", () => {
+    rerender();
+    act(() => tree.root.findByType(SessionList).props.onTabChange("chat"));
+    nameDesktop("desktop_1");
+
+    // The picker stays on screen — it is how the reader gets to a machine that
+    // does answer — and the list says how the picked one stands.
+    expect(moduleDisconnected()).toBeUndefined();
+    expect(button("desktops.pickerLabel")).toBeDefined();
+    const empty = renderEmpty();
+    expect(empty.texts).toContain("connection.disconnected");
+    // ...with the action that reaches *that* machine, not the set.
+    expect(empty.root.findAllByType(Button).map(node => node.props.label))
+      .toContain("connection.retry");
+    empty.unmount();
+  });
+
+  test("a machine that is still connecting is not one the list can read from", () => {
+    // The boundary of the rule: only a machine that *answers* keeps the phone's
+    // own page off, because only it has rows to give.
+    mockCatalogs.machines = [{ ...peer, status: "connecting" }];
+    rerender();
+
+    expect(moduleDisconnected()).toBeDefined();
+  });
+
+  test("an open machine that is reconnecting keeps the list it already has", () => {
+    // Nothing to do with a second machine: a phone whose own machine is between
+    // attempts shows what it last read rather than blanking the screen.
+    mockCatalogs.machines = [];
+    mockRemote.connectionPresentation = {
+      level: "connecting",
+      titleKey: "connection.connecting",
+      hintKey: "connection.offlineHint",
+    };
+    mockRemote.phase = "reconnecting";
+    mockRemote.hasConnectedContent = true;
+    mockRemote.desktopOnline = false;
+    rerender();
+
+    expect(moduleDisconnected()).toBeUndefined();
+  });
+
+  test("a conversation started from the merged list lands on the machine that answers", async () => {
+    // The modal's own path (UIKit release) is what the other creation tests use,
+    // and it is the one where a draft built on the wrong machine would show.
+    Platform.OS = "ios";
+    rerender();
+    act(() => tree.root.findByType(SessionList).props.onTabChange("chat"));
+    act(() => button("sessions.new").props.onPress());
+
+    // The machine the phone reads cannot take the conversation, so which machine
+    // it belongs to is the user's to say rather than the open one's by default.
+    expect(modalText()).toContain("sessions.chooseDevice");
+    const dialog = visibleModal()!;
+    await act(async () => { dialogRow("Office").props.onPress(); });
+    expect(mockRemote.newConversationOn).not.toHaveBeenCalled();
+    await act(async () => { dialog.props.onDismiss(); });
+    expect(mockRemote.newConversationOn).toHaveBeenCalledWith("desktop_2", "chat", "");
+    expect(mockRemote.newConversation).not.toHaveBeenCalled();
   });
 });
