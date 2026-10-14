@@ -298,3 +298,123 @@ it("keeps each line's expand state to itself", async () => {
   expect(lines[1]!.textContent).toBe("Read a file");
   expect(buttons().filter(button => button.getAttribute("aria-expanded") === "true")).toHaveLength(1);
 });
+
+/**
+ * A row whose target is not in the page reads it when the reader opens it.
+ *
+ * This is the whole reason a remote conversation can open on one request: a lean
+ * history page carries a call's identity and not its arguments, and fetching
+ * every one of them up front cost one round trip per call — dozens per page, over
+ * a link to another machine — before the first line was drawn. The phone reads a
+ * row's command when it is opened, and so does this.
+ */
+it("reads a missing target from its resolver only once the row is opened", async () => {
+  const asked: { runId: string; toolCallId: string }[] = [];
+  const resolveTarget = async (input: { runId: string; toolCallId: string }) => {
+    asked.push(input);
+    return "Rscript x.R";
+  };
+
+  render(<AgentActivityLine item={item({ runId: "r1", toolCallId: "c1" })} resolveTarget={resolveTarget} runId="r1" />);
+  // Collapsed: the label is all the row says, and nothing has been asked for.
+  expect(asked).toEqual([]);
+  expect(container.textContent).toBe("Ran a command");
+
+  await clickButton();
+  expect(asked).toEqual([{ runId: "r1", toolCallId: "c1" }]);
+  expect(container.textContent).toContain("Rscript x.R");
+});
+
+/** A row the page already carries a target for asks nothing, opened or not. */
+it("does not ask for a target the row already has", async () => {
+  const asked: unknown[] = [];
+  render(
+    <AgentActivityLine
+      item={item({ kind: "shell", target: "npm test", toolCallId: "c1" })}
+      resolveTarget={async (input) => {
+        asked.push(input);
+        return null;
+      }}
+      runId="r1"
+    />,
+  );
+
+  await clickButton();
+  expect(container.textContent).toContain("npm test");
+  expect(asked).toEqual([]);
+});
+
+/**
+ * A host that cannot answer leaves the row as it was.
+ *
+ * The label is still the truth about the call, and a row that showed an error
+ * where its command belongs would make a refused read look like a broken
+ * transcript.
+ */
+it("leaves a row whose read failed exactly as it was", async () => {
+  render(
+    <AgentActivityLine
+      item={item({ runId: "r1", toolCallId: "c1" })}
+      resolveTarget={async () => {
+        throw new Error("Unsupported command: get_tool_call_args");
+      }}
+      runId="r1"
+    />,
+  );
+
+  await clickButton();
+  expect(container.textContent).toBe("Ran a command");
+});
+
+/** A row with no call identity asks nothing, and offers no reveal it cannot do. */
+it("offers no reveal for a call it cannot address", async () => {
+  const asked: unknown[] = [];
+  render(
+    <AgentActivityLine
+      item={item({ target: null as unknown as string })}
+      resolveTarget={async (input) => {
+        asked.push(input);
+        return null;
+      }}
+      runId="r1"
+    />,
+  );
+
+  // The button is there for the run inspector, but opening it reveals nothing
+  // and asks for nothing: there is no call id to look arguments up by.
+  await clickButton();
+  expect(asked).toEqual([]);
+  expect(container.textContent).toBe("Ran a command");
+});
+
+/** An expanded burst reads the commands it stands for, all at once. */
+it("reads an expanded burst's commands in one go", async () => {
+  const asked: { runId: string; toolCallId: string }[] = [];
+  const resolveTarget = async (input: { runId: string; toolCallId: string }) => {
+    asked.push(input);
+    return input.toolCallId === "c1" ? "npm test" : "Rscript x.R";
+  };
+  const children = [
+    item({ id: "c1", kind: "shell", runId: "r1", toolCallId: "c1" }),
+    item({ id: "c2", kind: "shell", runId: "r1", toolCallId: "c2" }),
+    // boundary: one child already carries its own target, so it is not asked for.
+    item({ id: "c3", kind: "shell", runId: "r1", target: "make lint", toolCallId: "c3" }),
+  ];
+  render(
+    <AgentActivityLine
+      item={item({ children, count: 3, id: "g1", kind: "shell", status: "completed" })}
+      resolveTarget={resolveTarget}
+      runId="r1"
+    />,
+  );
+  expect(asked).toEqual([]);
+
+  await clickButton();
+  expect(asked).toEqual([
+    { runId: "r1", toolCallId: "c1" },
+    { runId: "r1", toolCallId: "c2" },
+  ]);
+  expect(container.textContent).toContain("npm test");
+  expect(container.textContent).toContain("Rscript x.R");
+  expect(container.textContent).toContain("make lint");
+});
