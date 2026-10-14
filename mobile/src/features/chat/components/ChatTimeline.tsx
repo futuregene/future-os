@@ -157,7 +157,7 @@ export function ChatTimeline({ remote, t, invertedTranscriptItems, scroll, quest
         <QuestionNavControl
           hasNext={questionNav.next !== null}
           hasPrevious={questionNav.hasPrevious}
-          nextLabel={t("chat.nextQuestion")}
+          nextLabel={t("chat.nextPassage")}
           onNext={questionNav.goToNext}
           onPrevious={questionNav.goToPrevious}
           previousLabel={t("chat.previousQuestion")}

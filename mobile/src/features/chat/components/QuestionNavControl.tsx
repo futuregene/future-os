@@ -9,7 +9,12 @@ import {
 import { colors, layout, spacing } from "../../../theme/tokens";
 
 /**
- * "↑ previous question / ↓ next question" for a long transcript.
+ * "↑ previous question / ↓ next passage" for a long transcript.
+ *
+ * The pair is deliberately not symmetric: ↑ walks the reader's own prompts,
+ * skipping whatever answer lies between two of them, while ↓ takes the next item
+ * below of either kind — so ↓ reads as the transcript written out, input,
+ * output, input… (see `useQuestionNav`).
  *
  * Two round buttons stacked on the right edge (the chosen of four options on the
  * style sheet): at 44px each they are the platform's minimum touch target, and

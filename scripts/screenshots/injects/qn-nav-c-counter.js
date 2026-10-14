@@ -4,7 +4,7 @@
 // a proposal only: this demo is at the newest of four turns. If this shape is
 // chosen, the component has to derive the ordinal from the anchor question — the
 // implementation deliberately tracks positions, not numbers.
-const down = document.querySelector('[aria-label="下一个提问"]');
+const down = document.querySelector('[aria-label="下一段"]');
 const stack = down && down.parentElement;
 
 if (!down || !stack) throw new Error('question nav control not found');

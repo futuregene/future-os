@@ -2,9 +2,9 @@ import type { TimelineItem } from "../../../remote/types";
 import {
   buildLadder,
   nextRung,
-  previousRung,
+  previousQuestion,
   questionIndices,
-  rungLanding,
+  rungIndex,
   rungPosition,
   type QuestionRung,
 } from "../questionNav";
@@ -132,31 +132,22 @@ describe("buildLadder", () => {
 });
 
 describe("where a rung lands", () => {
-  test("a question and an answer both land by their start", () => {
-    // The inverted list aligns a start at `viewPosition: 1` and an end at 0;
-    // the hook is what turns these into a scroll (see useQuestionNav). An
-    // answer included: the row is entered from its own top edge, and the walk
-    // then lifts it to the reply's last output by the offset the bubble
-    // measured there (that lift is pinned in useQuestionNav's own suite).
-    expect(rungLanding(rungAt(1))).toEqual({ index: 1, edge: "top" });
-    expect(rungLanding(rungAt(2))).toEqual({ index: 3, edge: "top" });
-    expect(rungLanding(rungAt(4))).toEqual({ index: 5, edge: "top" });
+  test("a rung lands on its own row, question and reply alike", () => {
+    // The landing is the row's *start* for everything, questions and replies
+    // (the inverted list's `viewPosition: 1`; the hook turns this into the
+    // scroll). A reply is then lifted inside its row to its last output block by
+    // the offset the bubble measured there — pinned in useQuestionNav's suite.
+    expect(rungIndex(rungAt(1))).toBe(1);
+    expect(rungIndex(rungAt(2))).toBe(3);
+    expect(rungIndex(rungAt(4))).toBe(5);
   });
 
-  test("the transcript's newest row lands by its end, which is the tail", () => {
-    // The rung the walk comes down to last must leave the reader at the bottom
-    // of the conversation rather than at the top of the newest answer: its end
-    // is where the list rests (see rungLanding).
-    expect(rungLanding(rungAt(0))).toEqual({ index: 0, edge: "bottom" });
-  });
-
-  test("a question that is itself the newest row lands at the tail too", () => {
-    // An unanswered prompt: nothing newer than it exists, so its end is the
-    // tail the same way a reply's is.
-    expect(rungLanding({ kind: "question", question: 0 })).toEqual({
-      index: 0,
-      edge: "bottom",
-    });
+  test("the transcript's newest row is not special", () => {
+    // View index 0 is the newest row — the one a freshly opened conversation is
+    // resting at — and it lands like any other: its own top edge, with the
+    // list's tail (and the composer's own "back to latest") below it.
+    expect(rungIndex(rungAt(0))).toBe(0);
+    expect(rungIndex({ kind: "question", question: 0 })).toBe(0);
   });
 
   test("a rung is found by what it is, not by where it sat", () => {
@@ -171,40 +162,40 @@ describe("where a rung lands", () => {
   });
 });
 
-describe("the ↑/↓ ladder over rungs", () => {
-  test("↑ at the tail offers the question of the turn on screen", () => {
-    // The newest reply fills the screen: its own end is where the reader
-    // already is, so the first press climbs to what started that turn.
-    expect(previousRung(LADDER, 0)).toEqual(rungAt(1));
+describe("the ↑/↓ walk over rungs", () => {
+  test("↑ at the tail offers the prompt of the turn on screen", () => {
+    // The newest reply fills the screen: the reader is inside it, so the first
+    // press climbs to what started that turn.
+    expect(previousQuestion(LADDER, 0)).toEqual(rungAt(1));
   });
 
-  test("↑ offers the answer's end above the turn being read", () => {
-    expect(previousRung(LADDER, 1)).toEqual(rungAt(2));
-    expect(previousRung(LADDER, 2)).toEqual(rungAt(2));
-    expect(previousRung(LADDER, 3)).toEqual(rungAt(3));
-    expect(previousRung(LADDER, 4)).toEqual(rungAt(4));
-    expect(previousRung(LADDER, 5)).toEqual(rungAt(5));
-    expect(previousRung(LADDER, 6)).toEqual(rungAt(6));
+  test("↑ offers the reader's own prompts, never the answers", () => {
+    // With Q3 at the top edge the answer below it (A2a, the reply to Q2) is not
+    // a destination: the press reaches the prompt above the reader instead.
+    expect(previousQuestion(LADDER, 1)).toEqual(rungAt(3)); // Q3 → Q2
+    expect(previousQuestion(LADDER, 4)).toEqual(rungAt(5)); // Q2 → Q1
+    expect(previousQuestion(LADDER, 6)).toEqual(rungAt(7)); // Q1 → Q0
+    // The same from inside an answer: the prompt that produced it (or, for a
+    // row with no prompt of its own seen yet, the nearest one above) is up
+    // there, so that is where the press lands.
+    expect(previousQuestion(LADDER, 2)).toEqual(rungAt(3)); // inside A2b → Q2
+    expect(previousQuestion(LADDER, 4)).toEqual(rungAt(5)); // inside A1 → Q1
   });
 
   test("the row at the top edge is the reader's, not a destination", () => {
-    // A question landed at the top edge (the press before this one put it
-    // there) is not re-selected: the press climbs to the answer above it.
-    expect(previousRung(LADDER, 1)).toEqual(rungAt(2));
-    expect(previousRung(LADDER, 3)).toEqual(rungAt(3));
-    // A reply taller than the viewport reports its own row as the topmost one
-    // wherever the reader is inside it — its end is below them, so the press
-    // climbs to the question that started the turn instead.
-    expect(previousRung(LADDER, 0)).toEqual(rungAt(1));
+    // A prompt landed at the top edge (the press before this one put it there)
+    // is not re-selected: the press climbs to the prompt above it.
+    expect(previousQuestion(LADDER, 1)).toEqual(rungAt(3));
+    expect(previousQuestion(LADDER, 6)).toEqual(rungAt(7));
   });
 
   test("↑ is unavailable at the oldest row", () => {
     // Top edge at the last row: every rung is on or below the reader.
-    expect(previousRung(LADDER, 8)).toBeNull();
-    expect(previousRung(LADDER, 9)).toBeNull();
+    expect(previousQuestion(LADDER, 8)).toBeNull();
+    expect(previousQuestion(LADDER, 9)).toBeNull();
   });
 
-  test("↓ from inside a turn goes to the next rung below", () => {
+  test("↓ from inside a turn goes to the next rung below, of either kind", () => {
     expect(nextRung(LADDER, 8)).toEqual(rungAt(6));
     expect(nextRung(LADDER, 7)).toEqual(rungAt(5));
     expect(nextRung(LADDER, 6)).toEqual(rungAt(4));
@@ -215,41 +206,39 @@ describe("the ↑/↓ ladder over rungs", () => {
   });
 
   test("↓ never selects the rung at the top edge", () => {
-    // The rung whose own row is at the top edge is where the reader is; ↓ is
-    // the inverse of ↑, so it steps to the newest rung strictly below.
+    // The rung whose own row is at the top edge is where the reader is, so ↓
+    // steps to the newest rung strictly below.
     expect(nextRung(LADDER, 1)).toEqual(rungAt(0));
     expect(nextRung(LADDER, 0)).toBeNull();
   });
 
   test("nothing is offered without a visible row", () => {
-    expect(previousRung(LADDER, null)).toBeNull();
+    expect(previousQuestion(LADDER, null)).toBeNull();
     expect(nextRung(LADDER, null)).toBeNull();
   });
 
-  test("the ladder's individual steps are all selectable", () => {
-    // The user-facing contract, pinned step by step: from the tail of the
-    // newest turn down to the oldest question, ↑ offers the question that
-    // started the turn on screen, then the end of the answer before it, then
-    // the question before that…
-    expect(previousRung(LADDER, 0)).toEqual(rungAt(1)); // Q3
-    expect(previousRung(LADDER, 1)).toEqual(rungAt(2)); // A2a's end
-    expect(previousRung(LADDER, 2)).toEqual(rungAt(2)); // A2a's end, reached
-    expect(previousRung(LADDER, 3)).toEqual(rungAt(3)); // Q2
-    expect(previousRung(LADDER, 4)).toEqual(rungAt(4)); // A1's end
-    expect(previousRung(LADDER, 5)).toEqual(rungAt(5)); // Q1
-    expect(previousRung(LADDER, 6)).toEqual(rungAt(6)); // A0's end
-    expect(previousRung(LADDER, 7)).toEqual(rungAt(7)); // Q0
-    expect(previousRung(LADDER, 8)).toBeNull(); // the oldest question is the reader's
+  test("↑ walks prompt to prompt down to the oldest one", () => {
+    // The user-facing contract of the ↑ button, pinned step by step: every press
+    // reaches a user input, and the answers in between are never a stop.
+    expect(previousQuestion(LADDER, 0)).toEqual(rungAt(1)); // Q3
+    expect(previousQuestion(LADDER, 1)).toEqual(rungAt(3)); // Q2, past A2a
+    expect(previousQuestion(LADDER, 4)).toEqual(rungAt(5)); // Q1
+    expect(previousQuestion(LADDER, 6)).toEqual(rungAt(7)); // Q0
+    expect(previousQuestion(LADDER, 8)).toBeNull(); // the oldest prompt is the reader's
+  });
 
-    // …and ↓ offers the mirror sequence back down.
-    expect(nextRung(LADDER, 8)).toEqual(rungAt(6));
-    expect(nextRung(LADDER, 7)).toEqual(rungAt(5));
-    expect(nextRung(LADDER, 6)).toEqual(rungAt(4));
-    expect(nextRung(LADDER, 5)).toEqual(rungAt(3));
-    expect(nextRung(LADDER, 4)).toEqual(rungAt(2));
-    expect(nextRung(LADDER, 3)).toEqual(rungAt(1));
-    expect(nextRung(LADDER, 2)).toEqual(rungAt(1));
-    expect(nextRung(LADDER, 1)).toEqual(rungAt(0));
+  test("↓ walks the transcript as written, input and output alternating", () => {
+    // From the oldest prompt downwards, each press is the next thing the
+    // conversation contains: that prompt's answer, then the next prompt, then
+    // its answer…
+    expect(nextRung(LADDER, 8)).toEqual(rungAt(6)); // A0 — the reply to Q0
+    expect(nextRung(LADDER, 7)).toEqual(rungAt(5)); // Q1
+    expect(nextRung(LADDER, 6)).toEqual(rungAt(4)); // A1 — the reply to Q1
+    expect(nextRung(LADDER, 5)).toEqual(rungAt(3)); // Q2
+    expect(nextRung(LADDER, 4)).toEqual(rungAt(2)); // A2a — the reply to Q2
+    expect(nextRung(LADDER, 3)).toEqual(rungAt(1)); // Q3
+    expect(nextRung(LADDER, 2)).toEqual(rungAt(1)); // Q3, reached from the answer
+    expect(nextRung(LADDER, 1)).toEqual(rungAt(0)); // A3 — the newest reply
     expect(nextRung(LADDER, 0)).toBeNull();
   });
 });
