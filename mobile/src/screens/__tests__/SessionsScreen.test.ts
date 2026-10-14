@@ -1,4 +1,4 @@
-import { createElement } from "react";
+import { createElement, type ReactElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import {
   ActivityIndicator,
@@ -906,5 +906,164 @@ describe("creating on the machine the user picks", () => {
     // Nothing to choose between, so the machine step never appears.
     expect(modalText()).not.toContain("sessions.chooseDevice");
     expect(modalText()).toContain("sessions.new");
+  });
+});
+
+/**
+ * The picker names a machine, and the list under it belongs to that machine.
+ *
+ * The list can only draw the machine the phone is reading and the machines that
+ * answer, so a machine with nothing to draw is exactly where a screen is tempted
+ * to fall back to something else — and one machine's conversations under another
+ * machine's name is what made choosing an offline desktop look like the tap had
+ * been ignored.
+ */
+describe("the machine the picker names", () => {
+  const peer = {
+    desktopId: "desktop_2",
+    label: "Office",
+    active: false,
+    status: "offline" as "offline" | "connected",
+  };
+
+  beforeEach(() => {
+    mockRemote.connectionPresentation = {
+      level: "connected",
+      titleKey: "connection.connected",
+      hintKey: "connection.offlineHint",
+    };
+    mockRemote.desktopOnline = true;
+  });
+
+  afterEach(() => {
+    mockCatalogs.machines = [];
+    mockCatalogs.catalogs = [];
+    mockCatalogs.commandsFor = jest.fn(() => null);
+  });
+
+  /** Name a machine in the picker, which is what tapping its row does. */
+  const nameDesktop = (desktopId: string) =>
+    act(() => tree.root.findByType(DesktopPicker).props.onChange({ kind: "desktop", desktopId }));
+  /** The props the session list was drawn with, for the scope under test. */
+  const list = () => tree.root.findByType(SessionList).props;
+  /** Render the empty state the list was handed, so its own copy can be read. */
+  const emptyState = () => {
+    let renderer: ReactTestRenderer | null = null;
+    act(() => { renderer = create(list().empty as ReactElement); });
+    const rendered = renderer as unknown as ReactTestRenderer;
+    return {
+      /** The copy on screen, as the reader sees it: our mocked `t` is the key. */
+      texts: rendered.root.findAllByType(Text).map(node => String(node.props.children)),
+      root: rendered.root,
+      unmount: () => act(() => rendered.unmount()),
+    };
+  };
+  /** A machine's row in a dialog, addressed by the name the user sees. */
+  const dialogRow = (label: string) =>
+    tree.root.findAll(node =>
+      node.props.accessibilityLabel === label
+      && node.props.accessibilityRole === "button"
+      && typeof node.props.onPress === "function",
+    )[0]!;
+
+  test.each(["offline", "connecting", "preparing"] as const)(
+    "a machine that is %s is described in its own state, on its own connection",
+    (status) => {
+      mockCatalogs.machines = [{ ...peer, status }];
+      act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
+      nameDesktop("desktop_2");
+
+      // An empty array of rows rather than none at all: the rows below belong to
+      // the machine the picker names, of which there are none — not to the machine
+      // the phone happens to be reading.
+      expect(list().merged).toEqual([]);
+      const empty = emptyState();
+      expect(empty.texts.some(text => text.includes("Office"))).toBe(true);
+      expect(empty.texts).toContain(`connection.machine.${status}`);
+      expect(empty.texts).toContain("desktops.unreachableHint");
+      // ...and the one action that can change that is on that machine, not on the
+      // machine the phone is talking to.
+      const reconnect = empty.root.findAllByType(Button)[0]!;
+      expect(reconnect.props.label).toBe("connection.reconnect");
+      act(() => reconnect.props.onPress());
+      expect(mockRemote.reconnect).toHaveBeenCalledWith("desktop_2");
+      empty.unmount();
+    },
+  );
+
+  test("a machine that is answering keeps the ordinary empty list, addressed to it", () => {
+    mockCatalogs.machines = [{ ...peer, status: "connected" }];
+    mockCatalogs.commandsFor = jest.fn(() => ({ capabilities: new Set<string>() }));
+    act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
+    act(() => tree.root.findByType(SessionList).props.onTabChange("chat"));
+    nameDesktop("desktop_2");
+
+    expect(list().merged).toEqual([]);
+    const empty = emptyState();
+    expect(empty.texts).toContain("sessions.emptyConnectedTitle");
+    // Starting one from this list names the machine the list is showing, rather
+    // than the machine the phone reads, which is what the button's words say.
+    act(() => empty.root.findAllByType(Button)[0]!.props.onPress());
+    expect(mockRemote.newConversationOn).toHaveBeenCalledWith("desktop_2", "chat", "");
+    expect(mockRemote.newConversation).not.toHaveBeenCalled();
+    empty.unmount();
+  });
+
+  test("no new-conversation button is offered for a machine that cannot take one", () => {
+    mockCatalogs.machines = [peer];
+    act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
+    nameDesktop("desktop_2");
+    // The machine is named and unreachable: the list says so and offers to reach
+    // it, and nothing on the screen offers to create on it.
+    expect(button("sessions.new")).toBeUndefined();
+    // The machine the phone is reading is not the one named, so its own button
+    // is untouched.
+    nameDesktop("desktop_1");
+    expect(button("sessions.new")).toBeDefined();
+  });
+
+  test("a conversation started while another machine is named is created on it", () => {
+    mockCatalogs.machines = [{ ...peer, status: "connected" }];
+    mockCatalogs.commandsFor = jest.fn(() => ({ capabilities: new Set<string>() }));
+    act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
+    act(() => tree.root.findByType(SessionList).props.onTabChange("chat"));
+    nameDesktop("desktop_2");
+
+    act(() => button("sessions.new").props.onPress());
+    expect(mockRemote.newConversationOn).toHaveBeenCalledWith("desktop_2", "chat", "");
+    expect(mockRemote.newConversation).not.toHaveBeenCalled();
+  });
+
+  test("a workspace list for a named machine starts by confirming that machine", () => {
+    mockCatalogs.machines = [{ ...peer, status: "connected" }];
+    mockCatalogs.commandsFor = jest.fn(() => ({ capabilities: new Set<string>() }));
+    act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
+    act(() => tree.root.findByType(SessionList).props.onTabChange("workspace"));
+    nameDesktop("desktop_2");
+
+    act(() => button("sessions.new").props.onPress());
+    // A workspace list is that machine's, and the step that reads it is the one
+    // that names the machine — so the dialog opens there, with the machine the
+    // list names already the one it is about.
+    expect(modalText()).toContain("sessions.chooseDevice");
+    expect(dialogRow("Office").props.accessibilityState).toMatchObject({ selected: true });
+    expect(dialogRow("A very long desktop name").props.accessibilityState).toMatchObject({ selected: false });
+  });
+
+  test("a scope on a machine that is no longer paired goes back to every desktop", () => {
+    const paired = [...mockRemote.desktops];
+    try {
+      nameDesktop("desktop_2");
+      expect(tree.root.findByType(DesktopPicker).props.filter)
+        .toEqual({ kind: "desktop", desktopId: "desktop_2" });
+      mockRemote.desktops = [paired[0]!];
+      act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
+      // Nothing to show and nothing to reach: the list stands on every desktop
+      // rather than on a machine the picker no longer offers.
+      expect(tree.root.findByType(DesktopPicker).props.filter).toEqual({ kind: "all" });
+    } finally {
+      mockRemote.desktops = paired;
+      act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
+    }
   });
 });

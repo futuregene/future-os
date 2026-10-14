@@ -63,6 +63,8 @@ export const resources = {
         pickerLabel: "Desktops",
         filterAll: "All desktops",
         manage: "Manage paired desktops…",
+        unreachableHint:
+          "Reconnect to read this desktop's conversations.",
         icons: {
           desktop: "Desktop",
           laptop: "Laptop",
@@ -1004,6 +1006,7 @@ export const resources = {
         pickerLabel: "桌面选择",
         filterAll: "全部桌面",
         manage: "管理已配对的桌面…",
+        unreachableHint: "重新连接后可查看该桌面端的会话。",
         icons: {
           desktop: "台式机",
           laptop: "笔记本",
