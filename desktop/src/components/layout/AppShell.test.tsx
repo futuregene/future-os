@@ -5,6 +5,7 @@ import type { ActivityRail } from "./ActivityRail";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { forgetHostCatalogue, warmHostCatalogue } from "../../features/remote-peer/remoteHostCatalog";
 import { defaultAgentModelId } from "../../integrations/agent/agentClient";
 import { AppShell } from "./AppShell";
 
@@ -554,6 +555,11 @@ beforeEach(() => {
   // `--sequence.shuffle`; see docs/testing/desktop-shell.md).
   for (const key of Object.keys(children))
     (children as Record<string, unknown>)[key] = null;
+  // The host's own catalogue is cached per host for as long as the window is
+  // open (`remoteHostCatalog`), so one test's models, settings and skills would
+  // otherwise be the next one's — the same reason the child-prop captures above
+  // are cleared.
+  forgetHostCatalogue("desktop_a");
   mocks.approvalsThreadIds = [];
   mocks.changeSettings.mockClear();
   mocks.decideApproval.mockClear();
@@ -1641,6 +1647,70 @@ describe("app shell collapsed-panel affordances", () => {
 
       expect(children.remoteConversationView).not.toBeNull();
       expect(composer().sessionId).toBe("sess_1");
+      view.unmount();
+    });
+
+    /**
+     * Opening a conversation costs the phone's commands, and nothing else.
+     *
+     * Everything a remote conversation needs from the *host* — its newest page,
+     * the run in flight, and that run's log — is asked for here, and that is all.
+     * What this app used to ask for on the same path belongs to the *machine*: its
+     * model catalogue, its own settings and the skills those ask for are read as
+     * the connection is established (which is when the phone reads them, and what
+     * `warmHostCatalogue` is the peer list calling below), and a second
+     * `get_state` for the settings picker was one command more than the phone
+     * spends on the same conversation. Every tool call's command was fetched here
+     * too — dozens on a real conversation, one round trip each.
+     *
+     * The three commands asserted are the phone's own three: state, page, log.
+     */
+    it("reads a remote conversation with the phone's commands, and no others", async () => {
+      const types: string[] = [];
+      mocks.invoke.mockImplementation(async (command: string, args?: unknown) => {
+        if (command !== "remote_peer_request")
+          return undefined;
+        const body = (args as { command?: { type?: string } })?.command ?? {};
+        const type = body.type ?? "";
+        types.push(type);
+        if (type === "get_session_entries") {
+          // A lean page: the calls are there, their arguments are not.
+          return {
+            entries: [
+              { id: "u1", kind: "user", role: "user", createdAtMs: 1, blocks: [{ kind: "text", text: "run it" }] },
+              { id: "a1", kind: "assistant", role: "assistant", createdAtMs: 2, runId: "run_1", blocks: [{ kind: "tool_call", name: "shell", toolCallId: "call_1" }] },
+            ],
+            hasMore: false,
+            nextOffset: 0,
+          };
+        }
+        if (type === "get_state")
+          return { activeRun: { runId: "run_1" }, model: "openai/gpt-5", thinkingLevel: "high" };
+        if (type === "get_events_since")
+          return { events: [], watermark: 0 };
+        if (type === "list_models")
+          return { models: [] };
+        if (type === "get_desktop_settings")
+          return { skillRecommend: false };
+        return undefined;
+      });
+
+      // What the peer list does as the connection is established: the host's own
+      // catalogue is read there, and it is a cache hit for the conversation that
+      // then opens.
+      warmHostCatalogue("desktop_a");
+      await act(async () => {
+        for (let i = 0; i < 8; i += 1) await Promise.resolve();
+      });
+      types.length = 0;
+
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+      await act(async () => {
+        for (let i = 0; i < 8; i += 1) await Promise.resolve();
+      });
+
+      expect(types).toEqual(["get_session_entries", "get_state", "get_events_since"]);
       view.unmount();
     });
 

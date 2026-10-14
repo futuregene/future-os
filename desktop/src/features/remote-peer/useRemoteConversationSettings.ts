@@ -1,9 +1,17 @@
 import type { ThinkingLevel } from "../../integrations/agent/agentClient";
 import type { RemoteModelInfo, RemotePeerEvent } from "./remotePeerClient";
+import type { RemoteSessionStateReading } from "./useRemoteTimeline";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { defaultThinkingLevel, readLastUsedModel, readLastUsedThinkingLevel, rememberLastUsedModel, rememberLastUsedThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
-import { getRemoteConversationSettings, listRemoteModels, remoteModelReference, setRemoteConversationModel, setRemoteConversationThinkingLevel } from "./remotePeerClient";
+import { hostModels, useHostCatalogueInvalidation } from "./remoteHostCatalog";
+import {
+  getRemoteConversationSettings,
+  parseRemoteConversationSettings,
+  remoteModelReference,
+  setRemoteConversationModel,
+  setRemoteConversationThinkingLevel,
+} from "./remotePeerClient";
 
 /**
  * The event kinds that mean a conversation's settings moved.
@@ -128,11 +136,28 @@ export function defaultRemoteThinkingLevel(
  * select leaves the control looking stuck, and the host is the authority either
  * way — if it refuses, its next `get_state` or its error puts the real value
  * back.
+ *
+ * `sessionState` is where those values come from on open, and it is the one
+ * argument worth reading twice: when a reader on this screen has already read the
+ * conversation's state, this hook applies *that* reply instead of asking the host
+ * the same question again. `undefined` means nobody has: a caller that owns the
+ * state read itself (or a screen with no timeline) gets the old behaviour, one
+ * `get_state` of its own.
  */
 export function useRemoteConversationSettings(
   desktopId: string | null,
   sessionId: string | null,
   enabled: boolean,
+  /**
+   * The conversation's state as another reader read it, or `null` while that
+   * reader is still asking.
+   *
+   * The timeline must read `get_state` *after* the page it belongs to — its reply
+   * replaces the page's own copy of the run in flight — and that same reply
+   * carries the model and the thinking level. Handing it over is what keeps an
+   * open from spending two `get_state` commands where the phone spends one.
+   */
+  sessionState?: RemoteSessionStateReading | null,
 ): RemoteConversationSettingsState {
   const [model, setModel] = useState<string | null>(null);
   const [thinkingLevel, setThinkingLevel] = useState<string | null>(null);
@@ -146,6 +171,13 @@ export function useRemoteConversationSettings(
    * conversation — the same hazard the timeline has, and the same fix.
    */
   const epochRef = useRef(0);
+  /** Whether another reader owns this conversation's state read (see the type). */
+  const handedOver = sessionState !== undefined;
+  /** The reply that reader has for *this* conversation, if it has one yet. */
+  const handed = sessionState !== undefined && sessionState !== null
+    && sessionState.sessionId === sessionId
+    ? sessionState
+    : null;
 
   const read = useCallback(async (
     desktop: string,
@@ -156,9 +188,10 @@ export function useRemoteConversationSettings(
     try {
       const [settings, catalogue] = await Promise.all([
         getRemoteConversationSettings(desktop, session),
-        // The catalogue is per host, not per conversation, but reading it here
-        // keeps one epoch and one failure path for both.
-        listRemoteModels(desktop).catch(() => [] as RemoteModelInfo[]),
+        // The catalogue is per host, not per conversation: this is a cache hit
+        // for a host this window has already read from (`remoteHostCatalog`),
+        // and the failure path below is what the picker reports.
+        hostModels(desktop).catch(() => [] as RemoteModelInfo[]),
       ]);
       if (epoch !== epochRef.current)
         return;
@@ -179,10 +212,35 @@ export function useRemoteConversationSettings(
     }
   }, []);
 
+  /**
+   * The host's catalogue, for the picker and for a draft's defaults.
+   *
+   * A failure is reported only for a draft: a conversation's own settings are
+   * read in `read`, or read by the timeline and handed over, and an empty picker
+   * beside a conversation whose transcript already reports the failure is a
+   * second copy of one message.
+   */
+  const loadModels = useCallback(async (
+    desktop: string,
+    epoch: number,
+  ): Promise<RemoteModelInfo[]> => {
+    try {
+      const catalogue = await hostModels(desktop);
+      if (epoch === epochRef.current)
+        setModels(catalogue);
+      return catalogue;
+    }
+    catch (err) {
+      if (epoch === epochRef.current && !sessionId)
+        setReadError(err instanceof Error ? err.message : String(err));
+      return [];
+    }
+  }, [sessionId]);
+
   // Open: read. Cleared first so another conversation's model cannot show for a
   // frame under the new one's title.
   useEffect(() => {
-    epochRef.current += 1;
+    const epoch = ++epochRef.current;
     setModel(null);
     setThinkingLevel(null);
     setModels([]);
@@ -197,29 +255,58 @@ export function useRemoteConversationSettings(
       // needs, and the values chosen here travel with the first prompt. Without
       // this the model picker was empty (and so disabled) and the thinking level
       // fell back to "off", which is not a default anyone chose.
-      const epoch = ++epochRef.current;
       setLoading(true);
-      void listRemoteModels(desktopId).then((catalogue) => {
+      void loadModels(desktopId, epoch).then((catalogue) => {
         if (epoch !== epochRef.current)
           return;
-        setModels(catalogue);
         // Resolved the way the phone resolves a draft, off its own memory of what
         // the user last chose (device-wide, so a pick made *here* — or in this
         // app's own composer — is where the next new conversation starts).
         const resolved = defaultRemoteModel(catalogue, readLastUsedModel());
         setModel(resolved);
         setThinkingLevel(defaultRemoteThinkingLevel(catalogue, resolved, readLastUsedThinkingLevel()));
-      }).catch((err: unknown) => {
-        if (epoch === epochRef.current)
-          setReadError(err instanceof Error ? err.message : String(err));
-      }).finally(() => {
-        if (epoch === epochRef.current)
-          setLoading(false);
+        setLoading(false);
       });
       return;
     }
-    void read(desktopId, sessionId);
-  }, [enabled, desktopId, sessionId, read]);
+    // A conversation: its picker is drawn from the host's catalogue, which is
+    // this window's cache for that host.
+    void loadModels(desktopId, epoch);
+    if (!handedOver) {
+      // Nobody else is reading this conversation's state: this hook is.
+      void read(desktopId, sessionId);
+      return;
+    }
+    // The timeline is reading it as this opens (it has to, for the run in
+    // flight), so the picker waits for that reply rather than paying for a
+    // second one — and stops waiting when the reply lands, answered or not.
+    setLoading(true);
+  }, [enabled, desktopId, sessionId, handedOver, loadModels, read]);
+
+  /**
+   * The reply the other reader read for this conversation.
+   *
+   * Applied as it arrives rather than only at open: the timeline reads the state
+   * again when a link comes back, and what it read then is newer than what the
+   * picker is showing. A reading the host *refused* carries no state — the
+   * transcript reports that failure on its own — so the picker simply stops
+   * waiting instead of showing a control that says it is still loading for ever.
+   */
+  useEffect(() => {
+    // Nothing yet: the open effect has already set what the control should say
+    // while it waits (this hook's own read, or the other reader's reply).
+    if (!handed)
+      return;
+    setLoading(false);
+    const state = handed.state;
+    if (!state)
+      return;
+    const settings = parseRemoteConversationSettings(state);
+    if (settings.model)
+      setModel(settings.model);
+    if (settings.thinkingLevel)
+      setThinkingLevel(settings.thinkingLevel);
+  }, [handed]);
 
   // Live: follow the host's own changes for this conversation.
   useEffect(() => {
@@ -255,6 +342,19 @@ export function useRemoteConversationSettings(
       dispose?.();
     };
   }, [enabled, desktopId, sessionId, read]);
+
+  /**
+   * The host's catalogue moved, for a conversation whose picker is drawn from it.
+   *
+   * The read behind it was dropped before this runs, so the picker asks the host
+   * again rather than re-rendering the list it already has. Only the models matter
+   * here: this conversation's own model and level are announced per conversation,
+   * and the listener above is what follows those.
+   */
+  useHostCatalogueInvalidation(desktopId, (domain) => {
+    if (domain === "models" && enabled && desktopId)
+      void loadModels(desktopId, epochRef.current);
+  });
 
   const change = useCallback(async (work: () => Promise<unknown>): Promise<void> => {
     setSaving(true);
