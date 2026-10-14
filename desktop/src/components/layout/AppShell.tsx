@@ -203,7 +203,12 @@ function ReadyAppShell({
   // Remote desktops (client role). Enabled for the whole session: the merged
   // conversation list is the chat section's own list, so a peer appearing must
   // update it without the user having visited the Remote Desktops screen first.
-  const { peers: remotePeers, catalogs: remoteCatalogs, refresh: refreshRemotePeers } = useRemotePeers(true);
+  const {
+    peers: remotePeers,
+    catalogs: remoteCatalogs,
+    refresh: refreshRemotePeers,
+    reconnectAll: reconnectRemotePeers,
+  } = useRemotePeers(true);
   useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
   useAgentDoneBell(appSettings.bellOnComplete);
   useRemoteDoneBell(appSettings.bellOnComplete);
@@ -1136,6 +1141,7 @@ function ReadyAppShell({
                           autoConnect={appSettings.autoConnectRemote}
                           leftPanelExpanded={showLeftPanel}
                           onOpenRemoteSession={openRemoteSession}
+                          onReconnectRemoteAll={reconnectRemotePeers}
                           onRefreshRemote={refreshRemote}
                           onStartConversation={(desktopId: string) => startRemoteConversation(desktopId)}
                           onToggleAutoConnect={value => void changeSettings({ autoConnectRemote: value })}

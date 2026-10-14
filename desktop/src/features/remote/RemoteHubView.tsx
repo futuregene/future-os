@@ -42,6 +42,7 @@ export function RemoteHubView({
   autoConnect,
   leftPanelExpanded,
   onOpenRemoteSession,
+  onReconnectRemoteAll,
   onStartConversation,
   onToggleAutoConnect,
   onToggleLeftPanel,
@@ -53,6 +54,13 @@ export function RemoteHubView({
   leftPanelExpanded: boolean;
   /** Open one of a paired computer's conversations, by its session id. */
   onOpenRemoteSession: (desktopId: string, sessionId: string) => void;
+  /**
+   * Bring every paired computer up, the ones the user stopped included.
+   *
+   * The liveness pass is the shell's — the same call the shell makes at launch,
+   * for the machines it is supposed to keep live — so this page only asks for it.
+   */
+  onReconnectRemoteAll: () => Promise<void>;
   /** Open a new conversation on a paired computer; owned by the shell. */
   onStartConversation: (desktopId: string) => void;
   onToggleAutoConnect: (value: boolean) => void;
@@ -140,6 +148,7 @@ export function RemoteHubView({
         >
           <RemoteClientSection
             onOpenSettings={setSettingsFor}
+            onReconnectAll={onReconnectRemoteAll}
             onStartConversation={onStartConversation}
             refreshNonce={refreshNonce}
           />

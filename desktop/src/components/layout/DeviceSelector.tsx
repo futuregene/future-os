@@ -4,6 +4,7 @@ import { Check, ChevronDown, Monitor, MonitorSmartphone } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { iconGlyph, peerBadgeText } from "../../features/remote-peer/peerIcons";
+import { peerStatus, peerStatusKey } from "../../features/remote-peer/peerStatus";
 import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { MenuPanel } from "../ui/MenuPanel";
@@ -93,8 +94,11 @@ export function DeviceSelector({
                   label={peerBadgeText(peer, peer.desktopId)}
                   // A disconnected machine stays selectable: its rows are gone
                   // anyway, and disabling the entry would leave no way to see
-                  // that it is merely offline rather than removed.
-                  note={peer.connected ? undefined : t("statusDisconnected")}
+                  // that it is merely offline rather than removed. The note says
+                  // *which* kind of not-there it is — being reached, unreachable,
+                  // or switched off by the user, whose own row offers the way
+                  // back.
+                  note={peer.connected ? undefined : t(peerStatusKey(peerStatus(peer)))}
                   onClick={() => choose({ kind: "device", desktopId: peer.desktopId })}
                 >
                   {filterIcon({ kind: "device", desktopId: peer.desktopId }, peers)}
@@ -160,7 +164,7 @@ function SelectorOption({
     >
       <span className="shrink-0">{children}</span>
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {note ? <span className="shrink-0 text-[10px] text-ink-muted">{note}</span> : null}
+      {note ? <span className="shrink-0 text-[10px] text-ink-muted" data-testid="option-note">{note}</span> : null}
       {active ? <Check className="size-3.5 shrink-0" /> : null}
     </button>
   );

@@ -58,6 +58,7 @@ function peer(overrides: Partial<RemotePeer> = {}): RemotePeer {
     agentAvailable: true,
     bridgeInstanceId: "bridge_1",
     connected: true,
+    stopped: false,
     desktopId: "desktop_a",
     error: null,
     features: [],
@@ -83,13 +84,18 @@ function addRowButton(container: HTMLElement): HTMLButtonElement {
 
 async function mount() {
   const onOpenSettings = vi.fn();
+  const onReconnectAll = vi.fn(async () => {});
   const onStartConversation = vi.fn();
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <RemoteClientSection onOpenSettings={onOpenSettings} onStartConversation={onStartConversation} />,
+      <RemoteClientSection
+        onOpenSettings={onOpenSettings}
+        onReconnectAll={onReconnectAll}
+        onStartConversation={onStartConversation}
+      />,
     );
   });
   await act(async () => {
@@ -99,6 +105,7 @@ async function mount() {
     container,
     input: () => container.querySelector<HTMLInputElement>("input")!,
     onOpenSettings,
+    onReconnectAll,
     onStartConversation,
     button: (label: string) => [...container.querySelectorAll("button")]
       .find(node => node.textContent === label),
@@ -315,6 +322,54 @@ it("lists every paired computer with its own name", async () => {
   await view.unmount();
 });
 
+// ── several machines at once ────────────────────────────────────────────────
+
+/**
+ * The count is the answer to "why is a machine's conversation missing". The app
+ * holds every pairing open, so a merged list short of one machine is a fact
+ * about this machine rather than about their settings — and this is where the
+ * user is told which of them is not up.
+ */
+it("says how many of several machines are up", async () => {
+  listRemotePeers.mockResolvedValue([
+    peer({ desktopId: "desktop_a" }),
+    peer({ desktopId: "desktop_b", connected: false, error: "gone" }),
+  ]);
+  const view = await mount();
+
+  expect(view.container.querySelector("[data-testid='peers-summary']")?.textContent)
+    .toBe("1 of 2 connected");
+  await view.unmount();
+});
+
+/** One machine has no set to summarise: its own row already says everything. */
+it("does not count a single machine", async () => {
+  const view = await mount();
+
+  expect(view.container.querySelector("[data-testid='peers-summary']")).toBeNull();
+  expect(view.button("Reconnect all")).toBeUndefined();
+  await view.unmount();
+});
+
+/**
+ * "Reconnect all" is the one control allowed to overrule a deliberate stop, so
+ * it must reach the shell's own liveness pass rather than reconnecting the rows
+ * itself.
+ */
+it("asks the shell to reconnect every machine", async () => {
+  listRemotePeers.mockResolvedValue([
+    peer({ desktopId: "desktop_a" }),
+    peer({ desktopId: "desktop_b", connected: false }),
+  ]);
+  const view = await mount();
+
+  await act(async () => view.button("Reconnect all")!.click());
+  await view.settle();
+
+  expect(view.onReconnectAll).toHaveBeenCalledTimes(1);
+  await view.unmount();
+});
+
 // ── unpairing a paired computer ─────────────────────────────────────────────
 
 /**
@@ -363,6 +418,36 @@ it("cancels an unpair without touching the pairing", async () => {
   expect(unpairRemotePeer).not.toHaveBeenCalled();
   expect(view.container.querySelector("[role='dialog']")).toBeNull();
   await view.unmount();
+});
+
+/**
+ * A machine the user turned off is listed as switched off — not as a fault, and
+ * not with the socket error its own disconnect left behind — and its row offers
+ * the way back.
+ */
+it("shows a stopped machine as stopped, with the way back", async () => {
+  listRemotePeers.mockResolvedValue([
+    peer({ connected: false, error: "socket closed", stopped: true }),
+  ]);
+  const view = await mount();
+
+  expect(view.rowButton("Connect")).toBeTruthy();
+  expect(view.rowButton("Disconnect")).toBeUndefined();
+  expect(view.text()).not.toContain("socket closed");
+  await view.unmount();
+});
+
+/** The three "not yet" states must not read as the same thing. */
+it("tells a machine still being reached from one that failed", async () => {
+  listRemotePeers.mockResolvedValue([peer({ connected: false, error: null })]);
+  const reaching = await mount();
+  expect(reaching.text()).not.toContain("Offline");
+  await reaching.unmount();
+
+  listRemotePeers.mockResolvedValue([peer({ connected: false, error: "refused" })]);
+  const failed = await mount();
+  expect(failed.text()).toContain("Offline");
+  await failed.unmount();
 });
 
 /**

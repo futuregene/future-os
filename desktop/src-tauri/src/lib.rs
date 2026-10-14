@@ -1138,6 +1138,7 @@ mod gui {
                 remote_peer_list,
                 remote_peer_pair,
                 remote_peer_connect,
+                remote_peer_connect_all,
                 remote_peer_disconnect,
                 remote_peer_unpair,
                 remote_peer_set_label,

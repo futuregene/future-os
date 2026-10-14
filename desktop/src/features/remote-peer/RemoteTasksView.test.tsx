@@ -40,6 +40,7 @@ function peer(): RemotePeer {
     agentAvailable: true,
     bridgeInstanceId: "b",
     connected: true,
+    stopped: false,
     desktopId: "desktop_a",
     error: null,
     features: [],

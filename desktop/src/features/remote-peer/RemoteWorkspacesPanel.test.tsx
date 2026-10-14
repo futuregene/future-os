@@ -26,6 +26,7 @@ function peer(overrides: Partial<RemotePeer> = {}): RemotePeer {
     agentAvailable: true,
     bridgeInstanceId: "b",
     connected: true,
+    stopped: false,
     desktopId: "desktop_a",
     error: null,
     features: ["workspace_create_v1", "workspace_pinning_v1"],

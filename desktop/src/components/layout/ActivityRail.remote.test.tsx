@@ -58,6 +58,7 @@ const peer = {
   agentAvailable: true,
   bridgeInstanceId: "bridge_1",
   connected: true,
+  stopped: false,
   desktopId: "desktop_a",
   error: null,
   features: [],
@@ -137,6 +138,8 @@ async function mountRail(overrides: Partial<ComponentProps<typeof ActivityRail>>
     actionsButton: () => container.querySelector<HTMLButtonElement>("button[aria-label='More actions']"),
     item: (label: string) => [...container.querySelectorAll("button")]
       .find(node => node.textContent === label),
+    /** The remote nav dot's own state, or null when it is not drawn. */
+    dotState: () => container.querySelector("[data-testid='remote-status-dot']")?.getAttribute("data-state") ?? null,
     text: () => container.textContent ?? "",
     unmount: () => {
       act(() => root.unmount());
@@ -144,6 +147,65 @@ async function mountRail(overrides: Partial<ComponentProps<typeof ActivityRail>>
     },
   };
 }
+
+describe("the remote nav dot", () => {
+  /**
+   * With machines paired, the dot answers for the *set*.
+   *
+   * Nothing about one machine can express "the merged list is short of another":
+   * the list interleaves every host's conversations, so the only honest summary
+   * is how many of them are up.
+   */
+  it("is green only when every paired machine is up", async () => {
+    const view = await mountRail({
+      remotePeers: [peer, { ...peer, desktopId: "desktop_b" }],
+    });
+    expect(view.dotState()).toBe("up");
+    view.unmount();
+  });
+
+  it("is amber when some of them are", async () => {
+    const view = await mountRail({
+      remotePeers: [peer, { ...peer, connected: false, desktopId: "desktop_b", error: "gone" }],
+    });
+    expect(view.dotState()).toBe("partial");
+    view.unmount();
+  });
+
+  it("is red when none of them are", async () => {
+    const view = await mountRail({
+      remotePeers: [{ ...peer, connected: false, error: "gone" }],
+    });
+    expect(view.dotState()).toBe("down");
+    view.unmount();
+  });
+
+  /**
+   * With nothing paired it keeps its other meaning — this machine's own host
+   * bridge, which is how devices connect *in* — so an unpaired machine still
+   * reports whether remote access itself is up.
+   */
+  it("falls back to the host bridge's own state when nothing is paired", async () => {
+    const view = await mountRail({ remoteIndicator: "connected", remotePeers: [] });
+    expect(view.dotState()).toBe("up");
+    view.unmount();
+  });
+
+  it("has no dot before anything is paired", async () => {
+    const view = await mountRail({ remotePeers: [] });
+    expect(view.dotState()).toBeNull();
+    view.unmount();
+  });
+
+  /** A stopped machine is still a machine that is not answering. */
+  it("counts a machine the user stopped as not up", async () => {
+    const view = await mountRail({
+      remotePeers: [peer, { ...peer, connected: false, desktopId: "desktop_b", stopped: true }],
+    });
+    expect(view.dotState()).toBe("partial");
+    view.unmount();
+  });
+});
 
 async function settle(): Promise<void> {
   await act(async () => {
