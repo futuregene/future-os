@@ -68,6 +68,19 @@ function peer(overrides: Partial<RemotePeer> = {}): RemotePeer {
   };
 }
 
+/**
+ * The row that folds the pairing form, by what it says.
+ *
+ * It is the row itself that is found, not just any `aria-expanded` control: the
+ * section is rendered on its own here, but a `Button` or a dialog could carry
+ * the attribute too, and reading the wrong one would make the assertions below
+ * pass without touching the form.
+ */
+function addRowButton(container: HTMLElement): HTMLButtonElement {
+  return [...container.querySelectorAll<HTMLButtonElement>("button[aria-expanded]")]
+    .find(node => (node.textContent || "").trim() === "Add a desktop")!;
+}
+
 async function mount() {
   const onOpenSettings = vi.fn();
   const onStartConversation = vi.fn();
@@ -90,6 +103,22 @@ async function mount() {
     button: (label: string) => [...container.querySelectorAll("button")]
       .find(node => node.textContent === label),
     /**
+     * The row that folds the pairing form.
+     *
+     * The form is folded to start (the machines below are the card's content),
+     * so every pairing test opens this first — which is also what a user does.
+     * `aria-expanded` is the row's own statement of which way it is, and it is
+     * what these assertions read rather than a class name.
+     */
+    addRow: () => addRowButton(container),
+    /** Open the pairing form if it is folded, so the box is on screen. */
+    openForm: async () => {
+      const row = addRowButton(container);
+      if (row.getAttribute("aria-expanded") === "false")
+        await act(async () => row.click());
+      return row;
+    },
+    /**
      * A computer's own row control, on the first row that carries it.
      *
      * Scoped to the row because two different controls answer to "Connect" (the
@@ -108,6 +137,9 @@ async function mount() {
       .find(node => node.textContent === label),
     text: () => container.textContent ?? "",
     type: async (value: string) => {
+      const row = addRowButton(container);
+      if (row.getAttribute("aria-expanded") === "false")
+        await act(async () => row.click());
       const input = container.querySelector<HTMLInputElement>("input")!;
       await act(async () => {
         const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
@@ -163,7 +195,31 @@ it("opens a machine's settings in a window instead of inline", async () => {
   expect(view.onOpenSettings).toHaveBeenCalledWith(expect.objectContaining({ desktopId: "desktop_a" }));
   // Nothing is stacked here: no settings page, and the list is still the page.
   expect(view.container.querySelector("[data-testid='peer-settings']")).toBeNull();
-  expect(view.input()).toBeTruthy();
+  expect(view.rowButton("Settings")).toBeTruthy();
+  await view.unmount();
+});
+
+/**
+ * The pairing form is folded away until it is wanted.
+ *
+ * It sat open above the machines at 158px — a fifth of the page — with two
+ * sentences about a text box, on a page whose content is the machines the user
+ * already has. The row states what is behind it, and the box keeps its name when
+ * the label that used to be beside it is gone.
+ */
+it("folds the pairing form away, and names the box when it is opened", async () => {
+  const view = await mount();
+
+  expect(view.addRow().getAttribute("aria-expanded")).toBe("false");
+  expect(view.input()).toBeNull();
+
+  await act(async () => view.addRow().click());
+  expect(view.addRow().getAttribute("aria-expanded")).toBe("true");
+  expect(view.input().getAttribute("aria-label")).toBe("Add a desktop");
+
+  // And back: the row is the only way in and the only way out.
+  await act(async () => view.addRow().click());
+  expect(view.input()).toBeNull();
   await view.unmount();
 });
 
@@ -189,7 +245,7 @@ it("withholds the new conversation button while disconnected", async () => {
 
 // ── pairing a new computer ──────────────────────────────────────────────────
 
-it("pairs from a pasted link, then clears the box", async () => {
+it("pairs from a pasted link, and keeps the box empty after it", async () => {
   const view = await mount();
   await view.type("futureos://remote/pair?code=abc");
 
@@ -197,6 +253,9 @@ it("pairs from a pasted link, then clears the box", async () => {
   await view.settle();
 
   expect(pairRemotePeer).toHaveBeenCalledWith("futureos://remote/pair?code=abc");
+  // The rows are the page again, and the box behind the closed row is empty:
+  // keeping a single-use link would invite a second press that cannot work.
+  await act(async () => view.addRow().click());
   expect(view.input().value).toBe("");
   await view.unmount();
 });
@@ -216,6 +275,7 @@ it("keeps the link and reports the reason when pairing fails", async () => {
 
 it("will not pair an empty link", async () => {
   const view = await mount();
+  await view.openForm();
   expect(view.button("Connect")!.hasAttribute("disabled")).toBe(true);
   await view.unmount();
 });
