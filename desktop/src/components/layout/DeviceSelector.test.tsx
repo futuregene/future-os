@@ -18,6 +18,7 @@ const peer: RemotePeer = {
   agentAvailable: true,
   bridgeInstanceId: "bridge_1",
   connected: true,
+  stopped: false,
   desktopId: "desktop_a",
   error: null,
   features: [],
@@ -30,17 +31,34 @@ beforeEach(() => {
   document.body.innerHTML = "";
 });
 
-async function mount(filter: DeviceFilter) {
+async function mount(filter: DeviceFilter, peers: RemotePeer[] = [peer]) {
   const onChange = vi.fn();
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <DeviceSelector filter={filter} onChange={onChange} onManage={() => {}} peers={[peer]} />,
+      <DeviceSelector filter={filter} onChange={onChange} onManage={() => {}} peers={peers} />,
     );
   });
   return { container, onChange, root };
+}
+
+/** Open the picker and read each machine's entry note, by machine id. */
+async function notes(peers: RemotePeer[]): Promise<Record<string, string>> {
+  const view = await mount({ kind: "all" }, peers);
+  const button = view.container.querySelector("button[aria-haspopup='listbox']")!;
+  await act(async () => {
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  const found: Record<string, string> = {};
+  for (const peer of peers) {
+    const row = [...view.container.querySelectorAll<HTMLElement>("[role='option']")]
+      .find(node => node.getAttribute("aria-label") === (peer.name ?? peer.desktopId));
+    found[peer.desktopId] = row?.querySelector<HTMLElement>("[data-testid='option-note']")?.textContent ?? "";
+  }
+  await view.root.unmount();
+  return found;
 }
 
 /** The lucide icon name a node renders, which is what "the same picture" means. */
@@ -86,4 +104,26 @@ it("gives each entry the machine's name, not its glyph", async () => {
     .map(node => node.getAttribute("aria-label"));
   expect(named).toContain("Studio iMac");
   await view.root.unmount();
+});
+
+/**
+ * A machine that is not answering is listed with *which* kind of not-answering
+ * it is: still being reached, unreachable, or switched off by the user. The
+ * picker is where the user goes to ask why a machine's conversations are
+ * missing from the merged list, so "Disconnected" for all three would be an
+ * answer that explains nothing.
+ */
+it("says why each machine is not in the list", async () => {
+  const found = await notes([
+    { ...peer, desktopId: "desktop_a", name: "Live" },
+    { ...peer, connected: false, desktopId: "desktop_b", name: "Reaching" },
+    { ...peer, connected: false, desktopId: "desktop_c", error: "gone", name: "Gone" },
+    { ...peer, connected: false, desktopId: "desktop_d", name: "Mine", stopped: true },
+  ]);
+
+  // A machine that answers needs no note: its own rows are in the list.
+  expect(found.desktop_a).toBe("");
+  expect(found.desktop_b).toBe("Connecting…");
+  expect(found.desktop_c).toBe("Offline");
+  expect(found.desktop_d).toBe("Stopped");
 });

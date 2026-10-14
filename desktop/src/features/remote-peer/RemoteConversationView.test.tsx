@@ -75,6 +75,7 @@ const peer = {
   agentAvailable: true,
   bridgeInstanceId: "bridge_1",
   connected: true,
+  stopped: false,
   desktopId: "desktop_a",
   error: null,
   features: [],

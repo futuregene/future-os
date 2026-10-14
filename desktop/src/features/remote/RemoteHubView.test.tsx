@@ -133,6 +133,7 @@ async function mount(overrides: Partial<Parameters<typeof RemoteHubView>[0]> = {
     autoConnect: false,
     leftPanelExpanded: true,
     onRefreshRemote: vi.fn(async () => {}),
+    onReconnectRemoteAll: vi.fn(async () => {}),
     onOpenRemoteSession: vi.fn(),
     onStartConversation: vi.fn(),
     onToggleAutoConnect: vi.fn(),

@@ -513,6 +513,16 @@ const handlers: Record<string, (args: any) => unknown> = {
     connected: true,
     error: null,
   }),
+  /**
+   * The app's own liveness pass, and "reconnect all".
+   *
+   * The fixture answers it with the same list: a capture's state *is* the
+   * fixture, and the list below is static, so a machine the fixture calls down
+   * stays down on screen however often the app asks for it. Serving it at all is
+   * what keeps a screen that clicks "reconnect all" from silently doing nothing
+   * in a capture while it works in the app.
+   */
+  remote_peer_connect_all: () => remotePeers,
   remote_peer_disconnect: () => null,
   remote_peer_unpair: () => null,
   remote_peer_set_label: () => null,

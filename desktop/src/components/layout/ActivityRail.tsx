@@ -24,6 +24,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { mergeConversations, rowKey } from "../../features/remote-peer/mergeConversations";
+import { peersDotState } from "../../features/remote-peer/peerStatus";
 import { SkillIntroBubble } from "../../features/skills/SkillIntroBubble";
 import { listInstalledSkills } from "../../integrations/skills/skillsClient";
 import { cn } from "../../lib/cn";
@@ -199,21 +200,38 @@ export function ActivityRail({
   const pendingApprovalCounts = usePendingApprovalCounts();
   // Shared overlay scrollbar for the conversation list, matching the chat view.
   const listScrollbar = useFloatingScrollbar();
-  // Connection indicator overlaid on the Remote nav icon: blue when connected,
-  // amber while a connection is being attempted, red when remote access is disconnected,
-  // and nothing before pairing.
-  const remoteDot = remoteIndicator
+  // Connection indicator overlaid on the Remote nav icon.
+  //
+  // It answers for the *paired* machines when there are any (the phone's own
+  // rule): blue only when every one of them is up, amber when some are, red when
+  // none are — because the merged conversation list is short of exactly the ones
+  // that are not, and that is the fact the reader has to be able to see without
+  // opening the page. With nothing paired it keeps its other meaning: this
+  // machine's own host bridge (blue while devices can connect in, amber while it
+  // is being established, red when it is down, nothing before pairing).
+  const peersDot = peersDotState(remotePeers);
+  const dotState: "up" | "partial" | "down" | null = peersDot
+    ?? (remoteIndicator === "connected"
+      ? "up"
+      : remoteIndicator === "connecting"
+        ? "partial"
+        : remoteIndicator === "disconnected"
+          ? "down"
+          : null);
+  const remoteDot = dotState
     ? (
         <span
           className={cn(
             "absolute -right-1 -top-1 size-2 rounded-full",
-            remoteIndicator === "connected"
+            dotState === "up"
               ? "bg-accent"
-              : remoteIndicator === "connecting"
+              : dotState === "partial"
                 ? "bg-warning"
                 : "bg-danger",
-            remoteIndicator === "connecting" && "animate-pulse",
+            dotState === "partial" && "animate-pulse",
           )}
+          data-testid="remote-status-dot"
+          data-state={dotState}
         />
       )
     : null;

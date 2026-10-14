@@ -18,6 +18,7 @@ vi.mock("../../integrations/tauri/invoke", () => ({
 const {
   abortRemoteRun,
   compactRemoteConversation,
+  connectAllRemotePeers,
   continueRemoteRun,
   createRemoteWorkspace,
   deleteRemoteConversation,
@@ -1008,6 +1009,34 @@ describe("the peer list", () => {
 
   it("keeps the hosts the backend did report", async () => {
     invokeMock.mockResolvedValue([{ desktopId: "desktop_a" }]);
-    await expect(listRemotePeers()).resolves.toEqual([{ desktopId: "desktop_a" }]);
+    await expect(listRemotePeers()).resolves.toEqual([{ desktopId: "desktop_a", stopped: false }]);
+  });
+
+  /**
+   * `stopped` is normalised rather than passed through, because its *absence* has
+   * a meaning the caller acts on: a backend from before the mark existed means
+   * "not stopped", and a caller that decides whether to reconnect a machine must
+   * be able to trust the field rather than a truthiness test on `undefined`.
+   */
+  it("reads a host the backend did not mark as not stopped", async () => {
+    invokeMock.mockResolvedValue([{ desktopId: "desktop_a", stopped: undefined }]);
+    await expect(listRemotePeers()).resolves.toEqual([{ desktopId: "desktop_a", stopped: false }]);
+  });
+});
+
+describe("the connect-all pass", () => {
+  it("asks the backend to bring every host up", async () => {
+    invokeMock.mockResolvedValue([{ desktopId: "desktop_a", stopped: true }]);
+
+    await expect(connectAllRemotePeers())
+      .resolves
+      .toEqual([{ desktopId: "desktop_a", stopped: true }]);
+    expect(lastCall().command).toBe("remote_peer_connect_all");
+  });
+
+  /** The caller decides a machine's state from this list, so it is never null. */
+  it("reads an unanswered command as no hosts", async () => {
+    invokeMock.mockResolvedValue(null);
+    await expect(connectAllRemotePeers()).resolves.toEqual([]);
   });
 });

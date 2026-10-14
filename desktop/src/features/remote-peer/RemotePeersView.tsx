@@ -5,6 +5,7 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { TextInput } from "../../components/ui/TextInput";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
+import { peersConnected, peerStatus, peerStatusKey, peerStatusTone } from "./peerStatus";
 import {
   connectRemotePeer,
   disconnectRemotePeer,
@@ -26,6 +27,7 @@ import {
  */
 export function RemoteClientSection({
   onOpenSettings,
+  onReconnectAll,
   onStartConversation,
   refreshNonce,
 }: {
@@ -36,6 +38,14 @@ export function RemoteClientSection({
   onStartConversation: (desktopId: string) => void;
   /** Open that machine's settings, as a page of the window the user is in. */
   onOpenSettings: (peer: RemotePeer) => void;
+  /**
+   * Bring every paired machine up, the stopped ones included.
+   *
+   * Owned by the shell because the liveness pass is the shell's: this section
+   * reads the machines, it does not decide when they come back. Re-reads the
+   * list, so the rows below settle into their new state.
+   */
+  onReconnectAll: () => Promise<void>;
   /**
    * Bumped when something outside this section changed a machine (a rename or an
    * unpair on its settings page), so the list re-reads instead of showing what it
@@ -69,6 +79,21 @@ export function RemoteClientSection({
     setError(null);
     try {
       await action();
+      await refresh();
+    }
+    catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+    finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleReconnectAll() {
+    setBusy("__all__");
+    setError(null);
+    try {
+      await onReconnectAll();
       await refresh();
     }
     catch (err) {
@@ -134,13 +159,38 @@ export function RemoteClientSection({
 
         {error ? <p className="text-xs text-danger">{error}</p> : null}
 
+        {/* The count is what the rows below add up to, and it is the answer to
+            "why is a machine's conversation missing": a list that is short of
+            one machine is the state the reader has to be able to see, and the
+            app now holds every pairing open, so "some of them are not up" is a
+            fact about this machine, not about their settings. */}
+        {peers.length > 1
+          ? (
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs text-ink-muted" data-testid="peers-summary">
+                  {t("peersSummary", {
+                    connected: peersConnected(peers).connected,
+                    total: peers.length,
+                  })}
+                </p>
+                <Button
+                  disabled={busy !== null}
+                  onClick={() => void handleReconnectAll()}
+                  size="sm"
+                >
+                  {busy === "__all__" ? t("connecting") : t("reconnectAll")}
+                </Button>
+              </div>
+            )
+          : null}
+
         {peers.length === 0
           ? <p className="text-sm text-ink-soft">{t("empty")}</p>
           : (
               <div className="space-y-2">
                 {peers.map(peer => (
                   <PeerRow
-                    busy={busy === peer.desktopId}
+                    busy={busy === peer.desktopId || busy === "__all__"}
                     key={peer.desktopId}
                     onDisconnect={() => void run(peer.desktopId, () => disconnectRemotePeer(peer.desktopId))}
                     onEdit={() => onOpenSettings(peer)}
@@ -156,17 +206,9 @@ export function RemoteClientSection({
   );
 }
 
-function peerStatus(peer: RemotePeer, t: (key: string) => string): { tone: "accent" | "warning" | "danger"; label: string } {
-  if (!peer.connected) {
-    return { tone: peer.error ? "danger" : "warning", label: t("statusDisconnected") };
-  }
-  // A reachable bridge can still have an unreachable agent: the link is up and
-  // every command fails. Saying "connected" there would be a lie the user
-  // discovers only when their message does not send.
-  if (!peer.agentAvailable) {
-    return { tone: "warning", label: t("statusAgentUnavailable") };
-  }
-  return { tone: "accent", label: t("statusConnected") };
+function peerBadge(peer: RemotePeer, t: (key: string) => string): { tone: "neutral" | "accent" | "warning" | "danger"; label: string } {
+  const status = peerStatus(peer);
+  return { tone: peerStatusTone(status), label: t(peerStatusKey(status)) };
 }
 
 function PeerRow({
@@ -185,11 +227,14 @@ function PeerRow({
   peer: RemotePeer;
 }) {
   const { t } = useTranslation("remotePeer");
-  const status = peerStatus(peer, t);
+  const status = peerBadge(peer, t);
   // Starting a conversation needs the host's *agent*, not just its bridge: the
   // bridge can be reachable while every prompt fails. Offering the button there
   // would hand the user a box whose messages cannot go anywhere.
-  const canConverse = peer.connected && peer.agentAvailable;
+  const canConverse = peerStatus(peer) === "connected";
+  // A machine the user turned off offers the way back; so does one that could
+  // not be reached. Only a live connection offers to stop.
+  const showDisconnect = peer.connected && !peer.stopped;
 
   return (
     <div className="flex items-center gap-3 rounded-lg border border-line-soft p-4" data-testid="peer-row">
@@ -202,7 +247,10 @@ function PeerRow({
           <Badge tone={status.tone}>{status.label}</Badge>
         </div>
         <div className="mt-0.5 truncate text-xs text-ink-muted">{peer.desktopId}</div>
-        {peer.error ? <div className="mt-1 text-xs text-danger">{peer.error}</div> : null}
+        {/* A stopped machine's last failure is stale by definition: the socket
+            went away because the user closed it. Saying both would read as a
+            fault that is not there. */}
+        {peer.error && !peer.stopped ? <div className="mt-1 text-xs text-danger">{peer.error}</div> : null}
       </div>
       <div className="flex shrink-0 items-center gap-2">
         {canConverse
@@ -212,7 +260,7 @@ function PeerRow({
               </Button>
             )
           : null}
-        {peer.connected
+        {showDisconnect
           ? <Button disabled={busy} onClick={onDisconnect} size="sm">{t("disconnect")}</Button>
           : <Button disabled={busy} onClick={onReconnect} size="sm" variant="primary">{t("connect")}</Button>}
         <Button disabled={busy} onClick={onEdit} size="sm" variant="ghost">{t("edit")}</Button>

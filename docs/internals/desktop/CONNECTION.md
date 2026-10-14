@@ -438,6 +438,37 @@ phone suspects a socket has failed it probes that same socket with `get_presence
 before it tears the connection down, while the desktop takes the answer from the
 `presence` subscription it already holds.
 
+**Every paired computer is held open (2026-10-14).** The client role now works the
+way the phone does. At launch the app answers "how do I reach every machine I am
+paired with" by bringing each of them up in one pass over the credential book, and a
+one-minute backstop retries any that are not connected. Until then a host came up only
+when the user pressed its own Connect, or when a command happened to address it, so a
+machine that was asleep at launch stayed out of the merged list for the rest of the
+session. Three details make that safe rather than merely eager:
+
+- **A reconnect keeps delivering.** The app's event sink for a host is remembered by
+the runtime, and a retry loop resolves it on each attempt. The stream used to be
+attached only by the call that supplied one, so an automatic reconnect produced a
+connection that answered every command and pushed nothing — the UI noticed only when
+something else happened to re-read.
+- **A deliberate stop stays stopped.** Disconnect records the host as *stopped*
+(`PeerSummary.stopped`), which is what the automatic pass reads to leave it alone;
+only an explicit connect — the row's own Connect, or "reconnect all" — clears the
+mark. From outside, the two are otherwise indistinguishable: both leave a host
+disconnected with its last error still recorded.
+- **The state is stated.** The client section counts "*N* of *M* connected" and offers
+"Reconnect all"; every row and every entry of the device picker carries the same five
+states (connected, agent unavailable, connecting, offline, stopped) from one place;
+and the Remote entry's dot answers for the paired machines — green only when every one
+of them is up, amber when some are, red when none are — falling back to this machine's
+own host-bridge state when nothing is paired. A merged list that is short of a machine
+is exactly the fact the reader has to be able to see.
+
+**The conversation half is still single-slot on the desktop.** This window reads one
+remote conversation at a time (see the limitations below), whereas the phone gives
+every paired desktop its own open conversation. What is aligned is the connection and
+the machines' state, not the number of open transcripts.
+
 **Known limitations (current implementation, not design goals).**
 
 - The **host side is still single-slot**: one pending/active pairing per account
@@ -463,6 +494,11 @@ before it tears the connection down, while the desktop takes the answer from the
   `useDesktopConnection` (its connection), `usePairedDesktops` (which desktops
   are paired and which is being read), `useAppLifecycle` (foreground/network,
   applied to all of them at once).
+- On the desktop, every paired host is held open (see above), but the window still
+  reads **one** remote conversation at a time: opening a row on another machine
+  switches which conversation this window draws. The phone is a step further on —
+  every paired desktop keeps its own open conversation, drafts and outbox — which on
+  the desktop would mean one timeline, composer and outbox per host.
 - Device identification needs a host build that reports it; an older host shows
   "unknown device".
 
