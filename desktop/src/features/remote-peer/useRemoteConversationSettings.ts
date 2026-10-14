@@ -19,10 +19,27 @@ export interface RemoteConversationSettingsState {
   thinkingLevel: string | null;
   /** The host's catalogue, for the picker. Empty until it answers. */
   models: RemoteModelInfo[];
+  /**
+   * True until this conversation's settings — and, on a draft, its host's
+   * catalogue — have been read.
+   *
+   * The picker needs it to tell "not read yet" from "the host has no model":
+   * both are a `null` model, and while the read is in flight that difference is
+   * the whole of what the control can say. Without it, opening a conversation
+   * (every read starts by clearing the previous one's value) put the control's
+   * own *label* on screen for as long as the host took to answer.
+   */
+  loading: boolean;
   /** True while a change is in flight, so the picker can say so. */
   saving: boolean;
-  /** A failed read or write, for the caller to show. */
-  error: string | null;
+  /**
+   * A failed read, and a failed write — kept apart because they are different
+   * events with different reasons. A read that failed changed nothing, so the
+   * write message ("could not change …") would describe something that never
+   * happened.
+   */
+  readError: string | null;
+  writeError: string | null;
   setModel: (reference: string) => Promise<void>;
   setThinkingLevel: (level: string) => Promise<void>;
 }
@@ -90,8 +107,10 @@ export function useRemoteConversationSettings(
   const [model, setModel] = useState<string | null>(null);
   const [thinkingLevel, setThinkingLevel] = useState<string | null>(null);
   const [models, setModels] = useState<RemoteModelInfo[]>([]);
+  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
+  const [writeError, setWriteError] = useState<string | null>(null);
   /**
    * Guards against a slow reply landing after the user has moved to another
    * conversation — the same hazard the timeline has, and the same fix.
@@ -103,6 +122,7 @@ export function useRemoteConversationSettings(
     session: string,
   ): Promise<void> => {
     const epoch = ++epochRef.current;
+    setLoading(true);
     try {
       const [settings, catalogue] = await Promise.all([
         getRemoteConversationSettings(desktop, session),
@@ -115,11 +135,17 @@ export function useRemoteConversationSettings(
       setModel(settings.model);
       setThinkingLevel(settings.thinkingLevel);
       setModels(catalogue);
-      setError(null);
+      setReadError(null);
     }
     catch (err) {
       if (epoch === epochRef.current)
-        setError(err instanceof Error ? err.message : String(err));
+        setReadError(err instanceof Error ? err.message : String(err));
+    }
+    finally {
+      // Guarded like every other write here: a slow reply that lands after the
+      // user moved on must not clear the *new* conversation's read state.
+      if (epoch === epochRef.current)
+        setLoading(false);
     }
   }, []);
 
@@ -130,7 +156,9 @@ export function useRemoteConversationSettings(
     setModel(null);
     setThinkingLevel(null);
     setModels([]);
-    setError(null);
+    setLoading(false);
+    setReadError(null);
+    setWriteError(null);
     if (!enabled || !desktopId)
       return;
     if (!sessionId) {
@@ -140,6 +168,7 @@ export function useRemoteConversationSettings(
       // this the model picker was empty (and so disabled) and the thinking level
       // fell back to "off", which is not a default anyone chose.
       const epoch = ++epochRef.current;
+      setLoading(true);
       void listRemoteModels(desktopId).then((catalogue) => {
         if (epoch !== epochRef.current)
           return;
@@ -148,7 +177,10 @@ export function useRemoteConversationSettings(
         setThinkingLevel(defaultRemoteThinkingLevel(catalogue, defaultRemoteModel(catalogue)));
       }).catch((err: unknown) => {
         if (epoch === epochRef.current)
-          setError(err instanceof Error ? err.message : String(err));
+          setReadError(err instanceof Error ? err.message : String(err));
+      }).finally(() => {
+        if (epoch === epochRef.current)
+          setLoading(false);
       });
       return;
     }
@@ -192,15 +224,15 @@ export function useRemoteConversationSettings(
 
   const change = useCallback(async (work: () => Promise<unknown>): Promise<void> => {
     setSaving(true);
-    setError(null);
+    setWriteError(null);
     try {
       await work();
     }
     catch (err) {
       // The host still has the old value, so the picker goes back to it — and
       // the re-read happens *before* the message is set, because a successful
-      // read clears the error as part of its job. Setting the message first left
-      // the user with a value that snapped back and no reason why.
+      // read clears the read error as part of its job. Setting the message first
+      // left the user with a value that snapped back and no reason why.
       if (desktopId && sessionId) {
         try {
           await read(desktopId, sessionId);
@@ -209,7 +241,7 @@ export function useRemoteConversationSettings(
           // The restore is best effort: the message matters more than it.
         }
       }
-      setError(err instanceof Error ? err.message : String(err));
+      setWriteError(err instanceof Error ? err.message : String(err));
     }
     finally {
       setSaving(false);
@@ -266,12 +298,14 @@ export function useRemoteConversationSettings(
   }, [desktopId, sessionId, thinkingLevel, change]);
 
   return {
-    error,
+    loading,
     model,
     models,
+    readError,
     saving,
     setModel: setModelChoice,
     setThinkingLevel: setThinkingLevelChoice,
     thinkingLevel,
+    writeError,
   };
 }
