@@ -221,7 +221,11 @@ export function RemotePeerSettings({
               </Button>
             </div>
           </SettingsRow>
-          <SettingsRow description={t("iconSectionHint")} title={t("icons.label")}>
+          {/* The glyphs are a grid, not a switch: two dozen of them want more
+              width than this column has, and beside the label they took it all
+              (the label drawn one character per line, the grid out of the card).
+              So this one row puts its control below the label. */}
+          <SettingsRow description={t("iconSectionHint")} stacked title={t("icons.label")}>
             <PeerIconPicker onChange={icon => onUpdateLabel({ icon })} value={peer.icon} />
           </SettingsRow>
         </SettingsList>
