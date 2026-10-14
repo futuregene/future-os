@@ -222,7 +222,7 @@ it("surfaces a catalogue that could not be read for a draft", async () => {
     return undefined;
   });
   const hook = await mountHook({ sessionId: "" });
-  expect(hook.current.error).toBe("host is not connected");
+  expect(hook.current.readError).toBe("host is not connected");
   expect(hook.current.model).toBeNull();
   await hook.unmount();
 });
@@ -338,7 +338,7 @@ it("puts the setting back when the host refuses it", async () => {
   });
   await settle();
 
-  expect(hook.current.error).toContain("model_not_available");
+  expect(hook.current.writeError).toContain("model_not_available");
   expect(hook.current.model).toBe("openai/gpt-5");
   await hook.unmount();
 });
@@ -351,7 +351,7 @@ it("surfaces a failed read", async () => {
   });
 
   const hook = await mountHook();
-  expect(hook.current.error).toContain("peer_not_connected");
+  expect(hook.current.readError).toContain("peer_not_connected");
   await hook.unmount();
 });
 
@@ -415,13 +415,15 @@ async function mountPicker(settings: Parameters<typeof RemoteConversationSetting
 
 function state(overrides: Partial<Parameters<typeof useRemoteConversationSettings>[0] extends never ? never : ReturnType<typeof useRemoteConversationSettings>> = {}) {
   return {
-    error: null,
+    loading: false,
     model: "openai/gpt-5",
     models: MODELS,
+    readError: null,
     saving: false,
     setModel: vi.fn(async () => {}),
     setThinkingLevel: vi.fn(async () => {}),
     thinkingLevel: "low",
+    writeError: null,
     ...overrides,
   };
 }
@@ -599,7 +601,7 @@ it("puts the thinking level back when the host refuses it", async () => {
   });
   await settle();
 
-  expect(hook.current.error).toContain("unsupported_level");
+  expect(hook.current.writeError).toContain("unsupported_level");
   expect(hook.current.thinkingLevel).toBe("low");
   await hook.unmount();
 });
@@ -663,7 +665,7 @@ it("closes a subscription that arrives after it unmounted", async () => {
  * computed* is not the feature — being on screen is.
  */
 it("shows why a refused change was refused", async () => {
-  const view = await mountPicker(state({ error: "model_not_available" }));
+  const view = await mountPicker(state({ writeError: "model_not_available" }));
 
   expect(view.container.textContent).toContain("model_not_available");
   // Announced, not merely painted: a silent line is easy to miss next to a
@@ -672,11 +674,71 @@ it("shows why a refused change was refused", async () => {
   await view.unmount();
 });
 
+/**
+ * A failed *read* is not reported as a failed *change*.
+ *
+ * The two share the one line under the pickers, and the write wording ("Could
+ * not change it") describes an event that did not happen when the host never
+ * answered. The reason is the same either way; what changes is which event the
+ * user is told about.
+ */
+it("reports a failed read as a read", async () => {
+  const view = await mountPicker(state({ readError: "peer_not_connected" }));
+
+  expect(view.container.textContent).toContain("Could not read it: peer_not_connected");
+  expect(view.container.textContent).not.toContain("Could not change it");
+  await view.unmount();
+});
+
 /** Nothing is announced while nothing has gone wrong. */
 it("says nothing when the last change succeeded", async () => {
-  const view = await mountPicker(state({ error: null }));
+  const view = await mountPicker(state());
 
   expect(view.container.querySelector("[role='alert']")).toBeNull();
+  await view.unmount();
+});
+
+/**
+ * The trigger says a *word* while the model is unknown — never its own label.
+ *
+ * `modelLabel` is the full sentence written for the tooltip and the accessible
+ * name. Used as the visible fallback it filled the `max-w-48` trigger with its
+ * opening clause ("Model for this conversation (…") for as long as the host
+ * took to answer, which on every open is the first thing the reader sees.
+ */
+it("shows a short word, not its own label, while the model is unknown", async () => {
+  const view = await mountPicker(state({ model: null, models: [] }));
+
+  expect(view.modelLabel()?.trim()).toBe("Model");
+  // The sentence is still where it belongs: the accessible name and the tooltip.
+  expect(view.model().getAttribute("title")).toBe("Model for this conversation (on that computer)");
+  await view.unmount();
+});
+
+/**
+ * A read in flight says so, rather than passing for a conversation with no model.
+ *
+ * Both are a `null` model, and "Model" on its own reads as the latter — a
+ * statement about the *host*, not about this machine waiting for it.
+ */
+it("says the read is in flight rather than showing the fallback", async () => {
+  const view = await mountPicker(state({ loading: true, model: null, models: [] }));
+
+  expect(view.modelLabel()?.trim()).toBe("Loading…");
+  await view.unmount();
+});
+
+/**
+ * A host that lists a model without a label shows its id — the phone's own rule,
+ * so the two controls read the same for the same catalogue.
+ */
+it("falls back to the model's id when the host gives no label", async () => {
+  const view = await mountPicker(state({
+    model: "openai/gpt-5",
+    models: [{ id: "gpt-5", provider: "openai" }],
+  }));
+
+  expect(view.modelLabel()?.trim()).toBe("gpt-5");
   await view.unmount();
 });
 
