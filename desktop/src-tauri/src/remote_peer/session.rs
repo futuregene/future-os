@@ -68,6 +68,17 @@ fn transient(error: &crate::AppError) -> bool {
     matches!(error, crate::AppError::RemoteTransport(_))
 }
 
+/// Capability a client declares on `secure_ready` to be told a catalog row's new
+/// recency instead of being sent the host's whole session list again.
+///
+/// A streaming run rewrites its conversation's activity timestamp about once a
+/// second, and that value is the list's ordering key — so without this the host
+/// re-sends every conversation it owns, once per second, for the length of the
+/// run (measured at 101.7–178.8 MB per run on the six heaviest completed runs).
+/// The client appends the packet to its catalogue in
+/// `desktop/src/components/layout/hooks/useRemotePeers.ts`.
+pub(crate) const CATALOG_ACTIVITY_FEATURE: &str = "catalog_activity_v1";
+
 /// Capability a client declares on `secure_ready` to narrow its event lane from
 /// "every conversation on the host" to the one the user is looking at.
 ///
@@ -101,11 +112,17 @@ pub(crate) const SELECTIVE_EVENTS_FEATURE: &str = "selective_events_v1";
 ///   client that declared this, and lean is what takes them off the page. The two
 ///   are one mechanism: declaring one without consuming the other would leave
 ///   every shell row showing its identity and no command.
-pub(crate) const DECLARED_FEATURES: [&str; 4] = [
+/// * `catalog_activity_v1` — the host stops re-sending a whole session list for
+///   activity, which this client is only safe to ask for while it *applies* the
+///   replacement packet (`useRemotePeers::handleCatalog`, domain
+///   `sessions_activity`). Its own in-place re-ordering on a live event stays as
+///   it was: it is what moves a row between the packets.
+pub(crate) const DECLARED_FEATURES: [&str; 5] = [
     "event_coalescing_v1",
     "reply_gzip_v1",
     SELECTIVE_EVENTS_FEATURE,
     crate::remote_host::lean::LEAN_EVENTS_FEATURE,
+    CATALOG_ACTIVITY_FEATURE,
 ];
 
 /// The session token a narrow `evt.` subscription may be built from.
@@ -951,6 +968,12 @@ mod tests {
     /// `get_tool_call_args` read it unlocks is what keeps a shell row's command on
     /// screen. Removing a fallback without removing this entry is what this test
     /// exists to stop.
+    ///
+    /// `catalog_activity_v1` is earned the same way: asking for it stops the host
+    /// re-sending a whole session list per second of every run, so it is only
+    /// truthful while `useRemotePeers` applies the packet that replaces it. Drop
+    /// that applier without dropping this entry and the merged list stops
+    /// re-ordering.
     #[test]
     fn the_client_declares_the_lanes_its_decoders_expect() {
         for expected in [
@@ -958,6 +981,7 @@ mod tests {
             "reply_gzip_v1",
             SELECTIVE_EVENTS_FEATURE,
             crate::remote_host::lean::LEAN_EVENTS_FEATURE,
+            CATALOG_ACTIVITY_FEATURE,
         ] {
             assert!(
                 DECLARED_FEATURES.contains(&expected),
@@ -970,7 +994,8 @@ mod tests {
                 "event_coalescing_v1",
                 "reply_gzip_v1",
                 "selective_events_v1",
-                "lean_events_v1"
+                "lean_events_v1",
+                "catalog_activity_v1"
             ])
         );
     }

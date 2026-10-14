@@ -240,6 +240,8 @@ workspace 文件树、Reset/Debug 属于本地事实，远端会话不提供入�
 | `evt.{sessionId}` | Desktop 发布会话事件 |
 | `presence` | Desktop 发布在线状态与桥接实例身份 |
 | `state.sessions` / `state.workspaces` | Desktop 发布目录快照 |
+| `state.activity` | 只发排序时间戳变动的行；声明了 `catalog_activity_v1` 的客户端才收得到 |
+| `state.events` | 协商后的低频运行/审批/配置通知（`selective_events_v1`） |
 | `xfer.up.>` | 手机上传分块以及发起下载拉取 |
 | `xfer.down.>` | Desktop 下发文件分块 |
 

@@ -15,6 +15,7 @@ import type {
   RemoteCredentials,
   RemoteWorkspace,
   RpcResponse,
+  SessionActivity,
   StreamEvent,
 } from "./types";
 
@@ -46,6 +47,12 @@ export interface RemoteClientCallbacks {
   onCatalogEpoch?(epoch: string | undefined): void;
   onPresence(presence: Presence): void;
   onSessions(sessions: PresenceSession[], version?: SnapshotVersion): void;
+  /**
+   * A catalog activity packet: the rows whose ordering timestamp moved, and the
+   * revision the packet belongs to. Optional, and only ever sent to a client
+   * that declared `catalog_activity_v1`.
+   */
+  onSessionActivity?(activity: SessionActivity[], version?: SnapshotVersion): void;
   onWorkspaces(workspaces: RemoteWorkspace[], version?: SnapshotVersion): void;
   onFeatures(features: string[]): void;
   onConnectionState(state: ConnectionState): void;
@@ -998,6 +1005,14 @@ export class RemoteClient {
           message.data,
         );
         this.callbacks.onSessions(data.sessions ?? [], data.version);
+      } else if (suffix === "activity") {
+        // Never routed through `onSessions`: that path reads its list as the
+        // whole catalogue, so a packet — which names only the rows that moved —
+        // would look like every other conversation had vanished.
+        const data = decodeRemoteJson<{ activity?: SessionActivity[]; version?: SnapshotVersion }>(
+          message.data,
+        );
+        this.callbacks.onSessionActivity?.(data.activity ?? [], data.version);
       } else if (suffix === "workspaces") {
         const data = decodeRemoteJson<{
           workspaces?: RemoteWorkspace[];
@@ -1234,7 +1249,7 @@ export class RemoteClient {
   }
 
   private async activateSecureChannel(connection: NatsConnection): Promise<void> {
-    // Declare this client's capabilities. Both are opt-in so the desktop keeps
+    // Declare this client's capabilities. Each is opt-in so the desktop keeps
     // its legacy behaviour for a client that never asks:
     //   event_coalescing_v1 — the desktop may merge a run's text fragments, and
     //     this client reads a coalesced index range instead of one step per
@@ -1249,11 +1264,22 @@ export class RemoteClient {
     //     tool's outcome from `exit_code`/`error` instead of parsing an
     //     `[exit: N]` footer out of the output. An older client does all three
     //     from the text, so it must keep receiving the full lane.
+    //   catalog_activity_v1 — while a run streams, the desktop may tell this
+    //     client only the rows whose ordering timestamp moved
+    //     (`onSessionActivity`) instead of re-sending the whole session list
+    //     about once a second. This client patches the rows it already holds and
+    //     re-sorts; a client that did not apply that packet would keep a list it
+    //     could not re-order, so it must keep receiving whole snapshots.
     await this.requestWithConnection(
       connection,
       {
         type: "secure_ready",
-        features: ["event_coalescing_v1", "reply_gzip_v1", "lean_events_v1"],
+        features: [
+          "event_coalescing_v1",
+          "reply_gzip_v1",
+          "lean_events_v1",
+          "catalog_activity_v1",
+        ],
         // Not a capability: the desktop shows the user what is connected, and it
         // cannot say "a phone" about something that never told it so. An older
         // desktop ignores both fields.

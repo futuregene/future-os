@@ -22,6 +22,7 @@ import type {
   RemoteCredentials,
   RemoteSession,
   RemoteWorkspace,
+  SessionActivity,
   SnapshotVersion,
   StreamEvent,
 } from "./types";
@@ -68,6 +69,11 @@ export interface DesktopConnectionOptions {
   reconcileSession(sessionId: string | undefined, reason: ReconcileReason, runId?: string): void;
   setCatalogEpoch?(epoch: string | undefined): void;
   applySessionSnapshot(sessions: RemoteSession[], version?: SnapshotVersion): boolean | void;
+  /**
+   * A catalog activity packet: the rows whose ordering timestamp moved, under
+   * the same version gate as a snapshot.
+   */
+  applySessionActivity(activity: SessionActivity[], version?: SnapshotVersion): boolean | void;
   applySessionStreaming(sessionId: string, streaming: boolean): void;
   setWorkspaces(workspaces: RemoteWorkspace[], version?: SnapshotVersion): void;
   refreshModels(): Promise<void>;
@@ -136,6 +142,7 @@ export function useDesktopConnection({
   reconcileSession,
   setCatalogEpoch,
   applySessionSnapshot,
+  applySessionActivity,
   applySessionStreaming,
   setWorkspaces,
   refreshModels,
@@ -347,6 +354,9 @@ export function useDesktopConnection({
             applySessionStreaming(currentId, streaming);
           }
         },
+        onSessionActivity: (activity, version) => {
+          if (access === accessRef.current) applySessionActivity(activity, version);
+        },
         onWorkspaces: (list, version) => {
           if (access === accessRef.current) setWorkspaces(list, version);
         },
@@ -403,6 +413,7 @@ export function useDesktopConnection({
       await client.open();
     },
     [
+      applySessionActivity,
       applySessionSnapshot,
       applySessionStreaming,
       closeConversation,

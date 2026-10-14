@@ -1,6 +1,7 @@
 import { createElement, type MutableRefObject } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { useSessionCatalog } from "../useSessionCatalog";
+import { mergeSessions } from "../mergeSessions";
 import type { RemoteClient } from "../client";
 import type { RemoteSession } from "../types";
 
@@ -285,6 +286,146 @@ describe("useSessionCatalog", () => {
     });
     expect(result.current.titleOverrides).toEqual({});
     expect(result.current.sessions[0]?.title).toBe("Desktop newer");
+  });
+
+  /**
+   * The catalog activity packet exists so a streaming run's ordering change
+   * costs a few dozen bytes instead of re-sending every conversation the desktop
+   * owns, about once a second. These tests are the client half of that contract:
+   * the row moves, nothing else does, and the packet cannot invent or resurrect
+   * a row.
+   */
+  describe("catalog activity packets", () => {
+    function catalog(...ids: string[]): RemoteSession[] {
+      return ids.map(id => ({ ...session(id), lastMessageAt: 1_000 }));
+    }
+
+    test("a packet moves the row's ordering timestamp and leaves every other field alone", () => {
+      render();
+      act(() => {
+        result.current.setCatalogEpoch("epoch");
+        result.current.applySessionSnapshot(catalog("s1", "s2"), { epoch: "epoch", revision: 1 });
+      });
+      expect(result.current.sessions.map(item => item.lastMessageAt)).toEqual([1_000, 1_000]);
+
+      act(() => {
+        result.current.applySessionActivity(
+          [{ sessionId: "s2", lastMessageAt: 9_000 }],
+          { epoch: "epoch", revision: 2 },
+        );
+      });
+
+      expect(result.current.sessions.map(item => item.lastMessageAt)).toEqual([1_000, 9_000]);
+      // Identity, title and status are not the packet's business: it carries one
+      // value per moved row and must not disturb what the snapshot set.
+      expect(result.current.sessions.map(item => item.sessionId)).toEqual(["s1", "s2"]);
+      expect(result.current.sessions.map(item => item.title)).toEqual(["Title s1", "Title s2"]);
+      expect(result.current.unreadSessions.size).toBe(0);
+      expect(onFinished).not.toHaveBeenCalled();
+    });
+
+    test("the merged list re-orders from the patched value", () => {
+      render();
+      act(() => {
+        result.current.setCatalogEpoch("epoch");
+        result.current.applySessionSnapshot(catalog("older", "newer"), { epoch: "epoch", revision: 1 });
+      });
+      act(() => {
+        result.current.applySessionActivity(
+          [{ sessionId: "older", lastMessageAt: 9_000 }],
+          { epoch: "epoch", revision: 2 },
+        );
+      });
+      // What the packet is for: the conversation that just spoke leads the list.
+      const merged = mergeSessions(
+        [{ desktopId: "d1", label: "d1", sessions: result.current.sessions }],
+        { kind: "all" },
+      );
+      expect(merged.map(row => row.session.sessionId)).toEqual(["older", "newer"]);
+    });
+
+    test("a packet cannot add a row the catalogue has never seen", () => {
+      render();
+      act(() => {
+        result.current.setCatalogEpoch("epoch");
+        result.current.applySessionSnapshot(catalog("s1"), { epoch: "epoch", revision: 1 });
+      });
+      act(() => {
+        result.current.applySessionActivity(
+          [
+            { sessionId: "s1", lastMessageAt: 2_000 },
+            { sessionId: "just-created", lastMessageAt: 2_000 },
+          ],
+          { epoch: "epoch", revision: 2 },
+        );
+      });
+      // A row with no title, mode or workspace cannot be drawn; the host's own
+      // structural push is what announces it.
+      expect(result.current.sessions.map(item => item.sessionId)).toEqual(["s1"]);
+      expect(result.current.sessions[0]?.lastMessageAt).toBe(2_000);
+    });
+
+    test("a repeated or older packet is refused by the version gate", () => {
+      render();
+      act(() => {
+        result.current.setCatalogEpoch("epoch");
+        result.current.applySessionSnapshot(catalog("s1"), { epoch: "epoch", revision: 1 });
+        result.current.applySessionActivity(
+          [{ sessionId: "s1", lastMessageAt: 5_000 }],
+          { epoch: "epoch", revision: 2 },
+        );
+      });
+      act(() => {
+        // Same packet twice: at-most-once delivery makes a duplicate normal, and
+        // it must not be applied again.
+        result.current.applySessionActivity(
+          [{ sessionId: "s1", lastMessageAt: 5_000 }],
+          { epoch: "epoch", revision: 2 },
+        );
+        // And an *older* packet — a value that is behind by one second — must not
+        // drag the row back.
+        result.current.applySessionActivity(
+          [{ sessionId: "s1", lastMessageAt: 4_000 }],
+          { epoch: "epoch", revision: 1 },
+        );
+      });
+      expect(result.current.sessions[0]?.lastMessageAt).toBe(5_000);
+    });
+
+    test("a packet is refused before the epoch is authenticated", () => {
+      render();
+      act(() => {
+        result.current.applySessionSnapshot(catalog("s1"), undefined);
+      });
+      act(() => {
+        result.current.applySessionActivity(
+          [{ sessionId: "s1", lastMessageAt: 5_000 }],
+          { epoch: "epoch", revision: 1 },
+        );
+      });
+      // A version that names an epoch this client has not authenticated
+      // describes a desktop generation it cannot trust.
+      expect(result.current.sessions[0]?.lastMessageAt).toBe(1_000);
+    });
+
+    test("a packet with no rows, and a malformed one, change nothing", () => {
+      render();
+      act(() => {
+        result.current.setCatalogEpoch("epoch");
+        result.current.applySessionSnapshot(catalog("s1"), { epoch: "epoch", revision: 1 });
+      });
+      act(() => {
+        result.current.applySessionActivity([], { epoch: "epoch", revision: 2 });
+        result.current.applySessionActivity(
+          [
+            { sessionId: "s1", lastMessageAt: Number.NaN },
+            { sessionId: "" as string, lastMessageAt: 5_000 },
+          ],
+          { epoch: "epoch", revision: 3 },
+        );
+      });
+      expect(result.current.sessions[0]?.lastMessageAt).toBe(1_000);
+    });
   });
 
   test("an older version cannot retire overlays even when returned to a fresh request", async () => {
