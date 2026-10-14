@@ -84,13 +84,11 @@ function answerHost(overrides: Partial<Record<string, unknown>> = {}): void {
 async function mount(props: {
   onChanged?: () => void;
   onOpenTasks?: () => void;
-  onUnpair?: () => void;
   onUpdateLabel?: (patch: { name?: string; icon?: string }) => void;
   peer?: RemotePeer;
 } = {}) {
   const onChanged = props.onChanged ?? vi.fn();
   const onOpenTasks = props.onOpenTasks ?? vi.fn();
-  const onUnpair = props.onUnpair ?? vi.fn();
   const onUpdateLabel = props.onUpdateLabel ?? vi.fn();
   const container = document.createElement("div");
   document.body.append(container);
@@ -101,7 +99,6 @@ async function mount(props: {
         onBack={vi.fn()}
         onChanged={onChanged}
         onOpenTasks={onOpenTasks}
-        onUnpair={onUnpair}
         onUpdateLabel={onUpdateLabel}
         peer={props.peer ?? peer()}
       />,
@@ -112,7 +109,6 @@ async function mount(props: {
     container,
     onChanged,
     onOpenTasks,
-    onUnpair,
     onUpdateLabel,
     input: () => container.querySelector<HTMLInputElement>("input")!,
     switchFor: (label: string) => container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`),
@@ -296,14 +292,19 @@ it("reports a failed read of the host's settings", async () => {
   await view.unmount();
 });
 
-it("unpairs through the caller", async () => {
+/**
+ * Unpairing is deliberately *not* here, and the absence is asserted.
+ *
+ * It used to be the last section of this page — a page the user has to open
+ * first, about the machine they have decided to stop using. It is now on that
+ * machine's row in the list (see RemotePeersView), and putting a second copy
+ * back here is the easy mistake: this page already talks about the pairing
+ * everywhere, so nothing on screen would look out of place.
+ */
+it("offers no way to unpair — that belongs to the machine's row", async () => {
   const view = await mount();
-  const unpair = [...view.container.querySelectorAll("button")]
-    .find(node => node.textContent === "Unpair")!;
 
-  await act(async () => unpair.click());
-
-  expect(view.onUnpair).toHaveBeenCalled();
+  expect(view.text()).not.toContain("Unpair");
   await view.unmount();
 });
 

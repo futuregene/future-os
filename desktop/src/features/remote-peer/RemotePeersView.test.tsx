@@ -18,12 +18,30 @@ const connectRemotePeer = vi.fn<(desktopId: string) => Promise<unknown>>();
 const disconnectRemotePeer = vi.fn<(desktopId: string) => Promise<unknown>>();
 const listRemotePeers = vi.fn<() => Promise<RemotePeer[]>>();
 const pairRemotePeer = vi.fn<(invitation: string) => Promise<unknown>>();
+const unpairRemotePeer = vi.fn<(desktopId: string) => Promise<string | null>>();
 vi.mock("./remotePeerClient", () => ({
   connectRemotePeer: (...args: Parameters<typeof connectRemotePeer>) => connectRemotePeer(...args),
   disconnectRemotePeer: (...args: Parameters<typeof disconnectRemotePeer>) => disconnectRemotePeer(...args),
   listRemotePeers: () => listRemotePeers(),
   pairRemotePeer: (...args: Parameters<typeof pairRemotePeer>) => pairRemotePeer(...args),
+  unpairRemotePeer: (...args: Parameters<typeof unpairRemotePeer>) => unpairRemotePeer(...args),
 }));
+// A revoke the platform never took comes back as a warning string, which the
+// section says out loud rather than swallowing: captured here so that claim can
+// be asserted.
+const toasts = vi.hoisted(() => [] as Array<{ message: string; tone?: string }>);
+vi.mock("../../lib/futureEvents", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/futureEvents")>();
+  return {
+    ...actual,
+    emitFutureEvent: (name: string, detail: unknown) => {
+      if (name === "toast")
+        toasts.push(detail as { message: string; tone?: string });
+      else
+        actual.emitFutureEvent(name as never, detail as never);
+    },
+  };
+});
 // LeftPanelTitlebarToggle → useIsFullscreen reads the Tauri window API, which is
 // irrelevant (and absent) under jsdom.
 vi.mock("@tauri-apps/api/window", () => ({
@@ -72,14 +90,18 @@ async function mount() {
     button: (label: string) => [...container.querySelectorAll("button")]
       .find(node => node.textContent === label),
     /**
-     * A computer's own row control.
+     * A computer's own row control, on the first row that carries it.
      *
      * Scoped to the row because two different controls answer to "Connect" (the
-     * pairing form and an offline computer) and to "Unpair" (the row and its
-     * confirmation dialog) — taking the first match would exercise the wrong one
-     * and pass while doing nothing.
+     * pairing form and an offline computer) and to "Unpair" (a machine's row and
+     * its confirmation dialog) — taking the first match would exercise the wrong
+     * one and pass while doing nothing.
      */
     rowButton: (label: string) => [...container.querySelectorAll<HTMLButtonElement>("[data-testid='peer-row'] button")]
+      .find(node => node.textContent === label),
+    /** The same control on one numbered row: each machine has its own. */
+    rowButtonIn: (row: number, label: string) => [...(container.querySelectorAll("[data-testid='peer-row']")[row]
+      ?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
       .find(node => node.textContent === label),
     /** A control inside the open dialog. */
     dialogButton: (label: string) => [...container.querySelectorAll<HTMLButtonElement>("[role=\'dialog\'] button")]
@@ -109,10 +131,12 @@ async function settle(): Promise<void> {
 
 beforeEach(() => {
   document.body.innerHTML = "";
+  toasts.length = 0;
   connectRemotePeer.mockReset().mockResolvedValue(undefined);
   disconnectRemotePeer.mockReset().mockResolvedValue(undefined);
   listRemotePeers.mockReset().mockResolvedValue([peer()]);
   pairRemotePeer.mockReset().mockResolvedValue(undefined);
+  unpairRemotePeer.mockReset().mockResolvedValue(null);
 });
 
 it("offers a new conversation on a reachable host, and names it", async () => {
@@ -228,5 +252,88 @@ it("lists every paired computer with its own name", async () => {
 
   expect(view.text()).toContain("Studio iMac");
   expect(view.text()).toContain("Mac mini");
+  await view.unmount();
+});
+
+// ── unpairing a paired computer ─────────────────────────────────────────────
+
+/**
+ * Unpairing is asked for from the row of the computer it removes.
+ *
+ * It used to be a button on that computer's own settings page — a page the user
+ * has to go and open, about the machine they have decided to stop using, which is
+ * not where the decision is made. On the list they are already looking at, it is
+ * one button per machine.
+ */
+it("asks before unpairing, and removes the machine whose row asked", async () => {
+  // The list answers with both machines, then with only the one that is left:
+  // what is on screen after the confirmation has to be what survived it.
+  listRemotePeers
+    .mockResolvedValueOnce([
+      peer({ desktopId: "desktop_a", name: "Studio iMac" }),
+      peer({ desktopId: "desktop_b", name: "Mac mini" }),
+    ])
+    .mockResolvedValue([peer({ desktopId: "desktop_a", name: "Studio iMac" })]);
+  const view = await mount();
+
+  await act(async () => view.rowButtonIn(1, "Unpair")!.click());
+
+  // The question names the machine the row named: every row offers "Unpair", and
+  // asking about one while removing another is the failure that hides here.
+  const dialog = view.container.querySelector("[role='dialog']")?.textContent ?? "";
+  expect(dialog).toContain("Unpair this desktop?");
+  expect(dialog).toContain("Mac mini");
+  expect(unpairRemotePeer).not.toHaveBeenCalled();
+
+  await act(async () => view.dialogButton("Unpair")!.click());
+  await view.settle();
+
+  expect(unpairRemotePeer).toHaveBeenCalledWith("desktop_b");
+  expect(view.text()).not.toContain("Mac mini");
+  await view.unmount();
+});
+
+/** Cancelling leaves the pairing alone. */
+it("cancels an unpair without touching the pairing", async () => {
+  const view = await mount();
+
+  await act(async () => view.rowButton("Unpair")!.click());
+  await act(async () => view.dialogButton("Cancel")!.click());
+
+  expect(unpairRemotePeer).not.toHaveBeenCalled();
+  expect(view.container.querySelector("[role='dialog']")).toBeNull();
+  await view.unmount();
+});
+
+/**
+ * The pairing is gone locally whatever the platform says, so a revoke the
+ * platform never took is reported instead of being claimed as a clean removal.
+ */
+it("reports a revoke the platform never took", async () => {
+  unpairRemotePeer.mockResolvedValue("pending");
+  const view = await mount();
+
+  await act(async () => view.rowButton("Unpair")!.click());
+  await act(async () => view.dialogButton("Unpair")!.click());
+  await view.settle();
+
+  expect(unpairRemotePeer).toHaveBeenCalledWith("desktop_a");
+  expect(toasts.some(toast => toast.message.includes("could not be reached to revoke"))).toBe(true);
+  await view.unmount();
+});
+
+/** Escape dismisses the question and leaves the pairing alone. */
+it("closes the confirmation on Escape without unpairing", async () => {
+  const view = await mount();
+
+  await act(async () => view.rowButton("Unpair")!.click());
+  expect(view.container.querySelector("[role='dialog']")).not.toBeNull();
+
+  await act(async () => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  });
+
+  expect(unpairRemotePeer).not.toHaveBeenCalled();
+  expect(view.container.querySelector("[role='dialog']")).toBeNull();
   await view.unmount();
 });
