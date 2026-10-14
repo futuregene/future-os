@@ -1339,10 +1339,16 @@ impl ServerSession {
                     });
                 }
             }
-            // The transcript terminal and agent_end event are now durable.
+            // The transcript terminal and agent_end event are now durable, but
+            // buffered deltas for this run may still be queued. Compaction
+            // publishes a snapshot and retires the run's raw rows, which makes
+            // those late deltas unappendable, so drain first.
             // This completion is the only trigger. Missed or failed attempts
             // keep the raw journal; startup and idle work never retry them.
             if !is_ephemeral && broadcaster.persistence_error().is_none() {
+                if let Err(error) = broadcaster.flush_journal() {
+                    tracing::warn!(%error, "could not drain the event journal before compaction");
+                }
                 maintenance_manager
                     .request_journal_compaction(&maintenance_session_id, &task_lease.run_id);
             }
