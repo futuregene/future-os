@@ -318,7 +318,9 @@ Three platform-level knobs are worth knowing:
   The driver's own probes (`ready`, optional element reads) stay non-fatal.
 
 `desktop/shot/main.tsx` accepts `?lang=en` and `?settings=key:value,...` to pin
-the UI language and seed app settings before boot; `mobile/shot/mock/shareIntent.ts`
+the UI language and seed app settings before boot; `?remoteSlowRead=1` holds a
+host's answers back, which is the only way a capture can show the state a reader
+is in *while* one is in flight; `mobile/shot/mock/shareIntent.ts`
 reads `?share=1` so the share-intake sheet appears only in the share scenarios.
 
 ### Pointer indicator and callouts
