@@ -16,12 +16,16 @@ import { useRemotePeers } from "./useRemotePeers";
 
 const listRemotePeers = vi.fn<() => Promise<RemotePeer[]>>();
 const fetchRemoteSessions = vi.fn<(desktopId: string) => Promise<unknown>>();
+const connectAllRemotePeers = vi.fn<() => Promise<RemotePeer[]>>();
+const connectRemotePeer = vi.fn<(desktopId: string) => Promise<RemotePeer>>();
 // The host-catalogue reads the poll warms as a connection is established
 // (`remoteHostCatalog`); none of the assertions here is about them, but a mock
 // that omitted them would take the whole refresh down with it.
 const listRemoteModels = vi.fn(async () => []);
 const getRemoteDesktopSettings = vi.fn(async () => ({ skillRecommend: false }));
 vi.mock("../../../features/remote-peer/remotePeerClient", () => ({
+  connectAllRemotePeers: () => connectAllRemotePeers(),
+  connectRemotePeer: (...args: Parameters<typeof connectRemotePeer>) => connectRemotePeer(...args),
   fetchRemoteSessions: (...args: Parameters<typeof fetchRemoteSessions>) => fetchRemoteSessions(...args),
   getRemoteDesktopSettings: () => getRemoteDesktopSettings(),
   listRemoteAvailableSkills: () => Promise.resolve([]),
@@ -46,6 +50,7 @@ function peer(overrides: Partial<RemotePeer> = {}): RemotePeer {
     agentAvailable: true,
     bridgeInstanceId: "bridge_1",
     connected: true,
+    stopped: false,
     desktopId: "desktop_a",
     error: null,
     features: [],
@@ -71,6 +76,88 @@ beforeEach(() => {
   listeners = [];
   listRemotePeers.mockReset().mockResolvedValue([peer()]);
   fetchRemoteSessions.mockReset().mockResolvedValue({ desktopId: "desktop_a", sessions: [] });
+  connectAllRemotePeers.mockReset().mockResolvedValue([]);
+  connectRemotePeer.mockReset().mockResolvedValue(peer());
+});
+
+/**
+ * The liveness pass: what happens to the machines nobody is reading.
+ *
+ * Nothing on screen retries a host that is not the one being read, so without
+ * this a machine that was asleep when the app started — or that dropped while
+ * the user was elsewhere — stayed out of the merged list for the rest of the
+ * session. It is the desktop half of the phone's "hold a live connection to
+ * every paired desktop".
+ */
+describe("holding every paired host", () => {
+  it("brings up a paired host that is not connected, as soon as the list is known", async () => {
+    let connected = false;
+    listRemotePeers.mockImplementation(async () => [peer({ connected })]);
+    connectRemotePeer.mockImplementation(async () => {
+      connected = true;
+      return peer({ connected: true });
+    });
+
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    expect(connectRemotePeer).toHaveBeenCalledWith("desktop_a");
+    // The list is re-read, so the row the user sees is the state the connect
+    // left behind rather than the state before it.
+    expect(hook.current.peers[0]!.connected).toBe(true);
+    hook.unmount();
+  });
+
+  /**
+   * The distinction the backend's `stopped` exists for: the pass reaches a host
+   * that dropped, and does not undo a host the user turned off.
+   */
+  it("leaves a host the user stopped alone", async () => {
+    listRemotePeers.mockResolvedValue([peer({ connected: false, stopped: true })]);
+
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    expect(connectRemotePeer).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+
+  it("asks again on the backstop, for the hosts that are still down", async () => {
+    vi.useFakeTimers();
+    try {
+      listRemotePeers.mockResolvedValue([peer({ connected: false })]);
+      const hook = renderHook(() => useRemotePeers(true));
+      await settle();
+      expect(connectRemotePeer).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      await settle();
+
+      expect(connectRemotePeer).toHaveBeenCalledTimes(2);
+      hook.unmount();
+    }
+    finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reconnect all asks for every machine, the stopped ones included", async () => {
+    listRemotePeers.mockResolvedValue([peer({ connected: false, stopped: true })]);
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    await act(async () => {
+      await hook.current.reconnectAll();
+    });
+
+    // The per-host pass skips what the user turned off; asking for everything is
+    // the one call allowed to overrule it.
+    expect(connectAllRemotePeers).toHaveBeenCalledTimes(1);
+    expect(connectRemotePeer).not.toHaveBeenCalled();
+    hook.unmount();
+  });
 });
 
 it("re-reads the hosts when one of them comes back", async () => {
