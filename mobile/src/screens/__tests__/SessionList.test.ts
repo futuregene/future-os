@@ -99,12 +99,17 @@ jest.mock("lucide-react-native", () =>
 jest.mock("../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote }));
 jest.mock("react-i18next", () => ({
   useTranslation: () => ({
-    t: (key: string, options?: { title?: string; count?: number }) =>
+    // The options a string is given are part of what it says, and the machine a
+    // sheet names is one of them: a sheet that names the wrong machine must be
+    // a failing expectation, not an invisible one.
+    t: (key: string, options?: { title?: string; count?: number; name?: string }) =>
       options?.title
         ? `${key}:${options.title}`
         : options?.count !== undefined
           ? `${key}:${options.count}`
-          : key,
+          : options?.name
+            ? `${key}:${options.name}`
+            : key,
   }),
 }));
 
@@ -1568,7 +1573,10 @@ test("a heading on another machine offers that machine's actions", async () => {
   act(() => button("sessions.workspaceActions:Review").props.onPress());
   expect(tree.root.findByType(ActionMenu).props.actions.map((a: { label: string }) => a.label))
     .toEqual([
-      "sessions.actionsOnDesktop",
+      // A machine the reader has not renamed is named by its id: the sheet says
+      // which machine these commands address, and an unnamed one is called what
+      // the picker calls it.
+      "sessions.actionsOnDesktop:desk-b",
       "sessions.new",
       "sessions.pin",
       "sessions.renameWorkspace",
@@ -1646,6 +1654,38 @@ test("both machines' groups offer a new conversation, whichever one is connected
   // conversations, which is what moves the connection.
   renderMerged(rows, "desk-b");
   expectBoth();
+});
+
+/**
+ * Every group's sheet names the machine that owns it, the phone's own included.
+ *
+ * A group's commands are the machine that owns the workspace — rename, pin and
+ * delete, and the conversation a new one starts there — so the sheet says which
+ * machine they address on its first line. Naming only a peer's group left the
+ * *shape* of a sheet depending on which machine the phone happened to be
+ * reading: the same group gained and lost the line as the reader moved between
+ * machines, and the reader's own group then read as a different kind of sheet
+ * from its neighbour's.
+ */
+test("every group's sheet names its machine, the reader's own included", () => {
+  const rows = [
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+  ];
+  const expectBothNames = () => {
+    // This machine's as the reader named it, the peer's by its id — which is
+    // what the picker above the list calls it too.
+    expect(sheetItems("Project")[0]).toBe("sessions.actionsOnDesktop:Studio");
+    expect(sheetItems("Review")[0]).toBe("sessions.actionsOnDesktop:desk-b");
+  };
+
+  renderMerged(rows, "desk-a");
+  expectBothNames();
+  // And the same two sheets after the reader opened one of the other machine's
+  // conversations, which is what moves the connection: a sheet does not change
+  // shape because the phone moved.
+  renderMerged(rows, "desk-b");
+  expectBothNames();
 });
 
 /**

@@ -95,7 +95,17 @@ jest.mock("react-native-safe-area-context", () => ({
   SafeAreaView: "SafeAreaView",
   useSafeAreaInsets: () => ({ top: 24, bottom: 34, left: 0, right: 0 }),
 }));
-jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key, i18n: { language: "en" } }) }));
+// The machine a string names is one of the options it is given — an action
+// sheet's heading, the new-conversation step's title — so the mock keeps it:
+// naming the wrong machine must fail an expectation rather than read as a bare
+// key.
+jest.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    t: (key: string, options?: { name?: string }) =>
+      options?.name ? `${key}:${options.name}` : key,
+    i18n: { language: "en" },
+  }),
+}));
 
 let tree: ReactTestRenderer;
 const onManageDesktops = jest.fn();
@@ -653,9 +663,9 @@ describe("conversations on other machines", () => {
     // The sheet says where the commands land before the first destructive item:
     // a delete that runs on another machine without saying so is the one action
     // a reader cannot take back.
-    expect(actions()[0]).toMatchObject({ heading: true, label: "sessions.actionsOnDesktop" });
+    expect(actions()[0]).toMatchObject({ heading: true, label: "sessions.actionsOnDesktop:Office" });
     expect(actions().map((action: { label: string }) => action.label))
-      .toEqual(["sessions.actionsOnDesktop", "sessions.pin", "chat.rename", "sessions.delete"]);
+      .toEqual(["sessions.actionsOnDesktop:Office", "sessions.pin", "chat.rename", "sessions.delete"]);
     // Every one of them can run: the machine it addresses is connected.
     expect(actions().filter((action: { onPress?: unknown }) => action.onPress)
       .every((action: { disabled?: boolean }) => !action.disabled)).toBe(true);
@@ -719,6 +729,35 @@ describe("conversations on other machines", () => {
     expect(peerCommands.setSessionPinned).not.toHaveBeenCalled();
     expect(modalText()).toContain("common.error");
   });
+});
+
+/**
+ * A conversation of the phone's *own* machine names it too.
+ *
+ * The merged list is one list of several machines, so a row's sheet says which
+ * machine its commands are addressed to wherever the conversation lives. Naming
+ * only a peer's row left the shape of a sheet depending on which machine the
+ * phone happened to be reading — the same conversation gained and lost the line
+ * as the reader moved between machines.
+ */
+test("a conversation on the machine the phone is reading names it too", () => {
+  const local = { sessionId: "here", threadId: "t-here", title: "Here", streaming: false };
+  act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
+  act(() => tree.root.findByType(SessionList).props.onMenu(local, "desktop_1"));
+
+  const actions = tree.root.findByType(ActionMenu).props.actions;
+  // The machine as this phone labels it — the name, not the id, because the
+  // reader has given it one.
+  expect(actions[0]).toMatchObject({
+    heading: true,
+    label: "sessions.actionsOnDesktop:A very long desktop name",
+  });
+  expect(actions.map((action: { label: string }) => action.label)).toEqual([
+    "sessions.actionsOnDesktop:A very long desktop name",
+    "sessions.pin",
+    "chat.rename",
+    "sessions.delete",
+  ]);
 });
 
 /**
@@ -820,7 +859,9 @@ describe("creating on the machine the user picks", () => {
     // The list is read down the other machine's own connection: the connected
     // machine's workspaces name workspaces the other machine has never heard of.
     expect(mockCatalogs.readWorkspaces).toHaveBeenCalledWith("desktop_2");
-    expect(modalText()).toContain("sessions.newOnDevice");
+    // The header names the machine the step is about — the mock keeps the name
+    // the string was given, so this is that machine and not just any.
+    expect(modalText()).toContain("sessions.newOnDevice:Office");
     expect(modalText()).toContain("Peer project");
     expect(modalText()).not.toContain("Connected project");
     // Registering a folder writes through the *active* connection, so a machine
@@ -857,7 +898,7 @@ describe("creating on the machine the user picks", () => {
   test("the machine list is reachable again from the machine it named", async () => {
     openDialog("workspace");
     await act(async () => { deviceRow("Office").props.onPress(); });
-    expect(modalText()).toContain("sessions.newOnDevice");
+    expect(modalText()).toContain("sessions.newOnDevice:Office");
     act(() => visibleModal()!.findAll(node =>
       node.props.accessibilityLabel === "common.back" && typeof node.props.onPress === "function",
     )[0]!.props.onPress());

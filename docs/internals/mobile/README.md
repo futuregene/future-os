@@ -347,7 +347,10 @@ launch, and the phone carries one conversation runtime: opening a conversation
 on another desktop switches which machine that is. The sessions themselves are
 listed together — every paired desktop keeps its own live connection, so all of
 their conversations are drawn in one merged list, and a row's own actions
-(rename, pin, delete) are issued to the machine that owns it.
+(rename, pin, delete) are issued to the machine that owns it — which its action
+sheet names on its first line, for every conversation and every workspace group
+in the merged list, the machine the phone is reading included, so a sheet does
+not change shape as the phone moves between machines.
 
 The picker above the list says which machines the list is about: "All desktops"
 shows every paired desktop's conversations merged, and a single desktop scopes
@@ -362,6 +365,14 @@ Each desktop in the list has a pencil button to rename it; the name is saved
 locally only and never synced to the Desktop or platform; clearing the name
 shows the Desktop's id again. The list is centered on wide screens with left
 and right margins kept.
+
+A machine's page — the settings action on its row — reads and writes *that*
+machine: its name and icon here, and its own settings, models, providers, skills
+and tasks over its own connection. A paired desktop is connected whether or not
+the phone is reading it, so a page has no connection step to perform first, and
+nothing on it reaches another machine. A machine that is not answering says so
+and disables the rows that need it; the phone's own settings screen lists no
+machines at all.
 
 Unpairing removes only the selected Desktop and does not affect other pairings.
 The Desktop-side one-phone limit is unchanged: switching phones still requires

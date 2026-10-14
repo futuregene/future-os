@@ -1,5 +1,5 @@
 import { iconGlyph } from "../remote/peerIcons";
-import { ArrowLeft, Check, Plus, Settings2, Trash2 } from "lucide-react-native";
+import { ArrowLeft, Plus, Settings2, Trash2 } from "lucide-react-native";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -14,8 +14,8 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "../components/Button";
 import { useAppDialog } from "../components/useAppDialog";
+import { DesktopScope, useRemoteControls } from "../remote/RemoteContext";
 import { SettingsScreen, type SettingsScreenHandle } from "../features/settings/SettingsScreen";
-import { useRemoteControls } from "../remote/RemoteContext";
 import type { PairedDesktop } from "../remote/types";
 import { colors, layout, radius, spacing } from "../theme/tokens";
 
@@ -124,10 +124,16 @@ export function DesktopsScreen({ onBack, onAdd, onOpenConversation }: {
             <Text style={styles.description}>{t("desktops.description")}</Text>
           </View>
           {remote.desktops.map((desktop) => {
+            // Whether this is the machine the phone is reading is *not* drawn on
+            // the row: beside the two actions a row carries, a highlight and a
+            // check mark read as a third control, and the one thing a row here
+            // cannot do is act. Assistive tech still gets it, and which machine a
+            // conversation is created on is asked for where one is created,
+            // marked there against the machine in use.
             const selected = remote.credentials?.pairId === desktop.pairId;
             const identity = (
               <>
-                <View style={[styles.desktopIcon, selected && styles.desktopIconSelected]}>
+                <View style={styles.desktopIcon}>
                   {/* The desktop's own mark, exactly as the session list and the
                       device page draw it: the icon the user picked *is* this
                       machine's identity. The generic monitor that used to be here
@@ -146,11 +152,10 @@ export function DesktopsScreen({ onBack, onAdd, onOpenConversation }: {
                     <Text numberOfLines={1} style={styles.id}>{desktop.desktopId}</Text>
                   ) : null}
                 </View>
-                {selected ? <Check color={colors.accent} size={18} /> : null}
               </>
             );
             return (
-              <View key={desktop.desktopId} style={[styles.card, selected && styles.cardSelected]}>
+              <View key={desktop.desktopId} style={styles.card}>
                 {picking
                   ? (
                       <Pressable
@@ -166,8 +171,7 @@ export function DesktopsScreen({ onBack, onAdd, onOpenConversation }: {
                     )
                   : (
                       /* The same drawing as the picker's row, and nothing to press:
-                         on this page the two actions beside it are what a tap can
-                         do, and the check mark still says which machine is in use. */
+                         on this page the two actions beside it are what a tap can do. */
                       <View
                         accessibilityLabel={label(desktop)}
                         accessibilityState={{ selected }}
@@ -224,13 +228,15 @@ export function DesktopsScreen({ onBack, onAdd, onOpenConversation }: {
         visible={editing !== null}
       >
         {editing
-          ? <SettingsScreen
-              deviceId={editing}
-              key={editing}
-              onClose={() => setEditing(null)}
-              onOpenConversation={onOpenConversation}
-              ref={settingsRef}
-            />
+          ? <DesktopScope desktopId={editing}>
+              <SettingsScreen
+                deviceId={editing}
+                key={editing}
+                onClose={() => setEditing(null)}
+                onOpenConversation={onOpenConversation}
+                ref={settingsRef}
+              />
+            </DesktopScope>
           : null}
       </Modal>
     </SafeAreaView>
@@ -267,10 +273,8 @@ const styles = StyleSheet.create({
     borderRadius: radius.lg,
     backgroundColor: colors.surface,
   },
-  cardSelected: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
   select: { flex: 1, minWidth: 0, minHeight: 64, flexDirection: "row", alignItems: "center", gap: spacing.sm, borderRadius: radius.md },
   desktopIcon: { width: 36, height: 44, alignItems: "center", justifyContent: "center", borderRadius: radius.md, backgroundColor: colors.surfaceSubtle },
-  desktopIconSelected: { backgroundColor: colors.surface },
   desktopGlyph: { fontSize: 20 },
   iconButton: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center", borderRadius: radius.md },
   pressed: { backgroundColor: colors.surfaceSubtle },
