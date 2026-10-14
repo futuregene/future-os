@@ -2,7 +2,8 @@ import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { ScrollView, SectionList, StyleSheet, Switch, Text, TextInput } from "react-native";
 import { Button } from "../../../components/Button";
-import { SettingsScreen, type SettingsScreenHandle } from "../SettingsScreen";
+import { SettingsScreen, TITLED_SETTINGS_PAGES, type SettingsScreenHandle } from "../SettingsScreen";
+import { resources } from "../../../i18n/locales";
 import { SettingsLink, SettingsSwitch, useSettingsStyles } from "../SettingsPrimitives";
 import { lightTheme } from "../../../theme/theme";
 import type { DesktopSettings, InstalledSkill, PairedDesktop, ProvidersView } from "../../../remote/types";
@@ -333,6 +334,34 @@ test("the phone's own screen holds no device settings", async () => {
   expect(text).toContain("desktopSettings.thisPhone");
   expect(text).not.toContain("desktopSettings.boundDesktop: Work computer");
 });
+
+test("every titled settings level has a header in both languages", () => {
+  // A level whose title key is missing does not fail loudly: the header renders
+  // the key itself (`desktopSettings.appearance`), which is how the appearance
+  // page first shipped. The header is built from `desktopSettings.<name>`, so
+  // hold that key to the shipped translations rather than to a mock's echo.
+  for (const page of TITLED_SETTINGS_PAGES) {
+    for (const language of ["en", "zh"] as const) {
+      const title = translations(language)[`desktopSettings.${page}`];
+      expect({ page, language, title }).toEqual({ page, language, title: expect.any(String) });
+      expect(title).not.toBe(`desktopSettings.${page}`);
+      expect(title).not.toBe("");
+    }
+  }
+});
+
+function translations(language: "en" | "zh"): Record<string, string> {
+  const flat: Record<string, string> = {};
+  const walk = (value: object, prefix = "") => {
+    for (const [key, entry] of Object.entries(value)) {
+      const path = prefix ? `${prefix}.${key}` : key;
+      if (typeof entry === "string") flat[path] = entry;
+      else if (entry && typeof entry === "object") walk(entry, path);
+    }
+  };
+  walk(resources[language].translation);
+  return flat;
+}
 
 test("the appearance level is reachable from the phone's own screen", async () => {
   await remountPhone();
