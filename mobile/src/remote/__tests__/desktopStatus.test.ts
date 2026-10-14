@@ -2,6 +2,7 @@ import {
   activeMachineStatus,
   machineStatusKey,
   machinesConnected,
+  machinesPartlyConnected,
   peerMachineStatus,
   type MachineSummary,
 } from "../desktopStatus";
@@ -80,5 +81,48 @@ describe("the dot's own answer", () => {
     // No pairing at all: the dot falls back to the active connection's own
     // presentation rather than reporting "0 of 0 connected".
     expect(machinesConnected([])).toEqual({ all: false, any: false, connected: 0, total: 0 });
+  });
+});
+
+describe("whose words the status block uses", () => {
+  const counts = (...statuses: MachineSummary["status"][]) =>
+    machinesConnected(statuses.map((status, index) => machine(`m${index}`, status)));
+  const down = connectionPresentation({
+    phase: "failed",
+    desktopOnline: false,
+    error: "whatever the transport said",
+  });
+  const ready = connectionPresentation({ phase: "ready", desktopOnline: true });
+  const revoked = connectionPresentation({ phase: "revoked", desktopOnline: false });
+
+  test("the set's, while some machines answer and some do not", () => {
+    // The case that read as "no connection" under a list saying two of three
+    // desktops were connected, whichever of them the open machine happened to be.
+    expect(machinesPartlyConnected(counts("connected", "connected", "offline"), ready)).toBe(true);
+    expect(machinesPartlyConnected(counts("connected", "connecting", "offline"), down)).toBe(true);
+    expect(machinesPartlyConnected(counts("preparing", "connected"), down)).toBe(true);
+  });
+
+  test("the open machine's, when every machine answers", () => {
+    expect(machinesPartlyConnected(counts("connected", "connected"), ready)).toBe(false);
+  });
+
+  test("the open machine's, when nothing answers", () => {
+    // There is no set to describe: its cause, its support code and the action
+    // that fits it are what the reader needs.
+    expect(machinesPartlyConnected(counts("offline", "connecting"), down)).toBe(false);
+    expect(machinesPartlyConnected(counts("offline", "offline"), ready)).toBe(false);
+  });
+
+  test("a single machine has no set to speak for", () => {
+    expect(machinesPartlyConnected(counts("offline"), down)).toBe(false);
+    expect(machinesPartlyConnected(counts(), ready)).toBe(false);
+  });
+
+  test("a pairing this machine lost keeps its own words and its own action", () => {
+    // "Some desktops are not connected" cannot explain an unpair prompt: the
+    // expired pairing is the thing to fix, on the machine whose conversation it
+    // was.
+    expect(machinesPartlyConnected(counts("connected", "offline"), revoked)).toBe(false);
   });
 });
