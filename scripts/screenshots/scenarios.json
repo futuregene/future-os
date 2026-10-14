@@ -2301,7 +2301,7 @@
             "wait": 600
           },
           {
-            "eval": "(() => { const stack = document.querySelector('[aria-label=\"下一个提问\"]').parentElement; return [...stack.children].map(el => { const r = el.getBoundingClientRect(); return [(el.getAttribute('aria-label') || el.textContent || '').slice(0, 4), Math.round(r.left), Math.round(r.right), Math.round(r.width), Math.round(r.height)]; }); })()"
+            "eval": "(() => { const stack = document.querySelector('[aria-label=\"下一段\"]').parentElement; return [...stack.children].map(el => { const r = el.getBoundingClientRect(); return [(el.getAttribute('aria-label') || el.textContent || '').slice(0, 4), Math.round(r.left), Math.round(r.right), Math.round(r.width), Math.round(r.height)]; }); })()"
           },
           {
             "shot": "m-qn-nav.png"
@@ -2309,7 +2309,7 @@
         ]
       },
       "qn-jump-states": {
-        "_comment": "一个场景跑三遍，只有注入不同：不动 / 按 ↑ / 按 ↓。提问的落点数值断言在 qn-align-check，这里只出画面。",
+        "_comment": "一个场景跑三遍，只有注入不同：不动 / 按 ↑ / 按 ↓。提问的落点数值断言在 qn-align-check，这里只出画面。↑ 永远落在提问上（跳过回答），↓ 落在下面最近的一级（提问或回答）。",
         "variantsTitle": "提问导航：滚动后出现 · 按 ↑ 之后 · 按 ↓ 之后（内容对齐方式相同）",
         "url": "http://localhost:8099/?multiTurn=1",
         "variants": [
@@ -2322,7 +2322,7 @@
             "inject": "injects/qn-state-up.js"
           },
           {
-            "label": "③ 按 ↓：下一个提问，同样是顶部对齐",
+            "label": "③ 按 ↓：下一段内容，同样是顶部对齐",
             "inject": "injects/qn-state-down.js"
           }
         ],
@@ -2367,7 +2367,7 @@
             "wait": 1000
           },
           {
-            "eval": "(() => { const read = label => { const el = document.querySelector(`[aria-label=\"${label}\"]`); return el ? (el.getAttribute('aria-disabled') === 'true' ? 'disabled' : 'enabled') : 'missing'; }; const stack = document.querySelector('[aria-label=\"下一个提问\"]'); return { up: read('上一个提问'), down: read('下一个提问'), buttons: stack ? stack.parentElement.children.length : 0 }; })()"
+            "eval": "(() => { const read = label => { const el = document.querySelector(`[aria-label=\"${label}\"]`); return el ? (el.getAttribute('aria-disabled') === 'true' ? 'disabled' : 'enabled') : 'missing'; }; const stack = document.querySelector('[aria-label=\"下一段\"]'); return { up: read('上一个提问'), down: read('下一段'), buttons: stack ? stack.parentElement.children.length : 0 }; })()"
           },
           {
             "shot": "m-qn-jump.png"
@@ -2375,7 +2375,7 @@
         ]
       },
       "qn-reply-tail": {
-        "_comment": "按 ↑ 的落点由这一级阶梯自己决定：提问把它的「开头」贴到列表顶边下方 12px；回答则落在它**最后一个有输出的块**上——那块在行内的偏移由气泡自己量（replyTailBlock 上报、useQuestionNav 抬起整行），所以按到一轮回答时，落在视口顶边的是这一轮最后那段输出（正文，或它结束于的工具调用），开头那些思考/工具行留在视口上方；只有列表最新那一行例外，它的「结尾」就是会话底部，贴底边上方 12px。滚动离开最新后按 ↑ 落到正在读的这一轮的提问，再按一次才落到上一轮的回答。harness 的 inverted 几何与真机相反（见 memory「在 worktree 里验证移动端 UI」），所以这里只断言语义，不看落点像素：能证明「按了之后落到预期那一轮」，以及「落点相对旧版正好平移了该回答上报的锚点那么多」（同一串步骤跑新旧两版，比较 scrollTop；演示数据每轮上报 40px）。方向以真机为准。",
+        "_comment": "↑ 与 ↓ 共用一个阶梯、读法不同：↑ 只落在**提问**上（两个提问之间的回答直接跳过，所以每次按都是上一个用户输入），↓ 落在下面最近的一级（提问或回答都算），读出来就是会话本身的顺序：输入、输出、输入、输出……落点统一是那一行的**开头**贴到列表顶边下方 12px；回答再按气泡量出来的行内偏移抬起，抬起后落在视口顶边的是这一轮最后那段输出（正文，或它结束于的工具调用），开头那些思考/工具行留在上方。列表最新那一行不再特殊：它和别的行一样按开头落点，会话真正的底部就在它下面一屏（右下角的「回到最新」在那里）。本场景按两次 ↑ 再按两次 ↓，看的就是这串顺序与落点。harness 的 inverted 几何与真机相反（见 memory「在 worktree 里验证移动端 UI」），所以这里只断言语义、不看落点像素；方向以真机为准，位移量可用同一串步骤跑新旧两版比较 scrollTop。",
         "url": "http://localhost:8099/?multiTurn=1",
         "steps": [
           {
@@ -2420,7 +2420,7 @@
         ]
       },
       "qn-page-up": {
-        "_comment": "到已载入历史顶部再按 ↑：先拉出更早的一页对话，然后落在新一页最老的那一轮。用 ?multiTurnOlder=1 让 mock 多一页可拉。",
+        "_comment": "到已载入历史顶部再按 ↑：先拉出更早的一页对话，然后落在新一页最老的那一轮（提问）。用 ?multiTurnOlder=1 让 mock 多一页可拉。注意页序：远端的一页是**会话顺序**（主机把自己倒序的扫描反过来再回），所以落点是这一页的第一个 id；mock 早期按最新在前返回，等于替真机验了一个相反的落点，现已与主机一致。",
         "url": "http://localhost:8099/?multiTurn=1&multiTurnOlder=1",
         "steps": [
           {

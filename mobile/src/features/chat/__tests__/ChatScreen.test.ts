@@ -876,19 +876,27 @@ describe("ChatScreen wiring", () => {
 
       // The row laid itself out before the press: that is the bubble's report.
       const card = view().findAllByType("TimelineCard" as never);
-      const older = card.find(node => node.props.item.id === "a1")!;
-      act(() => older.props.onReplyTailAnchor("a1", 240));
+      const answer = card.find(node => node.props.item.id === "a1")!;
+      act(() => answer.props.onReplyTailAnchor("a1", 240));
 
-      // The reader is at the newer question, so ↑ reaches the answer above it.
+      // The reader dragged up to the older question, so ↓ offers that question's
+      // answer — the rung this anchor belongs to.
+      act(() => list().props.onScrollBeginDrag({
+        nativeEvent: {
+          contentOffset: { x: 0, y: 1_360 },
+          contentSize: { width: 320, height: 2_000 },
+          layoutMeasurement: { width: 320, height: 600 },
+        },
+      }));
       act(() => list().props.viewabilityConfigCallbackPairs[0].onViewableItemsChanged({
-        viewableItems: [{ index: 1, key: "q2", isViewable: true }],
+        viewableItems: [{ index: 3, key: "q1", isViewable: true }],
         changed: [],
       }));
-      const up = view().findAll(node =>
-        node.props.accessibilityLabel === "chat.previousQuestion"
+      const down = view().findAll(node =>
+        node.props.accessibilityLabel === "chat.nextPassage"
         && typeof node.props.onPress === "function")[0];
-      expect(up).toBeDefined();
-      act(() => up!.props.onPress());
+      expect(down).toBeDefined();
+      act(() => down!.props.onPress());
 
       expect(scrollToIndex).toHaveBeenCalledWith({
         index: 2,

@@ -239,9 +239,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     loadOlderTimeline: async (): Promise<false | string[]> => {
       if (!withOlder || olderLoaded) return false;
       setOlderLoaded(true);
-      // Newest first within the page, matching the remote contract: the
-      // oldest id is last, and it is the row the page-up jump lands on.
-      return multiTurnOlderEntries.map(entry => entry.id).reverse();
+      // In conversation order, matching the remote contract: the *host* reverses
+      // its own descending scan before replying, so a backward page is
+      // oldest-first and its first id is the row the page-up jump lands on.
+      return multiTurnOlderEntries.map(entry => entry.id);
     },
     streaming: baseTimeline.streaming,
     compacting: scriptedCompaction ? baseTimeline.compacting === true : new URLSearchParams(window.location.search).get("compacting") === "1",

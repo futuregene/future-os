@@ -588,8 +588,8 @@ Frank 等报的是**结合潜能与冒险比例之间的 Pearson 相关**，不�
 /**
  * The page above `?multiTurn=1`'s loaded slice, served when the scenario asks
  * for older history (`?multiTurnOlder=1`): one older exchange, so a capture
- * can watch ↑ pull it in and land on it. The ids are the ones
- * `loadOlderTimeline` resolves with — the oldest is the jump's target.
+ * can watch ↑ pull it in and land on it. Listed in conversation order, the way
+ * `loadOlderTimeline` resolves it — the page's first row is the jump's target.
  */
 export const multiTurnOlderEntries = [
   {

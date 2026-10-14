@@ -4,7 +4,7 @@
 // rather than restyling anything: a vertical stack, and two 44px circular
 // buttons — the platform's minimum touch target.
 const up = document.querySelector('[aria-label="上一个提问"]');
-const down = document.querySelector('[aria-label="下一个提问"]');
+const down = document.querySelector('[aria-label="下一段"]');
 const stack = up && up.parentElement;
 
 if (!up || !down || !stack) throw new Error('question nav control not found');

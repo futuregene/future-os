@@ -5,7 +5,7 @@
 // appears when the reader scrolls away" has to be true for this panel to mean
 // anything.
 const up = document.querySelector('[aria-label="上一个提问"]');
-const down = document.querySelector('[aria-label="下一个提问"]');
+const down = document.querySelector('[aria-label="下一段"]');
 
 if (!up || !down) throw new Error('question nav control is not on screen after scrolling');
 if (up.getAttribute('aria-disabled') === 'true')
