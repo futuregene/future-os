@@ -1,11 +1,14 @@
+import type { ThinkingLevel } from "../../integrations/agent/agentClient";
 import type { RemoteModelInfo, RemotePeerEvent } from "./remotePeerClient";
 import type { RemoteSessionStateReading } from "./useRemoteTimeline";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { defaultThinkingLevel, readLastUsedModel, readLastUsedThinkingLevel, rememberLastUsedModel, rememberLastUsedThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
 import { hostModels, useHostCatalogueInvalidation } from "./remoteHostCatalog";
 import {
   getRemoteConversationSettings,
   parseRemoteConversationSettings,
+  remoteModelReference,
   setRemoteConversationModel,
   setRemoteConversationThinkingLevel,
 } from "./remotePeerClient";
@@ -52,46 +55,61 @@ export interface RemoteConversationSettingsState {
 }
 
 /**
- * The thinking level a new conversation on that host will run with.
- *
- * The agent's own default (`agent/src/rpc/session.rs`, `DEFAULT_THINKING_LEVEL`)
- * and the value this app uses for its own new conversations. It used to be "off"
- * here, which is not a default anybody chose: a new remote conversation would run
- * with thinking disabled unless the reader noticed the picker and changed it.
- */
-export const DEFAULT_REMOTE_THINKING_LEVEL = "medium";
-
-/**
  * The model a new conversation on that host should start with.
  *
- * The host's own designation (`isDefault` on its catalogue), then the first model
- * it offers. The phone resolves a draft the same way — last used, then the
- * catalogue's default, then the first — and the *point* of resolving it here is
- * that the choice is then sent with the first prompt, so what the picker shows is
- * what runs.
+ * The phone's order (`newConversation` in
+ * `mobile/src/remote/useConversationController.ts`), which is the order a new
+ * conversation on this machine uses too (`resolveInitialModelId`): the model the
+ * user last chose, if that host still offers it — then the host's own designation
+ * (`isDefault` on its catalogue) — then the first it offers. The choice is sent
+ * with the first prompt, so what the picker shows is what runs.
  */
-export function defaultRemoteModel(models: RemoteModelInfo[]): string | null {
-  const preferred = models.find(model => model.isDefault) ?? models[0];
+export function defaultRemoteModel(models: RemoteModelInfo[], lastUsed: string | null): string | null {
+  const remembered = lastUsed
+    ? models.find(model => remoteModelReference(model) === lastUsed)
+    : undefined;
+  const preferred = remembered ?? models.find(model => model.isDefault) ?? models[0];
   if (!preferred)
     return null;
-  return preferred.provider ? `${preferred.provider}/${preferred.id}` : preferred.id;
+  return remoteModelReference(preferred);
+}
+
+/**
+ * Whether that host's model accepts thinking controls at all.
+ *
+ * `undefined` is not `false`: a catalogue that does not say is treated as a model
+ * that does think, which is what the agent's own list means by omitting nothing
+ * (`reasoning` is always sent) and what this app does elsewhere
+ * (`modelSupportsThinking` in `integrations/agent/agentClient`).
+ */
+export function remoteModelSupportsThinking(
+  models: RemoteModelInfo[],
+  reference: string | null,
+): boolean {
+  const chosen = models.find(model => remoteModelReference(model) === reference);
+  return chosen?.reasoning !== false;
 }
 
 /**
  * The thinking level a draft should offer for the model it resolved.
  *
- * A model that does not accept thinking controls gets `off`, because that is what
- * it will run with; every other model gets this app's own default — the same level
- * this app's composer starts a conversation on.
+ * The phone's rule — start from the level the user last chose — with this app's own
+ * floor, which is the rule this app already applies to its new conversations
+ * (`resolveInitialThinkingLevel` in `integrations/agent/agentClient`): a level it
+ * never sees, or one that is not a level at all, means the app default. The phone's
+ * floor is `off`; this one is not, because `off` is what the user is not choosing:
+ * thinking off is a choice the picker offers, not the state a conversation should
+ * silently start in. A model that takes no thinking controls gets `off` either way,
+ * because that is what it will run with.
  *
- * Deliberately *not* the level the host's catalogue declares. That field is not a
- * default anybody chose: the agent answers `list_models` with `high` for every
- * reasoning model and `off` for the rest (`agent/src/rpc/commands/providers.rs`),
- * so seeding from it ran every new remote conversation on a reasoning model at
- * high effort while the same model started on this machine ran at medium — and the
- * level travels with the first prompt, so the host really did run it at high. This
- * app's own composer ignores the same field for the same reason
- * (`modelThinkingLevel` in `integrations/agent/agentClient`).
+ * Deliberately *not* the level the host's catalogue declares for the model. That
+ * field is not a default anybody chose: the agent answers `list_models` with `high`
+ * for every reasoning model and `off` for the rest
+ * (`agent/src/rpc/commands/providers.rs`), so seeding from it ran every new remote
+ * conversation on a reasoning model at high effort while the same model started on
+ * this machine ran at medium — and the level travels with the first prompt, so the
+ * host really did run it at high. This app's own composer ignores the same field
+ * for the same reason (`modelThinkingLevel` in `integrations/agent/agentClient`).
  *
  * The level is sent explicitly with the first prompt either way: this is not a
  * guess about what the host will *choose*, it is the value the host is asked for.
@@ -99,12 +117,15 @@ export function defaultRemoteModel(models: RemoteModelInfo[]): string | null {
 export function defaultRemoteThinkingLevel(
   models: RemoteModelInfo[],
   reference: string | null,
+  lastUsed: string | null,
 ): string {
-  const chosen = models.find(model =>
-    (model.provider ? `${model.provider}/${model.id}` : model.id) === reference);
-  if (chosen && chosen.reasoning === false)
+  if (!remoteModelSupportsThinking(models, reference))
     return "off";
-  return DEFAULT_REMOTE_THINKING_LEVEL;
+  // A remembered value is only a level if it is one of the six the agent accepts;
+  // anything else (a hand-edited localStorage entry) is not a choice to repeat.
+  return lastUsed && thinkingLevels.includes(lastUsed as ThinkingLevel)
+    ? lastUsed
+    : defaultThinkingLevel;
 }
 
 /**
@@ -238,9 +259,12 @@ export function useRemoteConversationSettings(
       void loadModels(desktopId, epoch).then((catalogue) => {
         if (epoch !== epochRef.current)
           return;
-        const reference = defaultRemoteModel(catalogue);
-        setModel(reference);
-        setThinkingLevel(defaultRemoteThinkingLevel(catalogue, reference));
+        // Resolved the way the phone resolves a draft, off its own memory of what
+        // the user last chose (device-wide, so a pick made *here* — or in this
+        // app's own composer — is where the next new conversation starts).
+        const resolved = defaultRemoteModel(catalogue, readLastUsedModel());
+        setModel(resolved);
+        setThinkingLevel(defaultRemoteThinkingLevel(catalogue, resolved, readLastUsedThinkingLevel()));
         setLoading(false);
       });
       return;
@@ -361,16 +385,22 @@ export function useRemoteConversationSettings(
   const setModelChoice = useCallback(async (reference: string): Promise<void> => {
     if (!desktopId)
       return;
+    // Remembered the way this app's own composer remembers a pick, and the way the
+    // phone does: it is what the *next* new conversation resolves from, on either
+    // screen. Written before the change is applied, because a host that refuses it
+    // is still a choice the user made — the same optimism the local composer has.
+    rememberLastUsedModel(reference);
     if (!sessionId) {
       // A draft: the value is local until the first prompt carries it, so it
       // moves here and the host is told nothing — there is no conversation on it
       // to set. Returning without this left the picker dead on a new
       // conversation, which is the state this whole path exists to fix.
       setModel(reference);
-      setThinkingLevel(current =>
-        defaultRemoteThinkingLevel(models, reference) === "off"
-          ? "off"
-          : current ?? DEFAULT_REMOTE_THINKING_LEVEL);
+      // Switching model keeps the level the user is on (the phone's rule) — but a
+      // model that takes no thinking controls runs at `off`, so the draft must not
+      // go on offering it one.
+      if (!remoteModelSupportsThinking(models, reference))
+        setThinkingLevel("off");
       return;
     }
     const previous = model;
@@ -389,6 +419,10 @@ export function useRemoteConversationSettings(
   const setThinkingLevelChoice = useCallback(async (level: string): Promise<void> => {
     if (!desktopId)
       return;
+    // See `setModelChoice`: the choice is what the next new conversation starts
+    // from, and it is remembered even for a conversation the host has to be told
+    // about.
+    rememberLastUsedThinkingLevel(level);
     if (!sessionId) {
       // See `setModelChoice`: a draft's choice is carried by its first prompt.
       setThinkingLevel(level);
