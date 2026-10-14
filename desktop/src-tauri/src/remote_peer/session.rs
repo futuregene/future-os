@@ -115,8 +115,9 @@ pub(crate) const SELECTIVE_EVENTS_FEATURE: &str = "selective_events_v1";
 /// * `catalog_activity_v1` — the host stops re-sending a whole session list for
 ///   activity, which this client is only safe to ask for while it *applies* the
 ///   replacement packet (`useRemotePeers::handleCatalog`, domain
-///   `sessions_activity`). Its own in-place re-ordering on a live event stays as
-///   it was: it is what moves a row between the packets.
+///   `sessions_activity`). The packet is then the only writer of a remote row's
+///   ordering timestamp on this side: a live event moves no row, because a
+///   client clock in that value is a row the next packet moves back.
 pub(crate) const DECLARED_FEATURES: [&str; 5] = [
     "event_coalescing_v1",
     "reply_gzip_v1",
@@ -971,9 +972,9 @@ mod tests {
     ///
     /// `catalog_activity_v1` is earned the same way: asking for it stops the host
     /// re-sending a whole session list per second of every run, so it is only
-    /// truthful while `useRemotePeers` applies the packet that replaces it. Drop
-    /// that applier without dropping this entry and the merged list stops
-    /// re-ordering.
+    /// truthful while `useRemotePeers` applies the packet that replaces it —
+    /// which is the *only* thing that moves a row on this side. Drop that applier
+    /// without dropping this entry and the merged list stops re-ordering.
     #[test]
     fn the_client_declares_the_lanes_its_decoders_expect() {
         for expected in [

@@ -341,12 +341,18 @@ its source icon; the device selector narrows it to one machine. The ordering key
 for **rows** is the one the local list already used —
 `pinned DESC, COALESCE(last_message_at, updated_at, created_at) DESC` — which is
 why the `state.sessions` snapshot gained an optional `lastMessageAt` (older
-clients ignore it). Ties put this machine first and then a host by its device id,
-or the list would reorder on every refresh. A host's snapshot arrives when it
-changes rather than on a timer: each push names its domain and carries the
-`{epoch, revision}` the host gave it, and the client applies it only when the
-epoch matches the handshake's and the revision is newer. The `presence` heartbeat
-is what makes a lost push visible — the heartbeat advertises the same revisions,
+clients ignore it). **A remote row's value is the host's own and is written only
+by the host** — the snapshot when the list's structure moves, the `state.activity`
+packet when only the value did. A client that stamped a clock of its own on the
+row (the desktop's live-event handler once used `Date.now()`) put two clocks in
+one ordering key: every event lifted the conversation above this machine's own
+rows, and the host's next report of that row put it back, so a row whose run was
+streaming jumped for the length of the run. Ties put this machine first and then a
+host by its device id, or the list would reorder on every refresh. A host's
+snapshot arrives when it changes rather than on a timer: each push names its
+domain and carries the `{epoch, revision}` the host gave it, and the client
+applies it only when the epoch matches the handshake's and the revision is newer.
+The `presence` heartbeat is what makes a lost push visible — the heartbeat advertises the same revisions,
 and one ahead of what was applied heals in a single authoritative read instead of
 waiting out a timer. A slow per-host read remains for hosts that predate the push
 and as the backstop that notices a dropped link.

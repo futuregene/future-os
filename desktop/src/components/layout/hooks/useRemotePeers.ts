@@ -229,11 +229,9 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
    * Live pushes update the catalogue in place, and a link coming back triggers a
    * re-read.
    *
-   * A session event settles three things the poll would otherwise lag on: that
-   * the session exists, that it is streaming, and that it just became the most
-   * recent — which is what moves the row. Reordering on *any* event would make
-   * the list jump while merely reading an old conversation, so only a
-   * session-scoped event counts.
+   * A session event settles one thing the poll would otherwise lag on: whether
+   * that conversation is running. It deliberately does **not** settle where the
+   * row belongs — see the handler, and `RemoteSessionRow.lastMessageAt`.
    *
    * A `resumed` push is the one thing the in-place update cannot fix: every
    * event sent while the link was down is gone, and the row it would have moved
@@ -268,7 +266,21 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
       const sessionId = readString(payload, "sessionId");
       if (!sessionId)
         return;
-      const at = Date.now();
+      // What an event settles is whether the conversation is *running* — a fact
+      // about the event itself, where the host's own snapshot is the slower path
+      // to the same answer.
+      //
+      // It deliberately does not move the row. A row's ordering timestamp
+      // belongs to the host's clock (`remote_host::catalog` reads
+      // `threads.last_message_at`, the agent's own event time), so stamping
+      // `Date.now()` here put a *second* clock into one row's key: every event
+      // lifted it above this machine's own conversations — nothing this machine
+      // holds is newer than its own `now` — and the host's next report of that
+      // row (a `state.activity` packet, the next snapshot, or a catalogue read)
+      // put it back where the host has it, so a row whose run was streaming
+      // jumped up and back for the length of the run. The phone draws the host's
+      // rows in the host's own order and never had it; this list is the one
+      // place a client could disagree with the host about a row's place in it.
       setCatalogs(current => current.map((catalog) => {
         if (catalog.desktopId !== desktopId)
           return catalog;
@@ -284,7 +296,6 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
         sessions[index] = {
           ...sessions[index]!,
           streaming: !isTerminal(payload),
-          lastMessageAt: at,
         };
         return { ...catalog, sessions };
       }));
