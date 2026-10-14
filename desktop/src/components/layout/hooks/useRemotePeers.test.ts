@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import type { RemotePeer } from "../../../features/remote-peer/remotePeerClient";
 import { act } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mergeConversations, rowKey } from "../../../features/remote-peer/mergeConversations";
 import { flushAsync, renderHook } from "../../../test/renderHook";
 import { useRemotePeers } from "./useRemotePeers";
 
@@ -277,6 +278,110 @@ describe("push catalog", () => {
       expect(hook.current.catalogs[0]!.sessions).toHaveLength(0);
       hook.unmount();
     });
+  });
+});
+
+describe("live events", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * What an event settles is the run, not the row's place: the ordering value
+   * belongs to the host's clock, and the host states it itself (a snapshot when
+   * the structure moves, `state.activity` when only the value did).
+   *
+   * The stamp this replaced was this machine's `Date.now()`, so every event put
+   * the row above every one of *this* machine's conversations — and the host's
+   * next report of it, on the host's clock, put it back. That is the jumping
+   * this test pins down: the value it starts with is the one it keeps.
+   */
+  it("settles whether a conversation is running without moving the row", async () => {
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    pushKind("catalog", "desktop_a", {
+      domain: "sessions",
+      version: { epoch: "epoch_1", revision: 1 },
+      sessions: [{ sessionId: "sess_1", title: "One", lastMessageAt: 1_000 }],
+    });
+    pushKind("event", "desktop_a", {
+      sessionId: "sess_1",
+      runId: "run_1",
+      type: "text_chunk",
+      data: "{\"text\":\"hi\"}",
+    });
+    await settle();
+
+    const [session] = hook.current.catalogs[0]!.sessions;
+    expect(session!.streaming).toBe(true);
+    expect(session!.lastMessageAt).toBe(1_000);
+
+    // A run that settles clears the dot and still leaves the value alone: the
+    // host's own report of the last message is what moves the row from here.
+    pushKind("event", "desktop_a", { sessionId: "sess_1", runId: "run_1", type: "agent_end", data: "{}" });
+    await settle();
+    expect(hook.current.catalogs[0]!.sessions[0]!.streaming).toBe(false);
+    expect(hook.current.catalogs[0]!.sessions[0]!.lastMessageAt).toBe(1_000);
+    hook.unmount();
+  });
+
+  /**
+   * The same rule as the user sees it, over the merged list: a host's row cannot
+   * overtake this machine's conversation by *speaking*, only by the host saying
+   * it moved. The phone's list never could — it draws the host's rows in the
+   * host's own order — which is why the desktop was the only place the order
+   * jumped.
+   */
+  it("cannot overtake this machine's rows until the host says the row moved", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(9_000_000);
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    pushKind("catalog", "desktop_a", {
+      domain: "sessions",
+      version: { epoch: "epoch_1", revision: 1 },
+      sessions: [{ sessionId: "sess_remote", title: "On the host", lastMessageAt: 1_000_000 }],
+    });
+    const order = () => mergeConversations(
+      [{
+        id: "local_1",
+        title: "Mine",
+        mode: "chat",
+        pinned: false,
+        status: "active",
+        workspaceId: "ws_1",
+        lastMessageAt: 5_000_000,
+        updatedAt: 5_000_000,
+        createdAt: 5_000_000,
+      }],
+      hook.current.catalogs,
+      { kind: "all" },
+    ).map(row => row.key);
+    expect(order()).toEqual([rowKey(null, "local_1"), rowKey("desktop_a", "sess_remote")]);
+
+    // The host's conversation is answering, on *this* machine's clock read as
+    // "now": the row is running, and its place is still the host's to give.
+    pushKind("event", "desktop_a", {
+      sessionId: "sess_remote",
+      runId: "run_1",
+      type: "text_chunk",
+      data: "{\"text\":\"hi\"}",
+    });
+    await settle();
+    expect(order()).toEqual([rowKey(null, "local_1"), rowKey("desktop_a", "sess_remote")]);
+
+    // The host's own report — the same subject the desktop now relies on — is
+    // what puts the row where the host has it.
+    pushKind("catalog", "desktop_a", {
+      domain: "sessions_activity",
+      version: { epoch: "epoch_1", revision: 2 },
+      activity: [{ sessionId: "sess_remote", lastMessageAt: 9_000_000 }],
+    });
+    await settle();
+    expect(order()).toEqual([rowKey("desktop_a", "sess_remote"), rowKey(null, "local_1")]);
+    hook.unmount();
   });
 });
 
