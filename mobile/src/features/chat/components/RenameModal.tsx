@@ -3,7 +3,8 @@ import { Modal, Platform, StyleSheet, Text, TextInput, View } from "react-native
 import type { TFunction } from "i18next";
 import { Button } from "../../../components/Button";
 import { DialogSurface } from "../../../components/DialogSurface";
-import { colors, radius, spacing } from "../../../theme/tokens";
+import { radius, spacing } from "../../../theme/tokens";
+import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
 
 export function RenameModal({
   renameOpen,
@@ -27,6 +28,8 @@ export function RenameModal({
   titleKey?: string;
   t: TFunction;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const [generating, setGenerating] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
   const epoch = useRef(0);
@@ -130,14 +133,14 @@ export function RenameModal({
   );
 }
 
-const styles = StyleSheet.create({
-  hint: { color: colors.inkMuted, fontSize: 12, lineHeight: 18, marginTop: spacing.sm },
-  error: { color: colors.danger, fontSize: 12 },
-  dialogTitle: { color: colors.inkStrong, fontSize: 20, fontWeight: "700" },
+const useStyles = createThemedStyles(theme => StyleSheet.create({
+  hint: { color: theme.colors.inkMuted, fontSize: theme.font(12), lineHeight: theme.leading(18), marginTop: spacing.sm },
+  error: { color: theme.colors.danger, fontSize: theme.font(12) },
+  dialogTitle: { color: theme.colors.inkStrong, fontSize: theme.font(20), fontWeight: "700" },
   inputBorder: {
     minWidth: 0,
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: theme.colors.line,
     borderRadius: radius.md,
     overflow: "hidden",
   },
@@ -145,9 +148,9 @@ const styles = StyleSheet.create({
     minHeight: 48,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
-    fontSize: 15,
-    color: colors.ink,
+    fontSize: theme.font(15),
+    color: theme.colors.ink,
   },
   dialogActions: { flexDirection: "row", gap: spacing.md },
   dialogAction: { flex: 1 },
-});
+}));

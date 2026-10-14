@@ -288,12 +288,6 @@ export function RemoteConversationView({
             header is for the conversation, and a figure that changes every turn
             draws the eye away from it. */}
         <div className="flex items-center gap-2">
-          <QuestionNavControl
-            hasNext={hasNextQuestion}
-            hasPrevious={hasPreviousQuestion}
-            onNext={goToNextQuestion}
-            onPrevious={goToPreviousQuestion}
-          />
           <IconButton
             aria-haspopup="dialog"
             // The local header's own size and spacing (`ThreadHeader`): the button
@@ -450,20 +444,32 @@ The same two layers this app's own conversation uses (`AgentThread`):
 
             {/* Reading history is not a fight with the view: once the reader has
                 scrolled away, following stops and this is how they come back. */}
-            {showJumpToLatest
-              ? (
-                  <button
-                    aria-label={t("jumpToLatest")}
-                    className="pointer-events-auto mx-auto flex items-center gap-1 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"
-                    onClick={scrollToLatest}
-                    title={t("jumpToLatest")}
-                    type="button"
-                  >
-                    <ArrowDown className="size-3.5" />
-                    {t("jumpToLatest")}
-                  </button>
-                )
-              : null}
+            <div className="mx-auto flex w-full max-w-3xl items-center justify-between gap-3">
+              {showJumpToLatest
+                ? (
+                    <button
+                      aria-label={t("jumpToLatest")}
+                      className="pointer-events-auto mx-auto flex items-center gap-1 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"
+                      onClick={scrollToLatest}
+                      title={t("jumpToLatest")}
+                      type="button"
+                    >
+                      <ArrowDown className="size-3.5" />
+                      {t("jumpToLatest")}
+                    </button>
+                  )
+                : <div />}
+              {/* The same corner this app's own conversation puts it in: a
+                  remote transcript is read the same way, and a control that
+                  moves between the two views is a control the reader has to
+                  find twice. */}
+              <QuestionNavControl
+                hasNext={hasNextQuestion}
+                hasPrevious={hasPreviousQuestion}
+                onNext={goToNextQuestion}
+                onPrevious={goToPreviousQuestion}
+              />
+            </div>
 
             {composer}
           </div>

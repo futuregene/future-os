@@ -1,7 +1,8 @@
 import { Lightbulb, X } from "lucide-react-native";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 import type { TFunction } from "i18next";
-import { colors, radius, spacing } from "../../../theme/tokens";
+import { radius, spacing } from "../../../theme/tokens";
+import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
 import type { PendingSuggestion } from "../useSkillRecommendation";
 
 /**
@@ -24,6 +25,8 @@ export function SkillSuggestionCard({
   onInstall: () => void;
   onDismiss: () => void;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   return (
     <View accessibilityRole="summary" style={styles.card}>
       <View style={styles.heading}>
@@ -75,10 +78,10 @@ export function SkillSuggestionCard({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(theme => StyleSheet.create({
   card: {
-    backgroundColor: colors.accentSoft,
-    borderColor: colors.focus,
+    backgroundColor: theme.colors.accentSoft,
+    borderColor: theme.colors.focus,
     borderRadius: radius.md,
     borderWidth: StyleSheet.hairlineWidth,
     gap: spacing.xs,
@@ -93,21 +96,21 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
   title: {
-    color: colors.inkSoft,
-    fontSize: 12,
+    color: theme.colors.inkSoft,
+    fontSize: theme.font(12),
     fontWeight: "600",
   },
   skill: {
-    color: colors.inkStrong,
+    color: theme.colors.inkStrong,
     flexShrink: 1,
     fontFamily: "Menlo",
-    fontSize: 12,
+    fontSize: theme.font(12),
     fontWeight: "600",
   },
   description: {
-    color: colors.inkSoft,
-    fontSize: 12,
-    lineHeight: 17,
+    color: theme.colors.inkSoft,
+    fontSize: theme.font(12),
+    lineHeight: theme.leading(17),
   },
   actions: {
     flexDirection: "row",
@@ -116,23 +119,23 @@ const styles = StyleSheet.create({
   },
   primary: {
     alignItems: "center",
-    backgroundColor: colors.accent,
+    backgroundColor: theme.colors.accent,
     borderRadius: radius.sm,
     justifyContent: "center",
     minHeight: 32,
     paddingHorizontal: spacing.md,
   },
   primaryPressed: {
-    backgroundColor: colors.accentHover,
+    backgroundColor: theme.colors.accentHover,
   },
   primaryLabel: {
-    color: colors.surface,
-    fontSize: 13,
+    color: theme.colors.surface,
+    fontSize: theme.font(13),
     fontWeight: "600",
   },
   secondary: {
     alignItems: "center",
-    borderColor: colors.line,
+    borderColor: theme.colors.line,
     borderRadius: radius.sm,
     borderWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
@@ -141,13 +144,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
   },
   secondaryPressed: {
-    backgroundColor: colors.surfaceSubtle,
+    backgroundColor: theme.colors.surfaceSubtle,
   },
   secondaryLabel: {
-    color: colors.inkSoft,
-    fontSize: 13,
+    color: theme.colors.inkSoft,
+    fontSize: theme.font(13),
   },
   disabled: {
     opacity: 0.6,
   },
-});
+}));

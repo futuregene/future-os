@@ -1,8 +1,8 @@
 import { FileText, Paperclip } from "lucide-react-native";
 import { Pressable, Text } from "react-native";
 import type { HistoryAttachment } from "../../../remote/types";
-import { colors } from "../../../theme/tokens";
-import { styles } from "./messageStyles";
+import { useTheme } from "../../../theme/ThemeContext";
+import { useStyles } from "./messageStyles";
 
 export function AttachmentChip({
   attachment,
@@ -11,6 +11,8 @@ export function AttachmentChip({
   attachment: HistoryAttachment;
   onOpen?(): void;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   return (
     <Pressable
       accessibilityLabel={attachment.name}

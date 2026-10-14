@@ -4,8 +4,8 @@ import { useTranslation } from "react-i18next";
 import { Pressable, Text, View } from "react-native";
 import { MarkdownText } from "../../../components/MarkdownText";
 import type { TimelineSegment } from "../../../remote/types";
-import { colors } from "../../../theme/tokens";
-import { styles } from "./messageStyles";
+import { useTheme } from "../../../theme/ThemeContext";
+import { useStyles } from "./messageStyles";
 import type { ToolTargetResolver } from "./types";
 import { ToolRow } from "./ToolRow";
 import { ThinkingRow } from "./ThinkingRow";
@@ -190,6 +190,8 @@ export function StepRunBlock({
   segments: StepSegment[];
   onResolveToolTarget?: ToolTargetResolver;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const counts = stepRunCounts(segments);
@@ -263,6 +265,7 @@ export function SegmentBlock({
   onOpenFile?(path: string): void;
   onResolveToolTarget?: ToolTargetResolver;
 }) {
+  const styles = useStyles();
   if (segment.kind === "text") {
     return <MarkdownText text={segment.text} onOpenFile={onOpenFile} streaming={streaming} />;
   }

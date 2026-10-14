@@ -33,6 +33,25 @@ jest.mock("../../share/ShareIntakeMenu", () => ({ ShareIntakeMenu: () => null })
 jest.mock("../../update/useUpdateReminder", () => ({ useUpdateReminder: () => {} }));
 let mockLanguageReady = true;
 jest.mock("../../i18n/useSystemLanguage", () => ({ useSystemLanguage: () => mockLanguageReady }));
+// The appearance read is the other half of the launch gate. It is a real async
+// read of storage, so this file drives it with a flag — like the language above
+// — and `ThemeContext.test.ts` covers the read itself.
+let mockAppearanceReady = true;
+jest.mock("../../theme/ThemeContext", () => ({
+  ...jest.requireActual<typeof import("../../theme/ThemeContext")>("../../theme/ThemeContext"),
+  useAppearanceReady: () => mockAppearanceReady,
+}));
+
+test("waits for the saved appearance before mounting app screens", () => {
+  mockAppearanceReady = false;
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(App)); });
+  expect(tree.root.findAllByType(SessionsScreen)).toHaveLength(0);
+  mockAppearanceReady = true;
+  act(() => tree.update(createElement(App)));
+  expect(tree.root.findAllByType(SessionsScreen)).toHaveLength(1);
+  act(() => tree.unmount());
+});
 
 test("waits for the saved language before mounting app screens", () => {
   mockLanguageReady = false;

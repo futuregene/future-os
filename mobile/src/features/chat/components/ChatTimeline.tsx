@@ -3,8 +3,9 @@ import { History } from "lucide-react-native";
 import { ActivityIndicator, FlatList, Platform, Pressable, RefreshControl, Text, View, type FlatListProps } from "react-native";
 import type { useRemote } from "../../../remote/RemoteContext";
 import type { TimelineItem } from "../../../remote/types";
-import { colors, spacing } from "../../../theme/tokens";
-import { styles } from "../chatStyles";
+import { spacing } from "../../../theme/tokens";
+import { useTheme } from "../../../theme/ThemeContext";
+import { useStyles } from "../chatStyles";
 import type { useChatScroll } from "../useChatScroll";
 import type { useQuestionNav } from "../useQuestionNav";
 import type { useTimelinePaging } from "../useTimelinePaging";
@@ -18,7 +19,10 @@ const SYNC_NOTICE_KEYS: Record<SyncNoticeState, string> = {
   retrying: "chat.syncRetrying",
   waitingNetwork: "chat.syncWaitingNetwork",
 };
-function TimelineItemGap() { return <View style={styles.itemGap} />; }
+function TimelineItemGap() {
+  const styles = useStyles();
+  return <View style={styles.itemGap} />;
+}
 function TimelineFlexSpacer() { return <View />; }
 interface Props {
   remote: ReturnType<typeof useRemote>;
@@ -37,6 +41,8 @@ interface Props {
 }
 export function ChatTimeline({ remote, t, invertedTranscriptItems, scroll, questionNav, paging,
   renderTimelineItem, onChatScroll, loadingHistory, pullRefresh, pullRefreshActive, showSyncNotice, noticeState }: Props) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { listRef } = scroll;
   const { showLoadOlderHint, pagingActive, loadOlder, onListLayout, onContentSizeChange,
     onScrollBeginDrag, onScrollEndDrag, onMomentumScrollBegin, onMomentumScrollEnd } = paging;

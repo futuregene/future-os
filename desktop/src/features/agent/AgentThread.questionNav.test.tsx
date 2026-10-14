@@ -132,23 +132,67 @@ const props = {
   thread,
 };
 
+/**
+ * Give the mocked transcript a real scroll geometry.
+ *
+ * The hook decides what the buttons offer from the rows' own layout, and jsdom
+ * reports every element at zero — so without this the conversation would look
+ * like one that fits its viewport with nothing to jump to (which is what the
+ * second case here is about). Rows are stacked `rowHeight` apart in content
+ * space; the container scrolls from its top.
+ */
+function layoutTranscript(rowHeight = 120, viewportHeight = 400) {
+  const scroller = container.querySelector<HTMLElement>("[data-chat-scroll]");
+  if (!scroller)
+    throw new Error("the transcript scroller is missing");
+  const rows = [...container.querySelectorAll<HTMLElement>("[data-message-id]")];
+  const rect = (top: number, height: number): DOMRect => ({
+    bottom: top + height,
+    height,
+    left: 0,
+    right: 600,
+    toJSON: () => ({}),
+    top,
+    width: 600,
+    x: 0,
+    y: top,
+  });
+  Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: rows.length * rowHeight + viewportHeight });
+  Object.defineProperty(scroller, "clientHeight", { configurable: true, value: viewportHeight });
+  vi.spyOn(scroller, "getBoundingClientRect").mockReturnValue(rect(0, viewportHeight));
+  rows.forEach((row, index) => {
+    vi.spyOn(row, "getBoundingClientRect").mockImplementation(() =>
+      rect(index * rowHeight - scroller.scrollTop, rowHeight));
+  });
+  // The offer is published from a scroll (the hook listens for one so an
+  // enabled state cannot lag behind the viewport). jsdom never fires one by
+  // itself, so the layout becoming real is announced here.
+  act(() => scroller.dispatchEvent(new Event("scroll")));
+}
+
 describe("agentThread question navigation", () => {
-  it("renders question navigation controls", () => {
+  it("renders question navigation controls in the conversation's corner", () => {
     act(() => root.render(createElement(AgentThread, props)));
     const previous = container.querySelector<HTMLButtonElement>("[aria-label='Previous question']");
-    const next = container.querySelector<HTMLButtonElement>("[aria-label='Next question']");
+    const next = container.querySelector<HTMLButtonElement>("[aria-label='Next passage']");
     expect(previous).not.toBeNull();
     expect(next).not.toBeNull();
+
+    // At the top of two turns: the first row is the reader's own, so ↑ has
+    // nowhere to go, while ↓ has the first turn's reply below it.
+    act(() => layoutTranscript());
     expect(previous?.disabled).toBe(true);
+    expect(next?.disabled).toBe(false);
   });
 
-  it("disables both directions for a single-question thread", () => {
+  it("disables both directions for a single unanswered question", () => {
     h.threadState.value = {
       ...h.threadState.value,
       messages: [user("u1")],
     };
     act(() => root.render(createElement(AgentThread, props)));
-    const next = container.querySelector<HTMLButtonElement>("[aria-label='Next question']");
+    act(() => layoutTranscript());
+    const next = container.querySelector<HTMLButtonElement>("[aria-label='Next passage']");
     const previous = container.querySelector<HTMLButtonElement>("[aria-label='Previous question']");
     expect(next?.disabled).toBe(true);
     expect(previous?.disabled).toBe(true);

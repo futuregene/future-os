@@ -4,12 +4,14 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../../components/Button";
 import { useRemoteControls } from "../../remote/RemoteContext";
 import type { AvailableSkill, InstalledSkill } from "../../remote/types";
-import { colors } from "../../theme/tokens";
-import { ResourceStatus, settingsStyles } from "./SettingsPrimitives";
+import { useTheme } from "../../theme/ThemeContext";
+import { ResourceStatus, useSettingsStyles } from "./SettingsPrimitives";
 import { isSkillUpgrade } from "./skillVersion";
 import { useDesktopResource } from "./useDesktopResource";
 
 export function SkillsSettingsPage() {
+  const settingsStyles = useSettingsStyles();
+  const { colors } = useTheme();
   const { t, i18n } = useTranslation();
   const remote = useRemoteControls();
   const installed = useDesktopResource(remote.listInstalledSkills, remote.skillsRevision, remote.desktopOnline);

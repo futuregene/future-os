@@ -15,7 +15,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { X } from "lucide-react-native";
 import type { AlbumImage } from "future-file-handler";
 import { Button } from "../../../components/Button";
-import { colors, layout, radius, spacing } from "../../../theme/tokens";
+import { layout, radius, spacing } from "../../../theme/tokens";
+import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
 
 export interface AlbumPickerModalProps {
   visible: boolean;
@@ -48,6 +49,8 @@ export function AlbumPickerModal({
   onConfirm,
   t,
 }: AlbumPickerModalProps) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const [selected, setSelected] = useState<string[]>([]);
@@ -174,17 +177,17 @@ export function AlbumPickerModal({
   );
 }
 
-const styles = StyleSheet.create({
-  overlay: { flex: 1, backgroundColor: colors.overlay },
+const useStyles = createThemedStyles(theme => StyleSheet.create({
+  overlay: { flex: 1, backgroundColor: theme.colors.overlay },
   sheet: {
     flex: 1,
     margin: spacing.md,
     borderRadius: radius.xl,
-    backgroundColor: colors.surface,
+    backgroundColor: theme.colors.surface,
   },
   header: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  title: { fontSize: 17, fontWeight: "600", color: colors.inkStrong },
-  count: { flex: 1, fontSize: 13, color: colors.inkMuted },
+  title: { fontSize: theme.font(17), fontWeight: "600", color: theme.colors.inkStrong },
+  count: { flex: 1, fontSize: theme.font(13), color: theme.colors.inkMuted },
   close: {
     width: layout.touchTarget,
     height: layout.touchTarget,
@@ -194,10 +197,10 @@ const styles = StyleSheet.create({
   },
   closePressed: { opacity: 0.6 },
   center: { flex: 1, alignItems: "center", justifyContent: "center", gap: spacing.md },
-  state: { fontSize: 14, color: colors.inkSoft, textAlign: "center" },
+  state: { fontSize: theme.font(14), color: theme.colors.inkSoft, textAlign: "center" },
   grid: { paddingVertical: spacing.sm },
   row: { gap: spacing.xs, marginBottom: spacing.xs },
-  cell: { borderRadius: radius.sm, overflow: "hidden", backgroundColor: colors.surfaceSubtle },
+  cell: { borderRadius: radius.sm, overflow: "hidden", backgroundColor: theme.colors.surfaceSubtle },
   thumb: { width: "100%", height: "100%" },
   selectedOverlay: {
     position: "absolute",
@@ -206,7 +209,7 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     borderWidth: 3,
-    borderColor: colors.accent,
+    borderColor: theme.colors.accent,
     backgroundColor: "rgba(37, 99, 235, 0.25)",
     alignItems: "flex-end",
   },
@@ -216,12 +219,12 @@ const styles = StyleSheet.create({
     margin: spacing.xs,
     paddingHorizontal: spacing.xs,
     borderRadius: radius.pill,
-    backgroundColor: colors.accent,
+    backgroundColor: theme.colors.accent,
     alignItems: "center",
     justifyContent: "center",
   },
-  badgeText: { color: colors.surface, fontSize: 12, fontWeight: "600" },
+  badgeText: { color: theme.colors.surface, fontSize: theme.font(12), fontWeight: "600" },
   footer: { gap: spacing.sm, paddingTop: spacing.sm },
-  hint: { fontSize: 12, color: colors.inkMuted },
+  hint: { fontSize: theme.font(12), color: theme.colors.inkMuted },
   actions: { flexDirection: "row", justifyContent: "flex-end", gap: spacing.sm },
-});
+}));

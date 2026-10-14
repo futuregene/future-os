@@ -2,7 +2,8 @@ import { useTranslation } from "react-i18next";
 import { MessageCircle, X } from "lucide-react-native";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { ShareSessionGroup } from "../../../share/shareSessionGroups";
-import { colors, layout, radius, spacing } from "../../../theme/tokens";
+import { layout, radius, spacing } from "../../../theme/tokens";
+import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
 /** One conversation row: title only (one line), plus its workspace heading. */
 export const SESSION_ROW_HEIGHT = 44;
 const ROW_PITCH = SESSION_ROW_HEIGHT + 1;
@@ -43,6 +44,8 @@ export function SessionPicker({ groups, onSelect, onClose, maxHeight }: {
   onClose: () => void;
   maxHeight: number;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const total = groups.reduce((count, group) => count + group.sessions.length, 0);
   return (
@@ -89,18 +92,18 @@ export function SessionPicker({ groups, onSelect, onClose, maxHeight }: {
   );
 }
 
-const styles = StyleSheet.create({
-  panel: { marginBottom: spacing.xs, borderWidth: 1, borderColor: colors.line, borderRadius: radius.lg,
-    backgroundColor: colors.surface, overflow: "hidden" },
+const useStyles = createThemedStyles(theme => StyleSheet.create({
+  panel: { marginBottom: spacing.xs, borderWidth: 1, borderColor: theme.colors.line, borderRadius: radius.lg,
+    backgroundColor: theme.colors.surface, overflow: "hidden" },
   header: { height: HEADER_HEIGHT, flexDirection: "row", alignItems: "center", paddingLeft: spacing.lg },
-  title: { flex: 1, fontSize: 13, fontWeight: "600", color: colors.inkSoft },
+  title: { flex: 1, fontSize: theme.font(13), fontWeight: "600", color: theme.colors.inkSoft },
   close: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center" },
   heading: { height: GROUP_HEADING_HEIGHT, paddingTop: spacing.sm, paddingLeft: spacing.lg,
-    fontSize: 12, fontWeight: "600", color: colors.inkMuted },
+    fontSize: theme.font(12), fontWeight: "600", color: theme.colors.inkMuted },
   row: { minHeight: SESSION_ROW_HEIGHT, flexDirection: "row", alignItems: "center", gap: spacing.sm,
-    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.lineSoft,
+    borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.colors.lineSoft,
     paddingLeft: spacing.lg, paddingRight: spacing.md },
-  pressed: { backgroundColor: colors.surfaceSubtle },
-  name: { flex: 1, minWidth: 0, fontSize: 14, fontWeight: "600", color: colors.ink },
-  hint: { fontSize: 13, color: colors.inkSoft, padding: spacing.md, flexShrink: 1 },
-});
+  pressed: { backgroundColor: theme.colors.surfaceSubtle },
+  name: { flex: 1, minWidth: 0, fontSize: theme.font(14), fontWeight: "600", color: theme.colors.ink },
+  hint: { fontSize: theme.font(13), color: theme.colors.inkSoft, padding: spacing.md, flexShrink: 1 },
+}));

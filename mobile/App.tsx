@@ -8,10 +8,10 @@ import { PairingScreen } from "./src/screens/PairingScreen";
 import { SessionsScreen } from "./src/screens/SessionsScreen";
 import { DesktopsScreen } from "./src/screens/DesktopsScreen";
 import { RemoteProvider, useRemoteControls as useRemote } from "./src/remote/RemoteContext";
+import { ThemeProvider, createThemedStyles, useAppearanceReady, useTheme } from "./src/theme/ThemeContext";
 import { shareLandedRevision, subscribeShareLanded } from "./src/share/shareInbox";
 import { ShareIntakeMenu } from "./src/share/ShareIntakeMenu";
 import { useUpdateReminder } from "./src/update/useUpdateReminder";
-import { colors } from "./src/theme/tokens";
 import { useSystemLanguage } from "./src/i18n/useSystemLanguage";
 
 // Enter transition for top-level screen swaps (there is no navigation library
@@ -19,6 +19,7 @@ import { useSystemLanguage } from "./src/i18n/useSystemLanguage";
 // unmounts immediately; sliding/fading the incoming one over the shared
 // background reads as a push/pop instead of a hard cut.
 function EnterTransition({ fromRight, children }: PropsWithChildren<{ fromRight: boolean }>) {
+  const styles = useStyles();
   // Stable holder (never re-set) — useState instead of useRef so the React
   // Compiler ref rules stay happy while the value survives re-renders.
   const [progress] = useState(() => new Animated.Value(0));
@@ -42,6 +43,8 @@ function EnterTransition({ fromRight, children }: PropsWithChildren<{ fromRight:
 }
 
 function AppContent() {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const remote = useRemote();
   const [screen, setScreen] = useState<"main" | "desktops" | "pair">("main");
   const showDesktops = () => setScreen("desktops");
@@ -99,32 +102,56 @@ function AppContent() {
 }
 
 export default function App() {
+  const styles = useStyles();
+  // Both stored preferences are read before the first screen is drawn: the gate
+  // is what keeps a saved language or scheme from flashing its default.
   const languageReady = useSystemLanguage();
-  if (!languageReady) {
-    return (
-      <View style={styles.loading}>
-        <ActivityIndicator color={colors.accent} size="large" />
-      </View>
-    );
-  }
+  const appearanceReady = useAppearanceReady();
   return (
     <SafeAreaProvider initialMetrics={initialWindowMetrics}>
-      <RemoteProvider>
-        <StatusBar style="dark" />
-        <AppContent />
-        <ShareIntakeMenu />
-        <AppDialogHost />
-      </RemoteProvider>
+      <ThemeProvider>
+        {/* The app's own canvas, full screen: on Android the system bars are
+            drawn over it, so the strip below the content follows the scheme
+            instead of the window's launch background. */}
+        <View style={styles.root}>
+          <ThemedStatusBar />
+          {languageReady && appearanceReady ? (
+            <RemoteProvider>
+              <AppContent />
+              <ShareIntakeMenu />
+              <AppDialogHost />
+            </RemoteProvider>
+          ) : <BootScreen />}
+        </View>
+      </ThemeProvider>
     </SafeAreaProvider>
   );
 }
 
-const styles = StyleSheet.create({
-  fill: { flex: 1, backgroundColor: colors.surface },
+/** Status-bar icons are content drawn on the scheme's canvas. */
+function ThemedStatusBar() {
+  const theme = useTheme();
+  return <StatusBar style={theme.scheme === "dark" ? "light" : "dark"} />;
+}
+
+/** Shown while a stored preference is being read, before any screen is. */
+function BootScreen() {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  return (
+    <View style={styles.loading}>
+      <ActivityIndicator color={colors.accent} size="large" />
+    </View>
+  );
+}
+
+const useStyles = createThemedStyles(theme => StyleSheet.create({
+  root: { flex: 1, backgroundColor: theme.colors.canvas },
+  fill: { flex: 1, backgroundColor: theme.colors.surface },
   loading: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: colors.canvas,
+    backgroundColor: theme.colors.canvas,
   },
-});
+}));

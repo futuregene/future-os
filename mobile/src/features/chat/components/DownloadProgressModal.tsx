@@ -1,6 +1,7 @@
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import type { TFunction } from "i18next";
-import { colors, layout, radius, spacing } from "../../../theme/tokens";
+import { layout, radius, spacing } from "../../../theme/tokens";
+import { createThemedStyles } from "../../../theme/ThemeContext";
 import { DialogSurface } from "../../../components/DialogSurface";
 import { formatBytes, type ActiveDownload } from "../utils";
 
@@ -19,6 +20,7 @@ export function DownloadProgressModal({
   onDownloadModalShow: () => void;
   t: TFunction;
 }) {
+  const styles = useStyles();
   const cancelling = activeDownload?.phase === "cancelling";
   return (
     <Modal
@@ -76,23 +78,23 @@ export function DownloadProgressModal({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(theme => StyleSheet.create({
   header: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  downloadTitle: { flex: 1, minWidth: 0, color: colors.inkStrong, fontSize: 20, fontWeight: "700" },
+  downloadTitle: { flex: 1, minWidth: 0, color: theme.colors.inkStrong, fontSize: theme.font(20), fontWeight: "700" },
   identity: { gap: spacing.xs },
   progress: { gap: spacing.sm },
-  downloadFileName: { color: colors.ink, fontSize: 14, fontWeight: "600" },
-  downloadPhase: { color: colors.inkMuted, fontSize: 13 },
+  downloadFileName: { color: theme.colors.ink, fontSize: theme.font(14), fontWeight: "600" },
+  downloadPhase: { color: theme.colors.inkMuted, fontSize: theme.font(13) },
   downloadTrack: {
     height: 7,
     overflow: "hidden",
     borderRadius: radius.pill,
-    backgroundColor: colors.surfaceSubtle,
+    backgroundColor: theme.colors.surfaceSubtle,
   },
-  downloadFill: { height: 7, borderRadius: radius.pill, backgroundColor: colors.accent },
+  downloadFill: { height: 7, borderRadius: radius.pill, backgroundColor: theme.colors.accent },
   downloadMeta: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  downloadBytes: { flex: 1, minWidth: 0, color: colors.inkMuted, fontSize: 12 },
-  downloadPercent: { flexShrink: 0, color: colors.inkSoft, fontSize: 12, fontWeight: "600" },
+  downloadBytes: { flex: 1, minWidth: 0, color: theme.colors.inkMuted, fontSize: theme.font(12) },
+  downloadPercent: { flexShrink: 0, color: theme.colors.inkSoft, fontSize: theme.font(12), fontWeight: "600" },
   downloadCancel: {
     minHeight: layout.touchTarget,
     minWidth: layout.touchTarget,
@@ -101,7 +103,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     borderRadius: radius.md,
   },
-  downloadCancelPressed: { backgroundColor: colors.surfaceSubtle },
+  downloadCancelPressed: { backgroundColor: theme.colors.surfaceSubtle },
   disabled: { opacity: 0.5 },
-  downloadCancelText: { color: colors.accent, fontSize: 14, fontWeight: "600" },
-});
+  downloadCancelText: { color: theme.colors.accent, fontSize: theme.font(14), fontWeight: "600" },
+}));

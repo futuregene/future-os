@@ -4,7 +4,8 @@ import { ArrowUp, ChevronRight, Eye, EyeOff, File, Folder, RefreshCw } from "luc
 import { ActivityIndicator, BackHandler, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { AppAlert as Alert } from "../../../components/appAlerts";
 import type { SessionFileListing } from "../../../remote/types";
-import { colors, layout, radius, spacing } from "../../../theme/tokens";
+import { layout, radius, spacing } from "../../../theme/tokens";
+import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
 import { formatBytes } from "../utils";
 
 /** An in-screen surface, not a native Modal: file previews/download dialogs can
@@ -24,6 +25,8 @@ export function SessionFilesPanel({
   onOpenFile: (path: string) => Promise<void>;
   onClose: () => void;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const [directories, setDirectories] = useState<string[]>([]);
   const [revision, setRevision] = useState(0);
@@ -182,22 +185,22 @@ export function SessionFilesPanel({
   );
 }
 
-const styles = StyleSheet.create({
-  panel: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, zIndex: 4, backgroundColor: colors.surface },
+const useStyles = createThemedStyles(theme => StyleSheet.create({
+  panel: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, zIndex: 4, backgroundColor: theme.colors.surface },
   toolbar: { flexDirection: "row", alignItems: "center", paddingHorizontal: layout.gutter, paddingTop: spacing.sm },
-  heading: { flex: 1, color: colors.inkStrong, fontSize: 18, fontWeight: "700" },
+  heading: { flex: 1, color: theme.colors.inkStrong, fontSize: theme.font(18), fontWeight: "700" },
   iconButton: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center", borderRadius: radius.md },
-  pressed: { backgroundColor: colors.surfaceSubtle },
+  pressed: { backgroundColor: theme.colors.surfaceSubtle },
   disabled: { opacity: 0.4 },
-  path: { color: colors.inkMuted, fontSize: 12, paddingHorizontal: layout.gutter, paddingVertical: spacing.sm },
-  navigation: { flexDirection: "row", justifyContent: "space-between", paddingHorizontal: layout.gutter, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  path: { color: theme.colors.inkMuted, fontSize: theme.font(12), paddingHorizontal: layout.gutter, paddingVertical: spacing.sm },
+  navigation: { flexDirection: "row", justifyContent: "space-between", paddingHorizontal: layout.gutter, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.colors.line },
   navButton: { minHeight: layout.touchTarget, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.xs, paddingHorizontal: spacing.sm, borderRadius: radius.md },
-  navLabel: { color: colors.inkMuted, fontSize: 14 },
+  navLabel: { color: theme.colors.inkMuted, fontSize: theme.font(14) },
   list: { paddingHorizontal: layout.gutter, paddingBottom: spacing.lg },
-  row: { minHeight: 60, flexDirection: "row", alignItems: "center", gap: spacing.md, paddingVertical: spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.lineSoft },
-  name: { flex: 1, color: colors.ink, fontSize: 15 },
-  size: { color: colors.inkMuted, fontSize: 12 },
+  row: { minHeight: 60, flexDirection: "row", alignItems: "center", gap: spacing.md, paddingVertical: spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.colors.lineSoft },
+  name: { flex: 1, color: theme.colors.ink, fontSize: theme.font(15) },
+  size: { color: theme.colors.inkMuted, fontSize: theme.font(12) },
   empty: { flexGrow: 1, alignItems: "center", justifyContent: "center", gap: spacing.md, padding: spacing.lg },
   emptyContent: { alignItems: "center", gap: spacing.md },
-  status: { color: colors.inkMuted, textAlign: "center", fontSize: 14 },
-});
+  status: { color: theme.colors.inkMuted, textAlign: "center", fontSize: theme.font(14) },
+}));

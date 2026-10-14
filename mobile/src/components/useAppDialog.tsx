@@ -3,7 +3,8 @@ import { Modal, Platform, StyleSheet, Text, View, type AlertButton, type AlertOp
 import { useTranslation } from "react-i18next";
 import { Button } from "./Button";
 import { DialogSurface } from "./DialogSurface";
-import { colors, spacing } from "../theme/tokens";
+import { spacing } from "../theme/tokens";
+import { createThemedStyles } from "../theme/ThemeContext";
 
 interface DialogRequest {
   title: string;
@@ -16,6 +17,7 @@ interface DialogRequest {
  * Actions run after dismissal so a failure or navigation cannot compete with
  * the outgoing UIKit presentation. Keep the host mounted while it dismisses. */
 export function useAppDialog(active = true) {
+  const styles = useStyles();
   const { t } = useTranslation();
   const [request, setRequest] = useState<DialogRequest | null>(null);
   const [visible, setVisible] = useState(false);
@@ -79,9 +81,9 @@ export function useAppDialog(active = true) {
   };
 }
 
-const styles = StyleSheet.create({
-  title: { color: colors.inkStrong, fontSize: 20, fontWeight: "700" },
-  message: { color: colors.inkSoft, fontSize: 15, lineHeight: 22 },
+const useStyles = createThemedStyles(theme => StyleSheet.create({
+  title: { color: theme.colors.inkStrong, fontSize: theme.font(20), fontWeight: "700" },
+  message: { color: theme.colors.inkSoft, fontSize: theme.font(15), lineHeight: theme.leading(22) },
   actions: { flexDirection: "row", gap: spacing.md },
   action: { flex: 1, minWidth: 0 },
-});
+}));

@@ -40,7 +40,8 @@ import type { RemoteSession, RemoteWorkspace } from "../remote/types";
 import { SessionList } from "./SessionList";
 import { DesktopPicker } from "./DesktopPicker";
 import { DisconnectedScreen } from "./DisconnectedScreen";
-import { colors, layout, radius, spacing } from "../theme/tokens";
+import { layout, radius, spacing } from "../theme/tokens";
+import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 import { promptUpgrade } from "../update/prompt";
 import { checkForUpdate } from "../update/update";
 import { SettingsScreen, type SettingsScreenHandle } from "../features/settings/SettingsScreen";
@@ -77,6 +78,8 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   onManageDesktops(): void;
   active?: boolean;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const Alert = useAppDialog(active);
   const { t, i18n } = useTranslation();
   const remote = useRemote();
@@ -1139,7 +1142,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(theme => StyleSheet.create({
   deviceBar: {
     flexDirection: "row",
     alignItems: "center",
@@ -1163,11 +1166,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderRadius: radius.lg,
-    backgroundColor: colors.accentSoft,
+    backgroundColor: theme.colors.accentSoft,
   },
-  desktopIdentity: { flex: 1, minWidth: 0, color: colors.ink, fontSize: 15, fontWeight: "600" },
-  safe: { flex: 1, backgroundColor: colors.surface },
-  page: { flex: 1, width: "100%", maxWidth: layout.contentMaxWidth, alignSelf: "center", backgroundColor: colors.surface },
+  desktopIdentity: { flex: 1, minWidth: 0, color: theme.colors.ink, fontSize: theme.font(15), fontWeight: "600" },
+  safe: { flex: 1, backgroundColor: theme.colors.surface },
+  page: { flex: 1, width: "100%", maxWidth: layout.contentMaxWidth, alignSelf: "center", backgroundColor: theme.colors.surface },
   topActions: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
   settingsButton: {
     width: 44,
@@ -1176,8 +1179,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderRadius: radius.md,
   },
-  pressed: { backgroundColor: colors.surfaceSubtle },
-  empty: { color: colors.inkMuted, fontSize: 14 },
+  pressed: { backgroundColor: theme.colors.surfaceSubtle },
+  empty: { color: theme.colors.inkMuted, fontSize: theme.font(14) },
   emptyState: {
     width: "100%",
     alignItems: "center",
@@ -1191,28 +1194,28 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderRadius: radius.lg,
   },
-  emptyIconOffline: { backgroundColor: colors.dangerSoft },
-  emptyIconIdle: { backgroundColor: colors.accentSoft },
+  emptyIconOffline: { backgroundColor: theme.colors.dangerSoft },
+  emptyIconIdle: { backgroundColor: theme.colors.accentSoft },
   emptyTitle: {
     alignSelf: "stretch",
     textAlign: "center",
-    color: colors.ink,
-    fontSize: 16,
+    color: theme.colors.ink,
+    fontSize: theme.font(16),
     fontWeight: "700",
   },
   emptyHint: {
     marginBottom: spacing.md,
     alignSelf: "stretch",
     textAlign: "center",
-    color: colors.inkMuted,
-    fontSize: 13,
-    lineHeight: 19,
+    color: theme.colors.inkMuted,
+    fontSize: theme.font(13),
+    lineHeight: theme.leading(19),
   },
   emptyInside: {
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
-    color: colors.inkMuted,
-    fontSize: 13,
+    color: theme.colors.inkMuted,
+    fontSize: theme.font(13),
   },
   fab: {
     position: "absolute",
@@ -1223,15 +1226,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderRadius: radius.pill,
-    backgroundColor: colors.accent,
-    shadowColor: colors.inkStrong,
+    backgroundColor: theme.colors.accent,
+    shadowColor: theme.colors.inkStrong,
     shadowOpacity: 0.2,
     shadowRadius: 8,
     elevation: 5,
   },
   fabPressed: { opacity: 0.8 },
   dialogHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  dialogTitle: { flexShrink: 1, color: colors.inkStrong, fontSize: 20, fontWeight: "700" },
+  dialogTitle: { flexShrink: 1, color: theme.colors.inkStrong, fontSize: theme.font(20), fontWeight: "700" },
   modeOptions: { flexDirection: "row", gap: spacing.sm },
   modeOption: {
     flex: 1,
@@ -1242,11 +1245,11 @@ const styles = StyleSheet.create({
     minHeight: 48,
     padding: spacing.sm,
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: theme.colors.line,
     borderRadius: radius.md,
   },
-  modeOptionActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
-  modeOptionText: { flexShrink: 1, color: colors.ink, fontSize: 14, fontWeight: "600" },
+  modeOptionActive: { borderColor: theme.colors.accent, backgroundColor: theme.colors.accentSoft },
+  modeOptionText: { flexShrink: 1, color: theme.colors.ink, fontSize: theme.font(14), fontWeight: "600" },
   workspaceOptionsContent: { gap: spacing.xs },
   workspaceOption: {
     minHeight: layout.touchTarget,
@@ -1255,32 +1258,32 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     padding: spacing.sm,
     borderWidth: 1,
-    borderColor: colors.lineSoft,
+    borderColor: theme.colors.lineSoft,
     borderRadius: radius.sm,
   },
-  workspaceOptionActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
-  workspaceOptionName: { flex: 1, color: colors.ink, fontSize: 14, fontWeight: "600" },
+  workspaceOptionActive: { borderColor: theme.colors.accent, backgroundColor: theme.colors.accentSoft },
+  workspaceOptionName: { flex: 1, color: theme.colors.ink, fontSize: theme.font(14), fontWeight: "600" },
   workspaceForm: { gap: spacing.xs },
   /** A machine the reader can see but not create on, in the machine picker. */
   deviceOptionUnavailable: { opacity: 0.6 },
-  deviceGlyph: { fontSize: 18 },
-  deviceStatus: { color: colors.inkMuted, fontSize: 13 },
-  fieldLabel: { color: colors.ink, fontSize: 14, fontWeight: "600" },
+  deviceGlyph: { fontSize: theme.font(18) },
+  deviceStatus: { color: theme.colors.inkMuted, fontSize: theme.font(13) },
+  fieldLabel: { color: theme.colors.ink, fontSize: theme.font(14), fontWeight: "600" },
   workspaceInput: {
     minHeight: layout.touchTarget,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: theme.colors.line,
     borderRadius: radius.md,
-    color: colors.ink,
-    fontSize: 15,
+    color: theme.colors.ink,
+    fontSize: theme.font(15),
   },
-  fieldHint: { color: colors.inkMuted, fontSize: 13, lineHeight: 18 },
-  fieldError: { color: colors.danger, fontSize: 13, lineHeight: 18 },
+  fieldHint: { color: theme.colors.inkMuted, fontSize: theme.font(13), lineHeight: theme.leading(18) },
+  fieldError: { color: theme.colors.danger, fontSize: theme.font(13), lineHeight: theme.leading(18) },
   settingsLabel: {
-    color: colors.inkMuted,
-    fontSize: 12,
+    color: theme.colors.inkMuted,
+    fontSize: theme.font(12),
     fontWeight: "700",
     textTransform: "uppercase",
     letterSpacing: 0.5,
@@ -1292,7 +1295,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: spacing.md,
   },
-  updateVersion: { color: colors.inkMuted, fontSize: 13 },
+  updateVersion: { color: theme.colors.inkMuted, fontSize: theme.font(13) },
   approvalOptions: { flexDirection: "row", gap: spacing.sm },
-  tierTriggerDisabled: { backgroundColor: colors.surfaceSubtle, opacity: 0.55 },
-});
+  tierTriggerDisabled: { backgroundColor: theme.colors.surfaceSubtle, opacity: 0.55 },
+}));

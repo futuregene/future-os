@@ -3,7 +3,8 @@ import { useTranslation } from "react-i18next";
 import { Info, X } from "lucide-react-native";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { RemoteSkill } from "../../../remote/types";
-import { colors, layout, radius, spacing } from "../../../theme/tokens";
+import { layout, radius, spacing } from "../../../theme/tokens";
+import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
 import { filterActions, filterSkills, type SlashAction } from "../skillCompletion";
 
 /** One two-line row: the command, then a single description line. */
@@ -46,6 +47,8 @@ export function SkillPicker({ query, supported, load, onSelect, onClose, onShowD
   /** Runs the chosen action; the picker owns no action behaviour itself. */
   onActionSelect?: (action: SlashAction) => void;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { t, i18n } = useTranslation();
   const [skills, setSkills] = useState<RemoteSkill[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
@@ -133,22 +136,22 @@ export function SkillPicker({ query, supported, load, onSelect, onClose, onShowD
   );
 }
 
-const styles = StyleSheet.create({
-  panel: { marginBottom: spacing.xs, borderWidth: 1, borderColor: colors.line, borderRadius: radius.lg,
-    backgroundColor: colors.surface, overflow: "hidden" },
+const useStyles = createThemedStyles(theme => StyleSheet.create({
+  panel: { marginBottom: spacing.xs, borderWidth: 1, borderColor: theme.colors.line, borderRadius: radius.lg,
+    backgroundColor: theme.colors.surface, overflow: "hidden" },
   header: { height: HEADER_HEIGHT, flexDirection: "row", alignItems: "center", paddingLeft: spacing.lg },
-  title: { flex: 1, fontSize: 13, fontWeight: "600", color: colors.inkSoft },
+  title: { flex: 1, fontSize: theme.font(13), fontWeight: "600", color: theme.colors.inkSoft },
   close: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center" },
-  option: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.lineSoft },
+  option: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.colors.lineSoft },
   row: { flexDirection: "row", alignItems: "center" },
   select: { flex: 1, minWidth: 0, minHeight: SKILL_ROW_HEIGHT, flexDirection: "column", alignItems: "stretch",
     justifyContent: "center", gap: spacing.xs, paddingLeft: spacing.lg, paddingRight: spacing.md, paddingVertical: spacing.sm },
   detailsButton: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center" },
-  pressed: { backgroundColor: colors.surfaceSubtle },
-  name: { fontSize: 14, fontWeight: "600", color: colors.ink },
-  description: { fontSize: 12, color: colors.inkMuted },
-  hint: { fontSize: 13, color: colors.inkSoft, padding: spacing.md, flexShrink: 1 },
+  pressed: { backgroundColor: theme.colors.surfaceSubtle },
+  name: { fontSize: theme.font(14), fontWeight: "600", color: theme.colors.ink },
+  description: { fontSize: theme.font(12), color: theme.colors.inkMuted },
+  hint: { fontSize: theme.font(13), color: theme.colors.inkSoft, padding: spacing.md, flexShrink: 1 },
   loading: { flexDirection: "row", alignItems: "center", paddingLeft: spacing.md },
   retry: { minHeight: 44, justifyContent: "center", alignItems: "center" },
-  retryText: { color: colors.accent, fontWeight: "600" },
-});
+  retryText: { color: theme.colors.accent, fontWeight: "600" },
+}));
