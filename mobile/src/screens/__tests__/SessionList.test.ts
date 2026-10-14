@@ -281,6 +281,67 @@ test("explicit row action opens rename/pin/delete menu; offline management is di
   expect(button("sessions.select").props.disabled).toBe(true);
 });
 
+/**
+ * The select control answers for the list, not for the page.
+ *
+ * A folded group's conversations leave the page and stay in the list, and a
+ * pinned conversation is a shortcut no batch may hold. Read off the drawn rows,
+ * a page holding nothing but a folded group and a pinned shortcut switched the
+ * control off — drawn at 40% opacity, which reads as gone, not as unavailable —
+ * on a list whose conversations were all still there, one fold away. The desktop
+ * rail's own "select conversations" is offered throughout; this is the same
+ * answer, and the one the list gave before the control learned to disable itself.
+ */
+test("the select control stays available while a folded group holds conversations", () => {
+  mockRemote.workspaces = [
+    { id: "w-select-fold", name: "Folded project", path: "/tmp/folded" },
+    { id: "w-select-pinned", name: "Pinned project", path: "/tmp/pinned" },
+  ];
+  mockRemote.sessions = [
+    {
+      sessionId: "f1",
+      threadId: "tf1",
+      title: "Folded plan",
+      mode: "workspace",
+      workspaceId: "w-select-fold",
+      streaming: false,
+    },
+    {
+      sessionId: "p1",
+      threadId: "tp1",
+      title: "Pinned plan",
+      mode: "workspace",
+      workspaceId: "w-select-pinned",
+      pinned: true,
+      streaming: false,
+    },
+  ];
+  act(() => tree.update(createElement(SessionList, {
+    tab: "workspace",
+    empty: null,
+    onMenu,
+    onTabChange,
+    commandsFor: testCommandsFor,
+  })));
+
+  // Fold the only group that holds an ordinary conversation: what is left on the
+  // page is the pinned shortcut, which no batch may hold.
+  act(() => button("Folded project").props.onPress());
+  expect(mergedTitles()).toEqual(["Pinned plan"]);
+  expect(button("sessions.select").props.disabled).toBe(false);
+
+  // And it works: selection mode opens on the list, whose folded conversations
+  // are one fold away — the pinned shortcut keeps no checkbox, as it never did.
+  act(() => button("sessions.select").props.onPress());
+  expect(button("sessions.selectVisible")).toBeDefined();
+  expect(button("sessions.select")).toBeUndefined();
+  expect(tree.root.findAll(node => node.props.accessibilityRole === "checkbox")).toHaveLength(0);
+
+  // This test replaced the catalogue every other test in this file starts from,
+  // so put it back rather than leave the next one to inherit this fixture.
+  renderChatTab();
+});
+
 test("search finds a collapsed child without changing folds", () => {
   expect(button("sessions.actions:Child")).toBeUndefined();
   act(() => button("sessions.search").props.onPress());
@@ -1912,6 +1973,41 @@ test("a row's own machine is named only when several machines are in the list", 
     "desk-b",
   );
   expect(glyphs()).toEqual([]);
+});
+
+/**
+ * A folded group is still part of the list, and so is the machine it belongs to.
+ *
+ * The machine set is read off the *list*, and a group's conversations leave the
+ * page when the group is folded — they were the only rows that would have named
+ * that machine. Read off the drawn conversations alone, folding a group took the
+ * glyphs off the whole list: two machines' workspaces of the same name then sat
+ * side by side saying nothing about which was whose, and unfolding one of them
+ * brought every glyph back at once.
+ */
+test("a folded group still names the machine that owns it", () => {
+  // A workspace of this test's own: folds are persisted (in storage and in a
+  // module-level cache), so folding one another test uses would hide its rows.
+  const own = { workspaceId: "w-fold-glyph", workspaceName: "Fold glyph" };
+  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan", own),
+    mergedRow("desk-b", "b1", "Remote plan", own),
+  ]);
+  // Both machines call the workspace "Fold glyph": one heading each, and each
+  // names its own machine rather than the other's.
+  const headings = () => tree.root.findAll(node =>
+    typeof node.props.onPress === "function" && node.props.accessibilityLabel === "Fold glyph");
+  expect(headings()).toHaveLength(2);
+  expect(glyphsIn(headings()[0]!, "desk-a")).toBe(1);
+  expect(glyphsIn(headings()[0]!, "desk-b")).toBe(0);
+  expect(glyphsIn(headings()[1]!, "desk-b")).toBe(1);
+
+  // Fold the peer's group away. Its conversations leave the page; the heading
+  // that names its machine does not, and the local group keeps naming its own.
+  act(() => headings()[1]!.props.onPress());
+  expect(mergedTitles()).toEqual(["Local plan"]);
+  expect(glyphsIn(headings()[0]!, "desk-a")).toBe(1);
+  expect(glyphsIn(headings()[1]!, "desk-b")).toBe(1);
 });
 
 /** The `+`/`−` in front of a conversation, in list order. */
