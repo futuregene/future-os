@@ -246,6 +246,29 @@ it("renames the machine locally, without sending the name anywhere", async () =>
   await view.unmount();
 });
 
+/**
+ * The icon row puts its control below the label rather than beside it.
+ *
+ * The picker is two dozen glyphs — wider than this column — and beside a label it
+ * took every pixel of it: the label was drawn one character per line and the grid
+ * ran out of the card. jsdom lays nothing out, so what is asserted here is the
+ * shape (this row stacks, the rows around it do not); the widths are measured in
+ * the screenshot harness, on the same row.
+ */
+it("stacks the icon picker under its label instead of beside it", async () => {
+  const view = await mount();
+
+  const picker = view.container.querySelector("[data-testid='icon-picker']")!;
+  const row = picker.parentElement!.parentElement!;
+  expect(row.className).toContain("flex-col");
+  // Left-aligned with the label it sits under, not pushed to the row's right edge.
+  expect(picker.parentElement!.className).toContain("justify-start");
+  // And its neighbours keep the row shape: a switch stays on the right of its label.
+  expect(row.previousElementSibling!.className).toContain("items-center");
+  expect(row.previousElementSibling!.className).not.toContain("flex-col");
+  await view.unmount();
+});
+
 /** The skills panel is handed to the page, and told whether the host is reachable. */
 it("reaches the skills page, and tells it whether the host is connected", async () => {
   const connected = await mount();
