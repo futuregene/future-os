@@ -82,9 +82,12 @@ export function RemoteWorkspaceMenu({
         aria-label={t("activityRail.workspaceActions", { name })}
         className={cn(
           // Kept in the layout while hidden, like every other heading control,
-          // so revealing it on hover does not shift the heading.
+          // so revealing it on hover does not shift the heading. Revealed by the
+          // workspace heading's *named* group: the rail's list area is an
+          // unnamed `group` of its own (the floating scrollbar's), and a bare
+          // `group-hover:` here was revealed by hovering anywhere in the list.
           "inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft",
-          open ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+          open ? "opacity-100" : "opacity-0 group-hover/workspace:opacity-100 focus-visible:opacity-100",
         )}
         onClick={() => setOpen(value => !value)}
         title={t("activityRail.workspaceActions", { name })}
