@@ -21,10 +21,6 @@
   "runPromptVersion": "v{{version}}",
   "runsNone": "还没有运行记录。",
   "openConversation": "打开会话",
-  "revisions": "提示词版本",
-  "revisionsNone": "还没有提示词版本记录。",
-  "apply": "应用",
-  "revisionActive": "当前",
   "confidence": "置信度 {{value}}%",
   "trigger": {
     "manual": "手动",
@@ -68,12 +64,6 @@
   "join": {
     "all": "全部到齐",
     "any": "任一到达"
-  },
-  "source": {
-    "user": "手动编辑",
-    "reflection": "反省",
-    "rollback": "回滚",
-    "superseded": "更早的版本"
   },
   "weekday": {
     "mon": "周一",
@@ -145,6 +135,5 @@
   "cwdChatWorkspace": "对话会话自带的临时工作区",
   "colConversation": "会话类型",
   "modelDefault": "默认模型",
-  "thinkingDefault": "默认",
-  "revisionsNoReason": "没有记录理由。"
+  "thinkingDefault": "默认"
 }

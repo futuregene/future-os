@@ -6,13 +6,12 @@ import type { DesktopSettings } from "../../../remote/types";
 import { SettingsSection } from "../SettingsPrimitives";
 import type { SettingsPageBack } from "../pageBack";
 import { TasksSettingsPage } from "../TasksSettingsPage";
-import type { RemoteTaskDep, RemoteTaskDetail, RemoteTaskRevision, RemoteTaskRow, RemoteTaskRun } from "../../../remote/taskTypes";
+import type { RemoteTaskDep, RemoteTaskDetail, RemoteTaskRow, RemoteTaskRun } from "../../../remote/taskTypes";
 
 let rows: RemoteTaskRow[];
 let detail: RemoteTaskDetail;
 let runs: RemoteTaskRun[];
 let deps: RemoteTaskDep[];
-let revisions: RemoteTaskRevision[];
 let models: { id: string; label?: string; provider?: string }[];
 /** The desktop's own settings: the enabled-model list comes from them. */
 let settings: DesktopSettings;
@@ -31,14 +30,12 @@ const mockRemote = {
   getTask: jest.fn(async () => ({ ...detail })),
   listTaskRuns: jest.fn(async () => [...runs]),
   listTaskDeps: jest.fn(async () => [...deps]),
-  listTaskRevisions: jest.fn(async () => [...revisions]),
   listSettingsModels: jest.fn(async () => [...models]),
   updateTask: jest.fn<Promise<unknown>, unknown[]>(async () => ({ ...detail })),
   createTask: jest.fn<Promise<unknown>, unknown[]>(async () => ({ ...detail })),
   deleteTask: jest.fn(async () => undefined),
   runTask: jest.fn(async () => ({ ...detail })),
   setTaskEnabled: jest.fn(async () => ({ ...detail })),
-  applyTaskRevision: jest.fn(async () => ({ ...detail })),
   setTaskDep: jest.fn(async () => undefined),
   removeTaskDep: jest.fn(async () => undefined),
   // The dependency editor is gated on the desktop declaring it. Tests that want
@@ -161,7 +158,6 @@ beforeEach(async () => {
   detail = taskDetail();
   runs = [{ id: "trn_1", kind: "main", origin: "schedule", status: "completed", threadId: "thr_1", startedAt: 1, finishedAt: 2, resultSummary: "all good", errorMessage: null }];
   deps = [{ upstreamTaskId: "tsk_up", upstreamName: "upstream", on: "success", satisfied: false }];
-  revisions = [{ id: "rev_2", version: 2, source: "reflection", status: "active", reason: "shorter", confidence: 0.8, createdAt: 2, promptPreview: "newer prompt" }];
   models = [
     { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", provider: "future" },
     { id: "gpt-5", provider: "openai" },
@@ -195,15 +191,14 @@ test("says so when the desktop has no tasks, and when the list cannot be read", 
   expect(texts()).not.toContain("desktopSettings.loadFailed");
 });
 
-test("opens a task on its runs and prompt versions, with the form a level down", async () => {
+test("opens a task on its runs and dependencies, with the form a level down", async () => {
   await act(async () => firstTask().props.onPress());
 
   expect(mockRemote.getTask).toHaveBeenCalledWith("tsk_1");
   // The task's own page: what it did, and the way into its settings.
   expect(sections()).toContain("daily report");
   expect(texts().some(text => String(text).includes("all good"))).toBe(true);
-  // Prompt versions can be applied.
-  expect(button("tasks.apply")).toBeDefined();
+  // The form is the only level down from here.
   expect(button("tasks.settings")).toBeDefined();
 
   // The form is its own page, carrying the prompt and the upstreams.
@@ -223,9 +218,6 @@ test("runs, enables and edits through the desktop", async () => {
 
   await act(async () => button("tasks.disable").props.onPress());
   expect(mockRemote.setTaskEnabled).toHaveBeenCalledWith("tsk_1", false);
-
-  await act(async () => button("tasks.apply").props.onPress());
-  expect(mockRemote.applyTaskRevision).toHaveBeenCalledWith("tsk_1", "rev_2");
 
   // Saving the prompt sends the whole record back, prompt included.
   await act(async () => settingsToggle().props.onPress());
@@ -358,7 +350,6 @@ test("summarises a manual task and a task with no runs", async () => {
   detail = taskDetail({ triggerKind: "manual", trigger: {}, latestRun: rows[0]!.latestRun });
   runs = [];
   deps = [];
-  revisions = [];
   await remount();
   expect(texts().some(text => String(text).includes("tasks.trigger.manual"))).toBe(true);
   await openTask();
@@ -884,17 +875,12 @@ test("needs no desktop workspace for a chat task", async () => {
   expect(texts()).toContain("tasks.form.problem.cwd");
 });
 
-// A version row with no reason recorded falls back to the prompt it holds, and
-// a catalogue model with no provider is keyed by its bare id.
-test("falls back to a version's prompt, and keys a model without a provider", async () => {
-  revisions = [{ id: "rev_1", version: 1, source: "user", status: "superseded", reason: null, confidence: null, createdAt: 1, promptPreview: "the original prompt" }];
+// A catalogue model with no provider is keyed by its bare id.
+test("keys a model without a provider by its bare id", async () => {
   models = [{ id: "bare-model" }];
   await remount();
-  // The version is history, so it is on the task's own page…
-  await act(async () => firstTask().props.onPress());
-  expect(texts()).toContain("the original prompt");
 
-  // …and the model it would be saved with is picked in the form.
+  await act(async () => firstTask().props.onPress());
   await act(async () => settingsToggle().props.onPress());
   await act(async () => chip("bare-model").props.onPress());
   await act(async () => button("tasks.form.save").props.onPress());

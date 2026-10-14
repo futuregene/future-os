@@ -219,7 +219,7 @@ export function AgentThread({
     goToNext: goToNextQuestion,
   } = useQuestionNav({
     messages: visibleMessages,
-    scrollRef: scrollRef ?? { current: null },
+    scrollRef,
     onTakeOver: () => takeOverQuestionNavRef.current(),
   });
 

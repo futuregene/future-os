@@ -151,6 +151,71 @@
           }
         ]
       },
+      "thread-question-nav": {
+        "_comment": "桌面端会话右下角的上下按钮（与手机端同一套行为）：↑ 永远落在**用户提问**上（两个提问之间的回答直接跳过），↓ 落在下面最近的一级（提问或回答都算），读出来就是会话本身的顺序：提问、回答、提问……落点统一是目标那一行的顶边贴到视口顶边下方 16px；落到回答上时，再按该行内标记 [data-reply-tail] 的那一段输出（它最后一段输出）抬起，所以读边是那段输出，而不是行首的思考/工具行。“读者在读哪一行”按行的**中点**是否在视口内判断：会话末尾上一轮的最后一行常常只剩一条边贴在顶边，若把那条边当成读者所在，刚打开会话按第一次 ↑ 就会越过当前这一轮的提问（因此中点规则有专门的单测）。桌面端滚动是正向的，所以这里连方向一起断言（手机端 harness 的 inverted 几何与真机相反，只能断言语义）。本场景：刚打开（停在会话底部）→ ↑ 落到正在读这一轮的提问 → 再 ↑ 跳过中间那条回答落到更早的提问 → ↓ 落到那条回答的**最后一段输出**上 → ↓ 落到它的下一条提问 → ↓ 到最新一轮回复，此时 ↓ 变灰（下面没有了）。",
+        "steps": [
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => { const c = document.querySelector('[data-chat-scroll]'); const b = c.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - b.top); const rows = [...c.querySelectorAll('[data-message-id]')]; const middle = el => (el.getBoundingClientRect().top + el.getBoundingClientRect().bottom) / 2; const here = rows.find(el => middle(el) >= b.top && middle(el) <= b.bottom) ?? rows.find(el => el.getBoundingClientRect().bottom > b.top + 1); const on = label => { const el = document.querySelector('[aria-label=\"' + label + '\"]'); return el ? !el.disabled : false; }; return { reader: here.dataset.messageId, readerTop: rel(here), text: (here.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 20), anchors: rows.filter(el => el.querySelector('[data-reply-tail]')).map(el => el.dataset.messageId), up: on('上一个问题'), down: on('下一段') }; })()"
+          },
+          {
+            "eval": "(() => { const el = document.querySelector('[aria-label=\"上一个问题\"]'); if (!el) throw new Error('the nav button is missing'); if (el.disabled) throw new Error('the 上一个问题 button is disabled here'); el.click(); return 'clicked 上一个问题'; })()"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => { const c = document.querySelector('[data-chat-scroll]'); const b = c.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - b.top); const rows = [...c.querySelectorAll('[data-message-id]')]; const row = rows.find(el => el.getBoundingClientRect().bottom > b.top + 1); const top = rel(row); if (row.dataset.messageId !== 'm_e4') throw new Error(`landed on ${row.dataset.messageId}, expected m_e4`); if (Math.abs(top - 16) > 2) throw new Error(`landed ${top}px below the viewport top edge, expected 16`); const text = (row.textContent || '').trim(); if (!text.includes('你')) throw new Error('landed on a reply, not on a prompt: ' + text.slice(0, 30)); return { id: row.dataset.messageId, top }; })()"
+          },
+          {
+            "eval": "(() => { const el = document.querySelector('[aria-label=\"上一个问题\"]'); if (!el) throw new Error('the nav button is missing'); if (el.disabled) throw new Error('the 上一个问题 button is disabled here'); el.click(); return 'clicked 上一个问题'; })()"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => { const c = document.querySelector('[data-chat-scroll]'); const b = c.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - b.top); const rows = [...c.querySelectorAll('[data-message-id]')]; const row = rows.find(el => el.getBoundingClientRect().bottom > b.top + 1); const top = rel(row); if (row.dataset.messageId !== 'm_e1') throw new Error(`landed on ${row.dataset.messageId}, expected m_e1`); if (Math.abs(top - 16) > 2) throw new Error(`landed ${top}px below the viewport top edge, expected 16`); const text = (row.textContent || '').trim(); if (!text.includes('你')) throw new Error('landed on a reply, not on a prompt: ' + text.slice(0, 30)); return { id: row.dataset.messageId, top }; })()"
+          },
+          {
+            "eval": "(() => { const el = document.querySelector('[aria-label=\"上一个问题\"]'); if (!el) throw new Error('the nav button is missing'); if (el.disabled === false) throw new Error('上一个问题 must be disabled here'); return '上一个问题 is disabled'; })()"
+          },
+          {
+            "eval": "(() => { const el = document.querySelector('[aria-label=\"下一段\"]'); if (!el) throw new Error('the nav button is missing'); if (el.disabled) throw new Error('the 下一段 button is disabled here'); el.click(); return 'clicked 下一段'; })()"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => { const c = document.querySelector('[data-chat-scroll]'); const b = c.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - b.top); const rows = [...c.querySelectorAll('[data-message-id]')]; const row = rows.find(el => el.getBoundingClientRect().bottom > b.top + 1); const anchor = row.querySelector('[data-reply-tail]'); if (!anchor) throw new Error(`the landed row ${row.dataset.messageId} marked no [data-reply-tail] block`); const top = rel(anchor); if (Math.abs(top - 16) > 2) throw new Error(`the reply's last output sits ${top}px below the viewport top edge, expected 16`); if (rel(row) >= top) throw new Error('the reply was not lifted: the reader got its reasoning rows, not its answer'); return { anchorTop: top, id: row.dataset.messageId, rowTop: rel(row), text: (anchor.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 24) }; })()"
+          },
+          {
+            "eval": "(() => { const el = document.querySelector('[aria-label=\"下一段\"]'); if (!el) throw new Error('the nav button is missing'); if (el.disabled) throw new Error('the 下一段 button is disabled here'); el.click(); return 'clicked 下一段'; })()"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => { const c = document.querySelector('[data-chat-scroll]'); const b = c.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - b.top); const rows = [...c.querySelectorAll('[data-message-id]')]; const row = rows.find(el => el.getBoundingClientRect().bottom > b.top + 1); const top = rel(row); if (row.dataset.messageId !== 'm_e4') throw new Error(`landed on ${row.dataset.messageId}, expected m_e4`); if (Math.abs(top - 16) > 2) throw new Error(`landed ${top}px below the viewport top edge, expected 16`); const text = (row.textContent || '').trim(); if (!text.includes('你')) throw new Error('landed on a reply, not on a prompt: ' + text.slice(0, 30)); return { id: row.dataset.messageId, top }; })()"
+          },
+          {
+            "eval": "(() => { const el = document.querySelector('[aria-label=\"下一段\"]'); if (!el) throw new Error('the nav button is missing'); if (el.disabled) throw new Error('the 下一段 button is disabled here'); el.click(); return 'clicked 下一段'; })()"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => { const el = document.querySelector('[aria-label=\"下一段\"]'); if (!el) throw new Error('the nav button is missing'); if (el.disabled === false) throw new Error('下一段 must be disabled here'); return '下一段 is disabled'; })()"
+          },
+          {
+            "eval": "(() => { const c = document.querySelector('[data-chat-scroll]'); const b = c.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - b.top); const rows = [...c.querySelectorAll('[data-message-id]')]; const middle = el => (el.getBoundingClientRect().top + el.getBoundingClientRect().bottom) / 2; const here = rows.find(el => middle(el) >= b.top && middle(el) <= b.bottom) ?? rows.find(el => el.getBoundingClientRect().bottom > b.top + 1); const on = label => { const el = document.querySelector('[aria-label=\"' + label + '\"]'); return el ? !el.disabled : false; }; return { reader: here.dataset.messageId, readerTop: rel(here), text: (here.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 20), anchors: rows.filter(el => el.querySelector('[data-reply-tail]')).map(el => el.dataset.messageId), up: on('上一个问题'), down: on('下一段') }; })()"
+          },
+          {
+            "shot": "d-question-nav.png"
+          }
+        ]
+      },
       "inline-image": {
         "steps": [
           {
@@ -701,7 +766,7 @@
             "wait": 900
           },
           {
-            "eval": "(() => { const t = document.body.innerText; if (!t.includes('运行记录')) throw new Error('the run history is not on the opened page'); if (!t.includes('提示词版本')) throw new Error('the version list is not on the opened page'); if (document.querySelector('dl')) throw new Error('a definition list is rendered while folded'); ['工作目录', '本周新增或改动', '全部到齐'].forEach(k => { if (t.includes(k)) throw new Error('the definition is not folded: ' + k + ' is visible'); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (!toggle) throw new Error('the settings disclosure is missing'); if (toggle.getAttribute('aria-expanded') !== 'false') throw new Error('the settings start expanded'); const runs = [...document.querySelectorAll('h3')].find(h => (h.textContent || '').trim() === '运行记录'); if (!runs) throw new Error('the run history heading is missing'); if (toggle.compareDocumentPosition(runs) & Node.DOCUMENT_POSITION_PRECEDING) throw new Error('the settings fold is below the run history'); })()"
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('运行记录')) throw new Error('the run history is not on the opened page'); if (t.includes('提示词版本')) throw new Error('the prompt-version list is on the app page; history belongs to the CLI'); if (document.querySelector('dl')) throw new Error('a definition list is rendered while folded'); ['工作目录', '本周新增或改动', '全部到齐'].forEach(k => { if (t.includes(k)) throw new Error('the definition is not folded: ' + k + ' is visible'); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (!toggle) throw new Error('the settings disclosure is missing'); if (toggle.getAttribute('aria-expanded') !== 'false') throw new Error('the settings start expanded'); const runs = [...document.querySelectorAll('h3')].find(h => (h.textContent || '').trim() === '运行记录'); if (!runs) throw new Error('the run history heading is missing'); if (toggle.compareDocumentPosition(runs) & Node.DOCUMENT_POSITION_PRECEDING) throw new Error('the settings fold is below the run history'); })()"
           },
           {
             "shot": "d-tasks-detail.png"
@@ -714,18 +779,6 @@
           },
           {
             "eval": "(() => { const t = document.body.innerText; if (!document.querySelector('dl')) throw new Error('the unfolded definition has no settings list'); ['工作目录', '本周新增或改动', '全部到齐'].forEach(k => { if (!t.includes(k)) throw new Error('the unfolded definition is missing ' + k); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (toggle.getAttribute('aria-expanded') !== 'true') throw new Error('the disclosure did not report itself open'); })()"
-          },
-          {
-            "eval": "(() => { const scrollers = [...document.querySelectorAll('div,main,section')].filter(el => el.scrollHeight > el.clientHeight + 40 && /auto|scroll/.test(getComputedStyle(el).overflowY)); if (!scrollers.length) throw new Error('no scroll container'); const target = scrollers.sort((a, b) => b.scrollHeight - a.scrollHeight)[0]; target.scrollTop = target.scrollHeight; return target.scrollTop;})()"
-          },
-          {
-            "wait": 600
-          },
-          {
-            "eval": "(() => { const rows = [...document.querySelectorAll('li')].map(li => (li.textContent || '').trim()).filter(t => t.startsWith('v')); if (!rows.length) throw new Error('no prompt-version rows rendered'); const joined = rows.join(' | '); if (!joined.includes('更早的版本')) throw new Error('a superseded version is not labelled: ' + joined); if (!joined.includes('反省')) throw new Error('a reflection version is not labelled: ' + joined); })()"
-          },
-          {
-            "shot": "d-tasks-detail-versions.png"
           }
         ]
       },
@@ -3656,7 +3709,7 @@
             "wait": 600
           },
           {
-            "eval": "(() => { const t = document.body.innerText; ['运行记录', '提示词版本'].forEach(k => { if (!t.includes(k)) throw new Error('the opened page is missing ' + k); }); if (!t.includes('写入 reports/weekly-2026-10-05.md')) throw new Error('the run summary is missing'); if (document.querySelectorAll('input').length) throw new Error('the form is rendered while folded'); })()"
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('运行记录')) throw new Error('the opened page is missing 运行记录'); if (t.includes('提示词版本')) throw new Error('the prompt-version list is on the phone page; history belongs to the CLI'); if (!t.includes('写入 reports/weekly-2026-10-05.md')) throw new Error('the run summary is missing'); if (document.querySelectorAll('input').length) throw new Error('the form is rendered while folded'); })()"
           },
           {
             "wait": 600

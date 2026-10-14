@@ -4,7 +4,6 @@ import { requestReadPage } from "./readPages";
 import type {
   RemoteTaskDep,
   RemoteTaskDetail,
-  RemoteTaskRevision,
   RemoteTaskRow,
   RemoteTaskRun,
 } from "./taskTypes";
@@ -90,9 +89,5 @@ export function useDesktopManagement(clientRef: RefObject<RemoteClient | null>) 
       request<void>({ type: "set_task_dep", taskId, upstreamTaskId, on }, true),
     removeTaskDep: (taskId: string, upstreamTaskId: string) =>
       request<void>({ type: "remove_task_dep", taskId, upstreamTaskId }, true),
-    listTaskRevisions: async (taskId: string) =>
-      (await request<{ revisions: RemoteTaskRevision[] }>({ type: "list_task_revisions", taskId })).revisions,
-    applyTaskRevision: (taskId: string, revisionId: string) =>
-      request<RemoteTaskDetail>({ type: "apply_task_revision", taskId, revisionId }, true),
   }), [request]);
 }

@@ -2,7 +2,6 @@ import type {
   TaskDepInput,
   TaskDepView,
   TaskInput,
-  TaskRevisionView,
   TaskRunView,
   TaskView,
 } from "./useTasks";
@@ -35,8 +34,6 @@ export interface TaskBackend {
   listDeps: (id: string) => Promise<TaskDepView[]>;
   setDep: (id: string, upstreamTaskId: string, on: string) => Promise<void>;
   removeDep: (id: string, upstreamTaskId: string) => Promise<void>;
-  listRevisions: (id: string) => Promise<TaskRevisionView[]>;
-  applyRevision: (id: string, revisionId: string) => Promise<void>;
 }
 
 /**
@@ -98,11 +95,5 @@ export const localTaskBackend: TaskBackend = {
   },
   async removeDep(id, upstreamTaskId) {
     await invokeCommand<void>("remove_task_dep", { id, upstreamTaskId });
-  },
-  listRevisions(id) {
-    return invokeCommand<TaskRevisionView[]>("list_task_revisions", { id });
-  },
-  async applyRevision(id, revisionId) {
-    await invokeCommand<TaskView>("apply_task_revision", { id, revisionId });
   },
 };
