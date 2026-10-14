@@ -1116,59 +1116,6 @@ export const taskDeps: Record<string, Array<{ upstreamTaskId: string; upstreamNa
   tsk_month_end: [],
 };
 
-/** Prompt versions, oldest first (the panel's `list_task_revisions`). */
-export const taskRevisions: Record<string, Array<{ id: string; version: number; prompt: string; source: string; status: string; reason: string | null; confidence: number | null; createdAt: number }>> = {
-  tsk_weekly_report: [
-    {
-      id: "rev_w1",
-      version: 1,
-      prompt: "整理本周进展。",
-      // What the prompt-change bookkeeping writes for the version being
-      // replaced: who wrote it was never recorded, so the row says what is
-      // certain instead of guessing.
-      source: "superseded",
-      status: "superseded",
-      reason: null,
-      confidence: null,
-      createdAt: now - 30 * day,
-    },
-    {
-      id: "rev_w3",
-      version: 3,
-      prompt: "读 notes/ 里本周新增或改动的文件，整理成中文周报。",
-      source: "user",
-      status: "superseded",
-      reason: null,
-      confidence: null,
-      createdAt: now - 9 * day,
-    },
-    {
-      id: "rev_w4",
-      version: 4,
-      prompt: "（当前生效版本，见左侧提示词）补上「下周待办」与文件路径要求。",
-      source: "reflection",
-      status: "active",
-      reason: "上一版没写明输出路径，运行结果无处可查；同时缺一条可执行的下周计划。",
-      confidence: 0.82,
-      createdAt: now - 2 * day,
-    },
-  ],
-  tsk_lit_watch: [
-    {
-      id: "rev_l2",
-      version: 2,
-      prompt: "（当前生效版本）限定 7 天内、按问题/方法/结论三行摘要，并给出 DOI。",
-      source: "user",
-      status: "active",
-      reason: null,
-      confidence: null,
-      createdAt: now - 4 * day,
-    },
-  ],
-  tsk_month_end: [],
-  tsk_notify: [],
-};
-
 export const nowRef = now;
 
 // ── The client role: this Desktop's pairings *out* to other computers ───────

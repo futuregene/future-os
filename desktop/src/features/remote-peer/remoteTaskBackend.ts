@@ -196,36 +196,5 @@ export function remoteTaskBackend(desktopId: string): TaskBackend {
     async removeDep(id, upstreamTaskId) {
       await send(desktopId, { type: "remove_task_dep", taskId: id, upstreamTaskId });
     },
-
-    async listRevisions(id) {
-      const data = await send<{ revisions?: unknown[] }>(
-        desktopId,
-        { type: "list_task_revisions", taskId: id },
-      );
-      return (Array.isArray(data?.revisions) ? data.revisions : []).flatMap((raw) => {
-        if (typeof raw !== "object" || raw === null)
-          return [];
-        const revision = raw as Record<string, unknown>;
-        const text = (key: string): string => (typeof revision[key] === "string" ? revision[key] as string : "");
-        return [{
-          id: text("id"),
-          version: typeof revision.version === "number" ? revision.version : 0,
-          // The host sends both the whole prompt and a preview; the editor shows
-          // the prompt, and the preview is what a phone's narrow row needs.
-          prompt: text("prompt") || text("promptPreview"),
-          source: text("source"),
-          status: text("status"),
-          reason: typeof revision.reason === "string" ? revision.reason : null,
-          confidence: typeof revision.confidence === "number" ? revision.confidence : null,
-          createdAt: typeof revision.createdAt === "number" ? revision.createdAt : 0,
-        }];
-      });
-    },
-
-    async applyRevision(id, revisionId) {
-      // The host answers the whole task, and it is the same implementation this
-      // app's own command uses — accepting a suggestion is one write either way.
-      await send(desktopId, { type: "apply_task_revision", taskId: id, revisionId });
-    },
   };
 }

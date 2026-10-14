@@ -751,7 +751,3 @@ export const demoTaskDeps = [
   { upstreamTaskId: "tsk_lit_watch", upstreamName: "文献监控", on: "completed", satisfied: true },
 ];
 
-export const demoTaskRevisions = [
-  { id: "rev_w4", version: 4, source: "reflection", status: "active", reason: "上一版没写明输出路径，结果无处可查。", confidence: 0.82, createdAt: Date.now() - 2 * 24 * 60 * 60_000, promptPreview: "（当前生效版本）补上文件路径要求。" },
-  { id: "rev_w3", version: 3, source: "user", status: "superseded", reason: null, confidence: null, createdAt: Date.now() - 9 * 24 * 60 * 60_000, promptPreview: "读 notes/ 里本周新增或改动的文件。" },
-];

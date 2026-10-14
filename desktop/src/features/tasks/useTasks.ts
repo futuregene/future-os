@@ -73,17 +73,6 @@ export interface TaskDepInput {
   on: string;
 }
 
-export interface TaskRevisionView {
-  id: string;
-  version: number;
-  prompt: string;
-  source: string;
-  status: string;
-  reason: string | null;
-  confidence: number | null;
-  createdAt: number;
-}
-
 /**
  * The task list and the actions on it, over whichever backend it was given.
  *
@@ -194,16 +183,6 @@ export function useTasks(backend: TaskBackend = localTaskBackend) {
     await reload();
   }, [backend, reload]);
 
-  const listRevisions = useCallback(
-    (id: string) => backend.listRevisions(id),
-    [backend],
-  );
-
-  const applyRevision = useCallback(async (id: string, revisionId: string) => {
-    await backend.applyRevision(id, revisionId);
-    await reload();
-  }, [backend, reload]);
-
   return {
     backend,
     tasks,
@@ -220,7 +199,5 @@ export function useTasks(backend: TaskBackend = localTaskBackend) {
     saveDeps,
     setDep,
     removeDep,
-    listRevisions,
-    applyRevision,
   };
 }

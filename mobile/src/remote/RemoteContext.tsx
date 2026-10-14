@@ -418,8 +418,6 @@ const NO_MANAGEMENT = {
   listTaskDeps: noop as never,
   setTaskDep: noop as never,
   removeTaskDep: noop as never,
-  listTaskRevisions: noop as never,
-  applyTaskRevision: noop as never,
 };
 
 /**
