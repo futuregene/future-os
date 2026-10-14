@@ -92,7 +92,15 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   fileTransferSupported: boolean;
   capabilities: Set<string>;
   pair(code: string): Promise<void>;
-  reconnect(): Promise<void>;
+  /**
+   * Reach a machine again — the one named, or the one the phone reads.
+   *
+   * Every paired machine has its own runtime, so a machine the list is showing
+   * but the phone is not reading can be reached on its own connection. Without
+   * the id this is the connection sheet's own action, which is about the machine
+   * the open conversation belongs to.
+   */
+  reconnect(desktopId?: string): Promise<void>;
   unpair(): Promise<void>;
   refreshSessions(): Promise<void>;
   refreshWorkspaces(): Promise<void>;
@@ -559,9 +567,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     else void entry?.connection.recover("request-failure");
   }, [rebuildDesktop]);
 
-  const reconnect = useCallback(async () => {
-    if (!activeDesktopId) return;
-    disconnectDesktop(activeDesktopId);
+  const reconnect = useCallback(async (desktopId?: string) => {
+    const target = desktopId ?? activeDesktopId;
+    if (!target) return;
+    disconnectDesktop(target);
   }, [activeDesktopId, disconnectDesktop]);
 
   /**

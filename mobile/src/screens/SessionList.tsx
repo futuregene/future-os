@@ -121,6 +121,11 @@ export function SessionList({
   /**
    * When set, the list shows these rows (every desktop's sessions merged)
    * instead of the active desktop's workspace tree.
+   *
+   * An empty array is a list with nothing to draw, not an absent one: the screen
+   * that named a machine with no rows of its own says so through `empty`, and
+   * falling back to the active machine's tree here would put one machine's
+   * conversations under another machine's name.
    */
   merged?: import("../remote/mergeSessions").MergedSessionRow[];
   /** Per-desktop glyph, so a merged row shows which machine it is on. */
@@ -190,7 +195,7 @@ export function SessionList({
   const rowCommands = (row: CatalogRow): DesktopCommands | null =>
     commandsFor(row.desktopId ?? null);
   const rows = useMemo(
-    () => (merged && merged.length > 0
+    () => (merged !== undefined
       ? sessionTreeMergedRows(merged, query, activeDesktopId, tab, collapsed, expanded)
       : catalogRows(remote.sessions, remote.workspaces, tab, collapsed, expanded, query)),
     [remote.sessions, remote.workspaces, merged, tab, collapsed, expanded, query, activeDesktopId],
@@ -221,7 +226,7 @@ export function SessionList({
    * used.
    */
   const allSessions = useMemo<BatchTarget[]>(() => {
-    if (merged && merged.length > 0)
+    if (merged !== undefined)
       return merged.map(row => ({
         key: row.key,
         session: row.session,
@@ -943,7 +948,7 @@ export function SessionList({
         style={[styles.page, { transform: [{ translateX: swipe.translateX }] }]}
         {...swipe.panHandlers}
       >
-        {merged && merged.length > 0
+        {merged !== undefined
           ? <View />
           : null}
         <FlatList
