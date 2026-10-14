@@ -143,6 +143,26 @@ impl EventBatchWriter {
         Ok(receiver)
     }
 
+    pub(super) fn shutdown(&mut self) -> anyhow::Result<()> {
+        if self.thread.is_none() {
+            return Ok(());
+        }
+        let (reply, receiver) = std::sync::mpsc::sync_channel(1);
+        self.sender
+            .send(EventWriteCommand::Shutdown(reply))
+            .map_err(|_| anyhow::anyhow!("event persistence worker unavailable at shutdown"))?;
+        let result = receiver
+            .recv()
+            .map_err(|_| anyhow::anyhow!("event shutdown acknowledgement lost"))?
+            .map_err(anyhow::Error::msg);
+        if let Some(thread) = self.thread.take() {
+            thread
+                .join()
+                .map_err(|_| anyhow::anyhow!("event persistence worker panicked"))?;
+        }
+        result
+    }
+
     pub(super) fn flush(&self) -> anyhow::Result<()> {
         Self::queue_flush(&self.sender)?
             .recv()
@@ -198,6 +218,9 @@ impl EventBatchWriter {
 
 impl Drop for EventBatchWriter {
     fn drop(&mut self) {
+        if self.thread.is_none() {
+            return;
+        }
         let (reply, receiver) = std::sync::mpsc::sync_channel(1);
         if self.sender.send(EventWriteCommand::Shutdown(reply)).is_ok() {
             let _ = receiver.recv();

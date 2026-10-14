@@ -19,14 +19,14 @@ pub(crate) struct Database {
 
 struct DatabaseWorker {
     reclaim_requested: Arc<AtomicBool>,
-    sender: Option<mpsc::SyncSender<DatabaseJob>>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    sender: parking_lot::Mutex<Option<mpsc::SyncSender<DatabaseJob>>>,
+    thread: parking_lot::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl Drop for DatabaseWorker {
     fn drop(&mut self) {
-        self.sender.take();
-        if let Some(thread) = self.thread.take() {
+        self.sender.get_mut().take();
+        if let Some(thread) = self.thread.get_mut().take() {
             if thread.thread().id() != std::thread::current().id() {
                 let _ = thread.join();
             }
@@ -84,8 +84,8 @@ impl Database {
             .context("SQLite worker initialization stopped")??;
         Ok(Self {
             inner: Arc::new(DatabaseWorker {
-                sender: Some(sender),
-                thread: Some(thread),
+                sender: parking_lot::Mutex::new(Some(sender)),
+                thread: parking_lot::Mutex::new(Some(thread)),
                 reclaim_requested,
             }),
         })
@@ -98,8 +98,9 @@ impl Database {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.inner
             .sender
+            .lock()
             .as_ref()
-            .expect("live SQLite worker sender")
+            .ok_or_else(|| anyhow!("SQLite worker is closed"))?
             .try_send(Box::new(move |connection| {
                 let _ = reply_tx.send(operation(connection));
             }))
@@ -108,6 +109,19 @@ impl Database {
                 mpsc::TrySendError::Disconnected(_) => anyhow!("SQLite worker is unavailable"),
             })?;
         reply_rx.recv().context("SQLite operation interrupted")?
+    }
+
+    /// Close admission and join the ordered worker after its accepted jobs.
+    /// The service supervisor owns the deadline, so a stuck job cannot cause
+    /// the host to incorrectly report Stopped or release instance ownership.
+    pub(crate) fn shutdown(&self) -> Result<()> {
+        self.inner.sender.lock().take();
+        if let Some(thread) = self.inner.thread.lock().take() {
+            thread
+                .join()
+                .map_err(|_| anyhow!("SQLite worker panicked during shutdown"))?;
+        }
+        Ok(())
     }
 
     /// Non-blocking hint. Idle worker slices give queued foreground writes

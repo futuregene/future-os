@@ -6,6 +6,15 @@ use futureos_lib::headless::{Launch, Options, HELP};
 
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(result) = futureos_lib::dispatch_agent_helper(&args) {
+        return match result {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::ExitCode::FAILURE
+            }
+        };
+    }
     let result = match Options::parse(&args) {
         Ok(Launch::Help) => {
             println!("{HELP}");

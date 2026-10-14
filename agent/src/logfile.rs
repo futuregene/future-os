@@ -249,6 +249,36 @@ macro_rules! eprintln_log {
     };
 }
 
+/// Hosts install tracing before runtime/GUI threads. A file mirror is installed
+/// separately, only after winning the Desktop instance lock. The host log is
+/// distinct from standalone Agent logs; external attachment never opens them.
+pub fn init_embedded_tracing() {
+    use tracing_subscriber::{fmt::MakeWriter, prelude::*};
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new("info,h2=warn,rustls=warn,tonic=warn,tower=warn")
+    });
+    let file_writer = || -> Box<dyn std::io::Write> {
+        match get() {
+            Some(mirror) => Box::new(mirror.make_writer()),
+            None => Box::new(std::io::sink()),
+        }
+    };
+    let _ = tracing_subscriber::registry()
+        .with(filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_writer(std::io::stderr),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_ansi(false)
+                .with_writer(file_writer),
+        )
+        .try_init();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

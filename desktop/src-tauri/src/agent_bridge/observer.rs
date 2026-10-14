@@ -832,7 +832,7 @@ async fn run_observer(
 }
 
 async fn plain_subscribe(
-    client: &mut crate::agent_proto::FutureAgentClient<tonic::transport::Channel>,
+    client: &mut super::client::AgentClient,
     session_id: &str,
 ) -> Option<tonic::Streaming<crate::agent_proto::StreamEvent>> {
     client
@@ -855,7 +855,7 @@ async fn sleep_or_cancel(cancel: &mut oneshot::Receiver<()>, duration: Duration)
 
 /// The session's active run per `get_state`, or None when idle/unreachable.
 async fn probe_active_run(
-    client: &mut crate::agent_proto::FutureAgentClient<tonic::transport::Channel>,
+    client: &mut super::client::AgentClient,
     session_id: &str,
 ) -> Option<String> {
     let response = client
@@ -1128,7 +1128,7 @@ async fn handle_event(
 }
 
 async fn replay_session_events(
-    client: &mut crate::agent_proto::FutureAgentClient<tonic::transport::Channel>,
+    client: &mut super::client::AgentClient,
     session_id: &str,
     shared: &Arc<ObserverShared>,
     state: &mut ObserverState,

@@ -9,6 +9,7 @@ fn bounded_queue_rejects_overload_and_recovers_after_drain() {
     let worker_gate = gate.clone();
     db.inner
         .sender
+        .lock()
         .as_ref()
         .unwrap()
         .try_send(Box::new(move |_| {
@@ -21,6 +22,7 @@ fn bounded_queue_rejects_overload_and_recovers_after_drain() {
     for _ in 0..256 {
         db.inner
             .sender
+            .lock()
             .as_ref()
             .unwrap()
             .try_send(Box::new(|_| {}))
@@ -37,6 +39,7 @@ fn bounded_queue_rejects_overload_and_recovers_after_drain() {
     let (done, done_rx) = mpsc::sync_channel(1);
     db.inner
         .sender
+        .lock()
         .as_ref()
         .unwrap()
         .send(Box::new(move |_| {

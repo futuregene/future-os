@@ -1836,18 +1836,18 @@ mod tests {
             .find(|candidate| candidate.is_file())
     }
 
-    /// Install a copy of `source` as the command `name` inside `dir`.
+    /// Install `source` as the command `name` inside `dir`. On Unix a symlink
+    /// preserves system executable identity (copied macOS binaries may be
+    /// killed on execution).
     fn install_argv_stub(dir: &std::path::Path, name: &str, source: &std::path::Path) {
         #[cfg(windows)]
         let target = dir.join(format!("{name}.exe"));
         #[cfg(unix)]
         let target = dir.join(name);
+        #[cfg(windows)]
         std::fs::copy(source, &target).unwrap();
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        std::os::unix::fs::symlink(source, &target).unwrap();
     }
 
     /// Prepend `dirs` to PATH for the duration of `body`.

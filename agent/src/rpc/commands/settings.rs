@@ -185,6 +185,11 @@ pub(crate) fn handle_compact(
 ) -> String {
     use std::sync::atomic::Ordering;
 
+    let work = session.read().service_work.clone();
+    let background = match work.background() {
+        Ok(guard) => guard,
+        Err(error) => return RpcResponse::build_fail(id, "compact", &error.to_string()),
+    };
     let in_progress = session.read().compaction_in_progress.clone();
     // A lost acknowledgement must not start a second compaction. Keep the
     // accepted request id usable after the worker's terminal event so an
@@ -233,6 +238,7 @@ pub(crate) fn handle_compact(
     let spawn = std::thread::Builder::new()
         .name("manual-compaction".to_string())
         .spawn(move || {
+            let _background = background;
             struct ResetOnDrop(Arc<std::sync::atomic::AtomicBool>);
             impl Drop for ResetOnDrop {
                 fn drop(&mut self) {

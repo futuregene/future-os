@@ -355,14 +355,18 @@ software and changes no system policy; a `skipping Linux sandbox smoke` must
 fail. **Do not hard-code "7 tests"** — use the actual suite in the candidate
 sources.
 
-The GUI dev-launch script is not a read-only probe: it builds/starts an
-independent Agent and runs Tauri, cleans stale runs/approvals by default, and
-reclaims the Agent it started on exit. Set `CLEAN_STALE_APP_TASKS=0` to keep
-those records; `DRY_RUN=1` for diagnostics only. Also settable: `REUSE_AGENT`,
-`BUILD_AGENT`, `BUILD_CLI`, `RUN_CHECKS`, `FUTURE_AGENT_GRPC_ADDR`,
-`DESKTOP_DEV_PORT`. An unavailable bwrap does not block Desktop startup,
-allowing the unavailable-hint to be verified; the authoritative security check
-remains with the Agent.
+The GUI dev-launch script builds/stages the CLI and starts Tauri. Desktop
+selects a compatible external Agent or embeds the complete service when the
+default endpoint is absent and its lock is free. The script never starts or
+kills an Agent, probes readiness by TCP port, or edits run/approval rows.
+`FUTURE_DESKTOP_AGENT_MODE=external` is attach-only; start that Agent separately.
+`BUILD_CLI`, `RUN_CHECKS` (static checks only), `FUTURE_AGENT_GRPC_ADDR` and
+`DESKTOP_DEV_PORT` remain configurable; `DRY_RUN=1` makes no filesystem writes
+or process launches. The old `REUSE_AGENT`, `BUILD_AGENT` and
+`CLEAN_STALE_APP_TASKS` switches no longer control startup. Bubblewrap availability
+and execution grants remain decided by the unchanged Agent security pipeline.
+Sandbox helpers enter before GUI/service initialization and carry the expected
+Agent build version; mismatches fail closed without an unconfined fallback.
 
 Run independently:
 

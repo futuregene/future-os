@@ -106,9 +106,7 @@ make install-skills # 内置技能 + /future-loop 技能
 make package-desktop    # 桌面打包 → .deb 位于 desktop/src-tauri/target/release/bundle/
 ```
 
-`scripts/dev/start-desktop-linux.sh` 会以开发模式针对本地构建的 agent 运行 GUI，
-并在 GUI 退出后停止由脚本启动的 agent。Bubblewrap 检查只作提示，以便同时测试
-沙盒不可用时的界面。
+`scripts/dev/start-desktop-linux.sh` 默认启动内置 Agent 的 GUI，也可以连接兼容的外部服务。脚本不会另起或结束 Agent；Bubblewrap 可用性和安全边界仍由 Agent 原有探测与执行链路决定。
 
 ### 可选 OS 沙箱
 
@@ -145,7 +143,7 @@ Copy-Item target\release\future.exe $bin
 & "$bin\future.exe" skills install
 ```
 
-**桌面应用** —— `make install` 的 desktop 部分（自身暂存 sidecar，对应 `make desktop-sidecars`；只暂存统一 `future` CLI，GUI 通过 `future agent` 启动 agent）：
+**桌面应用** —— `make install` 的 desktop 部分（自身暂存 sidecar，对应 `make desktop-sidecars`；统一 `future` CLI 用于技能和维护，GUI 在自身进程中运行 Agent library）：
 
 ```powershell
 # 将统一 CLI 以 host triple 命名暂存为 Tauri sidecar
@@ -162,12 +160,13 @@ Copy-Item desktop\src-tauri\target\release\futureos.exe "$env:USERPROFILE\.futur
 
 ```powershell
 node scripts\version.mjs --set-bundle
+Copy-Item "desktop\src-tauri\binaries\future-$triple.exe" desktop\src-tauri\binaries\installer-maintenance.exe -Force # 签名 CLI 时，在签名后复制
 Push-Location desktop; npm run tauri:build; Pop-Location   # → NSIS 安装 .exe 位于 desktop\src-tauri\target\release\bundle\nsis\
 ```
 
 说明：
 
-- `scripts\dev\start-desktop-windows.bat` 以开发模式针对本地构建的 agent 运行 GUI。
+- `scripts\dev\start-desktop-windows.bat` 委托 PowerShell 开发脚本启动 GUI，默认使用内置 Agent 或连接兼容外部服务。
 - `scripts/build/` 下的脚本（`build-desktop-macos.sh`、`build-desktop-windows-portable.ps1`、`build-desktop-windows-installer.ps1`）把上述步骤封装成单条命令，复刻 CI 打包流水线（DMG / 便携 zip / NSIS 安装器）。它们会预先检查工具链，且需要 `protoc`（`brew install protobuf` / `choco install protoc`）。产物包含 GUI 与统一 `future` CLI（agent/tui/channel/loop 已内嵌）——不含单独的 TUI。
 
 ## Loop 控制面（`future-loop`）
@@ -249,11 +248,7 @@ make setup
 make run-desktop
 ```
 
-`make setup` 安装 JavaScript workspace、初始化内置技能并创建 Tauri sidecar
-占位文件；`make run-desktop` 构建本地 CLI sidecar 并以开发模式启动桌面应用——
-应用启动时会自动拉起内置的 agent sidecar，无需单独运行 `future agent`
-（若每用户本地 IPC 或显式 `FUTURE_AGENT_GRPC_ADDR` 地址上已有 Agent 可连接，应用会
-复用它，不负责关闭该外部进程）。socket 选择规则见[目录布局](directory-layout.zh-CN.md)。
+`make setup` 安装 JavaScript workspace、初始化内置技能并创建仅供编译的 CLI 占位文件；运行时会拒绝空占位文件。`make run-desktop` 通过平台开发脚本构建/暂存真正的 CLI 并启动 Desktop，由应用内置完整 Agent，无需单独运行 `future agent`。若本地 IPC 或显式 `FUTURE_AGENT_GRPC_ADDR` 地址存在兼容 Agent，则连接它而不接管其退出。设置 `FUTURE_DESKTOP_AGENT_MODE=external` 可仅连接外部服务，请在另一个终端用相同 FutureOS home 启动匹配的 Agent。脚本不改写旧运行记录，也不会根据旧 PID 文件结束进程。`BUILD_CLI=0` 跳过 CLI 构建，`DESKTOP_DEV_PORT` 选择 Vite 端口，`RUN_CHECKS=1` 只执行静态检查，`DRY_RUN=1` 只打印配置。独立 Agent 日志保持在 `agent/logs/agent.log`，内置 Agent/宿主日志使用 `app/logs/desktop.log`。socket 规则见[目录布局](directory-layout.zh-CN.md)。
 Android 与 iOS 还需要各自的 SDK 和模拟器或真机，详见[移动端指南](../internals/mobile/README.md)。
 
 ### Proto

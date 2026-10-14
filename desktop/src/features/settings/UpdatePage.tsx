@@ -30,6 +30,7 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
   const [progress, setProgress] = useState(0);
   const [installed, setInstalled] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
+  const needsRecovery = installError?.startsWith("Update installation failed after cleanup:") ?? false;
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
   // Tear down the streamed-progress listener if the page unmounts mid-download
@@ -189,6 +190,7 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
                                       : (
                                           <Button
                                             leftIcon={<Download className="size-3.5" />}
+                                            disabled={needsRecovery}
                                             onClick={() => void handleInstall()}
                                             size="sm"
                                             variant="primary"
@@ -197,6 +199,9 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
                                           </Button>
                                         )}
                                   {installError ? <p className="text-xs text-danger">{`${t("update.installFailed")}: ${installError}`}</p> : null}
+                                  {needsRecovery
+                                    ? <Button onClick={() => void handleRestart()} size="sm" variant="primary">{t("update.restart")}</Button>
+                                    : null}
                                 </div>
                               )
                             : (

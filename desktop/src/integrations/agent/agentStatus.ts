@@ -15,6 +15,7 @@ export interface AgentStatus {
   phase: AgentStatusPhase;
   desktopVersion: string;
   agentVersion: string | null;
+  error?: string;
 }
 
 export function getAgentStatus(): Promise<AgentStatus> {

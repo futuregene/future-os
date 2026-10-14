@@ -1044,14 +1044,14 @@ impl GrpcClient {
 /// One-shot `ExecuteCommand` with a deadline (mirrors the CLI port; the TS
 /// client reuses a channel, per-call connect is equivalent for our use).
 async fn execute_unary(addr: &str, cmd: RpcCommand, timeout_secs: u64) -> Result<Value, String> {
-    let connected = future_rpc::transport::connect_channel(
-        Some(addr),
+    let mut client = future_rpc::connection::connect_verified(
+        addr,
+        future_rpc::connection::EXPECTED_AGENT_VERSION,
         Duration::from_secs(timeout_secs.min(5)),
-        None,
+        Duration::from_secs(5),
     )
     .await
-    .map_err(|e| e.to_string())?;
-    let mut client = future_rpc::transport::agent_client(connected.channel);
+    .map_err(|error| error.to_string())?;
     let response = client
         .execute_command(future_rpc::command_policy::request_with_timeout(cmd))
         .await
@@ -1294,17 +1294,17 @@ enum StreamExit {
 /// poke arrives.
 async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
     let poke_version = inner.poke_count.load(Ordering::SeqCst);
-    let connected = match future_rpc::transport::connect_channel(
-        Some(&inner.addr),
+    let mut client = match future_rpc::connection::connect_verified(
+        &inner.addr,
+        future_rpc::connection::EXPECTED_AGENT_VERSION,
         Duration::from_secs(TRY_CONNECT_TIMEOUT_SEC),
-        None,
+        Duration::from_secs(TRY_CONNECT_TIMEOUT_SEC),
     )
     .await
     {
-        Ok(connected) => connected,
+        Ok(client) => client,
         Err(_) => return StreamExit::Lost,
     };
-    let mut client = future_rpc::transport::agent_client(connected.channel);
     let request = StreamRequest {
         session_id: session.to_string(),
         ..Default::default()
@@ -1590,6 +1590,13 @@ mod tests {
             request: tonic::Request<RpcCommand>,
         ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
             let cmd = request.into_inner();
+            if cmd.r#type == "get_agent_readiness" {
+                return Ok(tonic::Response::new(future_rpc::proto::RpcResponse {
+                id: cmd.id, r#type: "response".into(), command: "get_agent_readiness".into(), success: true,
+                data: serde_json::json!({"version": future_rpc::connection::EXPECTED_AGENT_VERSION, "agentInstanceId":"mock-agent", "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION, "dataRootId":"0".repeat(64), "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION}).to_string(),
+                ..Default::default()
+            }));
+            }
             Ok(tonic::Response::new(RpcResponse {
                 id: cmd.id,
                 r#type: "response".into(),
@@ -1757,6 +1764,13 @@ mod tests {
             request: tonic::Request<RpcCommand>,
         ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
             let cmd = request.into_inner();
+            if cmd.r#type == "get_agent_readiness" {
+                return Ok(tonic::Response::new(future_rpc::proto::RpcResponse {
+                id: cmd.id, r#type: "response".into(), command: "get_agent_readiness".into(), success: true,
+                data: serde_json::json!({"version": future_rpc::connection::EXPECTED_AGENT_VERSION, "agentInstanceId":"mock-agent", "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION, "dataRootId":"0".repeat(64), "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION}).to_string(),
+                ..Default::default()
+            }));
+            }
             self.requests.lock().unwrap().push(cmd.clone());
             self.seen.lock().unwrap().push(cmd.r#type.clone());
             self.seen_sessions
@@ -3071,6 +3085,13 @@ mod tests {
             request: tonic::Request<RpcCommand>,
         ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
             let cmd = request.into_inner();
+            if cmd.r#type == "get_agent_readiness" {
+                return Ok(tonic::Response::new(future_rpc::proto::RpcResponse {
+                id: cmd.id, r#type: "response".into(), command: "get_agent_readiness".into(), success: true,
+                data: serde_json::json!({"version": future_rpc::connection::EXPECTED_AGENT_VERSION, "agentInstanceId":"mock-agent", "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION, "dataRootId":"0".repeat(64), "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION}).to_string(),
+                ..Default::default()
+            }));
+            }
             Ok(tonic::Response::new(RpcResponse {
                 id: cmd.id,
                 r#type: "response".into(),

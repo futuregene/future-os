@@ -85,6 +85,20 @@ impl SseBroadcaster {
     /// Fence the event journal before session deletion. The journal mutex is
     /// also held by append for the complete transaction, so when this
     /// returns no append can recreate rows for the deleted session.
+    pub(crate) fn shutdown_journal(&self) -> anyhow::Result<()> {
+        let mut journal = self.journal.lock();
+        journal.closed = true;
+        let result = if let Some(writer) = journal.writer.as_mut() {
+            writer.shutdown()
+        } else {
+            Ok(())
+        };
+        journal.writer.take();
+        journal.store = None;
+        self.journal_health.clear_interrupt();
+        result
+    }
+
     pub fn close_journal(&self) {
         let mut journal = self.journal.lock();
         journal.closed = true;

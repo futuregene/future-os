@@ -190,9 +190,20 @@ impl RunControl {
         if active.lease != *lease {
             return self.stale(lease, "install_cancellation");
         }
+        // Shutdown may arrive during Starting, before these targets exist.
+        // Installing them must deliver that request, never resurrect the run.
+        if matches!(
+            active.phase,
+            RunPhase::Cancelling | RunPhase::CancellationStuck
+        ) {
+            interrupt_flag.store(true, Ordering::SeqCst);
+            let _ = interrupt_tx.try_send(());
+        }
         active.interrupt_tx = Some(interrupt_tx);
         active.interrupt_flag = Some(interrupt_flag);
-        active.phase = RunPhase::Running;
+        if active.phase == RunPhase::Starting {
+            active.phase = RunPhase::Running;
+        }
         true
     }
 

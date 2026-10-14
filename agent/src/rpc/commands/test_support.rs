@@ -83,6 +83,7 @@ pub(crate) fn make_app_state_with(
     .collect();
     AppState {
         agent_instance_id: "agent-test-instance".to_string(),
+        data_root_id: "0".repeat(64),
         sessions: Arc::new(parking_lot::RwLock::new(sessions)),
         queue_budget,
         session_manager,
@@ -94,6 +95,7 @@ pub(crate) fn make_app_state_with(
         approval_gate,
         verbose: false,
         shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        service_work: Arc::new(crate::service::work::ServiceWork::default()),
         model_registry: model_registry.clone(),
         loop_template: Arc::new(Loop::new(Arc::new(EmptyProvider), "mock")),
     }

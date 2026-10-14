@@ -159,6 +159,12 @@ pub struct AgentInfoPayload {
 pub struct AgentReadinessPayload {
     pub version: String,
     pub agent_instance_id: String,
+    #[serde(default)]
+    pub protocol_version: u32,
+    #[serde(default)]
+    pub data_root_id: String,
+    #[serde(default)]
+    pub storage_schema_version: u32,
 }
 
 // ── get_commands ─────────────────────────────────────────────────────────────

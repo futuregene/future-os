@@ -265,7 +265,6 @@ impl Session {
 
     /// Whether the OS has reaped the child, independently of whether the
     /// session has *noticed*. See [`Session::wait_for_child_exit`].
-    #[cfg(test)]
     pub(crate) fn child_is_reaped(&self) -> bool {
         self.pty.lock().unwrap().try_wait().is_some()
     }

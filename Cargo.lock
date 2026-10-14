@@ -1122,6 +1122,8 @@ name = "future-rpc"
 version = "0.0.0"
 dependencies = [
  "async-stream",
+ "dirs",
+ "fd-lock",
  "hyper-util",
  "libc",
  "prost",

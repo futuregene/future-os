@@ -585,6 +585,9 @@ message AgentInfo {
 message AgentReadiness {
   string version = 1;
   string agent_instance_id = 2;
+  uint32 protocol_version = 3;
+  string data_root_id = 4;
+  uint32 storage_schema_version = 5;
 }
 
 // get_commands response.

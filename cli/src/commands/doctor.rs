@@ -338,7 +338,7 @@ async fn check_agent() -> CheckResult {
                 .unwrap_or_else(|| bin_path.clone()),
         );
     } else {
-        lines.push("future-agent not found on PATH — run `make install`".to_string());
+        lines.push("Standalone future-agent is optional; Desktop embeds Agent, and the CLI provides `future agent`".to_string());
     }
 
     let client = RunClient::new(&grpc_addr);
@@ -355,8 +355,12 @@ async fn check_agent() -> CheckResult {
                 lines,
             }
         }
-        Err(_) => {
+        Err(error) => {
+            lines.push(format!("Connection check: {error}"));
             if bin_path.is_none() {
+                lines.push(
+                    "Open Desktop for embedded hosting, or run `future agent` explicitly".into(),
+                );
                 return CheckResult {
                     name: "Agent".to_string(),
                     status: Status::Warn,
@@ -364,7 +368,7 @@ async fn check_agent() -> CheckResult {
                 };
             }
             lines.push(format!(
-                "{RED}Not running — start with: future-agent{RESET}"
+                "{RED}Agent unavailable — open Desktop or start `future agent`; check compatibility and instance locks{RESET}"
             ));
             CheckResult {
                 name: "Agent".to_string(),
@@ -784,7 +788,7 @@ mod tests {
         // Header + all 12 check sections present.
         assert!(stdout.starts_with("\u{1b}[1mFuture Doctor\u{1b}[0m — checking environment...\n"));
         assert!(stdout.contains("Not logged in — run `future auth login`"));
-        assert!(stdout.contains("future-agent not found on PATH"));
+        assert!(stdout.contains("Standalone future-agent is optional"));
         assert!(stdout.contains("future not found on PATH — run `make install`"));
         assert!(stdout.contains("future-tui not found on PATH"));
         assert!(stdout.contains("future-desktop not found on PATH"));
@@ -843,7 +847,7 @@ mod tests {
             stdout.contains("[!!]"),
             "expected an issue section: {stdout}"
         );
-        assert!(stdout.contains("Not running — start with: future-agent"));
+        assert!(stdout.contains("Agent unavailable — open Desktop or start `future agent`"));
         // Version captured from the fake binary's --version output.
         assert!(stdout.contains("v0.0.1"), "stdout: {stdout}");
     }
@@ -1310,7 +1314,7 @@ mod tests {
         let (code, stdout, _) = run_doctor().await;
         assert_eq!(code, 0);
         assert!(
-            stdout.contains("Not running — start with: future-agent"),
+            stdout.contains("Agent unavailable — open Desktop or start `future agent`"),
             "stdout: {stdout}"
         );
         assert!(

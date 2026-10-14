@@ -10,7 +10,7 @@ use super::replica::AGENT_REPLICAS;
 use crate::store;
 
 async fn canonical_active_run_id(
-    client: &mut crate::agent_proto::FutureAgentClient<tonic::transport::Channel>,
+    client: &mut super::client::AgentClient,
     session_id: &str,
 ) -> Result<Option<String>, crate::AppError> {
     let response = client

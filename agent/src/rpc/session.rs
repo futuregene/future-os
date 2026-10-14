@@ -49,6 +49,9 @@ pub struct ServerSession {
     /// Stable unique session identifier (UUID v4).  Used as the JSONL filename
     /// on disk and as the key in `AppState::sessions`.
     pub session_id: String,
+    pub(crate) service_work: Arc<crate::service::work::ServiceWork>,
+    scheduler_task: parking_lot::Mutex<Option<tokio::task::AbortHandle>>,
+    scheduler_done: Arc<std::sync::atomic::AtomicBool>,
     /// The agent run-loop: LLM provider + tool registry + iteration counter.
     /// Each session owns an independent loop minted from
     /// `AppState::loop_template` (`Loop::independent_copy`) — never a shared
@@ -244,6 +247,9 @@ impl ServerSession {
         let persistence =
             crate::session::SessionPersistence::new(manager.clone(), session_id.clone());
         Self {
+            service_work: Arc::new(crate::service::work::ServiceWork::default()),
+            scheduler_task: parking_lot::Mutex::new(None),
+            scheduler_done: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             queue_budget,
             shell_cancel_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             session_id: session_id.clone(),
@@ -305,7 +311,35 @@ impl ServerSession {
         let Some(receiver) = receiver_cell.lock().take() else {
             return;
         };
-        handle.spawn(scheduler_wake_worker(Arc::downgrade(session), receiver));
+        let sess = session.read();
+        let done = sess.scheduler_done.clone();
+        done.store(false, std::sync::atomic::Ordering::Release);
+        let weak = Arc::downgrade(session);
+        struct Done(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Done {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let done = Done(done);
+        let child_work = crate::service::work::process_auxiliary_work();
+        let task = handle.spawn(async move {
+            let _done = done;
+            let _child_work = child_work;
+            scheduler_wake_worker(weak, receiver).await;
+        });
+        *sess.scheduler_task.lock() = Some(task.abort_handle());
+    }
+
+    pub(crate) fn stop_scheduler(&self) {
+        if let Some(task) = self.scheduler_task.lock().take() {
+            task.abort();
+        }
+    }
+
+    pub(crate) fn scheduler_settled(&self) -> bool {
+        self.scheduler_done
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     fn on_scheduled_run_finished(&mut self, finished: &crate::runtime::RunLease) {
@@ -327,6 +361,9 @@ impl ServerSession {
                     "scheduler could not release completed run: {error}"
                 );
             }
+        }
+        if self.service_work.is_closed() {
+            return;
         }
         while let Some(next) = self.scheduler.queued().into_iter().next() {
             match self.start_next_scheduled() {

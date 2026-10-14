@@ -3,9 +3,10 @@
 # ResetSandbox passes through the maintenance CLI code; 124 means timeout.
 param(
     [Parameter(Mandatory = $true)][string]$InstallDir,
-    [ValidateSet('Check', 'Close', 'CloseFiles', 'ResetSandbox', 'VerifyInstall', 'AcquireLease', 'HoldLease', 'ReleaseLease')][string]$Mode = 'Check',
+    [ValidateSet('Check', 'Close', 'CloseInstalled', 'CloseFiles', 'ResetSandbox', 'VerifyInstall', 'AcquireLease', 'HoldLease', 'ReleaseLease')][string]$Mode = 'Check',
     [string]$LeaseDir,
-    [int]$InstallerPid
+    [int]$InstallerPid,
+    [string]$MaintenanceExecutable
 )
 $ErrorActionPreference = 'Stop'
 
@@ -15,10 +16,25 @@ function Invoke-FutureOSSandboxReset {
     $process = $null
     try {
         $executable = [IO.Path]::Combine([IO.Path]::GetFullPath($Directory), 'future.exe')
-        if (-not [IO.File]::Exists($executable)) { return 0 }
+        $legacy = [IO.Path]::Combine([IO.Path]::GetFullPath($Directory), 'future-agent.exe')
+        if ($MaintenanceExecutable -and [IO.File]::Exists($MaintenanceExecutable)) {
+            $executable = [IO.Path]::GetFullPath($MaintenanceExecutable)
+            $arguments = 'agent --reset-windows-sandbox'
+        } elseif ([IO.File]::Exists($executable)) {
+            $arguments = 'agent --reset-windows-sandbox'
+        } elseif ([IO.File]::Exists($legacy)) {
+            $executable = $legacy
+            $arguments = '--reset-windows-sandbox'
+        } else {
+            $state = Get-FutureOSAgentStateDirectory
+            if ([IO.File]::Exists([IO.Path]::Combine([IO.Path]::GetDirectoryName($state), 'windows-capabilities.json'))) {
+                throw 'Sandbox cleanup metadata exists but no maintenance executable is available.'
+            }
+            return 0
+        }
         $startInfo = [Diagnostics.ProcessStartInfo]::new()
         $startInfo.FileName = $executable
-        $startInfo.Arguments = 'agent --reset-windows-sandbox'
+        $startInfo.Arguments = $arguments
         $startInfo.UseShellExecute = $false
         $startInfo.CreateNoWindow = $true
         $process = [Diagnostics.Process]::Start($startInfo)
@@ -86,11 +102,18 @@ function Invoke-FutureOSInstallVerification {
     }
 }
 
+function Test-FutureOSAbsolutePath {
+    param([string]$Path)
+    # .NET IsPathRooted also accepts C:relative and root-only paths, while
+    # Rust Path::is_absolute requires a drive root or a complete UNC prefix.
+    return $Path -and $Path -match '^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+(?:[\\/]|$))'
+}
+
 function Get-FutureOSAgentStateDirectory {
     $root = $env:FUTURE_HOME
-    if (-not $root -or -not [IO.Path]::IsPathRooted($root)) {
+    if (-not (Test-FutureOSAbsolutePath $root)) {
         $profile = @($env:HOME, $env:USERPROFILE, [Environment]::GetFolderPath('UserProfile')) |
-            Where-Object { $_ -and [IO.Path]::IsPathRooted($_) } | Select-Object -First 1
+            Where-Object { Test-FutureOSAbsolutePath $_ } | Select-Object -First 1
         if (-not $profile) { throw 'Cannot resolve the FutureOS user profile for Agent lock verification.' }
         $root = [IO.Path]::Combine($profile, '.future')
     }
@@ -129,7 +152,7 @@ function Test-FutureOSAgentLock {
                     $name = [IO.Path]::GetFileNameWithoutExtension($executable)
                     $verified = [string]::Equals($executable, $recorded, [StringComparison]::OrdinalIgnoreCase) -and
                         [string]::Equals($recordedHome, $expectedHome, [StringComparison]::OrdinalIgnoreCase) -and
-                        @('future', 'future-agent').Contains($name.ToLowerInvariant()) -and
+                        @('future', 'future-agent', 'futureos', 'future-desktop', 'futureos-headless').Contains($name.ToLowerInvariant()) -and
                         ([int64]$owner.StartTime.ToFileTimeUtc() -eq [int64]$info.startTimeFiletime)
                     if ($verified) {
                         Write-Host "FutureOS Agent lock held by PID $($owner.Id): $executable"
@@ -233,7 +256,7 @@ function Invoke-FutureOSPreflight {
         # Current release desktop/CLI names plus both legacy executable names.
         # A pre-unified install can leave future-agent.exe running after the
         # desktop exits and block the new bundled Agent from taking ownership.
-        $targets = @('futureos.exe', 'future-desktop.exe', 'future.exe', 'future-agent.exe') | ForEach-Object {
+        $targets = @('futureos.exe', 'future-desktop.exe', 'futureos-headless.exe', 'future.exe', 'future-agent.exe') | ForEach-Object {
             [IO.Path]::Combine($directoryPath, $_)
         }
         # Desktop first: it must not restart the agent while we are stopping it.
@@ -267,7 +290,7 @@ function Invoke-FutureOSPreflight {
         # can survive exact-path cleanup. Never replace binaries while that
         # Agent still owns this FutureOS home.
         if ($Action -ne 'CloseFiles') {
-            $lockStatus = Test-FutureOSAgentLock -Action $Action
+            $lockStatus = Test-FutureOSAgentLock -Action $(if ($Action -eq 'CloseInstalled') { 'Check' } else { $Action })
             if ($lockStatus -ne 0) { return $lockStatus }
         }
 

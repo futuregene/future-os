@@ -236,6 +236,7 @@ jobs:
           if (-not $agentHelp.Contains('--reset-windows-sandbox')) {
             throw 'Staged future.exe does not support --reset-windows-sandbox.'
           }
+          Copy-Item $sidecar "desktop/src-tauri/binaries/installer-maintenance.exe" -Force
 
       # Pin the Tauri installer version to the plain semver core (NSIS rejects
       # SemVer suffixes). The display version keeps the full FUTURE_VERSION.

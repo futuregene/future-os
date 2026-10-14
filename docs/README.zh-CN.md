@@ -33,6 +33,7 @@
 | [Loop 控制面](architecture/loop-control-plane.zh-CN.md)（[en](architecture/loop-control-plane.md)） | `future-loop` — 目标/todos/门禁/监控、should-run 内核、配额、事件溯源、交付闭环、多 agent、supervisor/worker 消息、web dashboard |
 | [长程证据账本](architecture/long-run-evidence-ledger.zh-CN.md)（[en](architecture/long-run-evidence-ledger.md)） | 长程 loop 目标问责记录 — 墙钟、花费、验证结果、每个已关闭目标的显式边界 |
 | [SQLite 迁移](architecture/sqlite-migration.zh-CN.md)（[en](architecture/sqlite-migration.md)） | Agent/Desktop SQLite 存储布局与迁移策略 |
+| [Desktop 内置 Agent 开发计划](architecture/embedded-agent-development.zh-CN.md)（[en](architecture/embedded-agent-development.md)） | 进程内完整 Agent、服务与宿主生命周期、实例锁、退出清理、升级安装、开发工具及分阶段验收 |
 | [回复结果语义](architecture/response-outcomes.zh-CN.md)（[en](architecture/response-outcomes.md)） | 回复结束的结果语义（停止 / 拒答 / 过滤 / 暂停） |
 | [loop/](architecture/loop/README.md) | `future-loop` crate：[架构](architecture/loop/ARCHITECTURE.md)（en/zh）、[上游来源](../orchestration/loop/UPSTREAM.md)、[决策内核快照](architecture/loop/snapshots.md) |
 | [共享包](architecture/packages.zh-CN.md)（[en](architecture/packages.md)） | `packages/` 约定：npm/workspace 包与 crate 边界 |

@@ -68,6 +68,7 @@ pub struct ConnectedChannel {
 #[derive(Debug, Clone)]
 pub struct ConnectError {
     details: String,
+    pub kind: Option<io::ErrorKind>,
 }
 
 impl fmt::Display for ConnectError {
@@ -103,21 +104,49 @@ pub async fn connect_channel(
     connect_timeout: Duration,
     request_timeout: Option<Duration>,
 ) -> Result<ConnectedChannel, ConnectError> {
+    connect_channel_with_policy(configured, connect_timeout, request_timeout, false).await
+}
+
+/// A verified business channel must never transparently reconnect to a
+/// replacement (including legacy servers that ignore instance headers). A new
+/// physical channel requires a new readiness handshake.
+pub async fn connect_pinned_channel(
+    configured: Option<&str>,
+    connect_timeout: Duration,
+    request_timeout: Option<Duration>,
+) -> Result<ConnectedChannel, ConnectError> {
+    connect_channel_with_policy(configured, connect_timeout, request_timeout, true).await
+}
+
+async fn connect_channel_with_policy(
+    configured: Option<&str>,
+    connect_timeout: Duration,
+    request_timeout: Option<Duration>,
+    pinned: bool,
+) -> Result<ConnectedChannel, ConnectError> {
     let mut failures = Vec::new();
+    let mut kind = None;
     for endpoint in connection_plan(configured) {
         let label = endpoint.label();
         let attempt = tokio::time::timeout(
             connect_timeout,
-            connect_one(&endpoint, connect_timeout, request_timeout),
+            connect_one(&endpoint, connect_timeout, request_timeout, pinned),
         )
         .await;
         match attempt {
             Ok(Ok(channel)) => return Ok(ConnectedChannel { endpoint, channel }),
-            Ok(Err(error)) => failures.push(format!("{label}: {error}")),
-            Err(_) => failures.push(format!("{label}: connection timed out")),
+            Ok(Err(error)) => {
+                kind = io_error_kind(error.as_ref());
+                failures.push(format!("{label}: {error}"));
+            }
+            Err(_) => {
+                kind = Some(io::ErrorKind::TimedOut);
+                failures.push(format!("{label}: connection timed out"));
+            }
         }
     }
     Err(ConnectError {
+        kind,
         details: format!(
             "unable to connect to Future Agent ({})",
             failures.join("; ")
@@ -125,10 +154,20 @@ pub async fn connect_channel(
     })
 }
 
+fn io_error_kind(mut error: &(dyn std::error::Error + 'static)) -> Option<io::ErrorKind> {
+    loop {
+        if let Some(error) = error.downcast_ref::<io::Error>() {
+            return Some(error.kind());
+        }
+        error = error.source()?;
+    }
+}
+
 async fn connect_one(
     endpoint: &AgentEndpoint,
     connect_timeout: Duration,
     request_timeout: Option<Duration>,
+    pinned: bool,
 ) -> Result<Channel, Box<dyn std::error::Error + Send + Sync>> {
     match endpoint {
         AgentEndpoint::Tcp(addr) => {
@@ -138,10 +177,54 @@ async fn connect_one(
                 Some(timeout) => endpoint.timeout(timeout),
                 None => endpoint,
             };
-            Ok(endpoint.connect().await?)
+            if !pinned {
+                return Ok(endpoint.connect().await?);
+            }
+            if endpoint.uri().scheme_str() == Some("https") {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "HTTPS Agent endpoints require an explicitly configured TLS connector; refusing plaintext transport").into());
+            }
+            let host = endpoint
+                .uri()
+                .host()
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "TCP endpoint has no host")
+                })?
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .to_owned();
+            let port = endpoint.uri().port_u16().unwrap_or(
+                if endpoint.uri().scheme_str() == Some("https") {
+                    443
+                } else {
+                    80
+                },
+            );
+            let used = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            Ok(endpoint
+                .connect_with_connector(service_fn(move |_| {
+                    let used = used.clone();
+                    let host = host.clone();
+                    async move {
+                        claim_connection(&used, true)?;
+                        let stream = tokio::net::TcpStream::connect((host.as_str(), port)).await?;
+                        stream.set_nodelay(true)?;
+                        Ok::<_, io::Error>(TokioIo::new(stream))
+                    }
+                }))
+                .await?)
         }
-        AgentEndpoint::Local => connect_local(request_timeout).await,
+        AgentEndpoint::Local => connect_local_with_policy(request_timeout, pinned).await,
     }
+}
+
+fn claim_connection(used: &std::sync::atomic::AtomicBool, pinned: bool) -> io::Result<()> {
+    if pinned && used.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return Err(io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            "Agent connection changed; a fresh readiness handshake is required",
+        ));
+    }
+    Ok(())
 }
 
 fn normalize_tcp_uri(addr: &str) -> String {
@@ -209,9 +292,17 @@ pub fn local_endpoint_label() -> String {
     )
 }
 
-#[cfg(unix)]
+#[cfg(all(test, windows))]
 async fn connect_local(
     request_timeout: Option<Duration>,
+) -> Result<Channel, Box<dyn std::error::Error + Send + Sync>> {
+    connect_local_with_policy(request_timeout, false).await
+}
+
+#[cfg(unix)]
+async fn connect_local_with_policy(
+    request_timeout: Option<Duration>,
+    pinned: bool,
 ) -> Result<Channel, Box<dyn std::error::Error + Send + Sync>> {
     let path = local_socket_path();
     let endpoint = Endpoint::try_from("http://future-agent.local")?;
@@ -219,10 +310,13 @@ async fn connect_local(
         Some(timeout) => endpoint.timeout(timeout),
         None => endpoint,
     };
+    let used = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let channel = endpoint
         .connect_with_connector(service_fn(move |_| {
+            let used = used.clone();
             let path = path.clone();
             async move {
+                claim_connection(&used, pinned)?;
                 tokio::net::UnixStream::connect(path)
                     .await
                     .map(TokioIo::new)
@@ -233,8 +327,9 @@ async fn connect_local(
 }
 
 #[cfg(windows)]
-async fn connect_local(
+async fn connect_local_with_policy(
     request_timeout: Option<Duration>,
+    pinned: bool,
 ) -> Result<Channel, Box<dyn std::error::Error + Send + Sync>> {
     use tokio::net::windows::named_pipe::ClientOptions;
 
@@ -244,10 +339,13 @@ async fn connect_local(
         Some(timeout) => endpoint.timeout(timeout),
         None => endpoint,
     };
+    let used = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let channel = endpoint
         .connect_with_connector(service_fn(move |_| {
+            let used = used.clone();
             let pipe_name = pipe_name.clone();
             async move {
+                claim_connection(&used, pinned)?;
                 loop {
                     match ClientOptions::new().open(&pipe_name) {
                         Ok(pipe) => return Ok(TokioIo::new(pipe)),
@@ -359,11 +457,13 @@ async fn bind_local_at(path: std::path::PathBuf) -> io::Result<LocalIncoming> {
     }
 
     let listener = tokio::net::UnixListener::bind(&path)?;
+    // Capture the cleanup owner before constructing the lazy incoming stream.
+    // Startup can be cancelled after binding but before its first poll.
+    let cleanup = SocketCleanup(path.clone());
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     let expected_uid = unsafe { libc::geteuid() };
-    let cleanup_path = path.clone();
     let incoming = async_stream::stream! {
-        let _cleanup = SocketCleanup(cleanup_path);
+        let _cleanup = cleanup;
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => match stream.peer_cred() {
@@ -627,6 +727,20 @@ mod tests {
             error.to_string().contains("not owned by the current user"),
             "{error}"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unpolled_local_listener_releases_its_endpoint_on_drop() {
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("agent.sock");
+        let incoming = bind_local_at(socket.clone()).await.unwrap();
+        assert!(socket.exists());
+        drop(incoming);
+        assert!(!socket.exists(), "cancelled startup must remove its socket");
+        let next = bind_local_at(socket.clone()).await.unwrap();
+        drop(next);
+        assert!(!socket.exists());
     }
 
     #[cfg(unix)]

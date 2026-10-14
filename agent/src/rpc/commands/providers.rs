@@ -128,6 +128,9 @@ pub(crate) fn get_agent_readiness_response(state: &AppState, id: &str) -> String
         serde_json::json!({
             "version": crate::utils::VERSION,
             "agentInstanceId": state.agent_instance_id,
+            "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION,
+            "dataRootId": state.data_root_id,
+            "storageSchemaVersion": crate::session::database::CURRENT_SCHEMA_VERSION,
         }),
     )
 }

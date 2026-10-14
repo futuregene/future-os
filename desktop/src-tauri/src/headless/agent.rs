@@ -1,169 +1,40 @@
-//! Agent ownership for the terminal entry point. No Tauri shell plugin needed.
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::time::{Duration, Instant};
-
-/// Cold or network-mounted storage (HPC home directories) can push the
-/// Agent's first launch far past a local disk's timing. This is the outer
-/// bound, not the expectation.
-const AGENT_STARTUP_TIMEOUT: Duration = Duration::from_secs(180);
-/// How long to wait in silence before telling the user the Agent is not
-/// frozen.
-const SLOW_STARTUP_NOTICE_AFTER: Duration = Duration::from_secs(30);
+//! Headless uses the same scoped in-process owner as GUI. The bundled CLI
+//! remains needed only for short maintenance commands such as skill bootstrap.
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 
 #[derive(Default)]
-pub(super) struct Agent {
-    child: Option<tokio::process::Child>,
-}
-
+pub(super) struct Agent;
 impl Agent {
     pub(super) async fn ensure_running(&mut self) -> Result<(), crate::AppError> {
         let address = crate::agent_bridge::raw_agent_addr();
-        if reachable(&address).await {
-            eprintln!("Using the existing Agent; it will not be stopped on exit.");
-            return Ok(());
-        }
-        // An explicit endpoint belongs to its operator. Never start an agent
-        // that accidentally takes over an unreachable external endpoint.
-        if !address.eq_ignore_ascii_case(future_rpc::transport::AUTO_ENDPOINT) {
-            return Err("The configured Agent is unavailable. Start it first, or use the default local endpoint.".into());
-        }
-        let executable = find_sidecar()?;
-        let mut command = tokio::process::Command::new(&executable);
-        command.arg("agent").stdin(Stdio::null()).kill_on_drop(true);
-        // Only the host receives terminal signals; it first closes remote
-        // access, then stops the child it owns. Never signal an external agent.
-        #[cfg(unix)]
-        command.process_group(0);
-        #[cfg(windows)]
-        command.creation_flags(0x00000200); // CREATE_NEW_PROCESS_GROUP
-        self.child = Some(
-            command
-                .spawn()
-                .map_err(|e| format!("Start {}: {e}", executable.display()))?,
-        );
-        eprintln!(
-            "Started the bundled Agent. Ctrl+C will also stop this Agent and its active runs."
-        );
-        let started_at = Instant::now();
-        let mut slow_start_noted = false;
-        tokio::time::timeout(AGENT_STARTUP_TIMEOUT, async {
-            loop {
-                self.check_running()?;
-                if reachable(&address).await {
-                    return Ok::<_, crate::AppError>(());
-                }
-                if !slow_start_noted && started_at.elapsed() >= SLOW_STARTUP_NOTICE_AFTER {
-                    slow_start_noted = true;
-                    eprintln!(
-                        "The Agent is still starting; the first launch can be slow on cold \
-                         or network-mounted storage. Waiting for it to finish..."
-                    );
-                }
-                tokio::time::sleep(Duration::from_millis(200)).await;
-            }
-        })
-        .await
-        .map_err(|_| {
-            crate::AppError::from(
-                "Agent startup timed out. Start `future agent` in a separate terminal, then \
-                 restart headless Desktop; it will connect to the running Agent.",
-            )
-        })?
-    }
-
-    pub(super) fn check_running(&mut self) -> Result<(), crate::AppError> {
-        if let Some(child) = &mut self.child {
-            if let Some(status) = child.try_wait()? {
-                return Err(format!(
-                    "The owned Agent exited ({status}). Restart headless Desktop."
-                )
-                .into());
-            }
-        }
+        tokio::task::spawn_blocking(move || crate::agent_host::host().start(address))
+            .await
+            .map_err(|error| error.to_string())??;
         Ok(())
     }
-
-    pub(super) async fn shutdown(&mut self) {
-        let Some(mut child) = self.child.take() else {
-            return;
-        };
-        if child.try_wait().ok().flatten().is_some() {
-            return;
-        }
-        // Let the Agent cancel tool subprocess groups and settle active runs
-        // before killing it. This branch is never entered for an external Agent.
-        if tokio::time::timeout(Duration::from_secs(4), async {
-            let sessions = crate::store::active_run_sessions().unwrap_or_default();
-            futures::future::join_all(sessions.iter().map(|session| async move {
-                if let Err(error) = crate::agent_bridge::abort_session(session).await {
-                    eprintln!("Unable to abort an owned Agent session on exit: {error}");
-                }
-                crate::agent_bridge::wait_for_agent_idle(session).await;
-            }))
-            .await;
-        })
-        .await
-        .is_err()
-        {
-            eprintln!("Timed out cancelling active runs; stopping the owned Agent.");
-        }
-        #[cfg(windows)]
-        match tokio::time::timeout(
-            Duration::from_secs(5),
-            crate::agent_bridge::reset_windows_sandbox(),
-        )
-        .await
-        {
-            Ok(Ok(_)) => {}
-            Ok(Err(error)) => eprintln!("Agent sandbox cleanup failed: {error}"),
-            Err(_) => eprintln!("Agent sandbox cleanup timed out."),
-        }
-        // kill_on_drop is also armed during startup/error cancellation.
-        if child.try_wait().ok().flatten().is_none() {
-            if let Err(error) = child.start_kill() {
-                eprintln!("Unable to stop the owned Agent: {error}");
-            }
-            match tokio::time::timeout(Duration::from_secs(3), child.wait()).await {
-                Ok(Ok(_)) => {}
-                Ok(Err(error)) => eprintln!("Unable to reap the owned Agent: {error}"),
-                Err(_) => eprintln!("Timed out waiting for the owned Agent to exit."),
-            }
+    pub(super) fn check_running(&mut self) -> Result<(), crate::AppError> {
+        match crate::agent_host::host().phase() {
+            crate::agent_host::Phase::Failed(error) => Err(error.into()),
+            _ => Ok(()),
         }
     }
-}
-
-async fn reachable(address: &str) -> bool {
-    future_rpc::transport::connect_channel(
-        Some(address),
-        Duration::from_secs(2),
-        Some(Duration::from_secs(2)),
-    )
-    .await
-    .is_ok()
+    pub(super) async fn shutdown(&mut self) -> Result<(), crate::AppError> {
+        tokio::task::spawn_blocking(|| crate::desktop_shutdown::stop("headless_exit"))
+            .await
+            .map_err(|error| error.to_string())?
+    }
 }
 
 /// The bundled `future` CLI: beside the running executable, then the explicitly
 /// installed CLI on PATH. Also spawns `future init` for the built-in skills, so
 /// the message names the binary rather than only the Agent.
 pub(super) fn find_sidecar() -> Result<PathBuf, crate::AppError> {
-    let current = std::env::current_exe()?;
-    let parent = current
-        .parent()
-        .ok_or("Desktop executable has no parent directory")?;
-    let name = if cfg!(windows) {
-        "future.exe"
-    } else {
-        "future"
-    };
-    // Packaged sidecar beside Desktop, then the explicitly installed CLI on
-    // PATH. Do not search the current directory or spawn through a shell.
-    sidecar_candidates(parent, std::env::var_os("PATH").as_deref(), name)
-        .into_iter()
-        .find(|path| path.is_absolute() && path.is_file())
-        .ok_or_else(|| "No `future` CLI found. Place the matching future CLI beside Desktop, install it on PATH, or start `future agent` separately.".into())
+    crate::cli_tool::resolve()
 }
 
+#[cfg(test)]
 fn sidecar_candidates(parent: &Path, path: Option<&std::ffi::OsStr>, name: &str) -> Vec<PathBuf> {
     let mut candidates = vec![parent.join(name)];
     if let Some(path) = path {
@@ -193,9 +64,11 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_without_an_owned_child_is_a_noop() {
-        let mut agent = Agent::default();
+        let _home = crate::auth_store::test_support::HomeGuard::new("headless-stop");
+        let _mock = crate::agent_bridge::test_support::mock_agent();
+        let mut agent = Agent;
         agent.check_running().unwrap();
-        agent.shutdown().await;
-        assert!(agent.child.is_none());
+        agent.shutdown().await.unwrap();
+        assert!(!crate::agent_host::host().owns_agent());
     }
 }

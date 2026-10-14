@@ -194,7 +194,7 @@ bwrap/inner 没有 completion 且非信号终止时 helper 返回 infrastructure
 
 脚本收集环境、构建probe、Linux单测、大于十万项夹具、stderr捕获回归、所有ignored smoke、fmt/clippy，输出 `linux-sandbox-evidence-*.tar.gz`。不安装软件/改变系统策略；出现 `skipping Linux sandbox smoke` 必须失败。**不要固定写“7个测试”**，以候选源码实际套件为准。
 
-GUI开发启动脚本不是只读probe：它会构建/启动独立Agent并运行Tauri，默认清理stale runs/approvals，退出回收自己启动的Agent。需要保留这些记录时设置`CLEAN_STALE_APP_TASKS=0`；`DRY_RUN=1`仅诊断。还可设置`REUSE_AGENT`、`BUILD_AGENT`、`BUILD_CLI`、`RUN_CHECKS`、`FUTURE_AGENT_GRPC_ADDR`、`DESKTOP_DEV_PORT`。bwrap不可用不阻止Desktop启动，便于验证不可用提示；权威安全检查仍由Agent负责。
+GUI 开发脚本构建/暂存 CLI 并启动 Tauri；Desktop 自己选择兼容外部 Agent，或在默认端点缺失且锁空闲时运行完整内置服务。脚本不启动或结束 Agent，不用 TCP 端口判断 ready，不直接改写运行/审批记录。`FUTURE_DESKTOP_AGENT_MODE=external` 仅连接，请先单独启动外部 Agent。可设置 `BUILD_CLI`、`RUN_CHECKS`（仅静态检查）、`FUTURE_AGENT_GRPC_ADDR`、`DESKTOP_DEV_PORT`；`DRY_RUN=1` 不写文件、不启动进程。旧 `REUSE_AGENT`、`BUILD_AGENT`、`CLEAN_STALE_APP_TASKS` 不再控制启动。Bubblewrap 可用性、执行授权和安全检查仍由原 Agent 链路决定；helper 在 GUI/服务初始化前进入，并核对调用者的 Agent 构建版本，不匹配直接拒绝，不回退到无沙箱执行。
 
 独立执行：
 

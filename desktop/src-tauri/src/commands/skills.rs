@@ -90,7 +90,7 @@ pub async fn sync_skills() -> Result<serde_json::Value, crate::AppError> {
 /// thread body can run against a mock handle. The command wrapper is generic
 /// over `Runtime` for the same reason.
 fn spawn_builtin_skills<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
-    std::thread::spawn(move || skills_bootstrap::run_builtin_skills(&app));
+    crate::runtime::spawn_native(move || skills_bootstrap::run_builtin_skills(&app));
 }
 
 #[tauri::command]

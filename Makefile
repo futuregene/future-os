@@ -152,13 +152,15 @@ desktop-sidecars: build-cli
 ifeq ($(OS),windows)
 	@if not exist desktop\src-tauri\binaries mkdir desktop\src-tauri\binaries
 	$(COPY_CMD) target\release\future$(EXE_SUFFIX) "desktop\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)"
+	$(COPY_CMD) target\release\future$(EXE_SUFFIX) "desktop\src-tauri\binaries\installer-maintenance.exe"
 else
 	@mkdir -p desktop/src-tauri/binaries
 	cp target/release/future desktop/src-tauri/binaries/future-$(TARGET)
 endif
 
-# Empty sidecar placeholder: tauri-build aborts when the externalBin path is
-# missing, even for check/clippy/test. CI does the same (see ci.yml).
+# Compile-only CLI placeholder: tauri-build validates externalBin for checks.
+# Desktop embeds Agent without this file; runtime CLI lookup rejects empty
+# placeholders. Builds/packages must still stage the real CLI for tools.
 desktop-sidecar-placeholder:
 ifeq ($(OS),windows)
 	@if not exist "desktop\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)" (if not exist desktop\src-tauri\binaries mkdir desktop\src-tauri\binaries & type NUL > "desktop\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)")
@@ -289,9 +291,14 @@ run-channels:
 run-loop:
 	cd orchestration/loop && cargo run
 
-run-desktop: desktop-sidecars
-	$(call npm-install-if-needed,desktop)
-	cd desktop && npm run tauri:dev
+run-desktop:
+ifeq ($(OS),windows)
+	cmd /c scripts\dev\start-desktop-windows.bat
+else ifeq ($(OS),darwin)
+	bash scripts/dev/start-desktop-macos.sh
+else
+	bash scripts/dev/start-desktop-linux.sh
+endif
 
 run-mobile-android:
 	$(call npm-install-if-needed,mobile)

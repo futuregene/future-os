@@ -6,5 +6,4 @@
 // so silence dead-code warnings for the whole module.
 #![allow(dead_code)]
 
-pub use future_rpc::proto::future_agent_client::FutureAgentClient;
 pub use future_rpc::proto::*;

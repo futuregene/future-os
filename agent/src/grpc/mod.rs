@@ -23,6 +23,32 @@ use tokio_stream::StreamExt;
 // sites keep their `proto::...` paths.
 pub use future_rpc::proto;
 
+#[allow(clippy::result_large_err)]
+fn validate_expected_instance(
+    metadata: &tonic::metadata::MetadataMap,
+    state: &AppState,
+) -> Result<(), tonic::Status> {
+    for (header, actual) in [
+        (
+            future_rpc::connection::EXPECTED_INSTANCE_HEADER,
+            &state.agent_instance_id,
+        ),
+        (
+            future_rpc::connection::EXPECTED_DATA_ROOT_HEADER,
+            &state.data_root_id,
+        ),
+    ] {
+        if let Some(expected) = metadata.get(header) {
+            if expected.to_str().ok() != Some(actual.as_str()) {
+                return Err(tonic::Status::failed_precondition(
+                    "Agent instance or data root changed; reconnect and verify readiness",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn configure_service(
     service: FutureAgentService,
 ) -> proto::future_agent_server::FutureAgentServer<FutureAgentService> {
@@ -31,55 +57,98 @@ fn configure_service(
         .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
 }
 
-/// Start an explicitly requested TCP gRPC server. Native local IPC is the
-/// production default; TCP remains available for remote development and
-/// compatibility only.
+/// A pre-bound listener, so service startup can distinguish bind failures from
+/// readiness without changing the RPC service or transport protections.
+pub(crate) enum AgentListener {
+    Local(future_rpc::transport::LocalIncoming),
+    Tcp(tokio::net::TcpListener),
+}
+
+impl AgentListener {
+    pub(crate) async fn bind_local() -> Result<Self> {
+        Ok(Self::Local(future_rpc::transport::bind_local().await?))
+    }
+
+    pub(crate) async fn bind_tcp(host: &str, port: u16) -> Result<Self> {
+        let host = host.trim_start_matches('[').trim_end_matches(']');
+        let ip = host
+            .parse::<std::net::IpAddr>()
+            .map_err(|error| anyhow::anyhow!("invalid gRPC bind IP {host:?}: {error}"))?;
+        Ok(Self::Tcp(
+            tokio::net::TcpListener::bind(SocketAddr::new(ip, port)).await?,
+        ))
+    }
+
+    pub(crate) fn endpoint(&self) -> crate::service::AgentEndpoint {
+        match self {
+            Self::Local(_) => {
+                crate::service::AgentEndpoint::Local(future_rpc::transport::local_endpoint_label())
+            }
+            Self::Tcp(listener) => crate::service::AgentEndpoint::Tcp(
+                listener
+                    .local_addr()
+                    .expect("bound TCP listener has an address"),
+            ),
+        }
+    }
+
+    pub(crate) async fn serve(
+        self,
+        state: AppState,
+        shutdown: impl std::future::Future<Output = ()>,
+    ) -> Result<()> {
+        let server = tonic::transport::Server::builder()
+            .add_service(configure_service(FutureAgentService { state }));
+        match self {
+            Self::Local(incoming) => {
+                tracing::info!(endpoint = %future_rpc::transport::local_endpoint_label(), "gRPC server listening on local IPC");
+                server
+                    .serve_with_incoming_shutdown(incoming, shutdown)
+                    .await?;
+            }
+            Self::Tcp(listener) => {
+                let address = listener.local_addr()?;
+                tracing::info!(
+                    "gRPC server listening on {}:{}",
+                    address.ip(),
+                    address.port()
+                );
+                // Preserve Tonic's TCP accept/error handling and socket options.
+                let incoming =
+                    tonic::transport::server::TcpIncoming::from_listener(listener, true, None)
+                        .map_err(anyhow::Error::from_boxed)?;
+                server
+                    .serve_with_incoming_shutdown(incoming, shutdown)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Start an explicitly requested TCP gRPC server. Native local IPC remains the
+/// default; the service layer uses the same pre-bound implementation.
 pub async fn serve_tcp(state: AppState, host: &str, port: u16) -> Result<()> {
     serve_tcp_with(state, host, port, std::future::pending()).await
 }
 
-/// Start the per-user local IPC server (Unix-domain socket / Windows named
-/// pipe). Runs until process exit.
 pub async fn serve_local(state: AppState) -> Result<()> {
-    tracing::info!(endpoint = %future_rpc::transport::local_endpoint_label(), "gRPC server listening on local IPC");
-    let incoming = future_rpc::transport::bind_local().await?;
-    let grpc_service = FutureAgentService { state };
-    tonic::transport::Server::builder()
-        .add_service(configure_service(grpc_service))
-        .serve_with_incoming_shutdown(incoming, std::future::pending())
-        .await?;
-    Ok(())
+    AgentListener::bind_local()
+        .await?
+        .serve(state, std::future::pending())
+        .await
 }
 
-/// `serve` with an injectable shutdown trigger so tests can drive the server
-/// to a clean `Ok(())` completion (production never exits).
 async fn serve_tcp_with(
     state: AppState,
     host: &str,
     port: u16,
     shutdown: impl std::future::Future<Output = ()>,
 ) -> Result<()> {
-    tracing::info!("gRPC server listening on {}:{}", host, port);
-
-    // Build gRPC service
-    let grpc_service = FutureAgentService { state };
-
-    // Start gRPC server
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    let ip = host
-        .parse::<std::net::IpAddr>()
-        .map_err(|error| anyhow::anyhow!("invalid gRPC bind IP {host:?}: {error}"))?;
-    let grpc_addr = SocketAddr::new(ip, port);
-
-    // Raise the message-size limits above tonic's 4MB default. Image bytes no
-    // longer cross the wire (the agent reads them from the path), but a large
-    // session's get_session_entries / export_html response can still exceed 4MB.
-    tonic::transport::Server::builder()
-        .add_service(configure_service(grpc_service))
-        .serve_with_shutdown(grpc_addr, shutdown)
-        .await?;
-
-    Ok(())
+    AgentListener::bind_tcp(host, port)
+        .await?
+        .serve(state, shutdown)
+        .await
 }
 
 #[derive(Clone)]
@@ -196,6 +265,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         &self,
         request: tonic::Request<proto::RpcCommand>,
     ) -> Result<tonic::Response<proto::RpcResponse>, tonic::Status> {
+        validate_expected_instance(request.metadata(), &self.state)?;
         let cmd = request.into_inner();
         if cmd.sandbox_policy.as_ref().is_some_and(|policy| {
             !matches!(policy.tier.as_str(), "off" | "manual" | "sandbox")
@@ -395,8 +465,14 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         // The command dispatcher still contains legacy synchronous JSONL and
         // shell paths. Keep those off tonic's async workers while the per-
         // session ordered persistence worker is introduced incrementally.
+        let admitted = self
+            .state
+            .service_work
+            .enter()
+            .map_err(|error| tonic::Status::unavailable(error.to_string()))?;
         let command_state = self.state.clone();
         let resp_str = tokio::task::spawn_blocking(move || {
+            let _admitted = admitted;
             #[cfg(test)]
             if let Some(override_resp) = execute_command_test_override(&internal_cmd.cmd_type) {
                 return override_resp;
@@ -467,6 +543,12 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         &self,
         request: tonic::Request<proto::StreamRequest>,
     ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
+        validate_expected_instance(request.metadata(), &self.state)?;
+        let _admitted = self
+            .state
+            .service_work
+            .enter()
+            .map_err(|error| tonic::Status::unavailable(error.to_string()))?;
         let req = request.into_inner();
         let session_id = req.session_id;
         let event_types: std::collections::HashSet<String> = req.event_types.into_iter().collect();
@@ -510,7 +592,12 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                             .unwrap_or(true)
                 })
                 .map(move |result| map_broadcast_event(result, &lag_broadcaster, ""));
-            return Ok(tonic::Response::new(Box::pin(snapshot.chain(events))));
+            return Ok(tonic::Response::new(Box::pin(
+                futures::StreamExt::take_until(
+                    snapshot.chain(events),
+                    self.state.service_work.stream_shutdown(),
+                ),
+            )));
         }
 
         // Sessions are equal peers — every subscription must name its
@@ -655,7 +742,9 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             .map(move |result| map_broadcast_event(result, &lag_broadcaster, &lag_session_id));
         let stream = snapshot.chain(events);
 
-        Ok(tonic::Response::new(Box::pin(stream)))
+        Ok(tonic::Response::new(Box::pin(
+            futures::StreamExt::take_until(stream, self.state.service_work.stream_shutdown()),
+        )))
     }
 }
 
@@ -752,6 +841,7 @@ mod tests {
         .collect();
         AppState {
             agent_instance_id: "grpc-test".to_string(),
+            data_root_id: "0".repeat(64),
             sessions: Arc::new(parking_lot::RwLock::new(sessions)),
             queue_budget,
             session_manager,
@@ -763,6 +853,7 @@ mod tests {
             approval_gate,
             verbose,
             shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            service_work: Arc::new(crate::service::work::ServiceWork::default()),
             model_registry,
             loop_template: Arc::new(crate::agent::Loop::new(Arc::new(NoopProvider), "mock")),
         }
@@ -861,6 +952,49 @@ mod tests {
             "typed command must not dual-write data"
         );
         assert!(resp.payload.is_some(), "typed payload present");
+    }
+
+    #[tokio::test]
+    async fn stale_request_identity_cannot_mutate_or_hydrate_a_session() {
+        let state = grpc_app_state(false);
+        let count = state.sessions.read().len();
+        let service = FutureAgentService {
+            state: state.clone(),
+        };
+        for (header, value) in [
+            (
+                future_rpc::connection::EXPECTED_INSTANCE_HEADER,
+                "old-agent",
+            ),
+            (
+                future_rpc::connection::EXPECTED_DATA_ROOT_HEADER,
+                "wrong-root",
+            ),
+        ] {
+            let mut request = tonic::Request::new(proto::RpcCommand {
+                id: "stale".into(),
+                r#type: "new_session".into(),
+                session_id: "must-not-create".into(),
+                ..Default::default()
+            });
+            request
+                .metadata_mut()
+                .insert(header, value.parse().unwrap());
+            let error = service.execute_command(request).await.unwrap_err();
+            assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+            assert_eq!(state.sessions.read().len(), count);
+            assert!(!state.sessions.read().contains_key("must-not-create"));
+            let mut request = tonic::Request::new(proto::StreamRequest {
+                session_id: "must-not-hydrate".into(),
+                ..Default::default()
+            });
+            request
+                .metadata_mut()
+                .insert(header, value.parse().unwrap());
+            let error = service.stream_events(request).await.err().unwrap();
+            assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+            assert_eq!(state.sessions.read().len(), count);
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

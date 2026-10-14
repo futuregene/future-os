@@ -31,6 +31,34 @@ pub fn future_home_override_from(raw: Option<std::ffi::OsString>) -> Option<Path
         .filter(|path| !path.as_os_str().is_empty() && path.is_absolute())
 }
 
+/// The data root shared by Agent and clients. Reading it never creates state.
+pub fn future_home() -> PathBuf {
+    future_home_override().unwrap_or_else(|| {
+        user_home_from(
+            std::env::var_os("HOME"),
+            std::env::var_os("USERPROFILE"),
+            dirs::home_dir(),
+        )
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".future")
+    })
+}
+
+// Match Agent's established HOME -> USERPROFILE -> platform profile order.
+// Windows dirs::home_dir() alone uses the OS profile and ignores a custom HOME,
+// which would make the client probe a different lock/data root than its host.
+fn user_home_from(
+    home: Option<std::ffi::OsString>,
+    profile: Option<std::ffi::OsString>,
+    system: Option<PathBuf>,
+) -> Option<PathBuf> {
+    home.into_iter()
+        .chain(profile)
+        .map(PathBuf::from)
+        .find(|path| !path.as_os_str().is_empty() && path.is_absolute())
+        .or(system)
+}
+
 /// Stable short tag for a non-default FutureOS home, used to give each instance
 /// its own Windows named pipe (Unix sockets are distinguished by their path).
 /// FNV-1a keeps it dependency-free and identical across the Agent and its
@@ -50,6 +78,33 @@ pub fn home_tag(future_home: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_home_precedes_profile_for_agent_client_root_agreement() {
+        let home = std::env::temp_dir().join("rpc-home");
+        let profile = std::env::temp_dir().join("rpc-profile");
+        assert_eq!(
+            user_home_from(
+                Some(home.clone().into_os_string()),
+                Some(profile.into_os_string()),
+                None
+            ),
+            Some(home)
+        );
+    }
+
+    #[test]
+    fn invalid_home_falls_back_to_the_valid_profile() {
+        let profile = std::env::temp_dir().join("rpc-profile");
+        assert_eq!(
+            user_home_from(
+                Some("relative-home".into()),
+                Some(profile.clone().into_os_string()),
+                None
+            ),
+            Some(profile)
+        );
+    }
 
     #[test]
     fn override_accepts_absolute_and_rejects_empty_or_relative() {

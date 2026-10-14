@@ -10,9 +10,8 @@ use crate::{agent_supervisor, auth_store, store, AppError};
 /// relaunch the app. Login / provider config is preserved. `restart()` does not
 /// return, so the frontend invoke promise never resolves — the app restarts.
 ///
-/// Kill the bundled agent first — see [`set_future_environment`] for why
-/// `restart()` alone leaks it (here it's just hygiene: the env is unchanged, but
-/// leaving an orphaned sidecar on every reset is a process leak).
+/// Finish Agent and Desktop cleanup before clearing data or re-executing.
+/// A cleanup error leaves the data intact and prevents relaunch.
 #[tauri::command]
 #[rustfmt::skip]
 pub fn clear_app_data(app: tauri::AppHandle) -> Result<(), AppError> { clear_app_data_with(app, |app| app.restart()) }
@@ -23,8 +22,8 @@ fn clear_app_data_with<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     relaunch: impl FnOnce(tauri::AppHandle<R>) -> Result<(), AppError>,
 ) -> Result<(), AppError> {
+    agent_supervisor::shutdown_agent_gracefully()?;
     store::clear_all_data()?;
-    agent_supervisor::shutdown_agent_gracefully();
     relaunch(app)
 }
 
@@ -89,25 +88,9 @@ fn enforce_release_lock(is_release: bool, environment: &str) -> Result<(), AppEr
 /// `auth login --url`) and drops the stale key; both the agent and the GUI
 /// re-read `auth.json` on launch. `restart()` does not return.
 ///
-/// Why the explicit `shutdown_agent_gracefully()` is load-bearing, not optional:
-///
-/// The agent resolves the FutureGene `base_url` from `auth.json` **once, at
-/// startup** (agent/src/main.rs builds the registry via `resolve_future_base_url`
-/// and the engine's endpoint from it). It does not watch the file. So switching
-/// the environment only takes effect if the *agent process* restarts, not just
-/// the GUI.
-///
-/// But `app.restart()` on the main thread (all sync `#[tauri::command]`s run
-/// there) deliberately **skips** `RunEvent::Exit` — Tauri's own source says it
-/// "cannot guarantee the delivery of those events, so we skip them" and calls
-/// `process::restart()` directly. Our graceful shutdown lives in that skipped
-/// `RunEvent::Exit` handler (see lib.rs), so without this call the old agent is
-/// never killed: it survives as an orphan still bound to the gRPC port, pointing
-/// at the *previous* environment. The relaunched GUI then finds the port already
-/// reachable and attaches to that stale agent instead of spawning a fresh one —
-/// so model calls keep hitting the old environment even though the GUI's own
-/// platform calls (which re-read `auth.json`) moved. Killing the sidecar here
-/// forces the relaunched GUI to spawn a new agent that reads the new `base_url`.
+/// The Agent resolves this environment during initialization. Stop the entire
+/// owned service before writing the new value; Tauri restart may skip Exit.
+/// An external owner must be stopped independently before this setting changes.
 #[tauri::command]
 #[rustfmt::skip]
 pub fn set_future_environment(app: tauri::AppHandle, environment: String) -> Result<(), AppError> { set_future_environment_with(app, &environment, |app| app.restart()) }
@@ -120,12 +103,14 @@ fn set_future_environment_with<R: tauri::Runtime>(
     relaunch: impl FnOnce(tauri::AppHandle<R>) -> Result<(), AppError>,
 ) -> Result<(), AppError> {
     let platform_url = resolve_environment(environment)?;
-    // Deliberately a direct `auth_store` write (not the RPC-first path of audit
-    // item 2): this is a sync command that immediately kills and restarts the
-    // agent, so there is nothing to RPC — the relaunched agent reads the new
-    // `base_url` from auth.json at startup.
+    // Do not change shared credentials underneath an attached external owner.
+    if crate::agent_host::host().phase() == crate::agent_host::Phase::Ready
+        && !crate::agent_host::host().owns_agent()
+    {
+        return Err("Stop the external Agent before changing its environment".into());
+    }
+    agent_supervisor::shutdown_agent_gracefully()?;
     auth_store::set_future_base_url(&format!("{platform_url}/api"))?;
-    agent_supervisor::shutdown_agent_gracefully();
     relaunch(app)
 }
 
@@ -170,6 +155,29 @@ mod tests {
         set_future_environment_with(handle, "test", |_| Ok(())).expect("switch");
         let env = get_future_environment().expect("env");
         assert_eq!(env.environment, "test");
+    }
+
+    #[test]
+    fn failed_cleanup_prevents_reset_and_environment_mutation() {
+        let _home = HomeGuard::new("cmd-failed-stop");
+        crate::store::initialize_app_store().unwrap();
+        let files: Vec<_> = std::fs::read_dir(future_rpc::home::future_home())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        let app = tauri::test::mock_app();
+        crate::desktop_shutdown::fail_for_test("Agent drain failed");
+        assert!(
+            clear_app_data_with(app.handle().clone(), |_| panic!("must not relaunch")).is_err()
+        );
+        assert!(files.iter().all(|path| path.exists()));
+        assert!(
+            set_future_environment_with(app.handle().clone(), "test", |_| panic!(
+                "must not relaunch"
+            ))
+            .is_err()
+        );
+        assert_eq!(get_future_environment().unwrap().environment, "production");
     }
 
     #[test]

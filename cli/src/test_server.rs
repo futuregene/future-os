@@ -73,6 +73,13 @@ impl FutureAgent for MockAgent {
         request: tonic::Request<RpcCommand>,
     ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
         let cmd = request.into_inner();
+        if cmd.r#type == "get_agent_readiness" {
+            return Ok(tonic::Response::new(future_rpc::proto::RpcResponse {
+                id: cmd.id, r#type: "response".into(), command: "get_agent_readiness".into(), success: true,
+                data: serde_json::json!({"version": future_rpc::connection::EXPECTED_AGENT_VERSION, "agentInstanceId":"mock-agent", "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION, "dataRootId":"0".repeat(64), "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION}).to_string(),
+                ..Default::default()
+            }));
+        }
         self.seen.lock().expect("seen").push(cmd.clone());
         if self.status_empty_types.contains(&cmd.r#type) {
             return Err(tonic::Status::new(tonic::Code::Unknown, ""));

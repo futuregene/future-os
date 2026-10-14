@@ -317,6 +317,8 @@ fn prepare_session_delete(
                     "queued_cancelled": cancelled_count, "retryable": true}),
             ));
         }
+        session.read().stop_scheduler();
+        session.read().runtime.stop_cancellation_timer();
         // Closing both ordered writers fences late broadcasts before deletion.
         let session = session.write();
         if let Err(error) = session.persistence.close() {

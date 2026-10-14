@@ -338,6 +338,7 @@ impl ServerSession {
     }
 
     pub(super) fn start_next_scheduled(&mut self) -> Result<crate::runtime::RunAck> {
+        let _admission = self.service_work.enter()?;
         if let Some(error) = self
             .broadcaster
             .persistence_error()
@@ -1116,7 +1117,9 @@ impl ServerSession {
             let commit_truncation = stream_truncation.clone();
             let maintenance_manager = session_manager.clone();
             let maintenance_session_id = session_id.clone();
+            let child_work = crate::service::work::process_child_work();
             let persistence_task = tokio::task::spawn_blocking(move || {
+                let _child_work = child_work;
                 if is_ephemeral {
                     return anyhow::Ok(());
                 }

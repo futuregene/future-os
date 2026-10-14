@@ -189,9 +189,13 @@ impl RestrictedChild {
 
     pub(crate) async fn wait(&self) -> io::Result<u32> {
         let process = Arc::clone(&self.process);
-        let result = tokio::task::spawn_blocking(move || process.wait())
-            .await
-            .map_err(|error| io::Error::other(format!("process wait task failed: {error}")))?;
+        let child_work = crate::service::work::process_child_work();
+        let result = tokio::task::spawn_blocking(move || {
+            let _child_work = child_work;
+            process.wait()
+        })
+        .await
+        .map_err(|error| io::Error::other(format!("process wait task failed: {error}")))?;
         // The shell has exited; terminate any descendants still holding stdio
         // handles so output readers observe EOF. Sandbox jobs never support the
         // legacy detached-browser behavior.

@@ -108,6 +108,19 @@ pub fn bind() -> Result<&'static TerminalServer, String> {
         .ok_or_else(|| "terminal server unavailable".to_string())
 }
 
+// Unit transport fixtures share one listener across many HOME guards; it is
+// owned by that fixture, rather than by a mock Desktop's cleanup registry.
+fn spawn_server_task(future: impl std::future::Future<Output = ()> + Send + 'static) {
+    #[cfg(not(test))]
+    {
+        crate::runtime::spawn(future);
+    }
+    #[cfg(test)]
+    {
+        tauri::async_runtime::spawn(future);
+    }
+}
+
 /// Start accepting connections. Called from the Tauri `Ready` event so the
 /// runtime is live; `bind` must have run first.
 pub fn serve() -> Result<(), String> {
@@ -121,7 +134,7 @@ pub fn serve() -> Result<(), String> {
         .take()
         .ok_or_else(|| "terminal server is already serving".to_string())?;
     let semaphore = Arc::clone(&server.connections);
-    tauri::async_runtime::spawn(async move {
+    spawn_server_task(async move {
         let listener = match TcpListener::from_std(std_listener) {
             Ok(listener) => listener,
             Err(error) => {
@@ -137,7 +150,7 @@ pub fn serve() -> Result<(), String> {
             };
             match listener.accept().await {
                 Ok((stream, _)) => {
-                    tokio::spawn(async move {
+                    spawn_server_task(async move {
                         let _permit = permit;
                         if let Some(server) = SERVER.get() {
                             server.handle(stream).await;

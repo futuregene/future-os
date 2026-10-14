@@ -117,10 +117,7 @@ where
     // asynchronous commands run on); the server build has no Tauri runtime and
     // uses the process runtime `headless::run` installs, exactly like
     // `tasks::start_headless`.
-    #[cfg(feature = "gui")]
-    tauri::async_runtime::spawn(loop_body);
-    #[cfg(not(feature = "gui"))]
-    tokio::spawn(loop_body);
+    crate::runtime::spawn(loop_body);
 }
 
 async fn run_explicit<T, F, Fut>(job: &'static FixedIntervalJob, run: F) -> Result<T, AppError>

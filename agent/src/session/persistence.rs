@@ -66,6 +66,7 @@ struct PersistenceInner {
     session_id: String,
     worker: Mutex<Option<WorkerSlot>>,
     next_generation: AtomicU64,
+    threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
     closed: std::sync::atomic::AtomicBool,
     last_error: Mutex<Option<String>>,
     idle_timeout: Duration,
@@ -118,6 +119,7 @@ impl SessionPersistence {
                 session_id,
                 worker: Mutex::new(None),
                 next_generation: AtomicU64::new(0),
+                threads: Mutex::new(Vec::new()),
                 closed: std::sync::atomic::AtomicBool::new(false),
                 last_error: Mutex::new(None),
                 idle_timeout,
@@ -276,17 +278,29 @@ impl SessionPersistence {
                 .map(|slot| (slot.generation, slot.sender.clone()))
         };
         let Some((generation, sender)) = worker else {
-            return Ok(());
+            return self.join_workers();
         };
         let (ack_tx, ack_rx) = mpsc::sync_channel(1);
         if sender.send(PersistenceCommand::Barrier(ack_tx)).is_err() {
             clear_worker_generation(&mut self.inner.worker.lock(), generation);
-            return Ok(());
+            drop(sender);
+            return self.join_workers();
         }
         let _prior_result = ack_rx
             .recv()
             .map_err(|_| anyhow!("session persistence worker stopped before close boundary"))?;
         clear_worker_generation(&mut self.inner.worker.lock(), generation);
+        drop(sender);
+        self.join_workers()
+    }
+
+    fn join_workers(&self) -> Result<()> {
+        let threads = std::mem::take(&mut *self.inner.threads.lock());
+        for thread in threads {
+            thread
+                .join()
+                .map_err(|_| anyhow!("session persistence worker panicked"))?;
+        }
         Ok(())
     }
 
@@ -480,10 +494,13 @@ impl SessionPersistence {
         let weak = Arc::downgrade(&self.inner);
         let thread_sender = sender.clone();
         let name = format!("session-writer-{}", self.inner.session_id);
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name(name)
             .spawn(move || run_worker(weak, generation, receiver))
             .map_err(|error| anyhow!("failed to spawn session persistence worker: {error}"))?;
+        let mut threads = self.inner.threads.lock();
+        threads.retain(|thread| !thread.is_finished());
+        threads.push(thread);
         *worker = Some(WorkerSlot {
             generation,
             sender: thread_sender,

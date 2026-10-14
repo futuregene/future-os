@@ -43,6 +43,16 @@ internal static class InstallerFixture
                 Thread.Sleep(Timeout.Infinite);
             }
         }
+        string corrupt = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "corrupt-desktop");
+        if (File.Exists(corrupt))
+        {
+            File.WriteAllText(File.ReadAllText(corrupt).Trim(), "incomplete rollback");
+            return 5;
+        }
+        if (File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "record-launch")))
+        {
+            File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "recovered.ready"), "ready");
+        }
         // Simulate a mixed pre-sandbox CLI (clap uses exit 2 for an unknown
         // --reset-windows-sandbox flag) and an arbitrary cleanup failure
         // without touching real sandbox state.

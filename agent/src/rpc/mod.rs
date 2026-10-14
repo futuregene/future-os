@@ -24,6 +24,8 @@ pub use broadcaster::{
     RunAttachment, RunProjectionSnapshot, SseBroadcaster, BROADCAST_RING_CAPACITY,
 };
 pub use commands::handle_command_internal;
+#[cfg(test)]
+pub(crate) use commands::test_support::make_app_state as service_test_state;
 pub use protocol::{RpcCommand, RpcResponse, SseEvent};
 pub use session::ServerSession;
 
@@ -137,6 +139,7 @@ pub struct AppState {
     /// reconnect to the same in-memory scheduler from a restart that dropped
     /// queued runs and process-local idempotency state.
     pub agent_instance_id: String,
+    pub data_root_id: String,
     /// All live sessions keyed by session_id.  Sessions are equal peers —
     /// there is no privileged "default"/"current" session; clients address
     /// sessions explicitly and the agent hydrates them on demand.
@@ -156,6 +159,7 @@ pub struct AppState {
     /// streaming runs continue to completion.  Read-only and control commands
     /// (abort, status, etc.) are still accepted.
     pub shutting_down: Arc<AtomicBool>,
+    pub service_work: Arc<crate::service::work::ServiceWork>,
     /// Cached model registry populated once at startup.  Avoids repeated
     /// blocking network I/O on every get_state → Registry::new() call.
     pub model_registry: Arc<RwLock<ModelRegistry>>,
@@ -259,6 +263,8 @@ impl AppState {
             }
         }
 
+        new_sess.service_work = self.service_work.clone();
+
         // Only acquire the write lock for the final insertion — double-check
         // that another caller didn't beat us to it while we were loading.
         #[cfg(test)]
@@ -323,6 +329,7 @@ impl AppState {
             }
             session.broadcaster = broadcaster;
         }
+        session.service_work = self.service_work.clone();
         let session = Arc::new(RwLock::new(session));
         self.sessions.write().insert(id.clone(), session.clone());
         ServerSession::ensure_scheduler_worker(&session);
@@ -997,6 +1004,7 @@ mod tests {
     fn app_state_get_session_empty_id_returns_none() {
         let state = AppState {
             agent_instance_id: "agent-test-instance".to_string(),
+            data_root_id: "0".repeat(64),
             sessions: std::sync::Arc::new(parking_lot::RwLock::new(
                 std::collections::HashMap::new(),
             )),
@@ -1012,6 +1020,7 @@ mod tests {
             approval_gate: crate::rpc::ApprovalGate::default(),
             verbose: false,
             shutting_down: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            service_work: Arc::new(crate::service::work::ServiceWork::default()),
             model_registry: std::sync::Arc::new(parking_lot::RwLock::new(
                 crate::models::Registry::new(),
             )),
@@ -1034,6 +1043,7 @@ mod tests {
         let session_dir = dir.path().join("sessions");
         let state = AppState {
             agent_instance_id: "agent-test-instance".to_string(),
+            data_root_id: "0".repeat(64),
             sessions: std::sync::Arc::new(parking_lot::RwLock::new(
                 std::collections::HashMap::new(),
             )),
@@ -1047,6 +1057,7 @@ mod tests {
             approval_gate: crate::rpc::ApprovalGate::default(),
             verbose: false,
             shutting_down: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            service_work: Arc::new(crate::service::work::ServiceWork::default()),
             model_registry: std::sync::Arc::new(parking_lot::RwLock::new(
                 crate::models::Registry::new(),
             )),

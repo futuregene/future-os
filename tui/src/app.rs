@@ -10306,6 +10306,13 @@ mod tests {
             request: tonic::Request<RpcCommand>,
         ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
             let cmd = request.into_inner();
+            if cmd.r#type == "get_agent_readiness" {
+                return Ok(tonic::Response::new(future_rpc::proto::RpcResponse {
+                id: cmd.id, r#type: "response".into(), command: "get_agent_readiness".into(), success: true,
+                data: serde_json::json!({"version": future_rpc::connection::EXPECTED_AGENT_VERSION, "agentInstanceId":"mock-agent", "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION, "dataRootId":"0".repeat(64), "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION}).to_string(),
+                ..Default::default()
+            }));
+            }
             if cmd.r#type == "set_cwd" {
                 let cwd = cmd.cwd.trim().trim_end_matches(['/', '\\']).to_string();
                 let event = StreamEvent {
@@ -13908,6 +13915,13 @@ mod tests {
             request: tonic::Request<future_rpc::proto::RpcCommand>,
         ) -> Result<tonic::Response<future_rpc::proto::RpcResponse>, tonic::Status> {
             let cmd = request.into_inner();
+            if cmd.r#type == "get_agent_readiness" {
+                return Ok(tonic::Response::new(future_rpc::proto::RpcResponse {
+                id: cmd.id, r#type: "response".into(), command: "get_agent_readiness".into(), success: true,
+                data: serde_json::json!({"version": future_rpc::connection::EXPECTED_AGENT_VERSION, "agentInstanceId":"mock-agent", "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION, "dataRootId":"0".repeat(64), "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION}).to_string(),
+                ..Default::default()
+            }));
+            }
             self.requests.lock().unwrap().push(cmd.clone());
             self.seen.lock().unwrap().push((
                 cmd.r#type.clone(),
@@ -14427,7 +14441,7 @@ mod tests {
         );
 
         app.handle_key_action(KeyAction::ScrollChatUpPage);
-        pump(&mut app, &mut rx).await;
+        pump_until_history_settled(&mut app, &mut rx).await;
 
         let visible = crate::utils::strip_ansi_codes(&app.chat.render(100).join("\n"));
         assert!(
@@ -15567,6 +15581,13 @@ mod tests {
             ) -> Result<tonic::Response<future_rpc::proto::RpcResponse>, tonic::Status>
             {
                 let cmd = request.into_inner();
+                if cmd.r#type == "get_agent_readiness" {
+                    return Ok(tonic::Response::new(future_rpc::proto::RpcResponse {
+                id: cmd.id, r#type: "response".into(), command: "get_agent_readiness".into(), success: true,
+                data: serde_json::json!({"version": future_rpc::connection::EXPECTED_AGENT_VERSION, "agentInstanceId":"mock-agent", "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION, "dataRootId":"0".repeat(64), "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION}).to_string(),
+                ..Default::default()
+            }));
+                }
                 let fail = self.fail.contains(&cmd.r#type);
                 // new_session reports a fresh id so the client subscribes.
                 let data = if cmd.r#type == "new_session" {

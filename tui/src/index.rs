@@ -279,14 +279,14 @@ async fn execute_unary(
     cmd: RpcCommand,
     timeout_secs: u64,
 ) -> Result<RpcResponse, String> {
-    let connected = future_rpc::transport::connect_channel(
-        Some(addr),
+    let mut client = future_rpc::connection::connect_verified(
+        addr,
+        future_rpc::connection::EXPECTED_AGENT_VERSION,
         Duration::from_secs(timeout_secs.min(5)),
-        None,
+        Duration::from_secs(5),
     )
     .await
-    .map_err(|e| e.to_string())?;
-    let mut client = future_rpc::transport::agent_client(connected.channel);
+    .map_err(|error| error.to_string())?;
     client
         .execute_command(future_rpc::command_policy::request_with_timeout(cmd))
         .await
@@ -475,11 +475,15 @@ async fn apply_cli_options(addr: &str, session_id: &str, args: &CliArgs) -> Resu
 // ─── Print Mode (Non-Interactive) ──────────────────────────────────────────
 
 /// Dial a channel for the event-stream subscription (print mode).
-async fn dial_channel(addr: &str) -> Result<tonic::transport::Channel, String> {
-    future_rpc::transport::connect_channel(Some(addr), Duration::from_secs(5), None)
-        .await
-        .map(|connected| connected.channel)
-        .map_err(|e| e.to_string())
+async fn dial_channel(addr: &str) -> Result<future_rpc::connection::VerifiedAgentClient, String> {
+    future_rpc::connection::connect_verified(
+        addr,
+        future_rpc::connection::EXPECTED_AGENT_VERSION,
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 /// Resolve the session one non-interactive run talks to.
@@ -632,8 +636,7 @@ async fn run_print_mode(grpc_addr: &str, args: &CliArgs) -> Result<(), String> {
     apply_cli_options(grpc_addr, &session_id, args).await?;
 
     // Subscribe to events BEFORE sending the prompt.
-    let channel = dial_channel(grpc_addr).await?;
-    let mut client = future_rpc::transport::agent_client(channel);
+    let mut client = dial_channel(grpc_addr).await?;
     let mut stream = client
         .stream_events(StreamRequest {
             session_id: session_id.clone(),
@@ -1760,6 +1763,13 @@ mod tests {
             request: tonic::Request<RpcCommand>,
         ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
             let cmd = request.into_inner();
+            if cmd.r#type == "get_agent_readiness" {
+                return Ok(tonic::Response::new(future_rpc::proto::RpcResponse {
+                id: cmd.id, r#type: "response".into(), command: "get_agent_readiness".into(), success: true,
+                data: serde_json::json!({"version": future_rpc::connection::EXPECTED_AGENT_VERSION, "agentInstanceId":"mock-agent", "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION, "dataRootId":"0".repeat(64), "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION}).to_string(),
+                ..Default::default()
+            }));
+            }
             self.seen_commands.lock().unwrap().push(cmd.r#type.clone());
             if self.unary_status_types.contains(&cmd.r#type) {
                 return Err(tonic::Status::new(tonic::Code::Unknown, ""));

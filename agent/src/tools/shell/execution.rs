@@ -456,7 +456,9 @@ async fn spawn_shell_impl(
         let cwd = cwd.clone();
         let cancelled = interrupt_flag.clone();
         let deadline = Instant::now() + duration(timeout_secs);
+        let child_work = crate::service::work::process_child_work();
         let worker = tokio::task::spawn_blocking(move || {
+            let _child_work = child_work;
             sandbox.prepare_shell_for_cwd_with_cancel(&merged_cmd, escalated, &cwd, &|| {
                 cancelled.load(Ordering::Relaxed) || Instant::now() >= deadline
             })
