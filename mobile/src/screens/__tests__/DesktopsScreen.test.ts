@@ -1,9 +1,10 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { Alert, BackHandler, Modal, Text } from "react-native";
+import { Alert, BackHandler, Modal, StyleSheet, Text } from "react-native";
 import { Button } from "../../components/Button";
 import { PEER_ICONS } from "../../remote/peerIcons";
 import type { PairedDesktop } from "../../remote/types";
+import { colors } from "../../theme/tokens";
 import { DesktopsScreen } from "../DesktopsScreen";
 
 const mockRemote: {
@@ -20,7 +21,18 @@ const mockRemote: {
   switchDesktop: jest.fn(),
   removeDesktop: jest.fn(),
 };
-jest.mock("../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote }));
+/** The machine each device page was scoped to, in render order. */
+const mockScopes: string[] = [];
+jest.mock("../../remote/RemoteContext", () => ({
+  useRemoteControls: () => mockRemote,
+  // A device page reads the machine it names; the scope itself is the
+  // provider's, with its own tests. Here it only has to be reachable, for the
+  // right machine, and render what it wraps.
+  DesktopScope: ({ desktopId, children }: { desktopId: string; children: unknown }) => {
+    mockScopes.push(desktopId);
+    return children;
+  },
+}));
 // The device page is a stack of its own with its own tests; here it only has to
 // be reachable, for the right machine, and closable.
 jest.mock("../../features/settings/SettingsScreen", () => ({ SettingsScreen: "SettingsScreen" }));
@@ -86,6 +98,7 @@ const devicePage = () => tree.root.findAllByType("SettingsScreen" as never)[0];
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  mockScopes.length = 0;
   mockRemote.credentials = { pairId: "pair-1" };
   mockRemote.desktops = [
     { desktopId: "desktop-1", pairId: "pair-1" },
@@ -98,9 +111,21 @@ beforeEach(async () => {
 });
 afterEach(() => act(() => tree.unmount()));
 
-test("marks the desktop in use as the current one", () => {
+/**
+ * Which machine the phone is reading is not drawn on this list. The mark read
+ * as a third control on a row whose two controls are the actions beside it, and
+ * the list is a description of the machines (see the screen's own note). Which
+ * machine a new conversation belongs to is asked for where one is created, and
+ * assistive tech still gets the machine in use here.
+ */
+test("draws the machine in use plainly, saying which it is only to assistive tech", () => {
   expect(row("desktop-1").props.accessibilityState.selected).toBe(true);
   expect(row("desktop-2").props.accessibilityState.selected).toBe(false);
+  expect(tree.root.findAllByType("Check" as never)).toHaveLength(0);
+  // The highlight is gone with the mark: no row is painted as the current one.
+  expect(tree.root.findAll(
+    (node) => StyleSheet.flatten(node.props.style)?.backgroundColor === colors.accentSoft,
+  )).toHaveLength(0);
 });
 
 /**
@@ -124,10 +149,16 @@ test("a machine's row is not a control on the device page", () => {
  */
 test("the configure action opens that desktop's own page, and only when asked", async () => {
   expect(devicePage()).toBeUndefined();
+  // Nothing on this list reads a machine's settings, and no page exists to read
+  // them for.
+  expect(mockScopes).toHaveLength(0);
   act(() => pressables("desktops.settings")[1]!.props.onPress());
   const page = devicePage()!;
   expect(page.props.deviceId).toBe("desktop-2");
   expect(page.props.onOpenConversation).toBe(onOpenConversation);
+  // The page reads the machine it was opened for — not the one in use.
+  expect(mockScopes).toContain("desktop-2");
+  expect(mockScopes).not.toContain("desktop-1");
   // Nothing was written just by opening it: the name and icon live in the page.
   act(() => page.props.onClose());
   expect(devicePage()).toBeUndefined();

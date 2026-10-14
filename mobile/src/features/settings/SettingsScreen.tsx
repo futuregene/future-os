@@ -45,7 +45,7 @@ const DEVICE_LEVELS = new Set(["preferences", "models", "skills", "tasks", "prov
 
 /** A refused write, as the key of what failed. Held rather than a boolean
  * because the two surfaces fail differently and say so on screen. */
-type SettingsNotice = "desktopSettings.saveFailed" | "desktops.actionFailed" | "desktops.switchFailed";
+type SettingsNotice = "desktopSettings.saveFailed" | "desktops.actionFailed";
 
 /**
  * The settings stack.
@@ -56,6 +56,13 @@ type SettingsNotice = "desktopSettings.saveFailed" | "desktops.actionFailed" | "
  * machine's identity *and* every setting that is read from or written to it.
  * A machine's settings are not offered anywhere else: the phone's own screen
  * must not silently edit whichever desktop happens to be connected.
+ *
+ * The device page reads the machine it names. Everything under it is scoped to
+ * that desktop (`DesktopScope`, which its caller wraps it in), so the settings,
+ * models and tasks on screen are that machine's, over that machine's own live
+ * connection — which is why there is no "connect" step: every paired desktop is
+ * already connected, and being the machine the phone is *reading* is a different
+ * thing from being reachable.
  */
 export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdate, onOpenConversation, ref }: {
   /** The paired desktop to configure. Omitted: this phone's own settings. */
@@ -91,14 +98,10 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
   useImperativeHandle(ref, () => ({ goBack }), [goBack]);
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState<SettingsNotice | null>(null);
-  const [connecting, setConnecting] = useState(false);
   const active = useRef(true);
   const writing = useRef(false);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
   const device = deviceId ? remote.desktops.find(item => item.desktopId === deviceId) : undefined;
-  // The desktop's settings come from the machine itself, so they can only be
-  // read and written on the connection that machine owns.
-  const bound = !!device && device.pairId === remote.credentials?.pairId;
   const deviceName = device ? device.name || device.desktopId : t("desktops.title");
   // The name is the phone's own label for the device: typed into a field, kept
   // here while the user edits it, and written when they leave the field.
@@ -114,7 +117,7 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
   const skillsSupported = remote.capabilities?.has("skill_management_v1") ?? false;
   const providersSupported = remote.capabilities?.has("provider_management_v1") ?? false;
   const tasksSupported = remote.capabilities?.has("tasks_v1") ?? false;
-  const enabled = deviceMode && bound && remote.desktopOnline && supported;
+  const enabled = deviceMode && remote.desktopOnline && supported;
   const resource = useDesktopResource(remote.getDesktopSettings, remote.desktopSettingsRevision, enabled);
   const disabled = !enabled || saving || resource.loading || resource.failed || !resource.data;
   // Provider pages read and write their own authoritative snapshot; the shared
@@ -191,26 +194,6 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
     }
   };
 
-  /**
-   * Connect to the device this page belongs to, so its settings can be managed.
-   *
-   * A device that is not the connected one has no readable settings — they live
-   * on the machine — so this page offers the connection instead of a set of
-   * rows that would silently edit whichever desktop happens to be bound.
-   */
-  const connect = async () => {
-    if (!device || connecting) return;
-    setConnecting(true);
-    setFailed(null);
-    try {
-      await remote.switchDesktop(device.desktopId);
-    } catch {
-      if (active.current) setFailed("desktops.switchFailed");
-    } finally {
-      if (active.current) setConnecting(false);
-    }
-  };
-
   // Each level renders on its own; the stack keeps only the visible one mounted,
   // so returning to the provider list always re-reads the desktop's snapshot.
   function renderLevel() {
@@ -229,9 +212,9 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
           ? <ModelsSettingsPage settings={resource.data} disabled={disabled} onChange={patch => void changeSettings(patch)} />
           : null;
       case "skills":
-        return bound && remote.desktopOnline && skillsSupported ? <SkillsSettingsPage /> : null;
+        return remote.desktopOnline && skillsSupported ? <SkillsSettingsPage /> : null;
       case "tasks":
-        return bound && remote.desktopOnline && tasksSupported
+        return remote.desktopOnline && tasksSupported
           ? <TasksSettingsPage
               desktopOnline={remote.desktopOnline}
               settings={resource.data}
@@ -358,22 +341,18 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
         </SettingsField>
       </SettingsSection>
       <SettingsSection title={t("desktops.deviceSettings")}>
-        {bound
-          ? <>
-              <SettingsLink label={t("desktopSettings.preferences")} onPress={() => push({ name: "preferences" })} />
-              <SettingsLink label={t("desktopSettings.models")} disabled={!enabled} onPress={() => push({ name: "models" })} />
-              <SettingsLink label={t("desktopSettings.providers")} disabled={!remote.desktopOnline || !providersSupported} onPress={() => push({ name: "providers" })} />
-              <SettingsLink label={t("desktopSettings.skills")} disabled={!remote.desktopOnline || !skillsSupported} onPress={() => push({ name: "skills" })} />
-              <SettingsLink label={t("desktopSettings.tasks")} disabled={!remote.desktopOnline || !tasksSupported} onPress={() => push({ name: "tasks" })} />
-              {remote.desktopOnline && !capable ? <Text style={settingsStyles.description}>{t("desktopSettings.updateDesktop")}</Text> : null}
-            </>
-          : <>
-              {/* Settings live on the machine, so a device this phone is not
-                  connected to has none to show: offer the connection rather
-                  than rows that would edit the machine that *is* bound. */}
-              <Text style={settingsStyles.description}>{t("desktops.connectHint")}</Text>
-              <SettingsLink label={t("desktops.connect")} loading={connecting} onPress={() => void connect()} />
-            </>}
+        {/* The machine's own rows, on every paired machine. Each one keeps a
+            runtime of its own (see `DesktopScope`), so a machine's settings are
+            read and written over its own connection — there is no connection
+            step to perform first, and nothing here edits another machine. A
+            machine that is not answering says so below, in the notice, and the
+            rows that need it are disabled. */}
+        <SettingsLink label={t("desktopSettings.preferences")} onPress={() => push({ name: "preferences" })} />
+        <SettingsLink label={t("desktopSettings.models")} disabled={!enabled} onPress={() => push({ name: "models" })} />
+        <SettingsLink label={t("desktopSettings.providers")} disabled={!remote.desktopOnline || !providersSupported} onPress={() => push({ name: "providers" })} />
+        <SettingsLink label={t("desktopSettings.skills")} disabled={!remote.desktopOnline || !skillsSupported} onPress={() => push({ name: "skills" })} />
+        <SettingsLink label={t("desktopSettings.tasks")} disabled={!remote.desktopOnline || !tasksSupported} onPress={() => push({ name: "tasks" })} />
+        {remote.desktopOnline && !capable ? <Text style={settingsStyles.description}>{t("desktopSettings.updateDesktop")}</Text> : null}
       </SettingsSection>
     </ScrollView>;
   }
@@ -397,9 +376,9 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
         : t(`desktopSettings.${page.name}`)}</Text>
     </View>
     {deviceMode && DEVICE_LEVELS.has(page.name) ? <View style={styles.deviceScope}>
-      {/* The bound desktop's own mark, as the device list and the session list
-          draw it: these pages write to that machine, and it is the one place
-          the user's icon for it should be recognisable. */}
+      {/* The machine's own mark, as the device list and the session list draw
+          it: these pages write to it, and it is the one place the user's icon
+          for it should be recognisable. */}
       <View style={styles.deviceIcon}><Text style={styles.deviceGlyph}>{iconGlyph(device?.icon)}</Text></View>
       <View style={styles.heading}>
         <Text style={styles.deviceName}>{t("desktopSettings.boundDesktop", { name: deviceName })}</Text>
@@ -410,7 +389,7 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
     {page.name === "models" && enabled && (resource.failed || resource.loading) ? <View style={styles.notice}>
       <ResourceStatus loading={resource.loading} failed={resource.failed} onReload={() => void resource.reload()} />
     </View> : null}
-    {deviceMode && bound && !remote.desktopOnline ? <Text style={styles.notice}>{t("desktopSettings.offline")}</Text> : null}
+    {deviceMode && !remote.desktopOnline ? <Text style={styles.notice}>{t("desktopSettings.offline")}</Text> : null}
     {renderLevel()}
     </View>
   </View>;

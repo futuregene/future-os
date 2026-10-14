@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { prepareTaskNotifications } from "../../notifications/taskNotifications";
-import { RemoteProvider, useRemote, useRemoteControls, type RemoteControls } from "../RemoteContext";
+import { DesktopScope, RemoteProvider, useRemote, useRemoteControls, type RemoteControls } from "../RemoteContext";
 import { claimPairingCode } from "../pairing";
 import { loadCredentials, loadPairedDesktops } from "../storage";
 import type { Presence, RemoteCredentials, RemoteSession } from "../types";
@@ -441,6 +441,58 @@ describe("RemoteProvider over several desktops", () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  /**
+   * A device page reads the machine it names.
+   *
+   * Every paired machine keeps its own runtime, so a page opened for a machine
+   * the phone is not reading reads *that* machine — its catalogue, its settings —
+   * with no connection step and without the phone being pointed at it. This is
+   * the half a screen-level test cannot see: mocking the context makes a page
+   * that quietly read the open machine pass just the same, and that is how a
+   * settings write lands on a machine the user was not looking at.
+   */
+  test("a device page reads its own machine, and never the one the phone is on", async () => {
+    await mount();
+    await settle();
+    let page: RemoteControls | null = null;
+    function DevicePage(): null {
+      page = useRemoteControls();
+      return null;
+    }
+    await act(async () => {
+      renderer!.update(createElement(RemoteProvider, null,
+        createElement(Consumer),
+        createElement(DesktopScope, { desktopId: "desktop_2" }, createElement(DevicePage))));
+    });
+    act(() => {
+      clientFor("desktop_1").callbacks.onPresence?.(onlinePresence("desktop_1") as never);
+      clientFor("desktop_2").callbacks.onPresence?.(onlinePresence("desktop_2") as never);
+    });
+    await settle();
+    const studio = clientFor("desktop_1");
+    const office = clientFor("desktop_2");
+    studio.requests.length = 0;
+    office.requests.length = 0;
+
+    // The page's own state is the machine it names — including the catalogue it
+    // would render — and not the open machine's.
+    expect(page!.sessions.map((session) => session.sessionId)).toEqual(["b-1"]);
+    expect(remote.sessions.map((session) => session.sessionId)).toEqual(["a-1"]);
+    expect(page!.desktopOnline).toBe(true);
+
+    await act(async () => { await page!.getDesktopSettings(); });
+    await act(async () => { await remote.getDesktopSettings(); });
+
+    // Each surface addresses its own machine's connection: the named one for the
+    // page, the open one for the screens around it.
+    expect(commandsFor("desktop_2")).toContain("get_desktop_settings");
+    expect(commandsFor("desktop_1")).toContain("get_desktop_settings");
+    expect(office.requests.filter((record) => record.command.type === "get_desktop_settings")).toHaveLength(1);
+    expect(studio.requests.filter((record) => record.command.type === "get_desktop_settings")).toHaveLength(1);
+    // Nothing moved the phone: reading a machine is not choosing it.
+    expect(remote.credentials?.expectedDesktopId).toBe("desktop_1");
   });
 
   test("the merged list holds every machine's conversations, with each one's status", async () => {

@@ -366,6 +366,14 @@ locally only and never synced to the Desktop or platform; clearing the name
 shows the Desktop's id again. The list is centered on wide screens with left
 and right margins kept.
 
+A machine's page — the settings action on its row — reads and writes *that*
+machine: its name and icon here, and its own settings, models, providers, skills
+and tasks over its own connection. A paired desktop is connected whether or not
+the phone is reading it, so a page has no connection step to perform first, and
+nothing on it reaches another machine. A machine that is not answering says so
+and disables the rows that need it; the phone's own settings screen lists no
+machines at all.
+
 Unpairing removes only the selected Desktop and does not affect other pairings.
 The Desktop-side one-phone limit is unchanged: switching phones still requires
 regenerating a QR pairing, and the old phone's binding is revoked per the
