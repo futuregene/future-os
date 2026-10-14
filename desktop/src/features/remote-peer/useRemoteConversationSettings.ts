@@ -57,10 +57,20 @@ export function defaultRemoteModel(models: RemoteModelInfo[]): string | null {
  * The thinking level a draft should offer for the model it resolved.
  *
  * A model that does not accept thinking controls gets `off`, because that is what
- * it will run with; a model that declares its own level uses that; otherwise the
- * agent's default. The level is sent explicitly with the first prompt either way,
- * so this is not a guess about what the host will *choose* — it is the value the
- * host will be *asked* for.
+ * it will run with; every other model gets this app's own default — the same level
+ * this app's composer starts a conversation on.
+ *
+ * Deliberately *not* the level the host's catalogue declares. That field is not a
+ * default anybody chose: the agent answers `list_models` with `high` for every
+ * reasoning model and `off` for the rest (`agent/src/rpc/commands/providers.rs`),
+ * so seeding from it ran every new remote conversation on a reasoning model at
+ * high effort while the same model started on this machine ran at medium — and the
+ * level travels with the first prompt, so the host really did run it at high. This
+ * app's own composer ignores the same field for the same reason
+ * (`modelThinkingLevel` in `integrations/agent/agentClient`).
+ *
+ * The level is sent explicitly with the first prompt either way: this is not a
+ * guess about what the host will *choose*, it is the value the host is asked for.
  */
 export function defaultRemoteThinkingLevel(
   models: RemoteModelInfo[],
@@ -70,7 +80,7 @@ export function defaultRemoteThinkingLevel(
     (model.provider ? `${model.provider}/${model.id}` : model.id) === reference);
   if (chosen && chosen.reasoning === false)
     return "off";
-  return chosen?.thinkingLevel?.trim() || DEFAULT_REMOTE_THINKING_LEVEL;
+  return DEFAULT_REMOTE_THINKING_LEVEL;
 }
 
 /**
