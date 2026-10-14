@@ -785,6 +785,11 @@ function ReadyAppShell({
     activeRemote?.desktopId ?? null,
     activeRemote?.sessionId ?? null,
     activeRemote !== null,
+    // The timeline has already read this conversation's `get_state` — it must,
+    // for the run in flight — and the model and thinking level are the same
+    // reply. Handing it over is what keeps an open from spending two of them,
+    // which is one more than the phone spends on the same conversation.
+    remoteTimeline.sessionState,
   );
 
   /**

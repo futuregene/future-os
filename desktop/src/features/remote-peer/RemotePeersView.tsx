@@ -1,10 +1,12 @@
 import type { RemotePeer } from "./remotePeerClient";
+import { ChevronDown } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { TextInput } from "../../components/ui/TextInput";
+import { cn } from "../../lib/cn";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
 import {
@@ -57,6 +59,14 @@ export function RemoteClientSection({
   const [error, setError] = useState<string | null>(null);
   /** The machine whose unpair confirmation is open, if any. */
   const [unpairTarget, setUnpairTarget] = useState<RemotePeer | null>(null);
+  /**
+   * Whether the pairing form is unfolded.
+   *
+   * Folded to start: the machines below are what the card is for, and the form
+   * is one errand per machine. See where it is rendered for the widths this
+   * buys back.
+   */
+  const [addOpen, setAddOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -115,6 +125,9 @@ export function RemoteClientSection({
       // The link is single-use: keeping it in the box would invite the user to
       // press the button again and get a confusing failure.
       setInvitation("");
+      // Paired: the machine it added is now a row below, which is what the user
+      // came to see — so the form folds away behind the row it came from.
+      setAddOpen(false);
       await refresh();
     }
     catch (err) {
@@ -127,34 +140,56 @@ export function RemoteClientSection({
 
   return (
     <>
-      <div className="space-y-6">
+      <div className="space-y-4">
         {/* The paragraph that explains this direction lives on the hub, which
                   renders it as this section's subtitle. Rendering it here too put
-                  the same sentence on screen twice. */}
-        <div className="rounded-lg border border-line-soft bg-surface-subtle p-4">
-          <label className="text-sm font-medium text-ink" htmlFor="peer-invitation">
-            {t("addTitle")}
-          </label>
-          <p className="mt-1 text-xs leading-5 text-ink-muted">{t("addHint")}</p>
-          <div className="mt-3 flex items-center gap-2">
-            <TextInput
-              id="peer-invitation"
-              onChange={event => setInvitation(event.target.value)}
-              placeholder="futureos://remote/pair?…"
-              value={invitation}
+                  the same sentence on screen twice.
+
+                  The form itself is folded away. Pairing is one errand per machine;
+                  the machines the user already has are what this card is for, and the
+                  open form stood above them at 158px — a fifth of the page — with two
+                  sentences of prose about a text box. The row says what is behind it,
+                  and the instructions are read when the box is actually in front of
+                  the user. */}
+        <div className="rounded-lg border border-line-soft bg-surface-subtle">
+          <button
+            aria-expanded={addOpen}
+            className="flex w-full items-center gap-3 p-4 text-left"
+            onClick={() => setAddOpen(open => !open)}
+            type="button"
+          >
+            <span className="min-w-0 flex-1 text-sm font-medium text-ink">{t("addTitle")}</span>
+            <ChevronDown
+              aria-hidden
+              className={cn("size-4 shrink-0 text-ink-muted transition-transform", addOpen && "rotate-180")}
             />
-            <Button
-              disabled={!invitation.trim() || busy !== null}
-              onClick={() => void handlePair()}
-              size="sm"
-              variant="primary"
-            >
-              {busy === "__pair__" ? t("adding") : t("add")}
-            </Button>
-          </div>
-          {/* Replacing the phone pairing on the other machine is a real
-                consequence of this action, so it is stated before, not after. */}
-          <p className="mt-2 text-xs leading-5 text-ink-muted">{t("slotWarning")}</p>
+          </button>
+          {addOpen
+            ? (
+                <div className="px-4 pb-4">
+                  <p className="text-xs leading-5 text-ink-muted">{t("addHint")}</p>
+                  <div className="mt-3 flex items-center gap-2">
+                    <TextInput
+                      aria-label={t("addTitle")}
+                      onChange={event => setInvitation(event.target.value)}
+                      placeholder="futureos://remote/pair?…"
+                      value={invitation}
+                    />
+                    <Button
+                      disabled={!invitation.trim() || busy !== null}
+                      onClick={() => void handlePair()}
+                      size="sm"
+                      variant="primary"
+                    >
+                      {busy === "__pair__" ? t("adding") : t("add")}
+                    </Button>
+                  </div>
+                  {/* Replacing the phone pairing on the other machine is a real
+                        consequence of this action, so it is stated before, not after. */}
+                  <p className="mt-2 text-xs leading-5 text-ink-muted">{t("slotWarning")}</p>
+                </div>
+              )
+            : null}
         </div>
 
         {error ? <p className="text-xs text-danger">{error}</p> : null}

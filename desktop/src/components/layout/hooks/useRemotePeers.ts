@@ -4,6 +4,7 @@ import type { RemotePeer, RemotePeerEvent } from "../../../features/remote-peer/
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CatalogVersionGate } from "../../../features/remote-peer/catalogVersion";
+import { forgetHostCatalogue, warmHostCatalogue } from "../../../features/remote-peer/remoteHostCatalog";
 import { fetchRemoteSessions, listRemotePeers } from "../../../features/remote-peer/remotePeerClient";
 
 /** How often the peer list is refreshed. */
@@ -58,6 +59,20 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
       // disconnected host would open a connection as a side effect, which is
       // not what a background poll should do.
       const connected = next.filter(peer => peer.connected);
+      // And their *own* catalogue — its models, its settings, the skills those
+      // settings ask for — is read here, as the connection is established, rather
+      // than once per conversation opened (`remoteHostCatalog`). Cached per host,
+      // so this costs a command each on the first poll after a connection and
+      // nothing afterwards.
+      for (const peer of connected)
+        warmHostCatalogue(peer.desktopId);
+      // A host that is not connected has no catalogue worth keeping: what was
+      // read describes the connection that answered, and a re-pair or a
+      // reconnect re-reads it.
+      for (const peer of next) {
+        if (!peer.connected)
+          forgetHostCatalogue(peer.desktopId);
+      }
       const results = await Promise.all(connected.map(async (peer) => {
         try {
           return await fetchRemoteSessions(peer.desktopId);
@@ -140,8 +155,11 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
     void listen<RemotePeerEvent>("remote-peer-event", (event) => {
       const { desktopId, kind, payload } = event.payload;
       if (kind === "resumed") {
-        // Connection healed: drop the stale gate and re-read everything.
+        // Connection healed: drop the stale gate and re-read everything —
+        // including the host's own catalogue, which describes the connection
+        // that just came back rather than the one that dropped.
         gatesRef.current.delete(desktopId);
+        forgetHostCatalogue(desktopId);
         void refresh();
         return;
       }

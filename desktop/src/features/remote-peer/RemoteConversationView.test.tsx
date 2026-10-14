@@ -49,6 +49,25 @@ function entry(id: string, role: "assistant" | "user", text: string, runId?: str
   };
 }
 
+/**
+ * A shell call as a lean history page serves it.
+ *
+ * The host's page is byte-budgeted and its trim takes a shell call's whole
+ * argument list, so the row keeps its identity (`toolCallId`, and the entry's
+ * `runId`) and the command lives only on the host — which is what
+ * `get_tool_call_args` answers by.
+ */
+function shellEntry(id: string, toolCallId: string, runId = "run_1"): SessionEntry {
+  return {
+    id,
+    kind: "message",
+    role: "assistant",
+    runId,
+    createdAtMs: 2_000,
+    blocks: [{ kind: "tool_call", name: "shell", toolCallId }],
+  };
+}
+
 /** A reply whose run failed, which is the only state a host will continue from. */
 function failedEntry(id: string, runId: string | null): SessionEntry {
   return {
@@ -205,6 +224,48 @@ it("announces the open conversation, and clears it on leaving", async () => {
   setVisibleSession.mockClear();
   await view.unmount();
   expect(setVisibleSession).toHaveBeenCalledWith("desktop_a", null);
+});
+
+/**
+ * A tool row reads its command from the host when the reader opens it — and
+ * opening the conversation reads none of them.
+ *
+ * A lean page gives a shell call its identity and no arguments. Fetching them all
+ * on open cost one round trip per call on the page, serially through the client's
+ * command path: on a real conversation (median ~50 shell calls in the newest
+ * three exchanges) that was dozens of round trips over a link to another machine
+ * before the first line could be drawn, and every re-open paid it again. The
+ * phone reads a row's command when the row is opened, and this is the same
+ * bargain: the page it opens on, plus what the reader actually looks at.
+ */
+it("reads a shell row's command only when that row is opened", async () => {
+  const commands: string[] = [];
+  const client = await import("./remotePeerClient");
+  vi.mocked(client.requestRemotePeer).mockImplementation(async (_desktopId, command) => {
+    commands.push(String((command as { type?: string }).type));
+    if ((command as { type?: string }).type === "get_tool_call_args")
+      return { arguments: { command: "Rscript x.R" }, name: "shell" };
+    return {};
+  });
+
+  const view = await mount({ entries: [entry("u1", "user", "run it"), shellEntry("a1", "call_1")] });
+
+  expect(view.container.textContent).toContain("Ran a command");
+  expect(commands).toEqual([]);
+  expect(view.container.textContent).not.toContain("Rscript");
+
+  const row = [...view.container.querySelectorAll<HTMLButtonElement>("button")]
+    .find(button => (button.textContent ?? "").includes("Ran a command"));
+  expect(row).toBeTruthy();
+  await act(async () => {
+    row!.click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  expect(commands).toEqual(["get_tool_call_args"]);
+  expect(view.container.textContent).toContain("Rscript x.R");
+  await view.unmount();
 });
 
 it("offers fork on a reply, branching at the turn's user entry", async () => {
