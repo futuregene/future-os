@@ -1,5 +1,5 @@
 import { Check, CircleAlert, Copy, GitBranch } from "lucide-react-native";
-import { memo } from "react";
+import { Fragment, memo, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
 import { Pressable, Text, View } from "react-native";
@@ -14,7 +14,7 @@ import { RunIndicator, formatDuration } from "./messageUtils";
 import { useCopyState } from "./useCopyState";
 import { AttachmentChip } from "./AttachmentChip";
 import { StatusDivider } from "./MessageStatus";
-import { buildReplyBlocks, SegmentBlock, StepRunBlock } from "./ReplyBlocks";
+import { buildReplyBlocks, replyTailBlock, SegmentBlock, StepRunBlock } from "./ReplyBlocks";
 import { UserMessageText } from "./UserMessageText";
 
 function TimelineCardView({
@@ -27,9 +27,31 @@ function TimelineCardView({
   onContinue,
   onFork,
   onResolveToolTarget,
+  onReplyTailAnchor,
 }: TimelineCardProps) {
   const { t, i18n } = useTranslation();
   const { copied, copy } = useCopyState();
+  /**
+   * Where this reply's tail anchor sits **inside its own row**: the block
+   * list's own offset below the bubble's top, plus the anchor block's offset
+   * within that list. Chained from the layout events rather than assumed from
+   * `messageStyles`, because the walk that consumes it takes its geometry from
+   * measured frames and this number has to describe the layout that exists.
+   * (The bubble is the row's only child and carries no margin of its own, so its
+   * top is the row's top and the chain starts there.)
+   *
+   * Both are reported by the same render (see the `segmentList` below), so a
+   * row that re-lays out — a streaming reply, an image that arrives late —
+   * republishes its anchor instead of leaving a stale offset behind.
+   */
+  const blockListOffset = useRef<number | null>(null);
+  const anchorOffset = useRef<number | null>(null);
+  const reportReplyTailAnchor = useCallback(() => {
+    const list = blockListOffset.current;
+    const anchor = anchorOffset.current;
+    if (list === null || anchor === null) return;
+    onReplyTailAnchor?.(item.id, list + anchor);
+  }, [item.id, onReplyTailAnchor]);
 
   if (item.kind === "message") {
     if (item.role === "assistant") {
@@ -58,27 +80,55 @@ function TimelineCardView({
             ? t("failure.modelResponseError")
             : null;
       const copyableText = item.text;
+      // The reply's rendered slices, and the one a ↑/↓ press lands on: its
+      // last output block (see `replyTailBlock`).
+      const blocks = buildReplyBlocks(item.segments ?? [], item.streaming);
+      const tail = replyTailBlock(blocks);
       return (
         <View style={styles.assistantMessage}>
           {item.segments && item.segments.length > 0 ? (
-            <View style={styles.segmentList}>
-              {buildReplyBlocks(item.segments, item.streaming).map(block =>
-                block.kind === "steps" ? (
+            <View
+              onLayout={event => {
+                // The block list's own offset below the bubble's top: half of
+                // the anchor's position in the row, which the styles own and a
+                // jump must not have to guess.
+                blockListOffset.current = event.nativeEvent.layout.y;
+                reportReplyTailAnchor();
+              }}
+              style={styles.segmentList}
+            >
+              {blocks.map((block, index) => {
+                const key = block.kind === "steps" ? block.segments[0]!.id : block.segment.id;
+                const content = block.kind === "steps" ? (
                   <StepRunBlock
-                    key={block.segments[0]!.id}
                     segments={block.segments}
                     onResolveToolTarget={onResolveToolTarget}
                   />
                 ) : (
                   <SegmentBlock
-                    key={block.segment.id}
                     segment={block.segment}
                     streaming={item.streaming && block.segment === item.segments?.at(-1)}
                     onOpenFile={onOpenFile}
                     onResolveToolTarget={onResolveToolTarget}
                   />
-                ),
-              )}
+                );
+                // The anchor block is wrapped so its own offset can be
+                // measured: the wrapper carries no style, so it reports where
+                // the block sits without moving it.
+                return index === tail ? (
+                  <View
+                    key={key}
+                    onLayout={event => {
+                      anchorOffset.current = event.nativeEvent.layout.y;
+                      reportReplyTailAnchor();
+                    }}
+                  >
+                    {content}
+                  </View>
+                ) : (
+                  <Fragment key={key}>{content}</Fragment>
+                );
+              })}
             </View>
           ) : item.text.trim().length > 0 ? (
             <MarkdownText text={item.text} onOpenFile={onOpenFile} streaming={item.streaming} />

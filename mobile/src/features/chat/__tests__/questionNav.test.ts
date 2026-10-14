@@ -135,8 +135,9 @@ describe("where a rung lands", () => {
   test("a question and an answer both land by their start", () => {
     // The inverted list aligns a start at `viewPosition: 1` and an end at 0;
     // the hook is what turns these into a scroll (see useQuestionNav). An
-    // answer included: coming back up to one, the reader reads it forward from
-    // its first line.
+    // answer included: the row is entered from its own top edge, and the walk
+    // then lifts it to the reply's last output by the offset the bubble
+    // measured there (that lift is pinned in useQuestionNav's own suite).
     expect(rungLanding(rungAt(1))).toEqual({ index: 1, edge: "top" });
     expect(rungLanding(rungAt(2))).toEqual({ index: 3, edge: "top" });
     expect(rungLanding(rungAt(4))).toEqual({ index: 5, edge: "top" });
