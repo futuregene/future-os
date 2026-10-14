@@ -655,7 +655,12 @@ export function ActivityRail({
       // Right-click anywhere on the heading opens the same actions menu as the
       // `...` button.
       <div
-        className="group flex h-7 w-full items-center gap-1 rounded-md px-2 text-left transition-colors hover:bg-surface-subtle"
+        // The heading's group is *named*: its controls (the actions menu, the
+        // "new chat" plus) are revealed by hovering this heading. The rail's
+        // list area is itself an unnamed `group` — what the floating scrollbar
+        // reveals on — so naming this one is what keeps the pointer anywhere
+        // over the list from revealing every heading's controls at once.
+        className="group/workspace flex h-7 w-full items-center gap-1 rounded-md px-2 text-left transition-colors hover:bg-surface-subtle"
         onContextMenu={(event) => {
           event.preventDefault();
           setOpenWorkspaceMenuId(workspace.id);
