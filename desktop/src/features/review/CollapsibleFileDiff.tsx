@@ -40,7 +40,14 @@ export function CollapsibleFileDiff({
       }
     >
       <button
-        className="group sticky top-0 z-10 flex w-full items-center justify-between gap-2 border-b border-line-soft bg-surface/50 px-2.5 py-1.5 text-left"
+        // The row's group is *named*: the chevron is revealed by hovering this
+        // header. The list around it is an unnamed `group` too — that is what
+        // the floating scrollbar reveals on — and a bare `group-hover:` matches
+        // *any* ancestor group, so an unnamed one here showed every file's
+        // chevron as soon as the pointer was anywhere in the list (measured; see
+        // GitChangesReview's own test). `group/file-row` is the same name the
+        // file tree's rows use for the same control in the same situation.
+        className="group/file-row sticky top-0 z-10 flex w-full items-center justify-between gap-2 border-b border-line-soft bg-surface/50 px-2.5 py-1.5 text-left"
         onClick={onToggle}
         type="button"
       >
@@ -62,10 +69,10 @@ export function CollapsibleFileDiff({
             : null}
           {open
             ? (
-                <ChevronDown className="size-3.5 text-ink-muted opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" />
+                <ChevronDown className="size-3.5 text-ink-muted opacity-0 group-hover/file-row:opacity-100 group-focus-visible/file-row:opacity-100" />
               )
             : (
-                <ChevronRight className="size-3.5 text-ink-muted opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" />
+                <ChevronRight className="size-3.5 text-ink-muted opacity-0 group-hover/file-row:opacity-100 group-focus-visible/file-row:opacity-100" />
               )}
         </span>
       </button>
