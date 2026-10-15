@@ -1274,12 +1274,7 @@ export class RemoteClient {
       connection,
       {
         type: "secure_ready",
-        features: [
-          "event_coalescing_v1",
-          "reply_gzip_v1",
-          "lean_events_v1",
-          "catalog_activity_v1",
-        ],
+        features: this.declaredFeatures(),
         // Not a capability: the desktop shows the user what is connected, and it
         // cannot say "a phone" about something that never told it so. An older
         // desktop ignores both fields.
@@ -1290,14 +1285,39 @@ export class RemoteClient {
     );
   }
 
+  /** The capabilities this client declares on `secure_ready`. */
+  private declaredFeatures(): string[] {
+    return [
+      "event_coalescing_v1",
+      "reply_gzip_v1",
+      "lean_events_v1",
+      "catalog_activity_v1",
+    ];
+  }
+
   /**
-   * Whether the Desktop acked a feed that omits source indices for this
-   * connection (`lean_events_v1`). Integrity checks must not demand the slices
-   * it leaves out: they are omitted by design, and asking for them back would
-   * retry a range the peer will never send.
+   * Whether the feed this connection receives omits source indices
+   * (`lean_events_v1`). Integrity checks must not demand the slices it leaves
+   * out: they are omitted by design, and asking for them back would retry a
+   * range the peer will never send.
+   *
+   * Read from **this client's own declaration**, not from the capability list
+   * the desktop advertises back. `negotiatedFeatures` carries the desktop's own
+   * feature set (the commands it serves), and the four opt-in lanes are
+   * deliberately not in it — the desktop enables each one *because a client
+   * asked*, it never advertises them. Reading them from that list therefore
+   * answered "no" forever: the phone declared the trimmed lane, received its
+   * by-design index holes, and treated every one as loss (`nextEvent` → "gap"),
+   * which froze the reply at the last contiguous index until a reconcile
+   * happened to heal it.
+   *
+   * A declaration is the right source because the two possible peers agree on
+   * it: a desktop that knows the flag trims exactly the clients that asked, and
+   * a desktop too old to know it ignores the declaration and sends the full
+   * lane — which has no holes, so nothing here is exercised.
    */
   feedsOmittedIndices(): boolean {
-    return this.negotiatedFeatures.has("lean_events_v1");
+    return this.declaredFeatures().includes("lean_events_v1");
   }
 
   private async secureRequest(connection: NatsConnection, subject: string, plaintext: Uint8Array, timeout: number): Promise<Pick<Msg, "data">> {

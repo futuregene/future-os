@@ -588,6 +588,29 @@ describe("RemoteClient connection handoff", () => {
     expect(decodeRemoteJson<{ ok: boolean }>(compressed)).toEqual({ ok: true });
   });
 
+  // The trimmed lane's holes are by design, so the integrity rule that reads a
+  // jump as loss has to know the peer trims. That fact comes from the client's
+  // own declaration: the desktop enables each opt-in lane *because a client
+  // asked*, and never lists the four in the capability set it advertises back
+  // (`handleHandshake`'s reply carries its own commands — `selective_events_v1`,
+  // `prompt_receipt_v1`). Reading it from that list answered "no" forever, so
+  // every by-design hole read as loss: the reply froze at the last contiguous
+  // index while the run kept going, which is the reported "mobile shows a
+  // partial reply and scrolling does not help".
+  test("a declared trimmed lane is reported as one, though the desktop never advertises it", async () => {
+    const live = socket();
+    (wsconnect as jest.Mock).mockResolvedValue(live.connection);
+    // The desktop's honest reply: its own feature set, with none of the four
+    // client-declared lanes in it.
+    jest.spyOn(client as never, "performHandshake").mockResolvedValue({
+      bridgeInstanceId: "bridge",
+      features: ["selective_events_v1", "prompt_receipt_v1"],
+      presence: { bridgeInstanceId: "bridge", online: true },
+    } as never);
+    await client.open();
+    expect(client.feedsOmittedIndices()).toBe(true);
+  });
+
   test("the visible session is validated before it reaches a wildcard subject", () => {
     const install = jest.spyOn(client as never, "installEventSubscription");
     const internals = client as unknown as { visibleSessionId: string };
