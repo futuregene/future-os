@@ -399,8 +399,15 @@ pub(crate) fn handle_append_system_prompt(
     cmd: &RpcCommand,
     id: &str,
 ) -> String {
-    session.write().append_system_prompt(&cmd.system_prompt);
-    RpcResponse::ok(id, "append_system_prompt", serde_json::json!({}))
+    session.write().set_append_system_prompt(&cmd.system_prompt);
+    let sess = session.read();
+    // Echo the stored value back so a caller can confirm what took effect
+    // without a second round trip.
+    RpcResponse::ok(
+        id,
+        "append_system_prompt",
+        serde_json::json!({"appendSystemPrompt": sess.append_system_prompt}),
+    )
 }
 
 pub(crate) fn handle_set_ephemeral(

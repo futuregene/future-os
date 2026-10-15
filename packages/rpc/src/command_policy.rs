@@ -98,6 +98,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "list_tool_calls",
     "get_tool_output",
     "get_tool_call_args",
+    "get_system_prompt",
     "list_providers",
     "list_session_ids",
     "list_sessions",
@@ -161,6 +162,7 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
         | "get_runtime_metrics"
         | "get_session_stats"
         | "get_state"
+        | "get_system_prompt"
         | "list_models"
         | "list_providers"
         | "list_installed_skills"

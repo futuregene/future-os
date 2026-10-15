@@ -59,6 +59,8 @@ fn get_state_fixture() -> Value {
             "cwd": "/w",
             "skills": ["skill-a"],
             "contextFiles": ["CLAUDE.md"],
+            "contextFilesEnabled": true,
+            "appendSystemPrompt": "Always answer in haiku.",
             "contextWindow": 200000,
             "contextTokens": 1234,
             "contextPercent": 0.62,
@@ -346,6 +348,11 @@ fn typed_getters_match_struct_semantics() {
         state.pending_approvals[0]["save_suggestion"]["match_value"],
         "ls"
     );
+    // The session-level system-prompt fields survive the proto trip in both
+    // directions — a typed get_state carries no JSON fallback, so a field that
+    // is missing from the proto is silently lost rather than merely untyped.
+    assert_eq!(state.append_system_prompt, "Always answer in haiku.");
+    assert!(state.context_files_enabled);
 }
 
 #[test]

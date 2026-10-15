@@ -1797,7 +1797,104 @@ async fn prompt_persist_failure_aborts_run_with_error() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn append_system_prompt_reaches_the_model_on_every_run() {
+    let provider = ScriptedProvider::new(vec![text_turn("first"), text_turn("second")]);
+    let fixture = run_fixture(provider.clone(), "append-prompt");
+    let mut session = fixture.session;
+
+    session.set_append_system_prompt("Always answer in haiku.");
+    session.prompt("one", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    // Second run, no further set: the segment is rebuilt from the session, not
+    // dragged along from the previous run's prompt string.
+    session.prompt("two", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+
+    let requests = provider.requests.lock().unwrap();
+    assert!(
+        requests[0]
+            .system_prompt
+            .contains("Always answer in haiku."),
+        "the append must reach the run that follows the set — this is the \
+         regression: the old in-memory append was overwritten by \
+         build_system_prompt at the run boundary and never sent"
+    );
+    assert!(requests[1]
+        .system_prompt
+        .contains("Always answer in haiku."));
+
+    // Section order: the append comes after the built-in identity and the
+    // project context, and before the environment block, so it can override
+    // earlier rules without diluting metadata.
+    let prompt = &requests[0].system_prompt;
+    let append_at = prompt.find("Always answer in haiku.").unwrap();
+    let identity_at = prompt.find("You are FutureAgent").unwrap();
+    let env_at = prompt.find("# Environment").unwrap();
+    assert!(identity_at < append_at, "append must come after identity");
+    assert!(append_at < env_at, "append must come before environment");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn clearing_the_append_segment_removes_it_from_the_next_run() {
+    let provider = ScriptedProvider::new(vec![text_turn("first"), text_turn("second")]);
+    let fixture = run_fixture(provider.clone(), "append-prompt-clear");
+    let mut session = fixture.session;
+
+    session.set_append_system_prompt("MARKER_RULE");
+    session.prompt("one", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    assert!(provider.requests.lock().unwrap()[0]
+        .system_prompt
+        .contains("MARKER_RULE"));
+
+    // An empty value is how a caller clears it.
+    session.set_append_system_prompt("");
+    session.prompt("two", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    assert_eq!(session.append_system_prompt, "");
+    assert!(
+        !provider.requests.lock().unwrap()[1]
+            .system_prompt
+            .contains("MARKER_RULE"),
+        "a cleared append must not survive into the next run"
+    );
+}
+
+/// `session status --system-prompt` reads the prompt through
+/// `current_system_prompt`, so it has to be the same string a run sends —
+/// otherwise the command answers a question nobody asked.
+#[tokio::test(flavor = "current_thread")]
+async fn current_system_prompt_matches_what_a_run_sends() {
+    // Byte-equality across two builds, so HOME (which decides the discovered
+    // skills) must not change in between — see the note on
+    // `renaming_does_not_change_conversation_system_prompt`.
+    let _home = crate::test_support::TestHome::new();
+    let provider = ScriptedProvider::new(vec![text_turn("answer")]);
+    let fixture = run_fixture(provider.clone(), "append-prompt-read");
+    let mut session = fixture.session;
+    session.set_append_system_prompt("Rule for this session.");
+
+    let before_run = session.current_system_prompt();
+    assert!(before_run.contains("Rule for this session."));
+
+    session.prompt("one", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    let sent = provider.requests.lock().unwrap()[0].system_prompt.clone();
+    assert_eq!(before_run, sent);
+    // Still identical after the run — the read must not be a one-shot.
+    assert_eq!(session.current_system_prompt(), sent);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn renaming_does_not_change_conversation_system_prompt() {
+    // The assertion is byte-equality of two built prompts, so every input it
+    // depends on must be held constant for the duration. The prompt embeds the
+    // skills discovered under `$HOME`, and other tests in this binary redirect
+    // `$HOME` to a fixture directory (`TestHome`) to install fake skills —
+    // without this guard a refresh of the process-global skills cache between
+    // the two runs can serve run 1 and run 2 different skill sets, which fails
+    // the equality below for a reason that has nothing to do with renaming.
+    let _home = crate::test_support::TestHome::new();
     let provider = ScriptedProvider::new(vec![text_turn("first"), text_turn("second")]);
     let fixture = run_fixture(provider.clone(), "session-title");
     let mut session = fixture.session;

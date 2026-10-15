@@ -258,11 +258,21 @@ approvals). Only the second can answer a question about a session whose settings
 differ from the global defaults. `session set` writes both groups — the recorded
 options (`--model`, `--thinking`, `--cwd`, `--title`, `--parent`) and the live
 ones (`--tools`, `--no-tools`, `--no-builtin-tools`, `--system-prompt`,
-`--append-system-prompt`, `--permission`, `--sandbox`, `--context-files`,
-`--auto-compact`, `--auto-retry`) — and `session status` reads the live ones
-back. `abort`/`cancel`/`approve`/`reject` are the CLI counterpart of the TUI's
+`--permission`, `--sandbox`, `--context-files`, `--auto-compact`,
+`--auto-retry`) — and `session status` reads the live ones back.
+`abort`/`cancel`/`approve`/`reject` are the CLI counterpart of the TUI's
 `/stop`, `/cancel` and `/approve`, so a run started from a script can also be
 stopped from one.
+
+`--append-system-prompt` is the exception in that split: it is stored with the
+session record, so it survives an agent restart and applies to the runs any
+client starts later, and it is appended after the project context and workspace
+memory on every run — use it for rules that should keep applying, rather than
+repeating them in each message. `future session new --append-system-prompt "…"`
+sets it at creation; an empty value clears it. `session status` reports the
+segment plus whether project context is folded in, and `session status <id>
+--system-prompt` prints the whole prompt the next run would send (`--system-prompt`,
+whole-prompt replacement, stays live-only — the next run rebuilds the prompt).
 
 `future session history search --all --query "<text>"` searches across sessions
 instead of one, so "have we ever discussed this" does not require knowing which

@@ -438,7 +438,9 @@ impl RunClient {
         Ok(())
     }
 
-    /// `appendSystemPrompt(prompt, sessionId?)` — `append_system_prompt`.
+    /// `appendSystemPrompt(prompt, sessionId?)` — `append_system_prompt`. Sets
+    /// the session's persistent append segment (empty clears it); the agent
+    /// stores it in `session_info` and re-appends it on every run.
     pub async fn append_system_prompt(&self, prompt: &str, session_id: &str) -> Result<(), String> {
         let cmd = RpcCommand {
             system_prompt: prompt.to_string(),
@@ -447,6 +449,19 @@ impl RunClient {
         self.execute_command("append_system_prompt", cmd, Some(session_id), 5)
             .await?;
         Ok(())
+    }
+
+    /// `getSystemPrompt(sessionId)` — `get_system_prompt`. The full system
+    /// prompt the session's next run would send, plus the append segment and
+    /// the project-context files it folds in.
+    pub async fn get_system_prompt(&self, session_id: &str) -> Result<Value, String> {
+        self.execute_command(
+            "get_system_prompt",
+            RpcCommand::default(),
+            Some(session_id),
+            15,
+        )
+        .await
     }
 
     /// `setEphemeral(ephemeral, sessionId?)` — `set_ephemeral`.
@@ -650,12 +665,21 @@ impl RunClient {
         .await
     }
 
-    /// `newSession(cwd, name?)` — `new_session` with an optional title and
-    /// `createdBy: "cli"`. The name is applied when the agent creates the record.
-    pub async fn new_named_session(&self, cwd: &str, name: &str) -> Result<Value, String> {
+    /// `newSession(cwd, name?, appendSystemPrompt?)` — `new_session` with
+    /// `createdBy: "cli"`. The append segment rides the generic
+    /// `system_prompt` field, which `new_session` has no other use for, so a
+    /// session created with rules and one that sets them right after creation
+    /// land in the same storage.
+    pub async fn new_named_session(
+        &self,
+        cwd: &str,
+        name: &str,
+        append_system_prompt: Option<&str>,
+    ) -> Result<Value, String> {
         let cmd = RpcCommand {
             cwd: cwd.to_string(),
             name: name.to_string(),
+            system_prompt: append_system_prompt.unwrap_or_default().to_string(),
             created_by: "cli".to_string(),
             ..Default::default()
         };

@@ -103,6 +103,31 @@ pub(crate) fn handle_get_state(state: &AppState, cmd: &RpcCommand, id: &str) -> 
     RpcResponse::ok(id, "get_state", state_val)
 }
 
+/// `get_system_prompt` — the full system prompt the session's next run would
+/// send, including the persistent append segment.
+///
+/// Kept out of `get_state` deliberately: the prompt is tens of kilobytes, and
+/// `session status` polls `get_state`. Clients ask for the body only when a
+/// human wants to read it.
+pub(crate) fn handle_get_system_prompt(
+    session: &Arc<parking_lot::RwLock<ServerSession>>,
+    id: &str,
+) -> String {
+    let sess = session.read();
+    let prompt = sess.current_system_prompt();
+    RpcResponse::ok(
+        id,
+        "get_system_prompt",
+        serde_json::json!({
+            "systemPrompt": prompt,
+            "appendSystemPrompt": sess.append_system_prompt,
+            "contextFiles": crate::prompt::load_project_context(&sess.cwd, !sess.no_context_files)
+                .file_names(),
+            "contextFilesEnabled": !sess.no_context_files,
+        }),
+    )
+}
+
 pub(crate) fn handle_get_messages(
     session: &Arc<parking_lot::RwLock<ServerSession>>,
     id: &str,
