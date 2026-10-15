@@ -51,7 +51,9 @@ fn help_lists_all_pre_existing_commands_in_groups() {
     assert_eq!(code, 0);
     for expected in [
         "── goal ──",
-        "goal init --objective",
+        "init --objective",
+        "cancel --goal G",
+        "delete --goal G --force",
         "status [--goal G]",
         "── todo ──",
         "todo add|update|claim|complete|archive",

@@ -131,15 +131,61 @@ fn prog() -> &'static str {
 
 static PROG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
+/// A leading group name is optional: `future goal goal init` and
+/// `future goal init` are the same command.
+///
+/// The prefix is dropped only when what follows still resolves to a command, so
+/// the group keeps its `--help` grouping and group-scoped verbs that are not
+/// commands themselves (`future goal canary smoke`) keep their spelling. When
+/// it is dropped, the resolved command receives its own verb as the first
+/// argument, which is what every handler expects.
+fn strip_optional_group_prefix(
+    args: &[String],
+    registry: &CommandRegistry,
+    include_experimental: bool,
+) -> Vec<String> {
+    if args.len() < 2 {
+        return args.to_vec();
+    }
+    let leads_with_group = registry.groups().iter().any(|g| g.name == args[0]);
+    if !leads_with_group || registry.find(&args[1], include_experimental).is_none() {
+        return args.to_vec();
+    }
+    args[1..].to_vec()
+}
+
 async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
     let include_experimental = args.iter().any(|a| a == "--include-experimental");
     if args.is_empty() || matches!(args[0].as_str(), "--help" | "-h" | "help") {
         return cli_help(&build_cli_registry(), include_experimental);
     }
     let registry = build_cli_registry();
+    let args = strip_optional_group_prefix(&args, &registry, include_experimental);
     // G-26: the registry is the dispatch validation point — unknown commands
     // fail with a hint (aggregated help) instead of a bare match fallthrough.
     if registry.find(&args[0], include_experimental).is_none() {
+        // A bare group name is a common slip; say what it is instead of
+        // reporting a command that `--help` lists as a heading.
+        if let Some(group) = registry.groups().iter().find(|g| g.name == args[0]) {
+            bail!(
+                "`{}` is a command group ({}) — use one of its commands, e.g. `{prog} {} ...`; \
+                 see `{prog} --help`",
+                group.name,
+                group.summary,
+                registry
+                    .commands_in(
+                        registry
+                            .groups()
+                            .iter()
+                            .position(|g| g.name == group.name)
+                            .unwrap_or(0),
+                        include_experimental
+                    )
+                    .first()
+                    .map(|c| c.name.as_str())
+                    .unwrap_or("<command>")
+            );
+        }
         bail!("unknown command `{}` (try `{prog} --help`)", args[0]);
     }
     // P0-3②: `<command> --help` / `-h` prints the command's usage from the
@@ -167,7 +213,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
     }
     let mut store = Store::open(&root_dir())?;
     match args[0].as_str() {
-        "goal" => cmd_goal(&mut store, &args[1..]).await,
+        "init" | "cancel" | "delete" => cmd_goal(&mut store, &args[..]).await,
         "agent" => cmd_agent(&mut store, &args[1..]),
         "todo" => cmd_todo(&mut store, &args[1..]).await,
         "gate" => cmd_gate(&mut store, &args[1..]),
@@ -220,7 +266,9 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
 /// sync with `build_cli_registry`.
 const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
     // Start here — first goal, first status, install checks
-    ("goal", Journey::Starter),
+    ("init", Journey::Starter),
+    ("cancel", Journey::Starter),
+    ("delete", Journey::Starter),
     ("status", Journey::Starter),
     ("ui", Journey::Starter),
     ("doctor", Journey::Starter),
@@ -273,11 +321,26 @@ fn build_cli_registry() -> CommandRegistry {
     let mut r = CommandRegistry::new();
 
     let goal = r.group("goal", "goal lifecycle");
+    // The lifecycle verbs are top-level commands, not `goal <verb>`: the group
+    // is a `--help` presentation layer, and a group whose name repeats its own
+    // first command (`future goal goal init`) reads as a typo.
     r.command(
         goal,
-        "goal",
+        "init",
         "create a durable goal",
-        "goal init --objective \"...\" [--cwd DIR] [--goal-doc TEXT] [--goal-id ID]",
+        "init --objective \"...\" [--cwd DIR] [--goal-doc TEXT] [--goal-id ID]",
+    );
+    r.command(
+        goal,
+        "cancel",
+        "stop a goal's automation (state retained)",
+        "cancel --goal G [--reason TEXT]",
+    );
+    r.command(
+        goal,
+        "delete",
+        "delete a goal (irreversible; requires --force)",
+        "delete --goal G --force",
     );
     r.command(
         goal,
@@ -625,7 +688,7 @@ fn build_cli_registry() -> CommandRegistry {
     //    handler so the help text can never drift from the code. ──────────
 
     r.flags(
-        "goal",
+        "init",
         &[
             (
                 "--objective TEXT",
@@ -10070,9 +10133,9 @@ mod cli_quirks_tests {
             assert!(text.contains(title), "missing journey `{title}`: {text}");
         }
         // spot-check placement
-        let starter = text.find("goal init --objective").unwrap();
+        let starter = text.find("init --objective").unwrap();
         let daily_pos = text.find("── Daily operator ──").unwrap();
-        assert!(starter < daily_pos, "goal must be in Start here: {text}");
+        assert!(starter < daily_pos, "init must be in Start here: {text}");
         let run_pos = text.find("run --goal G --agent-id A").unwrap();
         assert!(run_pos > daily_pos, "run must come after daily: {text}");
     }

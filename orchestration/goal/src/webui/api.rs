@@ -797,8 +797,8 @@ pub fn events_page(store: &Store, goal_id: &str, limit: usize) -> Result<Option<
 }
 
 // The dashboard is strictly read-only: it projects the event ledger and
-// never appends to it. Mutations (gate resolve, goal cancel, …) stay in
-// the CLI (`future goal gate resolve`, `future goal goal cancel`).
+// never appends to it. Mutations (gate resolve, cancel, …) stay in
+// the CLI (`future goal gate resolve`, `future goal cancel`).
 
 /// Compact per-goal push payload for the SSE stream (avoids resending full
 /// details every tick; the detail view refetches on `goals` events anyway).
