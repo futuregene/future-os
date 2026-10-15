@@ -39,6 +39,17 @@ pub struct PeerSummary {
     /// full name in the merged list, which is why it exists at all.
     pub icon: Option<String>,
     pub connected: bool,
+    /// Whether the *user* stopped this host (its Connect/Disconnect control),
+    /// as opposed to it being unreachable on its own.
+    ///
+    /// The distinction is the whole reason this is on the wire: a caller that
+    /// keeps every paired host live (the app's own liveness pass) must retry a
+    /// host that dropped and must *not* resurrect one the user deliberately
+    /// turned off. Connecting it clears the mark — whichever call did so, its own
+    /// Connect, a command addressed to it, or "reconnect all" — so the automatic
+    /// pass can never undo a deliberate stop; the same rule the supervisor
+    /// follows by being aborted on disconnect.
+    pub stopped: bool,
     /// Last connection error for this host, cleared on a successful connect.
     pub error: Option<String>,
     /// The host's bridge instance while connected; `None` when not.
@@ -86,6 +97,19 @@ struct Runtime {
     /// The reconnect task per host, aborted on an explicit disconnect so a
     /// deliberate stop cannot be undone by a retry that was already scheduled.
     supervisors: HashMap<String, crate::runtime::TaskHandle>,
+    /// Where a host's pushes go, remembered for as long as the app is watching
+    /// it.
+    ///
+    /// Held here rather than captured by one connection's stream task because a
+    /// host outlives any single socket: an automatic reconnect has to re-attach
+    /// the stream to *something*, and a supervisor that reconnected without an
+    /// emitter produced an invisible connection — the host was `connected` and
+    /// every command worked, but no push (a presence tick, a catalogue
+    /// snapshot, a streamed reply) ever reached the UI. Only the command layer
+    /// supplies one, and it stays until the pairing is removed.
+    emitters: HashMap<String, Emitter>,
+    /// The hosts the user has explicitly disconnected. See `PeerSummary::stopped`.
+    stopped: std::collections::HashSet<String>,
     /// The last failure per host. Kept after a disconnect so the list can say
     /// *why* a host is not connected instead of only that it is not.
     errors: HashMap<String, String>,
@@ -179,6 +203,8 @@ pub(crate) async fn reset_for_test() {
     }
     live.live.clear();
     live.errors.clear();
+    live.emitters.clear();
+    live.stopped.clear();
     // A pull in flight has no connection to complete on, so its waiter would
     // hang until the client's own timeout. Dropping the senders wakes it now.
     live.chunks.clear();
@@ -385,6 +411,9 @@ fn paired_summary(desktop_id: &str) -> Result<PeerSummary, crate::AppError> {
         name: peer.label.name.clone(),
         icon: peer.label.icon.clone(),
         connected: false,
+        // Never stopped: this constructor describes a book entry, and the
+        // callers that want the live answer read `list()`.
+        stopped: false,
         error: None,
         bridge_instance_id: None,
         features: Vec::new(),
@@ -410,6 +439,7 @@ pub(crate) async fn list() -> Result<Vec<PeerSummary>, crate::AppError> {
                 name: peer.label.name.clone(),
                 icon: peer.label.icon.clone(),
                 connected: session.is_some(),
+                stopped: live.stopped.contains(&peer.creds.desktop_id),
                 error: live.errors.get(&peer.creds.desktop_id).cloned(),
                 bridge_instance_id: session.map(|session| session.bridge_instance_id().to_string()),
                 features: session
@@ -438,6 +468,47 @@ pub(crate) async fn ensure_connected(desktop_id: &str) -> Result<PeerSummary, cr
 /// is recorded against the host so the list can explain it, then returned.
 pub(crate) async fn connect(desktop_id: &str) -> Result<PeerSummary, crate::AppError> {
     connect_with_emitter(desktop_id, None).await
+}
+
+/// Make every paired host live, and answer with the list as it stands.
+///
+/// This is the client role's "everything I am paired with should be up": the
+/// user's own "reconnect all", and the only caller. It is deliberately
+/// unconditional about *stopped* hosts, because this call is what clears the
+/// stop a host was carrying — the user asking for every machine to come back
+/// includes the one they turned off. The app's automatic liveness pass must not
+/// use it for exactly that reason: it asks per host and skips the stopped ones
+/// (see `PeerSummary::stopped`).
+///
+/// Already-live hosts are left alone, so calling it repeatedly is free, and one
+/// unreachable host cannot fail the others: its error is recorded against it
+/// and shown on its own row, which is the same treatment its own Connect button
+/// gets.
+pub(crate) async fn connect_all(
+    emitter: Option<Emitter>,
+) -> Result<Vec<PeerSummary>, crate::AppError> {
+    let book = creds::load()?;
+    let pending: Vec<String> = {
+        let live = runtime().lock().await;
+        book.peers
+            .iter()
+            .map(|peer| peer.creds.desktop_id.clone())
+            .filter(|desktop_id| !live.live.contains_key(desktop_id))
+            .collect()
+    };
+    // In parallel: each attempt is a handshake with its own budget, so doing
+    // them one after another would make "reconnect all" take as long as the sum
+    // of the machines that happen to be asleep.
+    futures::future::join_all(pending.into_iter().map(|desktop_id| {
+        let emitter = emitter.clone();
+        async move {
+            if let Err(error) = connect_with_emitter(&desktop_id, emitter).await {
+                eprintln!("remote_peer: could not reach {desktop_id}: {error}");
+            }
+        }
+    }))
+    .await;
+    list().await
 }
 
 /// Connect and, when an emitter is supplied, start streaming that host's events
@@ -491,21 +562,41 @@ pub(crate) async fn connect_with_emitter(
     // receiver taken) before the subscribe below, which is the only ordering
     // that makes the value the same one the subscription is built from. The lock
     // is short and not held across a network round-trip.
-    let (visible_now, visible_changes) = {
+    //
+    // The same lock resolves *where the pushes go*. A caller that supplied an
+    // emitter is (re)stating the app's interest in this host, so it replaces
+    // whatever was registered; a caller that did not — an internal
+    // `ensure_connected`, the supervisor resuming a dropped link — gets the
+    // registered one back. Without that second half, the first command to
+    // reconnect a host after a drop left it connected and deaf: every command
+    // answered and no push ever reached the UI again.
+    let (visible_now, visible_changes, watcher) = {
         let mut live = runtime().lock().await;
+        let watcher = match emitter {
+            Some(emitter) => {
+                live.emitters
+                    .insert(desktop_id.to_string(), emitter.clone());
+                Some(emitter)
+            }
+            None => live.emitters.get(desktop_id).cloned(),
+        };
+        // A connection the user asked for, or this app's own liveness pass
+        // retrying a host that was only ever unreachable, is proof the host is
+        // wanted live again.
+        live.stopped.remove(desktop_id);
         let changes = live
             .visible
             .entry(desktop_id.to_string())
             .or_default()
             .clone();
         let now = changes.borrow().clone();
-        (now, changes.subscribe())
+        (now, changes.subscribe(), watcher)
     };
     // Subscribe before taking the runtime lock: subscription is a network
     // round-trip, and a failure there must not keep a usable connection out of
     // the map.
     let peer_session = connected.session;
-    let stream = match emitter {
+    let stream = match watcher {
         Some(emitter) => {
             attach_stream(&peer_session, emitter, desktop_id, visible_now.as_deref()).await
         }
@@ -575,12 +666,23 @@ pub(crate) fn spawn_supervisor(
             if connected {
                 return;
             }
-            match resume(&desktop_id, emitter.clone()).await {
+            // Where this host's pushes go, resolved per attempt: a caller may
+            // hand one in, but the loop's ordinary callers have none of their
+            // own, and the emitter the app registered is what keeps a recovered
+            // host *delivering* rather than merely answering. Without it the
+            // reconnect produced a live, watched-looking connection that pushed
+            // nothing at all 鈥?a dead live lane the UI only noticed when
+            // something else happened to re-read.
+            let watcher = match &emitter {
+                Some(emitter) => Some(emitter.clone()),
+                None => runtime().lock().await.emitters.get(&desktop_id).cloned(),
+            };
+            match resume(&desktop_id, watcher.clone()).await {
                 Ok(()) => {
                     // Say so, and say it *after* the subscriptions are attached:
                     // a client told to catch up before the stream is live can
                     // still miss the events that arrive in between.
-                    if let Some(emitter) = &emitter {
+                    if let Some(emitter) = &watcher {
                         emitter(PeerEvent {
                             desktop_id: desktop_id.clone(),
                             kind: "resumed",
@@ -1288,6 +1390,11 @@ pub(crate) async fn set_visible_session(desktop_id: &str, session_id: Option<&st
 }
 
 /// Drop the connection but keep the pairing (the user's "disconnect").
+///
+/// Records the host as *stopped*, which is what keeps a deliberate stop from
+/// being undone by the app's own liveness pass: that pass reconnects hosts that
+/// dropped, and without this it could not tell one the user turned off from one
+/// that fell over. Connecting the host later clears the mark.
 pub(crate) async fn disconnect(desktop_id: &str) {
     let mut live = runtime().lock().await;
     if let Some(task) = live.tasks.remove(desktop_id) {
@@ -1299,6 +1406,7 @@ pub(crate) async fn disconnect(desktop_id: &str) {
         supervisor.abort();
     }
     live.live.remove(desktop_id);
+    live.stopped.insert(desktop_id.to_string());
 }
 
 /// Drop the pairing locally, then try to revoke it server-side.
@@ -1311,6 +1419,15 @@ pub(crate) async fn unpair(desktop_id: &str) -> Result<Option<String>, crate::Ap
     let creds = stored_creds(desktop_id)?;
     disconnect(desktop_id).await;
     creds::remove(desktop_id)?;
+    {
+        // The pairing is gone, so nothing should remember where its pushes
+        // went or that the user had stopped it: re-pairing is a new host as far
+        // as this state is concerned.
+        let mut live = runtime().lock().await;
+        live.emitters.remove(desktop_id);
+        live.stopped.remove(desktop_id);
+        live.errors.remove(desktop_id);
+    }
     Ok(super::platform::revoke(&creds)
         .await
         .err()
@@ -1607,6 +1724,10 @@ fn on_transport_failure(live: &mut Runtime, desktop_id: &str, error: &crate::App
     // The connection was healthy and then was not: exactly the case automatic
     // recovery is for. An explicit disconnect takes the supervisor with it, so
     // this cannot resurrect a stopped link.
+    //
+    // No emitter is handed over: the loop takes the one the app registered for
+    // this host, which is the only way a *recovered* host still delivers what
+    // it pushes (see `spawn_supervisor`).
     if !live.supervisors.contains_key(desktop_id) {
         let supervisor = spawn_supervisor(desktop_id.to_string(), None);
         live.supervisors.insert(desktop_id.to_string(), supervisor);

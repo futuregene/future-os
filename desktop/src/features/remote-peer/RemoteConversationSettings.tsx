@@ -31,6 +31,16 @@ const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as 
  * Disabled while a change is in flight: the host applies one at a time, and a
  * second choice fired at it would be a race the user cannot see.
  *
+ * **What the trigger says when it has nothing to say is a *word*, not this
+ * control's label.** `modelLabel` is a full sentence ("Model for this
+ * conversation (on that computer)") written for the tooltip and the
+ * screen-reader name; used as the visible fallback it filled a `max-w-48`
+ * trigger with its own opening clause — "Model for this conversation (…" — every
+ * time the value was unknown, which is every open, until the host answered. The
+ * visible fallback is the same short word this app's own composer uses
+ * (`common:modelFallback`), and while the read is in flight the control says so
+ * instead, so a slow read reads as a slow read.
+ *
  * A refusal is *shown*, not merely held: the control falls back to what the host
  * still has, and without the reason beside it the user sees a value snap back
  * for no stated cause. The message is a shell of one line under the pickers, and
@@ -49,6 +59,18 @@ export function RemoteConversationSettings({
   // The thinking level this control shows, and the one it started on when the
   // host has not said: `off` is what the host's own picker falls back to.
   const activeThinkingLevel = settings.thinkingLevel ?? "off";
+  // The host can name a model its catalogue lists without a label, and can be
+  // using one the catalogue does not list at all — both of which the phone's
+  // control already answers, in this order, so the two controls read the same.
+  const modelText = activeModel?.label || activeModel?.id || settings.model || "";
+  const modelFallback = settings.loading ? t("settingsLoading") : t("common:modelFallback");
+  // One line for whichever failed last, and the write's own reason first: it is
+  // the one the user just caused, and it says their choice did not take.
+  const failure = settings.writeError
+    ? t("settingsSaveFailed", { message: settings.writeError })
+    : settings.readError
+      ? t("settingsReadFailed", { message: settings.readError })
+      : null;
 
   return (
     <div className="flex shrink-0 flex-col items-end">
@@ -73,9 +95,7 @@ export function RemoteConversationSettings({
                   model removed there, or one it resolves itself). Keeping that value
                   on screen is what stops the control from silently showing the first
                   entry as if it were selected. */}
-              <span className="truncate">
-                {(activeModel?.label ?? settings.model ?? "") || t("modelLabel")}
-              </span>
+              <span className="truncate">{modelText || modelFallback}</span>
               <ChevronDown className="size-3 shrink-0" />
             </button>
           )}
@@ -141,14 +161,14 @@ export function RemoteConversationSettings({
           ))}
         </SelectMenu>
       </div>
-      {settings.error
+      {failure
         ? (
             <p
               className="mt-0.5 max-w-72 truncate text-xs text-danger"
               role="alert"
-              title={t("settingsSaveFailed", { message: settings.error })}
+              title={failure}
             >
-              {t("settingsSaveFailed", { message: settings.error })}
+              {failure}
             </p>
           )
         : null}

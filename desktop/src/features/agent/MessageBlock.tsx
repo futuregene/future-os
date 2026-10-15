@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@future-os/thread-projection";
+import type { ActivityTargetResolver } from "./AgentActivityList";
 import type { ReplyBlock } from "./replyBlocks";
 import { GitBranch, RotateCcw, StepForward } from "lucide-react";
 import { Fragment, memo } from "react";
@@ -37,6 +38,15 @@ interface MessageBlockProps {
   onRetry?: (message: AgentMessage, source: AgentMessage) => void;
   workspaceId?: string | null;
   workspacePath?: string | null;
+  /**
+   * Where a tool row's target comes from when it arrived without one.
+   *
+   * Only a remote transcript has this: a live local run carries its calls'
+   * arguments, and the lean history page this app reads from another machine
+   * does not, so those rows ask for the one they are missing when a reader opens
+   * them (see `ActivityTargetResolver`). Unset everywhere else.
+   */
+  resolveActivityTarget?: ActivityTargetResolver;
 }
 
 // Memoized: pushed streaming deltas re-render MessageList frequently and any hover
@@ -57,6 +67,7 @@ function MessageBlockImpl({
   onHover,
   onLeave,
   onRetry,
+  resolveActivityTarget,
   workspaceId,
   workspacePath,
 }: MessageBlockProps) {
@@ -171,6 +182,7 @@ function MessageBlockImpl({
                     lastSegmentId={lastSegmentId}
                     liveSegmentId={liveSegmentId}
                     message={message}
+                    resolveActivityTarget={resolveActivityTarget}
                     streaming={streaming}
                     workspaceId={workspaceId}
                     workspacePath={workspacePath}
@@ -207,9 +219,22 @@ function MessageBlockImpl({
           )
         : null}
       {!isUser && !segments && message.runId
-        ? <AgentActivityList items={message.activityItems} workspacePath={workspacePath} runId={message.runId} />
+        ? (
+            <AgentActivityList
+              items={message.activityItems}
+              resolveTarget={resolveActivityTarget}
+              runId={message.runId}
+              workspacePath={workspacePath}
+            />
+          )
         : !isUser && !segments
-            ? <AgentActivityList items={message.activityItems} workspacePath={workspacePath} />
+            ? (
+                <AgentActivityList
+                  items={message.activityItems}
+                  resolveTarget={resolveActivityTarget}
+                  workspacePath={workspacePath}
+                />
+              )
             : null}
       {!isUser && (message.terminationNotice || noFinalReply)
         ? (
@@ -320,6 +345,7 @@ function ReplyBlockBody({
   lastSegmentId,
   liveSegmentId,
   message,
+  resolveActivityTarget,
   streaming,
   workspaceId,
   workspacePath,
@@ -330,6 +356,8 @@ function ReplyBlockBody({
   /** The slice a live text block is being written into, or null when settled. */
   liveSegmentId: string | null;
   message: AgentMessage;
+  /** Where a tool row's target comes from when it arrived without one. */
+  resolveActivityTarget?: ActivityTargetResolver;
   streaming: boolean;
   workspaceId?: string | null;
   workspacePath?: string | null;
@@ -337,6 +365,7 @@ function ReplyBlockBody({
   if (block.kind === "steps") {
     return (
       <ReplySteps
+        resolveTarget={resolveActivityTarget}
         segments={block.segments}
         workspaceId={workspaceId}
         workspacePath={workspacePath}
@@ -374,7 +403,14 @@ function ReplyBlockBody({
       />
     );
   }
-  return <AgentActivityLine item={segment.item} workspacePath={workspacePath} runId={message.runId} />;
+  return (
+    <AgentActivityLine
+      item={segment.item}
+      resolveTarget={resolveActivityTarget}
+      runId={message.runId}
+      workspacePath={workspacePath}
+    />
+  );
 }
 
 /**

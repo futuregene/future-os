@@ -10,10 +10,11 @@
 use super::creds;
 use super::runtime::cov_harness;
 use super::runtime::{
-    close_socket_for_test, connect, connect_with_emitter, disconnect, ensure_connected,
-    forget_connection_for_test, install_supervisor_for_test, list, live_count, pair_with_emitter,
-    request, sessions, set_label, set_visible_session, spawn_supervisor, stream_count,
-    supervisor_count, unpair, workspaces, Emitter, PeerEvent, PeerSummary, INJECT_CONNECTION_LOST,
+    close_socket_for_test, connect, connect_all, connect_with_emitter, disconnect,
+    ensure_connected, forget_connection_for_test, install_supervisor_for_test, list, live_count,
+    pair_with_emitter, request, sessions, set_label, set_visible_session, spawn_supervisor,
+    stream_count, supervisor_count, unpair, workspaces, Emitter, PeerEvent, PeerSummary,
+    INJECT_CONNECTION_LOST,
 };
 use super::session::EventsSubscription;
 use super::testing::{fixture, teardown, Fixture};
@@ -1333,6 +1334,180 @@ async fn a_broken_pairing_does_not_disturb_a_working_one() {
     assert!(!failing.connected);
     assert!(failing.error.is_some());
     assert_eq!(live_count().await, 1, "only the working host is connected");
+
+    teardown().await;
+}
+
+// ── the liveness pass ──────────────────────────────────────────────────────
+
+/// The launch pass: every pairing this machine holds comes up, and the ones
+/// that cannot answer are reported against themselves rather than failing the
+/// whole pass.
+///
+/// This is what makes the merged list complete at launch instead of showing
+/// this machine alone until the user happens to click every host's own Connect.
+#[tokio::test]
+async fn connect_all_brings_up_every_pairing_and_names_the_ones_it_cannot() {
+    let (_home, fx) = start("peer-rt-connect-all").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+
+    // A second pairing in the book that cannot answer, so both arms of the pass
+    // run in one test.
+    let mut broken = fx.paired.creds.clone();
+    broken.desktop_id = "desktop_broken".into();
+    broken.pair_id = "pair_broken".into();
+    broken.nats_url = "nats://127.0.0.1:1".into();
+    creds::upsert(broken).expect("store broken");
+
+    let (emitter, _seen) = counting_emitter();
+    let peers = connect_all(Some(emitter)).await.expect("connect all");
+
+    assert_eq!(peers.len(), 2);
+    assert!(
+        find(&peers, &desktop_id).connected,
+        "the reachable host must be up"
+    );
+    let failing = find(&peers, "desktop_broken");
+    assert!(!failing.connected);
+    assert!(
+        failing.error.is_some(),
+        "a host that cannot answer is its own failure: {failing:?}"
+    );
+    assert_eq!(
+        live_count().await,
+        1,
+        "only the reachable host is connected"
+    );
+    // Watched, not merely open: the point of the pass is that the UI can read
+    // these machines without opening each one by hand.
+    assert_eq!(stream_count().await, 1, "the connected host is streaming");
+
+    teardown().await;
+}
+
+/// An already-live host is left alone. A second handshake would replace a
+/// working connection 鈥?and with it the bridge identity and every subscription
+/// the UI is reading through.
+#[tokio::test]
+async fn connect_all_leaves_a_live_host_on_its_own_connection() {
+    let (_home, fx) = start("peer-rt-connect-all-idempotent").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    connect(&desktop_id).await.expect("connect");
+    let bridge = find(&list().await.expect("list"), &desktop_id)
+        .bridge_instance_id
+        .expect("connected");
+
+    let peers = connect_all(None).await.expect("connect all");
+
+    assert_eq!(
+        find(&peers, &desktop_id).bridge_instance_id.as_deref(),
+        Some(bridge.as_str()),
+        "the working connection must be the same one afterwards"
+    );
+    assert_eq!(live_count().await, 1);
+
+    teardown().await;
+}
+
+/// The mark a deliberate stop leaves, and what clears it.
+///
+/// The app's liveness pass reads exactly this pair of fields to decide who to
+/// retry: a host that dropped is brought back, and one the user turned off is
+/// left off until something asks for it by name. `connect_all` *is* that
+/// something: "reconnect all" and the launch pass both mean every pairing
+/// should be live.
+#[tokio::test]
+async fn a_stopped_host_is_named_as_stopped_until_it_is_asked_for() {
+    let (_home, fx) = start("peer-rt-stopped").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    connect(&desktop_id).await.expect("connect");
+    disconnect(&desktop_id).await;
+
+    let stopped = find(&list().await.expect("list"), &desktop_id);
+    assert!(!stopped.connected);
+    assert!(stopped.stopped, "{stopped:?}");
+
+    // Asked for by name: the row's own Connect, or a caller acting on it.
+    connect(&desktop_id).await.expect("connect again");
+    let resumed = find(&list().await.expect("list"), &desktop_id);
+    assert!(resumed.connected);
+    assert!(!resumed.stopped, "{resumed:?}");
+
+    teardown().await;
+}
+
+/// "Everything should be live" reaches a host the user had stopped, and clears
+/// the mark while it does 鈥?otherwise the pass would leave the same host to be
+/// retried for ever, or worse, skip it silently.
+#[tokio::test]
+async fn connect_all_resumes_a_host_the_user_had_stopped() {
+    let (_home, fx) = start("peer-rt-connect-all-resumes").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    connect(&desktop_id).await.expect("connect");
+    disconnect(&desktop_id).await;
+    assert!(find(&list().await.expect("list"), &desktop_id).stopped);
+
+    let peers = connect_all(None).await.expect("connect all");
+
+    let peer = find(&peers, &desktop_id);
+    assert!(peer.connected, "{peer:?}");
+    assert!(!peer.stopped, "{peer:?}");
+
+    teardown().await;
+}
+
+/// A recovered host keeps delivering.
+///
+/// The emitter used to be attached only by the call that supplied it, and every
+/// automatic reconnect passes none 鈥?so a host that came back was `connected`,
+/// every command answered, and nothing it pushed ever reached the UI again. The
+/// loop resolves the emitter the app registered instead, which is what this
+/// drives: a connection made *with* an emitter, dropped, and recovered by the
+/// loop in its production shape.
+#[tokio::test]
+async fn a_supervisor_reconnect_keeps_delivering_to_the_registered_emitter() {
+    let (_home, fx) = start("peer-rt-supervisor-emitter").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    let (emitter, seen) = recording_emitter();
+    connect_with_emitter(&desktop_id, Some(emitter))
+        .await
+        .expect("connect with a stream");
+
+    // The drop, without the command path noticing.
+    forget_connection_for_test(&desktop_id).await;
+    let handle = spawn_supervisor(desktop_id.clone(), None);
+    tokio::time::timeout(std::time::Duration::from_secs(15), handle)
+        .await
+        .expect("the supervisor must finish once the host is back")
+        .expect("no panic");
+
+    assert_eq!(
+        stream_count().await,
+        1,
+        "the recovered connection must be watched"
+    );
+    crate::remote::publish_event(
+        "sess_rt_after_reconnect",
+        "agent_text",
+        r#"{"text":"back"}"#,
+        "run-1",
+        1,
+        1,
+        "evt-1",
+        "2026-01-01T00:00:00Z",
+        1,
+        1,
+    );
+    wait_for(
+        "the recovered host's event never reached the emitter",
+        || {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|event| event.kind == "event")
+        },
+    )
+    .await;
 
     teardown().await;
 }

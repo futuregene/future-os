@@ -58,7 +58,17 @@ export interface RemoteSessionRow {
   pinned?: boolean;
   streaming?: boolean;
   status?: string;
-  /** Unix millis. Absent on a host that predates the field. */
+  /**
+   * Unix millis. Absent on a host that predates the field.
+   *
+   * Written by the host and only by the host — its own
+   * `COALESCE(last_message_at, updated_at)` — as a whole snapshot when the list's
+   * structure moved and as a `state.activity` packet when only the value did. A
+   * client that invented one (a clock of its own) would rank the row on a
+   * different clock from the one every later report of that row carries, and the
+   * row would jump every time the host restated it: see `useRemotePeers`, whose
+   * event handler is the one place that could.
+   */
   lastMessageAt?: number | null;
 }
 

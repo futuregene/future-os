@@ -18,6 +18,16 @@ export interface RemotePeer {
   /** A glyph from the fixed picker (`peerIcons.ts`), shown in place of the name. */
   icon: string | null;
   connected: boolean;
+  /**
+   * Whether the *user* turned this host off (its own Disconnect control), as
+   * opposed to it being unreachable on its own.
+   *
+   * The app's liveness pass reads this to decide who to bring back: a host that
+   * dropped is retried, and one the user stopped is left off until something
+   * asks for it by name. Without the distinction, an automatic pass would keep
+   * undoing a deliberate "Disconnect".
+   */
+  stopped: boolean;
   /** Why the last connection attempt failed, if it did. */
   error: string | null;
   bridgeInstanceId: string | null;
@@ -81,7 +91,26 @@ export interface RemoteRunEvent {
  */
 export async function listRemotePeers(): Promise<RemotePeer[]> {
   const raw = await invokeCommand<RemotePeer[] | null>("remote_peer_list");
-  return Array.isArray(raw) ? raw : [];
+  if (!Array.isArray(raw))
+    return [];
+  // `stopped` is the one field whose *absence* carries a meaning the caller
+  // acts on: a backend from before the mark existed means "not stopped", so it
+  // is spelled out here rather than left to a truthiness test at each site that
+  // decides whether to reconnect something.
+  return raw.map(peer => ({ ...peer, stopped: peer.stopped === true }));
+}
+
+/**
+ * Bring every paired host up, and answer with the list as it stands.
+ *
+ * Two callers, both meaning "everything should be live": the launch pass, and
+ * the user's own "reconnect all". It does not fail as a whole — a host this
+ * machine cannot reach is reported on its own row (its `error`), which is what
+ * keeps one sleeping machine from leaving the others unconnected.
+ */
+export async function connectAllRemotePeers(): Promise<RemotePeer[]> {
+  const raw = await invokeCommand<RemotePeer[] | null>("remote_peer_connect_all");
+  return (Array.isArray(raw) ? raw : []).map(peer => ({ ...peer, stopped: peer.stopped === true }));
 }
 
 export function pairRemotePeer(invitation: string): Promise<RemotePeer> {
@@ -712,6 +741,25 @@ export interface RemoteConversationSettings {
 }
 
 /**
+ * A conversation's settings, read out of a host's `get_state` reply.
+ *
+ * Exported because the reply has two readers: this module's own read, and the
+ * remote timeline, which reads the *same* command for the run in flight and hands
+ * its reply over rather than each hook asking the host again (see
+ * `RemoteSessionStateReading`).
+ */
+export function parseRemoteConversationSettings(
+  raw: unknown,
+): RemoteConversationSettings {
+  const record = typeof raw === "object" && raw !== null ? raw as Record<string, unknown> : {};
+  return {
+    model: typeof record.model === "string" && record.model ? record.model : null,
+    thinkingLevel:
+      typeof record.thinkingLevel === "string" && record.thinkingLevel ? record.thinkingLevel : null,
+  };
+}
+
+/**
  * Read a conversation's model and thinking level.
  *
  * Their own read rather than part of the timeline: these are settings the host
@@ -727,10 +775,34 @@ export async function getRemoteConversationSettings(
     { type: "get_state", sessionId },
     sessionId,
   );
-  return {
-    model: typeof raw?.model === "string" && raw.model ? raw.model : null,
-    thinkingLevel: typeof raw?.thinkingLevel === "string" && raw.thinkingLevel ? raw.thinkingLevel : null,
-  };
+  return parseRemoteConversationSettings(raw);
+}
+
+/** A host's own app settings, as far as this app reads them. */
+export interface RemoteDesktopSettings {
+  /**
+   * Whether that machine wants its conversations to get skill recommendations.
+   *
+   * A *host* setting, not one of this machine's: it is what decides whether a card
+   * is offered for a conversation that lives there.
+   */
+  skillRecommend: boolean;
+}
+
+/**
+ * Read a host's own app settings.
+ *
+ * One command for the whole machine rather than for one of its conversations, so
+ * it is read once per connection and dropped when the host says it moved
+ * (`app_settings_changed`) — see `remoteHostCatalog`.
+ */
+export async function getRemoteDesktopSettings(desktopId: string): Promise<RemoteDesktopSettings> {
+  const raw = await requestRemotePeer<Record<string, unknown>>(
+    desktopId,
+    { type: "get_desktop_settings" },
+    "list",
+  );
+  return { skillRecommend: raw?.skillRecommend === true };
 }
 
 /**

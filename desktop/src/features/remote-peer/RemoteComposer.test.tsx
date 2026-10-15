@@ -64,6 +64,7 @@ const peer = {
   agentAvailable: true,
   bridgeInstanceId: "bridge_1",
   connected: true,
+  stopped: false,
   desktopId: "desktop_a",
   error: null,
   // The capability a current host declares, which is what puts its skills in the
@@ -90,20 +91,24 @@ async function mount(props: {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
+  // What one render is given, before any per-render override: a re-render (the
+  // streaming tests need one) must not silently drop the other props.
+  const resolved = {
+    canCompact: props.canCompact ?? false,
+    desktopId: props.desktopId ?? "desktop_a",
+    onCompact: props.onCompact,
+    onCreated,
+    onSent,
+    peer: props.peer ?? peer,
+    sessionId: props.sessionId ?? "sess_1",
+    streaming: props.streaming,
+    workspaceId: props.workspaceId ?? null,
+  };
+  const element = (overrides: Partial<typeof resolved> = {}) => (
+    <RemoteComposer {...resolved} {...overrides} />
+  );
   await act(async () => {
-    root.render(
-      <RemoteComposer
-        canCompact={props.canCompact ?? false}
-        desktopId={props.desktopId ?? "desktop_a"}
-        onCompact={props.onCompact}
-        onCreated={onCreated}
-        onSent={onSent}
-        peer={props.peer ?? peer}
-        sessionId={props.sessionId ?? "sess_1"}
-        streaming={props.streaming}
-        workspaceId={props.workspaceId ?? null}
-      />,
-    );
+    root.render(element());
   });
   // The field is a textarea: the local composer's editor is a contenteditable
   // div, so this is the closest markup the remote one can share — and a
@@ -132,6 +137,14 @@ async function mount(props: {
       await act(async () => {
         input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key }));
       });
+    },
+    /**
+     * The same component with one prop changed, as the caller does when the host
+     * starts or settles a run: the composer is re-rendered, not remounted (the
+     * shell's key covers desktop+session only).
+     */
+    rerender: async (overrides: Partial<typeof resolved>) => {
+      await act(async () => root.render(element(overrides)));
     },
     unmount: async () => {
       await act(async () => root.unmount());
@@ -921,4 +934,47 @@ it("isolates drafts per desktop+session and clears them after send", async () =>
   const a3 = await mount({ desktopId: "desktop_a", sessionId: "sess_a" });
   expect(a3.input.value).toBe("");
   await a3.unmount();
+});
+
+// ── the caret ───────────────────────────────────────────────────────────────
+
+/**
+ * The field takes the caret when it appears, the way this app's own composer
+ * does.
+ *
+ * Regression: "New conversation" on a paired machine put that machine's composer
+ * on screen with no caret in it, so the first keystrokes after the click went
+ * nowhere — and for a draft the field is the only thing on the screen a prompt
+ * can be typed into. The conversation case is the same rule, so both are
+ * asserted here: the shell opens a draft and an existing conversation through
+ * the same view.
+ */
+it("takes the caret on mount, for a conversation and for a draft", async () => {
+  const conversation = await mount({ sessionId: "sess_1" });
+  expect(document.activeElement).toBe(conversation.input);
+  await conversation.unmount();
+
+  const draft = await mount({ sessionId: "" });
+  expect(document.activeElement).toBe(draft.input);
+  await draft.unmount();
+});
+
+/**
+ * A run in flight keeps the screen: the host is answering, and the reader may be
+ * doing something else in the meantime, so the caret is not taken from them —
+ * and it arrives in the field when the answer ends. The same rule this app's own
+ * composer follows with its own `sending`.
+ *
+ * Re-rendered rather than remounted on purpose: the shell keys this composer by
+ * desktop+session, so a run starting and settling changes the prop on a mounted
+ * component, and a fix that only ran on mount would pass the test above and
+ * still leave the caret outside the field after every answer.
+ */
+it("waits for a run in flight, then takes the caret when it settles", async () => {
+  const view = await mount({ streaming: true });
+  expect(document.activeElement).not.toBe(view.input);
+
+  await view.rerender({ streaming: false });
+  expect(document.activeElement).toBe(view.input);
+  await view.unmount();
 });

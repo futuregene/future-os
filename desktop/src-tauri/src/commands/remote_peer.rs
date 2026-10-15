@@ -72,6 +72,19 @@ pub async fn remote_peer_connect<R: tauri::Runtime>(
     runtime::connect_with_emitter(&desktop_id, Some(emitter(app))).await
 }
 
+/// Bring every paired host up at once and answer with the list as it stands.
+///
+/// Two callers, both of them "everything should be live": the app's launch
+/// pass, and the user's own "reconnect all". It never fails as a whole 鈥?each
+/// host's own failure is recorded against it and read off the returned list 鈥?
+/// because one machine being asleep must not leave the other two unconnected.
+#[tauri::command]
+pub async fn remote_peer_connect_all<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<Vec<PeerSummary>, crate::AppError> {
+    runtime::connect_all(Some(emitter(app))).await
+}
+
 #[tauri::command]
 pub async fn remote_peer_disconnect(desktop_id: String) -> Result<(), crate::AppError> {
     runtime::disconnect(&desktop_id).await;
@@ -472,6 +485,27 @@ mod tests {
         let warning = remote_peer_unpair(desktop_id).await.expect("unpair");
         assert!(warning.is_some());
         assert!(remote_peer_list().await.expect("list").is_empty());
+
+        teardown().await;
+    }
+
+    #[tokio::test]
+    async fn connect_all_through_the_command_reaches_the_paired_host() {
+        let (_home, fx) = start("peer-cmd-connect-all").await;
+        let app = mock_app();
+        let desktop_id = fx.paired.creds.desktop_id.clone();
+
+        // The app's own liveness pass goes through this wrapper, so the wrapper
+        // is what has to carry the emitter: without one the host would be
+        // connected and its pushes would go nowhere.
+        let peers = remote_peer_connect_all(app)
+            .await
+            .expect("connect every pairing");
+        let peer = peers
+            .into_iter()
+            .find(|peer| peer.desktop_id == desktop_id)
+            .expect("the paired host is in the list");
+        assert!(peer.connected, "{peer:?}");
 
         teardown().await;
     }

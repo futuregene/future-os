@@ -210,10 +210,19 @@ export function SessionList({
    * a single desktop (the picker's filter, or one pairing) every glyph would
    * repeat what the selector above the list already says, and take the width the
    * title needs.
+   *
+   * A heading's machine counts as much as a conversation's. Its group's
+   * conversations leave the list when the group is folded, and they are the only
+   * rows that would have named that machine — so reading the machine set off the
+   * drawn conversations alone took the glyphs off a list of folded groups and
+   * pinned shortcuts entirely, leaving two machines' workspaces of the same name
+   * side by side with nothing saying which was whose. What is being decided is
+   * whether the *list* holds one machine or several, and a folded group is still
+   * in it.
    */
   const showSource = useMemo(() => {
     const sources = new Set(
-      rows.flatMap(row => (row.kind === "session" && row.desktopId ? [row.desktopId] : [])),
+      rows.flatMap(row => (row.desktopId ? [row.desktopId] : [])),
     );
     return sources.size > 1;
   }, [rows]);
@@ -257,6 +266,23 @@ export function SessionList({
       row.kind === "session"
       && !row.session.pinned
       && commandsFor(row.desktopId ?? null) !== null,
+  );
+  /**
+   * Whether the list holds anything a batch may reach *at all*, folded away or
+   * not — which is a different question from the one `selectableRows` answers.
+   *
+   * That one is about the rows on screen, because "select visible" selects the
+   * visible ones. This one decides whether the select control above the list is
+   * offered, and a folded group's conversations are still in the list: they are
+   * reachable by expanding the group, and by the group's own sheet. Read off the
+   * drawn rows, a list of nothing but folded groups and pinned shortcuts — the
+   * shape a list takes after a while, and one no batch may hold — drew nothing
+   * selectable at all and switched the control off (at 40% opacity, which reads
+   * as gone) on a list of hundreds of conversations; the desktop rail's own
+   * "select conversations" is offered throughout.
+   */
+  const selectableTargets = allSessions.filter(
+    target => !target.session.pinned && commandsFor(target.desktopId ?? null) !== null,
   );
   /** The conversations the batch holds, folded away or not. */
   const targets = allSessions.filter(target => selected.has(target.key));
@@ -935,13 +961,13 @@ export function SessionList({
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={t("sessions.select")}
-                accessibilityState={{ disabled: deleting || selectableRows.length === 0 }}
-                disabled={deleting || selectableRows.length === 0}
+                accessibilityState={{ disabled: deleting || selectableTargets.length === 0 }}
+                disabled={deleting || selectableTargets.length === 0}
                 onPress={() => {
                   setSelecting(true);
                   setSelected(new Set());
                 }}
-                style={[styles.manage, (deleting || selectableRows.length === 0) && styles.disabled]}
+                style={[styles.manage, (deleting || selectableTargets.length === 0) && styles.disabled]}
               >
                 <ListChecks size={19} color={colors.inkSoft} />
               </Pressable>

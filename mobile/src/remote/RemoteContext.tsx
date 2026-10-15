@@ -75,6 +75,13 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   timelineError: "timeout" | null;
   canLoadOlderTimeline: boolean;
   loadingOlderTimeline: boolean;
+  /**
+   * The last pull of older history failed (timeout, transport, cancelled).
+   * Surfaces as a retry affordance; cleared by the next attempt. Distinct
+   * from `loadingOlderTimeline`: this is a *settled* failure the user can act
+   * on, not work still in flight.
+   */
+  olderHistoryFailed: boolean;
   modelId: string;
   thinkingLevel: ThinkingLevel;
   /** Token usage + amount for the open conversation (null until reported). */
@@ -240,7 +247,7 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
 export type { DesktopCommands } from "./desktopCommands";
 
 type TimelineContextValue = Pick<RemoteContextValue,
-  "timeline" | "timelinePending" | "timelineSyncStatus" | "timelineError" | "canLoadOlderTimeline" | "loadingOlderTimeline"
+  "timeline" | "timelinePending" | "timelineSyncStatus" | "timelineError" | "canLoadOlderTimeline" | "loadingOlderTimeline" | "olderHistoryFailed"
 >;
 export type RemoteControls = Omit<RemoteContextValue, keyof TimelineContextValue> & { streaming: boolean };
 const RemoteContext = createContext<RemoteControls | null>(null);
@@ -321,7 +328,8 @@ function sameTimelineData(previous: RuntimeEntry | undefined, next: RuntimeEntry
     && a.timelineSyncStatus === b.timelineSyncStatus
     && a.timelineError === b.timelineError
     && a.canLoadOlderTimeline === b.canLoadOlderTimeline
-    && a.loadingOlderTimeline === b.loadingOlderTimeline;
+    && a.loadingOlderTimeline === b.loadingOlderTimeline
+    && a.olderHistoryFailed === b.olderHistoryFailed;
 }
 
 /**
@@ -1046,6 +1054,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         timelineError: activeRuntime.timeline.timelineError,
         canLoadOlderTimeline: activeRuntime.timeline.canLoadOlderTimeline,
         loadingOlderTimeline: activeRuntime.timeline.loadingOlderTimeline,
+        olderHistoryFailed: activeRuntime.timeline.olderHistoryFailed,
       }
       : {
         timeline: EMPTY_TIMELINE,
@@ -1054,6 +1063,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         timelineError: null,
         canLoadOlderTimeline: false,
         loadingOlderTimeline: false,
+        olderHistoryFailed: false,
       }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the leaves, not the controller object
   ), [
@@ -1063,6 +1073,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     activeRuntime?.timeline.timelineError,
     activeRuntime?.timeline.canLoadOlderTimeline,
     activeRuntime?.timeline.loadingOlderTimeline,
+    activeRuntime?.timeline.olderHistoryFailed,
     timelineVersion,
   ]);
 

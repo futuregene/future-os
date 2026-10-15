@@ -62,6 +62,18 @@ export interface RemoteTimeline {
    */
   replayUnavailable: boolean;
   /**
+   * What the host last said about this conversation, in the reply the timeline
+   * reads for its run.
+   *
+   * Handed to the conversation's own settings rather than read again there: the
+   * model and the thinking level are the same reply, and a second `get_state` for
+   * the conversation that is already open is one command the phone does not spend
+   * (`mobile`'s `onSessionState` splits exactly these fields out of the reconcile
+   * read). `null` before the host has answered, and after another conversation is
+   * opened.
+   */
+  sessionState: RemoteSessionStateReading | null;
+  /**
    * Whether the host would take a compact request for this conversation.
    *
    * The host's own preconditions, mirrored so the affordance appears only where
@@ -144,11 +156,42 @@ const COMPACTION_SETTLED = new Set([
   "compaction_end",
 ]);
 
-/** The host's answer to `get_state`, as far as this hook reads it. */
-interface RemoteSessionState {
+/**
+ * The host's answer to `get_state`, as far as this app reads it.
+ *
+ * One reply for the whole conversation: which run is in flight (what the timeline
+ * reads it for) and the settings the picker shows (the model and the thinking
+ * level). One read answers both, which is why the timeline owns it and hands the
+ * reply over — see [`RemoteSessionStateReading`].
+ */
+export interface RemoteSessionState {
   /** The run in flight, if any: the one a mid-join has to read the log of. */
   activeRun?: { runId?: string } | null;
   isCompacting?: boolean;
+  /** The model the conversation runs with, as the host names it. */
+  model?: string;
+  thinkingLevel?: string;
+}
+
+/**
+ * One `get_state` reply, and the conversation it is about.
+ *
+ * The conversation id travels with it rather than being implied: this hook's own
+ * state outlives a change of the ids it was called with for one render, and a
+ * reply applied to the conversation that replaced it would show that
+ * conversation's own model under the new one's title.
+ */
+export interface RemoteSessionStateReading {
+  sessionId: string;
+  /**
+   * The host's reply, or `null` when it could not be read.
+   *
+   * A reader is told the difference between "the host answered" and "the host
+   * did not": a consumer that waits for these settings (the picker) must stop
+   * waiting either way, and it must not take an unread state for the host's own
+   * answer — which is what an empty object would look like.
+   */
+  state: RemoteSessionState | null;
 }
 
 interface EntriesPage {
@@ -227,6 +270,7 @@ export function useRemoteTimeline(
   const [streaming, setStreaming] = useState(false);
   const [compacting, setCompacting] = useState(false);
   const [replayUnavailable, setReplayUnavailable] = useState(false);
+  const [sessionState, setSessionState] = useState<RemoteSessionStateReading | null>(null);
   const [persistedEntryIds, setPersistedEntryIds] = useState<ReadonlySet<string>>(() => new Set());
   /** The cursor for the next older page (`nextOffset`), or null at the start. */
   const cursorRef = useRef<number | null>(null);
@@ -451,6 +495,10 @@ export function useRemoteTimeline(
       }, session);
       if (epoch !== epochRef.current)
         return;
+      // Kept as read — the whole reply, not just the run: its model and thinking
+      // level are what this conversation's settings are drawn from, and reading
+      // them here is what keeps an open from spending two `get_state` commands.
+      setSessionState({ sessionId: session, state: state ?? null });
       active = state?.activeRun?.runId ?? null;
       // The host's own answer to "is a run in flight", which is what a window that
       // just opened has no other way of knowing: the pushes only start arriving at
@@ -464,7 +512,11 @@ export function useRemoteTimeline(
     }
     catch {
       // A host that cannot answer is not evidence about its runs. The pushes
-      // still carry the reply; the log read is simply skipped this time.
+      // still carry the reply; the log read is simply skipped this time. What is
+      // said, though, is that this conversation's state was *not* read: the picker
+      // waits for this reply, and a failed read it never heard about would leave
+      // the control loading for ever.
+      setSessionState({ sessionId: session, state: null });
       return;
     }
     if (!active)
@@ -519,6 +571,9 @@ export function useRemoteTimeline(
     setStreaming(false);
     setCompacting(false);
     setReplayUnavailable(false);
+    // The settings another conversation's reader was handed must not be applied
+    // under this one's title, and the host has not answered for this one yet.
+    setSessionState(null);
     // Another conversation's replies must not be drawn under this one's title,
     // and the projections are accumulators that only apply to the run that
     // produced them — so the lane goes with them, cursors included: they describe
@@ -667,6 +722,7 @@ export function useRemoteTimeline(
       messages,
       liveReplies,
       replayUnavailable,
+      sessionState,
       canCompact: sessionId !== null && sessionId !== ""
         && entries.length > 0
         && !streaming
@@ -681,7 +737,7 @@ export function useRemoteTimeline(
       compacting,
       persistedEntryIds,
     }),
-    [entries, messages, liveReplies, replayUnavailable, sessionId, streaming, compacting, loading, loadingOlder, hasMore, error, loadOlder, refresh, persistedEntryIds],
+    [entries, messages, liveReplies, replayUnavailable, sessionState, sessionId, streaming, compacting, loading, loadingOlder, hasMore, error, loadOlder, refresh, persistedEntryIds],
   );
 }
 

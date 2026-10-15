@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import type { RemotePeer } from "../../../features/remote-peer/remotePeerClient";
 import { act } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mergeConversations, rowKey } from "../../../features/remote-peer/mergeConversations";
 import { flushAsync, renderHook } from "../../../test/renderHook";
 import { useRemotePeers } from "./useRemotePeers";
 
@@ -15,8 +16,21 @@ import { useRemotePeers } from "./useRemotePeers";
 
 const listRemotePeers = vi.fn<() => Promise<RemotePeer[]>>();
 const fetchRemoteSessions = vi.fn<(desktopId: string) => Promise<unknown>>();
+const connectAllRemotePeers = vi.fn<() => Promise<RemotePeer[]>>();
+const connectRemotePeer = vi.fn<(desktopId: string) => Promise<RemotePeer>>();
+// The host-catalogue reads the poll warms as a connection is established
+// (`remoteHostCatalog`); none of the assertions here is about them, but a mock
+// that omitted them would take the whole refresh down with it.
+const listRemoteModels = vi.fn(async () => []);
+const getRemoteDesktopSettings = vi.fn(async () => ({ skillRecommend: false }));
 vi.mock("../../../features/remote-peer/remotePeerClient", () => ({
+  connectAllRemotePeers: () => connectAllRemotePeers(),
+  connectRemotePeer: (...args: Parameters<typeof connectRemotePeer>) => connectRemotePeer(...args),
   fetchRemoteSessions: (...args: Parameters<typeof fetchRemoteSessions>) => fetchRemoteSessions(...args),
+  getRemoteDesktopSettings: () => getRemoteDesktopSettings(),
+  listRemoteAvailableSkills: () => Promise.resolve([]),
+  listRemoteInstalledSkills: () => Promise.resolve([]),
+  listRemoteModels: () => listRemoteModels(),
   listRemotePeers: () => listRemotePeers(),
   listRemoteWorkspaces: () => Promise.resolve([]),
 }));
@@ -36,6 +50,7 @@ function peer(overrides: Partial<RemotePeer> = {}): RemotePeer {
     agentAvailable: true,
     bridgeInstanceId: "bridge_1",
     connected: true,
+    stopped: false,
     desktopId: "desktop_a",
     error: null,
     features: [],
@@ -61,6 +76,88 @@ beforeEach(() => {
   listeners = [];
   listRemotePeers.mockReset().mockResolvedValue([peer()]);
   fetchRemoteSessions.mockReset().mockResolvedValue({ desktopId: "desktop_a", sessions: [] });
+  connectAllRemotePeers.mockReset().mockResolvedValue([]);
+  connectRemotePeer.mockReset().mockResolvedValue(peer());
+});
+
+/**
+ * The liveness pass: what happens to the machines nobody is reading.
+ *
+ * Nothing on screen retries a host that is not the one being read, so without
+ * this a machine that was asleep when the app started — or that dropped while
+ * the user was elsewhere — stayed out of the merged list for the rest of the
+ * session. It is the desktop half of the phone's "hold a live connection to
+ * every paired desktop".
+ */
+describe("holding every paired host", () => {
+  it("brings up a paired host that is not connected, as soon as the list is known", async () => {
+    let connected = false;
+    listRemotePeers.mockImplementation(async () => [peer({ connected })]);
+    connectRemotePeer.mockImplementation(async () => {
+      connected = true;
+      return peer({ connected: true });
+    });
+
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    expect(connectRemotePeer).toHaveBeenCalledWith("desktop_a");
+    // The list is re-read, so the row the user sees is the state the connect
+    // left behind rather than the state before it.
+    expect(hook.current.peers[0]!.connected).toBe(true);
+    hook.unmount();
+  });
+
+  /**
+   * The distinction the backend's `stopped` exists for: the pass reaches a host
+   * that dropped, and does not undo a host the user turned off.
+   */
+  it("leaves a host the user stopped alone", async () => {
+    listRemotePeers.mockResolvedValue([peer({ connected: false, stopped: true })]);
+
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    expect(connectRemotePeer).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+
+  it("asks again on the backstop, for the hosts that are still down", async () => {
+    vi.useFakeTimers();
+    try {
+      listRemotePeers.mockResolvedValue([peer({ connected: false })]);
+      const hook = renderHook(() => useRemotePeers(true));
+      await settle();
+      expect(connectRemotePeer).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      await settle();
+
+      expect(connectRemotePeer).toHaveBeenCalledTimes(2);
+      hook.unmount();
+    }
+    finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reconnect all asks for every machine, the stopped ones included", async () => {
+    listRemotePeers.mockResolvedValue([peer({ connected: false, stopped: true })]);
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    await act(async () => {
+      await hook.current.reconnectAll();
+    });
+
+    // The per-host pass skips what the user turned off; asking for everything is
+    // the one call allowed to overrule it.
+    expect(connectAllRemotePeers).toHaveBeenCalledTimes(1);
+    expect(connectRemotePeer).not.toHaveBeenCalled();
+    hook.unmount();
+  });
 });
 
 it("re-reads the hosts when one of them comes back", async () => {
@@ -277,6 +374,110 @@ describe("push catalog", () => {
       expect(hook.current.catalogs[0]!.sessions).toHaveLength(0);
       hook.unmount();
     });
+  });
+});
+
+describe("live events", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * What an event settles is the run, not the row's place: the ordering value
+   * belongs to the host's clock, and the host states it itself (a snapshot when
+   * the structure moves, `state.activity` when only the value did).
+   *
+   * The stamp this replaced was this machine's `Date.now()`, so every event put
+   * the row above every one of *this* machine's conversations — and the host's
+   * next report of it, on the host's clock, put it back. That is the jumping
+   * this test pins down: the value it starts with is the one it keeps.
+   */
+  it("settles whether a conversation is running without moving the row", async () => {
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    pushKind("catalog", "desktop_a", {
+      domain: "sessions",
+      version: { epoch: "epoch_1", revision: 1 },
+      sessions: [{ sessionId: "sess_1", title: "One", lastMessageAt: 1_000 }],
+    });
+    pushKind("event", "desktop_a", {
+      sessionId: "sess_1",
+      runId: "run_1",
+      type: "text_chunk",
+      data: "{\"text\":\"hi\"}",
+    });
+    await settle();
+
+    const [session] = hook.current.catalogs[0]!.sessions;
+    expect(session!.streaming).toBe(true);
+    expect(session!.lastMessageAt).toBe(1_000);
+
+    // A run that settles clears the dot and still leaves the value alone: the
+    // host's own report of the last message is what moves the row from here.
+    pushKind("event", "desktop_a", { sessionId: "sess_1", runId: "run_1", type: "agent_end", data: "{}" });
+    await settle();
+    expect(hook.current.catalogs[0]!.sessions[0]!.streaming).toBe(false);
+    expect(hook.current.catalogs[0]!.sessions[0]!.lastMessageAt).toBe(1_000);
+    hook.unmount();
+  });
+
+  /**
+   * The same rule as the user sees it, over the merged list: a host's row cannot
+   * overtake this machine's conversation by *speaking*, only by the host saying
+   * it moved. The phone's list never could — it draws the host's rows in the
+   * host's own order — which is why the desktop was the only place the order
+   * jumped.
+   */
+  it("cannot overtake this machine's rows until the host says the row moved", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(9_000_000);
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    pushKind("catalog", "desktop_a", {
+      domain: "sessions",
+      version: { epoch: "epoch_1", revision: 1 },
+      sessions: [{ sessionId: "sess_remote", title: "On the host", lastMessageAt: 1_000_000 }],
+    });
+    const order = () => mergeConversations(
+      [{
+        id: "local_1",
+        title: "Mine",
+        mode: "chat",
+        pinned: false,
+        status: "active",
+        workspaceId: "ws_1",
+        lastMessageAt: 5_000_000,
+        updatedAt: 5_000_000,
+        createdAt: 5_000_000,
+      }],
+      hook.current.catalogs,
+      { kind: "all" },
+    ).map(row => row.key);
+    expect(order()).toEqual([rowKey(null, "local_1"), rowKey("desktop_a", "sess_remote")]);
+
+    // The host's conversation is answering, on *this* machine's clock read as
+    // "now": the row is running, and its place is still the host's to give.
+    pushKind("event", "desktop_a", {
+      sessionId: "sess_remote",
+      runId: "run_1",
+      type: "text_chunk",
+      data: "{\"text\":\"hi\"}",
+    });
+    await settle();
+    expect(order()).toEqual([rowKey(null, "local_1"), rowKey("desktop_a", "sess_remote")]);
+
+    // The host's own report — the same subject the desktop now relies on — is
+    // what puts the row where the host has it.
+    pushKind("catalog", "desktop_a", {
+      domain: "sessions_activity",
+      version: { epoch: "epoch_1", revision: 2 },
+      activity: [{ sessionId: "sess_remote", lastMessageAt: 9_000_000 }],
+    });
+    await settle();
+    expect(order()).toEqual([rowKey("desktop_a", "sess_remote"), rowKey(null, "local_1")]);
+    hook.unmount();
   });
 });
 

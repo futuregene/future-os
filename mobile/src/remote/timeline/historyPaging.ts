@@ -1,3 +1,4 @@
+import { AppState } from "react-native";
 import type { RemoteClient } from "../client";
 import { requestReadPage } from "../readPages";
 import { SyncEngine } from "../syncEngine";
@@ -76,8 +77,26 @@ export function prependHistoryPage(
   };
 }
 
+/**
+ * Why a page never landed. `hidden` means the lane could not publish it at
+ * all (the session went to the background or was restarted, and the queued
+ * mutation was dropped with it) — the page is safe to re-offer once the lane
+ * can publish again, because it never reached the timeline. Everything else
+ * is an ordinary failure (timeout, transport, cancelled by a newer pull).
+ */
+export class HistoryPageHiddenError extends Error {
+  constructor() {
+    super("history_page_lane_hidden");
+    this.name = "HistoryPageHiddenError";
+  }
+}
+
 /** A page is complete when the authoritative sync lane publishes its merge.
  * React rendering and native layout are deliberately outside this contract.
+ * A lane that can no longer publish (backgrounded, restarted) rejects with
+ * {@link HistoryPageHiddenError} instead of leaving the waiter for the
+ * deadline: the page was dropped before it touched the timeline, so the
+ * caller may re-offer it once the lane can commit again.
  */
 export function commitHistoryPage(
   engine: SyncEngine,
@@ -87,17 +106,25 @@ export function commitHistoryPage(
   signal: AbortSignal,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
+    let settled = false;
     let applied = false;
+    let appStateSub: { remove(): void } | null = null;
     const cleanup = () => {
       unsubscribe();
+      appStateSub?.remove();
+      appStateSub = null;
       signal.removeEventListener("abort", abort);
     };
-    const abort = () => {
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
       cleanup();
-      reject(new Error("history_page_cancelled"));
+      reject(error);
     };
+    const abort = () => fail(new Error("history_page_cancelled"));
     const unsubscribe = engine.subscribe((commit) => {
       if (commit.sessionId !== sessionId || !applied) return;
+      settled = true;
       cleanup();
       resolve();
     });
@@ -106,7 +133,23 @@ export function commitHistoryPage(
       abort();
       return;
     }
+    // The op queues behind any in-flight reconcile. Backgrounding drops the
+    // lane's queue, so the op will never run — and the lane publishes nothing
+    // while hidden, so neither the commit subscription nor the abort signal
+    // can see it. React to the app-state transition directly; a lane restart
+    // in the foreground leaves the op queued, which is fine (it still runs).
+    appStateSub = AppState.addEventListener("change", (state) => {
+      if (state === "background" && !engine.canCommit(sessionId)) {
+        fail(new HistoryPageHiddenError());
+      }
+    });
+    // A race with an already-backgrounded app must not hang either.
+    if (!engine.canCommit(sessionId)) {
+      fail(new HistoryPageHiddenError());
+      return;
+    }
     engine.mutate(sessionId, (live) => {
+      if (settled) return live;
       if (!isCurrent()) {
         abort();
         return live;

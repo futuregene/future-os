@@ -4,7 +4,13 @@ import type { RemotePeer, RemotePeerEvent } from "../../../features/remote-peer/
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CatalogVersionGate } from "../../../features/remote-peer/catalogVersion";
-import { fetchRemoteSessions, listRemotePeers } from "../../../features/remote-peer/remotePeerClient";
+import { forgetHostCatalogue, warmHostCatalogue } from "../../../features/remote-peer/remoteHostCatalog";
+import {
+  connectAllRemotePeers,
+  connectRemotePeer,
+  fetchRemoteSessions,
+  listRemotePeers,
+} from "../../../features/remote-peer/remotePeerClient";
 
 /** How often the peer list is refreshed. */
 const PEER_POLL_MS = 5_000;
@@ -17,6 +23,20 @@ const PEER_POLL_MS = 5_000;
  * primary source of freshness.
  */
 const CATALOG_POLL_MS = 60_000;
+/**
+ * How often a paired host that should be live is asked for, when nothing else
+ * will.
+ *
+ * A host that is not the one being read has no retry control on screen, so a
+ * machine that was asleep when the app started — or that dropped while the user
+ * was elsewhere — would stay out of the merged list for the rest of the
+ * session. This is the same one-minute backstop the phone runs for the desktops
+ * nobody is reading, and it is deliberately slower than the list poll: a host
+ * that is genuinely down is being retried by the runtime's own supervisor, and
+ * re-handshaking every five seconds would be a second retry loop fighting the
+ * first.
+ */
+const LIVENESS_BACKSTOP_MS = 60_000;
 
 export interface RemotePeersState {
   peers: RemotePeer[];
@@ -26,12 +46,25 @@ export interface RemotePeersState {
   /** A failure of the *local* peer list read (the remote errors ride on `peers`). */
   error: string | null;
   refresh: () => Promise<void>;
+  /**
+   * Bring every paired host up, including one the user had turned off.
+   *
+   * The user's own "reconnect all", not the automatic pass: both mean "every
+   * pairing should be live", and only this one may overrule a deliberate stop.
+   */
+  reconnectAll: () => Promise<void>;
 }
 
 /**
  * Owns this machine's view of its paired remote desktops: the peer list, each
  * connected host's session catalogue, and the live event stream that keeps both
  * fresh.
+ *
+ * It also owns the client role's *liveness*, because the merged list is only as
+ * complete as the set of hosts that are up: a launch pass brings every pairing
+ * up, and a one-minute backstop retries the ones that should be live and are not
+ * (see `LIVENESS_BACKSTOP_MS`). Both are the desktop half of the phone's "hold a
+ * live connection to every paired desktop".
  *
  * Polling is still used for hosts that do not publish `catalogVersion`, and as
  * a slow safety net for drop detection; the primary source of catalogue
@@ -47,6 +80,8 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
   const peersRef = useRef<RemotePeer[]>([]);
   // One version gate per connected host; a host's epoch resets on reconnect.
   const gatesRef = useRef(new Map<string, CatalogVersionGate>());
+  // The launch pass happens once per app session, not once per poll.
+  const launchedRef = useRef(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -58,6 +93,20 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
       // disconnected host would open a connection as a side effect, which is
       // not what a background poll should do.
       const connected = next.filter(peer => peer.connected);
+      // And their *own* catalogue — its models, its settings, the skills those
+      // settings ask for — is read here, as the connection is established, rather
+      // than once per conversation opened (`remoteHostCatalog`). Cached per host,
+      // so this costs a command each on the first poll after a connection and
+      // nothing afterwards.
+      for (const peer of connected)
+        warmHostCatalogue(peer.desktopId);
+      // A host that is not connected has no catalogue worth keeping: what was
+      // read describes the connection that answered, and a re-pair or a
+      // reconnect re-reads it.
+      for (const peer of next) {
+        if (!peer.connected)
+          forgetHostCatalogue(peer.desktopId);
+      }
       const results = await Promise.all(connected.map(async (peer) => {
         try {
           return await fetchRemoteSessions(peer.desktopId);
@@ -76,6 +125,31 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
     }
   }, []);
 
+  /**
+   * Ask for the hosts that should already be live.
+   *
+   * Per host rather than "connect everything", because the two calls mean
+   * different things: this one acts on the machines that are *supposed* to be
+   * up, and a host the user deliberately disconnected is one of the answers to
+   * "should not". The backend records each failure against its own host, which
+   * is where the row reads it, so there is nothing to surface here.
+   */
+  const holdEveryHost = useCallback(async () => {
+    const wanted = peersRef.current.filter(peer => !peer.connected && !peer.stopped);
+    if (wanted.length === 0)
+      return;
+    await Promise.all(wanted.map(async (peer) => {
+      try {
+        await connectRemotePeer(peer.desktopId);
+      }
+      catch {
+        // Its own row says why. One sleeping machine must not throw away the
+        // work done for the others.
+      }
+    }));
+    await refresh();
+  }, [refresh]);
+
   // The first read also drives `loading`; later polls are silent so the list
   // does not flicker a spinner every five seconds.
   useEffect(() => {
@@ -86,16 +160,47 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
     }
     let cancelled = false;
     setLoading(true);
-    void refresh().finally(() => {
-      if (!cancelled)
-        setLoading(false);
-    });
+    void (async () => {
+      await refresh().finally(() => {
+        if (!cancelled)
+          setLoading(false);
+      });
+      // The launch pass, right after the first read answers who is paired.
+      // Before this, the merged list was this machine's alone until the user
+      // found the Remote page and clicked every host's own Connect.
+      if (cancelled || launchedRef.current)
+        return;
+      launchedRef.current = true;
+      await holdEveryHost();
+    })();
     const timer = setInterval(() => void refresh(), PEER_POLL_MS);
     return () => {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [enabled, refresh]);
+  }, [enabled, holdEveryHost, refresh]);
+
+  // The backstop for the hosts nothing else will reach.
+  useEffect(() => {
+    if (!enabled)
+      return;
+    const timer = setInterval(() => void holdEveryHost(), LIVENESS_BACKSTOP_MS);
+    return () => clearInterval(timer);
+  }, [enabled, holdEveryHost]);
+
+  const reconnectAll = useCallback(async () => {
+    try {
+      await connectAllRemotePeers();
+      setError(null);
+    }
+    catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+    // Re-read either way: the list is what the merged rows are built from, and
+    // a reconnected host has re-subscribed and is exactly the one whose rows
+    // were stale.
+    await refresh();
+  }, [refresh]);
 
   // A slower, separate catalogue cadence (see CATALOG_POLL_MS).
   useEffect(() => {
@@ -124,11 +229,9 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
    * Live pushes update the catalogue in place, and a link coming back triggers a
    * re-read.
    *
-   * A session event settles three things the poll would otherwise lag on: that
-   * the session exists, that it is streaming, and that it just became the most
-   * recent — which is what moves the row. Reordering on *any* event would make
-   * the list jump while merely reading an old conversation, so only a
-   * session-scoped event counts.
+   * A session event settles one thing the poll would otherwise lag on: whether
+   * that conversation is running. It deliberately does **not** settle where the
+   * row belongs — see the handler, and `RemoteSessionRow.lastMessageAt`.
    *
    * A `resumed` push is the one thing the in-place update cannot fix: every
    * event sent while the link was down is gone, and the row it would have moved
@@ -142,8 +245,11 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
     void listen<RemotePeerEvent>("remote-peer-event", (event) => {
       const { desktopId, kind, payload } = event.payload;
       if (kind === "resumed") {
-        // Connection healed: drop the stale gate and re-read everything.
+        // Connection healed: drop the stale gate and re-read everything —
+        // including the host's own catalogue, which describes the connection
+        // that just came back rather than the one that dropped.
         gatesRef.current.delete(desktopId);
+        forgetHostCatalogue(desktopId);
         void refresh();
         return;
       }
@@ -160,7 +266,21 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
       const sessionId = readString(payload, "sessionId");
       if (!sessionId)
         return;
-      const at = Date.now();
+      // What an event settles is whether the conversation is *running* — a fact
+      // about the event itself, where the host's own snapshot is the slower path
+      // to the same answer.
+      //
+      // It deliberately does not move the row. A row's ordering timestamp
+      // belongs to the host's clock (`remote_host::catalog` reads
+      // `threads.last_message_at`, the agent's own event time), so stamping
+      // `Date.now()` here put a *second* clock into one row's key: every event
+      // lifted it above this machine's own conversations — nothing this machine
+      // holds is newer than its own `now` — and the host's next report of that
+      // row (a `state.activity` packet, the next snapshot, or a catalogue read)
+      // put it back where the host has it, so a row whose run was streaming
+      // jumped up and back for the length of the run. The phone draws the host's
+      // rows in the host's own order and never had it; this list is the one
+      // place a client could disagree with the host about a row's place in it.
       setCatalogs(current => current.map((catalog) => {
         if (catalog.desktopId !== desktopId)
           return catalog;
@@ -176,7 +296,6 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
         sessions[index] = {
           ...sessions[index]!,
           streaming: !isTerminal(payload),
-          lastMessageAt: at,
         };
         return { ...catalog, sessions };
       }));
@@ -195,8 +314,8 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
   }, [enabled, refresh]);
 
   return useMemo(
-    () => ({ peers, catalogs, loading, error, refresh }),
-    [peers, catalogs, loading, error, refresh],
+    () => ({ peers, catalogs, loading, error, refresh, reconnectAll }),
+    [peers, catalogs, loading, error, refresh, reconnectAll],
   );
 }
 

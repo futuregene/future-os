@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readLastUsedModel, readLastUsedThinkingLevel, rememberLastUsedModel, rememberLastUsedThinkingLevel } from "../../integrations/agent/agentClient";
 import { RemoteConversationSettings } from "./RemoteConversationSettings";
+import { forgetHostCatalogue } from "./remoteHostCatalog";
 import { remoteModelReference } from "./remotePeerClient";
 import { useRemoteConversationSettings } from "./useRemoteConversationSettings";
 
@@ -96,6 +98,14 @@ beforeEach(() => {
   releaseListen = null;
   requestMock.mockReset();
   requestMock.mockResolvedValue(undefined);
+  // The host's catalogue is cached per host for as long as this window is open
+  // (`remoteHostCatalog`), so one test's answer would otherwise be the next
+  // one's — and the read it asserts would never happen.
+  forgetHostCatalogue("desktop_a");
+  // The remembered pick is shared with this app's own composer (one key per
+  // device, exactly as the phone's `SecureStore` is), so it has to start empty in
+  // every test or the previous one's choice seeds this one's draft.
+  localStorage.clear();
 });
 
 it("reads the conversation's settings and the host's catalogue", async () => {
@@ -113,6 +123,142 @@ it("reads the conversation's settings and the host's catalogue", async () => {
   expect(hook.current.thinkingLevel).toBe("medium");
   expect(hook.current.models.map(remoteModelReference)).toEqual(["openai/gpt-5", "openrouter/auto"]);
   await hook.unmount();
+});
+
+/**
+ * The state read the timeline makes, handed over instead of asked for again.
+ *
+ * The timeline reads `get_state` for the run in flight, and the conversation's
+ * model and thinking level ride the same reply. What is asserted here is that the
+ * picker is drawn from it: a conversation that opens with two `get_state`
+ * commands spends one more than the phone does on the same conversation.
+ */
+describe("a state read handed over by another reader", () => {
+  /**
+   * A probe of this hook that can be handed a different reading, as the shell
+   * hands over what the timeline read.
+   */
+  async function mountHanded(
+    reading: () => { sessionId: string; state: Record<string, unknown> | null } | null,
+    overrides: { sessionId?: string } = {},
+  ) {
+    const sessionId = overrides.sessionId === undefined ? "sess_1" : overrides.sessionId;
+    let current!: ReturnType<typeof useRemoteConversationSettings>;
+    function Probe() {
+      current = useRemoteConversationSettings("desktop_a", sessionId, true, reading());
+      return null;
+    }
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<Probe />));
+    await settle();
+    return {
+      get current() {
+        return current;
+      },
+      rerender: async () => {
+        await act(async () => root.render(<Probe />));
+        await settle();
+      },
+      unmount: async () => {
+        await act(async () => root.unmount());
+        container.remove();
+      },
+    };
+  }
+
+  it("takes the model and the level from it, and reads no state of its own", async () => {
+    requestMock.mockImplementation(async (name: string) => (name === "list_models" ? MODELS : undefined));
+
+    const hook = await mountHanded(() => ({
+      sessionId: "sess_1",
+      state: { activeRun: null, model: "openai/gpt-5", thinkingLevel: "high" },
+    }));
+
+    expect(hook.current.model).toBe("openai/gpt-5");
+    expect(hook.current.thinkingLevel).toBe("high");
+    // The command the phone does not spend: the timeline already read this reply.
+    expect(requestMock.mock.calls.some(call => call[0] === "get_state")).toBe(false);
+    // The catalogue is still this hook's business — it is what the picker offers,
+    // and it comes from the host's cached read rather than a second command.
+    expect(hook.current.models.map(remoteModelReference)).toEqual(["openai/gpt-5", "openrouter/auto"]);
+    await hook.unmount();
+  });
+
+  it("waits while that reader is still asking, rather than asking again", async () => {
+    requestMock.mockImplementation(async (name: string) => (name === "list_models" ? MODELS : undefined));
+
+    const hook = await mountHanded(() => null);
+
+    // Nothing yet — the host has not answered the timeline either — but no second
+    // `get_state` went out to find out, and the control says it is waiting rather
+    // than claiming the host has no model.
+    expect(hook.current.model).toBeNull();
+    expect(hook.current.loading).toBe(true);
+    expect(requestMock.mock.calls.some(call => call[0] === "get_state")).toBe(false);
+    await hook.unmount();
+  });
+
+  it("applies a reply that arrives after the open", async () => {
+    requestMock.mockImplementation(async (name: string) => (name === "list_models" ? MODELS : undefined));
+    let reading: { sessionId: string; state: Record<string, unknown> | null } | null = null;
+
+    const hook = await mountHanded(() => reading);
+    expect(hook.current.model).toBeNull();
+    expect(hook.current.loading).toBe(true);
+
+    // The timeline's read lands: it is this conversation's, and it carries the
+    // settings as well as the run.
+    reading = { sessionId: "sess_1", state: { model: "openrouter/auto", thinkingLevel: "low" } };
+    await hook.rerender();
+
+    expect(hook.current.model).toBe("openrouter/auto");
+    expect(hook.current.thinkingLevel).toBe("low");
+    expect(hook.current.loading).toBe(false);
+    await hook.unmount();
+  });
+
+  /**
+   * A read the host refused stops the waiting.
+   *
+   * The reading says the state was *not* read rather than carrying an empty one:
+   * a picker that went on waiting for a reply that is never coming would say it is
+   * loading for as long as the conversation is open, and its transcript is
+   * already reporting the failure that caused it.
+   */
+  it("stops waiting for a read the host refused", async () => {
+    requestMock.mockImplementation(async (name: string) => (name === "list_models" ? MODELS : undefined));
+
+    const hook = await mountHanded(() => ({ sessionId: "sess_1", state: null }));
+
+    expect(hook.current.loading).toBe(false);
+    expect(hook.current.model).toBeNull();
+    // And no failure of its own to report: the transcript's error is the one
+    // message for the read that did not happen.
+    expect(hook.current.readError).toBeNull();
+    await hook.unmount();
+  });
+
+  /**
+   * A reply about another conversation is not this one's.
+   *
+   * The reading travels with the id it belongs to, because a hook's state
+   * outlives the ids it was called with for one render: applied blind, the
+   * previous conversation's model would appear under the new one's title.
+   */
+  it("ignores a reading about a different conversation", async () => {
+    requestMock.mockImplementation(async (name: string) => (name === "list_models" ? MODELS : undefined));
+
+    const hook = await mountHanded(() => ({
+      sessionId: "sess_other",
+      state: { model: "openrouter/auto", thinkingLevel: "low" },
+    }));
+
+    expect(hook.current.model).toBeNull();
+    expect(hook.current.thinkingLevel).toBeNull();
+    await hook.unmount();
+  });
 });
 
 /**
@@ -153,6 +299,96 @@ it("seeds a draft from the host's catalogue, and reads no conversation state", a
   await hook.unmount();
 });
 
+/**
+ * A draft starts where the user left off — the phone's rule.
+ *
+ * `newConversation` on the phone resolves a draft from its memory of the last
+ * choice (`loadLastModel`/`loadLastThinking`) before it looks at the catalogue,
+ * and this machine keeps the same memory for its own composer
+ * (`readLastUsedModel`/`readLastUsedThinkingLevel`, one key per device). The
+ * desktop's draft was the one place that ignored it and always started from the
+ * host's `isDefault` — so a reader who had just been working at `xhigh` on
+ * `openrouter/auto` got the catalogue's default model back at `medium`.
+ */
+it("starts a draft from the model and level the user last chose", async () => {
+  rememberLastUsedModel("openai/gpt-5");
+  rememberLastUsedThinkingLevel("xhigh");
+  requestMock.mockImplementation(async (name: string) =>
+    (name === "list_models"
+      ? [
+          { id: "gpt-5", label: "GPT-5", provider: "openai" },
+          { id: "auto", isDefault: true, label: "Auto", provider: "openrouter" },
+        ]
+      : undefined));
+
+  const hook = await mountHook({ sessionId: "" });
+
+  // The remembered model wins over the host's own default...
+  expect(hook.current.model).toBe("openai/gpt-5");
+  // ...and the remembered level over the app default.
+  expect(hook.current.thinkingLevel).toBe("xhigh");
+  await hook.unmount();
+});
+
+/** A remembered model that host no longer offers is not a choice it can run. */
+it("falls back to the host's default when the remembered model is gone", async () => {
+  rememberLastUsedModel("openai/retired");
+  requestMock.mockImplementation(async (name: string) =>
+    (name === "list_models"
+      ? [
+          { id: "gpt-5", label: "GPT-5", provider: "openai" },
+          { id: "auto", isDefault: true, label: "Auto", provider: "openrouter" },
+        ]
+      : undefined));
+
+  const hook = await mountHook({ sessionId: "" });
+  expect(hook.current.model).toBe("openrouter/auto");
+  await hook.unmount();
+});
+
+/**
+ * Picking a model or a level *is* the memory the next draft reads.
+ *
+ * The phone writes its preference on every change, including on a conversation
+ * that already exists (`setModel`/`setThinkingLevel` in
+ * `mobile/src/remote/useConversationController.ts`), and so does this app's own
+ * composer. Without the write the draft would read a memory no remote pick ever
+ * updated, and the rule would only ever replay this machine's local choices.
+ */
+it("remembers a draft's choices for the next draft", async () => {
+  requestMock.mockImplementation(async (name: string) =>
+    (name === "list_models" ? [{ id: "gpt-5", provider: "openai" }, { id: "auto", provider: "openrouter" }] : undefined));
+  const hook = await mountHook({ sessionId: "" });
+
+  await act(async () => {
+    await hook.current.setModel("openrouter/auto");
+    await hook.current.setThinkingLevel("low");
+  });
+
+  expect(readLastUsedModel()).toBe("openrouter/auto");
+  expect(readLastUsedThinkingLevel()).toBe("low");
+  await hook.unmount();
+});
+
+/** And a choice made on a conversation the host has to be told about, too. */
+it("remembers a choice made on an existing conversation", async () => {
+  requestMock.mockImplementation(async (name: string) => {
+    if (name === "get_state")
+      return { model: "openai/gpt-5", thinkingLevel: "medium" };
+    if (name === "list_models")
+      return [{ id: "gpt-5", provider: "openai" }];
+    return undefined;
+  });
+  const hook = await mountHook();
+
+  await act(async () => {
+    await hook.current.setThinkingLevel("xhigh");
+  });
+
+  expect(readLastUsedThinkingLevel()).toBe("xhigh");
+  await hook.unmount();
+});
+
 /** With no default marked, the first model the host offers is what runs. */
 it("takes the first model when the host marks no default", async () => {
   requestMock.mockImplementation(async (name: string) =>
@@ -173,13 +409,43 @@ it("offers a non-reasoning model no thinking level", async () => {
   await hook.unmount();
 });
 
-/** A model that declares its own level uses it. */
-it("uses the level a model declares", async () => {
+/**
+ * A draft starts on this app's default, not on the level the host's catalogue
+ * declares for the model.
+ *
+ * That declared level is a capability marker, not a default: the agent reports
+ * `high` for every reasoning model and `off` for the rest
+ * (`agent/src/rpc/commands/providers.rs`), and this app's own composer ignores it
+ * for exactly that reason (`modelThinkingLevel`). Seeding a draft from it made
+ * every new remote conversation on a reasoning model run at high effort — the
+ * level travels with the first prompt, so the host ran it at high — while the
+ * same model started on this machine ran at medium.
+ */
+it("seeds a draft with this app's default, not the level the host declares", async () => {
   requestMock.mockImplementation(async (name: string) =>
     (name === "list_models"
       ? [{ id: "thinker", provider: "openai", reasoning: true, thinkingLevel: "high" }]
       : undefined));
   const hook = await mountHook({ sessionId: "" });
+  expect(hook.current.thinkingLevel).toBe("medium");
+  await hook.unmount();
+});
+
+/**
+ * The other half of that rule: a conversation that already exists on the host
+ * shows the level *it* is running at, whatever this app's default is. Only a
+ * draft is seeded here; overriding a real session's level would be this machine
+ * telling the host what it has.
+ */
+it("shows the host's own level for a conversation that exists", async () => {
+  requestMock.mockImplementation(async (name: string) => {
+    if (name === "get_state")
+      return { model: "openai/gpt-5", thinkingLevel: "high" };
+    if (name === "list_models")
+      return [{ id: "gpt-5", provider: "openai", reasoning: true, thinkingLevel: "high" }];
+    return undefined;
+  });
+  const hook = await mountHook();
   expect(hook.current.thinkingLevel).toBe("high");
   await hook.unmount();
 });
@@ -192,7 +458,7 @@ it("surfaces a catalogue that could not be read for a draft", async () => {
     return undefined;
   });
   const hook = await mountHook({ sessionId: "" });
-  expect(hook.current.error).toBe("host is not connected");
+  expect(hook.current.readError).toBe("host is not connected");
   expect(hook.current.model).toBeNull();
   await hook.unmount();
 });
@@ -308,7 +574,7 @@ it("puts the setting back when the host refuses it", async () => {
   });
   await settle();
 
-  expect(hook.current.error).toContain("model_not_available");
+  expect(hook.current.writeError).toContain("model_not_available");
   expect(hook.current.model).toBe("openai/gpt-5");
   await hook.unmount();
 });
@@ -321,7 +587,7 @@ it("surfaces a failed read", async () => {
   });
 
   const hook = await mountHook();
-  expect(hook.current.error).toContain("peer_not_connected");
+  expect(hook.current.readError).toContain("peer_not_connected");
   await hook.unmount();
 });
 
@@ -385,13 +651,15 @@ async function mountPicker(settings: Parameters<typeof RemoteConversationSetting
 
 function state(overrides: Partial<Parameters<typeof useRemoteConversationSettings>[0] extends never ? never : ReturnType<typeof useRemoteConversationSettings>> = {}) {
   return {
-    error: null,
+    loading: false,
     model: "openai/gpt-5",
     models: MODELS,
+    readError: null,
     saving: false,
     setModel: vi.fn(async () => {}),
     setThinkingLevel: vi.fn(async () => {}),
     thinkingLevel: "low",
+    writeError: null,
     ...overrides,
   };
 }
@@ -569,7 +837,7 @@ it("puts the thinking level back when the host refuses it", async () => {
   });
   await settle();
 
-  expect(hook.current.error).toContain("unsupported_level");
+  expect(hook.current.writeError).toContain("unsupported_level");
   expect(hook.current.thinkingLevel).toBe("low");
   await hook.unmount();
 });
@@ -633,7 +901,7 @@ it("closes a subscription that arrives after it unmounted", async () => {
  * computed* is not the feature — being on screen is.
  */
 it("shows why a refused change was refused", async () => {
-  const view = await mountPicker(state({ error: "model_not_available" }));
+  const view = await mountPicker(state({ writeError: "model_not_available" }));
 
   expect(view.container.textContent).toContain("model_not_available");
   // Announced, not merely painted: a silent line is easy to miss next to a
@@ -642,11 +910,71 @@ it("shows why a refused change was refused", async () => {
   await view.unmount();
 });
 
+/**
+ * A failed *read* is not reported as a failed *change*.
+ *
+ * The two share the one line under the pickers, and the write wording ("Could
+ * not change it") describes an event that did not happen when the host never
+ * answered. The reason is the same either way; what changes is which event the
+ * user is told about.
+ */
+it("reports a failed read as a read", async () => {
+  const view = await mountPicker(state({ readError: "peer_not_connected" }));
+
+  expect(view.container.textContent).toContain("Could not read it: peer_not_connected");
+  expect(view.container.textContent).not.toContain("Could not change it");
+  await view.unmount();
+});
+
 /** Nothing is announced while nothing has gone wrong. */
 it("says nothing when the last change succeeded", async () => {
-  const view = await mountPicker(state({ error: null }));
+  const view = await mountPicker(state());
 
   expect(view.container.querySelector("[role='alert']")).toBeNull();
+  await view.unmount();
+});
+
+/**
+ * The trigger says a *word* while the model is unknown — never its own label.
+ *
+ * `modelLabel` is the full sentence written for the tooltip and the accessible
+ * name. Used as the visible fallback it filled the `max-w-48` trigger with its
+ * opening clause ("Model for this conversation (…") for as long as the host
+ * took to answer, which on every open is the first thing the reader sees.
+ */
+it("shows a short word, not its own label, while the model is unknown", async () => {
+  const view = await mountPicker(state({ model: null, models: [] }));
+
+  expect(view.modelLabel()?.trim()).toBe("Model");
+  // The sentence is still where it belongs: the accessible name and the tooltip.
+  expect(view.model().getAttribute("title")).toBe("Model for this conversation (on that computer)");
+  await view.unmount();
+});
+
+/**
+ * A read in flight says so, rather than passing for a conversation with no model.
+ *
+ * Both are a `null` model, and "Model" on its own reads as the latter — a
+ * statement about the *host*, not about this machine waiting for it.
+ */
+it("says the read is in flight rather than showing the fallback", async () => {
+  const view = await mountPicker(state({ loading: true, model: null, models: [] }));
+
+  expect(view.modelLabel()?.trim()).toBe("Loading…");
+  await view.unmount();
+});
+
+/**
+ * A host that lists a model without a label shows its id — the phone's own rule,
+ * so the two controls read the same for the same catalogue.
+ */
+it("falls back to the model's id when the host gives no label", async () => {
+  const view = await mountPicker(state({
+    model: "openai/gpt-5",
+    models: [{ id: "gpt-5", provider: "openai" }],
+  }));
+
+  expect(view.modelLabel()?.trim()).toBe("gpt-5");
   await view.unmount();
 });
 

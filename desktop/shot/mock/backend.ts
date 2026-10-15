@@ -99,6 +99,27 @@ function hiddenModelKeys(): string[] {
   const hidden: unknown = (settings as { hiddenModels?: unknown }).hiddenModels;
   return Array.isArray(hidden) ? hidden.filter((item): item is string => typeof item === "string") : [];
 }
+
+/**
+ * Whether this page asked for a host whose *reads* take a moment (`?remoteSlowRead=1`).
+ *
+ * A host answers in a few milliseconds here, so the state a reader is in *while*
+ * a read is in flight never reaches a capture — and that is exactly the state a
+ * control with nothing to show lives in: one that filled its own label into the
+ * value slot looked identical to one that said it was loading. This flag is the
+ * fixture for that moment; nothing else about the host changes.
+ */
+function slowReadsEnabled(): boolean {
+  return typeof window !== "undefined"
+    && new URLSearchParams(window.location.search).get("remoteSlowRead") === "1";
+}
+
+/** One of the host's reads, held back to the fixture's `?remoteSlowRead=1`. */
+function slow<T>(answer: T): T | Promise<T> {
+  if (!slowReadsEnabled())
+    return answer;
+  return new Promise(resolve => setTimeout(resolve, 1500, answer));
+}
 const threadList = threads.map(thread => ({ ...thread }));
 const workspaceList = workspaces.map(workspace => ({ ...workspace }));
 /** How many times each thread's agent state has been read (see the handler). */
@@ -513,6 +534,16 @@ const handlers: Record<string, (args: any) => unknown> = {
     connected: true,
     error: null,
   }),
+  /**
+   * The app's own liveness pass, and "reconnect all".
+   *
+   * The fixture answers it with the same list: a capture's state *is* the
+   * fixture, and the list below is static, so a machine the fixture calls down
+   * stays down on screen however often the app asks for it. Serving it at all is
+   * what keeps a screen that clicks "reconnect all" from silently doing nothing
+   * in a capture while it works in the app.
+   */
+  remote_peer_connect_all: () => remotePeers,
   remote_peer_disconnect: () => null,
   remote_peer_unpair: () => null,
   remote_peer_set_label: () => null,
@@ -583,7 +614,7 @@ const handlers: Record<string, (args: any) => unknown> = {
        * tool call pushes nothing for minutes.
        */
       case "get_state":
-        return { ...remoteConversationState, ...replayState(String(command.sessionId ?? "")) };
+        return slow({ ...remoteConversationState, ...replayState(String(command.sessionId ?? "")) });
       /**
        * The run's log, for the client that reads it rather than guessing.
        *
@@ -618,7 +649,19 @@ const handlers: Record<string, (args: any) => unknown> = {
       // page fed from the wrong one would still look right here.
       case "list_models":
       case "get_available_models":
-        return { models: models.filter(model => !hiddenModelKeys().includes(`${model.provider}/${model.id}`)) };
+        return slow({
+          // The host answers with the level the *agent* declares for a model,
+          // which is a capability marker rather than a default anybody chose:
+          // `high` for every reasoning model and `off` for the rest
+          // (`agent/src/rpc/commands/providers.rs`). The fixture's own `models`
+          // carry the level this app's pickers start at, so the host's answer is
+          // mapped rather than reused: a client that seeded a draft from this
+          // field would look right here and run at high effort against a real
+          // machine (see `useRemoteConversationSettings`).
+          models: models
+            .filter(model => !hiddenModelKeys().includes(`${model.provider}/${model.id}`))
+            .map(model => ({ ...model, thinkingLevel: model.reasoning === false ? "off" : "high" })),
+        });
       case "list_settings_models":
         return { models };
       case "get_desktop_settings":

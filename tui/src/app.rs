@@ -4250,10 +4250,14 @@ impl<T: TerminalIo> App<T> {
                 self.send_held_draft();
                 return;
             }
-            // While the agent is being asked, escape must not clear either: the
-            // held draft is what the answer belongs to, and dropping it would
-            // leave a card pointing at nothing.
+            // While the agent is being asked the draft is already submitted, so
+            // escape means what it means next to a card: send it, without a
+            // skill. Swallowing the key left the wait with no way out of it at
+            // all — the box is locked for the whole round-trip, and the only
+            // thing that ever released a hold the answer never arrived for was
+            // the flow's own deadline.
             if self.editor_locked_by_reco() {
+                self.send_held_draft();
                 return;
             }
             if self.autocomplete.is_visible() {
@@ -5438,8 +5442,10 @@ impl<T: TerminalIo> App<T> {
     ///
     /// `Pending` (the agent is being asked) locks it, which is the TUI's
     /// equivalent of the desktop's disabled send button: the message that goes
-    /// out has to be the one that was evaluated. `Suggested` does not — there
-    /// the card is up and `a` / `Esc` decide.
+    /// out has to be the one that was evaluated. `Esc` is the way out — it sends
+    /// the held draft, so the lock can never trap the box for longer than the
+    /// round-trip lasts. `Suggested` does not lock it — there the card is up and
+    /// `a` / `Esc` decide.
     fn editor_locked_by_reco(&self) -> bool {
         matches!(self.skill_reco, SkillRecoState::Pending { .. })
     }
@@ -17303,7 +17309,9 @@ mod tests {
             "nothing may be sent while the answer is in flight"
         );
 
-        // Typing, pasting and Escape all leave the held draft as it is.
+        // Typing and pasting leave the held draft as it is. (Escape is the one
+        // exception, and has its own test: it sends the draft, exactly as it
+        // does next to a card.)
         app.handle_key("x");
         assert_eq!(app.input.get_value(), RECO_DRAFT);
         let dir = tempfile::tempdir().expect("tempdir");
@@ -17315,12 +17323,45 @@ mod tests {
             clipboard_programs(&programs).is_empty(),
             "a locked box must not even read the clipboard"
         );
+    }
+
+    /// Escape while the answer is in flight means what it means next to a card:
+    /// send the draft, without a skill. Swallowing it left the wait with no way
+    /// out for as long as it lasted, and a hold whose answer never arrived
+    /// (the flow's own deadline is the only thing that releases it) had no
+    /// user-side escape at all.
+    #[tokio::test]
+    async fn escape_while_the_answer_is_in_flight_sends_the_held_draft() {
+        let mut app = reco_app();
+        app.state.session_id = "s1".to_string();
+        app.input.set_value(RECO_DRAFT, None);
+        app.skill_reco = SkillRecoState::Pending {
+            draft: RECO_DRAFT.to_string(),
+        };
+
         app.handle_key(Key::ESCAPE);
         assert_eq!(
-            app.input.get_value(),
-            RECO_DRAFT,
-            "Escape must not clear the draft the answer belongs to"
+            app.skill_reco,
+            SkillRecoState::Idle,
+            "the wait is abandoned rather than left holding the box"
         );
+        assert_eq!(app.input.get_value(), "", "the draft went out, not back");
+        assert_eq!(
+            app.chat
+                .last_message()
+                .map(|message| message.content.as_str()),
+            Some(RECO_DRAFT),
+            "exactly the draft that was submitted"
+        );
+
+        // An answer that arrives afterwards must not resurrect a card — or spend
+        // a slot of the daily budget on one that was never shown.
+        app.apply_skill_reco_suggestion(
+            RECO_DRAFT.to_string(),
+            Some(("alpha".to_string(), "does alpha things".to_string())),
+        );
+        assert_eq!(app.skill_reco, SkillRecoState::Idle);
+        assert_eq!(crate::skill_reco::load_at(&app.skill_reco_path).count(), 0);
     }
 
     /// The lock belongs to the wait only: once the flow releases the draft the
