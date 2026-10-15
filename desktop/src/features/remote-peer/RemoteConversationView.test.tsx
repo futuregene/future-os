@@ -152,6 +152,7 @@ async function mount(props: {
         onOpenUsage={onOpenUsage}
         onRetry={() => {}}
         onToggleLeftPanel={() => {}}
+        olderHistoryFailed={false}
         peer={peer}
         persistedEntryIds={new Set(props.persistedEntryIds ?? props.entries.map(item => item.id))}
         sessionId="sess_1"

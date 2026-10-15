@@ -90,6 +90,7 @@ export function RemoteConversationView({
   onOpenUsage,
   onRetry,
   onToggleLeftPanel,
+  olderHistoryFailed,
   peer,
   persistedEntryIds,
   streaming,
@@ -135,7 +136,16 @@ export function RemoteConversationView({
    * host yet, which the caller must report rather than send.
    */
   onFork: (sourceEntryId: string, forkable: boolean) => void;
-  onLoadOlder: () => void;
+  /**
+   * Ask for the page above the loaded window.
+   *
+   * The press that asks for one lands on it (see `useQuestionNav`), so the reply
+   * is what says the page has been fetched — hence the promise rather than a
+   * fire-and-forget call.
+   */
+  onLoadOlder: () => Promise<unknown> | void;
+  /** Whether the last older page read failed (see the timeline). */
+  olderHistoryFailed: boolean;
   /** Open this conversation's account book (token usage and amount). */
   onOpenUsage: () => void;
   onRetry: () => void;
@@ -267,6 +277,13 @@ export function RemoteConversationView({
     messages,
     scrollRef,
     onTakeOver: () => takeOverQuestionNavRef.current(),
+    // The walk pages too: at the top of the loaded window the prompt above is in
+    // the host's history, and that is where ↑ has to reach. The same request the
+    // top-edge scroll makes (`loadOlderAtTop`), so a window too short to scroll
+    // is not a window whose history is unreachable.
+    hasOlderHistory: hasMore,
+    loadingOlder,
+    loadOlder: onLoadOlder,
   });
 
   return (
@@ -329,10 +346,19 @@ The same two layers this app's own conversation uses (`AgentThread`):
           conversations are put side by side — a hard edge under the last
           message reads as a second panel, not as one conversation. */}
       <div className="group relative min-h-0 flex-1 overflow-hidden">
-        {/* Reaching the top is what asks for older history (see
-            `loadOlderAtTop`); this is the same affordance the local transcript
-            floats over its top edge for the reader who would rather click. */}
-        {hasMore
+        {/* The band over the transcript's top edge, and the two moments it
+            speaks in: a page on its way (the reader asked for it, and the
+            fetched rows take a moment to arrive), or a page that did not come —
+            the same press, offered again.
+
+            It used to be up whenever the host had more history, which made it
+            permanent: a remote conversation opens on a window with earlier
+            pages above it, so the pill sat over the first line of the
+            transcript for as long as the window was open. Reading history is
+            not something the reader needs told twice — scrolling up to the top
+            asks for it, and ↑ fetches the page and lands on the prompt above —
+            so what is left is the feedback a request needs. */}
+        {loadingOlder || (olderHistoryFailed && hasMore)
           ? (
               <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center px-8 pt-5">
                 <button
@@ -345,7 +371,7 @@ The same two layers this app's own conversation uses (`AgentThread`):
                   type="button"
                 >
                   <History className="size-3.5" />
-                  {loadingOlder ? t("loadingOlder") : t("loadOlder")}
+                  {loadingOlder ? t("loadingOlder") : t("loadOlderFailed")}
                 </button>
               </div>
             )

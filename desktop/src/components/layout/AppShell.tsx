@@ -1208,7 +1208,8 @@ function ReadyAppShell({
                                 sourceEntryId,
                                 forkable,
                               )}
-                            onLoadOlder={() => void remoteTimeline.loadOlder()}
+                            onLoadOlder={() => remoteTimeline.loadOlder()}
+                            olderHistoryFailed={remoteTimeline.olderHistoryFailed}
                             onOpenUsage={() => setRemoteUsageOpen(true)}
                             onRetry={() => void remoteTimeline.refresh()}
                             peer={activeRemotePeer}

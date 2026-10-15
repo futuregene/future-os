@@ -403,7 +403,6 @@ export const resources = {
           "Latest content is not yet synced. Waiting for connection…",
         historyLoadTimedOut:
           "Loading this conversation timed out. Please try again.",
-        loadOlder: "Load earlier messages",
         loadingOlder: "Loading earlier messages…",
         loadOlderFailed: "Couldn't load earlier messages — tap to retry",
         model: "Model",
@@ -1312,7 +1311,6 @@ export const resources = {
         syncRetrying: "最新内容尚未同步完成，正在重试…",
         syncWaitingNetwork: "最新内容尚未同步完成，正在等待连接恢复…",
         historyLoadTimedOut: "加载对话超时，请重试。",
-        loadOlder: "加载更早的对话",
         loadingOlder: "正在加载更早的对话…",
         loadOlderFailed: "更早的对话没能加载出来，点按重试",
         model: "模型",
