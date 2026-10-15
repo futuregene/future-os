@@ -27,6 +27,7 @@ mod git_review;
 pub mod headless;
 mod host_environment;
 mod instance;
+pub mod launch;
 
 /// Sandbox children enter the existing Agent helper before constructing GUI
 /// or headless state. The helper never starts a service or takes its lock.
@@ -134,12 +135,12 @@ pub(crate) fn future_home_root() -> std::path::PathBuf {
 }
 
 #[cfg(feature = "gui")]
-pub use gui::run;
-#[cfg(feature = "gui")]
 pub(crate) use gui::{
     emit_approvals_updated, emit_remote_activity, emit_review_updated, emit_thread_runtime_updated,
     emit_threads_updated, APP_HANDLE,
 };
+#[cfg(feature = "gui")]
+pub use gui::{run, run_with};
 #[cfg(not(feature = "gui"))]
 mod no_gui;
 #[cfg(not(feature = "gui"))]
@@ -514,6 +515,23 @@ mod gui {
         let _ = handle.emit("remote-activity", thread_id.to_string());
     }
 
+    /// Ask the window to open the Remote page, which is the only place a
+    /// `--re-pair` invitation (or its failure) becomes visible: this entry point
+    /// prints no code, and a flag whose whole effect is off-screen would look
+    /// like it did nothing.
+    fn emit_remote_re_pair() {
+        if let Some(handle) = APP_HANDLE.get() {
+            emit_remote_re_pair_on(handle);
+        }
+    }
+
+    /// Emit on a caller-supplied handle, so the body is testable without a running
+    /// app (the process-global `APP_HANDLE` is only populated at setup).
+    fn emit_remote_re_pair_on<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) {
+        use tauri::Emitter;
+        let _ = handle.emit("remote-re-pair", ());
+    }
+
     /// Notify the frontend that the thread list changed behind its back — sessions
     /// created outside the GUI (TUI/CLI/channels) were imported into the store —
     /// so the sidebar re-lists threads. No payload: a bare invalidation signal.
@@ -809,18 +827,32 @@ mod gui {
 
     #[cfg_attr(mobile, tauri::mobile_entry_point)]
     pub fn run() -> Result<(), AppError> {
+        run_with(crate::launch::LaunchOptions::default())
+    }
+
+    /// Same as [`run`], with what the command line asked for. Mobile enters
+    /// through [`run`], so it always gets the defaults.
+    pub fn run_with(launch: crate::launch::LaunchOptions) -> Result<(), AppError> {
         // The combined Agent/Desktop dependency graph may include multiple
         // rustls providers. Select ring and hydrate tool environment before
         // Tauri starts threads or creates any HTTP clients.
         crate::host_environment::initialize()?;
         let app = tauri::Builder::default()
-            .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
                 // A second instance was launched — activate the existing window.
                 use tauri::Manager;
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.unminimize();
                     let _ = window.show();
                     let _ = window.set_focus();
+                }
+                // `--re-pair` belongs to the instance that owns the pairing: the
+                // launching process holds no credentials, so forwarding the flag
+                // is the only way a shell can ask this window to re-pair. The flag
+                // was already validated by that process — an unrecognized option
+                // never reaches here.
+                if crate::launch::requests_re_pair(&args) {
+                    spawn_remote_re_pair();
                 }
             }))
             .plugin(tauri_plugin_dialog::init())
@@ -1086,7 +1118,7 @@ mod gui {
         unsafe {
             let _ = windows::Win32::System::Console::FreeConsole();
         }
-        app.run(|app_handle, event| match event {
+        app.run(move |app_handle, event| match event {
             // `setup` runs while Tauri is still constructing its event loop.
             // Starting the bridge there races the runtime initialization on
             // macOS and can leave the detached start task without a live
@@ -1101,7 +1133,7 @@ mod gui {
                     if crate::desktop_shutdown::is_stopping() {
                         return;
                     }
-                    start_backend_background(handle);
+                    start_backend_background(handle, launch);
                 });
                 if let Err(error) = terminal::server::serve() {
                     eprintln!("FutureOS terminal server failed to start: {error}");
@@ -1131,7 +1163,7 @@ mod gui {
         Ok(())
     }
 
-    fn start_backend_background(app: tauri::AppHandle) {
+    fn start_backend_background(app: tauri::AppHandle, launch: crate::launch::LaunchOptions) {
         // Independent fixed-interval maintenance: app updates (24h),
         // Future balance (1h), and Future models (24h). Missed ticks while
         // suspended are skipped; each task runs at most once after resume.
@@ -1206,7 +1238,14 @@ mod gui {
         // Shadow-review maintenance (consistency check + crash recovery) runs
         // off the launch path so it never delays the window.
         crate::runtime::spawn_native(shadow_review::run_startup_maintenance);
-        spawn_remote_auto_connect();
+        // One launch, one remote start: a launch that asked to re-pair owns it, and
+        // running the auto-connect pass as well would race two starts for the same
+        // pairing (the loser's invitation is then revoked by the winner's).
+        if launch.re_pair {
+            spawn_remote_re_pair();
+        } else {
+            spawn_remote_auto_connect();
+        }
     }
 
     /// Start the persisted remote bridge only after Tauri's runtime has entered its
@@ -1239,15 +1278,36 @@ mod gui {
         });
     }
 
+    /// `--re-pair`: replace the saved pairing and show the fresh invitation.
+    ///
+    /// Like the auto-connect pass, this never fails the launch: the outcome is a
+    /// status the Remote page renders, and the event below is what opens that page
+    /// (the window shows the code; this entry point has nothing to print it to).
+    fn spawn_remote_re_pair() {
+        crate::runtime::spawn(async {
+            match crate::remote::re_pair().await {
+                Ok(status) if status.pairing_code.is_some() => {
+                    eprintln!("FutureOS remote re-pair: a new invitation is ready")
+                }
+                Ok(status) => eprintln!(
+                    "FutureOS remote re-pair: no invitation was issued ({:?} {:?})",
+                    status.phase, status.reason
+                ),
+                Err(error) => eprintln!("FutureOS remote re-pair failed: {error}"),
+            }
+            emit_remote_re_pair();
+        });
+    }
+
     #[cfg(test)]
     mod runtime_update_tests {
         use super::{
             apply_main_window_geometry, coalesce_runtime_updates, emit_approvals_updated_on,
             emit_approvals_updated_via, emit_remote_activity_on, emit_remote_activity_via,
-            emit_review_updated_on, emit_review_updated_via, emit_runtime_updates_on,
-            emit_threads_updated, emit_threads_updated_on, emit_threads_updated_via,
-            main_window_geometry, runtime_update_drain_loop, sample_thread_streaming,
-            sample_thread_streaming_with, size_main_window_to_screen,
+            emit_remote_re_pair_on, emit_review_updated_on, emit_review_updated_via,
+            emit_runtime_updates_on, emit_threads_updated, emit_threads_updated_on,
+            emit_threads_updated_via, main_window_geometry, runtime_update_drain_loop,
+            sample_thread_streaming, sample_thread_streaming_with, size_main_window_to_screen,
             thread_streaming_monitor_loop, ThreadRuntimeUpdate, ThreadRuntimeUpdateBatch,
         };
 
@@ -1362,6 +1422,7 @@ mod gui {
             let handle = app.handle();
             emit_review_updated_on(handle, "thread-1");
             emit_remote_activity_on(handle, "thread-1");
+            emit_remote_re_pair_on(handle);
             emit_approvals_updated_on(handle, "thread-1", "approval-1");
             emit_runtime_updates_on(
                 handle,

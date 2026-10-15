@@ -170,6 +170,17 @@ the full `futureos://remote/pair` link for the app to scan or paste — not a
 short numeric code. The graphical `futureos` entrypoint no longer accepts
 `--headless`; the standalone binary is built without GUI dependencies.
 
+**The graphical entry point accepts one flag of its own.** `futureos --re-pair`
+revokes the saved pairing and issues a fresh invitation, which the window's
+Remote page displays — the code is never printed, because a window has no
+terminal to print it to. The flag is refused without an interactive terminal: it
+cuts off the connected device the moment it runs (pairing replaces, see §2.2),
+and a script is where such a command would end up unattended. When another
+Desktop already owns the data directory, the launching process forwards its
+`argv` through the single-instance plugin and exits; the running instance
+performs the re-pair and raises its window, so the flag never needs the GUI to
+be restarted.
+
 Valid login and pairing are reused; no proactive re-pairing on every launch or
 disconnect. `--no-qr` keeps only the text link, with automatic fallback on
 narrow terminals; `--re-pair` explicitly authorizes replacing the original
