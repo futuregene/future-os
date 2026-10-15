@@ -9,6 +9,9 @@ use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 6;
+// Fail compilation if the storage owner and the client handshake drift.
+const _: () =
+    assert!(CURRENT_SCHEMA_VERSION == future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION as i64);
 
 type DatabaseJob = Box<dyn FnOnce(&mut Connection) + Send>;
 
@@ -36,6 +39,13 @@ impl Drop for DatabaseWorker {
 
 impl Database {
     pub(crate) fn open(path: &Path) -> Result<Self> {
+        Self::open_cancellable(path, crate::service::StartupCancellation::default())
+    }
+
+    pub(crate) fn open_cancellable(
+        path: &Path,
+        cancellation: crate::service::StartupCancellation,
+    ) -> Result<Self> {
         let path = path.to_path_buf();
         let (sender, receiver) = mpsc::sync_channel::<DatabaseJob>(256);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
@@ -44,7 +54,7 @@ impl Database {
         let thread = std::thread::Builder::new()
             .name("agent-sqlite".into())
             .spawn(move || {
-                let mut connection = match open_connection(&path) {
+                let mut connection = match connection::open_connection_cancellable(&path, &cancellation) {
                     Ok(connection) => connection,
                     Err(error) => {
                         let _ = ready_tx.send(Err(error));
@@ -136,6 +146,7 @@ mod connection;
 mod reclamation;
 mod schema;
 mod transactions;
+#[cfg(test)]
 use connection::open_connection;
 pub(crate) use reclamation::reclaim_space_when_idle;
 pub(crate) use transactions::{begin_write_transaction, try_maintenance_transaction};

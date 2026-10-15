@@ -68,7 +68,7 @@ impl PreparedInstaller {
             log,
         })
     }
-    pub(super) fn launch(self) -> Result<(), String> {
+    pub(super) fn launch(self, operation: &super::journal::Operation) -> Result<(), String> {
         use std::os::windows::process::CommandExt;
         let ready = self.directory.path().join("ready");
         let mut observer = Command::new(&self.powershell)
@@ -90,6 +90,8 @@ impl PreparedInstaller {
             .arg(&self.desktop)
             .arg("-Directory")
             .arg(self.directory.path())
+            .arg("-Record")
+            .arg(operation.path())
             .arg("-Log")
             .arg(&self.log)
             .spawn()
@@ -133,6 +135,7 @@ impl PreparedInstaller {
         }
         // Observer owns staged files until the installer exits. Dropping the
         // Rust Child does not kill it; it must survive Desktop's normal exit.
+        operation.hand_off();
         let _ = self.directory.keep();
         Ok(())
     }

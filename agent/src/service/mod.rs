@@ -45,7 +45,7 @@ impl StartupCancellation {
         self.0.store(true, Ordering::Release);
     }
 
-    fn check(&self) -> Result<()> {
+    pub(crate) fn check(&self) -> Result<()> {
         if self.0.load(Ordering::Acquire) {
             return Err(StartupCancelled.into());
         }

@@ -245,7 +245,7 @@ fn delete_sessions(
             for session_id in ready {
                 state.sessions.write().remove(&session_id);
                 // Publish only after the whole database transaction committed.
-                crate::rpc::publish_session_deleted(&session_id);
+                state.control_plane.publish_session_deleted(&session_id);
                 results.push(future_rpc::session_deletion::DeleteSessionResult {
                     session_id,
                     deleted: true,

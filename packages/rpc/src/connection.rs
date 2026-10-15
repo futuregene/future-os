@@ -8,13 +8,81 @@ use std::{
 };
 use tonic::transport::Channel;
 
-pub const AGENT_PROTOCOL_VERSION: u32 = 1;
+pub const AGENT_PROTOCOL_VERSION: u32 = 2;
 pub const AGENT_STORAGE_SCHEMA_VERSION: u32 = 6;
 /// Coordinated Agent release expected by RPC consumers. This differs from the
 /// CLI/TUI display version in bare development builds; suffixes are ignored.
 pub const EXPECTED_AGENT_VERSION: &str = env!("EXPECTED_AGENT_VERSION");
 pub const EXPECTED_INSTANCE_HEADER: &str = "x-future-agent-instance";
 pub const EXPECTED_DATA_ROOT_HEADER: &str = "x-future-agent-data-root";
+
+/// Protocol 2 requires a complete client contract on every business request.
+/// These headers fence instances; local IPC permissions remain authentication.
+pub const CLIENT_VERSION_HEADER: &str = "x-future-client-version";
+pub const CLIENT_PROTOCOL_HEADER: &str = "x-future-client-protocol";
+pub const CLIENT_SCHEMA_HEADER: &str = "x-future-client-storage-schema";
+
+#[allow(clippy::result_large_err)]
+pub fn bind_request<T>(
+    mut request: tonic::Request<T>,
+    readiness: &AgentReadinessPayload,
+    version: &str,
+) -> Result<tonic::Request<T>, tonic::Status> {
+    for (header, value) in [
+        (
+            EXPECTED_INSTANCE_HEADER,
+            readiness.agent_instance_id.clone(),
+        ),
+        (EXPECTED_DATA_ROOT_HEADER, readiness.data_root_id.clone()),
+        (CLIENT_VERSION_HEADER, version.to_owned()),
+        (CLIENT_PROTOCOL_HEADER, AGENT_PROTOCOL_VERSION.to_string()),
+        (
+            CLIENT_SCHEMA_HEADER,
+            AGENT_STORAGE_SCHEMA_VERSION.to_string(),
+        ),
+    ] {
+        request.metadata_mut().insert(
+            header,
+            value.parse().map_err(|_| {
+                tonic::Status::failed_precondition("invalid client connection contract")
+            })?,
+        );
+    }
+    Ok(request)
+}
+
+/// Validate before dispatch or session hydration, including read-only business
+/// calls and subscriptions. Only readiness discovery is exempt.
+#[allow(clippy::result_large_err)]
+pub fn validate_request_metadata(
+    metadata: &tonic::metadata::MetadataMap,
+    version: &str,
+    instance: &str,
+    root: &str,
+) -> Result<(), tonic::Status> {
+    let required = |header: &'static str| {
+        metadata
+            .get(header)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| {
+                tonic::Status::failed_precondition(
+                    "missing client contract; reconnect with a matching FutureOS client",
+                )
+            })
+    };
+    if required(EXPECTED_INSTANCE_HEADER)? != instance
+        || required(EXPECTED_DATA_ROOT_HEADER)? != root
+        || release_core(version).is_none()
+        || release_core(required(CLIENT_VERSION_HEADER)?) != release_core(version)
+        || required(CLIENT_PROTOCOL_HEADER)?.parse::<u32>().ok() != Some(AGENT_PROTOCOL_VERSION)
+        || required(CLIENT_SCHEMA_HEADER)?.parse::<u32>().ok() != Some(AGENT_STORAGE_SCHEMA_VERSION)
+    {
+        return Err(tonic::Status::failed_precondition(
+            "Agent instance, data root or client contract changed; reconnect with a matching FutureOS client",
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Clone, Debug)]
 pub struct CompatibilityRequirements {
@@ -80,7 +148,7 @@ pub fn data_root_id(home: &Path) -> io::Result<String> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
-fn release_core(version: &str) -> Option<&str> {
+pub fn release_core(version: &str) -> Option<&str> {
     let core = version.split(['-', '+']).next()?;
     let parts: Vec<_> = core.split('.').collect();
     (parts.len() == 3
@@ -176,6 +244,11 @@ async fn read_readiness(
         })?
         .into_inner();
     if !response.success {
+        if response.error_code == "agent_stopping" {
+            return Err(ConnectionError::StartupBlocked(
+                "Agent service is stopping; wait for it to exit before reconnecting; no local fallback".into(),
+            ));
+        }
         return Err(ConnectionError::Incompatible {
             agent_version: None,
             reason: format!("readiness rejected: {}", response.error),
@@ -216,20 +289,8 @@ impl VerifiedAgentClient {
     }
 
     #[allow(clippy::result_large_err)] // Tonic request APIs expose Status directly.
-    fn bind<T>(&self, mut request: tonic::Request<T>) -> Result<tonic::Request<T>, tonic::Status> {
-        request.metadata_mut().insert(
-            EXPECTED_INSTANCE_HEADER,
-            self.readiness.agent_instance_id.parse().map_err(|_| {
-                tonic::Status::failed_precondition("invalid Agent instance identity")
-            })?,
-        );
-        request.metadata_mut().insert(
-            EXPECTED_DATA_ROOT_HEADER,
-            self.readiness.data_root_id.parse().map_err(|_| {
-                tonic::Status::failed_precondition("invalid Agent data-root identity")
-            })?,
-        );
-        Ok(request)
+    fn bind<T>(&self, request: tonic::Request<T>) -> Result<tonic::Request<T>, tonic::Status> {
+        bind_request(request, &self.readiness, &self.requirements.version)
     }
 
     pub async fn execute_command(

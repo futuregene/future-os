@@ -23,10 +23,29 @@ takeover. For development, run `future agent` in another terminal before startin
 Desktop in external mode. Default `auto` supports both compatible external and
 embedded services; there is no force-embedded bypass of an external owner.
 
+A release Desktop rejects attachment when its configured Future platform is
+non-production. It does not rewrite authentication or remove keys while an
+external Agent owns the data root. Exit that Agent independently, then restart
+Desktop so the local owner can apply the existing production policy. Development
+builds retain an explicitly selected environment. Direct account, login and
+skill-guide requests apply the same check even if Agent startup failed. A stopping Agent also blocks
+attachment and local startup; wait for it to finish before reconnecting.
+
 CLI/TUI clients must use the same user, FUTURE_HOME and endpoint settings to
 connect to an embedded Agent. For an independently managed service, exit Desktop,
 start `future agent` separately, then reopen Desktop. Changing ports cannot
 bypass the instance lock for the same data root.
+
+CLI, TUI, Desktop and Channels share the business connection gate. RPC protocol 2
+requires complete version/protocol/storage and instance/data-root metadata on
+commands and subscriptions. Readiness is discoverable first, but unverified
+clients cannot execute business calls. Upgrade old clients together; mismatch
+never authorizes another service. Database schema and file formats are unchanged.
+
+On Unix, `<socket>.owner.lock` is an endpoint lease separate from the Agent data
+lock. Its continued existence is normal: ownership is determined by the OS lock.
+Do not delete it. Live or unclassifiable endpoints are preserved; only verified
+stale sockets can be reclaimed. Listener cleanup removes only its own endpoint.
 
 ## Exit, restart and updates
 
@@ -36,6 +55,13 @@ bypass the instance lock for the same data root.
   other clients observe cancellation or disconnection.
 - Attached external Agents survive. Desktop cancels its own submitted runs and
   closes its remote entry; other clients and the service continue running.
+  Queued work and work whose status cannot be confirmed retain ownership until
+  a terminal event or verified terminal state, so collector failures cannot
+  silently omit them from exit cancellation.
+- External cancellation must verify that exact run's terminal state. Timeout,
+  disconnect or another run's terminal is not success. Unconfirmed runs preserve
+  diagnostics and block update, reset and restart. Forcing Desktop to exit cannot
+  guarantee cancellation on an unreachable external service.
 - Headless Ctrl+C and Unix SIGTERM/SIGHUP perform bounded shutdown. Credentials
   and completed pairing remain available for the next launch.
 - Updates download, verify signatures and confirm interruption before full
@@ -52,12 +78,34 @@ restoration; incomplete rollback preserves diagnostics for repair with a trusted
 full installer. Replace portable files as a complete set to avoid mixing CLI and
 Desktop versions. See [Windows installer preflight](../internals/desktop-windows.md).
 
+Exit, updates, reset and restart share one stop operation. Later requests neither
+repeat cleanup nor extend its deadline. Cleanup runs in the background while the
+main window remains responsive and displays stages; headless reports stages to
+stderr. The stop result has a twenty-second overall deadline. Timeout reports
+failure and continues blocking installation/in-process restart; it does not
+force-kill writers or unlock early. Normal exit offers a process-exit decision
+after failure; explicitly forced quit logs failure and exits. Window close does
+not interrupt an active maintenance handoff to the installer.
+
+Exit can cancel startup during legacy-session import. Committed sessions survive,
+unfinished transactions roll back, and incomplete reads are not recorded as
+corrupt sources or a completed import batch. The next start resumes import.
+Uninterruptible system I/O remains subject to the safety barrier; never delete
+WAL or lock files to accelerate exit.
+
 ## Troubleshooting and logs
 
 The default data root is `~/.future`; a valid absolute FUTURE_HOME replaces the
 whole root. Embedded host logs are at `<root>/app/logs/desktop.log`. Independent
 CLI Agent file logs remain at `<root>/agent/logs/agent.log` when enabled. Windows
 update recovery uses `<root>/app/logs/update-recovery.log`.
+
+Desktop's `app/app.db`, `app/desktop.lock`, GUI single-instance scope, chat scratch
+workspaces, pairing and device identity follow this same root. The default paths
+and storage formats are unchanged. Earlier versions could leave Desktop data in
+the default root while Agent data used an override. Those files are left intact:
+this correction does not copy, merge or move them. Select the default root to
+access its Desktop data; an override selects its own isolated Desktop state.
 
 | Symptom | Action |
 | --- | --- |
@@ -67,6 +115,24 @@ update recovery uses `<root>/app/logs/update-recovery.log`.
 | CLI missing but Agent works | Restore a matching CLI beside Desktop or on absolute PATH; skills/maintenance require it, embedded hosting does not require another Agent process |
 | Cleanup failure prevents update | Preserve diagnostics; exit related clients and retry; if persistent, reboot and use the full installer |
 | Installation failure without automatic reopen | Inspect recovery/installer logs and repair completely; do not launch mixed binaries or an incomplete rollback |
+
+Update settings show the selected CLI path and version. Desktop probes
+`future version --json` without initializing storage and validates the Agent
+contract separately from tool capabilities. Different development commit
+suffixes need not be incompatible. For missing, incompatible or capability-poor
+tools, correct that path or restore a matching CLI; another Agent is not a fix.
+
+Update phases and outcomes live at
+`<data-root>/app/updates/<operation-id>/result.json`; `latest.json` selects the
+latest operation. Windows observer readiness confirms handoff only. The durable
+outcome determines installation success. The shutdown screen also displays the
+result and permits restart only after installation or verified restoration,
+subject to the cleanup gates. Unknown outcomes and incomplete rollback prevent
+automatic retry or relaunch. Inspect the records and recovery log, then repair
+with a trusted complete installer. After manual repair, explicit confirmation
+in update settings preserves the original failure rather than claiming verified
+success; an active observer still blocks acknowledgement. Retry downloads,
+verifies signatures and cleans up again instead of executing leftover staging.
 
 Report version, platform, service mode, error and relevant log excerpts. Remove
 API keys and pairing links. `future doctor` helps diagnose the environment but

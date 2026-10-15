@@ -91,7 +91,14 @@ fn child_session_sends_parent_without_copying_context() {
 #[test]
 fn session_and_command_happy_paths() {
     rt().block_on(async {
-        let (addr, shared) = spawn_mock(MockState::default()).await;
+        // Explicit usage so `session_totals` has something to read.
+        let (addr, shared) = spawn_mock(MockState {
+            tokens_in: 10,
+            tokens_out: 20,
+            cost: 0.5,
+            ..Default::default()
+        })
+        .await;
         let mut client = AgentClient::connect(&addr).await.unwrap();
 
         let session = client
@@ -123,7 +130,15 @@ fn session_and_command_happy_paths() {
         assert_eq!(prompt_calls[1].1, "supersede_session");
 
         let totals = client.session_totals(&session).await.unwrap();
-        assert_eq!(totals.tokens_in, 0);
+        // The mock reports usage the way the agent does — nested camelCase
+        // (`usage.inputTokens`) — so a correct reader sees the values. Reading
+        // the retired top-level keys returned 0 here.
+        assert_eq!(totals.tokens_in, 10, "usage.inputTokens must be read");
+        assert_eq!(totals.tokens_out, 20, "usage.outputTokens must be read");
+        assert!(
+            (totals.cost - 0.5).abs() < 1e-9,
+            "usage.costCny must be read"
+        );
 
         // session_alive: a live session probes true; a missing one probes false.
         assert!(
@@ -573,9 +588,14 @@ fn execute_turn_completed_no_validator() {
     rt().block_on(async {
         let (addr, shared) = spawn_mock(MockState {
             events: completed_events("mock-run-1"),
+            // Baseline plus what one turn adds: `get_state` reports the base
+            // before the prompt and base+growth after, so the delta the run
+            // record stores is exactly this growth. A reader of the retired
+            // top-level keys saw 0 on both sides and recorded 0.
             tokens_in: 10,
             tokens_out: 20,
             cost: 0.5,
+            usage_growth: (7, 11, 0.25),
             ..Default::default()
         })
         .await;
@@ -603,8 +623,14 @@ fn execute_turn_completed_no_validator() {
         assert_eq!(record.terminal_state, "completed");
         assert_eq!(record.run_id, "mock-run-1");
         assert_eq!(record.agent_id.as_deref(), Some("worker-a"));
-        // get_state returns the same totals before/after → zero deltas.
-        assert_eq!(record.tokens_in_delta, 0);
+        // One turn's growth, read from `usage.*` before and after the prompt.
+        assert_eq!(record.tokens_in_delta, 7, "usage.inputTokens delta");
+        assert_eq!(record.tokens_out_delta, 11, "usage.outputTokens delta");
+        assert!(
+            (record.cost_delta - 0.25).abs() < 1e-9,
+            "usage.costCny delta: {}",
+            record.cost_delta
+        );
         assert!(record.validation.is_none(), "no validator ⇒ not required");
         assert!(runs_dir.join("mock-run-1.live.jsonl").exists());
         assert!(shared
@@ -928,4 +954,35 @@ fn writeback_completion_and_repair_paths() {
     writeback(&mut goal, &record, None, None);
     assert_eq!(goal.todo("todo_x").unwrap().failed_attempts, 1);
     assert_eq!(goal.outcome_streak, 1);
+}
+
+#[test]
+fn goal_client_rejects_incompatible_agent_before_business_commands() {
+    rt().block_on(async {
+        let (addr, state) = spawn_mock(MockState {
+            readiness_version: Some("999.0.0".into()),
+            ..Default::default()
+        })
+        .await;
+        let error = AgentClient::connect(&addr)
+            .await
+            .err()
+            .expect("incompatible Agent");
+        assert!(error.to_string().contains("version"));
+        assert!(state.lock().unwrap().recorded.is_empty());
+    });
+}
+
+#[test]
+fn goal_client_fences_commands_and_streams_after_instance_change() {
+    rt().block_on(async {
+        let (addr, state) = spawn_mock(MockState::default()).await;
+        let mut client = AgentClient::connect(&addr).await.unwrap();
+        state.lock().unwrap().readiness_instance = Some("replacement-agent".into());
+        assert!(client.list_models().await.is_err());
+        assert!(client.run_turn("session", "run", None, None).await.is_err());
+        let state = state.lock().unwrap();
+        assert!(state.recorded.is_empty());
+        assert!(state.attach_after_idx.is_empty());
+    });
 }

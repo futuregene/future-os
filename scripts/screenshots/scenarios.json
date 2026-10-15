@@ -840,7 +840,7 @@
             "wait": 900
           },
           {
-            "eval": "(() => { const t = document.body.innerText; if (!t.includes('运行记录')) throw new Error('the run history is not on the opened page'); if (t.includes('提示词版本')) throw new Error('the prompt-version list is on the app page; history belongs to the CLI'); if (document.querySelector('dl')) throw new Error('a definition list is rendered while folded'); ['工作目录', '本周新增或改动', '全部到齐'].forEach(k => { if (t.includes(k)) throw new Error('the definition is not folded: ' + k + ' is visible'); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (!toggle) throw new Error('the settings disclosure is missing'); if (toggle.getAttribute('aria-expanded') !== 'false') throw new Error('the settings start expanded'); const runs = [...document.querySelectorAll('h3')].find(h => (h.textContent || '').trim() === '运行记录'); if (!runs) throw new Error('the run history heading is missing'); if (toggle.compareDocumentPosition(runs) & Node.DOCUMENT_POSITION_PRECEDING) throw new Error('the settings fold is below the run history'); })()"
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('运行记录')) throw new Error('the run history is not on the opened page'); if (t.includes('提示词版本')) throw new Error('the prompt-version list is on the app page; history belongs to the CLI'); if (document.querySelector('dl')) throw new Error('a definition list is rendered while folded'); ['工作目录', '本周新增或改动'].forEach(k => { if (t.includes(k)) throw new Error('the definition is not folded: ' + k + ' is visible'); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (!toggle) throw new Error('the settings disclosure is missing'); if (toggle.getAttribute('aria-expanded') !== 'false') throw new Error('the settings start expanded'); const runs = [...document.querySelectorAll('h3')].find(h => (h.textContent || '').trim() === '运行记录'); if (!runs) throw new Error('the run history heading is missing'); if (toggle.compareDocumentPosition(runs) & Node.DOCUMENT_POSITION_PRECEDING) throw new Error('the settings fold is below the run history'); })()"
           },
           {
             "shot": "d-tasks-detail.png"
@@ -852,7 +852,7 @@
             "wait": 400
           },
           {
-            "eval": "(() => { const t = document.body.innerText; if (!document.querySelector('dl')) throw new Error('the unfolded definition has no settings list'); ['工作目录', '本周新增或改动', '全部到齐'].forEach(k => { if (!t.includes(k)) throw new Error('the unfolded definition is missing ' + k); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (toggle.getAttribute('aria-expanded') !== 'true') throw new Error('the disclosure did not report itself open'); })()"
+            "eval": "(() => { const t = document.body.innerText; if (!document.querySelector('dl')) throw new Error('the unfolded definition has no settings list'); ['工作目录', '本周新增或改动'].forEach(k => { if (!t.includes(k)) throw new Error('the unfolded definition is missing ' + k); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (toggle.getAttribute('aria-expanded') !== 'true') throw new Error('the disclosure did not report itself open'); })()"
           }
         ]
       },

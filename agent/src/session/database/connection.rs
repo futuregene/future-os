@@ -4,7 +4,16 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 use std::{path::Path, time::Duration};
 
+#[cfg(test)]
 pub(super) fn open_connection(path: &Path) -> Result<Connection> {
+    open_connection_cancellable(path, &crate::service::StartupCancellation::default())
+}
+
+pub(super) fn open_connection_cancellable(
+    path: &Path,
+    cancellation: &crate::service::StartupCancellation,
+) -> Result<Connection> {
+    cancellation.check()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).context("create SQLite directory")?;
     }
@@ -47,12 +56,15 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection> {
     }
     // WAL initialization writes the database header. Configure a fresh file's
     // pointer-map layout before that first write, without a full VACUUM.
+    cancellation.check()?;
     configure_incremental_auto_vacuum(&connection)?;
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "synchronous", "FULL")?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
     connection.pragma_update(None, "wal_autocheckpoint", 1_000)?;
     connection.pragma_update(None, "journal_size_limit", 8 * 1024 * 1024)?;
-    super::schema::initialize_schema(&mut connection)?;
+    cancellation.check()?;
+    super::schema::initialize_schema(&mut connection, cancellation)?;
+    cancellation.check()?;
     Ok(connection)
 }

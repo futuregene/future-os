@@ -2588,22 +2588,33 @@ mod pipeline_tests {
             record.error_message
         );
 
-        // get_state itself failed → state treated as empty (no marker) → failed.
+        // A rejected query is not an empty authoritative state. Preserve the
+        // running row and submitted ownership until terminal evidence arrives.
         let run4 = seed_run(&thread.id);
+        crate::desktop_shutdown::own_run(
+            "sess-rgp".into(),
+            run4.id.clone(),
+            (*connect_agent().await.expect("verified mock")).clone(),
+        );
         mock.push(
             &format!("get_state#{}", run4.id),
             Reply::Reject("gone".to_string()),
         );
-        reconcile_run_gone(&run4.id, &run4.id, "sess-rgp", &thread.id, "gone")
+        let error = reconcile_run_gone(&run4.id, &run4.id, "sess-rgp", &thread.id, "gone")
             .await
-            .expect("failed");
+            .expect_err("rejected query must remain unknown");
+        assert!(
+            error.contains("reconcile get_state rejected: gone"),
+            "{error}"
+        );
         assert_eq!(
             crate::store::get_run(&run4.id)
                 .expect("run")
                 .expect("some")
                 .status,
-            "failed"
+            "running"
         );
+        assert_eq!(crate::desktop_shutdown::owned_count(), 1);
 
         // Connect failure → Err.
         let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock addr");
@@ -2613,6 +2624,8 @@ mod pipeline_tests {
             .expect_err("connect");
         std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
         assert!(error.contains("reconcile connect"), "{error}");
+        assert_eq!(crate::desktop_shutdown::owned_count(), 1);
+        crate::desktop_shutdown::release_run("sess-rgp", &run4.id);
     }
 
     #[test]

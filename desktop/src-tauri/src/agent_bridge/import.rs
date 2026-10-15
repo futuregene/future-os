@@ -358,26 +358,7 @@ fn parent_thread(summary: &AgentSessionSummary) -> Option<store::ThreadRecord> {
 /// separators and resolves the home dir via `crate::home_dir()` (which falls
 /// back to `USERPROFILE`, since `HOME` is normally unset on Windows).
 fn is_desktop_chat_cwd(cwd: &str) -> bool {
-    if cwd.is_empty() {
-        return false;
-    }
-    // Normalize separators so a Windows `C:\Users\<user>\.future\workspaces\chat\`
-    // matches the forward-slash suffix below.
-    let cwd = cwd.replace('\\', "/");
-    const SUFFIX: &str = "/.future/workspaces/chat/";
-    // Literal tilde: ~/.future/workspaces/chat/…
-    if cwd.starts_with(&format!("~{SUFFIX}")) {
-        return true;
-    }
-    // Expanded home: <home>/.future/workspaces/chat/…
-    if let Some(home) = crate::home_dir() {
-        let home = home.replace('\\', "/");
-        let prefix = format!("{}{SUFFIX}", home.trim_end_matches('/'));
-        if cwd.starts_with(&prefix) {
-            return true;
-        }
-    }
-    false
+    future_app_workspaces::is_chat_directory(cwd)
 }
 
 /// Best-effort write-back: tell the agent to use `cwd` for the session so the

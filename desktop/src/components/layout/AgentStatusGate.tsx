@@ -1,6 +1,7 @@
 import type { AgentStatus } from "../../integrations/agent/agentStatus";
 import { Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { UpdateRecoveryPanel } from "../../features/settings/UpdateRecoveryPanel";
 
 export interface AgentStatusGateProps {
   status: AgentStatus;
@@ -9,6 +10,22 @@ export interface AgentStatusGateProps {
 
 export function AgentStatusGate({ status, showWait = false }: AgentStatusGateProps) {
   const { t } = useTranslation("layout");
+  if (status.phase === "stopping") {
+    const failed = status.shutdown?.state === "failed";
+    const complete = status.shutdown?.state === "stopped";
+    return (
+      <div className="flex h-full items-center justify-center bg-canvas px-6 text-center text-ink">
+        <div aria-live="polite" className="flex max-w-lg flex-col items-center gap-3" role="status">
+          {!failed && !complete ? <Loader2 aria-hidden="true" className="size-6 animate-spin text-accent" /> : null}
+          <p className="text-lg font-medium">{t(failed ? "agentStatus.cleanupFailed" : complete ? "agentStatus.cleanupComplete" : "agentStatus.stopping")}</p>
+          {status.shutdown ? <p className="text-sm text-ink-muted">{t(`agentStatus.shutdownStages.${status.shutdown.stage}`)}</p> : null}
+          {failed && status.error ? <p role="alert" className="text-sm text-ink-muted">{status.error}</p> : null}
+          {failed ? <p className="text-sm text-ink-muted">{t("agentStatus.cleanupFailedHint")}</p> : null}
+          {status.shutdown?.reason === "update" ? <UpdateRecoveryPanel /> : null}
+        </div>
+      </div>
+    );
+  }
   const pending = status.phase === "checking" || status.phase === "starting" || status.phase === "recovering";
   const statusKey = status.phase === "incompatible"
     ? "agentStatus.incompatible"

@@ -1,6 +1,6 @@
 import type { AgentStatus } from "../../../integrations/agent/agentStatus";
 import { useEffect, useState } from "react";
-import { getAgentStatus } from "../../../integrations/agent/agentStatus";
+import { getAgentStatus, subscribeShutdownProgress } from "../../../integrations/agent/agentStatus";
 
 export const MINIMUM_AGENT_SPLASH_MS = 1000;
 export const AGENT_WAIT_HINT_DELAY_MS = 5000;
@@ -30,6 +30,15 @@ export function useAgentStatus(): AgentStartupStatus {
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
+    const unlisten = subscribeShutdownProgress((shutdown) => {
+      if (!cancelled) {
+        setStatus(current => (
+          current.shutdown?.state !== undefined && current.shutdown.state !== "running" && shutdown.state === "running"
+            ? current
+            : { ...current, phase: "stopping", shutdown, error: shutdown.errors.join("; ") || undefined }
+        ));
+      }
+    });
     const waitHintTimer = window.setTimeout(setShowWait, AGENT_WAIT_HINT_DELAY_MS, true);
     const startupTimeoutTimer = window.setTimeout(() => {
       setStatus(current => (
@@ -59,13 +68,17 @@ export function useAgentStatus(): AgentStartupStatus {
           next = { ...next, phase: "startup_timeout" };
         }
         setStatus(current => (
-          current.phase === next.phase
-          && current.desktopVersion === next.desktopVersion
-          && current.agentVersion === next.agentVersion
+          current.shutdown && (!next.shutdown || (current.shutdown.state !== "running" && next.shutdown.state === "running"))
             ? current
-            : next
+            : current.phase === next.phase
+              && current.desktopVersion === next.desktopVersion
+              && current.agentVersion === next.agentVersion
+              && current.error === next.error
+              && JSON.stringify(current.shutdown) === JSON.stringify(next.shutdown)
+              ? current
+              : next
         ));
-        const delay = next.phase === "checking" || next.phase === "starting" || next.phase === "recovering"
+        const delay = next.phase === "checking" || next.phase === "starting" || next.phase === "recovering" || next.phase === "stopping"
           ? 600
           : next.phase === "ready"
             ? 5000
@@ -85,6 +98,7 @@ export function useAgentStatus(): AgentStartupStatus {
     void probe();
     return () => {
       cancelled = true;
+      void unlisten.then(stop => stop());
       if (timer !== undefined)
         window.clearTimeout(timer);
       window.clearTimeout(waitHintTimer);
