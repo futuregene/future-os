@@ -14,7 +14,7 @@
 
 /// Operator journey metadata (P1-9) — the role-based lens used by
 /// `future goal commands`. LoopX presents its CLI in five operator groups
-/// (Start here / Daily operator / Loop driver / Setup & automation /
+/// (Start here / Daily operator / Goal driver / Setup & automation /
 /// Maintainer & adapter); the registry itself stays the flat machine
 /// catalog (`future goal registry`), journeys are a pure presentation
 /// overlay on top of it.
@@ -52,7 +52,7 @@ impl Journey {
         match self {
             Journey::Starter => "Start here",
             Journey::Daily => "Daily operator",
-            Journey::Driver => "Loop driver",
+            Journey::Driver => "Goal driver",
             Journey::Setup => "Setup & automation",
             Journey::Maintainer => "Maintainer & adapter",
         }
@@ -64,7 +64,7 @@ impl Journey {
             Journey::Daily => {
                 "todos, gates, replans, leases, quota — the day-to-day control surface"
             }
-            Journey::Driver => "per-turn loop execution: run envelopes, heartbeats, agent lanes",
+            Journey::Driver => "per-turn goal execution: run envelopes, heartbeats, agent lanes",
             Journey::Setup => "one-time configuration: authority, profiles, automation",
             Journey::Maintainer => {
                 "quality gates (benchmark/canary/replay), retention, introspection"
@@ -302,7 +302,7 @@ impl CommandRegistry {
     /// summary per command (LoopX `loopx commands` presentation).
     pub fn render_journeys(&self, include_experimental: bool) -> String {
         let mut out = String::new();
-        out.push_str("FutureOS loop command reference — grouped by operator journey\n\n");
+        out.push_str("FutureOS goal command reference — grouped by operator journey\n\n");
         for journey in Journey::ALL {
             let cmds = self.commands_in_journey(journey, include_experimental);
             if cmds.is_empty() {
@@ -566,7 +566,7 @@ mod tests {
         assert!(text.contains("goal init --objective"), "got: {text}");
         assert!(!text.contains("doctor-x"), "experimental leaked: {text}");
         // empty journeys are skipped; setup/driver/maintainer had no commands
-        assert!(!text.contains("── Loop driver ──"), "got: {text}");
+        assert!(!text.contains("── Goal driver ──"), "got: {text}");
         let text_x = r.render_journeys(true);
         assert!(text_x.contains("doctor-x --goal G (experimental)"));
     }

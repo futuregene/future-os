@@ -1,4 +1,4 @@
-//! Loop-owned, non-LLM watchdog and durable supervisor outbox. The watchdog
+//! Goal-plane-owned, non-LLM watchdog and durable supervisor outbox. The watchdog
 //! only observes and delivers; retry/replan/model selection remain agent policy.
 use crate::{
     agent_client::AgentClient,
@@ -162,7 +162,7 @@ pub async fn flush(store: &mut Store, goal_id: &str, client: &mut AgentClient) -
             // here whose queue is a stream of state syncs. While it is busy with
             // a run, the batches arriving behind it fold into ONE next run
             // instead of each starting (and usually being superseded) on its own.
-            client.prompt_coalescing(&session, &message, &format!("loop-batch:{id}")),
+            client.prompt_coalescing(&session, &message, &format!("goal-batch:{id}")),
         )
         .await??;
         store.append(Event::SupervisorBatchDelivered {
@@ -278,7 +278,7 @@ pub fn ensure_watchdog(store: &Store, goal: &str) -> Result<()> {
     }
     let mut cmd = std::process::Command::new(&exe);
     if stem == "future" {
-        cmd.arg("loop");
+        cmd.arg("goal");
     }
     cmd.args(["supervisor", "watch", "--goal", goal]);
     cmd.env("FUTURE_GOAL_ROOT", store.root_path());

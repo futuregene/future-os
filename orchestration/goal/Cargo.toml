@@ -20,8 +20,8 @@ path = "src/main.rs"
 # future-rpc crate, so building this crate (and anything that depends on it,
 # e.g. the unified `future` CLI) does NOT need protoc.
 future-rpc = { path = "../../packages/rpc" }
-# The desktop app's settings schema (keys, defaults, app.db path): the loop
-# reads `titleLanguage` from the same store `future session title` / `future
+# The desktop app's settings schema (keys, defaults, app.db path): the goal
+# plane reads `titleLanguage` from the same store `future session title` / `future
 # run` do, so a generated session title speaks the language the user chose.
 future-app-settings = { path = "../../packages/app-settings" }
 tonic.workspace = true

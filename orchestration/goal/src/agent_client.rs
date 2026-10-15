@@ -3,8 +3,8 @@
 //! `channels/src/grpc_client.rs`).
 //!
 //! Responsibilities here are purely transport: build RpcCommands, parse
-//! responses, subscribe to the event stream. All loop *policy* lives in
-//! `loop_engine.rs` / `state.rs` — this module must stay policy-free.
+//! responses, subscribe to the event stream. All goal-plane *policy* lives in
+//! `state.rs` / `runtime/` — this module must stay policy-free.
 
 use anyhow::{anyhow, Result};
 use future_rpc::proto::future_agent_client::FutureAgentClient;
@@ -40,7 +40,7 @@ pub struct RunSummary {
     /// agent's `agent_end.truncation` block when the AGENT judged the model
     /// stream truncated (it carries turn/tool progress); `None` when the turn
     /// ended any other way OR when the loop saw the event stream close without
-    /// a terminal event (no `agent_end` at all — the loop's own "closed
+    /// a terminal event (no `agent_end` at all — the goal plane's own "closed
     /// without a state" case, distinct from an agent-reported truncation).
     pub truncation: Option<Value>,
 }
@@ -513,7 +513,7 @@ impl AgentClient {
     /// the prompt-ack -> subscribe loss window) and collect events until
     /// `agent_end` (or the stream closes / errors).
     /// `live_log`: when set, every streamed event is teed to this JSONL file
-    /// so operators can watch a long turn live (`loop status` shows one line
+    /// so operators can watch a long turn live (`goal status` shows one line
     /// otherwise).
     ///
     /// O5: when the stream terminates with a gap-class error (the agent's

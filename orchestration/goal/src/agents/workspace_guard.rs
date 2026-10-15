@@ -308,7 +308,7 @@ mod tests {
     fn completed_or_dead_holder_does_not_reserve_workspace() {
         let now = crate::state::now_epoch();
         let workspace = std::env::temp_dir()
-            .join("loop-workspace-regression")
+            .join("goal-workspace-regression")
             .to_string_lossy()
             .into_owned();
         let mut t = claimed("t", "a", now + 3600);

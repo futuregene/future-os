@@ -14,7 +14,7 @@
 //!
 //! State is project-local under `<cwd>/.future/goal/` (override with the
 //! `FUTURE_GOAL_ROOT` env var), one goal per directory, event-sourced:
-//! `loop status` replays the ledger each time.
+//! `goal status` replays the ledger each time.
 
 use std::collections::HashMap;
 use std::time::SystemTime;
@@ -243,7 +243,7 @@ const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
     ("evidence-log", Journey::Daily),
     ("todo-event", Journey::Daily),
     ("history", Journey::Daily),
-    // Loop driver — per-turn execution surface for the driving agent
+    // Goal driver — per-turn execution surface for the driving agent
     ("run", Journey::Driver),
     ("turn", Journey::Driver),
     ("heartbeat-prompt", Journey::Driver),
@@ -3185,7 +3185,7 @@ fn print_ledger_read_note(store: &Store, goal_id: &str) {
 
 // ── ui ─────────────────────────────────────────────────────────────────────
 
-/// `loop ui [--port N] [--root DIR] [--no-open]` — serve the local web
+/// `goal ui [--port N] [--root DIR] [--no-open]` — serve the local web
 /// dashboard. Strictly read-only (GET only) over the goal state root
 /// (`.future/goal/`); run mutations stay in the CLI. Binds 127.0.0.1.
 async fn cmd_webui(args: &[String]) -> Result<()> {
@@ -3223,7 +3223,7 @@ async fn cmd_webui(args: &[String]) -> Result<()> {
     crate::webui::run_server(root, port, open_browser).await
 }
 
-/// `loop status --format json` — machine-readable projection (goal, todos
+/// `goal status --format json` — machine-readable projection (goal, todos
 /// with priority/class/status/blocks, terminal flag). Added because piping
 /// the human-readable status used to silently yield nothing scriptable.
 fn print_status_json(store: &Store, goal_filter: Option<String>) -> Result<()> {
@@ -4186,7 +4186,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     let mut lease_secs = DEFAULT_RUN_LEASE_SECS;
     let mut force_workspace = false;
     // First-turn title for the session this run creates. On by default (the
-    // desktop app's behaviour, which the loop lacked); `--no-title` opts out
+    // desktop app's behaviour, which the goal plane lacked); `--no-title` opts out
     // of the extra model call. A resumed session is never renamed.
     let mut no_title = false;
     // Session retention: the CALLER decides resume-vs-fresh, never the kernel.
@@ -4398,7 +4398,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     // resume-vs-fresh via --resume-session.
     let mut last_failure_kind: Option<crate::state::FailureKind> = None;
     // Set by `run_turns` the moment a turn actually reaches the model. Stays
-    // false when the loop breaks out before executing anything (wait/terminal
+    // false when the goal plane breaks out before executing anything (wait/terminal
     // decision, workspace conflict, no claimable todo).
     let mut executed_turn = false;
     // Down-channel steering: watch the ledger for supervisor steering
@@ -4688,7 +4688,7 @@ async fn supervise_after_run(store: &mut Store, goal_id: &str) -> Result<()> {
 
 /// The desktop app's preference file (`~/.future/app/app.db`) owns
 /// `titleLanguage` — the same source `future session title` and `future run`
-/// read, so a loop-minted session is named in the language the user chose
+/// read, so a goal-plane-minted session is named in the language the user chose
 /// rather than a hard-coded one. English when the store has never been written
 /// or cannot be read.
 fn app_title_language() -> Option<String> {
@@ -4798,7 +4798,7 @@ async fn run_turns(
         );
         let mode = packet.interaction_contract.mode;
         if mode == crate::contract::TurnMode::Terminal {
-            println!("✔ validated closure — loop stops");
+            println!("✔ validated closure — goal stops");
             break;
         }
         if mode == crate::contract::TurnMode::Replan {
@@ -6516,7 +6516,7 @@ fn bound_worker_sessions(
 
 /// `future goal worker list --goal G [--format json]` — the registered workers
 /// of a goal, each mapped to its current backing agent session and whether the
-/// agent is streaming it right now (an in-flight run). This is the loop's
+/// agent is streaming it right now (an in-flight run). This is the goal plane's
 /// deterministic agent-id ↔ session-id surface (fills the gap where the
 /// supervisor completion report does not carry the session id).
 async fn cmd_worker(store: &mut Store, args: &[String]) -> Result<()> {
@@ -6862,7 +6862,7 @@ async fn cmd_worker_stop(store: &mut Store, args: &[String]) -> Result<()> {
 /// `supervisor register` was skipped at setup, while three sibling goals —
 /// registered right after `goal init` — had every worker attached.
 ///
-/// Warned rather than refused: a goal with no supervisor is a state the loop
+/// Warned rather than refused: a goal with no supervisor is a state the goal plane
 /// already supports on purpose (the worker runs; its reports are ledgered and
 /// not pushed — see `run_without_supervisor_sends_no_report`). Turning that into
 /// a hard stop would forbid a documented mode to protect a metadata field; the
@@ -8843,7 +8843,7 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
 fn detached_child_args(exe_stem: &str, args: &[String]) -> Vec<String> {
     let mut child_args: Vec<String> = Vec::with_capacity(args.len() + 3);
     if exe_stem == "future" {
-        child_args.push("loop".to_string());
+        child_args.push("goal".to_string());
     }
     child_args.push("run".to_string());
     child_args.extend(args.iter().cloned());
@@ -9930,7 +9930,7 @@ mod cli_quirks_tests {
         for title in [
             "Start here",
             "Daily operator",
-            "Loop driver",
+            "Goal driver",
             "Setup & automation",
             "Maintainer & adapter",
         ] {
@@ -11550,7 +11550,7 @@ mod residual_branch_tests {
         let args: Vec<String> = ["--goal", "g"].iter().map(|s| s.to_string()).collect();
         assert_eq!(
             detached_child_args("future", &args),
-            ["loop", "run", "--goal", "g", "--detach"]
+            ["goal", "run", "--goal", "g", "--detach"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect::<Vec<_>>()

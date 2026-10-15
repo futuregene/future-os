@@ -100,11 +100,19 @@ fn workspace_conflicts_are_ordered_deterministically() {
     // TWO conflicting holders, asserted on the resulting order: this is what
     // makes `conflicts.sort_by` compare, so the ordering rule is exercised
     // rather than merely present. The fixture needs an ALREADY-ABSOLUTE shared
-    // scope — `agent_workspaces` returns the declared string verbatim while
-    // `todo_workspaces` normalizes relative scopes against the goal cwd, so a
-    // raw "src/shared" would match neither side.
-    let shared = std::env::temp_dir()
-        .join("loop-conflict-order")
+    // scope that also equals its own normalized form: `agent_workspaces`
+    // returns the declared string verbatim while `todo_workspaces` canonicalizes
+    // the prefixes that exist on disk. A raw `std::env::temp_dir()` path fails
+    // the second half wherever the temp root goes through a symlink (macOS
+    // `/tmp` -> `/private/tmp`, and again for `/var/folders/...`), so the two
+    // sides never match and both holders vanish from the conflict list. Creating
+    // the directory and canonicalizing it makes the declared scope byte-equal
+    // to the normalized one on every platform.
+    let shared_dir = tempfile::TempDir::new().expect("shared workspace dir");
+    let shared = shared_dir
+        .path()
+        .canonicalize()
+        .expect("canonicalize shared workspace")
         .to_string_lossy()
         .into_owned();
     let mut two = Goal::new("g2", "conflicts", "/tmp");
