@@ -23,6 +23,11 @@ pub enum AppError {
     /// carried verbatim, so the serialized string the frontend sees is unchanged.
     #[error("{0}")]
     AgentUnavailable(String),
+    #[error("{reason}")]
+    AgentIncompatible {
+        agent_version: Option<String>,
+        reason: String,
+    },
     /// A remote-control platform call failed. Carries the HTTP status and the
     /// server's machine-readable error code (the `error` field of the JSON
     /// error body, e.g. `invalid_remote_credential`) so callers can react by

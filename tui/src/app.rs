@@ -10312,6 +10312,13 @@ mod tests {
             request: tonic::Request<RpcCommand>,
         ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
             let cmd = request.into_inner();
+            if cmd.r#type == "get_agent_readiness" {
+                return Ok(tonic::Response::new(future_rpc::proto::RpcResponse {
+                id: cmd.id, r#type: "response".into(), command: "get_agent_readiness".into(), success: true,
+                data: serde_json::json!({"version": future_rpc::connection::EXPECTED_AGENT_VERSION, "agentInstanceId":"mock-agent", "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION, "dataRootId":"0".repeat(64), "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION}).to_string(),
+                ..Default::default()
+            }));
+            }
             if cmd.r#type == "set_cwd" {
                 let cwd = cmd.cwd.trim().trim_end_matches(['/', '\\']).to_string();
                 let event = StreamEvent {
@@ -13877,6 +13884,8 @@ mod tests {
         /// can hold the SYNs sent to a just-closed port until the next listener
         /// binds, which made the retry setup connect on its very first attempt.)
         not_ready: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        /// Wake the retry fixture only after an actual failed readiness probe.
+        readiness_rejected: Option<std::sync::Arc<tokio::sync::Notify>>,
         /// Page script for `get_session_entries`, keyed by the `before` cursor
         /// the client sent (`i64::MAX` = the tail read). A cursor the script
         /// does not mention answers an empty final page; no script at all is an
@@ -13915,6 +13924,23 @@ mod tests {
             request: tonic::Request<future_rpc::proto::RpcCommand>,
         ) -> Result<tonic::Response<future_rpc::proto::RpcResponse>, tonic::Status> {
             let cmd = request.into_inner();
+            if cmd.r#type == "get_agent_readiness" {
+                if self
+                    .not_ready
+                    .as_ref()
+                    .is_some_and(|ready| !ready.load(std::sync::atomic::Ordering::SeqCst))
+                {
+                    if let Some(rejected) = &self.readiness_rejected {
+                        rejected.notify_one();
+                    }
+                    return Err(tonic::Status::unavailable("agent starting"));
+                }
+                return Ok(tonic::Response::new(future_rpc::proto::RpcResponse {
+                id: cmd.id, r#type: "response".into(), command: "get_agent_readiness".into(), success: true,
+                data: serde_json::json!({"version": future_rpc::connection::EXPECTED_AGENT_VERSION, "agentInstanceId":"mock-agent", "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION, "dataRootId":"0".repeat(64), "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION}).to_string(),
+                ..Default::default()
+            }));
+            }
             self.requests.lock().unwrap().push(cmd.clone());
             self.seen.lock().unwrap().push((
                 cmd.r#type.clone(),
@@ -14434,7 +14460,7 @@ mod tests {
         );
 
         app.handle_key_action(KeyAction::ScrollChatUpPage);
-        pump(&mut app, &mut rx).await;
+        pump_until_history_settled(&mut app, &mut rx).await;
 
         let visible = crate::utils::strip_ansi_codes(&app.chat.render(100).join("\n"));
         assert!(
@@ -15398,24 +15424,29 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn wait_for_agent_retries_until_agent_appears() {
-        // The mock rejects the connect probe until 1.3 s in: the first
-        // try_connects fail (showing the retry message) before the agent
-        // answers. The readiness flip is mock-driven rather than a late TCP
-        // bind — a just-closed Windows port can hold connects until the next
-        // listener binds, which made the first attempt succeed and the retry
-        // path never run.
+        // Flip readiness only after the mock rejects a real probe. A fixed
+        // delay can expire before startup reaches the probe on a busy runner,
+        // and a late TCP bind is not portable across Windows and Unix.
         let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let rejected = std::sync::Arc::new(tokio::sync::Notify::new());
         let mock = AppMockAgent {
             not_ready: Some(ready.clone()),
+            readiness_rejected: Some(rejected.clone()),
             ..Default::default()
         };
         let (addr_str, _seen) = spawn_app_mock_with(mock).await;
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(1300)).await;
+            rejected.notified().await;
             ready.store(true, std::sync::atomic::Ordering::SeqCst);
         });
         let (mut app, mut rx) = make_app_at(&addr_str, &CliOptions::default());
-        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            app.start(mpsc::unbounded_channel().0),
+        )
+        .await
+        .expect("retrying startup should complete after readiness recovers")
+        .unwrap();
         assert!(app.is_running());
         let joined = system_messages(&app).join("\n");
         assert!(joined.contains("retrying every 1s"), "{joined}");
@@ -15574,6 +15605,13 @@ mod tests {
             ) -> Result<tonic::Response<future_rpc::proto::RpcResponse>, tonic::Status>
             {
                 let cmd = request.into_inner();
+                if cmd.r#type == "get_agent_readiness" {
+                    return Ok(tonic::Response::new(future_rpc::proto::RpcResponse {
+                id: cmd.id, r#type: "response".into(), command: "get_agent_readiness".into(), success: true,
+                data: serde_json::json!({"version": future_rpc::connection::EXPECTED_AGENT_VERSION, "agentInstanceId":"mock-agent", "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION, "dataRootId":"0".repeat(64), "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION}).to_string(),
+                ..Default::default()
+            }));
+                }
                 let fail = self.fail.contains(&cmd.r#type);
                 // new_session reports a fresh id so the client subscribes.
                 let data = if cmd.r#type == "new_session" {
@@ -22555,11 +22593,25 @@ mod tests {
         let first = git_args(&calls).len();
 
         press_on_overlay(&mut app, &mut rx, "ctrl+r");
-        pump_until_overlay_text(&mut app, &mut rx, "feat/demo").await;
-        assert!(git_args(&calls).len() > first, "the reload asked git again");
+        // Pump until the reload reaches git: the rows are on screen before AND
+        // after, so waiting for the text would return immediately and the
+        // assertion read straight after it would judge a reload that has not
+        // started yet (under load, a busy host).
+        let mut reloaded = false;
+        for _ in 0..PUMP_BUDGET_ITERS {
+            while let Ok(cmd) = rx.try_recv() {
+                app.handle_cmd(cmd);
+            }
+            if git_args(&calls).len() > first {
+                reloaded = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(PUMP_INTERVAL_MS)).await;
+        }
+        assert!(reloaded, "the reload asked git again");
         assert!(
             top_overlay_text(&mut app, 76).contains("feat/demo"),
-            "the panel keeps its rows while the reload runs"
+            "the reload kept its rows"
         );
         app.stop();
     }

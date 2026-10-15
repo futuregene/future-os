@@ -469,7 +469,10 @@ fn get_agent_readiness_wire_parity() {
         "get_agent_readiness",
         json!({
             "version": "1.0.5",
-            "agentInstanceId": "agent-1"
+            "agentInstanceId": "agent-1",
+            "protocolVersion": 1,
+            "dataRootId": "0".repeat(64),
+            "storageSchemaVersion": 6
         }),
     );
 }

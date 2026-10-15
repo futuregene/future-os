@@ -28,7 +28,7 @@ bundled `future.exe` can outlive the desktop and remain locked during an upgrade
 and before the new uninstaller runs sandbox permission cleanup.
 
 - Check the current desktop (`futureos.exe`), legacy desktop
-  (`future-desktop.exe`), CLI/agent (`future.exe`), and retired standalone Agent
+  (`future-desktop.exe`), headless host (`futureos-headless.exe`), CLI/agent (`future.exe`), and retired standalone Agent
   (`future-agent.exe`) in `$INSTDIR`.
 - Explain that closing the window does not necessarily stop the agent. Offer
   Yes (close this installation and continue), No (recheck after manual exit),
@@ -46,9 +46,16 @@ and before the new uninstaller runs sandbox permission cleanup.
   display blocking dialogs: exit **32** for busy files, **5** for write/check
   failures. `scripts/release/install.ps1` translates these into recovery instructions
   rather than continuing to initialization.
-- Explicit in-app updates (`/UPDATE`) close exact-path executables automatically.
-  This lets a new installer repair older releases that launched NSIS without
-  first stopping their Agent; unrelated installations are never touched.
+- Legacy in-app updates (`/UPDATE`) close exact-path executables in this
+  installation for older releases that left a sidecar running. New hosts pass
+  `/FUTUREOS_CLEAN` and only check occupancy. External hosts in other directories
+  block automatic updates too. Interactive Yes explicitly authorizes closing
+  verified external owners using the same data root; PID, creation time,
+  executable path and data root must all match.
+- Under the Agent lock lease, the installer runs its newly bundled maintenance
+  CLI to completely reset Windows sandbox permissions before backup/replacement.
+  Cleanup failure/timeout aborts installation. Old installed CLIs need not
+  support the maintenance command.
 - After the preflight succeeds, remove both current and retired sidecar names
   before Tauri copies the new desktop. Before replacement, preserve the current
   and legacy executables in NSIS temporary storage. A copy/extraction failure
@@ -58,17 +65,16 @@ and before the new uninstaller runs sandbox permission cleanup.
   Windows loader. A missing DLL, corrupt file, wrong architecture, non-zero exit
   or timeout aborts installation and restores the previous executables.
 
-The in-app Windows updater downloads and verifies the complete NSIS package
-before it stops the Desktop-owned Agent. It then launches the installer, because
-Tauri exits the desktop process directly on Windows and does not emit the normal
-`RunEvent::Exit` cleanup path. Keep this ordering aligned with the fail-before-copy
-installer preflight: downloads must not interrupt work, while installation must
-never begin with the bundled sidecar still running. The updater's
-`on_before_exit` hook runs only after download, signature verification, and
-package extraction succeed, immediately before NSIS launch. Update checks have a
-30-second deadline and installation requests have a 15-minute deadline. Portable
-Windows builds do not run the NSIS in-place updater because they have no
-registered installation target.
+The updater downloads/verifies, confirms the interruption scope, then performs
+fallible complete Desktop/Agent cleanup. Failure blocks installation. An
+independent observer waits for the original Desktop process handle to exit,
+launches `/P /R /UPDATE /FUTUREOS_CLEAN` and checks launch errors and exit codes.
+Failure relaunches the old app only if all original executable hashes match and
+no rollback-failure marker exists; otherwise diagnostics require repair.
+Recovery logs live at `FUTURE_HOME/app/logs/update-recovery.log`. Check timeout
+is thirty seconds, download timeout fifteen minutes, observer readiness ten
+seconds and Desktop exit sixty seconds. Extraction is never killed on timeout.
+Portable Windows builds still do not use the NSIS in-place updater.
 
 The helper is embedded into NSIS's temporary plugin directory, not installed
 with the app. Use native Windows PowerShell even from 32-bit NSIS so 64-bit
@@ -86,6 +92,12 @@ time-bounded, so a missing, old or broken CLI cannot hang or block removal.
 Capability metadata stays outside `$INSTDIR` for a later install/repair retry.
 
 ## Offline regression
+
+The phase-six offline hooks and update observer passed native Windows CI and
+daily unsigned packaging on 2026-10-15. See [execution evidence in sections
+10.10 and 10.13](../architecture/embedded-agent-development.md). Regressions use
+throwaway installers and validate actual product payloads without installing
+FutureOS; clean-VM real upgrades/rollback remain separate acceptance.
 
 On Windows with NSIS installed (the Tauri NSIS cache is also detected):
 

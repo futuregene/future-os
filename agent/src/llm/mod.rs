@@ -227,7 +227,9 @@ impl crate::types::LLMProvider for Client {
         // the durable conversation when a model temporarily loses image input;
         // adapt only this outbound projection.
         if target.capabilities.supports_image_input {
+            let child_work = crate::service::work::process_child_work();
             request = tokio::task::spawn_blocking(move || {
+                let _child_work = child_work;
                 for message in &mut request.messages {
                     let already_has_image = message
                         .content
@@ -341,7 +343,9 @@ impl crate::types::LLMProvider for Client {
         let protocol = target.protocol.protocol().canonical_name().to_string();
         let model = request.model.clone();
         let mut stream = resp.bytes_stream();
+        let background = crate::service::work::process_background()?;
         tokio::spawn(async move {
+            let _background = background;
             let started_at = Instant::now();
             let mut chunks_received = 0_u64;
             let mut bytes_received = 0_u64;

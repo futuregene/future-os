@@ -123,6 +123,9 @@ struct MockAgent;
 /// echoes the requested run id so tests that let the pipeline generate one
 /// still get a consistent acknowledgement.
 fn default_reply_data(cmd: &RpcCommand) -> String {
+    if cmd.r#type == "get_agent_readiness" {
+        return serde_json::json!({"version":crate::build_info::VERSION,"agentInstanceId":"agent-test","protocolVersion":future_rpc::connection::AGENT_PROTOCOL_VERSION,"dataRootId":"0".repeat(64),"storageSchemaVersion":future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION}).to_string();
+    }
     if cmd.r#type == "delete_sessions" {
         return serde_json::json!({"results": cmd.session_ids.iter().map(|session_id| {
             serde_json::json!({"sessionId": session_id, "deleted": true,
@@ -344,6 +347,10 @@ pub(crate) fn mock_agent() -> MockAgentGuard {
     // replies this test is about to script.
     super::observer::cancel_all_observers();
     ensure_mock_server();
+    // Each independent fixture starts with a fresh verification. Otherwise a
+    // one-shot readiness failure can be consumed by the previous test's cache
+    // probe, followed by a successful fresh handshake from the default script.
+    super::client::reset_test_connection();
     {
         let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.replies.clear();
@@ -421,20 +428,29 @@ impl MockAgentGuard {
             .push_back(script);
     }
 
-    /// Every `execute_command` the mock has seen since the guard was taken.
+    /// Business commands since the guard was taken. Readiness is recorded but
+    /// queried separately through `requests_of`, since an in-flight diagnostic
+    /// on the process-wide channel may finish after its original caller stops.
     pub(crate) fn requests(&self) -> Vec<RpcCommand> {
         STATE
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .requests
-            .clone()
+            .iter()
+            .filter(|cmd| cmd.r#type != "get_agent_readiness")
+            .cloned()
+            .collect()
     }
 
     /// Recorded commands of one type, in arrival order.
     pub(crate) fn requests_of(&self, command_type: &str) -> Vec<RpcCommand> {
-        self.requests()
-            .into_iter()
+        STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .requests
+            .iter()
             .filter(|cmd| cmd.r#type == command_type)
+            .cloned()
             .collect()
     }
 
@@ -654,14 +670,31 @@ mod tests {
 
     /// `TestHome::drop` takes the `None` arm (removes HOME) when no HOME was
     /// set before the fixture was created.
+    ///
+    /// `HOME` is process-global, so *both* ends of this test take `TEST_HOME_LOCK`:
+    /// reading the previous value while another test's `TestHome` is published would
+    /// capture that fixture's directory, and restoring it after the lock is gone
+    /// would publish a path its owner has already deleted — the next
+    /// `HOME`-reading test (a terminal cwd fallback, say) then resolves a directory
+    /// that no longer exists. `TestHome::new` takes the same non-reentrant lock
+    /// itself, so the guard is only held around the two raw `HOME` touches.
     #[test]
     fn test_home_drop_removes_home_when_unset_before() {
-        let saved = std::env::var("HOME").ok();
+        let saved = {
+            let _lock = crate::TEST_HOME_LOCK
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            std::env::var("HOME").ok()
+        };
         let mut home = TestHome::new("no-prev-home");
         home.prev_home = None;
         drop(home);
-        if let Some(saved) = saved {
-            std::env::set_var("HOME", saved);
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        match saved {
+            Some(saved) => std::env::set_var("HOME", saved),
+            None => std::env::remove_var("HOME"),
         }
     }
 }

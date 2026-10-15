@@ -6,145 +6,12 @@
 
 mod shutdown;
 
-use crate::{Engine, EngineConfig, Manager, ModelRegistry};
+#[cfg(test)]
+use crate::service::config::parse_tcp_bind;
+use crate::Manager;
 use anyhow::{Context, Result};
-use chrono::Local;
 use clap::Parser;
-use std::fs::{File, OpenOptions};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-
-type AgentInstanceGuard = fd_lock::RwLockWriteGuard<'static, File>;
-
-/// The lock is authoritative. This separate, readable file only helps the
-/// installer identify the process that currently owns it.
-struct AgentInstanceMetadata(PathBuf);
-
-impl Drop for AgentInstanceMetadata {
-    fn drop(&mut self) {
-        if let Err(error) = std::fs::remove_file(&self.0) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("Future Agent: could not remove instance metadata: {error}");
-            }
-        }
-    }
-}
-
-fn write_agent_instance_metadata(lock_path: &Path) -> Result<AgentInstanceMetadata> {
-    let path = lock_path.with_file_name("agent-instance.json");
-    let executable = std::env::current_exe().context("resolve Agent executable")?;
-    let metadata = serde_json::json!({
-        "pid": std::process::id(),
-        "executable": executable.to_string_lossy(),
-        "futureHome": crate::utils::future_home().to_string_lossy(),
-    });
-    #[cfg(windows)]
-    {
-        let mut metadata = metadata;
-        use windows_sys::Win32::Foundation::FILETIME;
-        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
-        let mut created = FILETIME {
-            dwLowDateTime: 0,
-            dwHighDateTime: 0,
-        };
-        let mut exited = created;
-        let mut kernel = created;
-        let mut user = created;
-        if unsafe {
-            GetProcessTimes(
-                GetCurrentProcess(),
-                &mut created,
-                &mut exited,
-                &mut kernel,
-                &mut user,
-            )
-        } == 0
-        {
-            return Err(std::io::Error::last_os_error())
-                .context("read Agent process creation time");
-        }
-        metadata["startTimeFiletime"] = serde_json::json!(
-            (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime)
-        );
-        write_agent_instance_metadata_file(path, metadata)
-    }
-    #[cfg(not(windows))]
-    write_agent_instance_metadata_file(path, metadata)
-}
-
-fn write_agent_instance_metadata_file(
-    path: PathBuf,
-    metadata: serde_json::Value,
-) -> Result<AgentInstanceMetadata> {
-    // The lock stays held until after this guard is dropped. A crash may leave
-    // stale metadata, so readers must always validate the lock and process.
-    std::fs::write(&path, serde_json::to_vec(&metadata)?)
-        .with_context(|| format!("write Agent instance metadata {}", path.display()))?;
-    Ok(AgentInstanceMetadata(path))
-}
-
-struct CleanupGuard<F: FnOnce()>(Option<F>);
-
-impl<F: FnOnce()> CleanupGuard<F> {
-    fn new(cleanup: F) -> Self {
-        Self(Some(cleanup))
-    }
-}
-
-impl<F: FnOnce()> Drop for CleanupGuard<F> {
-    fn drop(&mut self) {
-        if let Some(cleanup) = self.0.take() {
-            cleanup();
-        }
-    }
-}
-
-/// Hold a user-scoped process lock for the full server lifetime. The gRPC port
-/// is not a sufficient singleton boundary because a second agent can choose a
-/// different `--grpc-addr` while still sharing sessions, approval state, and
-/// Windows sandbox capability metadata with the first one.
-fn acquire_agent_instance_lock() -> Result<AgentInstanceGuard> {
-    acquire_agent_instance_lock_at(&crate::utils::default_config_dir().join("agent-instance.lock"))
-}
-
-fn acquire_agent_instance_lock_at(path: &Path) -> Result<AgentInstanceGuard> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        // Never alter the lock file before taking the lock; a rejected second
-        // process must leave the running Agent's state untouched.
-        .truncate(false)
-        .open(path)?;
-    // The lock object must outlive its write guard. This function runs once per
-    // server process, so retaining the tiny allocation until process exit is
-    // intentional; the OS releases the file lock even after a crash/force-kill.
-    let lock = Box::leak(Box::new(fd_lock::RwLock::new(file)));
-    let guard = lock.try_write().map_err(|error| {
-        if error.kind() == std::io::ErrorKind::WouldBlock {
-            anyhow::anyhow!(
-                "Future Agent is already running for this user (lock: {})",
-                path.display()
-            )
-        } else {
-            anyhow::Error::from(error)
-        }
-    })?;
-    // Older builds wrote a PID here. Keep the lock path and byte-range locking
-    // compatible while moving process identity into agent-instance.json.
-    guard.set_len(0)?;
-    Ok(guard)
-}
-
-/// Map of live server sessions shared with the shutdown paths.
-type SessionsMap = Arc<
-    parking_lot::RwLock<
-        std::collections::HashMap<String, Arc<parking_lot::RwLock<crate::rpc::ServerSession>>>,
-    >,
->;
+use std::path::Path;
 
 /// Transport crates that log per-frame / per-handshake detail at DEBUG. Raising
 /// the root level to `debug` for `--verbose` would otherwise bury the Agent's
@@ -187,20 +54,6 @@ fn verbose_default_filter_enables_grpc_debug_events() {
     }
 }
 
-fn parse_tcp_bind(addr: &str) -> Result<(String, u16)> {
-    let address = if addr.starts_with(':') && !addr[1..].contains(':') {
-        format!("127.0.0.1{addr}")
-    } else if !addr.contains(':') {
-        format!("127.0.0.1:{addr}")
-    } else {
-        addr.to_owned()
-    };
-    let socket: std::net::SocketAddr = address.parse().with_context(|| {
-        format!("invalid --grpc-addr {addr:?}: expected IP:port (bracket IPv6 addresses)")
-    })?;
-    Ok((socket.ip().to_string(), socket.port()))
-}
-
 #[cfg(test)]
 #[test]
 fn tcp_bind_rejects_invalid_ports_and_accepts_bracketed_ipv6() {
@@ -215,17 +68,6 @@ fn tcp_bind_rejects_invalid_ports_and_accepts_bracketed_ipv6() {
     }
     assert_eq!(parse_tcp_bind(":1234").unwrap(), ("127.0.0.1".into(), 1234));
     assert_eq!(parse_tcp_bind("[::1]:1234").unwrap(), ("::1".into(), 1234));
-}
-
-/// Abort every live session (SIGINT / profile-timer shutdown path).
-fn abort_all_sessions(sessions: &SessionsMap) {
-    for s in sessions.read().values() {
-        let session = s.read();
-        session.abort();
-        session
-            .approval_gate
-            .cancel_session(&session.session_id, "Agent is shutting down.");
-    }
 }
 
 #[derive(Parser)]
@@ -246,6 +88,8 @@ pub struct Cli {
     /// dispatched before singleton/config/runtime initialization.
     #[arg(long, hide = true, value_name = "REQUEST")]
     linux_sandbox_helper: Option<String>,
+    #[arg(long, hide = true, requires = "linux_sandbox_helper")]
+    linux_sandbox_host_version: Option<String>,
 
     /// Probe the current platform sandbox and print a stable JSON result
     /// without starting the agent server.
@@ -346,19 +190,33 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 /// guards (singleton lock, Windows permission cleanup, profilers) are dropped.
 pub fn run_from_args(args: &[String]) -> Result<()> {
     let mut argv = vec!["future-agent".to_string()];
+    // Keep helper dispatch deterministic even for a renamed standalone binary.
+    let args = if args.first().map(String::as_str) == Some("agent")
+        && args.get(1).map(String::as_str) == Some("--linux-sandbox-helper")
+    {
+        &args[1..]
+    } else {
+        args
+    };
     argv.extend_from_slice(args);
     let cli = Cli::parse_from(argv);
     // Applied before anything reads a FutureOS path (sandbox helper dispatch,
     // singleton lock, logging, state) and before the threads that would make
     // mutating the process environment unsound. Child processes — sandboxed
     // shells and skills calling the `future` CLI — inherit the same home.
-    apply_future_home(&cli)?;
+    if let Some(expected) = &cli.linux_sandbox_host_version {
+        anyhow::ensure!(
+            expected == crate::utils::VERSION,
+            "Linux sandbox helper build mismatch; restart FutureOS after updating"
+        );
+    }
     if let Some(_request) = cli.linux_sandbox_helper.as_deref() {
         #[cfg(target_os = "linux")]
         crate::sandbox::linux::helper::run_helper_request(_request);
         #[cfg(not(target_os = "linux"))]
         anyhow::bail!("Linux sandbox helper is unavailable on this platform");
     }
+    apply_future_home(&cli)?;
     if cli.probe_sandbox {
         let result = crate::sandbox::platform_sandbox_probe_product()?;
         println!("{}", serde_json::to_string(&result)?);
@@ -384,48 +242,41 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
     {
         anyhow::bail!("--migration-source requires --migrate-sessions or --retry-session-import");
     }
-    let _instance_guard = acquire_agent_instance_lock()?;
-    let _instance_metadata = match write_agent_instance_metadata(
-        &crate::utils::default_config_dir().join("agent-instance.lock"),
-    ) {
-        Ok(metadata) => Some(metadata),
-        Err(error) => {
-            eprintln!("Future Agent: could not publish instance metadata: {error:#}");
-            None
-        }
+    let config = crate::service::AgentConfig {
+        verbose: cli.verbose,
+        grpc_addr: cli.grpc_addr.clone(),
+        ..crate::service::AgentConfig::default()
     };
-    if cli.migrate_sessions || cli.retry_session_import.is_some() {
-        let manager = Manager::new(
-            cli.migration_source
-                .clone()
-                .unwrap_or_else(|| crate::utils::default_session_dir("")),
-        );
-        manager.initialize()?;
-        if let Some(id) = cli.retry_session_import.as_deref() {
-            manager.retry_legacy_import(id)?;
-        }
-        let report = manager.import_records()?;
-        println!("{}", serde_json::to_string(&report)?);
-        if let Some(id) = cli.retry_session_import.as_deref() {
-            if !report
-                .iter()
-                .any(|record| record.session_id == id && record.status == "imported")
-            {
-                anyhow::bail!("session import is still skipped; see the migration report");
+    crate::service::AgentService::with_instance(config, |service| {
+        if cli.migrate_sessions || cli.retry_session_import.is_some() {
+            let manager = Manager::new(
+                cli.migration_source
+                    .clone()
+                    .unwrap_or_else(|| crate::utils::default_session_dir("")),
+            );
+            manager.initialize()?;
+            if let Some(id) = cli.retry_session_import.as_deref() {
+                manager.retry_legacy_import(id)?;
             }
+            let report = manager.import_records()?;
+            println!("{}", serde_json::to_string(&report)?);
+            if let Some(id) = cli.retry_session_import.as_deref() {
+                if !report
+                    .iter()
+                    .any(|record| record.session_id == id && record.status == "imported")
+                {
+                    anyhow::bail!("session import is still skipped; see the migration report");
+                }
+            }
+            return Ok(());
         }
-        return Ok(());
-    }
-    // Environment hydration must precede the signal thread as well as Tokio's
-    // worker threads: mutating the process environment is only sound here.
-    crate::sandbox::hydrate_from_login_shell();
-    // Outlive runtime destruction, profiler output, and Windows ACE cleanup.
-    let (_shutdown_guard, shutdown_request) = shutdown::ShutdownGuard::start()?;
-    run_agent_lifecycle(
-        cleanup_windows_sandbox_on_startup,
-        || run(cli, shutdown_request),
-        cleanup_windows_sandbox_on_exit,
-    )
+        // Environment hydration must precede the signal thread as well as Tokio's
+        // worker threads: mutating the process environment is only sound here.
+        crate::sandbox::hydrate_from_login_shell();
+        // Outlive runtime destruction, profiler output, and Windows ACE cleanup.
+        let (_shutdown_guard, shutdown_request) = shutdown::ShutdownGuard::start()?;
+        service.run_with_cleanup(|| run(cli, shutdown_request, service))
+    })
 }
 
 /// Apply the FutureOS home of this process: an explicit `--home`, or the
@@ -462,36 +313,6 @@ fn set_future_home(dir: &Path, source: &str) -> Result<()> {
     Ok(())
 }
 
-fn run_agent_lifecycle<T>(
-    startup_cleanup: impl FnOnce(),
-    run_server: impl FnOnce() -> Result<T>,
-    exit_cleanup: impl FnOnce(),
-) -> Result<T> {
-    startup_cleanup();
-    // RAII makes cleanup cover successful shutdown, server/config errors, and
-    // unwindable panics. Process abort/force-exit cannot run destructors and is
-    // intentionally recovered by the next startup cleanup instead.
-    let _exit_cleanup = CleanupGuard::new(exit_cleanup);
-    run_server()
-}
-
-/// Once the singleton is held, no other Future Agent for this user can own a
-/// live restricted process tree. Reclaim ACEs left by a previous crash before
-/// accepting commands; the separate capability lock still fails safely if an
-/// installer/maintenance process is concurrently touching the state.
-fn cleanup_windows_sandbox_on_startup() {
-    #[cfg(target_os = "windows")]
-    match crate::sandbox::reset_windows_sandbox_capabilities() {
-        Ok(removed) if removed > 0 => {
-            eprintln!("Future Agent: cleaned {removed} stale Windows sandbox permission(s)")
-        }
-        Ok(_) => {}
-        Err(error) => {
-            eprintln!("Future Agent: could not clean stale Windows sandbox permissions: {error}")
-        }
-    }
-}
-
 /// Test-only failure injection for the profiler error arms. The spawned
 /// binary has no cfg(test), so integration tests steer via this env var.
 /// Values: "build" (guard construction), "report" (report build), "write"
@@ -502,7 +323,11 @@ fn profiler_fail_at(stage: &str) -> bool {
 }
 
 /// The full agent entry point — the former `main()` body.
-fn run(cli: Cli, shutdown_request: shutdown::ShutdownRequest) -> Result<()> {
+fn run(
+    cli: Cli,
+    shutdown_request: shutdown::ShutdownRequest,
+    service: &crate::service::AgentService<'_>,
+) -> Result<()> {
     // Resolve profile path early (before the runtime starts).
     // --profile-seconds alone implies CPU profiling with a default path —
     // but NOT when --profile-heap is set: running the CPU sampler during a
@@ -631,21 +456,24 @@ fn run(cli: Cli, shutdown_request: shutdown::ShutdownRequest) -> Result<()> {
     // which creates a nested runtime that cannot be dropped in async context.
     // Wrap in Arc<RwLock> so AppState can share the cached registry and
     // get_state_internal avoids repeated blocking network I/O.
-    let model_registry = Arc::new(parking_lot::RwLock::new(ModelRegistry::new()));
+    let prepared = service.prepare(crate::service::StartupCancellation::default())?;
 
     // Launch async portion
     // 2 MB thread stack (Rust's default) is enough for async I/O while
     // leaving headroom for deep serde/JSON recursion (was 4 MB).
     // On a 32-core machine this still saves 64 MB virtual memory vs 4 MB.
-    let run_result = tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(2 * 1024 * 1024)
-        .build()?
-        .block_on(async_main(model_registry, cli, shutdown_request));
+        .build()?;
+    let run_result = runtime.block_on(async_main(prepared, cli, shutdown_request));
+    // A FailedStopping report retains the instance. Do not let a detached
+    // blocking task prevent the CLI host from reaching its process-exit path.
+    runtime.shutdown_timeout(std::time::Duration::from_secs(1));
 
-    // Write profiling flamegraph on shutdown (after the runtime drops,
-    // so all async tasks have settled).  ProfilerGuard stops sampling on
-    // drop, so we must build the report BEFORE dropping the guard.
+    // Write profiling after host runtime teardown. A FailedStopping report
+    // can still retain blocking work until process exit; it never authorizes
+    // releasing the service instance. Build before the profiler guard drops.
     #[cfg(not(windows))]
     if let (Some(guard), Some(path)) = (profiler_guard, profile_path) {
         tracing::info!("Writing CPU profile flamegraph to {}", path.display());
@@ -698,241 +526,14 @@ fn run(cli: Cli, shutdown_request: shutdown::ShutdownRequest) -> Result<()> {
 }
 
 async fn async_main(
-    model_registry: Arc<parking_lot::RwLock<ModelRegistry>>,
+    prepared: crate::service::PreparedAgent<'_, '_>,
     cli: Cli,
     shutdown_request: shutdown::ShutdownRequest,
 ) -> Result<()> {
-    let cwd = crate::utils::home_dir().to_string_lossy().to_string();
-
-    let all_models = model_registry.read().all_models();
-
-    // Load settings
-    let settings_path = std::path::PathBuf::from(crate::models::settings_path());
-    let settings = match crate::config::load_settings(&settings_path) {
-        Ok(settings) => settings,
-        Err(error) => {
-            tracing::warn!(
-                "Failed to load settings from {}: {}. Falling back to defaults.",
-                settings_path.display(),
-                error
-            );
-            crate::Settings::default()
-        }
-    };
-
-    // Load auth store
-    let auth_store = crate::AuthStore::load();
-
-    // Resolve the *initial* model: the settings default, else the first model
-    // that has credentials (a built-in key or an auth.json entry for its
-    // provider). This is only a starting point — clients (GUI/TUI) set their own
-    // model per session via the `set_model` RPC, which rebuilds the registry and
-    // reloads auth.json, so the initial choice is not authoritative.
-    //
-    // IMPORTANT — do NOT turn "nothing configured" back into `process::exit(1)`.
-    // The agent runs as a Tauri sidecar that the GUI spawns and connects to over
-    // gRPC. On a fresh install there is no auth.json yet, so no model resolves —
-    // but the user logs in *from inside the GUI*, which needs the agent already
-    // reachable to drive the flow. If the agent exited here, that first-run login
-    // could never complete (the GUI spawns the sidecar exactly once at startup;
-    // see desktop/src-tauri/src/agent_supervisor.rs), and the app would look broken
-    // out of the box. So when nothing is configured we log a warning and start
-    // the server anyway with an empty model. The endpoint stays unconfigured
-    // until the first `set_model` call, which resolves base_url + api_key from a
-    // freshly loaded auth.json (see agent/src/rpc/session.rs::set_model).
-    let resolved_model = {
-        // Prefer future/deepseek-v4-pro when the future provider is configured.
-        let preferred = if auth_store.get("future").is_some()
-            || all_models
-                .iter()
-                .any(|m| m.provider == "future" && !m.api_key.is_empty())
-        {
-            all_models
-                .iter()
-                .find(|m| m.provider == "future" && m.id == "deepseek-v4-pro")
-                .map(|m| format!("{}/{}", m.provider, m.id))
-        } else {
-            None
-        };
-        preferred
-            .or_else(crate::models::get_default_model)
-            .or_else(|| {
-                all_models
-                    .iter()
-                    .find(|m| !m.api_key.is_empty() || auth_store.get(&m.provider).is_some())
-                    .map(|m| m.id.clone())
-            })
-            .unwrap_or_default()
-    };
-    if resolved_model.is_empty() {
-        tracing::info!(
-            "future-agent: no model configured yet — starting the gRPC server \
-             anyway so a client can log in and pick a model. Add an API key via \
-             'future auth login' or the desktop app, or configure a provider in \
-             ~/.future/agent/models.json."
-        );
-    }
-
-    // Resolve model config
-    let model_config = model_registry.read().resolve(&resolved_model);
-
-    let engine_model = model_config
-        .as_ref()
-        .map(|m| m.id.clone())
-        .unwrap_or_else(|| resolved_model.clone());
-
-    // Resolve base URL: models.json > auth.json baseUrl > built-in default
-    let base_url = model_config
-        .as_ref()
-        .filter(|m| !m.base_url.is_empty())
-        .map(|m| m.base_url.clone())
-        .or_else(|| {
-            model_config
-                .as_ref()
-                .and_then(|m| auth_store.base_url(&m.provider))
-        })
-        .unwrap_or_default();
-    let base_url = if base_url.is_empty() {
-        "https://api.openai.com/v1".to_string()
-    } else {
-        base_url
-    };
-
-    // Resolve API key from auth.json > model config
-    let api_key = model_config
-        .as_ref()
-        .and_then(|m| auth_store.get(&m.provider))
-        .or_else(|| {
-            model_config
-                .as_ref()
-                .filter(|m| !m.api_key.is_empty())
-                .map(|m| m.api_key.clone())
-        })
-        .unwrap_or_default();
-
-    // Default thinking level (clients override per-session).
-
-    // Honor each model's advertised output limit. Models without one retain
-    // the existing reasoning/non-reasoning fallbacks.
-    let max_tokens = model_config
-        .as_ref()
-        .map(crate::models::effective_max_tokens);
-
-    // Build engine config from settings and model config. The turn limit is
-    // opt-in: an absent or non-positive `maxTurns` is passed through as-is and
-    // means unlimited (see `Loop::run_streaming_with_messages`), matching
-    // `DEFAULT_MAX_TURNS` — no hidden floor is imposed here.
-    let config = EngineConfig {
-        cwd: cwd.clone(),
-        max_turns: settings.max_turns,
-        thinking_level: "high".to_string(),
-        compaction_reserve_tokens: settings.compaction_reserve_tokens(),
-        compaction_keep_recent_tokens: settings.compaction_keep_recent_tokens(),
-        ..EngineConfig::with_defaults()
-    };
-
-    // Build engine
-    let engine = if let Some(model) = model_config.as_ref() {
-        let target = crate::llm::schema::ResolvedModelTarget::from_model(
-            model,
-            api_key.clone(),
-            None,
-            max_tokens,
-        )?;
-        Engine::new_with_target(target, config)?
-    } else {
-        Engine::new(&base_url, &api_key, &engine_model, config, None, max_tokens)?
-    };
-    let mut engine = engine.with_tools(crate::coding_tools());
-
-    // Native per-user IPC is the default. Supplying --grpc-addr explicitly
-    // opts into TCP compatibility mode.
-    let tcp_bind = cli.grpc_addr.as_deref().map(parse_tcp_bind).transpose()?;
-    // Discover skills (global user-level dirs only — project/cwd-relative
-    // skill dirs are intentionally not scanned).
-    let skill_dirs = crate::global_skill_dirs();
-    let skills = crate::discover_skills_cached(&skill_dirs);
-    let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
-
-    // Load project context
-    let agent_content = crate::prompt::load_project_context(&cwd, true).content;
-
-    // Build system prompt
-    let today = Local::now().format("%Y-%m-%d").to_string();
-    let system_prompt = crate::prompt::build_prompt(&crate::prompt::PromptOptions {
-        working_directory: cwd.clone(),
-        date: today,
-        tools: engine.tools.clone(),
-        skills: skills.clone(),
-        agent_content,
-        ..Default::default()
-    });
-    engine.agent_loop.verbose = cli.verbose;
-    engine.agent_loop.system_prompt = system_prompt.clone();
-    engine.agent_loop.config.system_prompt = system_prompt;
-
-    let manager = Arc::new(Manager::default_for(&cwd));
-    manager
-        .initialize()
-        .context("initialize Agent SQLite storage")?;
-    let imports = manager.import_records()?;
-    let skipped = imports
-        .iter()
-        .filter(|record| record.status == "skipped")
-        .count();
-    if skipped > 0 {
-        tracing::warn!(
-            skipped,
-            "legacy sessions skipped; use --migrate-sessions for the migration report"
-        );
-    }
-    let approval_gate = crate::rpc::ApprovalGate::default();
-    // Template for minting per-session agent loops.  Sessions no longer
-    // share one global loop — each hydrated/created session gets an
-    // independent copy so concurrent runs, model switches and aborts stay
-    // session-local.  The template itself never runs prompts.
-    // Set the model_registry on the template so all session loops inherit
-    // the cached registry via independent_copy() — avoids ~15% CPU overhead
-    // from re-deserialising the model catalog on every prompt.
-    let mut template_loop = engine.agent_loop.independent_copy();
-    template_loop.model_registry = Some(model_registry.clone());
-    let loop_template = Arc::new(template_loop);
-
-    // The agent starts with ZERO sessions.  There is no privileged
-    // "default"/"current" session — clients (TUI, GUI, CLI, channels)
-    // create or switch to sessions explicitly, and the agent hydrates
-    // them on demand.  Settings that used to be applied to the startup
-    // default session are applied per-session in cmd_new_session.
-    let app_state = crate::rpc::AppState {
-        agent_instance_id: format!("agent_{}", uuid::Uuid::new_v4().simple()),
-        sessions: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
-        queue_budget: Arc::new(crate::runtime::GlobalQueueBudget::defaults()),
-        session_manager: manager,
-        welcome_version: crate::utils::VERSION.to_string(),
-        welcome_cwd: cwd.clone(),
-        welcome_skills: Arc::new(parking_lot::RwLock::new(skill_names.clone())),
-        welcome_exts: vec![],
-        explicit_session: false,
-        approval_gate,
-        verbose: cli.verbose,
-        shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        model_registry: model_registry.clone(),
-        loop_template,
-    };
-
-    // Ctrl+C: reject new prompts and abort in-flight streams. The independent
-    // signal thread remains alive if session locks or runtime teardown stall.
-    let shutting_down = app_state.shutting_down.clone();
-    let sessions = app_state.sessions.clone();
-
-    let server: std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send>> =
-        match tcp_bind {
-            Some((host, port)) => {
-                Box::pin(async move { crate::grpc::serve_tcp(app_state, &host, port).await })
-            }
-            None => Box::pin(crate::grpc::serve_local(app_state)),
-        };
-
+    let running = prepared.initialize().await?;
+    let handle = running.handle();
+    let server = running.serve(None);
+    tokio::pin!(server);
     // If --profile-seconds is set, spawn a task that signals shutdown after N
     // seconds via a oneshot so the flamegraph gets written by run().
     // When --profile-seconds is not set, use pending() so the select branch
@@ -940,8 +541,7 @@ async fn async_main(
     let profile_rx: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
         if let Some(secs) = cli.profile_seconds {
             let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-            let shutting_down = shutting_down.clone();
-            let sessions = sessions.clone();
+            let handle = handle.clone();
             tokio::spawn(async move {
                 tracing::info!(
                     "Profile timer: agent will auto-shutdown after {} seconds",
@@ -949,47 +549,41 @@ async fn async_main(
                 );
                 tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
                 tracing::info!("Profile timer expired — shutting down for flamegraph capture");
-                shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
-                abort_all_sessions(&sessions);
+                tracing::info!("Profile timer completed — draining active streams");
+                handle.request_shutdown(std::time::Duration::from_secs(5));
                 let _ = tx.send(());
             });
             Box::pin(async move {
                 let _ = rx.await;
-                tracing::info!("Profile timer completed — draining active streams");
             })
         } else {
             Box::pin(std::future::pending())
         };
 
     tokio::select! {
-        result = server => result?,
+        result = &mut server => return result,
         signal = shutdown_request => {
             signal.context("Ctrl-C listener stopped unexpectedly")?
                 .context("Could not listen for Ctrl-C")?;
-            shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
-
-            // Interrupt in-flight runs so the process exits promptly instead
-            // of waiting for a long LLM stream to finish on its own.
-            abort_all_sessions(&sessions);
+            handle.request_shutdown(std::time::Duration::from_secs(4));
             tracing::info!("Ctrl-C received — press Ctrl-C again to force exit");
         }
         _ = profile_rx => {
             // profile timer handled inside the future
         }
     }
-    Ok(())
-}
-
-/// A graceful standalone-agent exit has already stopped accepting work and
-/// settled/aborted streams. Revoke the now-unused persistent Windows ACEs.
-/// Failure is best-effort: metadata is retained so startup GC, Settings reset,
-/// or uninstall can retry after a crash, active lease, or transient I/O error.
-fn cleanup_windows_sandbox_on_exit() {
-    #[cfg(target_os = "windows")]
-    match crate::sandbox::reset_windows_sandbox_capabilities() {
-        Ok(removed) => tracing::info!(removed, "Cleaned Windows sandbox permissions on exit"),
-        Err(error) => {
-            tracing::warn!(%error, "Could not clean Windows sandbox permissions on exit")
+    let report = handle.shutdown(std::time::Duration::from_secs(4));
+    tokio::pin!(report);
+    tokio::select! {
+        report = &mut report => {
+            anyhow::ensure!(report.status == crate::service::ShutdownStatus::Stopped, "Agent failed to stop: {}", report.errors.join("; "));
+            server.await
+        }
+        result = &mut server => {
+            result?;
+            let report = report.await;
+            anyhow::ensure!(report.status == crate::service::ShutdownStatus::Stopped, "Agent failed to stop: {}", report.errors.join("; "));
+            Ok(())
         }
     }
 }
@@ -1016,80 +610,6 @@ mod tests {
                 .content
                 .is_empty()
         );
-    }
-
-    #[test]
-    fn agent_instance_lock_is_exclusive_and_reusable_after_drop() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("agent-instance.lock");
-        let first = acquire_agent_instance_lock_at(&path).expect("first agent owns lock");
-        let error = acquire_agent_instance_lock_at(&path).expect_err("second agent is rejected");
-        assert!(error.to_string().contains("already running"));
-        drop(first);
-        let _next = acquire_agent_instance_lock_at(&path).expect("lock released on exit");
-    }
-
-    #[test]
-    fn agent_instance_metadata_is_separate_and_removed_before_unlock() {
-        let dir = tempfile::tempdir().unwrap();
-        let lock_path = dir.path().join("agent-instance.lock");
-        let lock = acquire_agent_instance_lock_at(&lock_path).unwrap();
-        let metadata = write_agent_instance_metadata(&lock_path).unwrap();
-        let path = dir.path().join("agent-instance.json");
-        assert_eq!(std::fs::metadata(&lock_path).unwrap().len(), 0);
-        let value: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["pid"], std::process::id());
-        assert_eq!(
-            value["executable"],
-            std::env::current_exe().unwrap().to_string_lossy().as_ref()
-        );
-        assert!(acquire_agent_instance_lock_at(&lock_path).is_err());
-        drop(metadata);
-        assert!(!path.exists());
-        drop(lock);
-        assert!(acquire_agent_instance_lock_at(&lock_path).is_ok());
-    }
-
-    #[test]
-    fn agent_lifecycle_cleans_on_success_error_and_panic() {
-        let success = std::cell::RefCell::new(Vec::new());
-        let result: Result<i32> = run_agent_lifecycle(
-            || success.borrow_mut().push("startup"),
-            || {
-                success.borrow_mut().push("run");
-                Ok(7)
-            },
-            || success.borrow_mut().push("exit"),
-        );
-        assert_eq!(result.unwrap(), 7);
-        assert_eq!(*success.borrow(), ["startup", "run", "exit"]);
-
-        let error = std::cell::RefCell::new(Vec::new());
-        let result: Result<()> = run_agent_lifecycle(
-            || error.borrow_mut().push("startup"),
-            || {
-                error.borrow_mut().push("run");
-                anyhow::bail!("server failed")
-            },
-            || error.borrow_mut().push("exit"),
-        );
-        assert_eq!(result.unwrap_err().to_string(), "server failed");
-        assert_eq!(*error.borrow(), ["startup", "run", "exit"]);
-
-        let panic_steps = std::cell::RefCell::new(Vec::new());
-        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = run_agent_lifecycle::<()>(
-                || panic_steps.borrow_mut().push("startup"),
-                || {
-                    panic_steps.borrow_mut().push("run");
-                    panic!("server panic")
-                },
-                || panic_steps.borrow_mut().push("exit"),
-            );
-        }));
-        assert!(panic.is_err());
-        assert_eq!(*panic_steps.borrow(), ["startup", "run", "exit"]);
     }
 
     #[test]
@@ -1200,131 +720,18 @@ mod tests {
         crate::test_support::restore_env(future_rpc::home::FUTURE_HOME_ENV, &previous);
     }
 
-    /// The instance metadata file is advisory: dropping its guard must remove
-    /// only the file this process wrote, and must never take the process down
-    /// when it cannot (the lock, not this file, is what enforces the singleton).
     #[test]
-    fn unremovable_instance_metadata_is_left_alone() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("agent-instance.json");
-        // A directory is not the file the guard wrote, and `remove_file` refuses
-        // it — a non-NotFound failure, which must not panic out of `Drop`.
-        std::fs::create_dir_all(path.join("nested")).unwrap();
-        drop(AgentInstanceMetadata(path.clone()));
-        assert!(
-            path.join("nested").is_dir(),
-            "the guard must not remove what it did not write"
-        );
-        // A path that is already gone is silent, not an error.
-        drop(AgentInstanceMetadata(dir.path().join("never-written.json")));
-    }
-
-    /// The singleton lock is the first thing the Agent creates, and it decides
-    /// the config directory's existence — a fresh `--home` has none yet.
-    #[test]
-    fn the_instance_lock_creates_its_missing_parent_directories() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir
-            .path()
-            .join("not")
-            .join("created")
-            .join("agent-instance.lock");
-        let guard = acquire_agent_instance_lock_at(&path).expect("lock with its parents");
-        assert!(path.is_file());
-        assert!(
-            acquire_agent_instance_lock_at(&path).is_err(),
-            "the nested lock is exclusive like any other"
-        );
-        drop(guard);
-        assert!(acquire_agent_instance_lock_at(&path).is_ok());
-        // A lock path with no parent skips the directory creation entirely; it
-        // then fails on the open, because a directory is not a lock file.
-        assert!(
-            acquire_agent_instance_lock_at(Path::new("/")).is_err(),
-            "the filesystem root is not a lock file"
-        );
-    }
-
-    /// Interrupting the Agent must stop what is running *and* release anything
-    /// blocked on the user: a run parked on an approval prompt would otherwise
-    /// keep the process alive after the interrupt.
-    #[test]
-    fn abort_all_sessions_aborts_and_cancels_pending_approvals() {
-        let _sink = tracing::subscriber::set_default(
-            tracing_subscriber::fmt()
-                .with_writer(std::io::sink)
-                .with_ansi(false)
-                .finish(),
-        );
-        let dir = tempfile::tempdir().unwrap();
-        let workspace = dir.path().join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
-        let gate = crate::rpc::ApprovalGate::default();
-        let broadcaster = std::sync::Arc::new(crate::rpc::SseBroadcaster::new());
-        let workspace_arg = workspace.to_string_lossy().to_string();
-        let session = Arc::new(parking_lot::RwLock::new(
-            crate::rpc::ServerSession::new_with_queue_budget(
-                "session-1".to_string(),
-                std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
-                    std::sync::Arc::new(crate::test_support::EmptyProvider),
-                    "test-model",
-                ))),
-                std::sync::Arc::new(crate::session::Manager::new(dir.path().join("sessions"))),
-                &workspace_arg,
-                broadcaster.clone(),
-                gate.clone(),
-                std::sync::Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
-                std::sync::Arc::new(crate::runtime::GlobalQueueBudget::defaults()),
-            ),
-        ));
-        let sessions: SessionsMap =
-            Arc::new(parking_lot::RwLock::new(std::collections::HashMap::from([
-                ("session-1".to_string(), session.clone()),
-            ])));
-
-        // A `shell` command from the Manual tier asks; the call blocks until the
-        // gate decides, so it runs on its own thread like a real tool call.
-        let sandbox = crate::sandbox::ResolvedSandbox::resolve(
-            &crate::sandbox::SandboxPolicy {
-                tier: crate::sandbox::SandboxTier::Manual,
-                model_reviewer: false,
-            },
-            &workspace.to_string_lossy(),
-        );
-        let asking = {
-            let gate = gate.clone();
-            let broadcaster = broadcaster.clone();
-            std::thread::spawn(move || {
-                gate.request(
-                    broadcaster.as_ref(),
-                    "session-1",
-                    "/tmp",
-                    "shell",
-                    "tool-1",
-                    &serde_json::json!({"command": "rm -rf /tmp/futureos-abort-test"}),
-                    &sandbox,
-                )
-            })
-        };
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while gate.pending_for_session("session-1").is_empty() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the approval request never registered"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-
-        abort_all_sessions(&sessions);
-
-        assert!(
-            gate.pending_for_session("session-1").is_empty(),
-            "an interrupt must release a run blocked on the user"
-        );
-        assert!(
-            asking.join().is_ok(),
-            "the tool call must return a decision rather than hang"
-        );
+    fn mismatched_helper_rejects_before_home_validation_or_initialization() {
+        let error = run_from_args(&[
+            "--linux-sandbox-helper".into(),
+            "fd:999".into(),
+            "--linux-sandbox-host-version".into(),
+            "not-this-build".into(),
+            "--home".into(),
+            "relative-root".into(),
+        ])
+        .unwrap_err();
+        assert!(error.to_string().contains("helper build mismatch"));
     }
 
     /// The Linux sandbox helper is a Linux-only entry point; asking for it from
@@ -1349,30 +756,6 @@ mod tests {
     fn reset_windows_sandbox_is_a_sessionless_maintenance_command() {
         let _home = crate::test_support::TestHome::new();
         assert!(run_from_args(&["--reset-windows-sandbox".to_string()]).is_ok());
-    }
-
-    /// A capability file that cannot be parsed is not deleted: the granted ACEs
-    /// it describes are still on the filesystem, so the startup and exit cleanup
-    /// must report the failure and leave the file for an operator to inspect.
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn sandbox_cleanup_reports_an_unreadable_capability_file() {
-        let _home = crate::test_support::TestHome::new();
-        let path = crate::utils::future_home().join("windows-capabilities.json");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "{not json").unwrap();
-        let _sink = tracing::subscriber::set_default(
-            tracing_subscriber::fmt()
-                .with_writer(std::io::sink)
-                .with_ansi(false)
-                .finish(),
-        );
-        cleanup_windows_sandbox_on_startup();
-        cleanup_windows_sandbox_on_exit();
-        assert!(
-            path.exists(),
-            "a file we cannot parse is not ours to delete"
-        );
     }
 
     /// `--migration-source` only means something with one of the two migration

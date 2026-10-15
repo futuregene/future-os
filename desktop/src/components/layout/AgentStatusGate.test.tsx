@@ -12,12 +12,12 @@ afterEach(() => {
     mounted.pop()?.();
 });
 
-function renderStatus(phase: AgentStatus["phase"], showWait = false) {
+function renderStatus(phase: AgentStatus["phase"], showWait = false, error?: string) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   act(() => root.render(
-    <AgentStatusGate showWait={showWait} status={{ phase, desktopVersion: "1.1.8", agentVersion: null }} />,
+    <AgentStatusGate showWait={showWait} status={{ phase, desktopVersion: "1.1.8", agentVersion: null, ...(error ? { error } : {}) }} />,
   ));
   mounted.push(() => {
     act(() => root.unmount());
@@ -27,6 +27,11 @@ function renderStatus(phase: AgentStatus["phase"], showWait = false) {
 }
 
 describe("agent status gate", () => {
+  it("shows the connection gate reason for a blocked Agent", () => {
+    expect(renderStatus("unavailable", false, "Agent instance lock is occupied")).toContain("Agent instance lock is occupied");
+    expect(renderStatus("incompatible", false, "Agent serves a different data root")).toContain("Agent serves a different data root");
+  });
+
   it("shows only the animation during the first five seconds", () => {
     const text = renderStatus("starting");
     expect(text).toBe("");
@@ -45,16 +50,18 @@ describe("agent status gate", () => {
     expect(text).not.toContain("could not start");
   });
 
-  it("shows restart and reinstall guidance for startup failures", () => {
+  it("shows restart and external Agent diagnostics for startup failures", () => {
     const text = renderStatus("spawn_failed");
     expect(text).toContain("Future Agent could not start");
     expect(text).toContain("Restart FutureOS");
-    expect(text).toContain("reinstall FutureOS");
+    expect(text).toContain("external Agent");
+    expect(text).toContain("availability and version");
   });
 
   it("shows the version mismatch guidance", () => {
     const text = renderStatus("incompatible");
     expect(text).toContain("does not match this FutureOS version");
-    expect(text).toContain("finish the update");
+    expect(text).toContain("Update or stop the external Agent");
+    expect(text).toContain("cannot be bypassed");
   });
 });

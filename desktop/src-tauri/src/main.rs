@@ -6,6 +6,15 @@ For phone remote access without GUI dependencies, run futureos-headless instead.
 #[cfg(not(test))]
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(result) = futureos_lib::dispatch_agent_helper(&args) {
+        return match result {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::ExitCode::FAILURE
+            }
+        };
+    }
     match parse_args(&args) {
         Ok(true) => {
             println!("{HELP}");

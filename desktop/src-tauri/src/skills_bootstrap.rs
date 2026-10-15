@@ -6,7 +6,7 @@
 //! endpoints are unauthenticated). Used by the post-login onboarding flow; runs
 //! on a background thread since it blocks on the CLI child process.
 
-use tauri_plugin_shell::process::CommandEvent;
+use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
 const INIT_ARGS: [&str; 1] = ["init"];
@@ -14,17 +14,16 @@ const INIT_ARGS: [&str; 1] = ["init"];
 /// Force-run the skill bootstrap. Idempotent — the CLI itself skips
 /// already-installed skills. Used by the post-login onboarding flow.
 pub fn run_builtin_skills<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
-    let command = match app.shell().sidecar("future") {
-        Ok(command) => command.args(INIT_ARGS),
+    let executable = match crate::cli_tool::resolve() {
+        Ok(path) => path,
         Err(error) => {
-            eprintln!(
-                "FutureOS: bundled CLI sidecar unavailable ({error}); skipping skill bootstrap"
-            );
+            crate::host_environment::report(&format!("{error}; skipping built-in skill bootstrap"));
             return;
         }
     };
+    let command = app.shell().command(executable).args(INIT_ARGS);
 
-    let (rx, _child) = match command.spawn() {
+    let (rx, child) = match command.spawn() {
         Ok(pair) => pair,
         Err(error) => {
             eprintln!("FutureOS: failed to start skill bootstrap: {error}");
@@ -32,18 +31,54 @@ pub fn run_builtin_skills<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
         }
     };
 
-    drain_skill_events(rx);
+    drain_skill_events(rx, Some(child));
 }
 
 /// Drain the sidecar event channel to the logs, wait for exit, and report a
 /// non-zero exit. Extracted so the drain loop + exit check are testable without
 /// a real `AppHandle`/sidecar child.
-fn drain_skill_events(mut rx: tokio::sync::mpsc::Receiver<CommandEvent>) -> Option<i32> {
+fn drain_skill_events(
+    mut rx: tokio::sync::mpsc::Receiver<CommandEvent>,
+    mut child: Option<CommandChild>,
+) -> Option<i32> {
     let mut exit_code: Option<i32> = None;
-    while let Some(event) = rx.blocking_recv() {
-        handle_skill_event(event, &mut exit_code);
+    let mut stopping = None;
+    let mut terminated = false;
+    loop {
+        if child.is_some() && crate::desktop_shutdown::is_stopping() {
+            if let Err(error) = child.take().unwrap().kill() {
+                crate::runtime::record_cleanup_error(format!(
+                    "CLI bootstrap cancellation failed: {error}"
+                ));
+            }
+            stopping = Some(std::time::Instant::now());
+        }
+        match rx.try_recv() {
+            Ok(event) => {
+                terminated = matches!(event, CommandEvent::Terminated(_));
+                handle_skill_event(event, &mut exit_code);
+                if terminated {
+                    break;
+                }
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                if stopping
+                    .is_some_and(|since| since.elapsed() >= std::time::Duration::from_secs(2))
+                {
+                    crate::runtime::record_cleanup_error(
+                        "CLI bootstrap exit was not confirmed".into(),
+                    );
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
     }
 
+    if stopping.is_some() && !terminated {
+        crate::runtime::record_cleanup_error("CLI bootstrap termination was not confirmed".into());
+    }
     if exit_code != Some(0) {
         eprintln!("FutureOS: skill bootstrap did not complete (exit {exit_code:?})");
     }
@@ -106,7 +141,7 @@ mod tests {
         }))
         .unwrap();
         drop(tx);
-        assert_eq!(drain_skill_events(rx), Some(0));
+        assert_eq!(drain_skill_events(rx, None), Some(0));
     }
 
     #[test]
@@ -118,17 +153,24 @@ mod tests {
         }))
         .unwrap();
         drop(tx);
-        assert_eq!(drain_skill_events(rx), Some(2));
+        assert_eq!(drain_skill_events(rx, None), Some(2));
     }
 
     #[test]
     fn run_builtin_skills_logs_spawn_failure() {
-        // No bundled `future` sidecar binary in a mock app → the spawn fails and
-        // is logged, without draining anything.
+        let _home = crate::auth_store::test_support::HomeGuard::new("bootstrap-no-cli");
+        let previous = std::env::var_os("PATH");
+        std::env::set_var("PATH", "");
+        // No adjacent or PATH CLI: production tool discovery fails before any
+        // child is spawned, without draining an event channel.
         let app = tauri::test::mock_builder()
             .plugin(tauri_plugin_shell::init())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build mock app");
         run_builtin_skills(app.handle());
+        match previous {
+            Some(path) => std::env::set_var("PATH", path),
+            None => std::env::remove_var("PATH"),
+        }
     }
 }

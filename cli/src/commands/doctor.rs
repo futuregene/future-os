@@ -338,7 +338,7 @@ async fn check_agent() -> CheckResult {
                 .unwrap_or_else(|| bin_path.clone()),
         );
     } else {
-        lines.push("future-agent not found on PATH — run `make install`".to_string());
+        lines.push("Standalone future-agent is optional; Desktop embeds Agent, and the CLI provides `future agent`".to_string());
     }
 
     let client = RunClient::new(&grpc_addr);
@@ -355,8 +355,12 @@ async fn check_agent() -> CheckResult {
                 lines,
             }
         }
-        Err(_) => {
+        Err(error) => {
+            lines.push(format!("Connection check: {error}"));
             if bin_path.is_none() {
+                lines.push(
+                    "Open Desktop for embedded hosting, or run `future agent` explicitly".into(),
+                );
                 return CheckResult {
                     name: "Agent".to_string(),
                     status: Status::Warn,
@@ -364,7 +368,7 @@ async fn check_agent() -> CheckResult {
                 };
             }
             lines.push(format!(
-                "{RED}Not running — start with: future-agent{RESET}"
+                "{RED}Agent unavailable — open Desktop or start `future agent`; check compatibility and instance locks{RESET}"
             ));
             CheckResult {
                 name: "Agent".to_string(),
@@ -784,7 +788,7 @@ mod tests {
         // Header + all 12 check sections present.
         assert!(stdout.starts_with("\u{1b}[1mFuture Doctor\u{1b}[0m — checking environment...\n"));
         assert!(stdout.contains("Not logged in — run `future auth login`"));
-        assert!(stdout.contains("future-agent not found on PATH"));
+        assert!(stdout.contains("Standalone future-agent is optional"));
         assert!(stdout.contains("future not found on PATH — run `make install`"));
         assert!(stdout.contains("future-tui not found on PATH"));
         assert!(stdout.contains("future-desktop not found on PATH"));
@@ -843,7 +847,7 @@ mod tests {
             stdout.contains("[!!]"),
             "expected an issue section: {stdout}"
         );
-        assert!(stdout.contains("Not running — start with: future-agent"));
+        assert!(stdout.contains("Agent unavailable — open Desktop or start `future agent`"));
         // Version captured from the fake binary's --version output.
         assert!(stdout.contains("v0.0.1"), "stdout: {stdout}");
     }
@@ -1283,10 +1287,10 @@ mod tests {
     ///
     /// Windows half of `doctor_detects_agent_binary_not_running_as_issue`
     /// (whose fixture is a `#!/bin/sh` script): `which` runs
-    /// `where future-agent.exe`, which matches on name and extension alone, so
-    /// a placeholder file is enough for the component to count as present —
-    /// and `get_binary_version` then fails to spawn it, which is deterministic
-    /// and starts no process at all.
+    /// `where future-agent.exe`, which matches on name and extension alone.
+    /// Use a real Windows executable under that name: `get_binary_version`
+    /// runs it, and an invalid placeholder can raise a modal compatibility
+    /// error instead of failing silently on Windows.
     #[cfg(windows)]
     #[tokio::test]
     async fn doctor_reports_an_unreachable_agent_with_a_binary_on_path() {
@@ -1298,9 +1302,15 @@ mod tests {
         ]);
         let bin_dir = dir.path().join("fake-bin");
         tokio::fs::create_dir_all(&bin_dir).await.unwrap();
-        tokio::fs::write(bin_dir.join("future-agent.exe"), b"placeholder")
-            .await
-            .unwrap();
+        let windows_dir = std::env::var_os("SystemRoot")
+            .or_else(|| std::env::var_os("WINDIR"))
+            .expect("Windows system directory");
+        tokio::fs::copy(
+            std::path::PathBuf::from(windows_dir).join("System32/where.exe"),
+            bin_dir.join("future-agent.exe"),
+        )
+        .await
+        .expect("copy a valid Windows executable for the PATH fixture");
         let mut paths = vec![bin_dir];
         if let Some(p) = std::env::var_os("PATH") {
             paths.extend(std::env::split_paths(&p));
@@ -1310,7 +1320,7 @@ mod tests {
         let (code, stdout, _) = run_doctor().await;
         assert_eq!(code, 0);
         assert!(
-            stdout.contains("Not running — start with: future-agent"),
+            stdout.contains("Agent unavailable — open Desktop or start `future agent`"),
             "stdout: {stdout}"
         );
         assert!(
@@ -1419,12 +1429,18 @@ mod tests {
             .responses
             .insert("list_sessions".into(), "{\"sessions\":[]}".into());
         let addr = crate::test_server::spawn_mock(agent).await;
-        // All five binaries resolvable on PATH (fake versions); prepend so
-        // the `which` binary itself stays resolvable. `which` runs
-        // `where <name>.exe` on Windows, so the fixture's names must carry the
-        // platform's executable suffix there or the lookup never matches.
+        // All five binaries resolvable on PATH; prepend so the `which` binary
+        // itself stays resolvable. Windows looks for `.exe` files and doctor
+        // runs each one with `--version`, so use a real executable there.
         let bin_dir = dir.path().join("bin");
         tokio::fs::create_dir_all(&bin_dir).await.unwrap();
+        #[cfg(windows)]
+        let windows_executable = std::path::PathBuf::from(
+            std::env::var_os("SystemRoot")
+                .or_else(|| std::env::var_os("WINDIR"))
+                .expect("Windows system directory"),
+        )
+        .join("System32/where.exe");
         let suffix = if cfg!(windows) { ".exe" } else { "" };
         for name in [
             "future",
@@ -1434,6 +1450,11 @@ mod tests {
             "future-channel",
         ] {
             let path = bin_dir.join(format!("{name}{suffix}"));
+            #[cfg(windows)]
+            tokio::fs::copy(&windows_executable, &path)
+                .await
+                .expect("copy a valid Windows executable for the PATH fixture");
+            #[cfg(unix)]
             tokio::fs::write(&path, "#!/bin/sh\necho \"future v1.0.0\"\n")
                 .await
                 .unwrap();

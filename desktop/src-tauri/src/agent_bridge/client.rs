@@ -7,19 +7,17 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use tonic::transport::Channel;
-
-use crate::agent_proto::{Attachment, FutureAgentClient, RpcCommand, RpcResponse};
+use crate::agent_proto::{Attachment, RpcCommand, RpcResponse};
 
 /// Desktop client wrapper that applies the shared per-command deadline while
 /// leaving streaming RPCs on the underlying client deadline-free.
 #[derive(Clone, Debug)]
 pub struct AgentClient {
-    inner: FutureAgentClient<Channel>,
+    inner: future_rpc::connection::VerifiedAgentClient,
 }
 
 impl AgentClient {
-    fn new(inner: FutureAgentClient<Channel>) -> Self {
+    fn new(inner: future_rpc::connection::VerifiedAgentClient) -> Self {
         Self { inner }
     }
 
@@ -27,24 +25,42 @@ impl AgentClient {
         &mut self,
         command: RpcCommand,
     ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
-        self.inner
+        let _admitted = crate::desktop_shutdown::admit()?;
+        let prompt = command.r#type == "prompt";
+        let session = command.session_id.clone();
+        let requested = command.requested_run_id.clone();
+        if prompt {
+            crate::desktop_shutdown::own_run(
+                session.clone(),
+                requested.clone(),
+                self.inner.clone(),
+            );
+        }
+        let result = self
+            .inner
             .execute_command(future_rpc::command_policy::request_with_timeout(command))
-            .await
-    }
-
-    async fn execute_command_with_timeout(
-        &mut self,
-        command: RpcCommand,
-        timeout: Duration,
-    ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
-        let mut request = tonic::Request::new(command);
-        request.set_timeout(timeout);
-        self.inner.execute_command(request).await
+            .await;
+        if prompt {
+            if let Ok(response) = &result {
+                if response.get_ref().success {
+                    let data = future_rpc::decode::response_data(response.get_ref());
+                    if let Some(run) = data.get("run_id").and_then(serde_json::Value::as_str) {
+                        if run != requested {
+                            crate::desktop_shutdown::release_run(&session, &requested);
+                        }
+                        crate::desktop_shutdown::own_run(session, run.into(), self.inner.clone());
+                    }
+                } else {
+                    crate::desktop_shutdown::release_run(&session, &requested);
+                }
+            }
+        }
+        result
     }
 }
 
 impl std::ops::Deref for AgentClient {
-    type Target = FutureAgentClient<Channel>;
+    type Target = future_rpc::connection::VerifiedAgentClient;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
@@ -102,15 +118,15 @@ fn agent_channel_runtime() -> tokio::runtime::Handle {
         .clone()
 }
 
-/// Classify an RPC failure from a shared-channel call. With the cached lazy
-/// channel, `connect_agent` succeeds even when the agent dies *after* the
-/// channel was established — a down agent then surfaces here as a tonic
-/// `Unavailable` transport status. Map that to `AppError::AgentUnavailable`
+/// Classify an RPC failure after connection/readiness verification. An Agent
+/// that dies after verification surfaces as a tonic `Unavailable` transport
+/// status. Map that to `AppError::AgentUnavailable`
 /// so the tolerance sites (`abort_run`'s local cancel, credential reload's
 /// "down agent is success") keep working; anything else is an app-level
 /// failure and keeps the generic message variant. The agent reports
 /// command-level failures inside an OK `RpcResponse` (`success = false`),
-/// never as gRPC statuses, so a status error is always transport-level.
+/// never as gRPC statuses. Readiness and instance gates may also return status
+/// errors before a business command is dispatched.
 pub fn map_rpc_error(context: &str, status: tonic::Status) -> crate::AppError {
     if status.code() == tonic::Code::Unavailable {
         crate::AppError::AgentUnavailable(format!("{context}: {}", status.message()))
@@ -127,96 +143,111 @@ pub fn map_rpc_error(context: &str, status: tonic::Status) -> crate::AppError {
 /// production, but the test binary hosts more than one in-process mock agent;
 /// keying by address lets a changed `FUTURE_AGENT_GRPC_ADDR` reconnect instead
 /// of reusing a stale connection to the previous mock.
-static AGENT_CHANNEL: tokio::sync::Mutex<Option<(String, Channel)>> =
-    tokio::sync::Mutex::const_new(None);
+static AGENT_CHANNEL: tokio::sync::Mutex<
+    Option<(String, future_rpc::connection::VerifiedAgentClient)>,
+> = tokio::sync::Mutex::const_new(None);
 
-/// Resolve the agent endpoint and open a gRPC client. A connection failure maps
-/// to `AppError::AgentUnavailable` so callers can tolerate a down agent (e.g.
-/// `abort_run` still cancels the run locally).
-pub async fn connect_agent() -> Result<AgentClient, crate::AppError> {
-    let configured = raw_agent_addr();
-    // A cached channel already targeting this discovery configuration is
-    // reused as-is.
-    {
-        let cached = AGENT_CHANNEL.lock().await;
-        if let Some((addr, channel)) = cached.as_ref() {
-            if addr == &configured {
-                return Ok(AgentClient::new(future_rpc::transport::agent_client(
-                    channel.clone(),
-                )));
+pub(crate) fn map_connection_error(
+    error: future_rpc::connection::ConnectionError,
+) -> crate::AppError {
+    match error {
+        future_rpc::connection::ConnectionError::Incompatible {
+            agent_version,
+            ref reason,
+        } => crate::AppError::AgentIncompatible {
+            agent_version,
+            reason: format!("Incompatible Future Agent: {reason}"),
+        },
+        future_rpc::connection::ConnectionError::InstanceChanged => {
+            crate::AppError::AgentIncompatible {
+                agent_version: None,
+                reason: error.to_string(),
             }
         }
+        _ => crate::AppError::AgentUnavailable(error.to_string()),
     }
-    let configured_for_connect = configured.clone();
-    let channel = agent_channel_runtime()
-        .spawn(async move {
-            let connected = future_rpc::transport::connect_channel(
-                Some(&configured_for_connect),
-                CONNECT_TIMEOUT,
-                None,
-            )
+}
+
+/// Both the discovery configuration and concrete IPC label participate in the
+/// cache key. Readiness must pass even when the channel came from the cache.
+#[cfg(test)]
+static TEST_CONNECTION_GENERATION: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+pub(crate) fn reset_test_connection() {
+    TEST_CONNECTION_GENERATION.fetch_add(1, Ordering::AcqRel);
+}
+
+pub async fn connect_agent() -> Result<AgentClient, crate::AppError> {
+    let configured = raw_agent_addr();
+    let key = format!(
+        "{}|{}|{:?}",
+        configured,
+        future_rpc::transport::connection_plan(Some(&configured))[0].label(),
+        future_rpc::connection::CompatibilityRequirements::for_endpoint(
+            &configured,
+            crate::build_info::VERSION
+        )
+        .expected_home
+    );
+    #[cfg(test)]
+    let key = format!(
+        "{key}|{}",
+        TEST_CONNECTION_GENERATION.load(Ordering::Acquire)
+    );
+    let cached = AGENT_CHANNEL
+        .lock()
+        .await
+        .as_ref()
+        .filter(|(saved, _)| saved == &key)
+        .map(|(_, client)| client.clone());
+    if let Some(mut client) = cached {
+        let result = agent_channel_runtime()
+            .spawn(async move { client.verify().await.map(|()| client) })
             .await
             .map_err(|error| {
                 crate::AppError::AgentUnavailable(format!(
-                    "Unable to connect to Future Agent: {error}"
+                    "Agent verification task failed: {error}"
                 ))
             })?;
-            let label = connected.endpoint.label();
-            let ch = connected.channel;
-            let mut client = AgentClient::new(future_rpc::transport::agent_client(ch.clone()));
-            health_check(&mut client, &label).await?;
-            Ok::<Channel, crate::AppError>(ch)
+        match result {
+            Ok(client) => return Ok(AgentClient::new(client)),
+            Err(error) => {
+                let mut cached = AGENT_CHANNEL.lock().await;
+                if cached.as_ref().is_some_and(|(saved, _)| saved == &key) {
+                    *cached = None;
+                }
+                if !matches!(
+                    error,
+                    future_rpc::connection::ConnectionError::Transport(_)
+                        | future_rpc::connection::ConnectionError::Unverified(_)
+                ) {
+                    return Err(map_connection_error(error));
+                }
+            }
+        }
+    }
+    let client = agent_channel_runtime()
+        .spawn(async move {
+            future_rpc::connection::connect_verified(
+                &configured,
+                crate::build_info::VERSION,
+                CONNECT_TIMEOUT,
+                CONNECT_TIMEOUT,
+            )
+            .await
         })
         .await
-        .expect("agent channel task: pinned runtime outlives the process")?;
-    *AGENT_CHANNEL.lock().await = Some((configured, channel.clone()));
-    Ok(AgentClient::new(future_rpc::transport::agent_client(
-        channel,
-    )))
+        .map_err(|error| {
+            crate::AppError::AgentUnavailable(format!("Agent connection task failed: {error}"))
+        })?
+        .map_err(map_connection_error)?;
+    *AGENT_CHANNEL.lock().await = Some((key, client.clone()));
+    Ok(AgentClient::new(client))
 }
 
-/// Complete a business command round-trip without touching skill discovery.
-/// A transport connection alone is not readiness: during startup the local
-/// endpoint may exist before the command service can answer requests.
 pub(crate) async fn get_agent_readiness(
 ) -> Result<Option<future_rpc::payloads_ext::AgentReadinessPayload>, crate::AppError> {
-    let mut client = connect_agent().await?;
-    let response = client
-        .execute_command(base_command("get_agent_readiness", String::new()))
-        .await
-        .map_err(|status| map_rpc_error("Unable to read Future Agent status", status))?
-        .into_inner();
-    // An older Agent cannot implement this handshake. Report it as an
-    // incompatible build without invoking its skill-scanning get_agent_info.
-    if !response.success && response.error == "unknown command: get_agent_readiness" {
-        return Ok(None);
-    }
-    let response = response.ok_or_rpc_error("Future Agent did not report its build information")?;
-    let info: future_rpc::payloads_ext::AgentReadinessPayload =
-        serde_json::from_value(future_rpc::decode::response_data(&response))?;
-    if info.version.is_empty() || info.agent_instance_id.is_empty() {
-        return Err(crate::AppError::Message(
-            "Future Agent returned an incomplete readiness response".to_string(),
-        ));
-    }
-    Ok(Some(info))
-}
-
-/// One-shot reachability check run when the shared channel is first
-/// established: validates the lazy channel with a cheap, no-side-effect RPC
-/// so a down agent surfaces the familiar AgentUnavailable message rather
-/// than a raw tonic transport error on the next real command.
-async fn health_check(client: &mut AgentClient, endpoint_str: &str) -> Result<(), crate::AppError> {
-    client
-        .execute_command_with_timeout(list_streaming_sessions_command(), CONNECT_TIMEOUT)
-        .await
-        .map_err(|status| {
-            crate::AppError::AgentUnavailable(format!(
-                "Unable to connect to Future Agent at {endpoint_str}: {}",
-                status.message()
-            ))
-        })?;
-    Ok(())
+    Ok(Some(connect_agent().await?.readiness().clone()))
 }
 
 /// Turn a gRPC `RpcResponse` into a `Result`, surfacing the agent's own error
@@ -651,22 +682,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn health_check_maps_transport_failure_to_unavailable() {
+    async fn readiness_failure_maps_to_unavailable_without_business_calls() {
         let mock = mock_agent();
-        // Connect first (the OnceCell init health check consumes the default
-        // reply), then script the failure for the explicit health_check call.
-        let mut client = connect_agent().await.expect("connect to mock");
         mock.push(
-            "list_streaming_sessions",
-            Reply::Status(tonic::Code::Unavailable, "mock agent down"),
+            "get_agent_readiness",
+            Reply::Status(tonic::Code::Unavailable, "transport down"),
         );
-        let error = health_check(&mut client, "http://mock")
+        let error = connect_agent()
             .await
-            .expect_err("health check surfaces the transport failure");
+            .expect_err("failed readiness must prevent a business client");
         assert!(matches!(error, crate::AppError::AgentUnavailable(_)));
-        let message = error.to_string();
-        assert!(message.contains("http://mock"), "message: {message}");
-        assert!(message.contains("mock agent down"), "message: {message}");
+        assert!(
+            mock.requests().is_empty(),
+            "no business calls after failed readiness"
+        );
+        assert!(!mock.requests_of("get_agent_readiness").is_empty());
     }
 
     #[test]
@@ -967,13 +997,13 @@ mod tests {
         // The complete handshake still reads as ready, version and all.
         mock.push_typed_data(
             "get_agent_readiness",
-            serde_json::json!({"version": "0.9.0", "agentInstanceId": "mock-agent"}),
+            serde_json::json!({"version": crate::build_info::VERSION, "agentInstanceId": "mock-agent", "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION, "dataRootId":"0".repeat(64), "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION}),
         );
         let info = get_agent_readiness()
             .await
             .expect("complete payload")
             .expect("an Agent that answers the handshake is ready");
-        assert_eq!(info.version, "0.9.0");
+        assert_eq!(info.version, crate::build_info::VERSION);
         assert_eq!(info.agent_instance_id, "mock-agent");
     }
 }

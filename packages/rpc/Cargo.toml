@@ -13,6 +13,8 @@ prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
+dirs = "5"
+fd-lock = "4"
 tokio.workspace = true
 tokio-stream = { workspace = true, features = ["net"] }
 tower = { version = "0.4", features = ["util"] }

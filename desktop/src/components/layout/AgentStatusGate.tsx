@@ -24,6 +24,7 @@ export function AgentStatusGate({ status, showWait = false }: AgentStatusGatePro
       <div className="flex max-w-lg flex-col items-center gap-3">
         {pending ? <Loader2 aria-hidden="true" className="size-6 animate-spin text-accent" /> : null}
         {!pending ? <p className="text-lg font-medium">{t(statusKey)}</p> : null}
+        {!pending && status.error ? <p role="alert" className="text-sm text-ink-muted">{status.error}</p> : null}
         {!pending || showWait ? <p className="text-sm text-ink-muted">{t(actionKey)}</p> : null}
       </div>
     </div>

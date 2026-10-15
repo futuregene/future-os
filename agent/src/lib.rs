@@ -15,6 +15,7 @@ pub mod prompt;
 pub mod rpc;
 pub mod runtime;
 pub mod sandbox;
+pub mod service;
 pub mod session;
 pub mod skill_reco;
 pub mod skills;

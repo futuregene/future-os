@@ -141,9 +141,9 @@
   "agentStatus": {
     "wait": "请稍候",
     "failed": "Future Agent 启动失败",
-    "fixFailed": "请重启 FutureOS；如果仍无法恢复，请重新安装 FutureOS。",
+    "fixFailed": "请根据错误提示检查后重启 FutureOS。使用外部 Agent 时，请检查其可用性和版本。",
     "incompatible": "Future Agent 与当前 FutureOS 版本不一致",
-    "fixIncompatible": "请重启 FutureOS 完成更新；如果仍无法恢复，请重新安装 FutureOS。"
+    "fixIncompatible": "请更新或停止外部 Agent，然后重启 FutureOS。存在冲突时不能通过启动内置服务绕过检查。"
   },
   "userMenu": {
     "balance": "账户余额：{{credits}}",

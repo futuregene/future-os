@@ -70,37 +70,53 @@ where
     }
 }
 
-#[cfg(not(test))]
-pub(crate) fn spawn<F>(future: F) -> TaskHandle
-where
-    F: std::future::Future<Output = ()> + Send + 'static,
-{
-    spawn_untracked(future)
+/// Freeze registration before shutdown and wait for the actual future drops.
+/// This also lets test fixtures safely switch HOME after cancelling observers.
+type RegisteredTask = (
+    futures::future::AbortHandle,
+    std::sync::mpsc::Receiver<()>,
+    &'static std::panic::Location<'static>,
+);
+
+#[derive(Default)]
+struct Registry {
+    closed: bool,
+    tasks: Vec<RegisteredTask>,
+    errors: Vec<String>,
+}
+impl Registry {
+    fn prune_finished(&mut self) {
+        self.tasks
+            .retain(|(_, completed, _)| completed.try_recv().is_err());
+    }
+}
+static TASKS: std::sync::LazyLock<std::sync::Mutex<Registry>> =
+    std::sync::LazyLock::new(Default::default);
+
+pub(crate) fn freeze_tasks() {
+    TASKS.lock().unwrap_or_else(|p| p.into_inner()).closed = true;
+}
+#[cfg(feature = "gui")]
+pub(crate) fn tasks_frozen() -> bool {
+    TASKS.lock().unwrap_or_else(|p| p.into_inner()).closed
+}
+pub(crate) fn record_cleanup_error(error: String) {
+    TASKS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .errors
+        .push(error);
 }
 
-/// Process-lifetime tasks outlive the `#[tokio::test]` runtime that started
-/// them. Keep their cancellation handles in one registry so a test fixture can
-/// prove none still touches the process-global HOME or SQLite pool before it
-/// switches to another fixture.
-#[cfg(test)]
-type TestTask = (futures::future::AbortHandle, std::sync::mpsc::Receiver<()>);
+struct TaskCompletion(std::sync::mpsc::Sender<()>);
 
-#[cfg(test)]
-static TEST_TASKS: std::sync::LazyLock<std::sync::Mutex<Vec<TestTask>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
-
-#[cfg(test)]
-struct TestTaskCompletion(std::sync::mpsc::Sender<()>);
-
-#[cfg(test)]
-impl Drop for TestTaskCompletion {
+impl Drop for TaskCompletion {
     fn drop(&mut self) {
         let _ = self.0.send(());
     }
 }
 
-#[cfg(test)]
-fn tracked_test_future<F>(
+fn tracked_future<F>(
     future: F,
     registration: futures::future::AbortRegistration,
     done: std::sync::mpsc::Sender<()>,
@@ -110,25 +126,31 @@ where
 {
     // Own the guard before the first poll. Aborting an unpolled task must also
     // signal completion, not just disconnect the receiver used by HOME cleanup.
-    let completion = TestTaskCompletion(done);
+    let completion = TaskCompletion(done);
     async move {
         let _completion = completion;
         let _ = futures::future::Abortable::new(future, registration).await;
     }
 }
 
-#[cfg(test)]
+#[track_caller]
 pub(crate) fn spawn<F>(future: F) -> TaskHandle
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
     let (abort, registration) = futures::future::AbortHandle::new_pair();
     let (done, completed) = std::sync::mpsc::channel();
-    let task = spawn_untracked(tracked_test_future(future, registration, done));
-    TEST_TASKS
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .push((abort, completed));
+    let mut registry = TASKS.lock().unwrap_or_else(|p| p.into_inner());
+    if registry.closed {
+        drop(registry);
+        drop(future);
+        return spawn_untracked(async {});
+    }
+    registry.prune_finished();
+    let task = spawn_untracked(tracked_future(future, registration, done));
+    registry
+        .tasks
+        .push((abort, completed, std::panic::Location::caller()));
     task
 }
 
@@ -137,19 +159,61 @@ where
 /// earlier test can resolve the newly published HOME and lock its database.
 #[cfg(test)]
 pub(crate) fn cancel_test_tasks() {
-    let tasks = std::mem::take(
-        &mut *TEST_TASKS
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner()),
-    );
-    for (abort, _) in &tasks {
+    cancel_all_tasks(std::time::Duration::from_secs(5))
+        .expect("test tasks must stop before changing HOME");
+    *TASKS.lock().unwrap_or_else(|p| p.into_inner()) = Registry::default();
+    crate::desktop_shutdown::reset_for_test();
+}
+
+pub(crate) fn cancel_all_tasks(timeout: std::time::Duration) -> Result<(), crate::AppError> {
+    let tasks = {
+        let mut registry = TASKS.lock().unwrap_or_else(|p| p.into_inner());
+        registry.closed = true;
+        std::mem::take(&mut registry.tasks)
+    };
+    for (abort, _, _) in &tasks {
         abort.abort();
     }
-    for (_, completed) in tasks {
-        completed
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("process-lifetime test task must stop before changing HOME");
+    let deadline = std::time::Instant::now() + timeout;
+    for (_, completed, origin) in tasks {
+        if completed
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .is_err()
+        {
+            let error = format!("Desktop background work did not stop before cleanup deadline (registered at {origin})");
+            record_cleanup_error(error.clone());
+            return Err(error.into());
+        }
     }
+    let registry = TASKS.lock().unwrap_or_else(|p| p.into_inner());
+    if registry.errors.is_empty() {
+        Ok(())
+    } else {
+        Err(registry.errors.join("; ").into())
+    }
+}
+
+/// Native startup/maintenance jobs cannot be aborted as Rust futures. Keep
+/// their real completion in the same registry so reset refuses to race them.
+#[track_caller]
+pub(crate) fn spawn_native(job: impl FnOnce() + Send + 'static) {
+    let (abort, _registration) = futures::future::AbortHandle::new_pair();
+    let (done, completed) = std::sync::mpsc::channel();
+    let completion = TaskCompletion(done);
+    let mut registry = TASKS.lock().unwrap_or_else(|p| p.into_inner());
+    if registry.closed {
+        return;
+    }
+    registry.prune_finished();
+    registry
+        .tasks
+        .push((abort, completed, std::panic::Location::caller()));
+    std::thread::spawn(move || {
+        let _completion = completion;
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).is_err() {
+            record_cleanup_error("Desktop native background job panicked".into());
+        }
+    });
 }
 
 #[cfg(test)]
@@ -158,7 +222,7 @@ mod tests {
     fn unpolled_task_drop_still_reports_completion() {
         let (_abort, registration) = futures::future::AbortHandle::new_pair();
         let (done, completed) = std::sync::mpsc::channel();
-        let future = super::tracked_test_future(std::future::pending::<()>(), registration, done);
+        let future = super::tracked_future(std::future::pending::<()>(), registration, done);
         drop(future);
         completed
             .try_recv()
@@ -172,6 +236,43 @@ mod tests {
             .unwrap_or_else(|poison| poison.into_inner());
         let _task = super::spawn(std::future::pending::<()>());
         super::cancel_test_tasks();
+    }
+
+    #[test]
+    fn frozen_registry_never_polls_late_work_or_starts_native_jobs() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("runtime-freeze");
+        super::freeze_tasks();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let native = tx.clone();
+        let _task = super::spawn(async move {
+            tx.send(()).unwrap();
+        });
+        super::spawn_native(move || {
+            native.send(()).unwrap();
+        });
+        super::cancel_all_tasks(std::time::Duration::from_secs(1)).unwrap();
+        assert!(rx
+            .recv_timeout(std::time::Duration::from_millis(30))
+            .is_err());
+    }
+
+    #[test]
+    fn cleanup_waits_for_native_jobs_and_reports_persistence_failure() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("runtime-native");
+        let (tx, rx) = std::sync::mpsc::channel();
+        super::spawn_native(move || {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            tx.send(()).unwrap();
+        });
+        super::cancel_all_tasks(std::time::Duration::from_secs(1)).unwrap();
+        rx.try_recv().unwrap();
+        super::record_cleanup_error("ledger failed".into());
+        assert!(super::cancel_all_tasks(std::time::Duration::from_secs(1))
+            .unwrap_err()
+            .to_string()
+            .contains("ledger failed"));
+        // This injected failure belongs to this fixture only.
+        super::TASKS.lock().unwrap().errors.clear();
     }
 
     #[test]

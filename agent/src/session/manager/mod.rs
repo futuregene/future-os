@@ -18,6 +18,7 @@ pub struct Manager {
     store: OnceLock<SqliteStore>,
     initialization: parking_lot::Mutex<()>,
     journal_compactor: parking_lot::Mutex<Option<super::journal_compactor::CompletedRunCompactor>>,
+    stopping: std::sync::atomic::AtomicBool,
     /// Bounded LRU for legacy whole-history reads, keyed by transcript revision.
     /// Paged reads use the persisted display index directly.
     display_projection_cache: parking_lot::Mutex<Vec<DisplayProjectionCacheEntry>>,
@@ -29,6 +30,7 @@ pub struct Manager {
 impl Manager {
     pub fn new(dir: PathBuf) -> Self {
         Self {
+            stopping: std::sync::atomic::AtomicBool::new(false),
             dir,
             store: OnceLock::new(),
             initialization: parking_lot::Mutex::new(()),
@@ -71,6 +73,10 @@ impl Manager {
 
     fn start_journal_compactor(&self) -> Result<()> {
         let mut journal_compactor = self.journal_compactor.lock();
+        anyhow::ensure!(
+            !self.stopping.load(std::sync::atomic::Ordering::Acquire),
+            "session manager is stopping"
+        );
         if journal_compactor.is_none() {
             *journal_compactor = Some(super::journal_compactor::CompletedRunCompactor::start(
                 self.storage()?.clone(),
@@ -89,7 +95,32 @@ impl Manager {
         }
     }
 
+    pub(crate) fn journal_compaction_activity(&self) -> Option<usize> {
+        self.journal_compactor.try_lock().map(|compactor| {
+            compactor
+                .as_ref()
+                .map_or(0, |compactor| compactor.pending_count())
+        })
+    }
+
+    pub(crate) fn shutdown(&self) -> Result<()> {
+        self.stopping
+            .store(true, std::sync::atomic::Ordering::Release);
+        // Stop the optional builder before closing its database connection.
+        if let Some(compactor) = self.journal_compactor.lock().take() {
+            compactor.shutdown()?;
+        }
+        if let Some(store) = self.store.get() {
+            store.db.shutdown()?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn storage(&self) -> Result<&SqliteStore> {
+        anyhow::ensure!(
+            !self.stopping.load(std::sync::atomic::Ordering::Acquire),
+            "session storage is closed"
+        );
         if let Some(store) = self.store.get() {
             return Ok(store);
         }

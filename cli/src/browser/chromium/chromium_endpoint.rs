@@ -194,6 +194,7 @@ mod tests {
     /// Mirrors what Chrome's DevTools server does: answer the single
     /// `/json/version` request and hang up (`Connection: close`). The listener
     /// is bound by the caller so the test never races the server task.
+    #[cfg(unix)]
     async fn serve_one_http_over_socket(listener: tokio::net::UnixListener, response: String) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let (mut stream, _) = listener.accept().await.expect("accept");
@@ -216,6 +217,7 @@ mod tests {
     }
 
     /// Bind a socket under a per-test temp dir, returning the path.
+    #[cfg(unix)]
     fn bind_temp_socket(label: &str) -> (std::path::PathBuf, tokio::net::UnixListener) {
         let dir = std::env::temp_dir().join(format!("cdp-{label}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -225,6 +227,7 @@ mod tests {
         (socket, listener)
     }
 
+    #[cfg(unix)]
     fn cleanup(socket: &std::path::Path) {
         let _ = std::fs::remove_file(socket);
         if let Some(dir) = socket.parent() {
@@ -232,6 +235,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn version_json(ws_url: &str) -> String {
         json!({
             "Browser": "Chrome/154.0.8037.126",
@@ -242,6 +246,7 @@ mod tests {
         .to_string()
     }
 
+    #[cfg(unix)]
     fn http_response(body: &str) -> String {
         format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",

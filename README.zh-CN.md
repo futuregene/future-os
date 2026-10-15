@@ -141,11 +141,13 @@ future skills install          # 不带名字：安装全部内置技能
 
 ### 启动 Agent
 
-终端与 CLI 客户端都是轻量 gRPC 客户端，默认使用**每用户本地 IPC**（macOS/Linux 为 Unix socket，Windows 为仅当前用户可访问的命名管道）。Unix 优先使用 `FUTURE_AGENT_SOCKET`；Linux 未指定时使用 `$XDG_RUNTIME_DIR/future/agent.sock`，未设置该变量则回退到 `~/.future/run/agent.sock`（也是 macOS 默认路径）。用 `future agent --home DIR` 指定自己 FutureOS home 的实例，则由该 home 寻址——见[多实例运行](docs/guide/directory-layout.zh-CN.md#多实例运行future_home)。TUI 和桌面应用在没有可连接 Agent 时会自动启动 sidecar，也可以手动启动：
+终端与 CLI 客户端都是轻量 gRPC 客户端，默认使用**每用户本地 IPC**（macOS/Linux 为 Unix socket，Windows 为仅当前用户可访问的命名管道）。Unix 优先使用 `FUTURE_AGENT_SOCKET`；Linux 未指定时使用 `$XDG_RUNTIME_DIR/future/agent.sock`，未设置该变量则回退到 `~/.future/run/agent.sock`（也是 macOS 默认路径）。用 `future agent --home DIR` 指定自己 FutureOS home 的实例，则由该 home 寻址——见[多实例运行](docs/guide/directory-layout.zh-CN.md#多实例运行future_home)。Desktop GUI/headless 优先连接兼容外部 Agent；默认端点不存在且成功取得实例锁时，在自身进程中运行完整 Agent。不兼容或持锁不可用时直接报错，不启动第二份服务。TUI 保留原有独立 Agent 启动方式，也可以手动启动外部 Agent：
 
 ```bash
 future agent      # 在终端启动 agent（日志打到 stdout，Ctrl-C 停止）
 ```
+
+退出内置 Agent 的 Desktop 会停止所有客户端的任务，包括 CLI/TUI 对话；连接外部 Agent 时只取消本 Desktop 提交的运行，外部服务保持存活。详见 [Desktop Agent 生命周期与恢复](docs/guide/desktop-agent.zh-CN.md)。
 
 然后用同一个 `future` 命令启动终端界面：
 
@@ -169,7 +171,7 @@ test/nightly 构建检查 nightly；本地/源码构建跳过检查。网络失�
 > （`future-*` 二进制仍是构建目标，可用 `cargo build -p future-tui` 等构建，
 > 但已不再默认安装）。
 >
-> 若连接失败，检查 Agent 发现或 sidecar 启动问题——见 [故障排查](#故障排查)。
+> 若连接失败，检查 Agent 发现、兼容性和实例所有权——见 [故障排查](#故障排查)。
 
 ### 常用斜杠命令（TUI）
 
@@ -224,7 +226,7 @@ test/nightly 构建检查 nightly；本地/源码构建跳过检查。网络失�
 
 | 现象 | 解决 |
 |---|---|
-| 客户端报连接 / gRPC 错误退出 | 运行 `future doctor`，检查 sidecar 启动错误以及客户端与 Agent 的用户和 IPC 环境是否一致；必要时手动运行 `future agent`。仅在显式 TCP 模式下检查配置的地址/端口。 |
+| 客户端报连接 / gRPC 错误退出 | 运行 `future doctor`，检查 Agent 启动、版本、实例锁错误以及用户、数据根和 IPC 环境是否一致；更换服务前先看 [Desktop Agent 指南](docs/guide/desktop-agent.zh-CN.md)。仅在显式 TCP 模式下检查配置的地址/端口。 |
 | Agent 回复鉴权 / "no model" 错误 | 还没配置模型。运行 `future config`——见 [配置模型](#配置模型)。 |
 | 构建 / 安装问题 | 见 [构建与安装](docs/guide/build-and-install.zh-CN.md)（平台工具链、链接器、GUI 打包）。 |
 

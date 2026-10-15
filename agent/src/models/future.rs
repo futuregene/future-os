@@ -77,6 +77,7 @@ fn spawn_future_models_refresh_unlocked(
     api_key: &str,
     base_url: &str,
 ) -> Option<std::thread::JoinHandle<()>> {
+    let background = crate::service::work::process_background().ok()?;
     let now = now_secs();
     if now.saturating_sub(FUTURE_MODELS_LAST_ATTEMPT.load(Ordering::Relaxed))
         < FUTURE_MODELS_REFRESH_BACKOFF
@@ -95,6 +96,7 @@ fn spawn_future_models_refresh_unlocked(
     let api_key = api_key.to_string();
     let base_url = base_url.to_string();
     Some(std::thread::spawn(move || {
+        let _background = background;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             #[cfg(test)]
             inject_test_panic();

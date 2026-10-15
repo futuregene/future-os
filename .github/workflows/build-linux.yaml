@@ -29,6 +29,14 @@ on:
         required: false
       TAURI_UPDATER_PUBLIC_KEY:
         required: false
+      OSS_ENDPOINT:
+        required: false
+      OSS_BUCKET:
+        required: false
+      OSS_ACCESS_KEY_ID:
+        required: false
+      OSS_ACCESS_KEY_SECRET:
+        required: false
 
 jobs:
   build:
@@ -60,11 +68,13 @@ jobs:
       - name: Resolve version
         env:
           FUTURE_VERSION: ${{ inputs.version }}
-          INPUT_ARTIFACT_VERSION: ${{ inputs.artifact_version }}
+          FUTURE_ARTIFACT_VERSION: ${{ inputs.artifact_version }}
+          FUTURE_BUILD_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && !inputs.version && 'dev' || '' }}
         run: |
           set -euo pipefail
-          version="$(node scripts/version.mjs)"
-          artifact_version="${INPUT_ARTIFACT_VERSION:-$version}"
+          resolved="$(node scripts/version.mjs --json)"
+          version="$(node -p 'JSON.parse(process.argv[1]).version' "$resolved")"
+          artifact_version="$(node -p 'JSON.parse(process.argv[1]).artifactVersion' "$resolved")"
           echo "FUTURE_VERSION=$version" >> "$GITHUB_ENV"
           echo "FUTURE_ARTIFACT_VERSION=$artifact_version" >> "$GITHUB_ENV"
           echo "Linux version: $version (artifacts $artifact_version)"
@@ -116,7 +126,7 @@ jobs:
           cargo build --release --target "$target"
           triple=$(rustc -Vv | sed -n 's/^host: //p')
           mkdir -p ../desktop/src-tauri/binaries
-          cp "../target/$target/release/future" "../desktop/src-tauri/binaries/future-$triple"
+          install -m 755 "../target/$target/release/future" "../desktop/src-tauri/binaries/future-$triple"
           tar -czf "FutureOS_${FUTURE_ARTIFACT_VERSION}_linux_${{ matrix.arch }}-cli.tar.gz" \
             -C "../target/$target/release" future
 
@@ -226,6 +236,18 @@ jobs:
           }
           tar -tzf "$portable" ./futureos-headless >/dev/null
 
+      - name: Verify actual deb, portable and CLI payloads
+        run: python3 scripts/ci/check-packaged-entrypoints.py linux --version "$FUTURE_VERSION"
+
+      - name: Upload package verification logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: futureos-linux-${{ matrix.arch }}-package-smoke
+          path: target/package-smoke/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Sign updater artifact
         if: inputs.release == true
         env:
@@ -249,3 +271,26 @@ jobs:
           overwrite: true
           path: release-assets/
           retention-days: 7
+
+      - name: Setup ossutil for standalone dev build
+        if: github.event_name == 'workflow_dispatch' && !inputs.version
+        env:
+          OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+        run: bash scripts/release/setup-ossutil.sh
+
+      - name: Upload standalone dev artifacts to OSS
+        if: github.event_name == 'workflow_dispatch' && !inputs.version
+        env:
+          OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+          OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+        run: |
+          set -euo pipefail
+          target="oss://$OSS_BUCKET/dev/$FUTURE_ARTIFACT_VERSION"
+          ossutil cp -r -f release-assets/ "$target/"
+          for artifact in release-assets/*; do
+            name="$(basename "$artifact")"
+            ossutil stat "$target/$name"
+            echo "https://dl.future-os.cn/dev/$FUTURE_ARTIFACT_VERSION/$name"
+          done

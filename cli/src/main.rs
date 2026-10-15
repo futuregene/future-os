@@ -20,6 +20,11 @@ fn main() -> ExitCode {
 
 /// Everything past the OS argv read (unit-testable entry).
 fn run_from_args(args: &[String]) -> ExitCode {
+    // Hidden helper entry also works for renamed/staged unified CLI artifacts.
+    // Dispatch before any CLI runtime, logging or service initialization.
+    if args.first().map(String::as_str) == Some("--linux-sandbox-helper") {
+        return run_agent(args);
+    }
     // Embedded components (each builds its own tokio runtime) — dispatch
     // before the CLI runtime starts.
     if let Some(group) = args.first().map(String::as_str) {

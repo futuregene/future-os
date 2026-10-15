@@ -150,6 +150,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'New fixture compilation failed' }
     $newFixtureHash = (Get-FileHash -LiteralPath $newFixture).Hash
     if ($newFixtureHash -eq $fixtureHash) { throw 'Old and new fixtures must differ' }
+    & (Join-Path $PSScriptRoot 'test-windows-update-launcher.ps1') -Fixture $fixture
+    Write-Host 'Windows update observer recovery regressions passed.'
     $installer = Join-Path $root 'preflight-setup.exe'
     & $MakeNsis /V2 /WX /INPUTCHARSET UTF8 "/DTEST_OUTFILE=$installer" "/DTEST_FIXTURE=$newFixture" (Join-Path $PSScriptRoot 'windows-installer-preflight.nsi')
     if ($LASTEXITCODE -ne 0) { throw 'NSIS compilation failed' }
@@ -169,7 +171,13 @@ try {
     try {
         $lockFile.Lock(0, 1)
         Assert-Equal (Invoke-Preflight $fresh) 32 'Occupied Agent lock blocks install without metadata'
+        foreach ($invalidRoot in @('C:relative', '\root-only')) {
+            $env:FUTURE_HOME = $invalidRoot
+            Assert-Equal (Invoke-Preflight $fresh) 32 'Non-absolute override uses the same default Agent root'
+        }
+        $env:FUTURE_HOME = $null
     } finally {
+        $env:FUTURE_HOME = $null
         $lockFile.Unlock(0, 1)
         $lockFile.Dispose()
     }
@@ -194,6 +202,11 @@ try {
     Assert-Equal $desktop.HasExited $false 'Silent mode preserves desktop'
     Assert-Unchanged $target
 
+    Assert-Equal (Wait-Exit (Start-Installer $target '/S /UPDATE /FUTUREOS_CLEAN')) 32 'New updater never kills installed clients'
+    Assert-Equal $agent.HasExited $false 'New update preserves external Agent in same directory'
+    Assert-Equal $desktop.HasExited $false 'New update requires completed Desktop exit'
+    Assert-Unchanged $target
+
     Write-Host 'Testing automatic update recovery from an old running Agent...'
     $automatic = New-Install 'automatic mixed update'
     $automaticAgent = Start-Fixture $automatic
@@ -207,6 +220,15 @@ try {
     Assert-Equal (Get-FileHash -LiteralPath (Join-Path $automatic 'future.exe')).Hash $newFixtureHash 'Automatic update writes new Agent'
     Assert-Equal (Get-FileHash -LiteralPath (Join-Path $automatic 'futureos.exe')).Hash $newFixtureHash 'Automatic update writes new desktop'
     Assert-Equal (Test-Path (Join-Path $automatic 'future-agent.exe')) $false 'Automatic update removes legacy Agent'
+
+    Write-Host 'Testing mandatory pre-upgrade sandbox cleanup...'
+    foreach ($failure in @('fail-cleanup', 'unsupported-cleanup')) {
+        $cleanupFailure = New-Install $failure
+        Set-Content -LiteralPath (Join-Path $cleanupFailure $failure) -Value 'failure'
+        Assert-Equal (Wait-Exit (Start-Installer $cleanupFailure '/S /UPDATE')) 5 'Cleanup failure blocks replacement'
+        Assert-Unchanged $cleanupFailure
+        Assert-Equal (Invoke-Preflight $cleanupFailure) 0 'Cleanup failure releases installation lease'
+    }
 
     Write-Host 'Testing interactive cancellation...'
     # Interactive Cancel never stops processes or replaces files.
@@ -249,9 +271,28 @@ try {
     }
     $repair = New-Install 'cross-directory Agent repair'
     Assert-Equal (Invoke-Preflight $repair) 32 'Shared Agent lock blocks a different directory'
-    Assert-Equal (Wait-Exit (Start-Installer $repair '/S /UPDATE')) 0 'Verified Agent owner closed by update'
+    Assert-Equal (Wait-Exit (Start-Installer $repair '/S /UPDATE')) 32 'Automatic update preserves external Agent'
+    Assert-Unchanged $repair
+    Assert-Equal $lockedAgent.HasExited $false 'External Agent requires separate consent'
+    Assert-Equal (Invoke-Preflight $repair 'Close') 0 'Explicit close consent may stop verified external Agent'
     Assert-Equal $lockedAgent.HasExited $true 'Verified external Agent exited'
     Assert-Equal $otherAgent.HasExited $false 'Unrelated process in other installation survives'
+
+    foreach ($hostName in @('futureos.exe', 'futureos-headless.exe')) {
+        Copy-Item -LiteralPath (Join-Path $other 'future.exe') -Destination (Join-Path $other $hostName) -Force
+        Remove-Item -LiteralPath $ownerReady -ErrorAction SilentlyContinue
+        $embedded = Start-Process -FilePath (Join-Path $other $hostName) -ArgumentList "--hold-agent-lock `"$ownerReady`" `"$state`"" -PassThru
+        $processes.Add($embedded)
+        $deadline = [DateTime]::UtcNow.AddSeconds(10)
+        while (-not (Test-Path -LiteralPath $ownerReady)) {
+            if ($embedded.HasExited -or [DateTime]::UtcNow -gt $deadline) { throw 'Embedded lock owner did not start' }
+            Start-Sleep -Milliseconds 50
+        }
+        Assert-Equal (Invoke-Preflight $repair 'CloseInstalled') 32 'Automatic scope preserves external embedded host'
+        Assert-Equal $embedded.HasExited $false 'External embedded host survives'
+        Assert-Equal (Invoke-Preflight $repair 'Close') 0 'Manual consent recognizes embedded host'
+        Assert-Equal $embedded.HasExited $true 'Verified embedded owner exits after consent'
+    }
 
     Write-Host 'Testing external lock and retry...'
     $locked = New-Install 'external lock'
@@ -278,7 +319,7 @@ try {
 
     Write-Host 'Testing failed post-install health check rollback...'
     $unloadable = New-Install 'rollback after health check'
-    Assert-Equal (Wait-Exit (Start-Installer $unloadable '/S /FAILHEALTH')) 5 'Unloadable desktop reports failure'
+    Assert-Equal (Wait-Exit (Start-Installer $unloadable '/S /FAILHEALTH')) 5 'Failed desktop health probe reports failure'
     Assert-Equal (Get-FileHash -LiteralPath (Join-Path $unloadable 'future.exe')).Hash $fixtureHash 'Health failure restores old Agent'
     Assert-Equal (Get-FileHash -LiteralPath (Join-Path $unloadable 'futureos.exe')).Hash $fixtureHash 'Health failure restores old desktop'
     Assert-Equal (Test-Path (Join-Path $unloadable 'installed.marker')) $false 'Health failure does not report completion'

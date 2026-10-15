@@ -39,6 +39,7 @@ pub enum ManagerError {
     Spawn(String),
     /// Capacity limit reached; retry after closing a tab.
     Capacity(String),
+    Stopping,
 }
 
 impl ManagerError {
@@ -52,6 +53,7 @@ impl ManagerError {
             ManagerError::ShellUnavailable(_) => "SHELL_UNAVAILABLE",
             ManagerError::Spawn(_) => "SPAWN_FAILED",
             ManagerError::Capacity(_) => "CAPACITY_EXCEEDED",
+            ManagerError::Stopping => "TERMINAL_STOPPING",
         }
     }
 
@@ -60,6 +62,7 @@ impl ManagerError {
         match self {
             ManagerError::NotFound(_) => 404,
             ManagerError::Capacity(_) => 429,
+            ManagerError::Stopping => 503,
             _ => 400,
         }
     }
@@ -74,6 +77,7 @@ impl ManagerError {
             ManagerError::ShellUnavailable(detail) => detail.clone(),
             ManagerError::Spawn(detail) => detail.clone(),
             ManagerError::Capacity(detail) => detail.clone(),
+            ManagerError::Stopping => "Desktop is stopping".into(),
         }
     }
 }
@@ -89,6 +93,7 @@ impl From<cwd::CwdError> for ManagerError {
 
 #[derive(Default)]
 struct Registry {
+    closed: bool,
     sessions: HashMap<String, Arc<Session>>,
     /// Ids of exited sessions, oldest first — the eviction order.
     exit_order: VecDeque<String>,
@@ -151,23 +156,24 @@ impl Manager {
         rows: u16,
     ) -> Result<Info, ManagerError> {
         self.prune_exited();
-        {
-            let registry = self.registry.lock().unwrap();
-            if registry.sessions.len() >= MAX_SESSIONS {
-                return Err(ManagerError::Capacity(format!(
-                    "CAPACITY_EXCEEDED: at most {MAX_SESSIONS} terminals can be open at once"
-                )));
-            }
-            let for_thread = registry
-                .sessions
-                .values()
-                .filter(|session| session.thread_id() == thread_id)
-                .count();
-            if for_thread >= MAX_SESSIONS_PER_THREAD {
-                return Err(ManagerError::Capacity(format!(
-                    "CAPACITY_EXCEEDED: at most {MAX_SESSIONS_PER_THREAD} terminals per conversation"
-                )));
-            }
+        let mut registry = self.registry.lock().unwrap();
+        if registry.closed {
+            return Err(ManagerError::Stopping);
+        }
+        if registry.sessions.len() >= MAX_SESSIONS {
+            return Err(ManagerError::Capacity(format!(
+                "CAPACITY_EXCEEDED: at most {MAX_SESSIONS} terminals can be open at once"
+            )));
+        }
+        let for_thread = registry
+            .sessions
+            .values()
+            .filter(|session| session.thread_id() == thread_id)
+            .count();
+        if for_thread >= MAX_SESSIONS_PER_THREAD {
+            return Err(ManagerError::Capacity(format!(
+                "CAPACITY_EXCEEDED: at most {MAX_SESSIONS_PER_THREAD} terminals per conversation"
+            )));
         }
 
         let title = title.unwrap_or_else(|| "Terminal".to_string());
@@ -176,11 +182,7 @@ impl Manager {
         let session = Session::spawn(thread_id, title, program, args, cwd, cols, rows)
             .map_err(ManagerError::Spawn)?;
         let info = session.info();
-        self.registry
-            .lock()
-            .unwrap()
-            .sessions
-            .insert(info.id.clone(), session);
+        registry.sessions.insert(info.id.clone(), session);
         Ok(info)
     }
 
@@ -278,6 +280,37 @@ impl Manager {
         registry.exit_order.clear();
     }
 
+    pub(crate) fn freeze(&self) {
+        self.registry.lock().unwrap().closed = true;
+    }
+
+    /// Reset/relaunch must refuse to race a shell the OS could not reap.
+    pub(crate) fn shutdown_checked(&self, grace: Duration) -> Result<(), String> {
+        self.freeze();
+        let sessions: Vec<_> = self
+            .registry
+            .lock()
+            .unwrap()
+            .sessions
+            .values()
+            .cloned()
+            .collect();
+        self.shutdown_all(grace);
+        let pending: Vec<_> = sessions
+            .iter()
+            .filter(|session| !session.child_is_reaped())
+            .map(|session| session.id().to_owned())
+            .collect();
+        if pending.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Terminal children did not exit: {}",
+                pending.join(", ")
+            ))
+        }
+    }
+
     #[cfg(test)]
     pub fn running_count(&self) -> usize {
         let registry = self.registry.lock().unwrap();
@@ -352,6 +385,30 @@ impl Manager {
 mod tests {
     use super::*;
     use crate::terminal::test_support;
+
+    #[test]
+    fn process_shutdown_reaps_shells_and_permanently_closes_creation() {
+        let manager = Manager::new();
+        let info = create_with_command(&manager, "shutdown-thread", test_support::idle_command());
+        let session = manager.session(&info.id).unwrap();
+        manager
+            .shutdown_checked(Duration::from_millis(400))
+            .unwrap();
+        assert!(session.child_is_reaped());
+        let (program, args) = test_support::idle_command();
+        let error = manager
+            .create_with(
+                "late-thread".into(),
+                None,
+                program,
+                args,
+                test_support::working_dir(),
+                80,
+                24,
+            )
+            .unwrap_err();
+        assert_eq!(error, ManagerError::Stopping);
+    }
 
     fn manager_with_shell() -> Manager {
         Manager::new()

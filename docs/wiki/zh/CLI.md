@@ -39,7 +39,7 @@ alias future="/Applications/FutureOS.app/Contents/MacOS/future"
 
 大部分命令都要连接 FutureOS 的 agent(后台服务)。如果**桌面应用已打开**,agent 就已经在运行。否则,用 `future agent` 启动 agent(或直接运行 `future-agent` 二进制,二者是同一套代码;打开桌面应用也会自动拉起 agent)。
 
-`future config`、`future auth login` 和 `future auth logout` 在 Agent 未运行时也能直接使用，配置写入 `~/.future/agent/`。技能目录/安装命令也不要求 Agent 在线。TUI 与桌面一样可以自动启动自己的 Agent sidecar。`future doctor` 可诊断连接；默认通过每用户本地 IPC 发现，不是始终开放的 TCP 端口。
+`future config`、`future auth login` 和 `future auth logout` 在 Agent 未运行时也能直接使用，配置写入 `~/.future/agent/`。技能目录/安装命令也不要求 Agent 在线。TUI 保留独立 Agent 启动方式；桌面默认在自身进程中运行完整 Agent，或连接兼容外部服务。退出内置宿主也会停止 CLI/TUI 的任务，见 [Desktop Agent 指南](../../guide/desktop-agent.zh-CN.md)。`future doctor` 可诊断连接；默认通过每用户本地 IPC 发现，不是始终开放的 TCP 端口。
 
 ---
 
@@ -281,7 +281,7 @@ future doctor
 ## 小贴士
 
 - **macOS 被拦？** 先核对下载来源和签名；可信未签名测试包有单独首次启动说明，见 [[常见问题|FAQ]]。
-- **连接失败？** 运行 `future doctor`，检查 sidecar 错误、用户和 IPC 环境是否一致；按需打开桌面或运行 `future agent`。
+- **连接失败？** 运行 `future doctor`，检查 Agent 启动/兼容性/实例锁错误、用户和 IPC 环境是否一致；按需打开桌面或运行 `future agent`。
 
 ---
 

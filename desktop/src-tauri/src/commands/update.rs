@@ -10,7 +10,57 @@ use serde::Serialize;
 use serde_json::Value;
 use std::time::Duration;
 use tauri::Emitter;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_updater::UpdaterExt;
+
+static INSTALL_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+struct InstallGuard;
+#[cfg(any(target_os = "windows", test))]
+fn quote_windows_argument(value: &str) -> String {
+    let mut quoted = String::from("\"");
+    let mut slashes = 0;
+    for character in value.chars() {
+        if character == '\\' {
+            slashes += 1;
+            continue;
+        }
+        quoted.extend(std::iter::repeat_n(
+            '\\',
+            if character == '"' {
+                2 * slashes + 1
+            } else {
+                slashes
+            },
+        ));
+        quoted.push(character);
+        slashes = 0;
+    }
+    quoted.extend(std::iter::repeat_n('\\', 2 * slashes));
+    quoted.push('"');
+    quoted
+}
+impl Drop for InstallGuard {
+    fn drop(&mut self) {
+        INSTALL_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+fn install_after_cleanup(
+    cleanup: impl FnOnce() -> Result<(), AppError>,
+    install: impl FnOnce() -> Result<(), String>,
+) -> Result<(), AppError> {
+    cleanup()?;
+    install().map_err(|error| AppError::Message(format!(
+        "Update installation failed after cleanup: {error}. Restart FutureOS to recover the service."
+    )))
+}
+
+#[cfg(not(target_os = "windows"))]
+#[path = "update_recovery.rs"]
+mod recovery;
+#[cfg(target_os = "windows")]
+#[path = "update_windows.rs"]
+mod windows;
 
 use crate::{
     agent_supervisor,
@@ -395,8 +445,54 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn windows_resume_arguments_preserve_empty_quotes_slashes_and_option_like_values() {
+        assert_eq!(quote_windows_argument(""), "\"\"");
+        assert_eq!(quote_windows_argument("/UPDATE"), "\"/UPDATE\"");
+        assert_eq!(quote_windows_argument("a\"b"), "\"a\\\"b\"");
+        assert_eq!(
+            quote_windows_argument("C:\\some path\\"),
+            "\"C:\\some path\\\\\""
+        );
+    }
+
+    #[test]
+    fn cleanup_failure_never_enters_installation() {
+        let mut installed = false;
+        let result = install_after_cleanup(
+            || Err("drain failed".into()),
+            || {
+                installed = true;
+                Ok(())
+            },
+        );
+        assert_eq!(result.unwrap_err().to_string(), "drain failed");
+        assert!(!installed);
+    }
+
+    #[test]
+    fn installation_failure_requires_process_recovery_after_successful_cleanup() {
+        let cleaned = std::cell::Cell::new(false);
+        let result = install_after_cleanup(
+            || {
+                cleaned.set(true);
+                Ok(())
+            },
+            || {
+                assert!(cleaned.get());
+                Err("installer launch denied".into())
+            },
+        );
+        let message = result.unwrap_err().to_string();
+        assert!(message.starts_with("Update installation failed after cleanup:"));
+        assert!(message.contains("Restart FutureOS"));
+    }
+
     /// A one-shot HTTP server answering a single request with a fixed body.
     fn serve_once(status: &'static str, content_type: &'static str, body: Vec<u8>) -> String {
+        // Embedded Agent unifies multiple rustls provider features. A standalone
+        // mock app must initialize the same provider as GUI/headless startup.
+        crate::install_rustls_provider();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -822,6 +918,7 @@ mod tests {
 
     #[tokio::test]
     async fn install_app_update_errors_when_no_update_is_available() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-no-release");
         let manifest_url = serve_once("204 No Content", "application/json", Vec::new());
         let app = mock_app_with_updater(&[&manifest_url]);
         let error = install_app_update_impl(
@@ -840,6 +937,7 @@ mod tests {
 
     #[tokio::test]
     async fn install_app_update_errors_when_the_selected_endpoint_is_invalid() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-invalid-endpoint");
         let app = mock_app_with_updater(&[]);
         let error = install_app_update_impl(
             app.handle().clone(),
@@ -855,6 +953,8 @@ mod tests {
 
     #[tokio::test]
     async fn install_app_update_downloads_and_fails_signature_verification() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-bad-signature");
+        let phase = crate::agent_host::host().phase();
         let download_url = serve_once(
             "200 OK",
             "application/octet-stream",
@@ -878,11 +978,31 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.to_string().contains("Failed to install the update"));
+        assert!(error
+            .to_string()
+            .contains("Failed to download and verify the update"));
+        assert!(!crate::desktop_shutdown::is_stopping());
+        assert_eq!(crate::agent_host::host().phase(), phase);
+    }
+
+    #[test]
+    fn failed_cleanup_prevents_relaunch_and_stays_failed_on_retry() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-failed-stop");
+        crate::desktop_shutdown::fail_for_test("Agent drain failed");
+        let app = tauri::test::mock_app();
+        for _ in 0..2 {
+            let error = restart_after_app_update_with(app.handle().clone(), |_| {
+                panic!("failed cleanup must not relaunch")
+            })
+            .unwrap_err();
+            assert!(error.to_string().contains("Agent drain failed"));
+        }
     }
 
     #[test]
     fn restart_after_app_update_shuts_down_the_agent_before_relaunching() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-restart");
+        let _mock = crate::agent_bridge::test_support::mock_agent();
         let app = tauri::test::mock_app();
         restart_after_app_update_with(app.handle().clone(), |_| Ok(())).expect("restart");
     }
@@ -921,22 +1041,27 @@ async fn install_app_update_impl<R: tauri::Runtime>(
         ));
     }
 
+    INSTALL_ACTIVE
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        )
+        .map_err(|_| AppError::Message("An update installation is already in progress.".into()))?;
+    let install_guard = InstallGuard;
+    if crate::desktop_shutdown::is_stopping() {
+        return Err(AppError::Message(
+            "Desktop has stopped. Restart before installing an update.".into(),
+        ));
+    }
+
     let endpoint = endpoint_url
         .parse()
         .map_err(|error| updater_error("Invalid update endpoint", error))?;
     let comparison_current = current_version.to_string();
     let updater_builder = app.updater_builder();
     let updater_builder = updater_builder.timeout(UPDATE_INSTALL_TIMEOUT);
-    // Include this branch in test builds on other hosts so API/type regressions
-    // are caught without requiring a Windows linker for the full test suite.
-    #[cfg(any(target_os = "windows", test))]
-    let updater_builder = updater_builder.on_before_exit(|| {
-        // Tauri calls this only after the package has downloaded, passed its
-        // minisign check, and extracted successfully. It then launches NSIS
-        // and exits via std::process::exit(0), which bypasses RunEvent::Exit.
-        // Stop the owned sidecar at the last safe point before replacement.
-        agent_supervisor::shutdown_agent_gracefully();
-    });
     let updater = updater_builder
         .endpoints(vec![endpoint])
         .map_err(|error| updater_error("Failed to select the update channel", error))?
@@ -954,8 +1079,8 @@ async fn install_app_update_impl<R: tauri::Runtime>(
     let progress_app = app.clone();
     let mut downloaded = 0_u64;
 
-    update
-        .download_and_install(
+    let bytes = update
+        .download(
             move |chunk_length, content_length| {
                 downloaded = downloaded.saturating_add(chunk_length as u64);
                 let _ = progress_app.emit(
@@ -969,7 +1094,110 @@ async fn install_app_update_impl<R: tauri::Runtime>(
             || {},
         )
         .await
-        .map_err(|error| updater_error("Failed to install the update", error))
+        .map_err(|error| updater_error("Failed to download and verify the update", error))?;
+    #[cfg(target_os = "windows")]
+    let installer = windows::PreparedInstaller::new(&bytes)?;
+    // Confirm after signature verification, before closing admission. The
+    // embedded host owns CLI work too; installation must disclose that scope.
+    let confirmation_app = app.clone();
+    let confirmed = tokio::task::spawn_blocking(move || {
+        let scope = if crate::agent_host::host().owns_agent() {
+            "Installing stops all Agent work, including CLI conversations, shells and queued tasks."
+        } else {
+            "Installing stops this Desktop's work. An external Agent using the same data will block Windows installation; stop it yourself before continuing."
+        };
+        confirmation_app.dialog().message(scope).title("Install FutureOS update?")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom("Install and stop work".into(), "Keep running".into()))
+            .blocking_show()
+    }).await.map_err(|error| updater_error("Update confirmation failed", error))?;
+    if !confirmed {
+        return Err(AppError::Message(
+            "Update installation cancelled; work is still running.".into(),
+        ));
+    }
+    // Download verifies the signature before freezing work. An exit hook
+    // cannot veto NSIS, so return cleanup failures before calling install.
+    let (installed, restart_safe) = tokio::task::spawn_blocking(move || {
+        // Keep the update mutex through the native worker even if the invoke
+        // future is dropped while shutdown or installation is underway.
+        let _guard = install_guard;
+        #[cfg(not(target_os = "windows"))]
+        let original = match recovery::ProgramFingerprint::capture() {
+            Ok(original) => original,
+            Err(error) => {
+                return (
+                    Err(updater_error(
+                        "Cannot verify program files before cleanup",
+                        error,
+                    )),
+                    false,
+                )
+            }
+        };
+        let installed = install_after_cleanup(agent_supervisor::shutdown_agent_gracefully, || {
+            #[cfg(target_os = "windows")]
+            {
+                installer.launch()
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                update.install(&bytes).map_err(|error| error.to_string())
+            }
+        });
+        #[cfg(not(target_os = "windows"))]
+        let safe = installed.is_ok() || original.unchanged();
+        #[cfg(target_os = "windows")]
+        let safe = true; // launch errors occurred before installer handoff.
+        (installed, safe)
+    })
+    .await
+    .map_err(|error| updater_error("Update cleanup/install worker failed", error))?;
+    if let Err(error) = installed {
+        if !error
+            .to_string()
+            .starts_with("Update installation failed after cleanup:")
+        {
+            return Err(error);
+        }
+        crate::host_environment::report(&format!(
+            "Update installation failed after cleanup: {error}"
+        ));
+        // Never reopen frozen producers in the old process. The restart
+        // command performs the same successful cleanup, then re-execs.
+        let message = if restart_safe {
+            error.to_string()
+        } else {
+            format!("Update recovery requires repair: {error}. Original program files changed or are missing; reinstall FutureOS before restarting.")
+        };
+        let recovery_app = app.clone();
+        let recovery_message = message.clone();
+        let restart = tokio::task::spawn_blocking(move || {
+            recovery_app
+                .dialog()
+                .message(recovery_message)
+                .title("Update failed")
+                .kind(MessageDialogKind::Error)
+                .buttons(if restart_safe {
+                    MessageDialogButtons::OkCancelCustom(
+                        "Restart FutureOS".into(),
+                        "Stay closed".into(),
+                    )
+                } else {
+                    MessageDialogButtons::OkCustom("Keep stopped".into())
+                })
+                .blocking_show()
+        })
+        .await
+        .map_err(|error| updater_error("Update recovery dialog failed", error))?;
+        if restart && restart_safe {
+            app.restart();
+        }
+        return Err(AppError::Message(message));
+    }
+    #[cfg(target_os = "windows")]
+    app.exit(0);
+    Ok(())
 }
 
 /// Relaunch only after installation has completed and the user explicitly asks
@@ -984,6 +1212,6 @@ fn restart_after_app_update_with<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     relaunch: impl FnOnce(tauri::AppHandle<R>) -> Result<(), AppError>,
 ) -> Result<(), AppError> {
-    agent_supervisor::shutdown_agent_gracefully();
+    agent_supervisor::shutdown_agent_gracefully()?;
     relaunch(app)
 }

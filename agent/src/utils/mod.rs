@@ -802,7 +802,9 @@ mod util_tests {
 
     #[test]
     fn canonical_path_resolves() {
-        let result = canonical_path(Path::new("/tmp"));
+        // The crate directory exists on every platform; a hard-coded `/tmp`
+        // would make this a Unix-only test.
+        let result = canonical_path(Path::new(env!("CARGO_MANIFEST_DIR")));
         assert!(result.is_ok());
     }
 

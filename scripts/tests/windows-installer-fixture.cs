@@ -10,6 +10,11 @@ internal static class InstallerFixture
     private static int Main(string[] args)
     {
 #if INSTALLER_NEW
+        if (args.Length == 1 && args[0] == "--help" &&
+            File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "fail-health")))
+        {
+            return 5;
+        }
         // Keep the installer payload observably different from the old fixture
         // so rollback tests prove restoration rather than compare equal files.
         if (args.Length == 1 && args[0] == "--fixture-new")
@@ -42,6 +47,16 @@ internal static class InstallerFixture
                 File.WriteAllText(args[1], "ready");
                 Thread.Sleep(Timeout.Infinite);
             }
+        }
+        string corrupt = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "corrupt-desktop");
+        if (File.Exists(corrupt))
+        {
+            File.WriteAllText(File.ReadAllText(corrupt).Trim(), "incomplete rollback");
+            return 5;
+        }
+        if (File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "record-launch")))
+        {
+            File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "recovered.ready"), "ready");
         }
         // Simulate a mixed pre-sandbox CLI (clap uses exit 2 for an unknown
         // --reset-windows-sandbox flag) and an arbitrary cleanup failure

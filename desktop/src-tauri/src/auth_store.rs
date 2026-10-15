@@ -27,6 +27,9 @@ pub(crate) const FUTURE_PROVIDER_ID: &str = "future";
 /// `~/.future/agent` — the agent config dir that owns `auth.json` and
 /// `models.json`. Single source, shared with `agent_providers`.
 pub(crate) fn agent_dir() -> Result<PathBuf, AppError> {
+    if let Some(root) = future_rpc::home::future_home_override() {
+        return Ok(root.join("agent"));
+    }
     let home = crate::home_dir().ok_or("HOME/USERPROFILE environment variable is not set.")?;
     Ok(PathBuf::from(home).join(".future").join("agent"))
 }

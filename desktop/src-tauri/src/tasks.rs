@@ -2,7 +2,7 @@
 //!
 //! The deterministic kernel and store live in the `future-tasks` crate; this
 //! module is the desktop's tick loop plus the `Executor` wiring that reaches
-//! the sidecar agent, creates threads, and notifies the webview. Headless
+//! the Agent service, creates threads, and notifies the webview. Headless
 //! desktop reuses the same executor with notifications downgraded to ledger
 //! writes (no webview).
 
@@ -113,14 +113,24 @@ pub fn start<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
         }
         crate::emit_threads_updated();
     });
-    tauri::async_runtime::spawn(run_loop(notify));
+    crate::runtime::spawn(run_loop(notify));
 }
 
 /// Headless variant: same loop, notifications downgraded to nothing (the run
 /// ledger in `tasks.db` is the observable signal).
+static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub(crate) fn stop_admission() {
+    STOPPING.store(true, std::sync::atomic::Ordering::Release);
+    wake();
+}
+#[cfg(test)]
+pub(crate) fn reset_for_test() {
+    STOPPING.store(false, std::sync::atomic::Ordering::Release);
+}
+
 pub fn start_headless() {
     let notify: Notifier = std::sync::Arc::new(|_| {});
-    tokio::spawn(run_loop(notify));
+    crate::runtime::spawn(run_loop(notify));
 }
 
 async fn run_loop(notify: Notifier) {
@@ -135,6 +145,9 @@ async fn run_loop(notify: Notifier) {
     let mut interval = tokio::time::interval(TICK_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
+        if STOPPING.load(std::sync::atomic::Ordering::Acquire) {
+            break;
+        }
         // Wait for the cadence *or* for someone to ask for a run right now.
         // `Interval::tick` is cancel-safe, so losing this race does not skip a
         // scheduled tick.
@@ -240,12 +253,21 @@ pub(crate) fn candidates_for_test(
 async fn tick(notify: &Notifier) -> Result<(), String> {
     let store = Store::open(&future_home()).map_err(|e| e.to_string())?;
     for (task, reason) in candidates(&store, now_ms())? {
+        if STOPPING.load(std::sync::atomic::Ordering::Acquire) {
+            break;
+        }
         if store.has_running_run(&task.id).map_err(|e| e.to_string())? {
             continue; // overlap: skip this tick, the next one retries
         }
         let (run, upstream_sources) = claim(&store, &task, reason)?;
         let notify = notify.clone();
-        tokio::spawn(async move {
+        // Own finalization before the first poll, including rejected/aborted spawns.
+        let interrupted = InterruptedTask {
+            home: future_home(),
+            id: run.id.clone(),
+        };
+        crate::runtime::spawn(async move {
+            let _interrupted = interrupted;
             // A fresh store per run: `rusqlite::Connection` is not `Sync`, so
             // the tick's store cannot cross the spawn boundary.
             let store = match Store::open(&future_home()) {
@@ -403,6 +425,41 @@ fn clear_pending(store: &Store, task: &Task) -> Result<(), String> {
 /// Execute one claimed run: session → envelope → prompt → finalize. On
 /// completion, mark downstream dependency edges satisfied and (when the task
 /// asks for them) start a suggestion pass over it.
+struct InterruptedTask {
+    home: std::path::PathBuf,
+    id: String,
+}
+impl Drop for InterruptedTask {
+    fn drop(&mut self) {
+        // Only this executor's claimed run is settled; other processes' task
+        // rows and externally submitted Agent conversations are untouched.
+        let result = (|| {
+            let store = Store::open(&self.home).map_err(|e| e.to_string())?;
+            if let Some(mut run) = store.get_run(&self.id).map_err(|e| e.to_string())? {
+                if run.status == RunStatus::Running {
+                    run.status = RunStatus::Failed;
+                    run.finished_at = Some(now_ms());
+                    run.error_message = Some("Desktop stopped before task completion".into());
+                    store.update_run(&run).map_err(|e| e.to_string())?;
+                }
+            }
+            Ok::<_, String>(())
+        })();
+        if let Err(error) = result {
+            eprintln!("FutureOS task interruption persistence failed: {error}");
+            if crate::desktop_shutdown::is_stopping() {
+                crate::runtime::record_cleanup_error(error);
+            }
+        }
+    }
+}
+struct AbortTaskOnDrop(crate::runtime::TaskHandle);
+impl Drop for AbortTaskOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 async fn execute(
     notify: &Notifier,
     store: Store,
@@ -410,6 +467,10 @@ async fn execute(
     mut run: TaskRun,
     upstream_sources: Vec<UpstreamSource>,
 ) -> Result<(), String> {
+    let _interrupted = InterruptedTask {
+        home: future_home(),
+        id: run.id.clone(),
+    };
     // `Store` owns a `rusqlite::Connection` (Send but not Sync), so it is
     // moved through the async call and handed back rather than borrowed.
     let (store, outcome) = run_inner(store, &task, &mut run, upstream_sources).await;
@@ -564,13 +625,18 @@ async fn run_inner(
         Err(error) => return (store, Err(error.to_string())),
     };
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let handle = tokio::spawn(crate::agent_bridge::run_prepared_prompt_with_acceptance(
-        prepared, tx,
-    ));
+    let (finished, result) = tokio::sync::oneshot::channel();
+    let handle = crate::runtime::spawn(async move {
+        let result = crate::agent_bridge::run_prepared_prompt_with_acceptance(prepared, tx).await;
+        let _ = finished.send(result);
+    });
+    // Both futures are registered. Cancelling the executor aborts the collector,
+    // and the process cleanup still waits for its actual drop before reset.
+    let _abort_on_drop = AbortTaskOnDrop(handle);
     let _ = rx.await;
-    let prompt_result = handle
+    let prompt_result = result
         .await
-        .map_err(|e| format!("prompt task panicked: {e}"))
+        .map_err(|e| format!("prompt task stopped: {e}"))
         .and_then(|inner| inner.map_err(|e| e.to_string()));
     if let Err(error) = prompt_result {
         return (store, Err(error));
@@ -1523,8 +1589,15 @@ mod tests {
             .map(|c| c.cwd.clone())
             .collect();
         for cwd in &touched {
+            // Built from the platform's own separator: the stored path is a real
+            // `Path`, so on Windows the components are split by `\`.
+            let chat_root = format!(
+                "workspaces{}chat{}",
+                std::path::MAIN_SEPARATOR,
+                std::path::MAIN_SEPARATOR
+            );
             assert!(
-                cwd.contains("workspaces/chat/") && !cwd.trim().is_empty(),
+                cwd.contains(&chat_root) && !cwd.trim().is_empty(),
                 "not the conversation's workspace: {cwd}"
             );
         }

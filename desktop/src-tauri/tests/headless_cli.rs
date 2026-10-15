@@ -19,6 +19,8 @@ fn isolated_command(binary: &str, home: &Path) -> Command {
     command
         .env("HOME", home)
         .env("USERPROFILE", home)
+        .env("FUTURE_HOME", home.join(".future"))
+        .env_remove("FUTURE_AGENT_SOCKET")
         .env("FUTURE_AGENT_GRPC_ADDR", "http://[::1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -197,10 +199,31 @@ fn terminal_signals_cancel_startup_and_leave_the_external_endpoint_alone() {
                 .unwrap(),
         );
         let child = &mut guard.0;
-        let mut stderr = BufReader::new(child.stderr.take().unwrap());
-        let mut line = String::new();
-        stderr.read_line(&mut line).unwrap();
-        assert!(line.contains("foreground mode"), "{line}");
+        // Environment hydration may log before the foreground marker. Drain
+        // stderr continuously and wait for the marker with a deadline, rather
+        // than depending on the first line or blocking forever in read_line.
+        let stderr = child.stderr.take().unwrap();
+        let (lines, received) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines() {
+                let Ok(line) = line else { break };
+                let _ = lines.send(line);
+            }
+        });
+        let ready_deadline = Instant::now() + Duration::from_secs(15);
+        let mut startup_log = String::new();
+        loop {
+            let line = received
+                .recv_timeout(ready_deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or_else(|error| {
+                    panic!("headless foreground marker was not received: {error}\n{startup_log}")
+                });
+            startup_log.push_str(&line);
+            startup_log.push('\n');
+            if line.contains("foreground mode") {
+                break;
+            }
+        }
         let sent = Command::new("kill")
             .args([signal, &child.id().to_string()])
             .status()
@@ -218,7 +241,12 @@ fn terminal_signals_cancel_startup_and_leave_the_external_endpoint_alone() {
             }
             std::thread::sleep(Duration::from_millis(20));
         };
-        assert!(exit.success(), "{signal}: {exit}");
+        reader.join().unwrap();
+        for line in received.try_iter() {
+            startup_log.push_str(&line);
+            startup_log.push('\n');
+        }
+        assert!(exit.success(), "{signal}: {exit}\n{startup_log}");
         assert_eq!(endpoint.local_addr().unwrap(), address);
         assert_eq!(std::fs::read_to_string(&pairing).unwrap(), original);
     }

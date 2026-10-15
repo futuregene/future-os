@@ -79,7 +79,7 @@ future agent --reset-windows-sandbox
 
 也可用公共`--probe-sandbox`。probe成功执行时输出JSON，available:false是支持的不可用结果。reset返回`removedCapabilities`；活动Job失败并保留metadata，不提权、不杀任务。维护CLI/RPC无会话、在singleton前可调用。
 
-长驻Agent持`~/.future/agent/agent-instance.lock`用户级锁，换gRPC端口不能绕过。正常桌面退出、确认强制退出后的任务收敛、清数据/环境切换/更新重启，都在bundled Agent存活时先reset再终止；外部Agent不由Desktop清理/终止。Agent自身Ctrl+C也幂等reset。超时、崩溃或临时失败best-effort保留metadata，启动GC、设置reset、卸载继续回收。
+长驻 Agent 持 `~/.future/agent/agent-instance.lock` 用户级锁，换 gRPC 端口不能绕过。正常 Desktop 退出、确认强退后的清理、清数据、环境切换和更新重启，先排空内置服务并撤销权限，再释放所有权。清理失败禁止安装和进程内重启，并保留诊断 metadata；系统强杀不能保证完整清理。连接的外部 Agent 保留所有权，不由 Desktop reset 或停止。独立 Agent 的 Ctrl+C 也幂等 reset；启动 GC、设置 reset 和卸载继续回收。
 
 NSIS installMode为currentUser，卸载pre-hook以同一用户profile清理；reset失败应保留可重试sidecar，不先删除清理工具。不手工`icacls /reset`覆盖无关ACL。
 
@@ -192,15 +192,17 @@ powershell -ExecutionPolicy Bypass -File .\scripts\tests\test-windows-sandbox-li
 
 portable为根目录`FutureOS-portable-windows.zip`，保持FutureOS.exe/future.exe同目录；NSIS在`desktop\src-tauri\target\release\bundle\nsis\`。每次生命周期调用留独立时间戳日志，不记录完整命令行。
 
+内置 Agent 版的所有 `Expect*` 调用须传 `-InstallDirectory` 指向本次安装目录；`ExpectEmbedded` 取代旧的子进程断言，`ExpectBundled` 仅为兼容别名。脚本核对实例锁、PID/路径/创建时间/数据根及打包 CLI 真实 RPC，退出后核对锁释放和 metadata 删除。使用隔离绝对 `FUTURE_HOME`，让 Desktop、外部 Agent 和脚本继承同一值；清除 `FUTURE_AGENT_GRPC_ADDR`/`FUTURE_AGENT_SOCKET`，以默认本地 IPC 验收 owner。Snapshot 另外记录相关进程树线程和内存，不能把它当成完整的启动耗时测量。
+
 `-Action SeedCleanupFixture`仅record为0时写入指向`%TEMP%\FutureOS-Sandbox-Lifecycle-Fixture`的合法测试metadata，不加ACE、不覆盖真实记录。它证明应用/安装器到达reset，不单独证明真实ACE撤销（原生测试负责）。每个reset场景先seed，预期从1归0；中断后无活动任务时可用CLI reset恢复。
 
 | ID | 操作与生命周期Action | 必须观察 |
 |---|---|---|
-| RM-01 | ExpectClean→启动Desktop→再启动→ExpectBundled | 同用户一个Desktop/一个Agent，Agent父为Desktop |
-| RM-02 | ExpectBundled→SeedCleanupFixture→正常退出，等最多20秒→ExpectStopped | 两进程退出，record1→0 |
-| RM-03 | 分别seed后清数据重启、开发环境切换重启、更新后重启→ExpectRecovered | 旧Agent退出、新Agent唯一且配置正确、端口释放、record0；无法触发者NOT RUN |
-| RM-04 | 手启`future.exe agent --grpc-addr 127.0.0.1:50051`，Desktop连接→ExpectExternalAttached→seed→退出Desktop→ExpectExternalSurvives | 地址与FUTURE_AGENT_GRPC_ADDR一致；外部Agent及record1保留；其Ctrl+C后ExpectClean归0 |
-| RM-05 | bundled+seed→任务管理器强杀→Snapshot→重启→ExpectRecovered | 强杀不承诺同步清理；singleton可恢复，启动GC归0；活动lease不误撤 |
+| RM-01 | ExpectClean→启动Desktop→再启动→ExpectEmbedded | 本数据根一个Desktop宿主持锁，无独立Agent子进程，CLI真实RPC成功 |
+| RM-02 | ExpectEmbedded→SeedCleanupFixture→正常退出，等最多20秒→ExpectStopped | 宿主退出、实例锁释放、metadata删除，record1→0 |
+| RM-03 | 分别seed后清数据重启、开发环境切换重启、更新后重启→ExpectRecovered | 旧宿主退出、新宿主持锁并ready，record0；无法触发者NOT RUN |
+| RM-04 | 手启`future.exe agent`，Desktop连接→ExpectExternalAttached→seed→退出Desktop→ExpectExternalSurvives | 默认本地IPC；已核实外部owner及record1保留，CLI仍可读；其Ctrl+C后ExpectClean归0 |
+| RM-05 | embedded+seed→任务管理器强杀→Snapshot→重启→ExpectRecovered | 强杀不承诺同步清理；singleton可恢复，启动GC归0；活动lease不误撤 |
 | RM-06 | ExpectClean→seed→实际发布CLI `agent --reset-windows-sandbox`→ExpectClean；设置reset | 同一primitive，输出removedCapabilities；活动Job拒绝且不杀命令 |
 | RM-07 | 普通用户NSIS，退出/ExpectClean→seed→卸载→ExpectClean | metadata清理、安装目录移除、夹具/用户数据与无关DACL保留；reset失败不先删sidecar |
 

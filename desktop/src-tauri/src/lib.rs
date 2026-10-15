@@ -4,6 +4,7 @@
 #[cfg_attr(not(feature = "gui"), allow(unused_imports))]
 mod agent_bridge;
 mod agent_events;
+mod agent_host;
 mod agent_proto;
 #[cfg_attr(not(feature = "gui"), allow(unused_imports))]
 mod agent_providers;
@@ -12,9 +13,11 @@ mod agent_supervisor;
 mod approval_rules;
 mod auth_store;
 mod build_info;
+mod cli_tool;
 mod commands;
 mod config_io;
 mod conversations;
+mod desktop_shutdown;
 mod device_identity;
 mod error;
 mod future_login;
@@ -22,7 +25,20 @@ mod future_platform;
 mod git_diff_parse;
 mod git_review;
 pub mod headless;
+mod host_environment;
 mod instance;
+
+/// Sandbox children enter the existing Agent helper before constructing GUI
+/// or headless state. The helper never starts a service or takes its lock.
+pub fn dispatch_agent_helper(args: &[String]) -> Option<Result<(), String>> {
+    let helper_args = if args.first().map(String::as_str) == Some("agent") {
+        &args[1..]
+    } else {
+        args
+    };
+    (helper_args.first().map(String::as_str) == Some("--linux-sandbox-helper"))
+        .then(|| future_agent::cli::run_from_args(helper_args).map_err(|error| error.to_string()))
+}
 #[cfg(all(feature = "gui", target_os = "linux"))]
 mod linux_power;
 #[cfg(all(feature = "gui", target_os = "macos"))]
@@ -610,10 +626,7 @@ mod gui {
             std::sync::OnceLock::new();
         let tx = TX.get_or_init(|| {
             let (tx, rx) = std::sync::mpsc::channel::<ThreadRuntimeUpdate>();
-            std::thread::Builder::new()
-                .name("thread-runtime-updates".to_string())
-                .spawn(|| runtime_update_drain_loop(rx))
-                .expect("spawn thread runtime update emitter");
+            crate::runtime::spawn_native(|| runtime_update_drain_loop(rx));
             tx
         });
         // Couple revision allocation to channel insertion. Without this short lock,
@@ -708,7 +721,7 @@ mod gui {
     /// the only source that can see runs started by older TUI/CLI clients which do
     /// not create a GUI StoredRun or route through the Tauri collector.
     fn start_thread_streaming_monitor() {
-        tauri::async_runtime::spawn(thread_streaming_monitor_loop());
+        crate::runtime::spawn(thread_streaming_monitor_loop());
     }
 
     /// Poll the agent's streaming thread ids every second. Extracted so the loop
@@ -729,7 +742,12 @@ mod gui {
     /// is testable; the `APP_HANDLE` Some arm needs the real Wry handle.
     fn runtime_update_drain_loop(rx: std::sync::mpsc::Receiver<ThreadRuntimeUpdate>) {
         use std::time::{Duration, Instant};
-        while let Ok(first) = rx.recv() {
+        while !crate::desktop_shutdown::is_stopping() && !crate::runtime::tasks_frozen() {
+            let first = match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(first) => first,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            };
             let deadline = Instant::now() + Duration::from_millis(16);
             let mut rest = Vec::new();
             loop {
@@ -791,11 +809,10 @@ mod gui {
 
     #[cfg_attr(mobile, tauri::mobile_entry_point)]
     pub fn run() -> Result<(), AppError> {
-        // `reqwest` intentionally uses `rustls-no-provider` so it shares the
-        // `ring` backend selected by async-nats/Tauri instead of pulling aws-lc
-        // into the same process. Rustls requires the application to select that
-        // backend before the first HTTP client is built.
-        install_rustls_provider();
+        // The combined Agent/Desktop dependency graph may include multiple
+        // rustls providers. Select ring and hydrate tool environment before
+        // Tauri starts threads or creates any HTTP clients.
+        crate::host_environment::initialize()?;
         let app = tauri::Builder::default()
             .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
                 // A second instance was launched — activate the existing window.
@@ -883,121 +900,18 @@ mod gui {
                 match_windows_caption_color(app);
                 // The window is created hidden (`"visible": false` in tauri.conf.json)
                 // so the taskbar never flashes Tauri's default (blurry, upscaled) icon
-                // before the crisp one above is in place. Reveal it now.
-                {
-                    use tauri::Manager;
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
+                // before the crisp one above is in place. Tauri creates configured
+                // windows just before `setup`, when the runtime reaches Ready.
+                // The instance guard is already held before `app.run` is entered.
+                // Showing between Builder::build and app.run silently misses this
+                // window because it has not been created yet.
+                if let Some(window) = tauri::Manager::get_webview_window(app, "main") {
+                    if let Err(error) = window.show() {
+                        eprintln!("FutureOS main window could not be shown: {error}");
                     }
+                } else {
+                    eprintln!("FutureOS main window was not created during setup");
                 }
-                if let Err(error) = store::initialize_app_store() {
-                    eprintln!("FutureOS store initialization failed: {error}");
-                }
-                // Embedded terminal: bind the loopback listener now so the webview
-                // can be told its port as soon as it asks. Accepting connections
-                // starts on `Ready`, when the runtime is live. The server needs the
-                // store (it resolves a conversation's working directory), so this
-                // must come after store initialization. A failure here disables
-                // the terminal panel; the rest of the app is unaffected.
-                if let Err(error) = terminal::server::bind() {
-                    eprintln!("FutureOS terminal server bind failed: {error}");
-                }
-                // Independent fixed-interval maintenance: app updates (24h),
-                // Future balance (1h), and Future models (24h). Missed ticks while
-                // suspended are skipped; each task runs at most once after resume.
-                scheduler::start(app.handle().clone());
-                // User-defined tasks: the tick loop claims due tasks and runs
-                // them through the sidecar agent (full permission). Headless
-                // desktop starts the same loop from `headless/mod.rs`.
-                tasks::start(app.handle().clone());
-                // Do not preemptively cancel non-terminal GUI rows at startup. The
-                // Agent is authoritative and may have survived a GUI crash; the
-                // watchdog below reattaches or settles each row only after it can
-                // query that authority.
-                // Pin the FutureGene environment for this build channel before the
-                // agent starts: release builds are production-locked, dev builds
-                // default to the test environment on first launch. The agent reads
-                // base_url from auth.json once at startup, so this must run first.
-                if let Err(error) = future_platform::apply_channel_environment_default() {
-                    eprintln!("FutureOS environment policy failed: {error}");
-                }
-                // Start the bundled agent off the launch path — it does a blocking
-                // TCP probe and we don't want to delay the window. In dev (no
-                // sidecar binary) this no-ops and the user runs the agent manually.
-                let agent_handle = app.handle().clone();
-                std::thread::spawn(move || {
-                    agent_supervisor::start_agent_supervision(&agent_handle)
-                });
-                start_thread_streaming_monitor();
-                // Global provider/auth completion stream. This is independent of
-                // chat observers and fans committed revisions to WebView + Mobile.
-                agent_bridge::spawn_provider_config_observer();
-                // Global session lifecycle stream: sessions created by other
-                // clients (TUI/CLI/channels) are imported within milliseconds of
-                // the agent's session_created announcement. Its initial attach also
-                // performs the startup discovery pass, so startup has one owner for
-                // session discovery instead of racing a duplicate one-shot import.
-                agent_bridge::spawn_session_events_observer();
-                // Low-frequency safety reconciliation for lifecycle notifications
-                // missed during outages or emitted by an older Agent. The global
-                // stream is the realtime path and reconciles on every reconnect.
-                agent_bridge::spawn_session_discovery();
-                // Continuously flush local deletion tombstones. This is independent
-                // of the current UI route and makes offline GUI deletes converge.
-                agent_bridge::spawn_delete_outbox_worker();
-                // Periodically reconcile non-terminal run rows against the Agent's
-                // authoritative state (mirrors terminal markers, reattaches lost
-                // collectors, settles orphans). Guards against rows whose owning
-                // pipeline never settled them — e.g. a suspended webview that never
-                // applied the invoke response. Self-gates on Agent reachability.
-                agent_bridge::spawn_active_run_watchdog();
-                // After the agent has had time to start, reconcile pending approvals
-                // against its authoritative state. Active-run reconciliation itself
-                // is handled continuously by the watchdog above.
-                std::thread::spawn(|| {
-                    // Single-threaded runtime: `Runtime::new()` is multi_thread and
-                    // would spawn num_cpus workers for this one-shot task.
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .expect("tokio runtime");
-                    rt.block_on(async {
-                        // Give the agent a few seconds to come up; then test.
-                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                        // Delete threads whose agent session was removed externally
-                        // (TUI/CLI/manual) — detected via the agent's session list,
-                        // never file probing. Runs first so run reconciliation below
-                        // doesn't query sessions that no longer exist. Self-gates on
-                        // agent reachability (skips when the agent is down).
-                        if let Err(error) = store::reconcile_orphan_sessions().await {
-                            eprintln!("FutureOS orphan-session reconcile failed: {error}");
-                        }
-                        // Rows mirrored by older builds for sessions that were
-                        // created but never prompted are empty conversations
-                        // with no run to their name; drop them so the list
-                        // converges without waiting for the periodic pass.
-                        match store::reconcile_empty_conversations().await {
-                            Ok(0) => {}
-                            Ok(removed) => {
-                                eprintln!("FutureOS: removed {removed} empty conversation(s)");
-                                crate::emit_threads_updated();
-                            }
-                            Err(error) => {
-                                eprintln!("FutureOS empty-conversation reconcile failed: {error}")
-                            }
-                        }
-                        // Rows produced by older startup convergence builds are
-                        // terminal locally (`cancelled/interrupted`) and therefore
-                        // outside the active-run watchdog. Reconcile that legacy
-                        // shape once before approvals so an Agent run that survived
-                        // the GUI restart is reanimated instead of staying hidden.
-                        agent_bridge::reconcile_interrupted_runs().await;
-                        agent_bridge::reconcile_pending_approvals().await;
-                    });
-                });
-                // Shadow-review maintenance (consistency check + crash recovery) runs
-                // off the launch path so it never delays the window.
-                std::thread::spawn(shadow_review::run_startup_maintenance);
                 Ok(())
             })
             .invoke_handler(tauri::generate_handler![
@@ -1162,6 +1076,11 @@ mod gui {
         // makes Tauri panic (and abort on macOS's non-unwinding callback).
         let guard = instance::InstanceGuard::acquire()?;
         tauri::Manager::manage(&app, guard);
+        crate::host_environment::start_logging()?;
+        store::initialize_app_store()?;
+        if let Err(error) = terminal::server::bind() {
+            eprintln!("FutureOS terminal server bind failed: {error}");
+        }
         // Keep the Windows console attached until startup errors can be reported.
         #[cfg(target_os = "windows")]
         unsafe {
@@ -1173,7 +1092,17 @@ mod gui {
             // macOS and can leave the detached start task without a live
             // connection. `Ready` is emitted once the process runtime is live.
             tauri::RunEvent::Ready => {
-                spawn_remote_auto_connect();
+                let handle = app_handle.clone();
+                crate::runtime::spawn_native(move || {
+                    if let Err(error) = agent_supervisor::start_agent_supervision(&handle) {
+                        eprintln!("FutureOS Agent startup failed: {error}");
+                        return;
+                    }
+                    if crate::desktop_shutdown::is_stopping() {
+                        return;
+                    }
+                    start_backend_background(handle);
+                });
                 if let Err(error) = terminal::server::serve() {
                     eprintln!("FutureOS terminal server failed to start: {error}");
                 }
@@ -1193,24 +1122,91 @@ mod gui {
                 }
             }
             tauri::RunEvent::Exit => {
-                // A normal app/window exit still has a live runtime. Flush a
-                // short disconnect notice so the phone disables sending at
-                // once instead of waiting for heartbeat expiry. Crashes and
-                // power loss cannot run this handler and remain timeout-based.
-                //
-                // The embedded terminal is torn down first: shells are children
-                // of this process and must not outlive it. The grace period is
-                // short because the user is waiting to quit, and the teardown is
-                // bounded regardless of how wedged a child is.
-                if let Some(manager) = terminal::server::manager() {
-                    manager.shutdown_all(terminal::manager::CLOSE_GRACE);
+                if let Err(error) = agent_supervisor::shutdown_agent_gracefully() {
+                    eprintln!("FutureOS exit cleanup failed: {error}");
                 }
-                tauri::async_runtime::block_on(remote::stop_gracefully("app_exit"));
-                agent_supervisor::shutdown_agent_gracefully();
             }
             _ => {}
         });
         Ok(())
+    }
+
+    fn start_backend_background(app: tauri::AppHandle) {
+        // Independent fixed-interval maintenance: app updates (24h),
+        // Future balance (1h), and Future models (24h). Missed ticks while
+        // suspended are skipped; each task runs at most once after resume.
+        scheduler::start(app.clone());
+        // User-defined tasks: the tick loop claims due tasks and runs
+        // them through the Agent service (full permission). Headless
+        // desktop starts the same loop from `headless/mod.rs`.
+        tasks::start(app.clone());
+        // Do not preemptively cancel non-terminal GUI rows at startup. The
+        // Agent is authoritative and may have survived a GUI crash; the
+        // watchdog below reattaches or settles each row only after it can
+        // query that authority.
+        start_thread_streaming_monitor();
+        // Global provider/auth completion stream. This is independent of
+        // chat observers and fans committed revisions to WebView + Mobile.
+        agent_bridge::spawn_provider_config_observer();
+        // Global session lifecycle stream: sessions created by other
+        // clients (TUI/CLI/channels) are imported within milliseconds of
+        // the agent's session_created announcement. Its initial attach also
+        // performs the startup discovery pass, so startup has one owner for
+        // session discovery instead of racing a duplicate one-shot import.
+        agent_bridge::spawn_session_events_observer();
+        // Low-frequency safety reconciliation for lifecycle notifications
+        // missed during outages or emitted by an older Agent. The global
+        // stream is the realtime path and reconciles on every reconnect.
+        agent_bridge::spawn_session_discovery();
+        // Continuously flush local deletion tombstones. This is independent
+        // of the current UI route and makes offline GUI deletes converge.
+        agent_bridge::spawn_delete_outbox_worker();
+        // Periodically reconcile non-terminal run rows against the Agent's
+        // authoritative state (mirrors terminal markers, reattaches lost
+        // collectors, settles orphans). Guards against rows whose owning
+        // pipeline never settled them — e.g. a suspended webview that never
+        // applied the invoke response. Self-gates on Agent reachability.
+        agent_bridge::spawn_active_run_watchdog();
+        // After the agent has had time to start, reconcile pending approvals
+        // against its authoritative state. Active-run reconciliation itself
+        // is handled continuously by the watchdog above.
+        crate::runtime::spawn(async {
+            // Reconcile on the shared, tracked runtime after Agent readiness.
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            // Delete threads whose agent session was removed externally
+            // (TUI/CLI/manual) — detected via the agent's session list,
+            // never file probing. Runs first so run reconciliation below
+            // doesn't query sessions that no longer exist. Self-gates on
+            // agent reachability (skips when the agent is down).
+            if let Err(error) = store::reconcile_orphan_sessions().await {
+                eprintln!("FutureOS orphan-session reconcile failed: {error}");
+            }
+            // Rows mirrored by older builds for sessions that were
+            // created but never prompted are empty conversations
+            // with no run to their name; drop them so the list
+            // converges without waiting for the periodic pass.
+            match store::reconcile_empty_conversations().await {
+                Ok(0) => {}
+                Ok(removed) => {
+                    eprintln!("FutureOS: removed {removed} empty conversation(s)");
+                    crate::emit_threads_updated();
+                }
+                Err(error) => {
+                    eprintln!("FutureOS empty-conversation reconcile failed: {error}")
+                }
+            }
+            // Rows produced by older startup convergence builds are
+            // terminal locally (`cancelled/interrupted`) and therefore
+            // outside the active-run watchdog. Reconcile that legacy
+            // shape once before approvals so an Agent run that survived
+            // the GUI restart is reanimated instead of staying hidden.
+            agent_bridge::reconcile_interrupted_runs().await;
+            agent_bridge::reconcile_pending_approvals().await;
+        });
+        // Shadow-review maintenance (consistency check + crash recovery) runs
+        // off the launch path so it never delays the window.
+        crate::runtime::spawn_native(shadow_review::run_startup_maintenance);
+        spawn_remote_auto_connect();
     }
 
     /// Start the persisted remote bridge only after Tauri's runtime has entered its
@@ -1229,7 +1225,7 @@ mod gui {
             return;
         }
 
-        tauri::async_runtime::spawn(async {
+        crate::runtime::spawn(async {
             match remote::start(remote::RemoteStartInput {}).await {
                 Ok(status) if matches!(status.phase, remote::RemotePhase::Ready) => {
                     eprintln!("FutureOS remote auto-connect: connected")

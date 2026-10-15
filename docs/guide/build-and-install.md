@@ -50,7 +50,7 @@ Build:
 ```bash
 make install        # GUI + unified `future` CLI + skills (agent/tui/channel/loop are embedded) → /opt/homebrew/bin
 make install-cli    # unified `future` CLI only
-make install-desktop    # desktop app only (stages its own agent/CLI sidecars)
+make install-desktop    # desktop app only (stages its CLI tool)
 make install-skills # built-in skills + the /future-loop skill
 make package-desktop    # desktop bundle → .app + .dmg in desktop/src-tauri/target/release/bundle/
 scripts/build/build-desktop-macos.sh  # local DMG; auto-signs when a Developer ID certificate is available
@@ -113,14 +113,16 @@ scripts/build/build-desktop-linux.sh --out-dir ./dist   # → ./dist/FutureOS_<v
 scripts/dev/start-desktop-linux.sh                    # local Linux Desktop + agent development session
 make install        # or install straight from source: GUI + unified `future` CLI + skills → /usr/local/bin (sudo)
 make install-cli    # unified `future` CLI only
-make install-desktop    # desktop app only (stages its own agent/CLI sidecars)
+make install-desktop    # desktop app only (stages its CLI tool)
 make install-skills # built-in skills + the /future-loop skill
 make package-desktop    # desktop bundle → .deb in desktop/src-tauri/target/release/bundle/
 ```
 
-`scripts/dev/start-desktop-linux.sh` runs the GUI in dev mode against a locally
-built agent and stops the agent it started when the GUI exits. Bubblewrap
-diagnostics are informational so the sandbox-unavailable UI can also be tested.
+`scripts/dev/start-desktop-linux.sh` starts GUI development with an embedded
+Agent or attaches to a compatible external service. The launcher does not start
+or stop a separate Agent. The existing Agent probe and execution path still
+determine Bubblewrap availability and sandbox boundaries. See the
+[Agent lifecycle/development guide](desktop-agent.md).
 
 ### Optional OS sandbox
 
@@ -161,8 +163,8 @@ Copy-Item target\release\future.exe $bin
 ```
 
 **Desktop app** — the GUI half of `make install` (stages its own sidecar,
-`make desktop-sidecars` — only the unified `future` CLI; the desktop app starts the agent
-via `future agent`):
+`make desktop-sidecars` — only the unified `future` CLI for skills/maintenance;
+Desktop runs its Agent library in-process):
 
 ```powershell
 # Stage the unified CLI as the Tauri sidecar, named with the host triple
@@ -179,12 +181,13 @@ Copy-Item desktop\src-tauri\target\release\futureos.exe "$env:USERPROFILE\.futur
 
 ```powershell
 node scripts\version.mjs --set-bundle
+Copy-Item "desktop\src-tauri\binaries\future-$triple.exe" desktop\src-tauri\binaries\installer-maintenance.exe -Force # Copy after signing the CLI, if signed
 Push-Location desktop; npm run tauri:build; Pop-Location   # → NSIS setup .exe under desktop\src-tauri\target\release\bundle\nsis\
 ```
 
 Notes:
 
-- `scripts\dev\start-desktop-windows.bat` runs the GUI in dev mode against a locally built agent.
+- `scripts\dev\start-desktop-windows.bat` delegates to the PowerShell launcher; Desktop embeds Agent or connects to a compatible external service.
 - The scripts under `scripts/build/` (`build-desktop-macos.sh`, `build-desktop-windows-portable.ps1`, `build-desktop-windows-installer.ps1`) wrap these same steps into a single command and replicate the CI packaging pipeline (DMG / portable zip / NSIS installer). They check the toolchain up front and require `protoc` (`brew install protobuf` / `choco install protoc`). Their artifacts contain the GUI and the unified `future` CLI (agent/TUI/channel/loop embedded) — not a separate TUI.
 
 ## Loop control plane (`future-loop`)
@@ -275,12 +278,19 @@ make run-desktop
 ```
 
 `make setup` installs the JavaScript workspaces, initializes built-in skills, and
-creates the Tauri sidecar placeholder. `make run-desktop` builds the local CLI
-sidecar and starts the desktop app in development mode — the app auto-starts the
-bundled agent sidecar on launch, so no separate `future agent` is needed. (If an
+creates a compile-only CLI placeholder, which runtime tool discovery rejects.
+`make run-desktop` uses the platform launcher to build/stage the real CLI and
+start Desktop in development mode. Desktop embeds Agent when absent, so no
+separate `future agent` is needed. (If a compatible
 agent is already reachable through per-user local IPC or the explicit
 `FUTURE_AGENT_GRPC_ADDR` override, the app reuses it instead and does not own its
-shutdown.) See [directory layout](directory-layout.md) for socket selection.
+shutdown.) Set `FUTURE_DESKTOP_AGENT_MODE=external` for attach-only debugging;
+start the matching Agent separately with the same FutureOS home. Launchers do
+not cancel old database rows or kill agents recorded by stale PID files.
+`BUILD_CLI=0` skips the CLI build, `DESKTOP_DEV_PORT` selects the Vite port,
+`RUN_CHECKS=1` runs static checks, and `DRY_RUN=1` only prints configuration.
+Standalone Agent logs remain under `agent/logs/agent.log`; embedded Agent/host
+logs use `app/logs/desktop.log`. See [directory layout](directory-layout.md) for socket selection.
 Android and iOS need their respective SDKs and an emulator or device; see the
 [mobile guide](../internals/mobile/README.md).
 

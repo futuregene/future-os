@@ -9,6 +9,13 @@ use tokio::sync::mpsc;
 
 use super::{RunControl, RunLease, RunSnapshot};
 
+struct AuxiliaryGuard(Arc<std::sync::atomic::AtomicUsize>);
+impl Drop for AuxiliaryGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
 struct RuntimeTask {
     lease: RunLease,
     // Retained by the runtime so a future explicit force-cancel policy can
@@ -24,6 +31,8 @@ struct RuntimeTask {
 /// run lease can finalize state or release its task slot.
 pub struct SessionRuntime {
     control: RunControl,
+    cancellation_timer: Mutex<Option<tokio::task::AbortHandle>>,
+    auxiliary: Arc<std::sync::atomic::AtomicUsize>,
     task: Mutex<Option<RuntimeTask>>,
     completion_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<RunLease>>>,
     // Test-only observability/failure injection: always compiled (setters are
@@ -35,6 +44,8 @@ impl SessionRuntime {
     pub fn new(is_streaming: Arc<AtomicBool>) -> Self {
         Self {
             control: RunControl::new(is_streaming),
+            cancellation_timer: Mutex::new(None),
+            auxiliary: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             task: Mutex::new(None),
             completion_tx: Mutex::new(None),
             fail_next_begin_finalizing: std::sync::atomic::AtomicBool::new(false),
@@ -113,7 +124,11 @@ impl SessionRuntime {
                 epoch: snapshot.epoch,
                 run_sequence: snapshot.run_sequence,
             };
-            handle.spawn(async move {
+            let auxiliary = self.auxiliary_guard();
+            let child_work = crate::service::work::process_auxiliary_work();
+            let timer = handle.spawn(async move {
+                let _auxiliary = auxiliary;
+                let _child_work = child_work;
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 if runtime.control.snapshot().is_some_and(|active| {
                     active.run_id == lease.run_id
@@ -125,8 +140,27 @@ impl SessionRuntime {
                         .mark_stuck(&lease, "cancellation acknowledgement timed out");
                 }
             });
+            if let Some(previous) = self.cancellation_timer.lock().replace(timer.abort_handle()) {
+                previous.abort();
+            }
         }
         Ok(())
+    }
+
+    fn auxiliary_guard(&self) -> AuxiliaryGuard {
+        self.auxiliary
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        AuxiliaryGuard(self.auxiliary.clone())
+    }
+
+    pub(crate) fn stop_cancellation_timer(&self) {
+        if let Some(timer) = self.cancellation_timer.lock().take() {
+            timer.abort();
+        }
+    }
+
+    pub(crate) fn auxiliary_settled(&self) -> bool {
+        self.auxiliary.load(std::sync::atomic::Ordering::Acquire) == 0
     }
 
     pub fn snapshot(&self) -> Option<RunSnapshot> {
@@ -208,7 +242,11 @@ impl SessionRuntime {
         drop(slot);
 
         let runtime = self.clone();
+        let auxiliary = self.auxiliary_guard();
+        let child_work = crate::service::work::process_auxiliary_work();
         tokio::spawn(async move {
+            let _auxiliary = auxiliary;
+            let _child_work = child_work;
             let outcome = task.await;
             let mut slot = runtime.task.lock();
             // The slot still holds THIS task's lease: spawn() refuses double

@@ -11,15 +11,17 @@
 
     SeedCleanupFixture writes one valid FutureOS capability metadata record
     whose target is a dedicated directory under TEMP. It does not add an ACE.
-    This safely proves that packaged shutdown/startup/uninstall really reaches
-    the already-native-tested reset path while the Windows product gate remains
-    closed. Seeding refuses to overwrite any non-empty capability state.
+    This proves that packaged shutdown/startup/uninstall reaches the reset path
+    without adding an ACE. Seeding refuses to overwrite non-empty state.
+    ExpectEmbedded verifies the host itself owns the Agent lock and that the
+    packaged CLI can complete a read-only request. ExpectBundled is an alias.
+    Pass InstallDirectory for assertions; FUTURE_HOME selects the data root.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\scripts\tests\test-windows-sandbox-lifecycle.ps1 -Action Snapshot
-    powershell -ExecutionPolicy Bypass -File .\scripts\tests\test-windows-sandbox-lifecycle.ps1 -Action ExpectBundled
+    powershell -ExecutionPolicy Bypass -File .\scripts\tests\test-windows-sandbox-lifecycle.ps1 -Action ExpectEmbedded -InstallDirectory C:\FutureOS
     powershell -ExecutionPolicy Bypass -File .\scripts\tests\test-windows-sandbox-lifecycle.ps1 -Action SeedCleanupFixture
-    powershell -ExecutionPolicy Bypass -File .\scripts\tests\test-windows-sandbox-lifecycle.ps1 -Action ExpectStopped
+    powershell -ExecutionPolicy Bypass -File .\scripts\tests\test-windows-sandbox-lifecycle.ps1 -Action ExpectStopped -InstallDirectory C:\FutureOS
 #>
 [CmdletBinding()]
 param(
@@ -27,6 +29,7 @@ param(
         "Snapshot",
         "SeedCleanupFixture",
         "ExpectClean",
+        "ExpectEmbedded",
         "ExpectBundled",
         "ExpectStopped",
         "ExpectExternalAttached",
@@ -34,6 +37,7 @@ param(
         "ExpectRecovered"
     )]
     [string]$Action = "Snapshot",
+    [string]$InstallDirectory,
     [string]$OutputDirectory = "target/windows-sandbox-results",
     [int]$TimeoutSeconds = 20,
     [switch]$AllowElevated
@@ -65,7 +69,7 @@ $outputRoot = if ([IO.Path]::IsPathRooted($OutputDirectory)) {
     Join-Path $repoRoot $OutputDirectory
 }
 New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
-$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$stamp = (Get-Date -Format "yyyyMMdd-HHmmss-fff") + "-$PID"
 $logPath = Join-Path $outputRoot "windows-sandbox-lifecycle-$stamp.log"
 
 function Write-LogLine {
@@ -73,9 +77,14 @@ function Write-LogLine {
     $Text | Tee-Object -FilePath $logPath -Append
 }
 
+function Test-AbsolutePath {
+    param([string]$Path)
+    return $Path -and $Path -match '^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+(?:[\\/]|$))'
+}
+
 function Get-AgentHomeDirectory {
     foreach ($candidate in @($env:HOME, $env:USERPROFILE)) {
-        if (-not [string]::IsNullOrWhiteSpace($candidate) -and [IO.Path]::IsPathRooted($candidate)) {
+        if (Test-AbsolutePath $candidate) {
             return [IO.Path]::GetFullPath($candidate)
         }
     }
@@ -87,7 +96,38 @@ function Get-AgentHomeDirectory {
 }
 
 $agentHome = Get-AgentHomeDirectory
-$capabilityStatePath = Join-Path $agentHome ".future/windows-capabilities.json"
+$futureRoot = if (Test-AbsolutePath $env:FUTURE_HOME) {
+    [IO.Path]::GetFullPath($env:FUTURE_HOME)
+} else { Join-Path $agentHome '.future' }
+$capabilityStatePath = Join-Path $futureRoot 'windows-capabilities.json'
+$instancePath = Join-Path $futureRoot 'agent/agent-instance.json'
+$instanceLockPath = Join-Path $futureRoot 'agent/agent-instance.lock'
+if ($InstallDirectory) {
+    if (-not (Test-AbsolutePath $InstallDirectory)) { throw 'InstallDirectory must be absolute.' }
+    $InstallDirectory = [IO.Path]::GetFullPath($InstallDirectory).TrimEnd('\', '/')
+} elseif ($Action -notin @('Snapshot', 'SeedCleanupFixture')) {
+    throw 'Pass -InstallDirectory to scope lifecycle assertions to the installation under test.'
+}
+
+function Test-AgentLockHeld {
+    if (-not [IO.File]::Exists($instanceLockPath)) { return $false }
+    $stream = $null
+    try {
+        # Never create, truncate, delete or rewrite the production lock.
+        $stream = [IO.FileStream]::new($instanceLockPath, [IO.FileMode]::Open,
+            [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+        $stream.Lock(0, 1)
+        $stream.Unlock(0, 1)
+        return $false
+    } catch [IO.IOException] {
+        $code = $_.Exception.HResult -band 0xffff
+        if ($code -eq 2) { return $false } # File disappeared while the owner exited.
+        if ($code -in @(32, 33)) { return $true }
+        throw
+    } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
 
 function Read-CapabilityState {
     if (-not (Test-Path -LiteralPath $capabilityStatePath)) {
@@ -102,22 +142,65 @@ function Read-CapabilityState {
 
 function Get-LifecycleState {
     $all = @(Get-CimInstance Win32_Process)
-    $apps = @($all | Where-Object { $_.Name -ieq "futureos.exe" })
-    $agents = @($all | Where-Object {
-        $_.Name -ieq "future.exe" -and
-        -not [string]::IsNullOrWhiteSpace($_.CommandLine) -and
-        $_.CommandLine -match '(?i)(?:^|[\s"])(?:agent)(?:[\s"]|$)'
+    $installed = @($all | Where-Object {
+        -not $InstallDirectory -or ($_.ExecutablePath -and
+            [IO.Path]::GetDirectoryName($_.ExecutablePath).TrimEnd('\', '/') -ieq $InstallDirectory)
+    })
+    $apps = @($installed | Where-Object { $_.Name -in @('futureos.exe', 'futureos-headless.exe') })
+    $agents = @($installed | Where-Object {
+        $_.Name -ieq 'future-agent.exe' -or ($_.Name -ieq 'future.exe' -and
+            $_.CommandLine -match '(?i)(?:^|[\s"])(?:agent)(?:[\s"]|$)')
     })
     $appIds = @($apps | ForEach-Object { [uint32]$_.ProcessId })
     $bundled = @($agents | Where-Object { $appIds -contains [uint32]$_.ParentProcessId })
+    $held = Test-AgentLockHeld
+    $owner = $null
+    $ownerError = $null
+    if (Test-Path -LiteralPath $instancePath) {
+        $process = $null
+        try {
+            $info = Get-Content -LiteralPath $instancePath -Raw | ConvertFrom-Json
+            $process = [Diagnostics.Process]::GetProcessById([int]$info.pid)
+            $actualExe = [IO.Path]::GetFullPath($process.MainModule.FileName)
+            if ([IO.Path]::GetFileName($actualExe) -notin @('future.exe', 'future-agent.exe', 'futureos.exe', 'futureos-headless.exe', 'future-desktop.exe')) {
+                throw 'Agent metadata names an unrecognized host executable.'
+            }
+            if ($actualExe -ine [IO.Path]::GetFullPath([string]$info.executable) -or
+                [IO.Path]::GetFullPath([string]$info.futureHome).TrimEnd('\', '/') -ine $futureRoot.TrimEnd('\', '/') -or
+                $process.StartTime.ToFileTimeUtc() -ne [long]$info.startTimeFiletime) {
+                throw 'Agent metadata does not match the live executable, creation time and data root.'
+            }
+            $owner = $all | Where-Object { $_.ProcessId -eq $info.pid } | Select-Object -First 1
+            if ($null -eq $owner) { throw 'Agent owner exited during inspection.' }
+        } catch { $ownerError = $_.Exception.Message }
+        finally { if ($null -ne $process) { $process.Dispose() } }
+    }
     $external = @($agents | Where-Object { $appIds -notcontains [uint32]$_.ParentProcessId })
+    # An external owner can be a CLI or a headless/Desktop in another install.
+    if ($null -ne $owner -and $appIds -notcontains [uint32]$owner.ProcessId -and
+        @($external | Where-Object { $_.ProcessId -eq $owner.ProcessId }).Count -eq 0) {
+        $external += $owner
+    }
     $state = Read-CapabilityState
     $recordCount = if ($null -eq $state) { 0 } else { @($state.records).Count }
+    $treeIds = [Collections.Generic.HashSet[uint32]]::new()
+    foreach ($entry in @($apps) + @($agents) + @($external)) { $null = $treeIds.Add([uint32]$entry.ProcessId) }
+    do {
+        $changed = $false
+        foreach ($entry in $all) {
+            if ($treeIds.Contains([uint32]$entry.ParentProcessId) -and $treeIds.Add([uint32]$entry.ProcessId)) { $changed = $true }
+        }
+    } while ($changed)
     return [pscustomobject]@{
         Apps = $apps
         Agents = $agents
         BundledAgents = $bundled
         ExternalAgents = $external
+        Owner = $owner
+        OwnerError = $ownerError
+        LockHeld = $held
+        MetadataExists = (Test-Path -LiteralPath $instancePath)
+        ProcessTree = @($all | Where-Object { $treeIds.Contains([uint32]$_.ProcessId) })
         CapabilityRecords = $recordCount
     }
 }
@@ -138,6 +221,17 @@ function Write-StateSnapshot {
         Write-LogLine "  future agent PID=$($process.ProcessId) ParentPID=$($process.ParentProcessId) Owner=$owner"
     }
     Write-LogLine "Persisted capability records: $($State.CapabilityRecords)"
+    Write-LogLine "Agent lock held: $($State.LockHeld)"
+    if ($null -ne $State.Owner) { Write-LogLine "Verified owner: $($State.Owner.Name) PID=$($State.Owner.ProcessId)" }
+    if ($State.OwnerError) { Write-LogLine "Owner diagnosis: $($State.OwnerError)" }
+    foreach ($app in @($State.ProcessTree)) {
+        $process = $null
+        try {
+            $process = [Diagnostics.Process]::GetProcessById([int]$app.ProcessId)
+            Write-LogLine "Process=$($app.Name) PID=$($app.ProcessId) ParentPID=$($app.ParentProcessId) threads=$($process.Threads.Count) workingSetBytes=$($process.WorkingSet64) privateBytes=$($process.PrivateMemorySize64)"
+        } catch { Write-LogLine "Metrics unavailable for PID=$($app.ProcessId): $($_.Exception.Message)" }
+        finally { if ($null -ne $process) { $process.Dispose() } }
+    }
 }
 
 function Get-ExpectationErrors {
@@ -154,11 +248,15 @@ function Get-ExpectationErrors {
             if ($agentCount -ne 0) { $errors.Add("expected no Agent process, found $agentCount") }
             if ($State.CapabilityRecords -ne 0) { $errors.Add("expected zero capability records, found $($State.CapabilityRecords)") }
         }
-        "ExpectBundled" {
+        { $_ -in @('ExpectEmbedded', 'ExpectBundled', 'ExpectRecovered') } {
             if ($appCount -ne 1) { $errors.Add("expected one FutureOS process, found $appCount") }
-            if ($agentCount -ne 1) { $errors.Add("expected one Agent process, found $agentCount") }
-            if ($bundledCount -ne 1) { $errors.Add("expected the Agent parent to be FutureOS, bundled count is $bundledCount") }
+            if ($agentCount -ne 0) { $errors.Add("embedded mode must have no standalone Agent process, found $agentCount") }
             if ($externalCount -ne 0) { $errors.Add("expected no external Agent, found $externalCount") }
+            if (-not $State.LockHeld) { $errors.Add('expected the Agent instance lock to be held') }
+            if ($null -eq $State.Owner -or @($State.Apps | Where-Object { $_.ProcessId -eq $State.Owner.ProcessId }).Count -ne 1) {
+                $errors.Add('expected verified Agent metadata to name the Desktop/headless host itself')
+            }
+            if ($Expected -eq 'ExpectRecovered' -and $State.CapabilityRecords -ne 0) { $errors.Add('expected startup recovery to remove all capability records') }
         }
         "ExpectStopped" {
             if ($appCount -ne 0) { $errors.Add("expected FutureOS to be stopped, found $appCount process(es)") }
@@ -167,26 +265,58 @@ function Get-ExpectationErrors {
         }
         "ExpectExternalAttached" {
             if ($appCount -ne 1) { $errors.Add("expected one FutureOS process, found $appCount") }
-            if ($agentCount -ne 1) { $errors.Add("expected one Agent process, found $agentCount") }
             if ($bundledCount -ne 0) { $errors.Add("FutureOS unexpectedly owns an Agent process") }
             if ($externalCount -ne 1) { $errors.Add("expected one external Agent, found $externalCount") }
         }
         "ExpectExternalSurvives" {
             if ($appCount -ne 0) { $errors.Add("expected FutureOS to be stopped, found $appCount process(es)") }
-            if ($agentCount -ne 1) { $errors.Add("expected the external Agent to survive, found $agentCount") }
             if ($bundledCount -ne 0) { $errors.Add("a stopped FutureOS cannot own the surviving Agent") }
             if ($externalCount -ne 1) { $errors.Add("expected one external Agent, found $externalCount") }
             if ($State.CapabilityRecords -ne 1) { $errors.Add("expected Desktop to leave the external Agent's one fixture record untouched, found $($State.CapabilityRecords)") }
         }
-        "ExpectRecovered" {
-            if ($appCount -ne 1) { $errors.Add("expected one relaunched FutureOS process, found $appCount") }
-            if ($agentCount -ne 1) { $errors.Add("expected one recovered Agent process, found $agentCount") }
-            if ($bundledCount -ne 1) { $errors.Add("expected the recovered Agent to be owned by FutureOS") }
-            if ($externalCount -ne 0) { $errors.Add("expected no external Agent after recovery, found $externalCount") }
-            if ($State.CapabilityRecords -ne 0) { $errors.Add("expected startup recovery to remove all records, found $($State.CapabilityRecords)") }
+    }
+    if ($Expected -in @('ExpectClean', 'ExpectStopped')) {
+        if ($State.LockHeld) { $errors.Add('Agent instance lock is still held') }
+        if ($State.MetadataExists) { $errors.Add('Agent instance metadata was not removed') }
+    }
+    if ($Expected -in @('ExpectExternalAttached', 'ExpectExternalSurvives')) {
+        if (-not $State.LockHeld -or $null -eq $State.Owner -or
+            @($State.ExternalAgents | Where-Object { $_.ProcessId -eq $State.Owner.ProcessId }).Count -ne 1) {
+            $errors.Add('expected a verified external owner holding the Agent instance lock')
         }
     }
     return $errors
+}
+
+function Assert-AgentReady {
+    # A successful read-only CLI request includes the shared compatibility and
+    # readiness handshake. Never let this probe start an Agent or open its DB.
+    if ($env:FUTURE_AGENT_GRPC_ADDR -or $env:FUTURE_AGENT_SOCKET) {
+        throw 'Unset endpoint overrides for lifecycle validation; use the data-root-scoped default IPC.'
+    }
+    $cli = Join-Path $InstallDirectory 'future.exe'
+    if (-not (Test-Path -LiteralPath $cli)) { throw "Missing packaged CLI: $cli" }
+    $stdout = Join-Path $outputRoot "probe-$PID.stdout"
+    $stderr = Join-Path $outputRoot "probe-$PID.stderr"
+    $probe = $null
+    try {
+        $probe = Start-Process -FilePath $cli -ArgumentList 'session list --json' -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        if (-not $probe.WaitForExit(15000)) {
+            $probe.Kill()
+            $null = $probe.WaitForExit(5000)
+            throw 'Packaged CLI readiness probe timed out.'
+        }
+        if ($probe.ExitCode -ne 0) { throw "Packaged CLI readiness probe failed: $(Get-Content -LiteralPath $stderr -Raw)" }
+        $reply = Get-Content -LiteralPath $stdout -Raw
+        if ([string]::IsNullOrWhiteSpace($reply) -or -not $reply.TrimStart().StartsWith('[')) {
+            throw 'Packaged CLI did not return a sessions JSON array.'
+        }
+        $null = $reply | ConvertFrom-Json
+        Write-LogLine 'Packaged CLI compatibility/readiness and list_sessions RPC: PASS'
+    } finally {
+        if ($null -ne $probe) { $probe.Dispose() }
+        Remove-Item -LiteralPath $stdout, $stderr -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Seed-CleanupFixture {
@@ -238,6 +368,8 @@ try {
     Write-LogLine "User: $($identity.Name)"
     Write-LogLine "Elevated: $isElevated"
     Write-LogLine "Agent home: $agentHome"
+    Write-LogLine "FutureOS root: $futureRoot"
+    Write-LogLine "Installation: $InstallDirectory"
     Write-LogLine "Capability state: $capabilityStatePath"
 
     if ($Action -eq "SeedCleanupFixture") {
@@ -260,6 +392,20 @@ try {
         $errors = @()
         if ($Action -ne "Snapshot") {
             $errors = @(Get-ExpectationErrors $Action $state)
+        }
+        if ($errors.Count -eq 0 -and $Action -in @('ExpectEmbedded', 'ExpectBundled', 'ExpectRecovered', 'ExpectExternalAttached', 'ExpectExternalSurvives')) {
+            try {
+                # Metadata is published before ready. Retry a still-starting
+                # service instead of turning that normal interval into failure.
+                Assert-AgentReady
+                $afterProbe = Get-LifecycleState
+                $errors = @(Get-ExpectationErrors $Action $afterProbe)
+                if ($errors.Count -eq 0 -and ($afterProbe.Owner.ProcessId -ne $state.Owner.ProcessId -or
+                    $afterProbe.Owner.CreationDate -ne $state.Owner.CreationDate)) {
+                    $errors = @('Agent ownership changed during the readiness probe.')
+                }
+                $state = $afterProbe
+            } catch { $errors = @($_.Exception.Message) }
         }
         if ($errors.Count -eq 0) { break }
         Start-Sleep -Milliseconds 250

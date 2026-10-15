@@ -580,6 +580,12 @@ pub struct AgentReadiness {
     pub version: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub agent_instance_id: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "3")]
+    pub protocol_version: u32,
+    #[prost(string, tag = "4")]
+    pub data_root_id: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "5")]
+    pub storage_schema_version: u32,
 }
 /// get_commands response.
 #[derive(Clone, PartialEq, ::prost::Message)]

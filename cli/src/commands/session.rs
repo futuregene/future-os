@@ -2096,10 +2096,7 @@ mod tests {
         assert_eq!(workspace.kind, "user");
         assert_eq!(
             workspace.path,
-            directory
-                .path()
-                .canonicalize()
-                .unwrap()
+            future_app_workspaces::normalize_path(directory.path())
                 .display()
                 .to_string()
         );

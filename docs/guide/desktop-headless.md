@@ -16,9 +16,10 @@ It does not daemonize or install a system service.
   `future` CLI; you can also build them from source (section 5). The standalone
   entrypoint needs no GTK/WebKit and starts headless by default. The CLI-only
   archive still contains only `future`, not the Desktop backend entrypoint.
-- Put the CLI beside `futureos-headless` or on PATH so it can start the local Agent
-  when needed. You can also run `future agent` independently first; the headless
-  backend connects without starting a duplicate.
+- The complete Agent runs inside headless Desktop when no external service owns
+  the default endpoint/data directory. Keep the matching CLI beside the executable
+  or on PATH for skills and maintenance. You can also run `future agent` separately;
+  Desktop attaches only after compatibility/readiness checks.
 - Install a FutureOS mobile app matching the host's production/test environment.
 - Allow the host to reach the Future OS platform and configured NATS relay. The
   phone also needs network access.
@@ -143,8 +144,8 @@ Ctrl+C works while waiting for login, pairing, connection startup and normal
 operation. Exit first stops new remote operations and connection recovery, then
 performs bounded resource cleanup.
 
-- **Agent started by this Desktop:** cancel active conversations and stop the
-  Agent. In-progress tasks are interrupted.
+- **Embedded Agent:** cancel all clients' active/queued work, including CLI/TUI
+  conversations, then stop the service.
 - **Independently running Agent:** leave it running. This Desktop's remote entry
   still closes.
 - **Saved login and completed pairing:** retain them for the next `futureos-headless`
@@ -197,15 +198,19 @@ cargo test --no-default-features --features headless \
   --manifest-path desktop/src-tauri/Cargo.toml --test headless_cli
 ```
 
-On native Linux with Docker running, you can also manually check the ELF
-libraries and startup in a clean Ubuntu 24.04 container (no GUI stack):
+On native Linux with Docker running, check an official static musl artifact's
+ELF linkage and startup in a networkless Rocky Linux 8 container (old glibc,
+no GUI stack). Run from the repository root and pass the extracted binary:
 
 ```bash
-bash scripts/ci/check-headless-linux.sh desktop/src-tauri/target/release/futureos-headless
+bash scripts/ci/check-headless-linux.sh /path/to/futureos-headless
 ```
 
-Use a build compatible with Ubuntu 24.04 for this check. It is a manual verifier,
-not a step in the current CI or release workflows.
+The verifier requires a static musl build; a default host/glibc build is rejected.
+Linux release CI runs it before packaging and on headless binaries extracted
+from actual deb/portable archives.
+
+See [Desktop Agent lifecycle and recovery](desktop-agent.md) for service modes, logs and upgrade failures.
 
 ## 6. Data, permissions and troubleshooting
 
@@ -219,7 +224,7 @@ hosting, use the same user and directories as the initial interactive setup.
 |---|---|
 | `libwebkit2gtk-4.1.so.0` missing | This is the GUI binary; build and run `futureos-headless` instead |
 | `--headless` option removed or unknown | Use `futureos-headless` without that flag; `--no-qr` and `--re-pair` belong to the standalone entrypoint |
-| Agent not found | Place a matching `future` CLI or start the Agent independently; an unreachable explicitly configured Agent endpoint is not automatically taken over |
+| Agent unavailable/incompatible or instance lock occupied | Read the reported owner/version, check the same user/data root, and upgrade or exit the external owner; never delete the lock or bypass it. Explicit endpoints and external mode are attach-only |
 | Built-in skills were not installed | Check the `[skills]` lines on stderr: `future init` needs the CLI beside `futureos-headless` or on PATH, and a network route to the skill catalogue. The phone can still install skills itself |
 | Interactive terminal required | Complete initial login/pairing in a real terminal, without pipes, redirection or non-interactive service startup |
 | Platform authorization denied or expired | Restart and sign in as instructed; the login code is not the app pairing code |

@@ -25,7 +25,7 @@ Tauri 默认的 NSIS 运行中应用检查只覆盖主程序。捆绑的 `future
 **之前**、以及新卸载器执行沙箱权限清理之前做文件访问检查。
 
 - 检查 `$INSTDIR` 中的当前桌面端（`futureos.exe`）、旧桌面端（`future-desktop.exe`）、
-  CLI/agent（`future.exe`）以及已退役的独立 Agent（`future-agent.exe`）。
+  无头宿主（`futureos-headless.exe`）、CLI/agent（`future.exe`）以及已退役的独立 Agent（`future-agent.exe`）。持锁元数据同时核对 PID、创建时间、完整路径和数据根。
 - 说明关窗不等于停止 agent。提供"是"（关闭本安装并继续）、"否"（手动退出后重查）或
   "取消"。取消是默认项，退出且不替换可执行文件。
 - 关闭进程需要交互式同意，并给出任务/会话中断警告。可执行文件完整路径匹配不区分
@@ -37,8 +37,8 @@ Tauri 默认的 NSIS 运行中应用检查只覆盖主程序。捆绑的 `future
 - 通用静默（`/S`）与被动（`/P`）安装从不关闭程序，也不显示阻塞对话框：文件被占用
   退出 **32**，写入/检查失败退出 **5**。`scripts/release/install.ps1` 把这些码转成恢复指引，
   而不是继续初始化。
-- 显式的应用内更新（`/UPDATE`）会自动关闭精确路径匹配的可执行文件。这样新安装器能
-  修复那些启动 NSIS 前没有先停掉自己 Agent 的旧版本；无关安装永不受影响。
+- 旧应用内更新（`/UPDATE`）会关闭本安装目录中精确路径匹配的可执行文件，以兼容旧版本未停止 sidecar 的情况。新宿主传入 `/FUTUREOS_CLEAN`，仅检查、不关闭进程；其他目录中持锁的外部宿主也阻止自动升级。只有交互安装明确选择“是”，才授权停止同一数据根且身份已核实的外部宿主。
+- 在 Agent 锁租约内，先用安装包携带的本次构建维护 CLI 完整清理 Windows 沙箱权限，再备份和替换文件。清理错误或超时直接中止安装；旧 CLI 缺失/不支持维护命令不会妨碍使用新维护代码。
 - 预检通过后，在 Tauri 复制新桌面端之前删除当前与退役的 sidecar 名称。替换前，把
   当前与遗留可执行文件保留在 NSIS 临时存储中。复制/解压失败时恢复原样这一组；首次
   安装失败则移除不完整的可执行文件。
@@ -46,13 +46,7 @@ Tauri 默认的 NSIS 运行中应用检查只覆盖主程序。捆绑的 `future
   在 GUI/Agent 初始化前就返回，同时真实走了一遍 Windows 加载器。DLL 缺失、文件损坏、
   架构不符、非零退出或超时都会中止安装并恢复之前的可执行文件。
 
-应用内 Windows 更新器先下载并校验完整 NSIS 包，再停止由 Desktop 持有的 Agent。随后
-启动安装器——因为 Tauri 在 Windows 上会直接退出桌面进程，不会走常规的
-`RunEvent::Exit` 清理路径。保持该顺序与安装器"复制前先失败"的预检一致：下载不得
-打断工作，而安装绝不能在捆绑 sidecar 仍在运行时开始。更新器的 `on_before_exit`
-钩子只在下载、签名校验与解包成功后、NSIS 启动前一刻运行。更新检查有 30 秒期限，
-安装请求有 15 分钟期限。Windows 便携版构建不跑 NSIS 原地更新器，因为它们没有注册
-的安装目标。
+应用内更新先下载验签，再确认中断范围，执行可失败的完整 Desktop/Agent 清理。清理失败不启动安装器。独立观察进程等待原 Desktop 句柄退出后，以 `/P /R /UPDATE /FUTUREOS_CLEAN` 启动 NSIS，检查启动错误与退出码。安装失败只有在全部原可执行文件哈希恢复、无回滚失败标记时才重新启动旧程序；否则保留修复诊断。恢复日志在 `FUTURE_HOME/app/logs/update-recovery.log`。更新检查期限 30 秒、下载请求期限 15 分钟、观察进程就绪期限 10 秒、等待 Desktop 退出期限 60 秒；安装提取过程不因超时被强杀。Windows 便携版仍不执行 NSIS 原地更新。
 
 helper 被嵌入 NSIS 的临时插件目录，不随应用安装。即使从 32 位 NSIS 调用也要用原生
 Windows PowerShell，以便检查 64 位进程路径。若 PowerShell 无法运行，fail-closed 并
@@ -65,6 +59,8 @@ Windows PowerShell，以便检查 64 位进程路径。若 PowerShell 无法运�
 Capability 元数据留在 `$INSTDIR` 之外，供后续安装/修复重试。
 
 ## 离线回归
+
+阶段六离线 hooks 和升级观察器已在 2026-10-15 的原生 Windows CI、daily 未签名打包中通过，执行证据见[开发计划第 10.10 与 10.13 节](../architecture/embedded-agent-development.zh-CN.md)。回归使用临时模拟安装器，并验证真实产品包内容，不安装真实 FutureOS；干净 VM 的真实升级和回滚仍需单独验收。
 
 在装有 NSIS 的 Windows 上（也会检测 Tauri NSIS 缓存）：
 

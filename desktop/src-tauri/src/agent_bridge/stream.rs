@@ -372,6 +372,7 @@ pub(super) async fn collect_agent_response(
                     clean,
                     termination_kind,
                 } => {
+                    crate::desktop_shutdown::release_run(session_id, canonical_run_id);
                     break 'attach (clean, termination_kind);
                 }
             }
@@ -385,6 +386,7 @@ pub(super) async fn collect_agent_response(
         sleep(reconnect_delay(reconnect_attempt)).await;
     };
 
+    crate::desktop_shutdown::release_run(session_id, canonical_run_id);
     Ok(AgentResponse {
         content,
         complete: clean_end,

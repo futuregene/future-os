@@ -1,1210 +1,209 @@
-//! Bundled-agent supervisor.
-//!
-//! In a packaged build the Future Agent ships as a Tauri sidecar (see
-//! `bundle.externalBin` in tauri.conf.json). We start it on launch so the app
-//! works out of the box, and stop it on exit. If an agent is already reachable
-//! — dev runs it separately, or `future` manages it as a service — we
-//! attach to that one instead of spawning a duplicate that would just fail to
-//! bind the port.
-
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
-
+//! GUI adapter over the shared in-process Agent host. External Agents retain
+//! their ownership; successful full cleanup is required before relaunch.
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
-use tauri_plugin_shell::process::{CommandChild, CommandEvent};
-use tauri_plugin_shell::ShellExt;
 
-struct OwnedAgentChild {
-    generation: u64,
-    child: CommandChild,
-}
+static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
+static QUIT_DIALOG_OPEN: AtomicBool = AtomicBool::new(false);
 
-/// The sidecar child, kept so we can kill it on app exit. `None` when we
-/// attached to an externally-managed agent (or failed to spawn).
-static AGENT_CHILD: Mutex<Option<OwnedAgentChild>> = Mutex::new(None);
-static AGENT_SPAWN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
-static AGENT_SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
-static NEXT_AGENT_GENERATION: AtomicU64 = AtomicU64::new(1);
-
-#[derive(Default)]
-struct AgentRecovery {
-    attempted: bool,
-    stage: RecoveryStage,
-    ready_since: Option<Instant>,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum RecoveryStage {
-    #[default]
-    Idle,
-    Grace,
-    Restarting,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum RecoveryDecision {
-    None,
-    InProgress,
-    Schedule,
-}
-
-impl AgentRecovery {
-    fn observe(&mut self, phase: &str, owns_agent: bool, now: Instant) -> RecoveryDecision {
-        if phase == "ready" {
-            if self.stage == RecoveryStage::Grace {
-                // The Agent recovered during the one-second grace period. Do
-                // not tear down a process that is answering business RPCs.
-                self.stage = RecoveryStage::Idle;
-                self.attempted = false;
-                self.ready_since = Some(now);
-                return RecoveryDecision::None;
-            }
-            if self.stage == RecoveryStage::Restarting {
-                self.stage = RecoveryStage::Idle;
-                self.ready_since = Some(now);
-                return RecoveryDecision::None;
-            }
-            let stable = now.duration_since(*self.ready_since.get_or_insert(now))
-                >= AGENT_RECOVERY_STABLE_READY;
-            if stable {
-                self.attempted = false;
-            }
-            return RecoveryDecision::None;
-        }
-
-        self.ready_since = None;
-        match self.stage {
-            RecoveryStage::Grace => return RecoveryDecision::InProgress,
-            RecoveryStage::Restarting
-                if matches!(phase, "checking" | "starting" | "recovering") =>
-            {
-                return RecoveryDecision::InProgress;
-            }
-            RecoveryStage::Restarting => {
-                // The one allowed replacement reached a terminal failure.
-                self.stage = RecoveryStage::Idle;
-                return RecoveryDecision::None;
-            }
-            RecoveryStage::Idle => {}
-        }
-        if self.attempted || !recovery_is_safe(phase, owns_agent) {
-            return RecoveryDecision::None;
-        }
-
-        self.attempted = true;
-        self.stage = RecoveryStage::Grace;
-        RecoveryDecision::Schedule
-    }
-}
-
-static AGENT_RECOVERY: Mutex<AgentRecovery> = Mutex::new(AgentRecovery {
-    attempted: false,
-    stage: RecoveryStage::Idle,
-    ready_since: None,
-});
-
-const AGENT_RECOVERY_DELAY: Duration = Duration::from_secs(1);
-const AGENT_RECOVERY_STABLE_READY: Duration = Duration::from_secs(30);
-
-#[derive(Clone, Debug)]
-enum AgentLifecycle {
-    NotStarted,
-    Spawning { since: Instant },
-    Running { since: Instant },
-    Attached,
-    SpawnFailed,
-    Exited,
-}
-
-static AGENT_LIFECYCLE: Mutex<AgentLifecycle> = Mutex::new(AgentLifecycle::NotStarted);
-
-/// The process may legitimately spend several seconds opening its database and
-/// importing records before binding the local endpoint. Past this boundary an
-/// alive child is no longer described as indefinitely "starting".
-const AGENT_STARTUP_GRACE: Duration = Duration::from_secs(15);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentStatus {
-    /// checking | starting | recovering | ready | spawn_failed | exited |
-    /// startup_timeout | unavailable | incompatible
     pub phase: String,
     pub desktop_version: String,
     pub agent_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
-/// Set once the user has confirmed a force-quit, so the follow-up programmatic
-/// `app.exit()` closes the window without the `CloseRequested` guard re-prompting.
-static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
-
-/// True while the force-quit confirmation dialog is on screen. Repeated close
-/// attempts (clicking the traffic-light again, ⌘Q) are then swallowed instead of
-/// stacking a second dialog. Reset if the user cancels, so a later close re-prompts.
-static QUIT_DIALOG_OPEN: AtomicBool = AtomicBool::new(false);
-
-// A failed probe can consume its 300 ms connect timeout. Together with the
-// 200 ms gaps, 16 attempts bound the login gate to about eight seconds.
-const LOGIN_AGENT_READY_ATTEMPTS: usize = 16;
-const LOGIN_AGENT_READY_INTERVAL: Duration = Duration::from_millis(200);
-
-/// True if the configured TCP override or the per-user local endpoint accepts
-/// an HTTP/2 connection. Run the async connector on a short-lived helper
-/// thread so this synchronous launch hook never nests a Tokio runtime.
-fn agent_reachable(configured: &str) -> bool {
-    let configured = configured.to_string();
-    std::thread::spawn(move || {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .ok()
-            .and_then(|runtime| {
-                runtime
-                    .block_on(future_rpc::transport::connect_channel(
-                        Some(&configured),
-                        Duration::from_millis(300),
-                        Some(Duration::from_millis(300)),
-                    ))
-                    .ok()
-            })
-            .is_some()
-    })
-    .join()
-    .unwrap_or(false)
-}
-
-/// Start the bundled agent sidecar unless one is already reachable. Safe to call
-/// off the launch path (does a blocking TCP probe). No-op in dev when the
-/// sidecar binary isn't present — the error is logged and the user is expected
-/// to run the agent manually.
-///
-/// The agent runs through the unified `future` CLI sidecar (`future agent`),
-/// which embeds the same code as the retired standalone future-agent binary —
-/// so only `future` is bundled (tauri.conf.json externalBin).
-pub fn ensure_agent_running<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
-    ensure_agent_running_with(app, agent_reachable);
-}
-
-/// Begin supervision for this Desktop process. A restarted application gets a
-/// fresh process, while this flag prevents a delayed recovery from racing exit.
-pub fn start_agent_supervision<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
-    AGENT_SHUTTING_DOWN.store(false, Ordering::SeqCst);
-    ensure_agent_running(app);
-}
-
-/// Ensure the Agent is reachable before device authorization begins. The token
-/// exchange can return a one-time credential, so discovering a dead Agent only
-/// after that exchange risks losing the credential before it is durably saved.
-pub async fn ensure_agent_ready_for_login<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> bool {
-    let reachable = tokio::task::spawn_blocking(move || {
-        ensure_agent_running(&app);
-        wait_for_agent_ready_with(
-            LOGIN_AGENT_READY_ATTEMPTS,
-            || agent_reachable(&crate::agent_bridge::raw_agent_addr()),
-            || std::thread::sleep(LOGIN_AGENT_READY_INTERVAL),
-        )
-    })
-    .await
-    .unwrap_or(false);
-    reachable && agent_status().await.phase == "ready"
-}
-
-fn wait_for_agent_ready_with(
-    attempts: usize,
-    mut reachable: impl FnMut() -> bool,
-    mut wait: impl FnMut(),
-) -> bool {
-    for attempt in 0..attempts {
-        if reachable() {
-            return true;
-        }
-        if attempt + 1 < attempts {
-            wait();
-        }
-    }
-    false
-}
-
-/// [`ensure_agent_running`] with an injectable reachability probe, so the
-/// "already reachable" early-return is testable without a live agent.
-fn ensure_agent_running_with<R: tauri::Runtime>(
+pub fn start_agent_supervision<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    reachable: impl Fn(&str) -> bool,
-) {
-    let configured = crate::agent_bridge::raw_agent_addr();
-    if reachable(&configured) {
-        if AGENT_CHILD.lock().unwrap().is_none() {
-            *AGENT_LIFECYCLE.lock().unwrap() = AgentLifecycle::Attached;
-        }
-        eprintln!("FutureOS: agent already reachable via {configured}; not spawning bundled agent");
-        return;
-    }
-
-    // Startup and the login gate may race while the sidecar is still binding
-    // its endpoint. Keep one owned child and one spawn attempt at a time.
-    if AGENT_CHILD.lock().unwrap().is_some() || AGENT_SPAWN_IN_PROGRESS.swap(true, Ordering::SeqCst)
+) -> Result<(), crate::AppError> {
+    ensure_agent_running(app)
+}
+pub fn ensure_agent_running<R: tauri::Runtime>(
+    _app: &tauri::AppHandle<R>,
+) -> Result<(), crate::AppError> {
+    #[cfg(not(test))]
     {
-        return;
+        crate::agent_host::host().start(crate::agent_bridge::raw_agent_addr())
     }
-
-    *AGENT_LIFECYCLE.lock().unwrap() = AgentLifecycle::Spawning {
-        since: Instant::now(),
+    #[cfg(test)]
+    {
+        Ok(())
+    } // Mock Tauri apps must never launch a real default-home Agent.
+}
+pub async fn ensure_agent_ready_for_login<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> bool {
+    if !matches!(
+        tokio::task::spawn_blocking(move || ensure_agent_running(&app)).await,
+        Ok(Ok(()))
+    ) {
+        return false;
+    }
+    crate::agent_bridge::get_agent_readiness().await.is_ok()
+}
+pub async fn agent_status() -> AgentStatus {
+    let mut status = AgentStatus {
+        phase: "unavailable".into(),
+        desktop_version: crate::build_info::VERSION.into(),
+        agent_version: None,
+        error: None,
     };
-    spawn_bundled_agent(app, &configured);
-    AGENT_SPAWN_IN_PROGRESS.store(false, Ordering::SeqCst);
-}
-
-/// Resolve the `future` sidecar and spawn it (or log why we can't). Extracted so
-/// the sidecar-unavailable / spawn-failure arms are testable with a mock app
-/// handle instead of the real `AppHandle` + bundled sidecar binary.
-fn spawn_bundled_agent<R: tauri::Runtime>(app: &tauri::AppHandle<R>, configured: &str) {
-    let command = match app.shell().sidecar("future") {
-        Ok(command) if configured.eq_ignore_ascii_case(future_rpc::transport::AUTO_ENDPOINT) => {
-            command.arg("agent")
-        }
-        Ok(command) => command.args([
-            "agent",
-            "--grpc-addr",
-            configured
-                .trim_start_matches("http://")
-                .trim_start_matches("https://"),
-        ]),
-        Err(error) => {
-            *AGENT_LIFECYCLE.lock().unwrap() = AgentLifecycle::SpawnFailed;
-            eprintln!(
-                "FutureOS: bundled CLI sidecar unavailable ({error}); run it manually in dev"
-            );
-            return;
-        }
-    };
-
-    match command.spawn() {
-        Ok((rx, child)) => {
-            let generation = NEXT_AGENT_GENERATION.fetch_add(1, Ordering::Relaxed);
-            *AGENT_CHILD.lock().unwrap() = Some(OwnedAgentChild { generation, child });
-            *AGENT_LIFECYCLE.lock().unwrap() = AgentLifecycle::Running {
-                since: Instant::now(),
-            };
-            eprintln!("FutureOS: started bundled agent via {configured}");
-            // Drain the event channel on a background thread so agent stdout/stderr
-            // surfaces in logs and the pipe never backs up.
-            std::thread::spawn(move || drain_agent_events(rx, generation));
-        }
-        Err(error) => {
-            *AGENT_LIFECYCLE.lock().unwrap() = AgentLifecycle::SpawnFailed;
-            eprintln!("FutureOS: failed to start bundled agent: {error}");
-        }
+    if crate::desktop_shutdown::is_stopping() {
+        status.error = Some("Desktop is stopping".into());
+        return status;
     }
-}
-
-/// Drain a sidecar event channel to the logs. Extracted so the drain loop is
-/// testable without a real `AppHandle`/sidecar child.
-fn drain_agent_events(mut rx: tokio::sync::mpsc::Receiver<CommandEvent>, generation: u64) {
-    while let Some(event) = rx.blocking_recv() {
-        handle_agent_event(event, generation);
-    }
-}
-
-/// Route a single sidecar event to the logs. Extracted so the match arms are
-/// testable without a real `AppHandle`/sidecar child.
-fn handle_agent_event(event: CommandEvent, generation: u64) {
-    match event {
-        CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => {
-            eprint!("[agent] {}", String::from_utf8_lossy(&bytes));
+    match crate::agent_host::host().phase() {
+        crate::agent_host::Phase::Starting => {
+            status.phase = "starting".into();
+            return status;
         }
-        CommandEvent::Error(error) => {
-            eprintln!("FutureOS: bundled agent error: {error}");
+        crate::agent_host::Phase::Failed(error) => {
+            status.error = Some(error);
         }
-        CommandEvent::Terminated(payload) => {
-            let mut child = AGENT_CHILD.lock().unwrap();
-            let current =
-                is_current_generation(child.as_ref().map(|owned| owned.generation), generation);
-            if current {
-                child.take();
-                drop(child);
-                *AGENT_LIFECYCLE.lock().unwrap() = AgentLifecycle::Exited;
-                eprintln!("FutureOS: bundled agent exited: {payload:?}");
-            } else {
-                eprintln!(
-                    "FutureOS: ignored termination from superseded agent generation {generation}: {payload:?}"
-                );
-            }
-        }
-        // `CommandEvent` is `#[non_exhaustive]` — the wildcard arm is required
-        // for compilation and covers any future variants (currently none).
         _ => {}
     }
-}
-
-fn is_current_generation(active_generation: Option<u64>, event_generation: u64) -> bool {
-    active_generation == Some(event_generation)
-}
-
-/// Return the Agent lifecycle without consulting account or provider state.
-/// Readiness requires a successful business-RPC round trip. Only after that
-/// succeeds do we compare the two numeric release versions. Local build
-/// identity after the first `-` (commit hash / dirty marker) is deliberately
-/// ignored because Agent and Desktop use independent Cargo target caches.
-pub async fn agent_status() -> AgentStatus {
-    let desktop_version = crate::build_info::VERSION.to_string();
     match crate::agent_bridge::get_agent_readiness().await {
-        Ok(Some(info)) => status_from_version(info.version, desktop_version),
-        Ok(None) => AgentStatus {
-            phase: "incompatible".to_string(),
-            desktop_version,
-            agent_version: None,
-        },
-        Err(_) => status_from_lifecycle(AGENT_LIFECYCLE.lock().unwrap().clone(), desktop_version),
-    }
-}
-
-/// Return status and schedule one bounded restart when a Desktop-owned Agent
-/// cannot recover on its own. External Agents are deliberately observation-only.
-pub async fn agent_status_with_recovery<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-) -> AgentStatus {
-    let mut status = agent_status().await;
-    if schedule_agent_recovery(app, &status.phase) {
-        status.phase = "recovering".to_string();
+        Ok(Some(info)) if status.error.is_none() => {
+            status.phase = "ready".into();
+            status.agent_version = Some(info.version);
+            status.error = None;
+        }
+        Err(crate::AppError::AgentIncompatible {
+            agent_version,
+            reason,
+        }) => {
+            status.phase = "incompatible".into();
+            status.agent_version = agent_version;
+            status.error = Some(reason);
+        }
+        Err(error) if status.error.is_none() => status.error = Some(error.to_string()),
+        _ => {}
     }
     status
 }
 
-fn recovery_is_safe(phase: &str, owns_agent: bool) -> bool {
-    match phase {
-        "exited" | "spawn_failed" => true,
-        "startup_timeout" | "incompatible" => owns_agent,
-        _ => false,
-    }
+/// The invoke signature remains stable. Recovery requires a completed native
+/// stop; a status poll never replaces a failed or externally owned service.
+pub async fn agent_status_with_recovery<R: tauri::Runtime>(
+    _app: tauri::AppHandle<R>,
+) -> AgentStatus {
+    agent_status().await
 }
 
-fn schedule_agent_recovery<R: tauri::Runtime>(app: tauri::AppHandle<R>, phase: &str) -> bool {
-    if AGENT_SHUTTING_DOWN.load(Ordering::SeqCst) {
-        return false;
-    }
-    let owns_agent = AGENT_CHILD.lock().unwrap().is_some();
-    let mut recovery = AGENT_RECOVERY.lock().unwrap();
-    match recovery.observe(phase, owns_agent, Instant::now()) {
-        RecoveryDecision::None => return false,
-        RecoveryDecision::InProgress => return true,
-        RecoveryDecision::Schedule => {}
-    }
-    eprintln!("FutureOS: scheduling bundled Agent recovery after {phase}");
-    let recovery_phase = phase.to_string();
-    std::thread::spawn(move || {
-        std::thread::sleep(AGENT_RECOVERY_DELAY);
-        let still_scheduled = AGENT_RECOVERY.lock().unwrap().stage == RecoveryStage::Grace;
-        let recovered = still_scheduled && agent_is_ready_now();
-        if recovered {
-            let mut recovery = AGENT_RECOVERY.lock().unwrap();
-            recovery.attempted = false;
-            recovery.stage = RecoveryStage::Idle;
-            recovery.ready_since = Some(Instant::now());
-            return;
-        }
-        if still_scheduled && !AGENT_SHUTTING_DOWN.load(Ordering::SeqCst) {
-            AGENT_RECOVERY.lock().unwrap().stage = RecoveryStage::Restarting;
-            recover_agent_once(&app, &recovery_phase);
-        } else if still_scheduled {
-            AGENT_RECOVERY.lock().unwrap().stage = RecoveryStage::Idle;
-        }
-    });
-    true
+pub fn shutdown_agent_gracefully() -> Result<(), crate::AppError> {
+    crate::desktop_shutdown::stop("app_exit")
 }
 
-fn agent_is_ready_now() -> bool {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .ok()
-        .is_some_and(|runtime| runtime.block_on(agent_status()).phase == "ready")
-}
-
-fn recover_agent_once<R: tauri::Runtime>(app: &tauri::AppHandle<R>, phase: &str) {
-    let owned = AGENT_CHILD.lock().unwrap().take();
-    if matches!(phase, "startup_timeout" | "incompatible") {
-        let Some(owned) = owned else {
-            eprintln!(
-                "FutureOS: skipped automatic Agent recovery because it is externally managed"
-            );
-            return;
-        };
-        eprintln!(
-            "FutureOS: restarting bundled agent generation {} after {phase}",
-            owned.generation
-        );
-        kill_bundled_agent(owned.child);
-    } else if let Some(owned) = owned {
-        // A terminal event normally clears the handle. If it raced with this
-        // recovery task, make sure the old process cannot overlap the retry.
-        kill_bundled_agent(owned.child);
-    }
-
-    *AGENT_LIFECYCLE.lock().unwrap() = AgentLifecycle::NotStarted;
-    ensure_agent_running(app);
-}
-
-fn status_from_version(agent_version: String, desktop_version: String) -> AgentStatus {
-    AgentStatus {
-        phase: if numeric_version(&agent_version) == numeric_version(&desktop_version) {
-            "ready"
-        } else {
-            "incompatible"
-        }
-        .to_string(),
-        desktop_version,
-        agent_version: Some(agent_version),
-    }
-}
-
-fn numeric_version(version: &str) -> &str {
-    version
-        .split_once('-')
-        .map_or(version, |(numeric, _)| numeric)
-}
-
-fn status_from_lifecycle(lifecycle: AgentLifecycle, desktop_version: String) -> AgentStatus {
-    let phase = match lifecycle {
-        AgentLifecycle::NotStarted => "checking",
-        AgentLifecycle::Spawning { since } | AgentLifecycle::Running { since }
-            if since.elapsed() < AGENT_STARTUP_GRACE =>
-        {
-            "starting"
-        }
-        AgentLifecycle::Spawning { .. } | AgentLifecycle::Running { .. } => "startup_timeout",
-        AgentLifecycle::Attached => "unavailable",
-        AgentLifecycle::SpawnFailed => "spawn_failed",
-        AgentLifecycle::Exited => "exited",
-    };
-    AgentStatus {
-        phase: phase.to_string(),
-        desktop_version,
-        agent_version: None,
-    }
-}
-
-#[cfg(test)]
-fn shutdown_agent() {
-    shutdown_owned_agent_with(
-        AGENT_CHILD.lock().unwrap().take().map(|owned| owned.child),
-        || {},
-        kill_bundled_agent,
-    );
-}
-
-/// Revoke persistent Windows sandbox permissions while our bundled Agent is
-/// still alive, then terminate it. Idempotent; externally managed agents are
-/// intentionally untouched because their owner controls both process and
-/// capability lifetime.
-///
-/// Cleanup is best-effort and bounded so application exit cannot hang. A
-/// failure retains capability metadata for startup GC, Settings reset, and the
-/// uninstall fallback to retry later.
-///
-/// This must be called both from `RunEvent::Exit` and explicitly before every
-/// `app.restart()`: Tauri skips the Exit event for main-thread restart. After
-/// the child dies its listening socket closes immediately, so the relaunched
-/// GUI sees a free port and starts a fresh Agent.
-pub fn shutdown_agent_gracefully() {
-    AGENT_SHUTTING_DOWN.store(true, Ordering::SeqCst);
-    let child = AGENT_CHILD.lock().unwrap().take().map(|owned| owned.child);
-    shutdown_owned_agent_with(
-        child,
-        cleanup_windows_sandbox_permissions,
-        kill_bundled_agent,
-    );
-}
-
-fn shutdown_owned_agent_with<T>(child: Option<T>, cleanup: impl FnOnce(), kill: impl FnOnce(T)) {
-    if let Some(child) = child {
-        cleanup();
-        kill(child);
-    }
-}
-
-#[cfg(any(target_os = "windows", test))]
 #[derive(Debug, PartialEq, Eq)]
-enum AgentCleanupOutcome {
-    Cleaned(usize),
-    Failed(String),
-    TimedOut,
-}
-
-#[cfg(any(target_os = "windows", test))]
-async fn bounded_agent_cleanup<F, E>(cleanup: F, timeout: Duration) -> AgentCleanupOutcome
-where
-    F: std::future::Future<Output = Result<usize, E>>,
-    E: std::fmt::Display,
-{
-    match tokio::time::timeout(timeout, cleanup).await {
-        Ok(Ok(removed)) => AgentCleanupOutcome::Cleaned(removed),
-        Ok(Err(error)) => AgentCleanupOutcome::Failed(error.to_string()),
-        Err(_) => AgentCleanupOutcome::TimedOut,
-    }
-}
-
-fn cleanup_windows_sandbox_permissions() {
-    #[cfg(target_os = "windows")]
-    tauri::async_runtime::block_on(async {
-        match bounded_agent_cleanup(
-            crate::agent_bridge::reset_windows_sandbox(),
-            Duration::from_secs(5),
-        )
-        .await
-        {
-            AgentCleanupOutcome::Cleaned(removed) => {
-                eprintln!("FutureOS: cleaned {removed} Windows sandbox permission(s) on shutdown")
-            }
-            AgentCleanupOutcome::Failed(error) => {
-                eprintln!("FutureOS: failed to clean Windows sandbox permissions: {error}")
-            }
-            AgentCleanupOutcome::TimedOut => {
-                eprintln!("FutureOS: timed out cleaning Windows sandbox permissions")
-            }
-        }
-    });
-}
-
-fn kill_bundled_agent(child: CommandChild) {
-    if let Err(error) = child.kill() {
-        eprintln!("FutureOS: failed to kill bundled agent on shutdown: {error}");
-    }
-}
-
-/// What the window-close handler should do about a pending close, decided by the
-/// quit guard.
 pub enum QuitDecision {
-    /// Nothing is generating (or the user already confirmed the quit) — let the
-    /// window close normally. `RunEvent::Exit` then kills the sidecar as usual.
     Proceed,
-    /// A conversation is still running. The caller must `prevent_close()`; when
-    /// `open_dialog` is set it must also call [`confirm_quit`] to raise the
-    /// confirmation. `open_dialog` is false when a dialog is already up, so the
-    /// repeat close is simply swallowed.
     Confirm { open_dialog: bool },
 }
-
-/// Decide how to handle a window close request. Cheap enough to call on the
-/// event-loop thread: a single indexed `COUNT`-style query, only when a close is
-/// actually requested.
-pub fn on_close_requested() -> QuitDecision {
-    // Already committed to quitting — the abort/kill ran and we called `exit`.
-    if QUIT_CONFIRMED.load(Ordering::SeqCst) {
-        return QuitDecision::Proceed;
+fn active_work_count() -> Result<usize, crate::AppError> {
+    if matches!(
+        crate::agent_host::host().phase(),
+        crate::agent_host::Phase::Stopped
+    ) {
+        return Ok(0);
     }
-    // A confirmation is already on screen; don't stack another.
-    if QUIT_DIALOG_OPEN.load(Ordering::SeqCst) {
-        return QuitDecision::Confirm { open_dialog: false };
+    if matches!(
+        crate::agent_host::host().phase(),
+        crate::agent_host::Phase::Starting
+    ) {
+        return Err("Agent is still starting".into());
     }
-    // A failed query must not silently let a running conversation be killed —
-    // treat "unknown" as "nothing running" only because the alternative (blocking
-    // every quit on a DB hiccup) is worse; the abort path is best-effort anyway.
-    let running = crate::store::active_run_sessions()
-        .map(|sessions| !sessions.is_empty())
-        .unwrap_or(false);
-    if running {
-        QuitDecision::Confirm { open_dialog: true }
-    } else {
-        QuitDecision::Proceed
+    match crate::agent_host::host().activity()? {
+        Some(activity) => Ok(activity.running
+            + activity.queued
+            + activity.approvals
+            + activity.compactions
+            + activity.commands
+            + activity.background),
+        None => Ok(crate::desktop_shutdown::owned_count()),
     }
 }
-
-/// Raise the native "a conversation is still running" confirmation. It renders
-/// from the Rust process, not the webview, so it still works when the webview is
-/// hung — the whole point of guarding quit natively rather than in React.
-///
-/// MUST be called on the main/event-loop thread (it is: both callers —
-/// `on_window_event` and `RunEvent::ExitRequested` — run there). That lets us
-/// read the main window handle to parent the dialog, which macOS forbids off the
-/// UI thread, and lets `show` (non-blocking, callback-based) present without
-/// blocking the event loop.
-///
-/// On confirm: abort every still-running session (whether the agent is our
-/// bundled sidecar or an externally-managed one), then kill the sidecar if we own
-/// it, then exit. On cancel: clear the in-progress flag so a later close prompts
-/// again.
+pub fn on_close_requested() -> QuitDecision {
+    quit_decision(
+        QUIT_CONFIRMED.load(Ordering::Acquire),
+        QUIT_DIALOG_OPEN.load(Ordering::Acquire),
+        active_work_count(),
+    )
+}
+fn quit_decision(
+    confirmed: bool,
+    dialog_open: bool,
+    activity: Result<usize, crate::AppError>,
+) -> QuitDecision {
+    if confirmed {
+        return QuitDecision::Proceed;
+    }
+    if dialog_open {
+        return QuitDecision::Confirm { open_dialog: false };
+    }
+    match activity {
+        Ok(0) => QuitDecision::Proceed,
+        _ => QuitDecision::Confirm { open_dialog: true },
+    }
+}
 pub fn confirm_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
-    QUIT_DIALOG_OPEN.store(true, Ordering::SeqCst);
-    // Read at prompt time so the count/list reflects the moment the user is
-    // asked, not when the close was first requested.
-    let sessions = crate::store::active_run_sessions().unwrap_or_default();
-
+    QUIT_DIALOG_OPEN.store(true, Ordering::Release);
+    let message = if crate::agent_host::host().owns_agent() {
+        "Agent work is still active or cannot be checked. Quitting stops all connected clients' work, including CLI conversations. Quit anyway?"
+    } else {
+        "Desktop still has submitted work. Quitting cancels only this Desktop's submitted runs; the external Agent and other clients keep running. Quit anyway?"
+    };
     let mut dialog = app
         .dialog()
-        .message(quit_prompt_message(sessions.len()))
+        .message(message)
         .title("Quit FutureOS?")
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::OkCancelCustom(
-            "Force quit".to_string(),
-            "Keep running".to_string(),
+            "Force quit".into(),
+            "Keep running".into(),
         ));
-    // Parent to the main window so the confirmation is app-modal (on
-    // Windows/Linux a parentless dialog can surface behind or unfocused). Safe on
-    // macOS because we're on the main thread here.
     if let Some(window) = app.get_webview_window("main") {
         dialog = dialog.parent(&window);
     }
-
-    let callback_app = app.clone();
-    // `show` is non-blocking: it presents on the main thread and invokes the
-    // callback (on a background thread) once the user answers.
     dialog.show(move |confirmed| {
-        handle_quit_dialog_response(confirmed, &callback_app, &sessions, || callback_app.exit(0));
+        QUIT_DIALOG_OPEN.store(false, Ordering::Release);
+        if confirmed {
+            QUIT_CONFIRMED.store(true, Ordering::Release);
+            if let Err(error) = shutdown_agent_gracefully() {
+                eprintln!("FutureOS forced exit after cleanup failure: {error}");
+            }
+            app.exit(0);
+        }
     });
-}
-
-/// Body of the force-quit dialog response: on cancel clear the in-progress flag;
-/// on confirm commit to quitting and run the abort/kill/exit flow. Extracted so
-/// the response handling is testable without a native dialog (whose callback
-/// only fires on user interaction).
-fn handle_quit_dialog_response<R: tauri::Runtime>(
-    confirmed: bool,
-    app: &tauri::AppHandle<R>,
-    sessions: &[String],
-    exit: impl FnOnce(),
-) {
-    if !confirmed {
-        QUIT_DIALOG_OPEN.store(false, Ordering::SeqCst);
-        return;
-    }
-    // Commit to quitting before any close can be re-requested.
-    QUIT_CONFIRMED.store(true, Ordering::SeqCst);
-    confirmed_quit_flow(app, sessions, exit);
-}
-
-/// Body of the force-quit confirmation: abort every running session, wait for
-/// idle, kill the bundled sidecar, then exit. Extracted so the flow is testable
-/// with a mock handle and an injectable exit (a real `exit(0)` ends the test
-/// process).
-fn confirmed_quit_flow<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    sessions: &[String],
-    exit: impl FnOnce(),
-) {
-    // Abort each running session best-effort — an unreachable agent or a
-    // session that finished in the meantime is a harmless no-op.
-    tauri::async_runtime::block_on(async {
-        // Abort all sessions in parallel, then wait for all to go idle.
-        // Sequential waits would make force-quit take 3s per session;
-        // concurrent gRPC calls over the shared channel complete together.
-        let abort_futs: Vec<_> = sessions
-            .iter()
-            .map(|session| async move {
-                if let Err(error) = crate::agent_bridge::abort_session(session).await {
-                    eprintln!("FutureOS: failed to abort session {session} on quit: {error}");
-                }
-            })
-            .collect();
-        futures::future::join_all(abort_futs).await;
-        // Give the agent a moment for its abort to settle before the process
-        // exits or kills the sidecar. Without this the agent's LLM stream is
-        // torn down while it's still processing the abort interrupt, leaving a
-        // "LLM stream ended without a terminal signal" WARN in the agent log.
-        // Best-effort: an unreachable agent returns immediately.
-        let wait_futs: Vec<_> = sessions
-            .iter()
-            .map(|session| crate::agent_bridge::wait_for_agent_idle(session))
-            .collect();
-        futures::future::join_all(wait_futs).await;
-    });
-    let _ = app;
-    // Clean permissions and kill the bundled sidecar if we own it (no-op for
-    // an external agent).
-    shutdown_agent_gracefully();
-    exit();
-}
-
-/// Body of the force-quit confirmation, singular/plural by running-conversation
-/// count. `count` is always ≥ 1 at the call site.
-fn quit_prompt_message(count: usize) -> String {
-    if count <= 1 {
-        "A conversation is still running. Quitting now will interrupt it. Quit anyway?".to_string()
-    } else {
-        format!(
-            "{count} conversations are still running. Quitting now will interrupt them. Quit anyway?"
-        )
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tauri_plugin_shell::process::TerminatedPayload;
-
     #[test]
-    fn raw_agent_addr_defaults_to_auto() {
-        let prev = std::env::var_os("FUTURE_AGENT_GRPC_ADDR");
-        std::env::remove_var("FUTURE_AGENT_GRPC_ADDR");
-        let addr = crate::agent_bridge::raw_agent_addr();
-        assert_eq!(addr, future_rpc::transport::AUTO_ENDPOINT);
-        match prev {
-            Some(value) => std::env::set_var("FUTURE_AGENT_GRPC_ADDR", value),
-            None => std::env::remove_var("FUTURE_AGENT_GRPC_ADDR"),
-        }
-    }
-
-    #[test]
-    fn agent_reachable_reports_dead_tcp_port() {
-        // A bound-then-closed TCP port is unreachable: bind port 0 to learn a
-        // free port, drop it, then confirm the probe reports failure.
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        assert!(!agent_reachable(&format!("127.0.0.1:{port}")));
-    }
-
-    #[test]
-    fn agent_reachable_rejects_unparseable_addr() {
-        // A malformed TCP URI must fail discovery instead of panicking; the
-        // probe then falls through to local IPC (which succeeds on this dev
-        // machine only if a real agent is running, so it is not asserted).
-        let plan = future_rpc::transport::connection_plan(Some("http://[::1"));
-        assert!(plan
-            .iter()
-            .any(|endpoint| matches!(endpoint, future_rpc::transport::AgentEndpoint::Tcp(_))));
-    }
-
-    #[test]
-    fn quit_prompt_message_singular_and_plural() {
-        assert!(quit_prompt_message(1).contains("A conversation is still running"));
-        assert!(quit_prompt_message(3).contains("3 conversations are still running"));
-    }
-
-    #[test]
-    fn handle_agent_event_routes_all_variants() {
-        handle_agent_event(CommandEvent::Stdout(b"hello\n".to_vec()), 0);
-        handle_agent_event(CommandEvent::Stderr(b"warn\n".to_vec()), 0);
-        handle_agent_event(CommandEvent::Error("boom".to_string()), 0);
-        handle_agent_event(
-            CommandEvent::Terminated(TerminatedPayload {
-                code: Some(0),
-                signal: None,
-            }),
-            0,
-        );
-    }
-
-    #[test]
-    fn drain_agent_events_consumes_channel() {
-        let (tx, rx) = tokio::sync::mpsc::channel(1);
-        tx.blocking_send(CommandEvent::Terminated(TerminatedPayload {
-            code: Some(0),
-            signal: None,
-        }))
-        .unwrap();
-        drop(tx);
-        drain_agent_events(rx, 0);
-    }
-
-    #[test]
-    fn shutdown_agent_noops_without_child() {
-        // `AGENT_CHILD` is `None` by default in tests (no real sidecar spawn),
-        // so this exercises the idempotent no-op path.
-        shutdown_agent();
-    }
-
-    #[test]
-    fn graceful_shutdown_cleans_before_killing_owned_agent_only() {
-        let steps = std::cell::RefCell::new(Vec::new());
-        shutdown_owned_agent_with(
-            Some(()),
-            || steps.borrow_mut().push("cleanup"),
-            |_| steps.borrow_mut().push("kill"),
-        );
-        assert_eq!(*steps.borrow(), ["cleanup", "kill"]);
-
-        let touched = std::cell::Cell::new(false);
-        shutdown_owned_agent_with::<()>(None, || touched.set(true), |_| touched.set(true));
-        assert!(!touched.get());
-    }
-
-    #[test]
-    fn graceful_shutdown_cleanup_reports_success_failure_and_timeout() {
-        tauri::async_runtime::block_on(async {
-            assert_eq!(
-                bounded_agent_cleanup(async { Ok::<_, std::io::Error>(4) }, Duration::from_secs(1))
-                    .await,
-                AgentCleanupOutcome::Cleaned(4)
-            );
-            assert_eq!(
-                bounded_agent_cleanup(
-                    async { Err::<usize, _>(std::io::Error::other("reset failed")) },
-                    Duration::from_secs(1)
-                )
-                .await,
-                AgentCleanupOutcome::Failed("reset failed".to_string())
-            );
-            assert_eq!(
-                bounded_agent_cleanup(
-                    std::future::pending::<Result<usize, std::io::Error>>(),
-                    Duration::from_millis(1)
-                )
-                .await,
-                AgentCleanupOutcome::TimedOut
-            );
-        });
-    }
-
-    #[test]
-    fn confirmed_quit_flow_aborts_waits_and_exits() {
-        // Lock order MUST match the suite convention (mock_agent_lock BEFORE
-        // TEST_HOME_LOCK) — the approvals tests hold mock_agent_lock while
-        // acquiring their HomeGuard, so the reverse order deadlocks under
-        // instrumented timing.
-        let _lock = crate::commands::agent_mock::mock_agent_lock();
-        let _home = crate::auth_store::test_support::HomeGuard::new("agent-supervisor-quit-flow");
-        crate::store::initialize_app_store().unwrap();
-        crate::commands::agent_mock::ensure_mock_agent();
-        crate::commands::agent_mock::script_mock_agent(Default::default());
-        let app = tauri::test::mock_builder()
-            .plugin(tauri_plugin_shell::init())
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("build mock app");
-        let mut exited = false;
-        confirmed_quit_flow(app.handle(), &["sess-quit".to_string()], || exited = true);
-        assert!(exited);
-        crate::commands::agent_mock::script_mock_agent(Default::default());
-    }
-
-    #[test]
-    fn confirm_quit_builds_the_dialog_against_a_mock_handle() {
-        // Same lock-order convention as confirmed_quit_flow above.
-        let _lock = crate::commands::agent_mock::mock_agent_lock();
-        let _home = crate::auth_store::test_support::HomeGuard::new("agent-supervisor-quit-dialog");
-        crate::store::initialize_app_store().unwrap();
-        let app = tauri::test::mock_builder()
-            .plugin(tauri_plugin_shell::init())
-            .plugin(tauri_plugin_dialog::init())
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("build mock app");
-        confirm_quit(app.handle().clone());
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    #[test]
-    fn cleanup_windows_sandbox_permissions_is_a_noop_off_windows() {
-        // On non-Windows the function body is compiled out; calling it directly
-        // covers its (empty) fn declaration and closing brace.
-        cleanup_windows_sandbox_permissions();
-    }
-
-    #[test]
-    fn handle_quit_dialog_response_cancels_and_confirms() {
-        // Cancel path: only clears the in-progress flag, never exits.
-        QUIT_DIALOG_OPEN.store(true, Ordering::SeqCst);
-        let mut cancel_exited = false;
-        handle_quit_dialog_response(false, &mock_handle(), &[], || cancel_exited = true);
-        assert!(!cancel_exited, "cancel must not exit");
-        assert!(!QUIT_DIALOG_OPEN.load(Ordering::SeqCst));
-
-        // Confirm path: commits to quitting and runs the abort/wait/exit flow.
-        let _lock = crate::commands::agent_mock::mock_agent_lock();
-        let _home =
-            crate::auth_store::test_support::HomeGuard::new("agent-supervisor-quit-response");
-        crate::store::initialize_app_store().unwrap();
-        crate::commands::agent_mock::ensure_mock_agent();
-        // Fail the abort RPC so the best-effort abort-error arm is also covered.
-        crate::commands::agent_mock::script_mock_agent(crate::commands::agent_mock::MockScript {
-            transport_fail: ["abort".to_string()].into_iter().collect(),
-            ..Default::default()
-        });
-        QUIT_DIALOG_OPEN.store(true, Ordering::SeqCst);
-        QUIT_CONFIRMED.store(false, Ordering::SeqCst);
-        let mut exited = false;
-        handle_quit_dialog_response(true, &mock_handle(), &["sess-quit".to_string()], || {
-            exited = true
-        });
-        assert!(exited);
-        assert!(QUIT_CONFIRMED.load(Ordering::SeqCst));
-        crate::commands::agent_mock::script_mock_agent(Default::default());
-    }
-
-    #[test]
-    fn spawn_bundled_agent_logs_spawn_failure_for_a_non_executable_sidecar() {
-        let app = tauri::test::mock_builder()
-            .plugin(tauri_plugin_shell::init())
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("build mock app");
-        // The default placeholder is empty/non-executable → spawn fails and the
-        // error arm logs without panicking.
-        spawn_bundled_agent(app.handle(), "127.0.0.1:59998");
-    }
-
-    #[test]
-    fn ensure_agent_running_skips_when_reachable() {
-        // A reachable probe short-circuits before any sidecar resolution.
-        ensure_agent_running_with(&mock_handle(), |_| true);
-    }
-
-    #[test]
-    fn ensure_agent_running_logs_sidecar_unavailable() {
-        // Unreachable probe + no bundled sidecar binary → the spawn fails and is
-        // logged, without spawning anything.
-        ensure_agent_running_with(&mock_handle(), |_| false);
-    }
-
-    #[test]
-    fn ensure_agent_running_wrapper_probes_and_delegates() {
-        // The public entry wires `agent_reachable` into the injectable core. With
-        // a mock handle the spawn always fails (no bundled sidecar), so this is a
-        // benign no-op regardless of whether the bare addr happens to be reachable.
-        ensure_agent_running(&mock_handle());
-    }
-
-    #[test]
-    fn login_readiness_waits_for_a_started_agent() {
-        let mut probes = 0;
-        let mut waits = 0;
-        assert!(wait_for_agent_ready_with(
-            4,
-            || {
-                probes += 1;
-                probes == 3
-            },
-            || waits += 1,
-        ));
-        assert_eq!(probes, 3);
-        assert_eq!(waits, 2);
-    }
-
-    #[test]
-    fn login_readiness_is_bounded_when_startup_fails() {
-        let mut probes = 0;
-        let mut waits = 0;
-        assert!(!wait_for_agent_ready_with(
-            3,
-            || {
-                probes += 1;
-                false
-            },
-            || waits += 1,
-        ));
-        assert_eq!(probes, 3);
-        assert_eq!(waits, 2);
-    }
-
-    #[test]
-    fn lifecycle_distinguishes_starting_timeout_and_terminal_failures() {
-        let version = "1.2.3".to_string();
-        let starting = status_from_lifecycle(
-            AgentLifecycle::Running {
-                since: Instant::now(),
-            },
-            version.clone(),
-        );
-        assert_eq!(starting.phase, "starting");
-
-        let timed_out = status_from_lifecycle(
-            AgentLifecycle::Running {
-                since: Instant::now() - AGENT_STARTUP_GRACE - Duration::from_secs(1),
-            },
-            version.clone(),
-        );
-        assert_eq!(timed_out.phase, "startup_timeout");
+    fn unknown_or_busy_activity_requires_confirmation() {
         assert_eq!(
-            status_from_lifecycle(AgentLifecycle::SpawnFailed, version.clone()).phase,
-            "spawn_failed"
-        );
-        assert_eq!(
-            status_from_lifecycle(AgentLifecycle::Exited, version).phase,
-            "exited"
-        );
-    }
-
-    #[test]
-    fn recovery_policy_only_restarts_safe_owned_agent_states() {
-        assert!(recovery_is_safe("exited", false));
-        assert!(recovery_is_safe("spawn_failed", false));
-        assert!(recovery_is_safe("startup_timeout", true));
-        assert!(recovery_is_safe("incompatible", true));
-
-        assert!(!recovery_is_safe("startup_timeout", false));
-        assert!(!recovery_is_safe("incompatible", false));
-        assert!(!recovery_is_safe("unavailable", false));
-        assert!(!recovery_is_safe("ready", true));
-    }
-
-    #[test]
-    fn superseded_agent_exit_cannot_clear_the_current_generation() {
-        assert!(is_current_generation(Some(2), 2));
-        assert!(!is_current_generation(Some(2), 1));
-        assert!(!is_current_generation(None, 1));
-    }
-
-    #[test]
-    fn recovery_budget_prevents_loops_until_agent_is_stably_ready() {
-        let started = Instant::now();
-        let mut recovery = AgentRecovery::default();
-
-        assert_eq!(
-            recovery.observe("spawn_failed", false, started),
-            RecoveryDecision::Schedule
-        );
-        assert_eq!(
-            recovery.observe("spawn_failed", false, started),
-            RecoveryDecision::InProgress
-        );
-
-        recovery.stage = RecoveryStage::Idle;
-        assert_eq!(
-            recovery.observe("spawn_failed", false, started),
-            RecoveryDecision::None
-        );
-        assert_eq!(
-            recovery.observe("ready", true, started),
-            RecoveryDecision::None
-        );
-        assert_eq!(
-            recovery.observe(
-                "ready",
-                true,
-                started + AGENT_RECOVERY_STABLE_READY - Duration::from_millis(1),
-            ),
-            RecoveryDecision::None
-        );
-        assert!(recovery.attempted);
-        assert_eq!(
-            recovery.observe("ready", true, started + AGENT_RECOVERY_STABLE_READY),
-            RecoveryDecision::None
-        );
-        assert!(!recovery.attempted);
-        assert_eq!(
-            recovery.observe("exited", false, started + AGENT_RECOVERY_STABLE_READY),
-            RecoveryDecision::Schedule
-        );
-    }
-
-    #[test]
-    fn ready_during_recovery_grace_cancels_the_restart() {
-        let now = Instant::now();
-        let mut recovery = AgentRecovery::default();
-        assert_eq!(
-            recovery.observe("startup_timeout", true, now),
-            RecoveryDecision::Schedule
-        );
-        assert_eq!(
-            recovery.observe("ready", true, now + Duration::from_millis(500)),
-            RecoveryDecision::None
-        );
-        assert!(!recovery.attempted);
-        assert_eq!(recovery.stage, RecoveryStage::Idle);
-    }
-
-    #[test]
-    fn replacement_stays_recovering_until_ready_or_terminal_failure() {
-        let now = Instant::now();
-        let mut recovery = AgentRecovery {
-            attempted: true,
-            stage: RecoveryStage::Restarting,
-            ready_since: None,
-        };
-        assert_eq!(
-            recovery.observe("starting", true, now),
-            RecoveryDecision::InProgress
-        );
-        assert_eq!(
-            recovery.observe("startup_timeout", true, now),
-            RecoveryDecision::None
-        );
-        assert_eq!(recovery.stage, RecoveryStage::Idle);
-        assert_eq!(
-            recovery.observe("startup_timeout", true, now),
-            RecoveryDecision::None
-        );
-    }
-
-    #[test]
-    fn readiness_compares_only_the_numeric_agent_desktop_version() {
-        assert_eq!(
-            status_from_version("1.1.8".to_string(), "1.1.8".to_string()).phase,
-            "ready"
-        );
-        assert_eq!(
-            status_from_version(
-                "0.0.0-6b7717e5+local".to_string(),
-                "0.0.0-fb53a3f5+local.dirty".to_string(),
-            )
-            .phase,
-            "ready"
-        );
-        assert_eq!(
-            status_from_version(
-                "1.1.8-agent-build".to_string(),
-                "1.1.8-desktop-build".to_string(),
-            )
-            .phase,
-            "ready"
-        );
-        assert_eq!(
-            status_from_version("1.1.7-old".to_string(), "1.1.8-new".to_string()).phase,
-            "incompatible"
-        );
-    }
-
-    fn mock_handle() -> tauri::AppHandle<tauri::test::MockRuntime> {
-        let app = tauri::test::mock_builder()
-            .plugin(tauri_plugin_shell::init())
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("build mock app");
-        app.handle().clone()
-    }
-
-    #[test]
-    fn on_close_requested_respects_quit_flags() {
-        // These two flags are process-global and no other test touches them.
-        QUIT_CONFIRMED.store(true, Ordering::SeqCst);
-        assert!(matches!(on_close_requested(), QuitDecision::Proceed));
-        QUIT_CONFIRMED.store(false, Ordering::SeqCst);
-
-        QUIT_DIALOG_OPEN.store(true, Ordering::SeqCst);
-        assert!(matches!(
-            on_close_requested(),
-            QuitDecision::Confirm { open_dialog: false }
-        ));
-        QUIT_DIALOG_OPEN.store(false, Ordering::SeqCst);
-    }
-
-    #[test]
-    fn on_close_requested_proceeds_without_running_sessions() {
-        let _home = crate::auth_store::test_support::HomeGuard::new("agent-supervisor-quit");
-        crate::store::initialize_app_store().unwrap();
-        QUIT_CONFIRMED.store(false, Ordering::SeqCst);
-        QUIT_DIALOG_OPEN.store(false, Ordering::SeqCst);
-        assert!(matches!(on_close_requested(), QuitDecision::Proceed));
-    }
-
-    #[test]
-    fn on_close_requested_confirms_with_running_sessions() {
-        let _home = crate::auth_store::test_support::HomeGuard::new("agent-supervisor-quit-run");
-        crate::store::initialize_app_store().unwrap();
-        QUIT_CONFIRMED.store(false, Ordering::SeqCst);
-        QUIT_DIALOG_OPEN.store(false, Ordering::SeqCst);
-
-        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
-            mode: "chat".to_string(),
-            title: None,
-            workspace_id: None,
-            workspace_path: None,
-            workspace_name: None,
-            agent_session_id: None,
-        })
-        .unwrap();
-        crate::store::create_run(crate::store::CreateRunInput {
-            id: None,
-            thread_id: thread.id,
-            trigger_message_id: None,
-            model_provider: None,
-            model_id: None,
-        })
-        .unwrap();
-
-        assert!(matches!(
-            on_close_requested(),
+            quit_decision(false, false, Err("unknown".into())),
             QuitDecision::Confirm { open_dialog: true }
-        ));
+        );
+        assert_eq!(
+            quit_decision(false, false, Ok(1)),
+            QuitDecision::Confirm { open_dialog: true }
+        );
+        assert_eq!(quit_decision(false, false, Ok(0)), QuitDecision::Proceed);
+        assert_eq!(
+            quit_decision(false, true, Ok(1)),
+            QuitDecision::Confirm { open_dialog: false }
+        );
+        assert_eq!(quit_decision(true, false, Ok(1)), QuitDecision::Proceed);
+    }
+    #[test]
+    fn mock_gui_does_not_start_an_agent() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        ensure_agent_running(app.handle()).unwrap();
     }
 }

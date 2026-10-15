@@ -55,21 +55,24 @@ impl Options {
 /// A single process-lifetime runtime; no Tauri Builder, window, plugin or
 /// event loop is constructed on this path.
 pub fn run(options: Options) -> Result<(), String> {
+    // Hydration may supply FUTURE_HOME; freeze it before selecting the lock.
+    crate::host_environment::initialize().map_err(|e| e.to_string())?;
     let _guard = crate::instance::InstanceGuard::acquire().map_err(|e| e.to_string())?;
-    crate::install_rustls_provider();
+    crate::host_environment::start_logging().map_err(|e| e.to_string())?;
     prepare_terminal();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        .worker_threads(2)
+        .max_blocking_threads(32)
+        .thread_stack_size(2 * 1024 * 1024)
         .build()
         .map_err(|e| e.to_string())?;
     crate::runtime::set(runtime.handle().clone());
     let result = runtime.block_on(async {
         let signals = ShutdownSignals::new()?;
-        let mut agent = agent::Agent::default();
+        let mut agent = agent::Agent;
         let result = until_shutdown(signals.wait(), session(&options, &mut agent)).await;
-        eprintln!("Stopping remote access...");
-        remote::stop_gracefully("headless_exit").await;
-        agent.shutdown().await;
+        agent.shutdown().await?;
         result
     });
     // Do not let a stuck blocking task make Ctrl+C wait forever.
@@ -92,7 +95,6 @@ async fn session(options: &Options, agent: &mut agent::Agent) -> Result<(), AppE
     eprintln!("FutureOS headless Desktop - foreground mode. Press Ctrl+C to stop.");
     // Fail on corrupt credentials rather than silently replacing the account.
     crate::auth_store::read()?;
-    crate::future_platform::apply_channel_environment_default()?;
     let paired = crate::remote_host::pairing::load_creds_checked()?.is_some();
     if !paired || options.re_pair || future_login::future_api_key().is_err() {
         require_terminal()?;
@@ -116,7 +118,7 @@ async fn session(options: &Options, agent: &mut agent::Agent) -> Result<(), AppE
     crate::scheduler::start_headless();
     // Built-in skills are installed by the window's post-login onboarding. A
     // server never renders that flow, so it runs the same CLI step itself.
-    tokio::spawn(bootstrap_builtin_skills());
+    crate::runtime::spawn(bootstrap_builtin_skills());
     if options.re_pair {
         require_terminal()?;
         eprintln!("Revoking the saved phone pairing (--re-pair).");
@@ -135,7 +137,7 @@ async fn session(options: &Options, agent: &mut agent::Agent) -> Result<(), AppE
     // executor's notifications downgrade to ledger-only (the run rows are the
     // signal). This is what lets a server box run tasks with no GUI attached.
     crate::tasks::start_headless();
-    tokio::spawn(async {
+    crate::runtime::spawn(async {
         crate::agent_bridge::reconcile_interrupted_runs().await;
         crate::agent_bridge::reconcile_pending_approvals().await;
     });
@@ -224,7 +226,7 @@ fn require_terminal() -> Result<(), AppError> {
 /// skills from its own Skills page, and the catalog fetch behind `future init`
 /// is a network call this foreground process must not stall on.
 async fn bootstrap_builtin_skills() {
-    let executable = match agent::find_sidecar() {
+    let executable = match crate::cli_tool::resolve() {
         Ok(executable) => executable,
         Err(error) => {
             eprintln!("Skipping built-in skill setup: {error}");
@@ -234,6 +236,7 @@ async fn bootstrap_builtin_skills() {
     let output = tokio::process::Command::new(&executable)
         .arg("init")
         .stdin(Stdio::null())
+        .kill_on_drop(true)
         .output()
         .await;
     let output = match output {

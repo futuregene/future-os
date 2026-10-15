@@ -17,7 +17,7 @@ mod settings;
 mod skills;
 
 #[cfg(test)]
-mod test_support;
+pub(super) mod test_support;
 
 #[cfg(test)]
 mod dispatcher_tests;
@@ -39,6 +39,18 @@ use super::{AppState, RpcCommand, RpcResponse};
 pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     let id = &cmd.id;
     let cmd_type = &cmd.cmd_type;
+    let _admission = match state.service_work.enter() {
+        Ok(guard) => guard,
+        Err(error) => {
+            return RpcResponse::build_fail_code(
+                id,
+                cmd_type,
+                "agent_stopping",
+                &error.to_string(),
+                serde_json::json!({"retryable": false}),
+            )
+        }
+    };
 
     // The shared policy is also the command registry used by every client to
     // set a finite unary deadline. This makes it impossible to add a live

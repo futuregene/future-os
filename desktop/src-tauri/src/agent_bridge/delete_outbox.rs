@@ -82,7 +82,7 @@ pub async fn reconcile_delete_outbox() {
 }
 
 /// Keep retrying durable deletion intent for as long as this GUI process is
-/// alive. Startup-only delivery loses convergence whenever the sidecar starts
+/// alive. Startup-only delivery loses convergence whenever the Agent service starts
 /// late or an Agent refuses deletion while a run is draining.
 pub fn spawn_delete_outbox_worker() {
     crate::runtime::spawn(async {

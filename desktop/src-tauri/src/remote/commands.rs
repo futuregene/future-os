@@ -2798,7 +2798,7 @@ mod bridge_tests {
         assert_eq!(reply["success"], json!(true));
         assert_eq!(reply["data"]["entries"].as_array().unwrap().len(), 1);
 
-        // Production sidecar responses carry typed payload only (`data` is
+        // Production Agent responses carry typed payload only (`data` is
         // empty); mobile history must still flow through the remote bridge.
         agent.script_typed_for(
             "get_session_entries",
@@ -4839,11 +4839,12 @@ mod bridge_tests {
     /// refuses the whole read when the probe fails rather than answering with a
     /// guessed `false` the phone would show as a missing feature.
     #[tokio::test]
-    async fn desktop_settings_refuse_to_guess_sandbox_availability() {
+    async fn desktop_settings_reports_platform_sandbox_availability() {
         let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-settings-probe").await;
         let agent = ensure_mock_agent();
         agent.clear_scripts();
+        agent.clear_requests();
 
         agent.script(
             "probe_sandbox",
@@ -4861,11 +4862,19 @@ mod bridge_tests {
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "get_settings" }))
             .await;
-        assert_eq!(reply["success"], json!(false));
-        assert!(
-            reply["error"].as_str().unwrap().contains("probe exploded"),
-            "got: {reply}"
-        );
+        if cfg!(target_os = "macos") {
+            // macOS has built-in Seatbelt availability; it does not ask the
+            // Agent to probe the Windows/Linux optional backend.
+            assert_eq!(reply["success"], json!(true), "got: {reply}");
+            assert_eq!(reply["data"]["sandboxAvailable"], json!(true));
+            assert!(!agent.served("probe_sandbox", ""));
+        } else {
+            assert_eq!(reply["success"], json!(false));
+            assert!(
+                reply["error"].as_str().unwrap().contains("probe exploded"),
+                "got: {reply}"
+            );
+        }
         bridge.stop().await;
     }
 

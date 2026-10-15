@@ -12,6 +12,16 @@
 use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Agent and RPC share the 0.0.0 Cargo release baseline. CLI/TUI display
+    // versions use a different development scheme; do not compare that label
+    // against the Agent built into the same checkout. Coordinated builds set
+    // FUTURE_VERSION for every crate and remain strictly version checked.
+    let agent_version = std::env::var("FUTURE_VERSION")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
+    println!("cargo:rustc-env=EXPECTED_AGENT_VERSION={agent_version}");
+    println!("cargo:rerun-if-env-changed=FUTURE_VERSION");
     println!("cargo:rerun-if-env-changed=REGENERATE_PROTO");
     // Also re-run when the proto source changes, so `make generate-proto`
     // after a proto edit is not skipped by Cargo's build-script cache (the

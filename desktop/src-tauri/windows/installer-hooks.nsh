@@ -4,7 +4,13 @@
 ; survive beside a newly copied desktop and create a mixed-version install.
 !include x64.nsh
 Var FutureOSRestorePending
+Var FutureOSRestoreFailed
 !define FUTUREOS_PREFLIGHT_SCRIPT "${__FILEDIR__}\installer-preflight.ps1"
+!ifndef FUTUREOS_TEST_DIAGNOSTICS
+  ; Staged from the same signed CLI used by externalBin. Use the NEW
+  ; maintenance code even when the installed legacy CLI lacks this command.
+  !define FUTUREOS_MAINTENANCE_EXE "${__FILEDIR__}\..\binaries\installer-maintenance.exe"
+!endif
 ; Tauri includes hooks BEFORE MUI_LANGUAGE defines LANG_*; use Windows LCIDs.
 
 LangString FutureOSInstallRunning 1033 "FutureOS is still running in:$\r$\n$INSTDIR$\r$\n$\r$\nThe background service (future.exe, or legacy future-agent.exe) can keep running after the window closes. Setup must close this installation's desktop and any verified Agent using the same FutureOS data before continuing.$\r$\n$\r$\nSave your work and wait for tasks to finish. Closing an Agent, including one from another installation directory, will interrupt its tasks and sessions.$\r$\n$\r$\nYes: close the old programs and continue.$\r$\nNo: check again after you close them yourself.$\r$\nCancel: stop setup without replacing files."
@@ -22,9 +28,15 @@ LangString FutureOSInstallNotWritable 2052 "安装程序无法确认可以写入
 !macroend
 
 !macro FutureOSRestoreExecutable NAME
+  ClearErrors
+  IfFileExists "$INSTDIR\${NAME}" 0 +4
   Delete "$INSTDIR\${NAME}"
-  IfFileExists "$PLUGINSDIR\${NAME}.futureos-backup" 0 +3
+  IfErrors 0 +2
+  StrCpy $FutureOSRestoreFailed 1
+  IfFileExists "$PLUGINSDIR\${NAME}.futureos-backup" 0 +5
   CopyFiles /SILENT "$PLUGINSDIR\${NAME}.futureos-backup" "$INSTDIR\${NAME}"
+  IfErrors 0 +2
+  StrCpy $FutureOSRestoreFailed 1
   DetailPrint "Restored ${NAME} after the lifecycle operation failed."
 !macroend
 
@@ -55,7 +67,7 @@ Function ${PREFIX}FutureOSRunPreflight
     ; NSIS is 32-bit; native PowerShell can inspect 64-bit process paths.
     StrCpy $0 "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
   ${EndIf}
-  nsExec::ExecToStack /TIMEOUT=60000 '"$0" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\futureos-preflight.ps1" -InstallDir "$INSTDIR" -Mode $R0 -LeaseDir "$PLUGINSDIR" -InstallerPid $R2'
+  nsExec::ExecToStack /TIMEOUT=60000 '"$0" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\futureos-preflight.ps1" -InstallDir "$INSTDIR" -Mode $R0 -LeaseDir "$PLUGINSDIR" -InstallerPid $R2 -MaintenanceExecutable "$PLUGINSDIR\futureos-maintenance.exe"'
   Pop $R1
   Pop $1
   StrCmp $1 "" +2
@@ -132,9 +144,16 @@ Function ${PREFIX}FutureOSCloseForUpdate
   ; the new installer must be able to repair those already-mixed installs.
   Push $R0
   Push $R1
+  Push $R3
   InitPluginsDir
   File /oname=$PLUGINSDIR\futureos-preflight.ps1 "${FUTUREOS_PREFLIGHT_SCRIPT}"
-  StrCpy $R0 Close
+  StrCpy $R0 CloseInstalled
+  ; New embedded hosts have already drained completely. Their update must
+  ; never kill an external Agent or a newly started CLI, even in $INSTDIR.
+  ClearErrors
+  ${GetOptions} $CMDLINE "/FUTUREOS_CLEAN" $R3
+  IfErrors +2 0
+  StrCpy $R0 Check
   Call ${PREFIX}FutureOSRunPreflight
   StrCmp $R1 0 futureos_update_preflight_done
   DetailPrint "Automatic update preflight exit code: $R1"
@@ -146,6 +165,7 @@ futureos_update_preflight_access:
   SetErrorLevel 5
   Quit
 futureos_update_preflight_done:
+  Pop $R3
   Pop $R1
   Pop $R0
 FunctionEnd
@@ -175,12 +195,31 @@ futureos_preinstall_checked:
   SetErrorLevel $R1
   Abort
 futureos_preinstall_lease_acquired:
+!ifdef FUTUREOS_MAINTENANCE_EXE
+  ClearErrors
+  File /oname=$PLUGINSDIR\futureos-maintenance.exe "${FUTUREOS_MAINTENANCE_EXE}"
+  IfErrors futureos_preinstall_cleanup_failed
+!endif
+  ; Maintenance is sessionless and must complete under the held lease before
+  ; backup/deletion/extraction. Unsupported old maintenance also fails closed.
+  StrCpy $R0 ResetSandbox
+  Call FutureOSRunPreflight
+  StrCmp $R1 0 futureos_preinstall_cleanup_done futureos_preinstall_cleanup_failed
+futureos_preinstall_cleanup_failed:
+  DetailPrint "Sandbox cleanup failed; installation cancelled (exit $R1)."
+  StrCpy $R0 ReleaseLease
+  Call FutureOSRunPreflight
+  SetErrorLevel 5
+  Abort
+futureos_preinstall_cleanup_done:
+  Delete "$INSTDIR\futureos-recovery-failed"
   ; Preserve every executable that this installer replaces or retires. NSIS
   ; writes files in place; without these copies, a disk/AV/extraction failure
   ; after the first write can leave neither a complete old nor new version.
   InitPluginsDir
   StrCpy $FutureOSRestorePending 0
   !insertmacro FutureOSBackupExecutable "futureos.exe"
+  !insertmacro FutureOSBackupExecutable "futureos-headless.exe"
   !insertmacro FutureOSBackupExecutable "future.exe"
   !insertmacro FutureOSBackupExecutable "future-desktop.exe"
   !insertmacro FutureOSBackupExecutable "future-agent.exe"
@@ -225,6 +264,7 @@ futureos_postinstall_lease_released:
   Pop $R1
   Pop $R0
   !insertmacro FutureOSDeleteExecutableBackup "futureos.exe"
+  !insertmacro FutureOSDeleteExecutableBackup "futureos-headless.exe"
   !insertmacro FutureOSDeleteExecutableBackup "future.exe"
   !insertmacro FutureOSDeleteExecutableBackup "future-desktop.exe"
   !insertmacro FutureOSDeleteExecutableBackup "future-agent.exe"
@@ -232,13 +272,24 @@ futureos_postinstall_lease_released:
 !macroend
 
 Function FutureOSRestoreAfterFailure
+  Push $R8
   StrCmp $FutureOSRestorePending 1 0 futureos_restore_done
+  StrCpy $FutureOSRestoreFailed 0
   !insertmacro FutureOSRestoreExecutable "futureos.exe"
+  !insertmacro FutureOSRestoreExecutable "futureos-headless.exe"
   !insertmacro FutureOSRestoreExecutable "future.exe"
   !insertmacro FutureOSRestoreExecutable "future-desktop.exe"
   !insertmacro FutureOSRestoreExecutable "future-agent.exe"
+  StrCmp $FutureOSRestoreFailed 0 futureos_restore_succeeded
+  FileOpen $R8 "$INSTDIR\futureos-recovery-failed" w
+  FileWrite $R8 "Executable rollback failed. Repair this installation before launching FutureOS."
+  FileClose $R8
+  DetailPrint "Rollback incomplete; automatic recovery launch is disabled."
+  Goto futureos_restore_done
+futureos_restore_succeeded:
   StrCpy $FutureOSRestorePending 0
 futureos_restore_done:
+  Pop $R8
 FunctionEnd
 
 ; NSIS extraction failures reach this callback while $PLUGINSDIR still exists.
@@ -301,22 +352,26 @@ futureos_sandbox_cleanup_done:
   ; Keep temporary copies so a lock race between preflight and deletion cannot
   ; turn a reported failure into a partially removed installation.
   !insertmacro FutureOSUninstallBackupExecutable "futureos.exe"
+  !insertmacro FutureOSUninstallBackupExecutable "futureos-headless.exe"
   !insertmacro FutureOSUninstallBackupExecutable "future.exe"
   !insertmacro FutureOSUninstallBackupExecutable "future-agent.exe"
   !insertmacro FutureOSUninstallBackupExecutable "future-desktop.exe"
   ClearErrors
   Delete "$INSTDIR\futureos.exe"
+  Delete "$INSTDIR\futureos-headless.exe"
   Delete "$INSTDIR\future.exe"
   Delete "$INSTDIR\future-agent.exe"
   Delete "$INSTDIR\future-desktop.exe"
   IfErrors futureos_uninstall_restore
   !insertmacro FutureOSDeleteExecutableBackup "futureos.exe"
+  !insertmacro FutureOSDeleteExecutableBackup "futureos-headless.exe"
   !insertmacro FutureOSDeleteExecutableBackup "future.exe"
   !insertmacro FutureOSDeleteExecutableBackup "future-agent.exe"
   !insertmacro FutureOSDeleteExecutableBackup "future-desktop.exe"
   Goto futureos_uninstall_executables_removed
 futureos_uninstall_restore:
   !insertmacro FutureOSRestoreExecutable "futureos.exe"
+  !insertmacro FutureOSRestoreExecutable "futureos-headless.exe"
   !insertmacro FutureOSRestoreExecutable "future.exe"
   !insertmacro FutureOSRestoreExecutable "future-agent.exe"
   !insertmacro FutureOSRestoreExecutable "future-desktop.exe"

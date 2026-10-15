@@ -21,7 +21,7 @@ FutureOS 是「一个 AI agent 到处跑」的多端系统：核心是 Rust gRPC
 - `orchestration/loop/`：Rust `future-loop`，loop 控制面。
 - `packages/rpc/`：Rust `future-rpc`，protobuf 线协议（单一真源）。
 
-GUI 不把 Agent 作为 Tauri crate dependency 编进桌面进程。运行时 GUI 默认通过每用户本地 IPC 连接 Agent gRPC 服务；Unix 优先使用 `FUTURE_AGENT_SOCKET`；`FUTURE_HOME`（`future agent --home`）被重定向的实例使用 `<FUTURE_HOME>/run/agent.sock`；Linux 否则使用 `$XDG_RUNTIME_DIR/future/agent.sock`，再回退 `~/.future/run/agent.sock`（macOS 默认）；Windows 使用当前用户命名管道。`FUTURE_AGENT_GRPC_ADDR` 可显式指定 TCP，Agent 需传 `--grpc-addr` 开启。无可连接 Agent 时桌面启动统一 `future agent` sidecar，仅负责自己启动的进程生命周期。
+GUI 和 headless Desktop 将完整 Agent 服务作为 Rust library 编入自身进程，共用一个宿主。优先连接兼容外部 Agent；只有默认端点不存在且成功取得实例锁才启动内置服务。不兼容或持锁不可用时直接报错，不打开第二份 Agent 数据库。显式远端只连接、不接管。客户端仍使用每用户本地 IPC（Unix socket、当前用户 Windows 命名管道），沿用 FUTURE_HOME 和端点覆盖规则。打包 CLI 继续提供技能、维护及独立 Agent 能力。退出内置宿主会取消所有客户端任务；连接外部服务时外部 owner 保持运行。参见[生命周期指南](../../guide/desktop-agent.zh-CN.md)和[实现计划](../../architecture/embedded-agent-development.zh-CN.md)。
 
 ## 3. 产品原则
 

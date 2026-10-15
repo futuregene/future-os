@@ -607,16 +607,16 @@ mod tests {
         let mock = mock_agent();
         let workspace = seed_workspace(home.path(), "ws");
 
-        // No pending approvals at all: no agent traffic.
+        // No pending approvals at all: no business calls.
         reconcile_pending_approvals().await;
-        assert!(mock.requests().is_empty());
+        assert!(mock.requests().is_empty(), "{:?}", mock.requests());
 
         // Pending approval on a thread with no agent session → skipped.
         let no_session = seed_thread(&workspace.id, None);
         let run = seed_run(&no_session.id);
         seed_approval("appr-nosession", &run.id);
         reconcile_pending_approvals().await;
-        assert!(mock.requests().is_empty());
+        assert!(mock.requests().is_empty(), "{:?}", mock.requests());
         assert_eq!(
             store::get_approval_request("appr-nosession")
                 .expect("query")
@@ -631,7 +631,7 @@ mod tests {
         seed_approval("appr-orphan", &run2.id);
         store::delete_thread(&thread.id).expect("delete thread");
         reconcile_pending_approvals().await;
-        assert!(mock.requests().is_empty());
+        assert!(mock.requests().is_empty(), "{:?}", mock.requests());
         assert!(
             store::get_approval_request("appr-orphan")
                 .expect("query")

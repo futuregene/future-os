@@ -175,8 +175,8 @@ jobs:
         run: npm ci
 
       # The unified `future` CLI is the single sidecar (tauri.conf.json
-      # bundle.externalBin); the agent runs through `future agent`, so only the
-      # CLI needs building and staging.
+      # bundle.externalBin). Desktop embeds Agent; the CLI remains necessary
+      # for tool subprocesses and the standalone `future agent` entry point.
       - name: Build CLI
         working-directory: cli
         env:
@@ -186,7 +186,7 @@ jobs:
           cargo build --release
           triple="$(rustc -Vv | sed -n 's/^host: //p')"
           mkdir -p ../desktop/src-tauri/binaries
-          cp ../target/release/future "../desktop/src-tauri/binaries/future-$triple"
+          install -m 755 ../target/release/future "../desktop/src-tauri/binaries/future-$triple"
 
       - name: Set Tauri bundle version
         env:
@@ -416,8 +416,34 @@ jobs:
           xcrun stapler validate -v "$dmg"
           echo "SIGNED_DMG=$dmg" >> "$GITHUB_ENV"
 
-      # Validate the exact two user journeys, not only Tauri's build directory:
-      # mount the website DMG and extract the automatic-updater archive. Both
+      # A valid signature alone does not prove that the bundled CLI is
+      # executable (compile-only placeholders can leave mode 0644 behind).
+      - name: Verify packaged Desktop and CLI entry points
+        env:
+          FUTURE_VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, subprocess, tempfile
+          apps = list(pathlib.Path('desktop/src-tauri/target/release/bundle/macos').glob('*.app'))
+          assert len(apps) == 1, f'Expected one app, found {len(apps)}'
+          with tempfile.TemporaryDirectory(prefix='futureos-package-probe-') as profile:
+              env = os.environ.copy()
+              state = pathlib.Path(profile) / '.future'
+              env.update(HOME=profile, USERPROFILE=profile, FUTURE_HOME=str(state))
+              env.pop('FUTURE_AGENT_GRPC_ADDR', None)
+              env.pop('FUTURE_AGENT_SOCKET', None)
+              for binary, flag in [('future', '--version'), ('futureos', '--help')]:
+                  path = apps[0] / 'Contents/MacOS' / binary
+                  assert os.access(path, os.X_OK), f'Packaged binary is not executable: {path}'
+                  result = subprocess.run([str(path.resolve()), flag], env=env, capture_output=True, text=True, timeout=15)
+                  assert result.returncode == 0, result.stderr
+                  if binary == 'future':
+                      assert result.stdout.strip() == 'future v' + os.environ['FUTURE_VERSION'], result.stdout
+              assert not state.exists(), 'Early package probes initialized Agent state'
+          PY
+
+      # Validate both user journeys: mount the website DMG and extract the
+      # automatic-updater archive. Both
       # copies of the app must retain their Developer ID signature and stapled
       # notarization ticket and must pass Gatekeeper assessment.
       - name: Verify signed artifacts

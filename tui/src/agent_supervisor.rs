@@ -1,10 +1,9 @@
 //! TUI-owned Agent sidecar lifecycle.
 //!
-//! A TUI first probes every configured transport. If no Agent is reachable it
-//! launches the unified `future agent` sidecar (or the standalone
-//! `future-agent` fallback) and owns that child until the TUI exits.
+//! A TUI validates its configured Agent before sending business requests. Only
+//! an absent default local endpoint and an available instance lock authorize
+//! the unified `future agent` sidecar (or standalone fallback).
 
-use future_rpc::proto::RpcCommand;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -22,17 +21,13 @@ fn executable_name(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
-fn launch_candidates(current_exe: &Path, configured: &str) -> Vec<LaunchSpec> {
-    let mut agent_args = vec!["agent".to_string()];
-    let mut standalone_args = Vec::new();
-    if !configured.eq_ignore_ascii_case(future_rpc::transport::AUTO_ENDPOINT) {
-        let addr = configured
-            .trim_start_matches("http://")
-            .trim_start_matches("https://")
-            .to_string();
-        agent_args.extend(["--grpc-addr".to_string(), addr.clone()]);
-        standalone_args.extend(["--grpc-addr".to_string(), addr]);
-    }
+fn launch_candidates(current_exe: &Path) -> Vec<LaunchSpec> {
+    let agent_args = vec![
+        "agent".to_string(),
+        "--grpc-addr".to_string(),
+        "auto".to_string(),
+    ];
+    let standalone_args = vec!["--grpc-addr".to_string(), "auto".to_string()];
 
     let mut candidates = Vec::new();
     if executable_name(current_exe) == "future" {
@@ -75,35 +70,23 @@ impl Drop for OwnedAgent {
     }
 }
 
-async fn agent_healthy(configured: &str) -> bool {
-    let Ok(connected) = future_rpc::transport::connect_channel(
-        Some(configured),
-        Duration::from_millis(400),
-        Some(Duration::from_secs(2)),
-    )
-    .await
-    else {
-        return false;
-    };
-    let mut client = future_rpc::transport::agent_client(connected.channel);
-    client
-        .execute_command(RpcCommand {
-            id: uuid::Uuid::new_v4().to_string(),
-            r#type: "list_streaming_sessions".to_string(),
-            ..Default::default()
-        })
-        .await
-        .map(|response| response.into_inner().success)
-        .unwrap_or(false)
-}
-
 /// Return `None` when an existing Agent was found, or an owned child when the
 /// TUI had to launch one. The child is terminated when the returned guard is
 /// dropped.
 pub async fn ensure_agent_running(configured: &str) -> Result<Option<OwnedAgent>, String> {
-    if agent_healthy(configured).await {
-        return Ok(None);
-    }
+    let permit = match future_rpc::connection::select_agent(
+        configured,
+        future_rpc::connection::EXPECTED_AGENT_VERSION,
+        Duration::from_millis(400),
+        Duration::from_secs(2),
+    )
+    .await
+    .map_err(|error| error.to_string())?
+    {
+        future_rpc::connection::AgentSelection::External(_) => return Ok(None),
+        future_rpc::connection::AgentSelection::LocalStart(permit) => permit,
+    };
+    permit.recheck().map_err(|error| error.to_string())?;
 
     if cfg!(test) {
         return Err("agent sidecar startup is disabled in unit tests".to_string());
@@ -112,7 +95,7 @@ pub async fn ensure_agent_running(configured: &str) -> Result<Option<OwnedAgent>
     let current_exe = std::env::current_exe()
         .map_err(|error| format!("cannot locate the TUI executable: {error}"))?;
     let mut failures = Vec::new();
-    for candidate in launch_candidates(&current_exe, configured) {
+    for candidate in launch_candidates(&current_exe) {
         let mut command = Command::new(&candidate.program);
         command
             .args(&candidate.args)
@@ -127,8 +110,24 @@ pub async fn ensure_agent_running(configured: &str) -> Result<Option<OwnedAgent>
             }
         };
         for _ in 0..40 {
-            if agent_healthy(configured).await {
-                return Ok(Some(OwnedAgent { child }));
+            match future_rpc::connection::connect_verified(
+                configured,
+                future_rpc::connection::EXPECTED_AGENT_VERSION,
+                Duration::from_millis(400),
+                Duration::from_secs(2),
+            )
+            .await
+            {
+                Ok(_) => return Ok(Some(OwnedAgent { child })),
+                Err(
+                    future_rpc::connection::ConnectionError::Transport(_)
+                    | future_rpc::connection::ConnectionError::Unverified(_),
+                ) => {}
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(error.to_string());
+                }
             }
             match child.try_wait() {
                 Ok(Some(status)) => {
@@ -160,27 +159,21 @@ mod tests {
 
     #[test]
     fn unified_binary_launches_agent_without_tcp_in_auto_mode() {
-        let specs = launch_candidates(Path::new("/opt/future/bin/future"), "auto");
+        let specs = launch_candidates(Path::new("/opt/future/bin/future"));
         assert_eq!(
             specs[0],
             LaunchSpec {
                 program: PathBuf::from("/opt/future/bin/future"),
-                args: vec!["agent".into()],
+                args: vec!["agent".into(), "--grpc-addr".into(), "auto".into()],
             }
         );
     }
 
     #[test]
-    fn explicit_tcp_is_forwarded_only_when_requested() {
-        let specs = launch_candidates(
-            Path::new("/opt/future/bin/future-tui"),
-            "http://127.0.0.1:55001",
-        );
-        assert_eq!(
-            specs[0].args,
-            vec!["agent", "--grpc-addr", "127.0.0.1:55001"]
-        );
-        assert_eq!(specs[1].args, vec!["--grpc-addr", "127.0.0.1:55001"]);
+    fn every_sidecar_candidate_is_pinned_to_the_local_endpoint() {
+        let specs = launch_candidates(Path::new("/opt/future/bin/future-tui"));
+        assert_eq!(specs[0].args, vec!["agent", "--grpc-addr", "auto"]);
+        assert_eq!(specs[1].args, vec!["--grpc-addr", "auto"]);
     }
 
     /// A long-running child that exits on its own only long after the test.
@@ -254,13 +247,13 @@ mod tests {
     /// The `cfg!(test)` guard: a unit test must never launch a real sidecar, so
     /// the probe's failure must surface as this refusal and not as a spawn.
     #[tokio::test]
-    async fn ensure_agent_running_refuses_to_spawn_in_test_builds() {
+    async fn ensure_agent_running_refuses_an_unavailable_explicit_endpoint() {
         // Port 1 is never a running agent, so the health probe fails and the
         // launch path is entered.
         let error = match ensure_agent_running("127.0.0.1:1").await {
             Ok(_) => panic!("a test build must not start an agent"),
             Err(error) => error,
         };
-        assert!(error.contains("disabled in unit tests"), "{error}");
+        assert!(error.contains("no local fallback"), "{error}");
     }
 }

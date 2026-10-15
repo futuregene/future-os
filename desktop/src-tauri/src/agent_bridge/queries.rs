@@ -309,7 +309,7 @@ pub async fn get_session_entries_before(
 }
 
 pub(super) async fn fetch_all_session_entries_with_client(
-    client: &mut crate::agent_proto::FutureAgentClient<tonic::transport::Channel>,
+    client: &mut super::client::AgentClient,
     session_id: &str,
 ) -> Result<Vec<future_rpc::payloads::SessionEntryPayload>, crate::AppError> {
     const PAGE_SIZE: i64 = 250;
@@ -337,7 +337,7 @@ pub(super) async fn fetch_all_session_entries_with_client(
 }
 
 async fn read_history_page_with_client(
-    client: &crate::agent_proto::FutureAgentClient<tonic::transport::Channel>,
+    client: &super::client::AgentClient,
     command: future_rpc::proto::RpcCommand,
 ) -> Result<future_rpc::payloads::SessionEntriesPage, crate::AppError> {
     future_rpc::history::read_page(command, |command| {

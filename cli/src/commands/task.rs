@@ -200,14 +200,12 @@ fn open_store() -> Result<Store> {
 }
 
 /// FutureOS home root (`<home>/agent`, `<home>/tasks`, …), normally `~/.future`.
-/// `FUTURE_HOME` replaces the whole root, matching the agent.
+/// `FUTURE_HOME` replaces the whole root, matching the agent; the fallback goes
+/// through the shared `HOME → USERPROFILE → platform profile` order, because
+/// `dirs::home_dir()` alone reads the Windows token profile and would keep the
+/// tasks ledger in a different home than a redirected `HOME` names.
 fn future_home() -> std::path::PathBuf {
-    if let Some(override_dir) = future_rpc::home::future_home_override() {
-        return override_dir;
-    }
-    dirs::home_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join(".future")
+    future_rpc::home::future_home()
 }
 
 fn now_ms() -> i64 {

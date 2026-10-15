@@ -715,6 +715,10 @@ impl ApprovalGate {
     /// session. Served via get_state so a (re)connecting client can rebuild
     /// approval cards it missed — the pending map is process-wide, so filter
     /// by session here (same ownership rule as `decide`).
+    pub(crate) fn try_pending_count(&self) -> Option<usize> {
+        self.pending.try_lock().map(|pending| pending.len())
+    }
+
     pub fn pending_for_session(&self, session_id: &str) -> Vec<serde_json::Value> {
         self.pending
             .lock()
@@ -745,6 +749,17 @@ impl ApprovalGate {
             },
         );
         rx
+    }
+
+    pub(crate) fn cancel_all(&self, note: &str) {
+        let pending = std::mem::take(&mut *self.pending.lock());
+        for pending in pending.into_values() {
+            let _ = pending.tx.send(ApprovalDecision {
+                approved: false,
+                note: note.to_string(),
+                status: ApprovalDecisionStatus::Cancelled,
+            });
+        }
     }
 
     pub fn cancel_session(&self, session_id: &str, note: &str) -> usize {

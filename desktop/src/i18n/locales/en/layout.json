@@ -141,9 +141,9 @@
   "agentStatus": {
     "wait": "Please wait a moment.",
     "failed": "Future Agent could not start",
-    "fixFailed": "Restart FutureOS. If the issue continues, reinstall FutureOS.",
+    "fixFailed": "Restart FutureOS and check the reported error. If using an external Agent, check its availability and version.",
     "incompatible": "Future Agent does not match this FutureOS version",
-    "fixIncompatible": "Restart FutureOS to finish the update. If the issue continues, reinstall FutureOS."
+    "fixIncompatible": "Update or stop the external Agent, then restart FutureOS. A conflicting Agent cannot be bypassed by starting an embedded service."
   },
   "userMenu": {
     "balance": "Balance: {{credits}}",

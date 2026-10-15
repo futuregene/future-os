@@ -100,6 +100,8 @@ pub(crate) fn helper_args(executable: &Path, encoded: String) -> Vec<String> {
     }
     args.push("--linux-sandbox-helper".into());
     args.push(encoded);
+    args.push("--linux-sandbox-host-version".into());
+    args.push(crate::utils::VERSION.into());
     args
 }
 
@@ -264,11 +266,22 @@ mod tests {
     fn helper_dispatch_supports_unified_and_standalone_binaries() {
         assert_eq!(
             helper_args(Path::new("/opt/future"), "x".into()),
-            ["agent", "--linux-sandbox-helper", "x"]
+            [
+                "agent",
+                "--linux-sandbox-helper",
+                "x",
+                "--linux-sandbox-host-version",
+                crate::utils::VERSION
+            ]
         );
         assert_eq!(
             helper_args(Path::new("/opt/future-agent"), "x".into()),
-            ["--linux-sandbox-helper", "x"]
+            [
+                "--linux-sandbox-helper",
+                "x",
+                "--linux-sandbox-host-version",
+                crate::utils::VERSION
+            ]
         );
     }
 
@@ -287,7 +300,10 @@ mod tests {
             .min((super::super::request::MAX_ARG_BYTES - base_argv_bytes) / per_char_cost);
         let command = "x".repeat(command_chars);
         let prepared = prepare(&probe(), plan(), &command, &abs("/tmp/work")).unwrap();
-        assert_eq!(prepared.args.last().map(String::as_str), Some("fd:3"));
+        assert!(prepared
+            .args
+            .windows(2)
+            .any(|pair| { pair[0] == "--linux-sandbox-helper" && pair[1] == "fd:3" }));
         let payload = prepared.request_payload.as_deref().unwrap();
         assert!(payload.len() > command.len());
         let request = LinuxSandboxRequest::from_json_bytes(payload).unwrap();

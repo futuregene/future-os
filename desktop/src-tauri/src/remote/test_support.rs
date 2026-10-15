@@ -464,8 +464,9 @@ impl MockAgent {
 
     /// Install the persistent script used by the `commands::agent_mock`
     /// facade: canned per-command success payloads / error messages plus a
-    /// `down` flag that makes every non-health-check command fail with
-    /// `Code::Unavailable`. Replaces the previous persistent script.
+    /// `down` flag that makes readiness and business commands fail with
+    /// `Code::Unavailable`, except the legacy `list_streaming_sessions` probe.
+    /// Replaces the previous persistent script.
     pub(crate) fn set_persistent_script(
         &self,
         data: HashMap<String, String>,
@@ -654,6 +655,9 @@ fn default_answer(
         "get_agent_readiness" => ok(json!({
             "version": crate::build_info::VERSION,
             "agentInstanceId": "mock-agent",
+            "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION,
+            "dataRootId": "0".repeat(64),
+            "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION,
         })),
         "list_streaming_sessions" => ok(json!({ "sessions": [] })),
         "probe_sandbox" => ok(json!({
@@ -802,10 +806,9 @@ impl crate::agent_proto::future_agent_server::FutureAgent for AgentService {
         request: tonic::Request<crate::agent_proto::RpcCommand>,
     ) -> Result<tonic::Response<crate::agent_proto::RpcResponse>, tonic::Status> {
         let cmd = request.into_inner();
-        // Down mode: everything but the connect-time health check fails like
-        // a dead agent — except it still lets clients latch their channel.
-        // `persistent_transport_fail` extends that to specific commands,
-        // including the health check itself.
+        // Down mode rejects readiness, so it cannot produce a verified client.
+        // Preserve the legacy streaming-list probe for existing fixtures;
+        // `persistent_transport_fail` may reject that command as well.
         let (down, transport_fail) = {
             let state = self.state.lock().unwrap();
             (

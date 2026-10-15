@@ -47,7 +47,8 @@ CARGO_PINNED := rustup run $(RUST_TOOLCHAIN) cargo
 
 # ─── Install ────────────────────────────────────────────────────────────────
 # The unified `future` CLI embeds agent/tui/channel/loop; the desktop bundles
-# it as a sidecar (`future agent`). Standalone future-agent/-tui/-channel/-loop
+# it for CLI tools and maintenance; Desktop hosts Agent in process by default.
+# Standalone future-agent/-tui/-channel/-loop
 # binaries are dev-only (cargo run -p <crate>) — install puts exactly two files
 # in PREFIX: `future` and `future-desktop`.
 
@@ -152,13 +153,15 @@ desktop-sidecars: build-cli
 ifeq ($(OS),windows)
 	@if not exist desktop\src-tauri\binaries mkdir desktop\src-tauri\binaries
 	$(COPY_CMD) target\release\future$(EXE_SUFFIX) "desktop\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)"
+	$(COPY_CMD) target\release\future$(EXE_SUFFIX) "desktop\src-tauri\binaries\installer-maintenance.exe"
 else
 	@mkdir -p desktop/src-tauri/binaries
-	cp target/release/future desktop/src-tauri/binaries/future-$(TARGET)
+	install -m 755 target/release/future desktop/src-tauri/binaries/future-$(TARGET)
 endif
 
-# Empty sidecar placeholder: tauri-build aborts when the externalBin path is
-# missing, even for check/clippy/test. CI does the same (see ci.yml).
+# Compile-only CLI placeholder: tauri-build validates externalBin for checks.
+# Desktop embeds Agent without this file; runtime CLI lookup rejects empty
+# placeholders. Builds/packages must still stage the real CLI for tools.
 desktop-sidecar-placeholder:
 ifeq ($(OS),windows)
 	@if not exist "desktop\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)" (if not exist desktop\src-tauri\binaries mkdir desktop\src-tauri\binaries & type NUL > "desktop\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)")
@@ -181,7 +184,7 @@ build-desktop-headless: build-cli
 ifeq ($(OS),windows)
 	$(COPY_CMD) target\release\future.exe desktop\src-tauri\target\release\future.exe
 else
-	cp target/release/future desktop/src-tauri/target/release/future
+	install -m 755 target/release/future desktop/src-tauri/target/release/future
 endif
 
 # Mobile native projects are generated locally by Expo (gitignored).
@@ -289,9 +292,14 @@ run-channels:
 run-loop:
 	cd orchestration/loop && cargo run
 
-run-desktop: desktop-sidecars
-	$(call npm-install-if-needed,desktop)
-	cd desktop && npm run tauri:dev
+run-desktop:
+ifeq ($(OS),windows)
+	cmd /c scripts\dev\start-desktop-windows.bat
+else ifeq ($(OS),darwin)
+	bash scripts/dev/start-desktop-macos.sh
+else
+	bash scripts/dev/start-desktop-linux.sh
+endif
 
 run-mobile-android:
 	$(call npm-install-if-needed,mobile)

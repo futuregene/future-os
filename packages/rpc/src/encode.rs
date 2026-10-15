@@ -652,6 +652,9 @@ fn get_agent_readiness(data: &Value) -> Option<proto::AgentReadiness> {
     Some(proto::AgentReadiness {
         version: payload.version,
         agent_instance_id: payload.agent_instance_id,
+        protocol_version: payload.protocol_version,
+        data_root_id: payload.data_root_id,
+        storage_schema_version: payload.storage_schema_version,
     })
 }
 

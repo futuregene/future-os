@@ -388,7 +388,7 @@ mod tests {
         let printed = text(captured.out);
         assert!(printed.contains("demo"), "{printed}");
         assert!(
-            printed.contains(&project.canonicalize().unwrap().display().to_string()),
+            printed.contains(&workspaces::normalize_path(&project).display().to_string()),
             "the stored path is canonical: {printed}"
         );
 
@@ -466,7 +466,7 @@ mod tests {
         assert_eq!(parsed[0]["name"], "tilde-project");
         assert_eq!(
             parsed[0]["path"],
-            project.canonicalize().unwrap().display().to_string()
+            workspaces::normalize_path(&project).display().to_string()
         );
     }
 

@@ -95,7 +95,8 @@ fi
 echo "==> Building CLI (release) and staging as Tauri sidecar"
 cargo build --release --manifest-path cli/Cargo.toml
 mkdir -p desktop/src-tauri/binaries
-cp target/release/future "desktop/src-tauri/binaries/future-$TRIPLE"
+# A previous check may have left a non-executable externalBin placeholder.
+install -m 755 target/release/future "desktop/src-tauri/binaries/future-$TRIPLE"
 
 echo "==> Setting Tauri bundle version"
 node scripts/version.mjs --set-bundle

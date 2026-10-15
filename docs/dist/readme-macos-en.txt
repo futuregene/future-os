@@ -19,8 +19,13 @@ a "unidentified developer" or "damaged" warning. This is expected. Choose one:
 
 [Notes]
 · An internet connection is required for the first-time login (in the app).
-· Personal data is stored in ~/.future. The app stops only the agent it started;
-  an externally managed agent stays running.
+· Personal data is stored in ~/.future. Desktop hosts a complete in-process Agent
+  by default and can attach to a compatible external service.
+· Exiting an embedded owner cancels every client's work, including CLI/TUI;
+  GUI prompts for active work. Attached external Agents survive; Desktop cancels
+  only its own submitted runs.
+· Incompatible or unavailable lock owners fail. Exit or upgrade that service;
+  never delete its lock to bypass the check.
 · The desktop defaults to Unrestricted; select approvals/sandboxing in Settings.
   Online features still send requests to their corresponding services.
 · The command-line tool future is included at

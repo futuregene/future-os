@@ -129,6 +129,9 @@ mod tests {
                 serde_json::json!({
                     "version": crate::build_info::VERSION,
                     "agentInstanceId": "matching-agent",
+                    "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION,
+                    "dataRootId": "0".repeat(64),
+                    "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION,
                 })
                 .to_string(),
             )]),
@@ -195,6 +198,9 @@ mod tests {
                 serde_json::json!({
                     "version": crate::build_info::VERSION,
                     "agentInstanceId": "matching-agent",
+                    "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION,
+                    "dataRootId": "0".repeat(64),
+                    "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION,
                 })
                 .to_string(),
             )]),

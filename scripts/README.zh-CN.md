@@ -20,13 +20,17 @@
 
 ## dev/
 
-本地开发会话：构建并启动 agent 与一个前端。
+本地开发会话。Desktop 默认启动内置 Agent；
+`FUTURE_DESKTOP_AGENT_MODE=external` 仅连接另行启动的服务。
 
-- `start-desktop-linux.sh` — Linux Tauri 桌面开发会话，对接本地构建的 agent。
+- `start-desktop-linux.sh` — 使用内置 Agent 的 Linux Tauri 桌面开发会话。
 - `start-desktop-macos.sh` — 上者的 macOS 版本。
-- `start-desktop-windows.bat` — 上者的 Windows 版本。
+- `start-desktop-common.sh` — macOS/Linux 公共实现；独立开发进程组、有界退出及 CLI 暂存。
+- `start-desktop-windows.bat` / `start-desktop-windows.ps1` — Windows 包装入口与实际实现。
 - `start-mobile-android.sh` — Expo/Android 开发会话（SDK 检查、prebuild、Gradle 或 Metro）。
 - `start-mobile-ios.sh` — Expo/iOS 开发会话（CocoaPods、prebuild、Xcode 构建或 Metro）。
+
+详细开关、退出语义和恢复见 [Desktop Agent 指南](../docs/guide/desktop-agent.zh-CN.md)。`DRY_RUN=1` 不启动进程；`RUN_CHECKS=1` 仅静态检查。端口占用失败而不换端口；相对 Cargo 输出目录从仓库根解析。
 
 ## release/
 
@@ -99,7 +103,12 @@ runner `.cmd` 脚本、把原始输出整理成旁证文件的几个分析脚本
 - `test-windows-installer-preflight.ps1` — 使用下述 fixture 的 NSIS 安装器生命周期验收。
 - `test-windows-sandbox.ps1` — Windows 原生沙箱验收（手动调用，不进 CI）。
 - `test-windows-sandbox-lifecycle.ps1` — 沙箱生命周期验收动作
-  （Snapshot / ExpectBundled / SeedCleanupFixture / ExpectStopped）。
+  （Snapshot / ExpectEmbedded / SeedCleanupFixture / ExpectStopped）；断言要求
+  `-InstallDirectory`，核对内置宿主身份、实例锁与真实 CLI RPC。
+- `test-windows-lifecycle-assertions.ps1` — 生命周期断言离线回归，仅导入纯函数，
+  不检查或修改真实运行状态。
+- `test-windows-update-launcher.ps1` — 升级观察器和恢复离线 fixture，由安装预检
+  套件传入编译后的 fixture 程序运行。
 - `test_s2_compaction.py` — 针对已构建 `future` 二进制的本地 S2 压缩冒烟测试。
 - `validate-ios-share-profiles.py` — 主/扩展 provisioning profile 缺少共享权限时在归档前失败。
 - `test_ios_share_profiles.py` — `validate-ios-share-profiles.py` 的离线单元测试。
@@ -110,6 +119,11 @@ runner `.cmd` 脚本、把原始输出整理成旁证文件的几个分析脚本
 
 CI 辅助脚本（由工作流文件调用）。
 
+- `check-embedded-agent.py` — Linux、Windows、macOS 的启动入口 dry-run、CLI 查找行为及 RPC/服务/GUI/headless
+  原生生命周期专项门禁，由 CI 归档日志和 JSON 汇总。
+- `check-packaged-entrypoints.py` — 解包真实 deb/NSIS、portable 和 CLI 压缩包，
+  使用隔离目录验证早期入口与精确 CLI 版本，并对包内 Linux 静态程序执行旧 glibc
+  headless 检查；保留 JSON 和日志证据。
 - `check-headless-linux.sh` — 校验发布二进制为静态链接，然后在无网络、旧 glibc 的
   干净 Linux 镜像中启动它（便携包基线）。
 - `install-apt-packages.sh` — 安装仅 CI 使用的 Ubuntu 软件包；Azure runner 镜像

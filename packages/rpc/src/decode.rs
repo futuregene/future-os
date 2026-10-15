@@ -684,6 +684,9 @@ fn agent_readiness_from_proto(
     crate::payloads_ext::AgentReadinessPayload {
         version: info.version.clone(),
         agent_instance_id: info.agent_instance_id.clone(),
+        protocol_version: info.protocol_version,
+        data_root_id: info.data_root_id.clone(),
+        storage_schema_version: info.storage_schema_version,
     }
 }
 

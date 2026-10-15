@@ -1,4 +1,8 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!(
+        "cargo:rustc-env=FUTURE_TARGET_TRIPLE={}",
+        std::env::var("TARGET")?
+    );
     // Inject the build version (see scripts/version.mjs) as a compile-time env.
     let base = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_string());
     let version = std::env::var("FUTURE_VERSION")
@@ -90,9 +94,9 @@ fn ensure_placeholder_sidecars_for_non_release_builds() -> Result<(), Box<dyn st
     let binaries_dir = std::path::Path::new("binaries");
     std::fs::create_dir_all(binaries_dir)?;
 
-    // The unified `future` CLI is the only sidecar — `future agent` runs the
-    // embedded agent, so a separate future-agent binary is no longer bundled
-    // (see agent_supervisor.rs).
+    // Compile-only CLI placeholder. Desktop embeds Agent as a Rust library;
+    // the real packaged CLI remains required for skills/maintenance. Runtime
+    // tool discovery rejects these empty files; packaging stages a real CLI.
     let path = binaries_dir.join(format!("future-{target}{ext}"));
     if !path.exists() {
         std::fs::File::create(path)?;

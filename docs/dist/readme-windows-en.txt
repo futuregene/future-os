@@ -5,19 +5,17 @@ FutureOS Portable Setup Guide (Windows)
 Extract the entire archive to any folder (e.g. D:\FutureOS) and double-click
 FutureOS.exe to run — no installation needed.
 Note: FutureOS.exe and future.exe must stay in the same folder; do not move
-them separately. The backend agent is launched automatically via future.exe
-(`future agent`) on startup.
+them separately. Desktop hosts the complete Agent in its own process by default;
+future.exe remains available for skills, maintenance and independent CLI use.
 
 [First Run]
 · SmartScreen reputation warnings can occur even on signed builds. Verify the
   official source/publisher first; choose "More info" → "Run anyway" only for
   a trusted artifact. Do not bypass an unexpected signature/publisher mismatch.
-· If the window opens but says "backend service not connected": the downloaded
-  archive was flagged as "from the Internet". Recommended fix: before
-  extracting, right-click the .zip → "Properties" → check "Unblock" at the
-  bottom → OK → extract. Or, after extracting, open PowerShell in that folder
-  and run:
-    Get-ChildItem -Recurse | Unblock-File
+· For an incompatible backend or held instance lock, identify GUI/headless or
+  independently managed Agents using the same data root. Exit or upgrade the
+  owner, then reopen. Never delete the lock. Desktop does not start a second
+  Agent when an external service is incompatible or its lock owner unavailable.
 
 [Runtime]
 Requires the Microsoft Edge WebView2 Runtime (included on recent Win10 / Win11).
@@ -28,7 +26,9 @@ website and try again.
 [Notes]
 · An internet connection is required for the first-time login.
   Personal data is stored in C:\Users\<username>\.future.
-· On app exit, only the agent it started is stopped; external agents stay running.
+· Exiting an embedded owner cancels every client's active, queued and approval
+  work, including CLI/TUI conversations; GUI prompts when work exists. Attached
+  external Agents survive; Desktop cancels only its own submitted runs.
 · The desktop defaults to Unrestricted; select approvals/write protection in
   Settings. Online features still send requests to their corresponding services.
 · The command-line tool future.exe is included in the same directory.

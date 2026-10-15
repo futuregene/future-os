@@ -117,10 +117,7 @@ where
     // asynchronous commands run on); the server build has no Tauri runtime and
     // uses the process runtime `headless::run` installs, exactly like
     // `tasks::start_headless`.
-    #[cfg(feature = "gui")]
-    tauri::async_runtime::spawn(loop_body);
-    #[cfg(not(feature = "gui"))]
-    tokio::spawn(loop_body);
+    crate::runtime::spawn(loop_body);
 }
 
 async fn run_explicit<T, F, Fut>(job: &'static FixedIntervalJob, run: F) -> Result<T, AppError>
@@ -412,6 +409,10 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
 
+        // HOME fixtures cancel the process-wide task registry. Hold their
+        // shared guard so parallel cleanup cannot abort this loop mid-test,
+        // and stop our loop before the next fixture changes HOME.
+        let _home = crate::auth_store::test_support::HomeGuard::new("scheduler_spawned");
         let job: &'static FixedIntervalJob =
             Box::leak(Box::new(FixedIntervalJob::new(Duration::from_millis(40))));
         let runs = Arc::new(AtomicUsize::new(0));
@@ -453,6 +454,7 @@ mod tests {
     #[cfg(feature = "gui")]
     #[test]
     fn starting_the_loops_on_a_mock_app_is_inert() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("scheduler_mock");
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
         let before = Instant::now();

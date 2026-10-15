@@ -39,7 +39,7 @@ alias future="/Applications/FutureOS.app/Contents/MacOS/future"
 
 Most commands connect to the FutureOS agent (the background service). If the **desktop app is open**, the agent is already running. Otherwise, start the agent with `future agent` (or the `future-agent` binary directly — both are the same code), or open the desktop app, which starts it automatically.
 
-`future config`, `future auth login`, and `future auth logout` also work with the agent stopped, writing configuration under `~/.future/agent/`. Skill catalog/install commands do not require an agent either. The TUI, like the desktop, can start its own agent sidecar. `future doctor` diagnoses connectivity; default discovery is per-user local IPC, not an always-open TCP port.
+`future config`, `future auth login`, and `future auth logout` also work with the agent stopped, writing configuration under `~/.future/agent/`. Skill catalog/install commands do not require an agent either. The TUI retains independent Agent startup; Desktop hosts the complete Agent in process or attaches to a compatible external service. Exiting an embedded owner also stops CLI/TUI work; see the [Desktop Agent guide](../../guide/desktop-agent.md). `future doctor` diagnoses connectivity; default discovery is per-user local IPC, not an always-open TCP port.
 
 ---
 
@@ -306,7 +306,7 @@ Checks login status, component installation, agent connectivity, OS sandbox avai
 ## Tips
 
 - **macOS blocked it?** Verify the download/signature first. Trusted unsigned test builds have separate first-launch instructions; see [[FAQ]].
-- **Connection failed?** Run `future doctor`; check sidecar errors and matching user/IPC environment. Open the desktop or start `future agent` if needed.
+- **Connection failed?** Run `future doctor`; check Agent startup/compatibility/instance-lock errors and matching user/IPC environment. Open the desktop or start `future agent` if needed.
 
 ---
 

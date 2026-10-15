@@ -86,9 +86,15 @@ pub async fn stop_gracefully(reason: &str) -> RemoteStatus {
     let notice = mobile_disconnect_notice(reason);
     let status = stop();
     if let Some((client, subject, payload)) = notice {
-        crate::runtime::spawn(async move {
+        if crate::desktop_shutdown::is_stopping() {
+            // Registration is frozen at process exit. Still deliver the bounded
+            // presence notice before the cleanup runtime goes away.
             send_mobile_disconnect_notice(client, subject, payload).await;
-        });
+        } else {
+            crate::runtime::spawn(async move {
+                send_mobile_disconnect_notice(client, subject, payload).await;
+            });
+        }
     }
     status
 }

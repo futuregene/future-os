@@ -23,14 +23,13 @@ use std::collections::HashMap;
 /// call sites.
 pub(crate) use crate::remote::test_support::mock_agent_lock;
 
-/// What the mock answers. `down` answers every command *except* the
-/// connect-time health check with `Code::Unavailable` — indistinguishable from
-/// a dead agent for callers (`AppError::AgentUnavailable`), while still
-/// letting `connect_agent` latch its channel, so test outcomes don't depend on
-/// execution order.
+/// What the mock answers. `down` also rejects readiness with
+/// `Code::Unavailable`, so connection gates and business calls both observe
+/// `AppError::AgentUnavailable`.
 #[derive(Clone, Default)]
 pub(crate) struct MockScript {
-    /// Every command but the health check answers `Unavailable`.
+    /// Readiness and business commands answer `Unavailable`; the legacy
+    /// `list_streaming_sessions` probe remains available to existing fixtures.
     pub down: bool,
     /// `list_session_ids` returns `success = false` (enumeration failed).
     pub fail_list_session_ids: bool,
@@ -58,6 +57,7 @@ pub(crate) fn ensure_mock_agent() -> crate::remote::test_support::MockAgent {
 /// Point the mock at a new persistent script. Caller must hold
 /// [`mock_agent_lock`].
 pub(crate) fn script_mock_agent(script: MockScript) {
+    crate::agent_bridge::reset_test_connection();
     let mut data = script.data;
     let mut errors = script.errors;
     if script.fail_list_session_ids {
@@ -68,8 +68,7 @@ pub(crate) fn script_mock_agent(script: MockScript) {
         data.entry("list_session_ids".to_string())
             .or_insert_with(|| serde_json::json!({ "ids": script.session_ids }).to_string());
     }
-    // The health check always answers Ok (even in down mode), reporting the
-    // scripted streaming sessions.
+    // Report scripted streaming sessions when the Agent is up.
     data.entry("list_streaming_sessions".to_string())
         .or_insert_with(|| serde_json::json!({ "sessionIds": script.streaming_ids }).to_string());
     let agent = ensure_mock_agent();
@@ -150,9 +149,7 @@ mod tests {
     async fn mock_down_mode_is_indistinguishable_from_a_dead_agent() {
         let _lock = mock_agent_lock();
         ensure_mock_agent();
-        // Latch the process-wide agent channel while the mock is up (the
-        // health check succeeds even in down mode, so this cannot fail once
-        // the mock is started).
+        // Verify the process-wide Agent connection while the mock is up.
         script_mock_agent(MockScript::default());
         let mut client = crate::agent_bridge::connect_agent()
             .await
@@ -169,23 +166,11 @@ mod tests {
             .await;
         assert_eq!(first.expect_err("down mock").code(), Code::Unavailable);
 
-        // The health check stays up: the latch/health probe must keep
-        // succeeding so callers reach the Unavailable path instead of a
-        // connect failure.
-        let health = client
-            .execute_command(typed_command("list_streaming_sessions"))
+        // Readiness is mandatory even for reads and cached channels.
+        let error = crate::agent_bridge::connect_agent()
             .await
-            .expect("health check");
-        assert!(health.into_inner().success);
-
-        // A fresh connect reuses the latched channel — same failure.
-        let mut again = crate::agent_bridge::connect_agent()
-            .await
-            .expect("latched channel");
-        let second = again
-            .execute_command(typed_command("list_session_ids"))
-            .await;
-        assert_eq!(second.expect_err("down mock").code(), Code::Unavailable);
+            .expect_err("a down Agent must not produce a verified client");
+        assert!(matches!(error, crate::AppError::AgentUnavailable(_)));
 
         script_mock_agent(MockScript::default());
     }

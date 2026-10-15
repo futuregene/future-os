@@ -65,14 +65,14 @@ impl RunClient {
             cmd.session_id = sid.to_string();
         }
 
-        let connected = future_rpc::transport::connect_channel(
-            Some(&self.addr),
+        let mut client = future_rpc::connection::connect_verified(
+            &self.addr,
+            future_rpc::connection::EXPECTED_AGENT_VERSION,
             Duration::from_secs(timeout_secs.min(5)),
-            None,
+            Duration::from_secs(5),
         )
         .await
-        .map_err(|e| e.to_string())?;
-        let mut client = future_rpc::transport::agent_client(connected.channel);
+        .map_err(|error| error.to_string())?;
         let response = client
             .execute_command(future_rpc::command_policy::request_with_timeout(cmd))
             .await
@@ -712,16 +712,14 @@ impl RunClient {
         verbose: bool,
         out: &Output,
     ) -> Result<(Vec<Value>, String), String> {
-        let connected = future_rpc::transport::connect_channel(
-            Some(&self.addr),
+        let mut client = future_rpc::connection::connect_verified(
+            &self.addr,
+            future_rpc::connection::EXPECTED_AGENT_VERSION,
             Duration::from_secs(5),
-            // The stream has its own lifecycle/watchdogs; never apply an
-            // overall channel or gRPC request deadline.
-            None,
+            Duration::from_secs(5),
         )
         .await
-        .map_err(|e| e.to_string())?;
-        let mut client = future_rpc::transport::agent_client(connected.channel);
+        .map_err(|error| error.to_string())?;
         let request = StreamRequest {
             session_id: session_id.to_string(),
             ..Default::default()
