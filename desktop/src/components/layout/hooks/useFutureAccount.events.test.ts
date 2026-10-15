@@ -289,6 +289,25 @@ describe("useFutureAccount pushed updates", () => {
     harness.unmount();
   });
 
+  it("re-reads the account when the scheduler reports the credential gone or rejected", async () => {
+    const harness = renderHook(() => useFutureAccount());
+    await flushAsync();
+    expect(harness.current.status).toBe("authenticated");
+
+    // The window may have been showing an account and a balance for hours; the
+    // scheduler's answer is the only nudge it gets, and the authoritative state
+    // (here: signed out) is what it must end up showing.
+    mocks.getAuth.mockResolvedValue({ profile: null, status: "signed_out" });
+    act(() => mocks.tauri["scheduler-future-auth-changed"]!({}));
+    await flushAsync();
+    await flushAsync();
+    expect(mocks.clearProfile).toHaveBeenCalled();
+    expect(mocks.clearBalance).toHaveBeenCalled();
+    expect(harness.current.status).toBe("signed_out");
+    expect(harness.current.balance).toBeNull();
+    harness.unmount();
+  });
+
   it("resets to checking and re-verifies after a credential change", async () => {
     const harness = renderHook(() => useFutureAccount());
     await flushAsync();

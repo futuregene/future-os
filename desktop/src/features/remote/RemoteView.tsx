@@ -301,11 +301,24 @@ export function RemoteHostSection({
               <div className="flex h-9 items-center">
                 {busy
                   ? <p aria-live="polite" className="text-sm text-ink-muted">{t("preparingPairingHint")}</p>
-                  : (
-                      <Button onClick={() => void handleStart()} variant="primary">
-                        {t("pairAndStart")}
-                      </Button>
-                    )}
+                  : presentation?.action === "loginAgain"
+                    ? (
+                        /* Pairing needs an account: the platform issues the code,
+                           so without one this button could only ever fail. It
+                           offers the step that unblocks the user, and matches the
+                           failure said above it. */
+                        <Button
+                          onClick={() => emitFutureEvent("show-onboarding", undefined)}
+                          variant="primary"
+                        >
+                          {t("loginAgain")}
+                        </Button>
+                      )
+                    : (
+                        <Button onClick={() => void handleStart()} variant="primary">
+                          {t("pairAndStart")}
+                        </Button>
+                      )}
               </div>
             )
           : null}
