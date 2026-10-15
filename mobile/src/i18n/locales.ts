@@ -889,12 +889,6 @@ export const resources = {
           sat: "Sat",
           sun: "Sun",
         },
-        join: { all: "all upstreams", any: "any upstream" },
-        on: {
-          success: "after success",
-          failure: "after failure",
-          completed: "after any result",
-        },
         form: {
           details: "Scheduled task details",          name: "Name",
           model: "Model",
@@ -1765,12 +1759,6 @@ export const resources = {
           fri: "周五",
           sat: "周六",
           sun: "周日",
-        },
-        join: { all: "全部到齐", any: "任一到达" },
-        on: {
-          success: "成功后",
-          failure: "失败后",
-          completed: "结束后",
         },
         form: {
           details: "定时任务信息",

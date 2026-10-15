@@ -119,6 +119,23 @@ pub struct AgentClient {
     inner: Option<VerifiedAgentClient>,
 }
 
+/// First present key on the payload's `usage` object, as a token count.
+///
+/// A provider that reports no usage simply omits the object, so a miss is 0
+/// rather than an error.
+fn read_usage_u64(usage: Option<&Value>, keys: &[&str]) -> u64 {
+    keys.iter()
+        .find_map(|key| usage?.get(*key)?.as_u64())
+        .unwrap_or(0)
+}
+
+/// First present key on the payload's `usage` object, as a money amount.
+fn read_usage_f64(usage: Option<&Value>, keys: &[&str]) -> f64 {
+    keys.iter()
+        .find_map(|key| usage?.get(*key)?.as_f64())
+        .unwrap_or(0.0)
+}
+
 impl AgentClient {
     /// Connect through the shared per-user transport discovery: an explicit
     /// TCP address (FUTURE_GOAL_AGENT_ADDR, or a test mock addr) is tried
@@ -371,10 +388,25 @@ impl AgentClient {
         let s = self
             .call("get_state", session_id, Default::default())
             .await?;
+        // The typed `get_state` payload carries usage in its nested `usage`
+        // object (`GetStatePayload` → `SessionUsage`, camelCase). The former
+        // top-level `tokensIn` / `tokensOut` / `totalCost` keys no longer exist
+        // on the agent — reading them silently returned zeros, which is why
+        // every run record reported `tokens_*_delta: 0` and `cost_delta: 0.0`
+        // while the agent's own session accounting held the real figures.
+        //
+        // No fallback to the retired keys: a fallback is what let the test
+        // fixture keep emitting the old shape and hide this. The snake_case
+        // spellings are accepted because the payload reaches us through the
+        // generic typed decode, and the TUI's usage reader tolerates both.
+        let usage = s.get("usage");
+        let tokens_in = read_usage_u64(usage, &["inputTokens", "input_tokens"]);
+        let tokens_out = read_usage_u64(usage, &["outputTokens", "output_tokens"]);
+        let cost = read_usage_f64(usage, &["costCny", "cost_cny"]);
         Ok(SessionTotals {
-            tokens_in: s["tokensIn"].as_u64().unwrap_or(0),
-            tokens_out: s["tokensOut"].as_u64().unwrap_or(0),
-            cost: s["totalCost"].as_f64().unwrap_or(0.0),
+            tokens_in,
+            tokens_out,
+            cost,
         })
     }
 
