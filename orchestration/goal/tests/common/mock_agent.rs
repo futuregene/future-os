@@ -167,7 +167,7 @@ impl FutureAgent for MockAgent {
             .as_deref()
             .unwrap_or("goal-mock-agent");
         let root = "0".repeat(64);
-        if cmd.r#type == "readiness" {
+        if cmd.r#type == "get_agent_readiness" {
             return Ok(response(
                 &cmd,
                 true,
