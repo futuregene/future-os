@@ -141,7 +141,8 @@ export function serialize(editor: HTMLDivElement | null): string {
       const path = element.getAttribute("data-path") ?? "";
       // Angle-wrap whenever the path holds whitespace OR parens: a bare `)` in
       // the path closes the markdown link early, truncating downstream parsing
-      // (MessageBlock's MENTION_LINK matches the `<...>` form for these).
+      // (the composer's MENTION_LINK and the markdown parser both read the
+      // `<...>` destination form for these).
       out += `[${label}](${/[\s()]/.test(path) ? `<${path}>` : path})`;
       return;
     }
