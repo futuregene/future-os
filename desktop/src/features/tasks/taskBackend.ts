@@ -1,10 +1,4 @@
-import type {
-  TaskDepInput,
-  TaskDepView,
-  TaskInput,
-  TaskRunView,
-  TaskView,
-} from "./useTasks";
+import type { TaskInput, TaskRunView, TaskView } from "./useTasks";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 
 /**
@@ -31,36 +25,6 @@ export interface TaskBackend {
   setEnabled: (id: string, enabled: boolean) => Promise<void>;
   runNow: (id: string) => Promise<void>;
   listRuns: (id: string, limit: number) => Promise<TaskRunView[]>;
-  listDeps: (id: string) => Promise<TaskDepView[]>;
-  setDep: (id: string, upstreamTaskId: string, on: string) => Promise<void>;
-  removeDep: (id: string, upstreamTaskId: string) => Promise<void>;
-}
-
-/**
- * The lazy reconciliation both backends share: make a task's edges say exactly
- * `wanted` and nothing else.
- *
- * It compares against what is stored *now*, not what the form was opened with,
- * so an edit made elsewhere in between is not silently reverted.
- */
-export async function reconcileDeps(
-  backend: Pick<TaskBackend, "listDeps" | "setDep" | "removeDep">,
-  id: string,
-  wanted: TaskDepInput[],
-): Promise<void> {
-  const current = await backend.listDeps(id);
-  const byUpstream = new Map(wanted.map(dep => [dep.upstreamTaskId, dep.on]));
-  for (const dep of current) {
-    const on = byUpstream.get(dep.upstreamTaskId);
-    if (on === undefined)
-      await backend.removeDep(id, dep.upstreamTaskId);
-    else if (on !== dep.on)
-      await backend.setDep(id, dep.upstreamTaskId, on);
-    byUpstream.delete(dep.upstreamTaskId);
-  }
-  // What is left in the map is new: it was not among the stored edges.
-  for (const [upstreamTaskId, on] of byUpstream)
-    await backend.setDep(id, upstreamTaskId, on);
 }
 
 /** This app's own task store, through the Tauri commands. */
@@ -86,14 +50,5 @@ export const localTaskBackend: TaskBackend = {
   },
   listRuns(id, limit) {
     return invokeCommand<TaskRunView[]>("list_task_runs", { id, limit });
-  },
-  listDeps(id) {
-    return invokeCommand<TaskDepView[]>("list_task_deps", { id });
-  },
-  async setDep(id, upstreamTaskId, on) {
-    await invokeCommand<void>("set_task_dep", { id, upstreamTaskId, on });
-  },
-  async removeDep(id, upstreamTaskId) {
-    await invokeCommand<void>("remove_task_dep", { id, upstreamTaskId });
   },
 };

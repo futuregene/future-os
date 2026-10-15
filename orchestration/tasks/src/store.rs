@@ -19,25 +19,25 @@ pub const STORE_DIR: &str = "tasks";
 /// this order, and `task_from_row` reads them positionally.
 const TASK_COLUMNS: &str = "
     id, name, enabled, prompt, prompt_version, cwd, model_id, thinking_level,
-    session_policy, conversation_mode, thread_id, trigger_kind, trigger_json, dep_join,
+    session_policy, conversation_mode, thread_id, trigger_kind, trigger_json,
     next_due_at, pending_request_at, pending_origin, pending_actor,
     session_retention, created_at, updated_at, deleted_at";
 
 const SQL_INSERT_TASK: &str = "
     INSERT INTO tasks (
         id, name, enabled, prompt, prompt_version, cwd, model_id, thinking_level,
-        session_policy, conversation_mode, thread_id, trigger_kind, trigger_json, dep_join,
+        session_policy, conversation_mode, thread_id, trigger_kind, trigger_json,
         next_due_at, pending_request_at, pending_origin, pending_actor,
         session_retention, created_at, updated_at, deleted_at
-    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)";
+    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)";
 
 const SQL_UPDATE_TASK: &str = "
     UPDATE tasks SET
         name=?2, enabled=?3, prompt=?4, prompt_version=?5, cwd=?6, model_id=?7,
         thinking_level=?8, session_policy=?9, conversation_mode=?10, thread_id=?11,
-        trigger_kind=?12, trigger_json=?13, dep_join=?14, next_due_at=?15,
-        pending_request_at=?16, pending_origin=?17, pending_actor=?18,
-        session_retention=?19, updated_at=?20, deleted_at=?21
+        trigger_kind=?12, trigger_json=?13, next_due_at=?14,
+        pending_request_at=?15, pending_origin=?16, pending_actor=?17,
+        session_retention=?18, updated_at=?19, deleted_at=?20
     WHERE id=?1";
 
 /// `(enabled = 1)` plus "due now or explicitly requested" — the tick's query.
@@ -47,35 +47,6 @@ const SQL_DUE_TASKS: &str = "
       AND (pending_request_at IS NOT NULL
            OR (trigger_kind = 'schedule' AND next_due_at IS NOT NULL AND next_due_at <= ?1))
     ORDER BY next_due_at, created_at";
-
-const SQL_ADD_DEP: &str =
-    "INSERT OR REPLACE INTO task_deps (task_id, upstream_task_id, on_condition) VALUES (?1, ?2, ?3)";
-const SQL_DROP_DEP: &str = "DELETE FROM task_deps WHERE task_id = ?1 AND upstream_task_id = ?2";
-const SQL_DROP_DEP_STATE: &str =
-    "DELETE FROM task_dep_state WHERE task_id = ?1 AND upstream_task_id = ?2";
-/// Edges that point *at* a task, from whatever downstream. Used when a task is
-/// deleted: the downstream must not keep waiting on something that is gone.
-const SQL_DROP_DEPS_POINTING_AT: &str = "DELETE FROM task_deps WHERE upstream_task_id = ?1";
-const SQL_DROP_DEP_STATES_POINTING_AT: &str =
-    "DELETE FROM task_dep_state WHERE upstream_task_id = ?1";
-const SQL_LIST_DEPS: &str =
-    "SELECT task_id, upstream_task_id, on_condition FROM task_deps WHERE task_id = ?1";
-const SQL_LIST_ALL_DEPS: &str = "SELECT task_id, upstream_task_id, on_condition FROM task_deps";
-const SQL_GET_DEP_STATE: &str = "
-    SELECT task_id, upstream_task_id, satisfied_run_id, satisfied_at
-    FROM task_dep_state WHERE task_id = ?1 AND upstream_task_id = ?2";
-const SQL_LIST_DEP_STATES: &str = "
-    SELECT task_id, upstream_task_id, satisfied_run_id, satisfied_at
-    FROM task_dep_state WHERE task_id = ?1";
-const SQL_MARK_DEP_SATISFIED: &str = "
-    INSERT INTO task_dep_state (task_id, upstream_task_id, satisfied_run_id, satisfied_at)
-    VALUES (?1, ?2, ?3, ?4)
-    ON CONFLICT(task_id, upstream_task_id) DO UPDATE SET
-      satisfied_run_id = excluded.satisfied_run_id,
-      satisfied_at = excluded.satisfied_at";
-const SQL_CLEAR_DEP_STATE: &str = "
-    UPDATE task_dep_state SET satisfied_run_id = NULL, satisfied_at = NULL
-    WHERE task_id = ?1 AND upstream_task_id = ?2";
 
 /// The `task_runs` column list (see `TASK_COLUMNS`).
 /// The run's small columns: `result_text` (the saved answer) is deliberately
@@ -215,6 +186,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   thread_id        TEXT,
   trigger_kind     TEXT NOT NULL,
   trigger_json     TEXT NOT NULL,
+  -- Legacy column. Task dependencies were removed; nothing reads or writes it,
+  -- and it is kept so an existing database needs no destructive migration.
   dep_join         TEXT NOT NULL DEFAULT 'all',
   next_due_at      INTEGER,
   pending_request_at INTEGER,
@@ -227,6 +200,11 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS tasks_active_name ON tasks(name) WHERE deleted_at IS NULL;
 
+-- Legacy tables. Task dependencies were removed; nothing reads or writes these
+-- any more. They are kept (rather than dropped) so an existing database loses
+-- no rows to a migration nobody asked for, and so a downgrade does not have to
+-- recreate them. A future cleanup can drop them once no installation can still
+-- carry rows worth keeping.
 CREATE TABLE IF NOT EXISTS task_deps (
   task_id          TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   upstream_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -366,7 +344,6 @@ impl Store {
             task.thread_id,
             trigger_kind_str(task.trigger_kind),
             serde_json::to_string(&task.trigger_json)?,
-            dep_join_str(task.dep_join),
             task.next_due_at,
             task.pending_request_at,
             task.pending_origin.map(run_origin_str),
@@ -395,7 +372,6 @@ impl Store {
             task.thread_id,
             trigger_kind_str(task.trigger_kind),
             serde_json::to_string(&task.trigger_json)?,
-            dep_join_str(task.dep_join),
             task.next_due_at,
             task.pending_request_at,
             task.pending_origin.map(run_origin_str),
@@ -442,83 +418,6 @@ impl Store {
         let rows = stmt.query_map(params![now_ms], task_from_row)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
-    }
-
-    // ─── deps ─────────────────────────────────────────────────────────────
-
-    pub fn add_dep(&self, dep: &TaskDep) -> Result<()> {
-        let values = params![dep.task_id, dep.upstream_task_id, dep_on_str(dep.on)];
-        self.conn.execute(SQL_ADD_DEP, values)?;
-        Ok(())
-    }
-
-    pub fn remove_dep(&self, task_id: &str, upstream_task_id: &str) -> Result<()> {
-        let values = params![task_id, upstream_task_id];
-        self.conn.execute(SQL_DROP_DEP, values)?;
-        self.conn.execute(SQL_DROP_DEP_STATE, values)?;
-        Ok(())
-    }
-
-    /// Drop every edge that points at `upstream_task_id`, whichever task holds
-    /// it. Deleting a task has to do this: an edge is a promise that the
-    /// upstream will report a run, and a deleted task never will — the
-    /// downstream would wait forever on a name that resolves to nothing.
-    pub fn remove_deps_pointing_at(&self, upstream_task_id: &str) -> Result<()> {
-        let values = params![upstream_task_id];
-        self.conn.execute(SQL_DROP_DEPS_POINTING_AT, values)?;
-        self.conn.execute(SQL_DROP_DEP_STATES_POINTING_AT, values)?;
-        Ok(())
-    }
-
-    pub fn list_deps(&self, task_id: &str) -> Result<Vec<TaskDep>> {
-        let mut stmt = self.conn.prepare(SQL_LIST_DEPS)?;
-        let rows = stmt.query_map(params![task_id], dep_from_row)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(Into::into)
-    }
-
-    pub fn list_all_deps(&self) -> Result<Vec<TaskDep>> {
-        let mut stmt = self.conn.prepare(SQL_LIST_ALL_DEPS)?;
-        let rows = stmt.query_map([], dep_from_row)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(Into::into)
-    }
-
-    pub fn get_dep_state(
-        &self,
-        task_id: &str,
-        upstream_task_id: &str,
-    ) -> Result<Option<TaskDepState>> {
-        let mut stmt = self.conn.prepare(SQL_GET_DEP_STATE)?;
-        let mut rows = stmt.query_map(params![task_id, upstream_task_id], dep_state_from_row)?;
-        Ok(rows.next().transpose()?)
-    }
-
-    pub fn list_dep_states(&self, task_id: &str) -> Result<Vec<TaskDepState>> {
-        let mut stmt = self.conn.prepare(SQL_LIST_DEP_STATES)?;
-        let rows = stmt.query_map(params![task_id], dep_state_from_row)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(Into::into)
-    }
-
-    pub fn mark_dep_satisfied(
-        &self,
-        task_id: &str,
-        upstream_task_id: &str,
-        run_id: &str,
-        at_ms: i64,
-    ) -> Result<()> {
-        let values = params![task_id, upstream_task_id, run_id, at_ms];
-        self.conn.execute(SQL_MARK_DEP_SATISFIED, values)?;
-        Ok(())
-    }
-
-    pub fn clear_dep_states(&self, task_id: &str, pairs: &[(String, String)]) -> Result<()> {
-        for (upstream, _run_id) in pairs {
-            let values = params![task_id, upstream];
-            self.conn.execute(SQL_CLEAR_DEP_STATE, values)?;
-        }
-        Ok(())
     }
 
     // ─── runs ─────────────────────────────────────────────────────────────
@@ -693,23 +592,6 @@ impl Store {
 
 // ─── row mapping ────────────────────────────────────────────────────────────
 
-fn dep_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskDep> {
-    Ok(TaskDep {
-        task_id: row.get(0)?,
-        upstream_task_id: row.get(1)?,
-        on: parse_dep_on(&row.get::<_, String>(2)?).unwrap_or(DepOn::Success),
-    })
-}
-
-fn dep_state_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskDepState> {
-    Ok(TaskDepState {
-        task_id: row.get(0)?,
-        upstream_task_id: row.get(1)?,
-        satisfied_run_id: row.get(2)?,
-        satisfied_at: row.get(3)?,
-    })
-}
-
 fn revision_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PromptRevision> {
     Ok(PromptRevision {
         id: row.get(0)?,
@@ -743,18 +625,17 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         trigger_kind: parse_trigger_kind(&row.get::<_, String>(11)?).unwrap_or(TriggerKind::Manual),
         trigger_json: serde_json::from_str(&row.get::<_, String>(12)?)
             .unwrap_or(serde_json::Value::Null),
-        dep_join: parse_dep_join(&row.get::<_, String>(13)?).unwrap_or(DepJoin::All),
-        next_due_at: row.get(14)?,
-        pending_request_at: row.get(15)?,
+        next_due_at: row.get(13)?,
+        pending_request_at: row.get(14)?,
         pending_origin: row
-            .get::<_, Option<String>>(16)?
+            .get::<_, Option<String>>(15)?
             .and_then(|s| parse_run_origin(&s)),
-        pending_actor: row.get(17)?,
-        session_retention: parse_session_retention(&row.get::<_, String>(18)?)
+        pending_actor: row.get(16)?,
+        session_retention: parse_session_retention(&row.get::<_, String>(17)?)
             .unwrap_or(SessionRetention::Keep),
-        created_at: row.get(19)?,
-        updated_at: row.get(20)?,
-        deleted_at: row.get(21)?,
+        created_at: row.get(18)?,
+        updated_at: row.get(19)?,
+        deleted_at: row.get(20)?,
     })
 }
 
@@ -793,36 +674,6 @@ fn parse_trigger_kind(s: &str) -> Option<TriggerKind> {
     match s {
         "manual" => Some(TriggerKind::Manual),
         "schedule" => Some(TriggerKind::Schedule),
-        _ => None,
-    }
-}
-
-fn dep_join_str(j: DepJoin) -> &'static str {
-    match j {
-        DepJoin::All => "all",
-        DepJoin::Any => "any",
-    }
-}
-fn parse_dep_join(s: &str) -> Option<DepJoin> {
-    match s {
-        "all" => Some(DepJoin::All),
-        "any" => Some(DepJoin::Any),
-        _ => None,
-    }
-}
-
-fn dep_on_str(o: DepOn) -> &'static str {
-    match o {
-        DepOn::Success => "success",
-        DepOn::Failure => "failure",
-        DepOn::Completed => "completed",
-    }
-}
-fn parse_dep_on(s: &str) -> Option<DepOn> {
-    match s {
-        "success" => Some(DepOn::Success),
-        "failure" => Some(DepOn::Failure),
-        "completed" => Some(DepOn::Completed),
         _ => None,
     }
 }
@@ -955,7 +806,6 @@ mod tests {
             thread_id: None,
             trigger_kind: TriggerKind::Schedule,
             trigger_json: serde_json::json!({"mode":"daily","time":"09:00"}),
-            dep_join: DepJoin::All,
             next_due_at: Some(1_000),
             pending_request_at: None,
             pending_origin: None,
@@ -975,7 +825,6 @@ mod tests {
         let got = s.get_task(&t.id).unwrap().unwrap();
         assert_eq!(got.name, "a");
         assert_eq!(got.trigger_kind, TriggerKind::Schedule);
-        assert_eq!(got.dep_join, DepJoin::All);
     }
 
     #[test]
@@ -1009,28 +858,6 @@ mod tests {
         assert!(names.contains(&"due"));
         assert!(names.contains(&"pending"));
         assert!(!names.contains(&"future"));
-    }
-
-    #[test]
-    fn dep_state_mark_and_clear() {
-        let (_dir, s) = store();
-        let a = task("a");
-        let b = task("b");
-        s.insert_task(&a).unwrap();
-        s.insert_task(&b).unwrap();
-        s.add_dep(&TaskDep {
-            task_id: b.id.clone(),
-            upstream_task_id: a.id.clone(),
-            on: DepOn::Success,
-        })
-        .unwrap();
-        s.mark_dep_satisfied(&b.id, &a.id, "trn_1", 1_000).unwrap();
-        let st = s.get_dep_state(&b.id, &a.id).unwrap().unwrap();
-        assert_eq!(st.satisfied_run_id.as_deref(), Some("trn_1"));
-        s.clear_dep_states(&b.id, &[(a.id.clone(), "trn_1".to_string())])
-            .unwrap();
-        let st = s.get_dep_state(&b.id, &a.id).unwrap().unwrap();
-        assert!(st.satisfied_run_id.is_none());
     }
 
     #[test]
@@ -1311,51 +1138,6 @@ mod tests {
         assert_eq!(third.find_task_by_name("old").unwrap().unwrap().name, "old");
     }
 
-    /// Deleting a task has to take the edges pointing at it: an edge is a
-    /// promise the upstream will report again, and a deleted one never will.
-    #[test]
-    fn edges_pointing_at_a_task_are_dropped_together() {
-        let (_dir, s) = store();
-        let upstream = task("upstream");
-        let a = task("a");
-        let b = task("b");
-        for t in [&upstream, &a, &b] {
-            s.insert_task(t).unwrap();
-        }
-        for downstream in [&a, &b] {
-            s.add_dep(&TaskDep {
-                task_id: downstream.id.clone(),
-                upstream_task_id: upstream.id.clone(),
-                on: DepOn::Success,
-            })
-            .unwrap();
-            s.mark_dep_satisfied(&downstream.id, &upstream.id, "trn_1", 1)
-                .unwrap();
-        }
-        // An unrelated edge survives.
-        s.add_dep(&TaskDep {
-            task_id: b.id.clone(),
-            upstream_task_id: a.id.clone(),
-            on: DepOn::Success,
-        })
-        .unwrap();
-
-        s.remove_deps_pointing_at(&upstream.id).unwrap();
-
-        assert!(s.list_deps(&a.id).unwrap().is_empty());
-        assert!(s.get_dep_state(&a.id, &upstream.id).unwrap().is_none());
-        assert!(s.get_dep_state(&b.id, &upstream.id).unwrap().is_none());
-        assert_eq!(
-            s.list_deps(&b.id).unwrap().len(),
-            1,
-            "an edge that does not point at the removed task is left alone"
-        );
-        assert_eq!(s.list_all_deps().unwrap().len(), 1);
-
-        // Idempotent: nothing left to remove is not an error.
-        s.remove_deps_pointing_at(&upstream.id).unwrap();
-    }
-
     /// Both conversation modes round-trip, and an unparseable value falls back
     /// to the behaviour every task had before the setting existed.
     #[test]
@@ -1409,7 +1191,6 @@ mod tests {
         t.thread_id = Some("thr_1".into());
         t.trigger_kind = TriggerKind::Manual;
         t.trigger_json = serde_json::json!({"mode":"interval","every_minutes":5,"anchor":7});
-        t.dep_join = DepJoin::Any;
         t.pending_request_at = Some(42);
         t.pending_origin = Some(RunOrigin::Chain);
         t.pending_actor = Some("task:tsk_up".into());
@@ -1492,65 +1273,6 @@ mod tests {
         let due = s.list_due_tasks(1_000).unwrap();
         let names: Vec<&str> = due.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"manual-future"), "{names:?}");
-    }
-
-    // ─── dependencies ─────────────────────────────────────────────────────
-
-    #[test]
-    fn dependency_edges_and_their_progress_are_stored_per_task() {
-        let (_dir, s) = store();
-        let a = task("a");
-        let b = task("b");
-        let c = task("c");
-        for t in [&a, &b, &c] {
-            s.insert_task(t).unwrap();
-        }
-        s.add_dep(&TaskDep {
-            task_id: c.id.clone(),
-            upstream_task_id: a.id.clone(),
-            on: DepOn::Success,
-        })
-        .unwrap();
-        s.add_dep(&TaskDep {
-            task_id: c.id.clone(),
-            upstream_task_id: b.id.clone(),
-            on: DepOn::Completed,
-        })
-        .unwrap();
-
-        let deps = s.list_deps(&c.id).unwrap();
-        assert_eq!(deps.len(), 2);
-        assert!(deps
-            .iter()
-            .any(|d| d.upstream_task_id == a.id && d.on == DepOn::Success));
-        assert!(deps
-            .iter()
-            .any(|d| d.upstream_task_id == b.id && d.on == DepOn::Completed));
-        assert!(s.list_deps(&a.id).unwrap().is_empty());
-        assert_eq!(s.list_all_deps().unwrap().len(), 2);
-
-        // Progress is per (downstream, upstream) pair and only the latest mark
-        // survives.
-        assert!(s.list_dep_states(&c.id).unwrap().is_empty());
-        assert!(s.get_dep_state(&c.id, &a.id).unwrap().is_none());
-        s.mark_dep_satisfied(&c.id, &a.id, "trn_1", 10).unwrap();
-        s.mark_dep_satisfied(&c.id, &a.id, "trn_2", 20).unwrap();
-        let states = s.list_dep_states(&c.id).unwrap();
-        assert_eq!(states.len(), 1);
-        assert_eq!(states[0].satisfied_run_id.as_deref(), Some("trn_2"));
-        assert_eq!(states[0].satisfied_at, Some(20));
-
-        s.clear_dep_states(&c.id, &[(a.id.clone(), "trn_2".into())])
-            .unwrap();
-        let st = s.get_dep_state(&c.id, &a.id).unwrap().unwrap();
-        assert!(st.satisfied_run_id.is_none());
-
-        // Removing an edge drops its progress row too.
-        s.mark_dep_satisfied(&c.id, &b.id, "trn_3", 30).unwrap();
-        s.remove_dep(&c.id, &a.id).unwrap();
-        assert_eq!(s.list_deps(&c.id).unwrap().len(), 1);
-        assert!(s.get_dep_state(&c.id, &a.id).unwrap().is_none());
-        assert_eq!(s.list_dep_states(&c.id).unwrap().len(), 1);
     }
 
     // ─── runs ─────────────────────────────────────────────────────────────
@@ -1704,7 +1426,7 @@ mod tests {
         let raw = Connection::open(store_path(dir.path())).unwrap();
         raw.execute(
             "UPDATE tasks SET session_policy='bogus', trigger_kind='bogus', trigger_json='not json',
-                              dep_join='bogus', pending_origin='bogus'
+                              pending_origin='bogus'
              WHERE id = ?1",
             params![t.id],
         )
@@ -1713,19 +1435,7 @@ mod tests {
         assert_eq!(got.session_policy, SessionPolicy::New);
         assert_eq!(got.trigger_kind, TriggerKind::Manual);
         assert_eq!(got.trigger_json, serde_json::Value::Null);
-        assert_eq!(got.dep_join, DepJoin::All);
         assert!(got.pending_origin.is_none());
-
-        // A real upstream row: the schema enforces the foreign key.
-        let upstream = task("upstream");
-        s.insert_task(&upstream).unwrap();
-        raw.execute(
-            "INSERT INTO task_deps (task_id, upstream_task_id, on_condition) VALUES (?1, ?2, 'bogus')",
-            params![t.id, upstream.id],
-        )
-        .unwrap();
-        assert_eq!(s.list_deps(&t.id).unwrap()[0].on, DepOn::Success);
-        assert_eq!(s.list_all_deps().unwrap()[0].on, DepOn::Success);
 
         s.insert_run(&run_row(&t.id, RunStatus::Running, 1))
             .unwrap();
@@ -1750,43 +1460,22 @@ mod tests {
     #[test]
     fn every_enum_value_round_trips_through_its_stored_spelling() {
         let (_dir, s) = store();
-        for (policy, join, retention) in [
-            (SessionPolicy::New, DepJoin::All, SessionRetention::Keep),
-            (
-                SessionPolicy::Existing,
-                DepJoin::Any,
-                SessionRetention::Keep,
-            ),
-            (SessionPolicy::New, DepJoin::All, SessionRetention::Delete),
+        for (policy, retention) in [
+            (SessionPolicy::New, SessionRetention::Keep),
+            (SessionPolicy::Existing, SessionRetention::Keep),
+            (SessionPolicy::New, SessionRetention::Delete),
         ] {
-            let mut t = task(&format!("{policy:?}-{join:?}-{retention:?}"));
+            let mut t = task(&format!("{policy:?}-{retention:?}"));
             t.session_policy = policy;
-            t.dep_join = join;
             t.session_retention = retention;
             t.trigger_kind = TriggerKind::Manual;
             t.pending_origin = Some(RunOrigin::Chain);
             s.insert_task(&t).unwrap();
             let got = s.get_task(&t.id).unwrap().unwrap();
             assert_eq!(got.session_policy, policy);
-            assert_eq!(got.dep_join, join);
             assert_eq!(got.session_retention, retention);
             assert_eq!(got.trigger_kind, TriggerKind::Manual);
             assert_eq!(got.pending_origin, Some(RunOrigin::Chain));
-        }
-
-        for on in [DepOn::Success, DepOn::Failure, DepOn::Completed] {
-            let mut upstream = task(&format!("up-{on:?}"));
-            upstream.trigger_kind = TriggerKind::Manual;
-            let downstream = task(&format!("down-{on:?}"));
-            s.insert_task(&upstream).unwrap();
-            s.insert_task(&downstream).unwrap();
-            s.add_dep(&TaskDep {
-                task_id: downstream.id.clone(),
-                upstream_task_id: upstream.id.clone(),
-                on,
-            })
-            .unwrap();
-            assert_eq!(s.list_deps(&downstream.id).unwrap()[0].on, on);
         }
 
         for kind in [RunKind::Main, RunKind::Manual, RunKind::Chain] {

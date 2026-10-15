@@ -13,10 +13,6 @@
   "deleteConfirm": "删除定时任务「{{name}}」？它已生成的会话会保留。",
   "prompt": "提示词",
   "promptVersion": "提示词版本 v{{version}}",
-  "deps": "依赖",
-  "depsNone": "没有上游任务，本任务按自己的触发器运行。",
-  "depsReady": "已到达",
-  "depsWaiting": "未到达",
   "runs": "运行记录",
   "runPromptVersion": "v{{version}}",
   "runsNone": "还没有运行记录。",
@@ -24,7 +20,6 @@
   "confidence": "置信度 {{value}}%",
   "trigger": {
     "manual": "手动",
-    "dependency": "依赖触发",
     "every": "每 {{minutes}} 分钟",
     "daily": "每天",
     "monthly": "每月 {{day}} 日 {{time}}",
@@ -35,7 +30,6 @@
   },
   "triggerMode": {
     "manual": "手动（仅在被触发时运行）",
-    "dependency": "依赖触发（上游任务完成后运行）",
     "once": "指定日期运行一次",
     "interval": "每隔 N 分钟",
     "daily": "每天",
@@ -55,15 +49,6 @@
     "manual": "手动",
     "chain": "依赖触发",
     "reflection": "反省"
-  },
-  "on": {
-    "success": "成功后",
-    "failure": "失败后",
-    "completed": "结束后"
-  },
-  "join": {
-    "all": "全部到齐",
-    "any": "任一到达"
   },
   "weekday": {
     "mon": "周一",
@@ -91,7 +76,7 @@
     "sessionRetention": "运行后会话",
     "sessionRetentionKeep": "保留",
     "sessionRetentionDelete": "删除",
-    "sessionRetentionHint": "每次运行结束后删除它的会话（成功或失败都一样）。运行的状态、摘要与完整输出仍保留在运行记录里，后续依赖的任务也照常拿到摘要。",
+    "sessionRetentionHint": "每次运行结束后删除它的会话（成功或失败都一样）。运行的状态、摘要与完整输出仍保留在运行记录里。",
     "trigger": "触发器",
     "date": "日期",
     "time": "时间",
@@ -112,17 +97,6 @@
     "conversationModeHint": "对话会话出现在「对话」里，工作区就是它自己的临时目录，无需设置；工作区会话归档在工作目录下，需要指定目录。",
     "cwdPlaceholder": "选择文件夹，或直接输入路径",
     "browse": "浏览",
-    "deps": "依赖触发",
-    "depsNone": "还没有上游任务：添加一个，本任务就会在它完成后运行。",
-    "depsAlongsideSchedule": "本任务还有定时触发；下面的上游完成后它也会运行。",
-    "depAdd": "添加上游任务",
-    "depAddPlaceholder": "选择一个上游任务",
-    "depAddAction": "添加",
-    "depNoCandidates": "没有其它任务可以依赖；先新建一个上游任务。",
-    "depCondition": "{{name}} 的触发条件",
-    "depRemove": "移除对 {{name}} 的依赖",
-    "depRemoveShort": "移除",
-    "depJoin": "多个上游的到达条件",
     "month": "月份",
     "dayOfMonth": "几号"
   },

@@ -13,10 +13,6 @@
   "deleteConfirm": "Delete scheduled task \"{{name}}\"? Conversations it already created are kept.",
   "prompt": "Prompt",
   "promptVersion": "Prompt version v{{version}}",
-  "deps": "Dependencies",
-  "depsNone": "No upstream tasks. This task runs on its own trigger.",
-  "depsReady": "ready",
-  "depsWaiting": "waiting",
   "runs": "Runs",
   "runPromptVersion": "v{{version}}",
   "runsNone": "No runs yet.",
@@ -24,7 +20,6 @@
   "confidence": "confidence {{value}}%",
   "trigger": {
     "manual": "Manual",
-    "dependency": "Dependency",
     "every": "Every {{minutes}} min",
     "daily": "Daily",
     "monthly": "Monthly on day {{day}} at {{time}}",
@@ -35,7 +30,6 @@
   },
   "triggerMode": {
     "manual": "Manual (only when triggered)",
-    "dependency": "Dependency (runs when an upstream task finishes)",
     "once": "Once on a date",
     "interval": "Every N minutes",
     "daily": "Every day",
@@ -55,15 +49,6 @@
     "manual": "manual",
     "chain": "chain",
     "reflection": "reflection"
-  },
-  "on": {
-    "success": "after success",
-    "failure": "after failure",
-    "completed": "after any result"
-  },
-  "join": {
-    "all": "all upstreams",
-    "any": "any upstream"
   },
   "weekday": {
     "mon": "Mon",
@@ -91,7 +76,7 @@
     "sessionRetention": "Conversation after the run",
     "sessionRetentionKeep": "Keep",
     "sessionRetentionDelete": "Delete",
-    "sessionRetentionHint": "Delete the run's conversation once it settles, success or failure. The run's status, summary and full output stay on the run, and a dependent task still receives the summary.",
+    "sessionRetentionHint": "Delete the run's conversation once it settles, success or failure. The run's status, summary and full output stay on the run.",
     "trigger": "Trigger",
     "date": "Date",
     "time": "Time",
@@ -112,17 +97,6 @@
     "conversationModeHint": "A chat conversation appears under Chat and brings its own temporary working directory — nothing to set. A workspace conversation is filed under its working directory, so it needs one.",
     "cwdPlaceholder": "Pick a folder, or type a path",
     "browse": "Browse",
-    "deps": "Dependency triggers",
-    "depsNone": "No upstream tasks yet: add one and this task runs when it finishes.",
-    "depsAlongsideSchedule": "This task also has its own schedule; it runs when the upstreams below finish too.",
-    "depAdd": "Add an upstream task",
-    "depAddPlaceholder": "Pick an upstream task",
-    "depAddAction": "Add",
-    "depNoCandidates": "There is no other task to depend on yet — create the upstream task first.",
-    "depCondition": "When {{name}} finishes",
-    "depRemove": "Remove the dependency on {{name}}",
-    "depRemoveShort": "Remove",
-    "depJoin": "With several upstreams, run",
     "month": "Month",
     "dayOfMonth": "Day"
   },

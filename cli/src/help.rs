@@ -290,29 +290,26 @@ Usage:
         [--model M] [--thinking L] [--session new|existing]
         [--session-retention keep|delete]
         [--conversation workspace|chat] [--disabled] [--json]
-        [--depends-on A[:success|failure|completed]]… [--join-any]
         (--manual | --at "YYYY-MM-DD HH:MM" | --every 30m
          | --daily [--time 09:00]
          | --weekly --days mon,wed,fri [--time 10:00]
          | --monthly --day 31 [--time 09:00]
          | --yearly --month 12 --day 31 [--time 22:00])
-  future task edit <id|name> [any add flag] [--enable|--disable]
-        [--join-all|--join-any] [--depends-on …] [--json]
+  future task edit <id|name> [any add flag] [--enable|--disable] [--json]
   future task enable|disable <id|name>
   future task remove <id|name> [--yes]              Soft-delete; runs are kept
   future task run <id|name> [--wait] [--timeout 15m] [--json]
   future task runs <id|name> [--limit N] [--json]
   future task output <run-id> [--tail N] [--json]   A run's full answer
   future task feedback <run-id> good|bad [--note "…"]
-  future task upstream|deps <id|name> [--json]     Dependency edges + progress
   future task prompt log <id|name> [--json]         The prompt version history
   future task prompt apply <id|name> <revision-id>  Put a stored version back in force
   future task prompt revert <id|name>               Back to the previous version
 
 Triggers:
   --manual    Only runs when triggered: `future task run`, the desktop panel,
-              the phone, or a dependency of another task. This is also what an
-              add without any trigger flag produces.
+              the phone, or another agent. This is also what an add without any
+              trigger flag produces.
   --at        One-shot on a calendar date/time (local time).
   --every     Every N minutes (30m, 2h, 1d). Anchored to a grid; no drift.
   --daily     Every day at --time (default 09:00).
@@ -322,14 +319,6 @@ Triggers:
   --yearly    Once a year on --month (1-12) and --day (1-31) at --time
               (default 09:00). A day the month cannot hold runs on the last
               day of that month, so 2/29 runs on the 28th in a common year.
-
-Dependencies:
-  --depends-on A            Run when A finishes successfully.
-  --depends-on A:failure    …when A fails. Also :completed for either.
-  --join-any                Run when any one upstream has finished (default is
-                            to wait for all of them).
-  The upstream's result summary is injected into the run's prompt, and
-  `future task upstream` shows which edges have fired.
 
 Session:
   --session new       Each run opens a new conversation (default).
@@ -343,9 +332,8 @@ Session:
                       What the run *did* is not lost — its status, its result
                       summary and its whole answer are recorded on the run, so
                       `future task runs` and `future task output <run-id>`
-                      still answer, and a dependent task still receives the
-                      summary. Only the conversation (its reasoning, its tools,
-                      its transcript) goes.
+                      still answer. Only the conversation (its reasoning, its
+                      tools, its transcript) goes.
   --conversation workspace  File the conversation under the working directory
                             (default).
   --conversation chat       Open it as a chat conversation instead (it runs in

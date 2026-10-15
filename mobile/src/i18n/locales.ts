@@ -834,9 +834,9 @@ export const resources = {
         runNow: "Run now",
         enable: "Enable",
         disable: "Disable",
-        deps: "Dependencies",
-        depsReady: "ready",
-        depsWaiting: "waiting",
+
+
+
         runs: "Runs",
         runNoSummary: "No summary recorded.",
         runSessionDeleted: "This run's conversation was deleted as configured; the output is saved on the run.",
@@ -849,7 +849,7 @@ export const resources = {
         thinkingLabels: { off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "XHigh" },
         trigger: {
           manual: "Manual",
-          dependency: "Dependency",
+
           every: "Every {{minutes}} min",
           everyHours: "Every {{hours}} h",
           everyDays: "Every {{days}} d",
@@ -859,7 +859,7 @@ export const resources = {
         },
         triggerMode: {
           manual: "Manual",
-          dependency: "Dependency",
+
           once: "Once",
           interval: "Interval",
           daily: "Daily",
@@ -907,15 +907,15 @@ export const resources = {
         sessionRetention: "Conversation after the run",
         sessionRetentionKeep: "Keep",
         sessionRetentionDelete: "Delete",
-        sessionRetentionHint: "Delete the run's conversation once it settles, success or failure. The run's status, summary and full output stay on the run, and a dependent task still receives the summary.",
+        sessionRetentionHint: "Delete the run's conversation once it settles, success or failure. The run's status, summary and full output stay on the run.",
           prompt: "Prompt",
-          deps: "Dependency triggers",
-          depsNone: "No upstream tasks yet: add one and this task runs when it finishes.",
-          depsAlongsideSchedule: "This task also has its own schedule; it runs when the upstreams below finish too.",
-          depsUnsupported: "Update FutureOS Desktop to set dependencies here. The current ones are listed below.",
-          depNoCandidates: "There is no other task to depend on yet — create the upstream task first.",
-          depRemove: "Remove the dependency on {{name}}",
-          depJoin: "With several upstreams, run",
+
+
+
+
+
+
+
           conversation: "Conversation type",
           conversationWorkspace: "Workspace conversation",
           conversationChat: "Chat conversation",
@@ -1712,9 +1712,9 @@ export const resources = {
         enable: "启用",
         disable: "停用",
         openConversation: "打开会话",
-        deps: "依赖",
-        depsReady: "已到达",
-        depsWaiting: "未到达",
+
+
+
         runs: "运行记录",
         runNoSummary: "本次没有记录摘要。",
         runSessionDeleted: "这次运行的会话已按设置删除；输出保存在运行记录里。",
@@ -1726,7 +1726,7 @@ export const resources = {
         thinkingLabels: { off: "关闭", minimal: "最简", low: "低", medium: "中", high: "高", xhigh: "极高" },
         trigger: {
           manual: "手动",
-          dependency: "依赖触发",
+
           every: "每 {{minutes}} 分钟",
           everyHours: "每 {{hours}} 小时",
           everyDays: "每 {{days}} 天",
@@ -1736,7 +1736,7 @@ export const resources = {
         },
         triggerMode: {
           manual: "手动",
-          dependency: "依赖触发",
+
           once: "一次性",
           interval: "间隔",
           daily: "每天",
@@ -1785,15 +1785,15 @@ export const resources = {
         sessionRetention: "运行后会话",
         sessionRetentionKeep: "保留",
         sessionRetentionDelete: "删除",
-        sessionRetentionHint: "每次运行结束后删除它的会话（成功或失败都一样）。运行的状态、摘要与完整输出仍保留在运行记录里，后续依赖的任务也照常拿到摘要。",
+        sessionRetentionHint: "每次运行结束后删除它的会话（成功或失败都一样）。运行的状态、摘要与完整输出仍保留在运行记录里。",
           prompt: "提示词",
-          deps: "依赖触发",
-          depsNone: "还没有上游任务：添加一个，本任务就会在它完成后运行。",
-          depsAlongsideSchedule: "本任务还有定时触发；下面的上游完成后它也会运行。",
-          depsUnsupported: "请更新 FutureOS 桌面端，才能在这里设置依赖；当前依赖见下方列表。",
-          depNoCandidates: "没有其它任务可以依赖；先新建一个上游任务。",
-          depRemove: "移除对 {{name}} 的依赖",
-          depJoin: "多个上游的到达条件",
+
+
+
+
+
+
+
           conversation: "会话类型",
           conversationWorkspace: "工作区会话",
           conversationChat: "对话会话",

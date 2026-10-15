@@ -31,10 +31,9 @@ pub async fn task(command: Option<&str>, rest: &[String], out: &Output) -> Resul
         Some("runs") => runs(rest, out),
         Some("output") => output(rest, out).await,
         Some("feedback") => feedback(rest, out),
-        Some("upstream" | "deps") => upstream(rest, out),
         Some("prompt") => prompt(rest, out),
         Some(other) => Err(format!(
-            "Unknown argument: {other}\nUsage: future task [list|show|add|edit|enable|disable|remove|run|runs|output|feedback|upstream|prompt] …\nRun `future task --help` for details."
+            "Unknown argument: {other}\nUsage: future task [list|show|add|edit|enable|disable|remove|run|runs|output|feedback|prompt] …\nRun `future task --help` for details."
         )),
     }
 }
@@ -42,8 +41,8 @@ pub async fn task(command: Option<&str>, rest: &[String], out: &Output) -> Resul
 /// `future task output <run-id>` — the full answer a run gave.
 ///
 /// A run's ledger entry carries a truncated summary (the head and tail, 2000
-/// chars); this prints the whole answer, which is what an agent reading an
-/// upstream result needs when the summary is not enough.
+/// chars); this prints the whole answer, which is what an agent building on an
+/// earlier run needs when the summary is not enough.
 ///
 /// The answer saved on the run wins whenever there is one: it *is* this run's
 /// answer, and it is still there after a task that deletes its conversations
@@ -249,14 +248,8 @@ fn find_task_for_history(store: &Store, id_or_name: &str) -> Result<Task> {
 }
 
 /// How a task is triggered, for the list and the detail header.
-///
-/// A task with dependencies and no schedule of its own reads as `dependency`:
-/// that is what makes it run, and calling it `manual` would describe it as
-/// something the user has to start by hand. A task with *both* keeps its
-/// schedule here, and its edges show up in `future task upstream` / `deps`.
-fn format_trigger(task: &Task, dep_count: usize) -> String {
+fn format_trigger(task: &Task) -> String {
     match task.trigger_kind {
-        future_tasks::TriggerKind::Manual if dep_count > 0 => "dependency".to_string(),
         future_tasks::TriggerKind::Manual => "manual".to_string(),
         future_tasks::TriggerKind::Schedule => {
             let j = &task.trigger_json;
@@ -339,101 +332,17 @@ fn parse_duration_minutes(s: &str) -> Option<i64> {
     }
 }
 
-/// Parse `A` or `A:failure` into an upstream reference and a condition.
-/// The default condition is `success`, so the common case is just a name.
-fn parse_dep_spec(spec: &str) -> Result<(String, future_tasks::DepOn)> {
-    let (name, condition) = match spec.split_once(':') {
-        Some((name, cond)) => (name, Some(cond)),
-        None => (spec, None),
-    };
-    if name.is_empty() {
-        return Err(format!("--depends-on needs a task name, got {spec:?}"));
-    }
-    let on = match condition {
-        None | Some("success") => future_tasks::DepOn::Success,
-        Some("failure") => future_tasks::DepOn::Failure,
-        Some("completed") => future_tasks::DepOn::Completed,
-        Some(other) => {
-            return Err(format!(
-                "unknown dependency condition {other:?}: expected success|failure|completed"
-            ));
-        }
-    };
-    Ok((name.to_string(), on))
-}
-
-/// Every `--depends-on` value, in order.
-fn dep_specs(args: &[String]) -> Result<Vec<(String, future_tasks::DepOn)>> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--depends-on" {
-            let value = args
-                .get(i + 1)
-                .ok_or_else(|| "--depends-on requires a value".to_string())?;
-            out.push(parse_dep_spec(value)?);
-            i += 1;
-        }
-        i += 1;
-    }
-    Ok(out)
-}
-
-/// Write the dependency edges for `task_id`, resolving each upstream by id or
-/// name. Replaces the existing edges so re-running `add`/`edit` is idempotent.
-fn write_deps(store: &Store, task_id: &str, specs: &[(String, future_tasks::DepOn)]) -> Result<()> {
-    for existing in store.list_deps(task_id).map_err(|e| e.to_string())? {
-        store
-            .remove_dep(task_id, &existing.upstream_task_id)
-            .map_err(|e| e.to_string())?;
-    }
-    for (reference, on) in specs {
-        let upstream = find_task(store, reference)?;
-        if upstream.id == task_id {
-            return Err(format!("a task cannot depend on itself: {reference}"));
-        }
-        store
-            .add_dep(&future_tasks::TaskDep {
-                task_id: task_id.to_string(),
-                upstream_task_id: upstream.id,
-                on: *on,
-            })
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-/// The dependency edges as shown by `upstream`, with each edge's progress.
-fn dep_rows(store: &Store, task_id: &str) -> Result<Vec<serde_json::Value>> {
-    let mut rows = Vec::new();
-    for dep in store.list_deps(task_id).map_err(|e| e.to_string())? {
-        let upstream = store
-            .get_task(&dep.upstream_task_id)
-            .map_err(|e| e.to_string())?;
-        let satisfied = store
-            .get_dep_state(task_id, &dep.upstream_task_id)
-            .map_err(|e| e.to_string())?
-            .and_then(|state| state.satisfied_run_id);
-        rows.push(json!({
-            "upstreamTaskId": dep.upstream_task_id,
-            "upstreamName": upstream.map(|t| t.name),
-            "on": format!("{:?}", dep.on).to_lowercase(),
-            "satisfied": satisfied.is_some(),
-            "satisfiedRunId": satisfied,
-        }));
-    }
-    Ok(rows)
-}
-
 /// The resolved identity for a `<id|name>` argument, so the commands can print
 /// something a caller can use in the next invocation.
-fn task_json(t: &Task, dep_count: usize) -> serde_json::Value {
+fn task_json(t: &Task) -> serde_json::Value {
     json!({
         "id": t.id,
         "name": t.name,
         "enabled": t.enabled,
-        "trigger": format_trigger(t, dep_count),
-        "depCount": dep_count,
+        "trigger": format_trigger(t),
+        // Always 0: dependencies were removed, and the field stays so a reader
+        // (the skill, a script) does not have to handle its absence.
+        "depCount": 0,
         "nextDueAt": t.next_due_at,
         "queued": t.pending_request_at.is_some(),
         "sessionPolicy": format!("{:?}", t.session_policy).to_lowercase(),
@@ -462,9 +371,6 @@ fn list(args: &[String], out: &Output) -> Result<()> {
     let tasks = store
         .list_tasks(include_deleted)
         .map_err(|e| e.to_string())?;
-    // One query for every edge, so the trigger column can tell a dependency task
-    // from one that only ever runs on request.
-    let dep_counts = dep_counts(&store)?;
     if json_flag {
         let items: Vec<_> = tasks
             .iter()
@@ -473,8 +379,8 @@ fn list(args: &[String], out: &Output) -> Result<()> {
                     "id": t.id,
                     "name": t.name,
                     "enabled": t.enabled,
-                    "trigger": format_trigger(t, dep_count_of(&dep_counts, &t.id)),
-                    "depCount": dep_count_of(&dep_counts, &t.id),
+                    "trigger": format_trigger(t),
+                    "depCount": 0,
                     "nextDueAt": t.next_due_at,
                     "queued": t.pending_request_at.is_some(),
                     "sessionPolicy": format!("{:?}", t.session_policy).to_lowercase(),
@@ -500,26 +406,13 @@ fn list(args: &[String], out: &Output) -> Result<()> {
         out.log(&format!(
             "{:<24} {:<20} {:<4} {:<24} {}",
             t.name,
-            format_trigger(t, dep_count_of(&dep_counts, &t.id)),
+            format_trigger(t),
             state,
             next,
             t.id
         ));
     }
     Ok(())
-}
-
-/// Upstream edge count per task id, from one query.
-fn dep_counts(store: &Store) -> Result<std::collections::HashMap<String, usize>> {
-    let mut counts = std::collections::HashMap::new();
-    for dep in store.list_all_deps().map_err(|e| e.to_string())? {
-        *counts.entry(dep.task_id).or_insert(0) += 1;
-    }
-    Ok(counts)
-}
-
-fn dep_count_of(counts: &std::collections::HashMap<String, usize>, task_id: &str) -> usize {
-    counts.get(task_id).copied().unwrap_or(0)
 }
 
 fn show(args: &[String], out: &Output) -> Result<()> {
@@ -531,7 +424,6 @@ fn show(args: &[String], out: &Output) -> Result<()> {
         .ok_or_else(|| "usage: future task show <id|name> [--json] [--prompt]".to_string())?;
     let store = open_store()?;
     let t = find_task(&store, id)?;
-    let dep_count = dep_count_of(&dep_counts(&store)?, &t.id);
     let latest = store
         .latest_run_for_task(&t.id)
         .map_err(|e| e.to_string())?;
@@ -550,8 +442,8 @@ fn show(args: &[String], out: &Output) -> Result<()> {
             "conversationMode": format!("{:?}", t.conversation_mode).to_lowercase(),
             "triggerKind": format!("{:?}", t.trigger_kind).to_lowercase(),
             "trigger": t.trigger_json,
-            "depJoin": format!("{:?}", t.dep_join).to_lowercase(),
-            "depCount": dep_count,
+            "depJoin": "all",
+            "depCount": 0,
             "nextDueAt": t.next_due_at,
             "queued": t.pending_request_at.is_some(),
             "latestRun": latest.map(|r| json!({
@@ -567,7 +459,7 @@ fn show(args: &[String], out: &Output) -> Result<()> {
     }
     out.log(&format!("{}  ({})", t.name, t.id));
     out.log(&format!("  enabled:  {}", t.enabled));
-    out.log(&format!("  trigger:  {}", format_trigger(&t, dep_count)));
+    out.log(&format!("  trigger:  {}", format_trigger(&t)));
     if t.trigger_kind == future_tasks::TriggerKind::Schedule {
         out.log(&format!("  next due: {}", format_ms(t.next_due_at)));
     }
@@ -623,7 +515,6 @@ fn add(args: &[String], out: &Output) -> Result<()> {
     let mut trigger_json = serde_json::json!({});
     let mut trigger_kind = future_tasks::TriggerKind::Manual;
     let mut disabled = false;
-    let mut dep_join = future_tasks::DepJoin::All;
     let mut json_flag = false;
 
     let mut i = 0;
@@ -703,11 +594,6 @@ fn add(args: &[String], out: &Output) -> Result<()> {
             "--manual" => {
                 trigger_kind = future_tasks::TriggerKind::Manual;
                 trigger_json = serde_json::json!({});
-            }
-            "--join-any" => dep_join = future_tasks::DepJoin::Any,
-            "--depends-on" => {
-                // Parsed as a group by `dep_specs`; skip its value here.
-                i += 1;
             }
             "--json" => json_flag = true,
             "--at" => {
@@ -821,7 +707,6 @@ fn add(args: &[String], out: &Output) -> Result<()> {
     }
 
     let now = now_ms();
-    let specs = dep_specs(args)?;
     let next_due = compute_next_due(
         &Task {
             id: String::new(),
@@ -838,7 +723,6 @@ fn add(args: &[String], out: &Output) -> Result<()> {
             thread_id: None,
             trigger_kind,
             trigger_json: trigger_json.clone(),
-            dep_join,
             next_due_at: None,
             pending_request_at: None,
             pending_origin: None,
@@ -865,7 +749,6 @@ fn add(args: &[String], out: &Output) -> Result<()> {
         thread_id: None,
         trigger_kind,
         trigger_json,
-        dep_join,
         next_due_at: next_due,
         pending_request_at: None,
         pending_origin: None,
@@ -877,7 +760,6 @@ fn add(args: &[String], out: &Output) -> Result<()> {
 
     let store = open_store()?;
     store.insert_task(&t).map_err(|e| e.to_string())?;
-    write_deps(&store, &t.id, &specs)?;
 
     if json_flag {
         out.log(
@@ -885,10 +767,9 @@ fn add(args: &[String], out: &Output) -> Result<()> {
                 "id": t.id,
                 "name": t.name,
                 "nextDueAt": t.next_due_at,
-                "dependsOn": specs.iter().map(|(name, on)| json!({
-                    "upstream": name,
-                    "on": format!("{on:?}").to_lowercase(),
-                })).collect::<Vec<_>>(),
+                // Empty: dependencies were removed. The field stays so a reader
+                // of this output does not have to handle its absence.
+                "dependsOn": Vec::<serde_json::Value>::new(),
             }))
             .map_err(|e| e.to_string())?,
         );
@@ -896,12 +777,6 @@ fn add(args: &[String], out: &Output) -> Result<()> {
         out.log(&format!("Created task {} ({})", t.name, t.id));
         if let Some(due) = t.next_due_at {
             out.log(&format!("  next due: {}", format_ms(Some(due))));
-        }
-        for (name, on) in &specs {
-            out.log(&format!(
-                "  runs after: {name} ({})",
-                format!("{on:?}").to_lowercase()
-            ));
         }
     }
     Ok(())
@@ -931,13 +806,8 @@ fn edit(args: &[String], out: &Output) -> Result<()> {
     let mut changed_prompt: Option<String> = None;
     let mut trigger_json: Option<serde_json::Value> = None;
     let mut trigger_kind: Option<future_tasks::TriggerKind> = None;
-    let mut join: Option<future_tasks::DepJoin> = None;
     let mut enable: Option<bool> = None;
     let mut rename: Option<String> = None;
-    // `--depends-on` replaces the whole edge set, so it is a flag *presence*
-    // check rather than an incremental edit.
-    let specs = dep_specs(args)?;
-    let sets_deps = args.iter().any(|a| a == "--depends-on");
 
     while i < args.len() {
         if i == reference_index {
@@ -1068,13 +938,10 @@ fn edit(args: &[String], out: &Output) -> Result<()> {
                     Some(serde_json::json!({"mode":"yearly","month":month,"day":day,"time":time}));
                 trigger_kind = Some(future_tasks::TriggerKind::Schedule);
             }
-            "--join-any" => join = Some(future_tasks::DepJoin::Any),
-            "--join-all" => join = Some(future_tasks::DepJoin::All),
             "--enable" => enable = Some(true),
             "--disable" => enable = Some(false),
             "--json" => {}
             "--time" | "--days" | "--day" | "--month" => i += 1,
-            "--depends-on" => i += 1,
             other => return Err(format!("unknown flag: {other}")),
         }
         i += 1;
@@ -1109,9 +976,6 @@ fn edit(args: &[String], out: &Output) -> Result<()> {
         task.trigger_json = trigger_json.unwrap_or_else(|| serde_json::json!({}));
         task.next_due_at = compute_next_due(&task, now_ms());
     }
-    if let Some(j) = join {
-        task.dep_join = j;
-    }
     if let Some(on) = enable {
         task.enabled = on;
         // Re-enabling re-resolves the schedule: a task paused across its slot
@@ -1122,22 +986,12 @@ fn edit(args: &[String], out: &Output) -> Result<()> {
     }
     task.updated_at = now_ms();
     store.update_task(&task).map_err(|e| e.to_string())?;
-    if sets_deps {
-        write_deps(&store, &task.id, &specs)?;
-    }
 
-    let dep_count = store
-        .list_deps(&task.id)
-        .map(|deps| deps.len())
-        .unwrap_or(0);
     if json_flag {
-        out.log(
-            &serde_json::to_string_pretty(&task_json(&task, dep_count))
-                .map_err(|e| e.to_string())?,
-        );
+        out.log(&serde_json::to_string_pretty(&task_json(&task)).map_err(|e| e.to_string())?);
     } else {
         out.log(&format!("Updated task {} ({})", task.name, task.id));
-        out.log(&format!("  trigger:  {}", format_trigger(&task, dep_count)));
+        out.log(&format!("  trigger:  {}", format_trigger(&task)));
         if task.prompt_version > 1 {
             out.log(&format!("  prompt:   v{}", task.prompt_version));
         }
@@ -1174,9 +1028,8 @@ fn set_enabled(args: &[String], out: &Output, enabled: bool) -> Result<()> {
 
 /// `future task remove <id|name> [--yes]`.
 ///
-/// Soft-deletes the task and drops the dependency edges pointing at it, so no
-/// downstream keeps waiting on something that can never report again. Runs and
-/// the conversations they produced are left alone.
+/// Soft-deletes the task. Runs and the conversations they produced are left
+/// alone.
 fn remove(args: &[String], out: &Output) -> Result<()> {
     let yes = args.iter().any(|a| a == "--yes");
     let reference = args
@@ -1195,9 +1048,6 @@ fn remove(args: &[String], out: &Output) -> Result<()> {
     task.enabled = false;
     task.updated_at = now_ms();
     store.update_task(&task).map_err(|e| e.to_string())?;
-    store
-        .remove_deps_pointing_at(&task.id)
-        .map_err(|e| e.to_string())?;
     out.log(&format!("Removed task {} ({})", task.name, task.id));
     Ok(())
 }
@@ -1224,55 +1074,6 @@ fn feedback(args: &[String], out: &Output) -> Result<()> {
     run.feedback_note = note;
     store.update_run(&run).map_err(|e| e.to_string())?;
     out.log(&format!("Recorded {verdict} on run {run_id}"));
-    Ok(())
-}
-
-/// `future task upstream <id|name> [--json]` — the dependency edges and how far
-/// each has got.
-fn upstream(args: &[String], out: &Output) -> Result<()> {
-    let json_flag = args.iter().any(|a| a == "--json");
-    let reference = args
-        .iter()
-        .find(|a| !a.starts_with('-'))
-        .ok_or_else(|| "usage: future task upstream <id|name> [--json]".to_string())?;
-    let store = open_store()?;
-    let task = find_task(&store, reference)?;
-    let rows = dep_rows(&store, &task.id)?;
-    if json_flag {
-        out.log(
-            &serde_json::to_string_pretty(&json!({
-                "id": task.id,
-                "name": task.name,
-                "join": format!("{:?}", task.dep_join).to_lowercase(),
-                "upstream": rows,
-            }))
-            .map_err(|e| e.to_string())?,
-        );
-        return Ok(());
-    }
-    if rows.is_empty() {
-        out.log(&format!("{} has no upstream tasks.", task.name));
-        return Ok(());
-    }
-    out.log(&format!(
-        "{} — join {:?}",
-        task.name,
-        format!("{:?}", task.dep_join).to_lowercase()
-    ));
-    for row in &rows {
-        let name = row["upstreamName"]
-            .as_str()
-            .unwrap_or_else(|| row["upstreamTaskId"].as_str().unwrap_or("?"));
-        let state = if row["satisfied"] == json!(true) {
-            "satisfied"
-        } else {
-            "waiting"
-        };
-        out.log(&format!(
-            "  {name:<24} on {:<10} {state}",
-            row["on"].as_str().unwrap_or("?")
-        ));
-    }
     Ok(())
 }
 
@@ -1748,9 +1549,6 @@ mod tests {
             (vec!["enable"], false),
             (vec!["enable", "t"], true),
             (vec!["disable", "t"], true),
-            (vec!["upstream", "t"], true),
-            (vec!["deps", "t"], true),
-            (vec!["upstream"], false),
             (vec!["output"], false),
             // A run id that does not exist is still a usage-level failure, not a
             // panic: `output` reads the ledger before it touches the agent.
@@ -1815,7 +1613,6 @@ mod tests {
                 "--daily",
                 "--time",
                 "07:30",
-                "--join-any",
                 "--json",
             ]),
             &out,
@@ -1830,7 +1627,6 @@ mod tests {
         assert_eq!(t.thinking_level.as_deref(), Some("high"));
         assert_eq!(t.session_policy, future_tasks::SessionPolicy::Existing);
         assert_eq!(t.conversation_mode, future_tasks::ConversationMode::Chat);
-        assert_eq!(t.dep_join, future_tasks::DepJoin::Any);
         assert_eq!(t.trigger_json["mode"], "daily");
         assert_eq!(t.trigger_json["time"], "07:30");
         assert!(t.next_due_at.is_some(), "a schedule resolves its next slot");
@@ -1894,10 +1690,10 @@ mod tests {
         );
     }
 
-    /// `--depends-on` replaces the whole edge set, and a prompt edit keeps the
-    /// version it replaced so the original stays reachable.
+    /// A prompt edit keeps the version it replaced, so the original stays
+    /// reachable.
     #[tokio::test]
-    async fn edit_replaces_dependencies_and_keeps_the_replaced_prompt() {
+    async fn edit_keeps_the_replaced_prompt() {
         let _guard = crate::test_env::lock_env().await;
         let home = Home::new();
         let (setup, _c) = Output::memory();
@@ -1911,39 +1707,7 @@ mod tests {
         let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
 
         let (out, _captured) = Output::memory();
-        edit(&args(&["down", "--depends-on", "up-a"]), &out).unwrap();
-        let down = store.find_task_by_name("down").unwrap().unwrap();
-        assert_eq!(store.list_deps(&down.id).unwrap().len(), 1);
-        assert_eq!(
-            store.list_deps(&down.id).unwrap()[0].on,
-            future_tasks::DepOn::Success,
-            "a bare name means success"
-        );
-
-        edit(
-            &args(&[
-                "down",
-                "--depends-on",
-                "up-b:failure",
-                "--depends-on",
-                "up-a:completed",
-            ]),
-            &out,
-        )
-        .unwrap();
-        let deps = store.list_deps(&down.id).unwrap();
-        assert_eq!(deps.len(), 2, "the old edge was replaced, not added to");
-        let on_for = |name: &str| {
-            let id = store.find_task_by_name(name).unwrap().unwrap().id;
-            deps.iter().find(|d| d.upstream_task_id == id).unwrap().on
-        };
-        assert_eq!(on_for("up-b"), future_tasks::DepOn::Failure);
-        assert_eq!(on_for("up-a"), future_tasks::DepOn::Completed);
-
-        // The prompt edit records v2 and keeps v1, so `prompt revert` can get
-        // back to where the task started.
-        let (edit_out, _c2) = Output::memory();
-        edit(&args(&["down", "--prompt", "the second prompt"]), &edit_out).unwrap();
+        edit(&args(&["down", "--prompt", "the second prompt"]), &out).unwrap();
         let after = store.find_task_by_name("down").unwrap().unwrap();
         assert_eq!(after.prompt_version, 2);
         let versions: Vec<i64> = store
@@ -1957,7 +1721,7 @@ mod tests {
 
         // A second edit is idempotent about the history: it does not add
         // another copy of v1.
-        edit(&args(&["down", "--prompt", "the third"]), &edit_out).unwrap();
+        edit(&args(&["down", "--prompt", "the third"]), &out).unwrap();
         let v1s = store
             .list_revisions(&after.id)
             .unwrap()
@@ -1987,13 +1751,6 @@ mod tests {
             (vec!["t", "--every", "fortnightly"], "30m, 2h, 1d"),
             (vec!["t", "--weekly"], "requires --days"),
             (vec!["t", "--monthly"], "requires --day"),
-            (vec!["t", "--depends-on", "t"], "cannot depend on itself"),
-            (vec!["t", "--depends-on", ""], "needs a task name"),
-            (
-                vec!["t", "--depends-on", "up:maybe"],
-                "success|failure|completed",
-            ),
-            (vec!["t", "--depends-on", "ghost"], "not found"),
             (vec!["ghost", "--cwd", "/x"], "not found"),
             (
                 vec!["t", "--prompt-file", "/does/not/exist"],
@@ -2085,11 +1842,10 @@ mod tests {
 
     // ─── remove ───────────────────────────────────────────────────────────
 
-    /// Removing takes the edges that pointed at the task, so no downstream
-    /// keeps waiting on something that can never report again. The runs are
-    /// left alone: the conversations they produced are the user's.
+    /// Removing is a soft delete, and the runs are left alone: the conversations
+    /// they produced are the user's.
     #[tokio::test]
-    async fn remove_drops_the_edges_pointing_at_it_and_keeps_the_runs() {
+    async fn remove_keeps_the_runs() {
         let _guard = crate::test_env::lock_env().await;
         let home = Home::new();
         let (setup, _c) = Output::memory();
@@ -2102,12 +1858,7 @@ mod tests {
         }
         let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
         let (out, _c2) = Output::memory();
-        edit(&args(&["down", "--depends-on", "up"]), &out).unwrap();
-        let down = store.find_task_by_name("down").unwrap().unwrap();
         let up = store.find_task_by_name("up").unwrap().unwrap();
-        store
-            .mark_dep_satisfied(&down.id, &up.id, "trn_1", 1)
-            .unwrap();
 
         // Without --yes it refuses and changes nothing.
         let error = remove(&args(&["up"]), &out).unwrap_err();
@@ -2117,8 +1868,6 @@ mod tests {
         let (out, captured) = Output::memory();
         remove(&args(&["up", "--yes"]), &out).unwrap();
         assert!(text(captured.out).contains("Removed task up"));
-        assert!(store.list_deps(&down.id).unwrap().is_empty());
-        assert!(store.get_dep_state(&down.id, &up.id).unwrap().is_none());
         // The tombstone is what makes the removal visible to `list --all`.
         // `find_task_by_name` filters deleted rows, so read it by id.
         assert!(store
@@ -2211,71 +1960,6 @@ mod tests {
             let error = feedback(&args(&values), &out).unwrap_err();
             assert!(error.contains(expect), "{values:?}: {error:?}");
         }
-    }
-
-    // ─── upstream ─────────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn upstream_reports_edges_and_their_progress() {
-        let _guard = crate::test_env::lock_env().await;
-        let home = Home::new();
-        let (setup, _c) = Output::memory();
-        for name in ["up", "down"] {
-            add(
-                &args(&["--name", name, "--prompt", "p", "--cwd", "/tmp"]),
-                &setup,
-            )
-            .unwrap();
-        }
-        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
-
-        // No edges yet.
-        let (out, captured) = Output::memory();
-        upstream(&args(&["down"]), &out).unwrap();
-        assert!(text(captured.out).contains("no upstream tasks"));
-
-        let (out, _c2) = Output::memory();
-        edit(
-            &args(&["down", "--depends-on", "up:failure", "--join-any"]),
-            &out,
-        )
-        .unwrap();
-
-        let (out, captured) = Output::memory();
-        upstream(&args(&["down"]), &out).unwrap();
-        let shown = text(captured.out);
-        assert!(shown.contains("up"));
-        assert!(shown.contains("failure"));
-        assert!(shown.contains("waiting"));
-
-        let down = store.find_task_by_name("down").unwrap().unwrap();
-        let up = store.find_task_by_name("up").unwrap().unwrap();
-        store
-            .mark_dep_satisfied(&down.id, &up.id, "trn_9", 1)
-            .unwrap();
-        let (out, captured) = Output::memory();
-        upstream(&args(&["down"]), &out).unwrap();
-        assert!(text(captured.out).contains("satisfied"));
-
-        let (out, captured) = Output::memory();
-        upstream(&args(&["down", "--json"]), &out).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
-        assert_eq!(parsed["join"], "any");
-        assert_eq!(parsed["upstream"][0]["on"], "failure");
-        assert_eq!(parsed["upstream"][0]["satisfied"], true);
-        assert_eq!(parsed["upstream"][0]["satisfiedRunId"], "trn_9");
-        assert_eq!(parsed["upstream"][0]["upstreamName"], "up");
-
-        // The empty case in JSON, and the argument guards.
-        let (out, captured) = Output::memory();
-        upstream(&args(&["up", "--json"]), &out).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
-        assert_eq!(parsed["upstream"], serde_json::json!([]));
-
-        let (out, _c3) = Output::memory();
-        assert!(upstream(&args(&[]), &out)
-            .unwrap_err()
-            .contains("usage: future task upstream"));
     }
 
     // ─── prompt versions ──────────────────────────────────────────────────
@@ -2411,47 +2095,6 @@ mod tests {
         }
     }
 
-    // ─── dependency specs ─────────────────────────────────────────────────
-
-    #[test]
-    fn dependency_specs_parse_the_condition_and_its_default() {
-        assert_eq!(
-            parse_dep_spec("up").unwrap(),
-            ("up".to_string(), future_tasks::DepOn::Success)
-        );
-        assert_eq!(
-            parse_dep_spec("up:success").unwrap().1,
-            future_tasks::DepOn::Success
-        );
-        assert_eq!(
-            parse_dep_spec("up:failure").unwrap().1,
-            future_tasks::DepOn::Failure
-        );
-        assert_eq!(
-            parse_dep_spec("up:completed").unwrap().1,
-            future_tasks::DepOn::Completed
-        );
-        assert!(parse_dep_spec("up:maybe")
-            .unwrap_err()
-            .contains("success|failure|completed"));
-        assert!(parse_dep_spec("")
-            .unwrap_err()
-            .contains("needs a task name"));
-        assert!(parse_dep_spec(":failure")
-            .unwrap_err()
-            .contains("needs a task name"));
-
-        // Collection: repeated flags in order, and a missing value is refused.
-        assert!(dep_specs(&args(&["--depends-on"]))
-            .unwrap_err()
-            .contains("requires a value"));
-        assert!(dep_specs(&args(&["--name", "x"])).unwrap().is_empty());
-        let specs = dep_specs(&args(&["--depends-on", "a", "--depends-on", "b:failure"])).unwrap();
-        assert_eq!(specs.len(), 2);
-        assert_eq!(specs[0].0, "a");
-        assert_eq!(specs[1].1, future_tasks::DepOn::Failure);
-    }
-
     // ─── trigger resolution ───────────────────────────────────────────────
 
     /// The next-slot helper answers for a schedule and stays silent for a
@@ -2501,7 +2144,7 @@ mod tests {
         // Every subcommand `task()` can route, including the aliases.
         let dispatched: std::collections::BTreeSet<&str> = [
             "list", "show", "add", "edit", "enable", "disable", "remove", "run", "runs", "output",
-            "feedback", "upstream", "deps", "prompt",
+            "feedback", "prompt",
         ]
         .into_iter()
         .collect();
@@ -2561,9 +2204,9 @@ mod tests {
     }
 
     /// `add` takes `--manual` explicitly (the same thing an add with no trigger
-    /// flag produces), and records dependencies with their conditions.
+    /// flag produces).
     #[tokio::test]
-    async fn add_manual_and_dependency_flags_are_recorded() {
+    async fn add_manual_flag_is_recorded() {
         let _guard = crate::test_env::lock_env().await;
         let home = Home::new();
         let (out, _c) = Output::memory();
@@ -2573,54 +2216,32 @@ mod tests {
         )
         .unwrap();
 
-        // Explicit --manual, with a plain-text confirmation of the edges.
-        let (out, captured) = Output::memory();
+        let (out, _captured) = Output::memory();
         add(
             &args(&[
-                "--name",
-                "down",
-                "--prompt",
-                "p",
-                "--cwd",
-                "/tmp",
-                "--manual",
-                "--depends-on",
-                "up:failure",
-                "--join-any",
+                "--name", "down", "--prompt", "p", "--cwd", "/tmp", "--manual",
             ]),
             &out,
         )
         .unwrap();
-        let shown = text(captured.out);
-        assert!(shown.contains("runs after: up (failure)"), "{shown}");
 
         let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
         let down = store.find_task_by_name("down").unwrap().unwrap();
         assert_eq!(down.trigger_kind, future_tasks::TriggerKind::Manual);
         assert_eq!(down.trigger_json, serde_json::json!({}));
-        assert_eq!(down.dep_join, future_tasks::DepJoin::Any);
-        assert_eq!(store.list_deps(&down.id).unwrap().len(), 1);
 
-        // The JSON form names the edge as the caller wrote it.
+        // The JSON form still names the (now empty) edge set, so a reader of
+        // this output does not have to handle the key's absence.
         let (out, captured) = Output::memory();
         add(
             &args(&[
-                "--name",
-                "down2",
-                "--prompt",
-                "p",
-                "--cwd",
-                "/tmp",
-                "--depends-on",
-                "up:completed",
-                "--json",
+                "--name", "down2", "--prompt", "p", "--cwd", "/tmp", "--json",
             ]),
             &out,
         )
         .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
-        assert_eq!(parsed["dependsOn"][0]["upstream"], "up");
-        assert_eq!(parsed["dependsOn"][0]["on"], "completed");
+        assert_eq!(parsed["dependsOn"], serde_json::json!([]));
     }
 
     /// Every trigger flag `edit` accepts, so a task can be moved between all the
@@ -2738,7 +2359,6 @@ mod tests {
             thread_id: None,
             trigger_kind: kind,
             trigger_json: serde_json::json!({}),
-            dep_join: future_tasks::DepJoin::All,
             next_due_at: None,
             pending_request_at: None,
             pending_origin: None,
@@ -2755,7 +2375,7 @@ mod tests {
         let t = task_with_trigger(future_tasks::TriggerKind::Manual);
         let mut t = t;
         t.pending_request_at = Some(5);
-        let json = task_json(&t, 0);
+        let json = task_json(&t);
         assert_eq!(json["id"], "tsk_1");
         assert_eq!(json["queued"], true);
         assert_eq!(json["trigger"], "manual");
@@ -2763,25 +2383,17 @@ mod tests {
         assert_eq!(json["sessionPolicy"], "new");
     }
 
-    /// The trigger reads as what actually starts the task: dependencies make it
-    /// `dependency`, not `manual` (nobody starts it by hand), while a task with
-    /// its own schedule keeps that schedule.
+    /// Each trigger kind reads as what actually starts the task.
     #[test]
-    fn the_trigger_label_distinguishes_dependencies_from_by_hand_runs() {
+    fn the_trigger_label_names_the_schedule() {
         let mut manual = task_with_trigger(future_tasks::TriggerKind::Manual);
         manual.trigger_json = serde_json::json!({});
-        assert_eq!(format_trigger(&manual, 0), "manual");
-        assert_eq!(format_trigger(&manual, 2), "dependency");
+        assert_eq!(format_trigger(&manual), "manual");
 
         let mut scheduled = manual.clone();
         scheduled.trigger_kind = future_tasks::TriggerKind::Schedule;
         scheduled.trigger_json = serde_json::json!({"mode": "daily", "time": "09:00"});
-        assert_eq!(format_trigger(&scheduled, 0), "daily 09:00");
-        assert_eq!(
-            format_trigger(&scheduled, 2),
-            "daily 09:00",
-            "a task that also has upstreams still runs on its own schedule"
-        );
+        assert_eq!(format_trigger(&scheduled), "daily 09:00");
     }
 
     // ─── store location ───────────────────────────────────────────────────
