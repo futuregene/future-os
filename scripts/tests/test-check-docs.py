@@ -35,7 +35,7 @@ spec.loader.exec_module(checker)
 
 # Every whitelisted path must exist, or the checker reports it missing.
 WHITELISTED_FILES = [
-    "CLAUDE.md",
+    "AGENTS.md",
     "README.md",
     "README.zh-CN.md",
     "SECURITY.md",
