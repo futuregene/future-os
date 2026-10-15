@@ -119,12 +119,15 @@ export function applyJournalRunOutcomes(messages: AgentMessage[]): AgentMessage[
 }
 
 function applyRunToMessage(message: AgentMessage, run: StoredRun): AgentMessage {
-  // An aborted exchange projects with no content and no reply time (the agent
-  // saved no assistant entry). Stamp it with the run's end time — the actual
-  // stop time — instead of the session-derived fallback. An exchange with real
-  // content keeps its own recorded reply time.
+  // Stopped replies keep the persisted run start, even when the agent saved a
+  // partial assistant entry later in the run. Other reply-less exchanges retain
+  // their existing end-time fallback; real replies keep their recorded time.
   const isEmpty = !message.content.trim() && !message.segments?.length;
-  const stopTime = isEmpty ? runEndedIso(run) : null;
+  let replyTime: string | null = null;
+  if (run.status === "cancelled")
+    replyTime = runStartedIso(run);
+  else if (isEmpty)
+    replyTime = runEndedIso(run);
   const stopped = run.status === "cancelled";
   const terminationNotice = stopped
     ? userStoppedNotice()
@@ -144,8 +147,14 @@ function applyRunToMessage(message: AgentMessage, run: StoredRun): AgentMessage 
     runError: run.errorMessage ?? message.runError,
     status: run.status === "failed" ? "failed" : (message.status ?? "complete"),
     durationMs: message.durationMs ?? runDurationMs(run),
-    createdAt: stopTime ?? message.createdAt,
+    createdAt: replyTime ?? message.createdAt,
   };
+}
+
+/** The run's persisted start, including the creation time for legacy rows. */
+function runStartedIso(run: StoredRun): string | null {
+  const ms = run.startedAt ?? run.createdAt;
+  return typeof ms === "number" ? storedTimeToIso(ms) : null;
 }
 
 /** The run's end (stop) time as ISO, or null when the run recorded none. */

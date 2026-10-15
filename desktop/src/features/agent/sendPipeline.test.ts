@@ -220,6 +220,7 @@ describe("runSendPipeline terminal-status handling", () => {
     expect(assistant?.stopped).toBe(true);
     expect(assistant?.terminationNotice).toContain("stopped this response manually");
     expect(assistant?.content).toBe("final answer");
+    expect(assistant?.createdAt).toBe(new Date(1_000).toISOString());
     // Pipeline start + the cancelled finalization; a fall-through into the
     // completion render would add a third.
     expect(deps.onThreadActivity).toHaveBeenCalledTimes(2);
@@ -263,6 +264,7 @@ describe("runSendPipeline stream/failure edges", () => {
       .filter(m => m.role === "assistant")
       .pop();
     expect(assistant?.stopped).toBe(true);
+    expect(assistant?.createdAt).toBe(new Date(1_000).toISOString());
     expect(assistant?.thinkingActive).toBe(false);
     expect(assistant?.terminationNotice).toContain("stopped this response manually");
     expect(deps.onThreadActivity).toHaveBeenCalled();
