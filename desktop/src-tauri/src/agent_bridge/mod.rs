@@ -100,9 +100,9 @@ use self::queries::{next_events_cursor, EVENTS_PAGE_SIZE};
 #[cfg(test)]
 use self::reconciliation::{
     active_run_watchdog_pass, check_and_reanimate_run, plan_active_run_reconciliation,
-    reconcile_active_run_once, reconcile_run_gone, settle_from_agent_terminal, watchdog_interval,
-    ActiveRunAction, TEST_WATCHDOG_STOP, WATCHDOG_GRACE_SECS, WATCHDOG_INTERVAL_SECS,
-    WATCHDOG_ORPHAN_SECS,
+    plan_settled_run_reconciliation, reconcile_active_run_once, reconcile_run_gone,
+    settle_from_agent_terminal, watchdog_interval, ActiveRunAction, SettledRunLedger,
+    TEST_WATCHDOG_STOP, WATCHDOG_GRACE_SECS, WATCHDOG_INTERVAL_SECS, WATCHDOG_ORPHAN_SECS,
 };
 use self::replica::AGENT_REPLICAS;
 use self::run_control::{mark_run_completed_if_active, mark_run_failed_if_active};

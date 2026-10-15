@@ -343,7 +343,7 @@ Agent 当前审批未决时应停在对应危险操作处等待用户明确允�
 - `requested_action` 预览需要可读化展示；内容过长时 UI 内部滚动，最大高度不超过窗口高度的三分之一。
 - 批量操作使用 `batch_operation`，用于一组文件写入、批量删除、批量命令或跨多个资源的高风险动作。
 - **产品设计：** workspace 外的普通读取不拦截，也不产生 `outside_workspace_read` 审批；敏感路径仍由不可覆盖的敏感文件守卫按 `file_read` 处理。workspace 外的写入 / 编辑 / 删除继续通过 `outside_workspace_write` 等审批。
-- GUI 或 Agent 重启后遗留的 `pending` 审批**不**无条件取消：启动收敛保留它们，由 `reconcile_pending_approvals`（启动一次 + watchdog 周期）按 Agent `get_state.pendingApprovals` 的权威集合裁决——Agent 仍在等待的保留卡片（run 复活并回到 `waiting_approval`），Agent 已不持有的（在他处已决、已 abort、或 Agent 自身重启丢失）才转为 `cancelled`，本地缺失的可从 Agent payload 重建。非终态 Run 同样不启动即取消，而是经 `reconcile_interrupted_runs` + `reanimate_run` + active-run watchdog 按 Agent 实际状态收敛（GUI 崩溃期间 Agent 可能仍在运行；仅当 Agent 确认 run 已消失才 settle）。
+- GUI 或 Agent 重启后遗留的 `pending` 审批**不**无条件取消：启动收敛保留它们，由 `reconcile_pending_approvals`（启动一次 + watchdog 周期）按 Agent `get_state.pendingApprovals` 的权威集合裁决——Agent 仍在等待的保留卡片（run 复活并回到 `waiting_approval`），Agent 已不持有的（在他处已决、已 abort、或 Agent 自身重启丢失）才转为 `cancelled`，本地缺失的可从 Agent payload 重建。非终态 Run 同样不启动即取消，而是经 `reconcile_interrupted_runs` + `reanimate_run` + active-run watchdog 按 Agent 实际状态收敛（GUI 崩溃期间 Agent 可能仍在运行；仅当 Agent 确认 run 已消失才 settle）。GUI 自己 settle 的行——`failed`，或启动收敛的 `cancelled`+`interrupted` 猜测——随后会按同一账本复读：在该 run 仍被 Agent 处理时写下的行（排队提交在 ack 处即返回 invoke 响应）会被复原，或在 Agent 完成后 settle 为 `completed`；用户中止与 `completed` 行永不复读。
 - 如果审批通过后产生文件变更，再由 Review Changeset 展示实际修改对比。
 - P2 引入结构化 `action_payload` 和 `sandbox_boundary` 字段（设计细节见 git history，原 `P2_APPROVAL_MODEL.md`）。
 - **v2（审批规则重构，2026-07-04）**：常规审批对象收敛为**文件路径访问**，规则改为**文件式**（`${WS}/.future/approval_rule.json`、`~/.future/approval_rule.json`，agent 直接读）；手动 shell 与 macOS/Linux escalation 仍是整命令审批，完整语义见 [SANDBOX/COMMON.zh-CN.md](SANDBOX/COMMON.zh-CN.md)。相应地：
