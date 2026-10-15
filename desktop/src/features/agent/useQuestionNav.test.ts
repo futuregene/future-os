@@ -23,6 +23,29 @@ function call(id: string): MessageSegment {
   return ({ id, kind: "activity", item: { id, kind: "read", status: "completed" } }) as unknown as MessageSegment;
 }
 
+/** The viewport's own top edge, in viewport coordinates. */
+const VIEWPORT_TOP = 24;
+const VIEWPORT_HEIGHT = 300;
+
+/**
+ * A DOMRect for a content offset, as the container's own scroll puts it on
+ * screen: the hook reads real geometry, so the fixture has to report it.
+ */
+function rectAt(contentTop: number, height: number, container: HTMLElement): DOMRect {
+  const top = VIEWPORT_TOP + contentTop - container.scrollTop;
+  return {
+    bottom: top + height,
+    height,
+    left: 0,
+    right: 600,
+    toJSON: () => ({}),
+    top,
+    width: 600,
+    x: 0,
+    y: top,
+  };
+}
+
 /**
  * Two turns. The first reply opens with reasoning and a call before its prose
  * (the shape that made the landing matter), the second is plain prose.
@@ -63,18 +86,9 @@ function transcript({
     container.appendChild(row);
     return row;
   });
-  const top = 24;
-  const rect = (contentTop: number, height: number): DOMRect => ({
-    bottom: top + contentTop - container.scrollTop + height,
-    height,
-    left: 0,
-    right: 600,
-    toJSON: () => ({}),
-    top: top + contentTop - container.scrollTop,
-    width: 600,
-    x: 0,
-    y: top + contentTop - container.scrollTop,
-  });
+  const top = VIEWPORT_TOP;
+  const rect = (contentTop: number, height: number): DOMRect =>
+    rectAt(contentTop, height, container);
   vi.spyOn(container, "getBoundingClientRect").mockReturnValue({
     bottom: top + viewportHeight,
     height: viewportHeight,
@@ -478,5 +492,295 @@ describe("useQuestionNav arrow keys", () => {
     press("ArrowDown");
     expect(container.scrollTop).toBe(0);
     container.remove();
+  });
+});
+
+/** One row's height in the paging fixture, so a landing can be arithmetic. */
+const ROW_HEIGHT = 100;
+
+/**
+ * A transcript whose rows the test can re-draw.
+ *
+ * That is what a fetched page does to one: the rows it brings go *above* the
+ * reader, so every offset below them moves — and the press that fetched them has
+ * to land on the rows it brought, measured where they ended up.
+ */
+function pagedTranscript() {
+  const container = document.createElement("div");
+  container.style.height = `${VIEWPORT_HEIGHT}px`;
+  container.style.overflow = "auto";
+  document.body.appendChild(container);
+  vi.spyOn(container, "getBoundingClientRect").mockReturnValue({
+    bottom: VIEWPORT_TOP + VIEWPORT_HEIGHT,
+    height: VIEWPORT_HEIGHT,
+    left: 0,
+    right: 600,
+    toJSON: () => ({}),
+    top: VIEWPORT_TOP,
+    width: 600,
+    x: 0,
+    y: VIEWPORT_TOP,
+  });
+  Object.defineProperty(container, "clientHeight", { configurable: true, value: VIEWPORT_HEIGHT });
+  /** Draw `ids` as the transcript, in order, one row each. */
+  const layOut = (ids: string[]) => {
+    container.replaceChildren();
+    ids.forEach((id, index) => {
+      const row = document.createElement("div");
+      row.dataset.messageId = id;
+      vi.spyOn(row, "getBoundingClientRect").mockImplementation(() =>
+        rectAt(index * ROW_HEIGHT, ROW_HEIGHT, container));
+      container.append(row);
+    });
+    Object.defineProperty(container, "scrollHeight", {
+      configurable: true,
+      value: ids.length * ROW_HEIGHT + VIEWPORT_TOP,
+    });
+  };
+  return { container, layOut, scrollRef: { current: container as HTMLElement | null } };
+}
+
+/** The page read is the test's to finish, so it can draw the rows first. */
+function deferred() {
+  let release: () => void = () => {};
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
+/**
+ * Frames on demand.
+ *
+ * A real `requestAnimationFrame` arrives after the commit that drew a page's
+ * rows, which is the moment the landing is resolved at — so the test, not the
+ * timer, decides when the browser paints.
+ */
+function queuedFrames() {
+  const queued: FrameRequestCallback[] = [];
+  const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    queued.push(callback);
+    return queued.length;
+  });
+  return {
+    /** Run every frame queued so far, for `rounds` batches. */
+    paint(rounds = 1) {
+      for (let round = 0; round < rounds && queued.length > 0; round += 1) {
+        const batch = queued.splice(0);
+        act(() => batch.forEach(callback => callback(0)));
+      }
+    },
+    /** Whether a frame loop is still waiting for its rows. */
+    get waiting(): number {
+      return queued.length;
+    },
+    restore: () => raf.mockRestore(),
+  };
+}
+
+/**
+ * Paging from the loaded window's top.
+ *
+ * A remote conversation is read a page at a time, and a window can be shorter
+ * than its viewport — so the top-edge scroll that asks the host for more cannot
+ * be reached by scrolling at all. ↑ is the walk's own way in: it asks for the
+ * page, and the press lands on the prompt it was reaching for once the rows the
+ * page brought have been drawn.
+ */
+describe("useQuestionNav paging from the window's top", () => {
+  const WINDOW_MESSAGES: TranscriptMessage[] = [
+    user("u5"),
+    assistant("a5", [text("t5")]),
+    user("u6"),
+    assistant("a6", [text("t6")]),
+  ];
+  const PAGE_MESSAGES: TranscriptMessage[] = [
+    user("u1"),
+    assistant("a1", [text("t1")]),
+    user("u2"),
+    assistant("a2", [text("t2")]),
+  ];
+  const WINDOW_IDS = ["u5", "a5", "u6", "a6"];
+  const PAGE_IDS = ["u1", "a1", "u2", "a2"];
+
+  it("fetches the page above, and lands on the prompt the press was reaching for", async () => {
+    const world = pagedTranscript();
+    world.layOut(WINDOW_IDS);
+    const frames = queuedFrames();
+    const gate = deferred();
+    const loadOlder = vi.fn(() => gate.promise);
+    const onTakeOver = vi.fn();
+    let messages: TranscriptMessage[] = WINDOW_MESSAGES;
+    const hook = renderHook(() => useQuestionNav({
+      hasOlderHistory: true,
+      loadOlder,
+      messages,
+      onTakeOver,
+      scrollRef: world.scrollRef,
+    }));
+
+    // Nothing above the loaded window, and the host has more: ↑ is offered and
+    // its press is a request, not a scroll.
+    expect(hook.current.previous).toBeNull();
+    expect(hook.current.hasPrevious).toBe(true);
+
+    act(() => hook.current.goToPrevious());
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+    // …and the viewport is handed over before the page lands, so a reply
+    // streaming in cannot pull the reader back to the tail.
+    expect(onTakeOver).toHaveBeenCalledTimes(1);
+
+    // The page arrives: the transcript's own array grows, the rows are drawn
+    // above the reader, and the reader stays on their row — the anchor the view
+    // keeps when older history is prepended (`preserveViewport`).
+    messages = [...PAGE_MESSAGES, ...WINDOW_MESSAGES];
+    act(() => {
+      world.layOut([...PAGE_IDS, ...WINDOW_IDS]);
+      world.container.scrollTop = PAGE_IDS.length * ROW_HEIGHT;
+      hook.rerender();
+    });
+    await act(async () => {
+      gate.release();
+    });
+    frames.paint(2);
+
+    // The press comes to rest on u2 — the closest prompt above the reader, which
+    // arrived with the page — 16px under the container's own top edge. (Landing
+    // "at the top" would read 0 here, and not moving at all 400.)
+    expect(world.container.scrollTop).toBe(2 * ROW_HEIGHT - 16);
+
+    // The walk then goes on *inside* the page: one step per press, not one page.
+    act(() => hook.current.goToPrevious());
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+    expect(world.container.scrollTop).toBe(0);
+    hook.unmount();
+    frames.restore();
+    world.container.remove();
+  });
+
+  it("waits for the frame that draws the page, when the rows follow the read", async () => {
+    const world = pagedTranscript();
+    world.layOut(WINDOW_IDS);
+    const frames = queuedFrames();
+    const gate = deferred();
+    const loadOlder = vi.fn(() => gate.promise);
+    let messages: TranscriptMessage[] = WINDOW_MESSAGES;
+    const hook = renderHook(() => useQuestionNav({
+      hasOlderHistory: true,
+      loadOlder,
+      messages,
+      onTakeOver: vi.fn(),
+      scrollRef: world.scrollRef,
+    }));
+
+    act(() => hook.current.goToPrevious());
+    // The read finishes before React has drawn what it brought. The landing has
+    // to watch the frames that follow it, not the one it was asked on — and it
+    // leaves the reader where they are until the page is actually there.
+    await act(async () => {
+      gate.release();
+    });
+    expect(frames.waiting).toBe(1);
+    expect(world.container.scrollTop).toBe(0);
+
+    messages = [...PAGE_MESSAGES, ...WINDOW_MESSAGES];
+    act(() => {
+      world.layOut([...PAGE_IDS, ...WINDOW_IDS]);
+      world.container.scrollTop = PAGE_IDS.length * ROW_HEIGHT;
+      hook.rerender();
+    });
+    frames.paint(1);
+
+    expect(world.container.scrollTop).toBe(2 * ROW_HEIGHT - 16);
+    hook.unmount();
+    frames.restore();
+    world.container.remove();
+  });
+
+  it("asks for one page per press, however the press is repeated", async () => {
+    const world = pagedTranscript();
+    world.layOut(WINDOW_IDS);
+    const frames = queuedFrames();
+    const gate = deferred();
+    const loadOlder = vi.fn(() => gate.promise);
+    let loadingOlder = false;
+    const hook = renderHook(() => useQuestionNav({
+      hasOlderHistory: true,
+      loadOlder,
+      loadingOlder,
+      messages: WINDOW_MESSAGES,
+      onTakeOver: vi.fn(),
+      scrollRef: world.scrollRef,
+    }));
+
+    act(() => {
+      hook.current.goToPrevious();
+      hook.current.goToPrevious();
+    });
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+
+    // …and while the host is reading it, the walk is busy: the button is inert
+    // until the page has landed (the same rule the mobile walk applies).
+    loadingOlder = true;
+    act(() => {
+      hook.rerender();
+      hook.current.goToPrevious();
+    });
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+    expect(hook.current.hasPrevious).toBe(false);
+    await act(async () => {
+      gate.release();
+    });
+    hook.unmount();
+    frames.restore();
+    world.container.remove();
+  });
+
+  it("pages from the arrow key too, since the keys and the buttons are one walk", () => {
+    const world = pagedTranscript();
+    world.layOut(WINDOW_IDS);
+    const loadOlder = vi.fn(() => Promise.resolve());
+    const hook = renderHook(() => useQuestionNav({
+      hasOlderHistory: true,
+      loadOlder,
+      messages: WINDOW_MESSAGES,
+      onTakeOver: vi.fn(),
+      scrollRef: world.scrollRef,
+    }));
+
+    expect(press("ArrowUp").defaultPrevented).toBe(true);
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+    hook.unmount();
+    world.container.remove();
+  });
+
+  it("leaves the reader where they were when the page never arrives", async () => {
+    const world = pagedTranscript();
+    world.layOut(WINDOW_IDS);
+    const frames = queuedFrames();
+    const gate = deferred();
+    const loadOlder = vi.fn(() => gate.promise);
+    const hook = renderHook(() => useQuestionNav({
+      hasOlderHistory: true,
+      loadOlder,
+      messages: WINDOW_MESSAGES,
+      onTakeOver: vi.fn(),
+      scrollRef: world.scrollRef,
+    }));
+
+    act(() => hook.current.goToPrevious());
+    // The read fails: nothing is ever drawn above the reader.
+    await act(async () => {
+      gate.release();
+    });
+    frames.paint(20);
+
+    expect(world.container.scrollTop).toBe(0);
+    // The wait is bounded, so nothing is left looking for rows that are not
+    // coming — and the next press is free to ask again.
+    expect(frames.waiting).toBe(0);
+    hook.unmount();
+    frames.restore();
+    world.container.remove();
   });
 });

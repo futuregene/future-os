@@ -203,6 +203,65 @@ describe("useRemoteTimeline", () => {
     hook.unmount();
   });
 
+  /**
+   * A page that did not arrive is that *page's* failure, not the conversation's.
+   *
+   * The window is exactly what it was — nothing was prepended — so the honest
+   * surface is the press the reader made, offered again (`olderHistoryFailed`),
+   * rather than an error over a transcript that is intact.
+   */
+  it("reports a failed older page as its own state, and clears it on the next ask", async () => {
+    requestMock
+      .mockResolvedValueOnce(page([entry("e3", "user", "newest")], { hasMore: true, nextOffset: 42 }))
+      .mockRejectedValueOnce(new Error("peer_timeout"));
+
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    expect(hook.current.olderHistoryFailed).toBe(false);
+
+    await act(async () => {
+      await hook.current.loadOlder();
+    });
+
+    expect(hook.current.olderHistoryFailed).toBe(true);
+    expect(hook.current.error).toBeNull();
+    expect(hook.current.entries.map(item => item.id)).toEqual(["e3"]);
+    // Still there to ask for: a failed page does not consume the cursor.
+    expect(hook.current.hasMore).toBe(true);
+
+    // A retry is a fresh ask: the offer gives way to the page being read again,
+    // and then to the page itself.
+    let release: (value: unknown) => void = () => {};
+    requestMock.mockImplementationOnce(() => new Promise((resolve) => {
+      release = resolve;
+    }));
+    let retry!: Promise<void>;
+    await act(async () => {
+      retry = hook.current.loadOlder();
+      await Promise.resolve();
+    });
+    expect(hook.current.loadingOlder).toBe(true);
+    expect(hook.current.olderHistoryFailed).toBe(false);
+
+    await act(async () => {
+      release(page([entry("e1", "user", "oldest")], { hasMore: false, nextOffset: 0 }));
+      await retry;
+    });
+    expect(hook.current.olderHistoryFailed).toBe(false);
+    expect(hook.current.entries.map(item => item.id)).toEqual(["e1", "e3"]);
+    hook.unmount();
+  });
+
+  /** The first read failing is still the transcript's own failure. */
+  it("does not report a failed first read as a failed page", async () => {
+    requestMock.mockRejectedValue(new Error("peer_not_connected"));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    expect(hook.current.error).toBe("peer_not_connected");
+    expect(hook.current.olderHistoryFailed).toBe(false);
+    hook.unmount();
+  });
+
   it("surfaces a read failure without inventing an empty conversation", async () => {
     requestMock.mockRejectedValue(new Error("peer_not_connected"));
     const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));

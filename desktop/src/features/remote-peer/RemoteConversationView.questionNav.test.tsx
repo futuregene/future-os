@@ -66,6 +66,7 @@ async function mount(messages: AgentMessage[]) {
         onOpenUsage={vi.fn()}
         onRetry={vi.fn()}
         onToggleLeftPanel={vi.fn()}
+        olderHistoryFailed={false}
         peer={undefined}
         persistedEntryIds={new Set()}
         sessionId="sess_1"

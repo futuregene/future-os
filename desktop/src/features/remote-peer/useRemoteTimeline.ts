@@ -87,6 +87,14 @@ export interface RemoteTimeline {
   /** True while an older page is being appended. */
   loadingOlder: boolean;
   hasMore: boolean;
+  /**
+   * The last older page read failed.
+   *
+   * The window is unchanged when that happens, so the honest surface is the one
+   * the reader asked from — the same press, offered again — rather than an error
+   * over a transcript that is intact (see `error`).
+   */
+  olderHistoryFailed: boolean;
   error: string | null;
   loadOlder: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -266,6 +274,18 @@ export function useRemoteTimeline(
   const [loading, setLoading] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasMore, setHasMore] = useState(false);
+  /**
+   * Whether the last older page read failed, so the transcript can offer the
+   * press again.
+   *
+   * The page is fetched because the reader asked for it (a press on ↑, a scroll
+   * to the top), and a read that failed leaves the window exactly as it was —
+   * which is precisely the state a retry is for. Kept apart from `error`, which
+   * is about the conversation's own record: a page that did not arrive is not the
+   * transcript failing to load, and the reply the reader is reading is not what
+   * went missing.
+   */
+  const [olderHistoryFailed, setOlderHistoryFailed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [compacting, setCompacting] = useState(false);
@@ -412,6 +432,10 @@ export function useRemoteTimeline(
     }
     else {
       setLoadingOlder(true);
+      // A retry is a *fresh* ask: the surface that offered it goes back to
+      // saying the page is being read, and the flag says so again only if this
+      // attempt fails too.
+      setOlderHistoryFailed(false);
     }
     try {
       // The tail for a first/catch-up read, the previous response's
@@ -463,7 +487,14 @@ export function useRemoteTimeline(
     }
     catch (err) {
       if (epoch === epochRef.current) {
-        setError(err instanceof Error ? err.message : String(err));
+        // Which read failed decides what the reader is told: a page that did not
+        // arrive is this page's own failure (retryable where it was asked for),
+        // while a conversation that could not be read at all is the
+        // transcript's.
+        if (side === "older")
+          setOlderHistoryFailed(true);
+        else
+          setError(err instanceof Error ? err.message : String(err));
       }
       return [];
     }
@@ -568,6 +599,9 @@ export function useRemoteTimeline(
     cursorRef.current = cached?.cursor ?? null;
     setHasMore(cached?.hasMore ?? false);
     setError(null);
+    // A failed page belongs to the conversation it was asked for: another one is
+    // not carrying its retry offer.
+    setOlderHistoryFailed(false);
     setStreaming(false);
     setCompacting(false);
     setReplayUnavailable(false);
@@ -730,6 +764,7 @@ export function useRemoteTimeline(
       loading,
       loadingOlder,
       hasMore,
+      olderHistoryFailed,
       error,
       loadOlder,
       refresh,
@@ -737,7 +772,7 @@ export function useRemoteTimeline(
       compacting,
       persistedEntryIds,
     }),
-    [entries, messages, liveReplies, replayUnavailable, sessionState, sessionId, streaming, compacting, loading, loadingOlder, hasMore, error, loadOlder, refresh, persistedEntryIds],
+    [entries, messages, liveReplies, replayUnavailable, sessionState, sessionId, streaming, compacting, loading, loadingOlder, hasMore, olderHistoryFailed, error, loadOlder, refresh, persistedEntryIds],
   );
 }
 

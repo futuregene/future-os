@@ -28,9 +28,11 @@ async function mount(props: {
   hasMore?: boolean;
   /** The reply the host is writing, if the test is about streaming. */
   liveReplies?: RemoteLiveReply[];
+  loadingOlder?: boolean;
   messages: AgentMessage[];
+  olderHistoryFailed?: boolean;
   onFork?: (sourceEntryId: string, forkable: boolean) => void;
-  onLoadOlder?: () => void;
+  onLoadOlder?: () => void | Promise<unknown>;
   persisted?: string[];
 }) {
   const container = document.createElement("div");
@@ -49,7 +51,7 @@ async function mount(props: {
         leftPanelExpanded
         liveReplies={props.liveReplies ?? []}
         loading={false}
-        loadingOlder={false}
+        loadingOlder={props.loadingOlder ?? false}
         messages={props.messages}
         onContinueRun={vi.fn()}
         onDecideApproval={vi.fn()}
@@ -58,6 +60,7 @@ async function mount(props: {
         onOpenUsage={vi.fn()}
         onRetry={vi.fn()}
         onToggleLeftPanel={vi.fn()}
+        olderHistoryFailed={props.olderHistoryFailed ?? false}
         peer={undefined}
         persistedEntryIds={new Set(props.persisted ?? [])}
         sessionId="sess_1"
@@ -122,6 +125,63 @@ it("asks for nothing when there is no more history", async () => {
 
   await view.scroll(300, 10);
   expect(onLoadOlder).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+/** The pill the band over the transcript's top edge draws, if it is up. */
+function olderPill(view: { container: HTMLElement }) {
+  return view.container.querySelector<HTMLButtonElement>("button[aria-label='Load older']");
+}
+
+/**
+ * The band over the transcript's top edge speaks only while it has something to
+ * say.
+ *
+ * It used to be up whenever the host had more history — which is every remote
+ * conversation that is not its first page — so the pill sat over the first line
+ * of the transcript for as long as the window was open, covering what it was
+ * next to. What is left is the feedback a request needs: a page on its way, or a
+ * page that did not come.
+ */
+it("leaves the top of the transcript clear while the host's history is simply farther up", async () => {
+  const messages = entriesToMessages([entry("u1", "user", "hello"), entry("a1", "assistant", "hi")]);
+  const view = await mount({ hasMore: true, messages });
+
+  expect(olderPill(view)).toBeNull();
+  await view.unmount();
+});
+
+it("says a page is on its way, and is not pressable while it is", async () => {
+  const messages = entriesToMessages([entry("u1", "user", "hello")]);
+  const view = await mount({ hasMore: true, loadingOlder: true, messages });
+
+  const pill = olderPill(view)!;
+  expect(pill.textContent).toContain("Loading…");
+  expect(pill.disabled).toBe(true);
+  expect(pill.getAttribute("aria-busy")).toBe("true");
+  await view.unmount();
+});
+
+it("offers the press again when the page did not come", async () => {
+  const messages = entriesToMessages([entry("u1", "user", "hello")]);
+  const onLoadOlder = vi.fn();
+  const view = await mount({ hasMore: true, messages, olderHistoryFailed: true, onLoadOlder });
+
+  const pill = olderPill(view)!;
+  expect(pill.textContent).toContain("retry");
+  expect(pill.disabled).toBe(false);
+  expect(pill.getAttribute("aria-busy")).toBe("false");
+
+  await act(async () => pill.click());
+  expect(onLoadOlder).toHaveBeenCalledTimes(1);
+  await view.unmount();
+});
+
+it("does not offer a retry for a page there is none of", async () => {
+  const messages = entriesToMessages([entry("u1", "user", "hello")]);
+  const view = await mount({ hasMore: false, messages, olderHistoryFailed: true });
+
+  expect(olderPill(view)).toBeNull();
   await view.unmount();
 });
 

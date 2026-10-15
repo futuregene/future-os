@@ -27,6 +27,7 @@
   },
   "runsOn": "在 {{name}} 上执行",
   "loadOlder": "加载更早的消息",
+  "loadOlderFailed": "更早的消息没能加载出来，点击重试",
   "loadingOlder": "加载中…",
   "loadingHistory": "正在加载历史…",
   "emptyConversation": "还没有消息。",

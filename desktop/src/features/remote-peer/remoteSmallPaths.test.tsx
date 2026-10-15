@@ -79,6 +79,7 @@ async function mountView(messages: AgentMessage[], onFork: (source: string, fork
         onOpenUsage={vi.fn()}
         onRetry={vi.fn()}
         onToggleLeftPanel={vi.fn()}
+        olderHistoryFailed={false}
         peer={undefined}
         persistedEntryIds={new Set()}
         sessionId="sess_1"

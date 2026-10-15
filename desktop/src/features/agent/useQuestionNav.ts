@@ -1,6 +1,6 @@
 import type { RefObject } from "react";
 import type { MessageIndex, NavRung, TranscriptMessage } from "./questionNav";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isEditableTarget } from "../../lib/editableTarget";
 import { hasKeyboardOwner } from "../../lib/keyboardOwners";
 import { useCommittedRef } from "../../lib/useCommittedRef";
@@ -23,6 +23,15 @@ const JUMP_TOP_INSET_PX = 16;
 const LANDING_MOVES_PX = 2;
 /** A bound on walking past unreachable rungs, so a stuck layout cannot loop. */
 const MAX_SKIPPED_RUNGS = 200;
+/**
+ * How many frames to keep looking for the rows a fetched page brings.
+ *
+ * A page's rows are React's to draw and the browser's to lay out, so a press
+ * whose target lives in the page is resolved from a later frame (see `pageUp`).
+ * Bounded because a page that never arrives — a read that failed — must not
+ * leave a frame loop running behind it.
+ */
+const PAGE_LANDING_FRAMES = 10;
 
 /**
  * The marker the reply row puts on the block a `replyTail` rung lands on (see
@@ -92,14 +101,38 @@ export function useQuestionNav<T extends TranscriptMessage>({
   messages,
   scrollRef,
   onTakeOver,
+  hasOlderHistory = false,
+  loadingOlder = false,
+  loadOlder,
 }: {
   messages: T[];
   scrollRef: RefObject<HTMLElement | null>;
   onTakeOver: () => void;
+  /**
+   * More transcript pages exist above the loaded window.
+   *
+   * A remote conversation is read a page at a time, and the loaded window is the
+   * newest pages of one that continues above it — so the walk's own answer at the
+   * window's top ("nothing above") is not the end of the conversation, and ↑
+   * fetches the page rather than stalling there. Unset — a local transcript,
+   * whose paging hangs off its own top edge — leaves the walk exactly as it was.
+   */
+  hasOlderHistory?: boolean;
+  /** A page is already being fetched. */
+  loadingOlder?: boolean;
+  /** Ask for the next page up. Resolves once the page has been fetched. */
+  loadOlder?: () => void | Promise<unknown>;
 }): QuestionNavApi {
   const rungs = useMemo(() => buildNavRungs(messages), [messages]);
   const rungsRef = useCommittedRef(rungs);
   const onTakeOverRef = useCommittedRef(onTakeOver);
+  const hasOlderRef = useCommittedRef(hasOlderHistory);
+  const loadingOlderRef = useCommittedRef(loadingOlder);
+  const loadOlderRef = useCommittedRef(loadOlder);
+  /** A page press in flight: one press per page, however it is repeated. */
+  const pagePendingRef = useRef(false);
+  /** The frame loop looking for that page's rows, or null when none is armed. */
+  const pageFrameRef = useRef<number | null>(null);
   const [offer, setOffer] = useState<{ previous: NavRung | null; next: NavRung | null }>({
     next: null,
     previous: null,
@@ -257,7 +290,69 @@ export function useQuestionNav<T extends TranscriptMessage>({
     publish();
   }, [landingOffset, onTakeOverRef, publish, rows, scrollRef, step]);
 
-  const goToPrevious = useCallback(() => navigate("previous"), [navigate]);
+  /**
+   * ↑ above the loaded window's top: fetch the page there, then land the press.
+   *
+   * A remote conversation is paged from the host, and the walk's own answer at
+   * the window's top is "nothing above" — exactly where the reader must not be
+   * stalled: the prompt they are looking for is the first one of the page above.
+   * The landing therefore waits for the rows that page brings (they are a React
+   * commit away), and the press is re-resolved against them — so it comes to rest
+   * on the prompt the page begins with, measured, rather than on an offset
+   * guessed before the browser had laid it out.
+   */
+  const pageUp = useCallback(() => {
+    const request = loadOlderRef.current;
+    if (
+      !request
+      || pagePendingRef.current
+      || pageFrameRef.current !== null
+      || loadingOlderRef.current
+    ) {
+      return;
+    }
+    pagePendingRef.current = true;
+    // Hand the viewport over before the page lands: the transcript stops
+    // following its tail, so the prepended rows are drawn above the reader
+    // instead of arriving under a viewport pinned to the bottom.
+    onTakeOverRef.current();
+    const rowsBefore = rows().length;
+    const settle = (frame: number) => {
+      if (rows().length > rowsBefore) {
+        pageFrameRef.current = null;
+        navigate("previous");
+        return;
+      }
+      if (frame >= PAGE_LANDING_FRAMES) {
+        pageFrameRef.current = null;
+        return;
+      }
+      pageFrameRef.current = window.requestAnimationFrame(() => settle(frame + 1));
+    };
+    const fetched = () => {
+      pagePendingRef.current = false;
+      settle(0);
+    };
+    try {
+      // Waiting on the read itself is what makes the landing reliable: a page
+      // from another machine can take longer than the frames this looks through.
+      Promise.resolve(request()).then(fetched, fetched);
+    }
+    catch {
+      fetched();
+    }
+  }, [loadOlderRef, loadingOlderRef, navigate, onTakeOverRef, rows]);
+
+  const goToPrevious = useCallback(() => {
+    // The target is resolved against the DOM now, as everywhere else in the walk;
+    // only when there is nothing above the reader does history come into it.
+    if (step("previous") !== null) {
+      navigate("previous");
+      return;
+    }
+    if (hasOlderRef.current)
+      pageUp();
+  }, [hasOlderRef, navigate, pageUp, step]);
   const goToNext = useCallback(() => navigate("next"), [navigate]);
 
   /**
@@ -274,18 +369,43 @@ export function useQuestionNav<T extends TranscriptMessage>({
         editable: isEditableTarget(event.target),
         owned: hasKeyboardOwner(),
       });
-      if (direction === null || step(direction) === null)
+      if (direction === null)
         return;
+      if (step(direction) === null) {
+        // ↑ at the window's top is the button's own press, not a key the walk
+        // cannot answer: the keys and the buttons are one walk, so the key pages
+        // too. ↓ has no equivalent — there is no page newer than the window —
+        // and is left to the page, which is the ordinary line scroll.
+        if (direction === "previous" && hasOlderRef.current) {
+          event.preventDefault();
+          goToPrevious();
+        }
+        return;
+      }
       event.preventDefault();
       navigate(direction);
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [navigate, step]);
+  }, [goToPrevious, hasOlderRef, navigate, step]);
+
+  // A landing that is still looking for its rows must not outlive the view: it
+  // would move a viewport nobody asked it to touch.
+  useEffect(
+    () => () => {
+      if (pageFrameRef.current !== null)
+        window.cancelAnimationFrame(pageFrameRef.current);
+      pageFrameRef.current = null;
+      pagePendingRef.current = false;
+    },
+    [],
+  );
 
   return {
     hasNext: offer.next !== null,
-    hasPrevious: offer.previous !== null,
+    // ↑ stays alive one step past the loaded walk when the host has more
+    // history: the press fetches it and lands where the page begins.
+    hasPrevious: offer.previous !== null || (hasOlderHistory && !loadingOlder),
     goToNext,
     goToPrevious,
     next: offer.next,

@@ -27,6 +27,7 @@
   },
   "runsOn": "Runs on {{name}}",
   "loadOlder": "Load older",
+  "loadOlderFailed": "Couldn't load earlier messages — click to retry",
   "loadingOlder": "Loading…",
   "loadingHistory": "Loading history…",
   "emptyConversation": "No messages yet.",
