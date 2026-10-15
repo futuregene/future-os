@@ -256,6 +256,11 @@ export async function upsertStreamingPreview(
 
       const updated: AgentMessage = {
         ...base[existingIndex]!,
+        // An older live bubble may have been stamped when the view reattached.
+        // Keep its header aligned with the run's elapsed-time anchor.
+        createdAt: runStartedAt != null
+          ? new Date(runStartedAt).toISOString()
+          : base[existingIndex]!.createdAt,
         activityItems: projection.activityItems,
         segments: projection.segments,
         content: content || base[existingIndex]!.content,
@@ -316,7 +321,7 @@ function streamingBubble(
     authorKey: "author.researchCopilot",
     content: projection.content.trim(),
     status: "streaming",
-    createdAt: new Date().toISOString(),
+    createdAt: new Date(runStartedAt ?? Date.now()).toISOString(),
     activityItems: projection.activityItems,
     segments: projection.segments,
     thinkingActive: projection.thinkingActive,
