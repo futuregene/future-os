@@ -91,6 +91,23 @@ pub struct MockState {
     pub prompt_request_ids: Vec<String>,
     /// The `message` text of every prompt command, in order.
     pub prompt_messages: Vec<String>,
+    /// `queryCount` reported by `get_state` — the user-message count the
+    /// first-turn title guard reads. Default 0 ("no turns yet"), so a test
+    /// must opt in to titling explicitly.
+    pub query_count: u64,
+    /// `sessionName` reported by `get_state` (empty = unnamed).
+    pub session_name: String,
+    /// Title answered by `generate_session_title`. `None` makes the command
+    /// fail, which is the "no title provider" shape a title must survive.
+    pub title: Option<String>,
+    /// A name the user applies WHILE the title is being generated: the mock
+    /// renames the session itself before answering, so the loop's
+    /// post-generation re-check must see a name it did not generate.
+    pub rename_during_title: Option<String>,
+    /// `name` of every `set_session_name` command, in order.
+    pub renamed: Vec<String>,
+    /// The `mode` (title language) of every `generate_session_title` command.
+    pub title_languages: Vec<String>,
 }
 
 impl MockState {
@@ -190,9 +207,33 @@ impl FutureAgent for MockAgent {
                     ));
                 }
                 format!(
-                    "{{\"tokensIn\":{},\"tokensOut\":{},\"totalCost\":{}}}",
-                    st.tokens_in, st.tokens_out, st.cost
+                    "{{\"tokensIn\":{},\"tokensOut\":{},\"totalCost\":{},\"queryCount\":{},\"sessionName\":\"{}\"}}",
+                    st.tokens_in, st.tokens_out, st.cost, st.query_count, st.session_name
                 )
+            }
+            "generate_session_title" => {
+                st.title_languages.push(cmd.mode.clone());
+                if let Some(concurrent) = st.rename_during_title.clone() {
+                    st.session_name = concurrent;
+                }
+                let Some(title) = st.title.clone() else {
+                    // No title provider configured: the call must fail, and the
+                    // run must survive it.
+                    return Ok(response(
+                        &cmd,
+                        false,
+                        String::new(),
+                        "mock has no title provider".to_string(),
+                    ));
+                };
+                format!("{{\"title\":\"{}\"}}", title)
+            }
+            "set_session_name" => {
+                st.renamed.push(cmd.name.clone());
+                // The real agent persists the name; the post-generation
+                // re-check reads it back, so the mock must too.
+                st.session_name = cmd.name.clone();
+                String::new()
             }
             "delete_session" => {
                 st.live_sessions.remove(&cmd.session_id);

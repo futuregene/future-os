@@ -34,6 +34,13 @@ pub struct MockAgent {
     pub status_empty_types: HashSet<String>,
     /// Types that fail the unary call with a message-bearing tonic Status.
     pub status_message_types: HashSet<String>,
+    /// Per-command-type response sequence: consumed in order, the last entry
+    /// repeating once exhausted. Lets a test make one command answer
+    /// differently across calls (e.g. `get_state` before and after a
+    /// concurrent user rename).
+    pub sequences: HashMap<String, Vec<String>>,
+    /// How far each [`Self::sequences`] entry has been consumed.
+    pub sequence_index: Arc<Mutex<HashMap<String, usize>>>,
     /// Canned events for stream_events.
     pub events: Vec<StreamEvent>,
     /// Emit a stream-level error after the canned events.
@@ -79,6 +86,25 @@ impl FutureAgent for MockAgent {
         }
         if self.status_message_types.contains(&cmd.r#type) {
             return Err(tonic::Status::unavailable("transport down"));
+        }
+        if let Some(sequence) = self.sequences.get(&cmd.r#type) {
+            if !sequence.is_empty() {
+                let mut index = self.sequence_index.lock().expect("sequence index");
+                let position = index.entry(cmd.r#type.clone()).or_insert(0);
+                let data = sequence[(*position).min(sequence.len() - 1)].clone();
+                *position += 1;
+                return Ok(tonic::Response::new(RpcResponse {
+                    id: cmd.id,
+                    r#type: "response".into(),
+                    command: cmd.r#type.clone(),
+                    success: true,
+                    data,
+                    error: String::new(),
+                    error_code: String::new(),
+                    error_data: String::new(),
+                    payload: None,
+                }));
+            }
         }
         let data = self
             .responses

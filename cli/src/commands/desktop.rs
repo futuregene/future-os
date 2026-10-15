@@ -72,7 +72,10 @@ fn db_path() -> Result<std::path::PathBuf, String> {
 /// desktop app has no store yet. A store that exists but cannot be read is an
 /// error — the same distinction the app's own phone-facing handlers make, so
 /// defaults are never passed off as saved values.
-pub(super) fn load() -> Result<future_app_settings::AppSettings, String> {
+///
+/// `pub(crate)` because the title language is read from here by `future run`
+/// (and not only by this command).
+pub(crate) fn load() -> Result<future_app_settings::AppSettings, String> {
     let Some(conn) = future_app_settings::connect_existing().map_err(|error| error.to_string())?
     else {
         return Ok(future_app_settings::defaults());

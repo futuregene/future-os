@@ -35,6 +35,7 @@ struct RunArgs {
     mode: String,
     cwd: Option<String>,
     verbose: bool,
+    auto_title: bool,
     busy_policy: String,
     file_args: Vec<String>,
     messages: Vec<String>,
@@ -83,6 +84,11 @@ Output:
   --verbose                Write progress and tool calls to stderr
 
 Other:
+  --no-title               Do not name a session this run creates. By default
+                           the first answer of a NEW session is used to generate
+                           and save a title (one extra model call). Sessions
+                           that already existed (--session/--continue/--fork)
+                           are never renamed.
   --grpc-addr <addr>       Explicit TCP address (default: auto, per-user local IPC).
                            Also configurable via FUTURE_AGENT_GRPC_ADDR.
                            Explicit TCP is tried first, then local IPC.
@@ -134,6 +140,7 @@ fn parse_run_args(args: &[String], out: &Output) -> Option<RunArgs> {
         mode: "text".to_string(),
         cwd: None,
         verbose: false,
+        auto_title: true,
         busy_policy: String::new(),
         file_args: Vec::new(),
         messages: Vec::new(),
@@ -233,6 +240,7 @@ fn parse_run_args(args: &[String], out: &Output) -> Option<RunArgs> {
                 }
             }
             "--no-session" => result.no_session = true,
+            "--no-title" => result.auto_title = false,
             "--steer" => {
                 result.busy_policy = "supersede_session".to_string();
             }
@@ -364,6 +372,7 @@ pub async fn run_command(args: &[String], out: &Output) -> Result<(), String> {
         // recorded working directory alone.
         cwd: parsed.cwd,
         verbose: parsed.verbose,
+        auto_title: parsed.auto_title,
         busy_policy: parsed.busy_policy,
         message: prompt,
     };
@@ -465,6 +474,14 @@ mod tests {
         assert_eq!(parsed.busy_policy, "supersede_session");
         // No flag → empty (the default follow-up policy at the RPC layer).
         assert_eq!(parse(&["hi"]).unwrap().busy_policy, "");
+    }
+
+    #[test]
+    fn parse_no_title_flag() {
+        // Titling a session this run creates is on by default (matching the
+        // desktop app); `--no-title` is the opt-out.
+        assert!(parse(&["hi"]).unwrap().auto_title);
+        assert!(!parse(&["--no-title", "hi"]).unwrap().auto_title);
     }
 
     #[test]
@@ -624,6 +641,14 @@ mod tests {
         assert!(stdout.contains("none (deny all tools)"), "stdout: {stdout}");
         assert!(!stdout.contains("default 127.0.0.1:50051"));
         assert!(!stdout.contains("read-only outside workspace"));
+        // The opt-out and its cost (one extra model call) are documented in
+        // the help the user actually reads.
+        assert!(stdout.contains("--no-title"), "stdout: {stdout}");
+        assert!(stdout.contains("one extra model call"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("never renamed"),
+            "help must say existing sessions are left alone: {stdout}"
+        );
 
         // No message and no @files → usage error.
         let (out, cap) = Output::memory();
@@ -741,6 +766,100 @@ mod tests {
             "set_cwd must not fire without --cwd: {:?}",
             agent.seen_of("set_cwd")
         );
+    }
+
+    /// End to end through the CLI entry: a new session is titled, `--no-title`
+    /// suppresses it, and `--session` leaves an existing conversation alone.
+    #[tokio::test]
+    async fn run_command_titles_only_sessions_it_creates() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let state = "{\"queryCount\":1,\"isStreaming\":false,\"sessionName\":\"\"}";
+        let events = vec![
+            crate::test_server::stream_event("text_chunk", "{\"text\":\"hi there\"}"),
+            crate::test_server::stream_event("agent_end", "{}"),
+        ];
+
+        // ① a session this run created → titled
+        let mut agent = crate::test_server::MockAgent {
+            events: events.clone(),
+            ..Default::default()
+        };
+        agent
+            .responses
+            .insert("new_session".into(), "{\"sessionId\":\"s-run\"}".into());
+        agent.responses.insert("get_state".into(), state.into());
+        agent.responses.insert(
+            "generate_session_title".into(),
+            "{\"title\":\"Fresh title\"}".into(),
+        );
+        let addr = crate::test_server::spawn_mock(agent.clone()).await;
+        let (out, _) = Output::memory();
+        run_command(
+            &["--grpc-addr".to_string(), addr.clone(), "hi".to_string()],
+            &out,
+        )
+        .await
+        .expect("run");
+        assert_eq!(agent.seen_of("set_session_name").len(), 1);
+        assert_eq!(agent.seen_of("set_session_name")[0].name, "Fresh title");
+
+        // ② `--no-title` → the same setup generates nothing
+        let mut agent = crate::test_server::MockAgent {
+            events: events.clone(),
+            ..Default::default()
+        };
+        agent
+            .responses
+            .insert("new_session".into(), "{\"sessionId\":\"s-run\"}".into());
+        agent.responses.insert("get_state".into(), state.into());
+        agent.responses.insert(
+            "generate_session_title".into(),
+            "{\"title\":\"Fresh title\"}".into(),
+        );
+        let addr = crate::test_server::spawn_mock(agent.clone()).await;
+        let (out, _) = Output::memory();
+        run_command(
+            &[
+                "--grpc-addr".to_string(),
+                addr,
+                "--no-title".to_string(),
+                "hi".to_string(),
+            ],
+            &out,
+        )
+        .await
+        .expect("run");
+        assert!(agent.seen_of("generate_session_title").is_empty());
+        assert!(agent.seen_of("set_session_name").is_empty());
+
+        // ③ an existing session, even a nameless one-answer one, is untouched
+        let mut agent = crate::test_server::MockAgent {
+            events,
+            ..Default::default()
+        };
+        agent.responses.insert("get_state".into(), state.into());
+        agent.responses.insert(
+            "generate_session_title".into(),
+            "{\"title\":\"Fresh title\"}".into(),
+        );
+        let addr = crate::test_server::spawn_mock(agent.clone()).await;
+        let (out, _) = Output::memory();
+        run_command(
+            &[
+                "--grpc-addr".to_string(),
+                addr,
+                "--session".to_string(),
+                "s-existing".to_string(),
+                "hi".to_string(),
+            ],
+            &out,
+        )
+        .await
+        .expect("run");
+        assert!(agent.seen_of("new_session").is_empty());
+        assert!(agent.seen_of("generate_session_title").is_empty());
+        assert!(agent.seen_of("set_session_name").is_empty());
     }
 
     #[tokio::test]
