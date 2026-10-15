@@ -723,6 +723,41 @@ pub(crate) fn goal_path_segment(id: &str) -> String {
     )
 }
 
+/// Resolved state root for a project directory: `FUTURE_GOAL_ROOT` when set,
+/// otherwise `<project>/.future/goal/`.
+///
+/// This is the single rule for "where does goal state live". Every path that is
+/// derived from a project directory must come through here, or it silently
+/// picks a different directory than the ledger when the override is in use.
+///
+/// Callers acting on a specific *goal* should not derive a root from the goal's
+/// own cwd: pass `Store::root_path()` instead. The ledger, the run records and
+/// `ACTIVE_GOAL_STATE.md` are all written under the store's root, which is
+/// fixed when the store opens. A goal created with `--cwd DIR` from a different
+/// process directory records `DIR` as its cwd while its state still lands under
+/// the store root, so a cwd-derived path would look in a directory that holds
+/// nothing.
+pub fn state_root_for(project: &Path) -> String {
+    if let Ok(root) = std::env::var("FUTURE_GOAL_ROOT") {
+        return root;
+    }
+    project
+        .join(".future")
+        .join("goal")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Serializes tests that mutate the process-global `FUTURE_GOAL_ROOT`.
+///
+/// Unit tests share one process, so a test that sets or clears the override
+/// must hold this for as long as it depends on the value.
+#[cfg(test)]
+pub(crate) fn state_root_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 impl Store {
     pub fn open(root: &str) -> Result<Self> {
         let root = PathBuf::from(root);
