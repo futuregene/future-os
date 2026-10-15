@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
+import { useKeyboardOwner } from "../../lib/keyboardOwners";
 import { useOverlayLayer } from "./overlayStack";
 
 /**
@@ -22,6 +23,9 @@ export function Overlay({
 }) {
   const { t } = useTranslation("common");
   const { isTop } = useOverlayLayer(open);
+  // A modal holds the keyboard for as long as it is up: the transcript behind it
+  // must not answer an unmodified arrow key (see `lib/keyboardOwners`).
+  useKeyboardOwner(open);
 
   useEffect(() => {
     if (!open) {

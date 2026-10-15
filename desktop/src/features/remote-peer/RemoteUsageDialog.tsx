@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { useKeyboardOwner } from "../../lib/keyboardOwners";
 import { SessionUsageDialog } from "../agent/SessionUsageDialog";
 import { useRemoteUsage } from "./useRemoteUsage";
 
@@ -27,6 +28,9 @@ export function RemoteUsageDialog({
 }) {
   const { t } = useTranslation("remotePeer");
   const { usage, loading, error } = useRemoteUsage(desktopId, sessionId, true);
+  // A dialog holds the keyboard while it is up — including this file's own
+  // hand-rolled error state below, which is not an `Overlay`.
+  useKeyboardOwner(true);
 
   if (error) {
     return (

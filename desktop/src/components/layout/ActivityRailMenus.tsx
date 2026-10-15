@@ -5,6 +5,7 @@ import { useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { openPath } from "../../integrations/storage/files";
 import { cn } from "../../lib/cn";
+import { useKeyboardOwner } from "../../lib/keyboardOwners";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { MenuPanel } from "../ui/MenuPanel";
 import { useDropUpMenu } from "./hooks/useDropUpMenu";
@@ -29,6 +30,9 @@ export function ThreadItemMenu({
 }) {
   const { t } = useTranslation("layout");
   const { menuRef, dropUp } = useDropUpMenu();
+  // The menu is up, so the arrows walk its rows (`handleMenuKeyDown`) rather
+  // than the transcript behind it (see `lib/keyboardOwners`).
+  useKeyboardOwner(true);
 
   return (
     <MenuPanel
@@ -96,6 +100,8 @@ export function WorkspaceHeaderMenu({
     },
   });
   const { menuRef, dropUp } = useDropUpMenu(open);
+  // While the menu is up it owns the arrows, not the transcript behind it.
+  useKeyboardOwner(open);
 
   return (
     <div className="relative" ref={layerRef}>
@@ -180,6 +186,8 @@ export function ChatSectionMenu({
     },
   });
   const { menuRef, dropUp } = useDropUpMenu(open);
+  // While the menu is up it owns the arrows, not the transcript behind it.
+  useKeyboardOwner(open);
 
   return (
     <div className="relative" ref={layerRef}>

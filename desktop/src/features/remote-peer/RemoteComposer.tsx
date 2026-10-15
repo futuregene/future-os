@@ -9,6 +9,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { readNativeClipboardFilePaths, savePastedFile, savePastedImage } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
+import { EMPTY_EDITOR_ATTR } from "../../lib/editableTarget";
 import { errorMessage } from "../../lib/errors";
 import { imageExtensionFromMime, splitFileName } from "../agent/attachments";
 import { SkillRecommendCard } from "../agent/SkillRecommendCard";
@@ -687,6 +688,12 @@ export function RemoteComposer({
             composers look like two different products. */}
       <textarea
         aria-label={t("composerLabel")}
+        // A bare textarea holds no placeholder attribute to carry this, and the
+        // empty state is what decides whether the transcript behind may answer
+        // an arrow key (see `lib/editableTarget`): the field autofocuses, so
+        // without the marker a remote conversation would have no keyboard way
+        // to page. An empty field is not somewhere anyone is typing *in*.
+        {...(text === "" ? { [EMPTY_EDITOR_ATTR]: "" } : {})}
         // `block`, not the default `inline-block`: an inline-block textarea sits
         // on a text baseline, so its line box keeps room for the descender below
         // it — about 6px of empty space the local editor (a block-level `div`)

@@ -4,6 +4,7 @@ import { Download, Settings, Wallet } from "lucide-react";
 import { useCallback, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/cn";
+import { useKeyboardOwner } from "../../lib/keyboardOwners";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { IconButton } from "../ui/IconButton";
 import { MenuPanel } from "../ui/MenuPanel";
@@ -99,6 +100,9 @@ function AccountMenuButton({
   const menuId = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const close = useCallback(() => setOpen(false), []);
+  // The open account menu owns the arrows, which walk its own rows
+  // (`handleMenuKeyDown`) rather than the transcript behind it.
+  useKeyboardOwner(open);
   const layerRef = useDismissableLayer<HTMLDivElement>({
     enabled: open,
     onDismiss: close,
