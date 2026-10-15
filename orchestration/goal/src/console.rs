@@ -93,14 +93,12 @@ fn next_action_text(goal: &Goal) -> String {
 
 /// Project-local state root: `<cwd>/.future/goal/` (run future-goal from the
 /// project dir, or override with FUTURE_GOAL_ROOT). All goal state stays
-/// inside the project.
+/// inside the project. Path resolution for anything else, including a named
+/// project or a specific goal, goes through [`crate::store::state_root_for`].
 pub(crate) fn root_dir() -> String {
-    if let Ok(root) = std::env::var("FUTURE_GOAL_ROOT") {
-        return root;
-    }
-    let project = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let root = project.join(".future").join("goal");
-    root.to_string_lossy().into_owned()
+    crate::store::state_root_for(
+        &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+    )
 }
 
 fn gen_id(prefix: &str) -> String {
@@ -3889,7 +3887,7 @@ fn scheduler_liveness(store: &mut Store, args: &[String]) -> Result<()> {
                 consecutive: alerts.len() as u32 + 1,
                 ts: now,
             })?;
-            write_liveness_inbox_alert(&goal, &agent, &eval);
+            write_liveness_inbox_alert(&store.root_path(), &goal, &agent, &eval);
             alert_note =
                 " → alert recorded (attention escalates; operator inbox notified)".to_string();
         } else {
@@ -3919,17 +3917,19 @@ fn scheduler_liveness(store: &mut Store, args: &[String]) -> Result<()> {
 }
 
 /// Best-effort operator-inbox alert file (LoopX: breach → operator_inbox).
-/// Written under the goal's project `.future/goal/inbox/` so the `inbox`
-/// urgency projection surfaces it as a direct mention.
+///
+/// Written under the goal's STATE ROOT (`<root>/inbox/`), which is the same
+/// directory `future goal inbox` reads: deriving it from `goal.cwd` pointed at
+/// a different directory whenever `FUTURE_GOAL_ROOT` was set — and, because the
+/// reader accepted the same wrong pairing, the alert was then invisible to the
+/// projection that is supposed to surface it.
 fn write_liveness_inbox_alert(
+    root: &str,
     goal: &crate::state::Goal,
     agent: &str,
     eval: &crate::scheduler::liveness::LivenessEvaluation,
 ) {
-    let inbox = std::path::Path::new(&goal.cwd)
-        .join(".future")
-        .join("goal")
-        .join("inbox");
+    let inbox = std::path::Path::new(root).join("inbox");
     if std::fs::create_dir_all(&inbox).is_err() {
         return;
     }
@@ -5735,7 +5735,9 @@ fn cmd_backfill(store: &mut Store, args: &[String]) -> Result<()> {
         }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-    let goal = store
+    // The goal must exist; the workbench is read from the state root below, so
+    // the replayed goal is not otherwise needed here.
+    store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
     let level: crate::projection::privacy::PrivacyLevel =
@@ -5744,7 +5746,7 @@ fn cmd_backfill(store: &mut Store, args: &[String]) -> Result<()> {
         Some(path) => {
             std::fs::read_to_string(&path).map_err(|e| anyhow::anyhow!("read {path}: {e}"))?
         }
-        None => crate::backfill::active_state_markdown(&goal.cwd, &goal_id)?,
+        None => crate::backfill::active_state_markdown(&store.root_path(), &goal_id)?,
     };
     let outcome = crate::backfill::backfill_todo_events(&markdown, &goal_id, level)?;
     if dry_run {
@@ -9706,6 +9708,7 @@ mod coverage_tests {
 
     #[test]
     fn root_dir_env_override() {
+        let _guard = crate::store::state_root_env_lock();
         std::env::set_var("FUTURE_GOAL_ROOT", "/tmp/loop-root-dir-test");
         assert_eq!(root_dir(), "/tmp/loop-root-dir-test");
         std::env::remove_var("FUTURE_GOAL_ROOT");
@@ -9714,6 +9717,56 @@ mod coverage_tests {
             std::path::Path::new(&root_dir()).ends_with(".future/goal"),
             "{}",
             root_dir()
+        );
+    }
+
+    /// The one resolution rule everything path-derived must use.
+    #[test]
+    fn state_root_for_prefers_the_override_and_falls_back_to_the_project() {
+        let _guard = crate::store::state_root_env_lock();
+        let project = std::path::Path::new("/tmp/project");
+        let fallback = project.join(".future").join("goal");
+        std::env::remove_var("FUTURE_GOAL_ROOT");
+        assert_eq!(
+            crate::store::state_root_for(project),
+            fallback.to_string_lossy(),
+            "without the override the project decides"
+        );
+        std::env::set_var("FUTURE_GOAL_ROOT", "/tmp/override");
+        assert_eq!(
+            crate::store::state_root_for(project),
+            "/tmp/override",
+            "the override wins over the project"
+        );
+        std::env::remove_var("FUTURE_GOAL_ROOT");
+    }
+
+    /// The liveness alert must land where `future goal inbox` reads, i.e. under
+    /// the state root — not under `goal.cwd`, which is a different directory
+    /// whenever the override is set.
+    #[test]
+    fn liveness_alert_is_written_under_the_state_root_not_the_goal_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("state-root");
+        let cwd = dir.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+        let goal = Goal::new("g_live", "obj", &cwd.to_string_lossy());
+        let eval =
+            crate::scheduler::liveness::evaluate_liveness("g_live", "a", Some(1_000), 1_000, 60);
+        write_liveness_inbox_alert(&root.to_string_lossy(), &goal, "a", &eval);
+        let written: Vec<String> = std::fs::read_dir(root.join("inbox"))
+            .expect("inbox created under the state root")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            written.iter().any(|f| f.starts_with("liveness-g_live-a-")),
+            "{written:?}"
+        );
+        assert!(
+            !cwd.join(".future").exists(),
+            "the goal cwd must not be written to"
         );
     }
 
@@ -10976,7 +11029,7 @@ mod residual_branch_tests {
         let goal = Goal::new("g", "obj", &blocker.to_string_lossy());
         let eval = crate::scheduler::liveness::evaluate_liveness("g", "a", Some(1), 1000, 60);
         // `.future/goal/inbox` cannot be created under a regular file.
-        write_liveness_inbox_alert(&goal, "a", &eval);
+        write_liveness_inbox_alert(&blocker.to_string_lossy(), &goal, "a", &eval);
     }
 
     // ── auto_register_workspaces: empty vs non-empty cwd ───────────────────

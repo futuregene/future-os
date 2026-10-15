@@ -418,12 +418,15 @@ pub fn backfill_todo_events(
     })
 }
 
-/// The markdown workbench text for a goal (project-local state layout under
-/// the project's `.future/goal/goals/<id>/`).
-pub fn active_state_markdown(cwd: &str, goal_id: &str) -> Result<String> {
-    let path = std::path::Path::new(cwd)
-        .join(".future")
-        .join("goal")
+/// The markdown workbench text for a goal, read from its STATE ROOT
+/// (`<root>/goals/<id>/ACTIVE_GOAL_STATE.md`).
+///
+/// The root is the resolved state root (see [`crate::store::state_root_for`]),
+/// not the goal's cwd: the projection is written under the store's root, and
+/// the two differ whenever `FUTURE_GOAL_ROOT` is set or the goal was created
+/// with `--cwd DIR` from another directory.
+pub fn active_state_markdown(root: &str, goal_id: &str) -> Result<String> {
+    let path = std::path::Path::new(root)
         .join("goals")
         .join(crate::store::goal_path_segment(goal_id))
         .join("ACTIVE_GOAL_STATE.md");

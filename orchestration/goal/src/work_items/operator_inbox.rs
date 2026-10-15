@@ -144,15 +144,19 @@ pub fn project_operator_inbox_urgency(
     }
 }
 
-/// Load pending inbox events from `<project>/.future/goal/inbox/*.json`
-/// (project-local pending events). Path safety: the inbox must stay under
-/// `.future/goal/inbox` inside the project; `..` components and absolute
-/// paths are rejected; malformed files are skipped.
-pub fn load_pending_inbox_events(
-    project: &str,
+/// Load inbox events from an EXPLICIT state root (`<root>/inbox/*.json`).
+///
+/// Path safety: the inbox must stay under `<root>/inbox`; `..` components and
+/// absolute paths are rejected; malformed files are skipped.
+///
+/// Pure with respect to the environment: callers that hold a project directory
+/// rather than a root use [`load_pending_inbox_events`], and a test that only
+/// cares about the inbox layout uses this one — reading the process-global
+/// override here would couple every caller to whatever another thread set.
+pub fn load_pending_inbox_events_at(
+    root: &str,
     inbox_rel: &str,
 ) -> Result<Vec<OperatorInboxEvent>, String> {
-    let root = Path::new(project);
     let raw = inbox_rel.trim();
     if raw.starts_with('/') || raw.starts_with('\\') {
         return Err("operator inbox path must stay under .future/goal/inbox".into());
@@ -166,8 +170,8 @@ pub fn load_pending_inbox_events(
     {
         return Err("operator inbox path must stay under .future/goal/inbox".into());
     }
-    let inbox = root.join(".future").join("goal").join(rel_path);
-    let canonical_inbox = root.join(".future").join("goal").join("inbox");
+    let inbox = Path::new(root).join(rel_path);
+    let canonical_inbox = Path::new(root).join("inbox");
     if !inbox.starts_with(&canonical_inbox) {
         return Err("operator inbox path must stay under .future/goal/inbox".into());
     }
@@ -233,6 +237,21 @@ pub fn load_pending_inbox_events(
         });
     }
     Ok(events)
+}
+
+/// Load inbox events from a project's RESOLVED STATE ROOT: `FUTURE_GOAL_ROOT`
+/// when set, `<project>/.future/goal/` otherwise.
+///
+/// The root is the state root rather than a project-relative layout because the
+/// liveness alert writer puts its files under the state root: resolving
+/// differently here would leave those alerts unreadable by the projection meant
+/// to surface them.
+pub fn load_pending_inbox_events(
+    project: &str,
+    inbox_rel: &str,
+) -> Result<Vec<OperatorInboxEvent>, String> {
+    let root = crate::store::state_root_for(Path::new(project));
+    load_pending_inbox_events_at(&root, inbox_rel)
 }
 
 #[cfg(test)]

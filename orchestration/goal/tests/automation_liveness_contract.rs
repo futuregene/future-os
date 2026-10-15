@@ -150,16 +150,20 @@ fn stale_heartbeat_breaches_alerts_escalates_and_recovers() {
         assert_eq!(alert.threshold_secs, 60);
         assert!(alert.elapsed_secs >= 3 * 3600 - 5);
 
-        let inbox = std::path::Path::new(&proj)
-            .join(".future")
-            .join("goal")
-            .join("inbox");
+        // The alert file lives under the STATE ROOT (`<root>/inbox`), which is
+        // the directory `future goal inbox` reads — not under the goal's cwd,
+        // which stops matching as soon as FUTURE_GOAL_ROOT is set (it is here).
+        let inbox = std::path::Path::new(root).join("inbox");
         let alerts: Vec<_> = std::fs::read_dir(&inbox)
-            .expect("inbox dir created")
+            .expect("inbox dir created under the state root")
             .filter_map(|e| e.ok())
             .filter(|e| e.file_name().to_string_lossy().starts_with("liveness-g1-"))
             .collect();
         assert_eq!(alerts.len(), 1, "operator inbox alert file written");
+        assert!(
+            !std::path::Path::new(&proj).join(".future").exists(),
+            "the goal cwd must not receive state paths"
+        );
 
         // Cooldown: an immediate second check does NOT append another alert.
         cli(&[

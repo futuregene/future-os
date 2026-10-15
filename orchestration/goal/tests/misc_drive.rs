@@ -641,9 +641,17 @@ fn replan_obligation_cleared_arms() {
 
 #[test]
 fn operator_inbox_load_arms() {
-    use future_goal::work_items::operator_inbox::load_pending_inbox_events;
+    use future_goal::work_items::operator_inbox::load_pending_inbox_events_at;
     let dir = tempfile::tempdir().unwrap();
-    let project = dir.path().to_string_lossy().into_owned();
+    // The root is passed explicitly: the project-relative layout is what
+    // `state_root_for` resolves to without an override, and keeping the env out
+    // of this test is what lets it run next to the CLI scenarios in this file
+    // (they set FUTURE_GOAL_ROOT process-wide).
+    let root = dir
+        .path()
+        .join(".future/goal")
+        .to_string_lossy()
+        .into_owned();
     let inbox = dir.path().join(".future/goal/inbox");
     std::fs::create_dir_all(&inbox).unwrap();
     // Events with missing optional fields get defaults; entries without a
@@ -656,15 +664,15 @@ fn operator_inbox_load_arms() {
     std::fs::write(inbox.join("b.json"), "\"just a string\"").unwrap();
     std::fs::write(inbox.join("c.json"), "[{\"message_id\":\"m2\"}]").unwrap();
     std::fs::write(inbox.join("d.json"), "{\"message_id\":\"m3\"}").unwrap();
-    let events = load_pending_inbox_events(&project, "inbox").unwrap();
+    let events = load_pending_inbox_events_at(&root, "inbox").unwrap();
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0].message_id, "m1");
-    assert!(load_pending_inbox_events(&project, "../escape").is_err());
-    assert!(load_pending_inbox_events(&project, "/abs").is_err());
+    assert!(load_pending_inbox_events_at(&root, "../escape").is_err());
+    assert!(load_pending_inbox_events_at(&root, "/abs").is_err());
     // Missing inbox dir → empty.
     let empty = tempfile::tempdir().unwrap();
     assert!(
-        load_pending_inbox_events(&empty.path().to_string_lossy(), "inbox")
+        load_pending_inbox_events_at(&empty.path().to_string_lossy(), "inbox")
             .unwrap()
             .is_empty()
     );
