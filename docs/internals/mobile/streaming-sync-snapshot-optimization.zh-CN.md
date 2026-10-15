@@ -107,7 +107,7 @@
 - Mobile：类型检查、lint、95 个套件 / **1,322 个测试**通过。
 - Agent：fmt、clippy `--all-targets -D warnings`，1,772 个 lib 测试及该 crate 的其他默认测试目标通过（原有忽略项保留）。
 - Desktop Rust：fmt、clippy `--all-targets -D warnings`；默认 GUI 特性的 1,246 个 lib 测试、main 与 headless_cli 测试通过。新测试还直接经过真实 bridge 分块路径。
-- RPC：115 个 lib 测试及 wire roundtrip/additive compatibility 测试通过；共享 command policy 的消费者 CLI、channels、loop、TUI 的默认测试目标也已检查。
+- RPC：115 个 lib 测试及 wire roundtrip/additive compatibility 测试通过；共享 command policy 的消费者 CLI、channels、goal、TUI 的默认测试目标也已检查。
 - 一次多 crate 串联命令在 200 秒上限被中断，后续串联在 400 秒上限中断；它们不是测试断言失败。已只补跑未完成的目标，最后的 TUI cli_smoke 单独通过（5 个测试），doc tests 亦完成。没有把超时命令直接记为全绿。
 - 新覆盖：并发 cursor/快照一致性、run 切换、持久历史与内存投影一致、坏 journal 拒绝、空/超大明确回退、旧 Agent 兼容、分块 owner 边界、无增量、增量缺段/错误 run、终止事件与 live 重叠去重、工具/思考恢复、用户条目去重、失败时保留 UI 和旧游标。
 

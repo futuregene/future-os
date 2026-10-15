@@ -9,7 +9,7 @@
 Desktop will run the complete Agent inside its Rust process when the default
 local endpoint has no external Agent and it acquires the instance lock.
 Compatible external services remain attached; incompatible or unreachable lock
-owners produce explicit errors. External Agents and CLI, TUI, channels and loop
+owners produce explicit errors. External Agents and CLI, TUI, channels and the goal plane
 clients retain the shared RPC interface. The change reduces Windows startup and
 upgrade failures caused by divergent Desktop and sidecar lifetimes while
 preserving instance locking, tools, persistence and external client access.
@@ -40,7 +40,7 @@ connection does not authorize binding an address.
 ### 1.2 Exit and clients
 
 Exiting Desktop in embedded mode stops every task on that Agent, including
-tasks initiated by CLI, TUI, mobile, channels and loop. The exit prompt uses an
+tasks initiated by CLI, TUI, mobile, channels and the goal plane. The exit prompt uses an
 Agent-wide activity snapshot covering running work, queues, approvals and
 long-running session mutations. Choosing to keep running must not close
 admission early.
@@ -108,7 +108,7 @@ headless Desktop ─┼── future-agent service ── RPC, runtime, storage,
 future agent ─────┤
 future-agent ─────┘
 
-CLI / TUI / channels / loop / Desktop bridge ── shared RPC ── active Agent
+CLI / TUI / channels / goal / Desktop bridge ── shared RPC ── active Agent
 ```
 
 Extract `agent/src/service/`, with suggested modules for configuration,
@@ -478,7 +478,7 @@ Phase one implementation: branch `codex/agent-service-layer`, implementation bas
 
 [Service](../../agent/src/service/mod.rs) owns the extraction while [CLI](../../agent/src/cli.rs) retains argument, maintenance, logging, signal and profiling policy. [Startup](../../agent/src/service/startup.rs) reuses engine, SQLite import and AppState initialization. [Instance](../../agent/src/service/instance.rs) preserves the lock path, Windows byte protocol and metadata fields without leaking the lock allocation. Ready follows initialization, binding and the server's first successful poll. Shared Unix transport now cleans an unpolled bound socket on cancellation.
 
-[Isolated regression fixtures](../../agent/tests/service_startup.rs) cover real TCP/local IPC, contention, duplicate initialization in one scope, cancellation, corrupt storage, occupied endpoints and original-format import. Existing lifecycle tests moved with their implementation; service-wide shutdown tests now cover approval interruption. Local Agent/RPC and CLI/TUI/channels/loop all-target Clippy passed with warnings denied, along with the `dhat-heap` feature check, formatting and diff checks. Local unit/integration execution on 2026-10-14 is recorded in section 10.4; native Windows/Linux and CI outcomes remain pending.
+[Isolated regression fixtures](../../agent/tests/service_startup.rs) cover real TCP/local IPC, contention, duplicate initialization in one scope, cancellation, corrupt storage, occupied endpoints and original-format import. Existing lifecycle tests moved with their implementation; service-wide shutdown tests now cover approval interruption. Local Agent/RPC and CLI/TUI/channels/goal all-target Clippy passed with warnings denied, along with the `dhat-heap` feature check, formatting and diff checks. Local unit/integration execution on 2026-10-14 is recorded in section 10.4; native Windows/Linux and CI outcomes remain pending.
 
 Phase one preserved storage implementation/schema, protobuf, binary entry points and CLI flag declarations. Phase two adds explicit writer closure and work registration while preserving schema, storage formats and business RPC. Global broadcaster subscriptions terminate through a service shutdown signal. Dropping serving produces a failed stop rather than evidence of complete cleanup. Phase four integrates Desktop.
 
@@ -525,7 +525,7 @@ The data-root identifier hashes the canonical directory path with SHA-256; it is
 
 CLI/TUI retain their existing display versions but use shared `EXPECTED_AGENT_VERSION` for gates. Coordinated builds use injected `FUTURE_VERSION`; bare Cargo development builds use the RPC/Agent `0.0.0` release baseline, avoiding false rejection due to CLI/TUI's `0.0.2` display scheme. Isolated real-service fixtures verify this shared expected version. Future changes to the Cargo release baseline must keep Agent/RPC aligned.
 
-GUI, headless, CLI and TUI business commands and subscriptions use `VerifiedAgentClient`, rechecking readiness before dispatch. Verified Channels cannot transparently reconnect to replacement servers; a new physical connection requires a fresh handshake. Requests carry expected-instance and expected-root headers, validated by the Agent before command conversion, admission or subscription initialization. Legacy direct RPC callers may omit headers; gated clients always send both. Desktop caches distinguish endpoint/root configuration, discard failed verification and display specific blocking reasons. channels/loop retain their existing client interfaces and have not switched wrappers in this phase.
+GUI, headless, CLI and TUI business commands and subscriptions use `VerifiedAgentClient`, rechecking readiness before dispatch. Verified Channels cannot transparently reconnect to replacement servers; a new physical connection requires a fresh handshake. Requests carry expected-instance and expected-root headers, validated by the Agent before command conversion, admission or subscription initialization. Legacy direct RPC callers may omit headers; gated clients always send both. Desktop caches distinguish endpoint/root configuration, discard failed verification and display specific blocking reasons. channels/goal retain their existing client interfaces and have not switched wrappers in this phase.
 
 Only an absent/refused default local endpoint with an available instance lock yields an opaque `LocalStartPermit`. Failed handshakes, version/protocol/schema/root mismatches, held/unavailable locks, permission or unknown connection errors and explicit endpoint failures return errors. Preflight does not create/rewrite lock files or initialize databases. `AgentService::with_local_start` consumes the permit and reacquires the authoritative lock before host initialization, closing startup races. Existing sidecar launches also recheck permission and explicitly pass `--grpc-addr auto`. This historical phase-three record predates phase-four Desktop hosting and did not change the default hosting mode.
 
@@ -638,7 +638,7 @@ agree; no implicit external prelaunch is required for successful verification.
 | D1 | Reopen after cancellation, forced exit or shutdown crash | Consistent transactions, interrupted-run recovery, retained history |
 | C1 | CLI embedded connection, Desktop exit, reconnect/replacement | Clear cancellation/disconnect, fresh handshake, stale cursor/queue reset |
 | C2 | External exit/restart, explicit unreachable endpoint, incompatible reconnect | Ownership respected, no endpoint takeover, effective gates |
-| C3 | Mobile/channels/loop streams across shutdown and restart | Disconnect/cancellation is not success; approvals/queues converge; new instance is validated |
+| C3 | Mobile/channels/goal streams across shutdown and restart | Disconnect/cancellation is not success; approvals/queues converge; new instance is validated |
 | U1 | Download, signature, extraction or launch failure | Early failure keeps tasks; post-stop failure has recovery |
 | U2 | CLI/skill process, old orphan sidecar, other-install owner | File/scope/lease/outcome checks prevent mixed versions |
 | U3 | Copy/loader failure, reinstall, uninstall-first upgrade, cleanup timeout | Executable rollback, retained data, truthful install/uninstall results |
@@ -1019,7 +1019,7 @@ platforms at `07e3c932`:
 Counts include fixture entry points and are not all disjoint product scenarios.
 Reported suite seconds include compilation, not startup performance. Summaries
 and logs are archived under `agent/target/phase7-ci-results/native-{linux,windows,macos}/`.
-Agent, CLI/TUI, channels/RPC/loop/tasks, frontend and fmt/Clippy checks passed.
+Agent, CLI/TUI, channels/RPC/goal/tasks, frontend and fmt/Clippy checks passed.
 Linux GUI full tests had one failure in
 `scheduler::tests::a_spawned_job_fires_at_its_deadline_and_reanchors` (1,804 passed,
 1 failed, 12 ignored). That test lacked the fixture guard used for global task

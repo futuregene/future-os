@@ -36,7 +36,7 @@ IM bots are all interfaces that connect to it.
 - `cli/`: Rust `future-cli`, building the unified `future` binary that
   aggregates component management.
 - `channels/`: Rust `future-channel`, the Feishu / DingTalk IM bridge.
-- `orchestration/loop/`: Rust `future-loop`, the loop control plane.
+- `orchestration/goal/`: Rust `future-goal`, the goal control plane.
 - `packages/rpc/`: Rust `future-rpc`, the protobuf wire contract (single source
   of truth).
 

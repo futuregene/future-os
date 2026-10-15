@@ -80,4 +80,4 @@ if ($futureExe) {
 Write-Host ""
 Write-Host "FutureOS $Version installed." -ForegroundColor Green
 Write-Host "  - Launch 'FutureOS' from the Start menu; the desktop app auto-starts the agent."
-Write-Host "  - Use the bundled CLI for 'future agent|tui|channel|loop'."
+Write-Host "  - Use the bundled CLI for 'future agent|tui|channel|goal'."

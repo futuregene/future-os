@@ -26,8 +26,8 @@ gate。这些是 agent 的工作记录，不是面向用户的产品文档——
 ## 这些记录的用途
 
 - 源码注释引用具体章节，因此章节号是引用目标——要保持稳定，或至少保持其
-  含义。例如：`orchestration/loop/src/webui/server.rs` 与
-  `orchestration/loop/tests/*.rs` 引用 `module-loop.md`；`tui/src/app.rs`
+  含义。例如：`orchestration/goal/src/webui/server.rs` 与
+  `orchestration/goal/tests/*.rs` 引用 `module-goal.md`；`tui/src/app.rs`
   引用 `module-tui.md`；桌面测试引用 `desktop-*.md`。
 - 战役 gate 只检查结构：每个存在未覆盖行的文件，必须在路径同一行注明
   waiver 类别。理由是否成立由复核者负责——未被证伪的 waiver 记为证据，

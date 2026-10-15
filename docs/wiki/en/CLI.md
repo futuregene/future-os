@@ -220,7 +220,7 @@ build targets but no longer ship by default):
 ```bash
 future tui                # terminal UI
 future channel            # IM channel bridge: Feishu / DingTalk
-future loop status        # loop control plane: goals/todos/gates
+future goal status        # goal control plane: goals/todos/gates
 ```
 
 ### `session` — manage sessions

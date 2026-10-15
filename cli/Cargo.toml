@@ -28,14 +28,14 @@ future-app-workspaces = { path = "../packages/app-workspaces" }
 # The CLI opens the desktop app's database itself (`future workspace`); the
 # connection, the pragmas and the row reads all go through the shared crate.
 rusqlite = { version = "0.40", features = ["bundled"] }
-# Embedded components: `future agent|tui|channel|loop <args>` runs the same
+# Embedded components: `future agent|tui|channel|goal <args>` runs the same
 # code as the standalone binaries (kept as separate [[bin]] targets too, see
 # Makefile run-* targets). The entry points build their own tokio runtimes,
 # so the CLI dispatches them from main() BEFORE entering its own runtime.
 future-agent = { path = "../agent" }
 future-tui = { path = "../tui" }
 future-channel = { path = "../channels" }
-future-loop = { path = "../orchestration/loop" }
+future-goal = { path = "../orchestration/goal" }
 future-tasks = { path = "../orchestration/tasks" }
 serde.workspace = true
 # preserve_order: JSON object key order must match the TS CLI's JS semantics

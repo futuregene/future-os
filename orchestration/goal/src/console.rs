@@ -1,0 +1,12010 @@
+//! `future-goal` — FutureOS goal control plane CLI.
+//!
+//! Commands (mirror the reference core tick, implemented natively):
+//!   goal init    — create a durable goal (registry + event ledger)
+//!   todo add     — add an agent/user/gate/monitor todo
+//!   todo claim   — claim a todo (owner identity)
+//!   todo complete — complete a todo; REQUIRES --no-follow-up or --successor,
+//!     non-empty --evidence for advancement todos, and (when declared)
+//!     --acceptance tokens inside the evidence; --force overrides both.
+//!   gate resolve — resolve a user gate with a decision payload
+//!   status       — project the active state (todos, gaps, next action)
+//!   quota should-run — emit the typed ShouldRunPacket (deterministic)
+//!   run          — drive one bounded gRPC turn + writeback (agent-id or anonymous)
+//!
+//! State is project-local under `<cwd>/.future/goal/` (override with the
+//! `FUTURE_GOAL_ROOT` env var), one goal per directory, event-sourced:
+//! `goal status` replays the ledger each time.
+
+use std::collections::HashMap;
+use std::time::SystemTime;
+
+use crate::agent_client::TurnProgressTracker;
+use crate::cli::registry::{CommandRegistry, FlagHelp, Journey};
+use crate::decision::{complete_todo, decide_for};
+use crate::executor::{execute_turn, writeback};
+use crate::state::{now_epoch, Goal, TaskClass, Todo, TodoStatus};
+use crate::store::{Event, Store};
+use anyhow::{bail, Result};
+
+/// Materialize the project-local active-state projection for one goal:
+/// `<cwd>/.future/goal/goals/<id>/ACTIVE_GOAL_STATE.md`.
+///
+/// Best-effort, and deliberately so. Every caller has already committed its real
+/// change to the ledger before this runs, and the file is a regenerable
+/// projection of that ledger — the next mutation rewrites it. Propagating a
+/// failure here reported a committed operation as failed, and the natural
+/// response (retry) then hit "another agent holds a live lease" for a todo that
+/// this very process had claimed.
+///
+/// A warning keeps it from being silent without making it fatal. `cmd_lease` and
+/// `cmd_backfill` already ignored the result; this makes that the rule instead of
+/// a per-call choice.
+fn sync_compat(store: &Store, goal_id: &str) {
+    if let Err(error) = try_sync_compat(store, goal_id) {
+        println!("   ⚠ could not refresh ACTIVE_GOAL_STATE.md (best-effort): {error:#}");
+    }
+}
+
+fn try_sync_compat(store: &Store, goal_id: &str) -> Result<()> {
+    let Some(goal) = store.replay(goal_id)? else {
+        return Ok(());
+    };
+    crate::compat::write_active_state(&store.goal_dir(goal_id), &goal)
+}
+
+/// Recompute and persist the active-state Next Action line. Every todo /
+/// gate mutation must call this BEFORE `sync_compat` so `status` never shows
+/// a stale next action (previously only the run writeback path refreshed
+/// `next_action.txt`).
+fn refresh_next_action(store: &Store, goal_id: &str) -> Result<()> {
+    let goal = store
+        .replay(goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    store.set_next_action(goal_id, &next_action_text(&goal))?;
+    Ok(())
+}
+
+/// The goal-level Next Action line, owner-aware. The naive
+/// `runnable_advancement()` frontier is the shared pool (agent_id=None) and
+/// drops every owner-scoped todo, so an all-owner-scoped goal read as
+/// "all todos complete; no further action" while work was still waiting on
+/// its owners. This picks the first shared-pool runnable todo when one
+/// exists; otherwise, if only owner-scoped todos remain, it says so
+/// explicitly instead of claiming completion.
+fn next_action_text(goal: &Goal) -> String {
+    let (claimable, owner_scoped) = goal.pending_advancement_owner_aware();
+    if let Some(t) = claimable.first() {
+        return t.text.clone();
+    }
+    if !owner_scoped.is_empty() {
+        let owners: std::collections::BTreeSet<&str> = owner_scoped
+            .iter()
+            .filter_map(|t| t.owner.as_deref())
+            .collect();
+        return format!(
+            "{} owner-scoped todo(s) await their owning agent(s): {}",
+            owner_scoped.len(),
+            owners.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+    "all todos complete; no further action".to_string()
+}
+
+/// Project-local state root: `<cwd>/.future/goal/` (run future-goal from the
+/// project dir, or override with FUTURE_GOAL_ROOT). All goal state stays
+/// inside the project.
+pub(crate) fn root_dir() -> String {
+    if let Ok(root) = std::env::var("FUTURE_GOAL_ROOT") {
+        return root;
+    }
+    let project = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let root = project.join(".future").join("goal");
+    root.to_string_lossy().into_owned()
+}
+
+fn gen_id(prefix: &str) -> String {
+    // Goal-plane-style ids: <prefix>_<12hex> (underscore, no dash) — matches
+    // the reference format and pre-existing goal/todo ids.
+    format!(
+        "{}_{}",
+        prefix,
+        &uuid::Uuid::new_v4().simple().to_string()[..12]
+    )
+}
+
+/// Entry point shared by the standalone `future-goal` binary and the
+/// embedded `future goal` CLI command. `prog` is the invocation name used
+/// in error hints ("future-goal" vs "future goal"); it is stored in PROG so
+/// any command handler can reference it.
+pub fn run(prog: &str, args: Vec<String>) -> Result<()> {
+    let _ = PROG.set(prog.to_string());
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(main_from_args(prog, args))
+}
+
+/// Invocation name for error hints — set by `run`, falls back to the
+/// standalone binary name.
+fn prog() -> &'static str {
+    PROG.get().map(String::as_str).unwrap_or("future-goal")
+}
+
+static PROG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
+    let include_experimental = args.iter().any(|a| a == "--include-experimental");
+    if args.is_empty() || matches!(args[0].as_str(), "--help" | "-h" | "help") {
+        return cli_help(&build_cli_registry(), include_experimental);
+    }
+    let registry = build_cli_registry();
+    // G-26: the registry is the dispatch validation point — unknown commands
+    // fail with a hint (aggregated help) instead of a bare match fallthrough.
+    if registry.find(&args[0], include_experimental).is_none() {
+        bail!("unknown command `{}` (try `{prog} --help`)", args[0]);
+    }
+    // P0-3②: `<command> --help` / `-h` prints the command's usage from the
+    // registry instead of the flag being silently swallowed by argument
+    // parsing (previously `--help` on a subcommand was a no-op boolean).
+    if args[1..].iter().any(|a| a == "--help" || a == "-h") {
+        // `<command> <sub> --help` renders the exact verb usage when args[1]
+        // is a known subcommand; otherwise the command-level help.
+        let sub = args
+            .get(1)
+            .map(|s| s.as_str())
+            .filter(|s| !s.starts_with('-'));
+        let text = match sub {
+            Some(s)
+                if registry
+                    .find_subcommand(&args[0], s, include_experimental)
+                    .is_some() =>
+            {
+                render_subcommand_help(&registry, &args[0], s, include_experimental)
+            }
+            _ => render_command_help(&registry, &args[0], include_experimental),
+        };
+        print!("{text}");
+        return Ok(());
+    }
+    let mut store = Store::open(&root_dir())?;
+    match args[0].as_str() {
+        "goal" => cmd_goal(&mut store, &args[1..]).await,
+        "agent" => cmd_agent(&mut store, &args[1..]),
+        "todo" => cmd_todo(&mut store, &args[1..]).await,
+        "gate" => cmd_gate(&mut store, &args[1..]),
+        "backup" => cmd_backup(&store, &args[1..]),
+        "authority" => cmd_authority(&mut store, &args[1..]),
+        "replan" => cmd_replan(&mut store, &args[1..]),
+        "frontier" => cmd_frontier(&store, &args[1..]),
+        "profile" => cmd_profile(&mut store, &args[1..]),
+        "status" => cmd_status(&store, &args[1..]),
+        "ui" => cmd_webui(&args[1..]).await,
+        "quota" => cmd_quota(&store, &args[1..]),
+        "scheduler" => cmd_scheduler(&mut store, &args[1..]).await,
+        "store" => cmd_store(&mut store, &args[1..]),
+        "backfill" => cmd_backfill(&mut store, &args[1..]),
+        "privacy" => cmd_privacy(&store, &args[1..]),
+        "lease" => cmd_lease(&mut store, &args[1..]),
+        "runs" => cmd_runs(&store, &args[1..]),
+        "heartbeat-prompt" => cmd_heartbeat(&store, &args[1..]),
+        "worker-bridge" => cmd_worker_bridge(&mut store, &args[1..]).await,
+        "models" => cmd_models(&args[1..]).await,
+        "diagnose" => cmd_diagnose(&store, &args[1..]),
+        "run" => cmd_run(&mut store, &args[1..]).await,
+        // ── P3 commands ──────────────────────────────────────────────────
+        "scope" => cmd_scope(&store, &args[1..]),
+        "lane" => cmd_lane(&store, &args[1..]),
+        "supervisor" => cmd_supervisor(&mut store, &args[1..]).await,
+        "report" => cmd_report(&mut store, &args[1..]),
+        "worker" => cmd_worker(&mut store, &args[1..]).await,
+        "task-graph" => cmd_task_graph(&store, &args[1..]),
+        "attention" => cmd_attention(&store, &args[1..]),
+        "inbox" => cmd_inbox(&store, &args[1..]),
+        "delivery" => cmd_delivery(&mut store, &args[1..]),
+        "registry" => cmd_registry(&registry, &args[1..]),
+        "commands" => cmd_commands(&registry, &args[1..]),
+        // ── P4 commands (G-20 / G-27) ───────────────────────────────────
+        "canary" => cmd_canary(&store, &args[1..]),
+        "version" => cmd_version(&store, &args[1..]),
+        "doctor" => cmd_doctor(&store, &args[1..]).await,
+        "history" => cmd_history(&store, &args[1..]),
+        "turn" => cmd_turn(&store, &args[1..]),
+        "todo-event" => cmd_todo_event(&store, &args[1..]),
+        "evidence-log" => cmd_evidence_log(&store, &args[1..]),
+        other => bail!("unknown command `{other}` (try `{prog} --help`)"),
+    }
+}
+
+/// P1-9: operator journey assignments for the statically registered
+/// commands (`future goal commands` grouped view). A test
+/// (`journey_assignments_cover_every_static_command`) keeps this table in
+/// sync with `build_cli_registry`.
+const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
+    // Start here — first goal, first status, install checks
+    ("goal", Journey::Starter),
+    ("status", Journey::Starter),
+    ("ui", Journey::Starter),
+    ("doctor", Journey::Starter),
+    ("agent", Journey::Starter),
+    // Daily operator — the day-to-day control surface
+    ("todo", Journey::Daily),
+    ("gate", Journey::Daily),
+    ("replan", Journey::Daily),
+    ("frontier", Journey::Daily),
+    ("lease", Journey::Daily),
+    ("task-graph", Journey::Daily),
+    ("quota", Journey::Daily),
+    ("scheduler", Journey::Daily),
+    ("attention", Journey::Daily),
+    ("inbox", Journey::Daily),
+    ("delivery", Journey::Daily),
+    ("diagnose", Journey::Daily),
+    ("evidence-log", Journey::Daily),
+    ("todo-event", Journey::Daily),
+    ("history", Journey::Daily),
+    // Goal driver — per-turn execution surface for the driving agent
+    ("run", Journey::Driver),
+    ("turn", Journey::Driver),
+    ("heartbeat-prompt", Journey::Driver),
+    ("worker-bridge", Journey::Driver),
+    ("scope", Journey::Driver),
+    ("lane", Journey::Driver),
+    ("supervisor", Journey::Driver),
+    ("report", Journey::Driver),
+    ("worker", Journey::Driver),
+    // Setup & automation — one-time configuration
+    ("models", Journey::Setup),
+    ("authority", Journey::Setup),
+    ("profile", Journey::Setup),
+    ("store", Journey::Setup),
+    ("backfill", Journey::Setup),
+    ("privacy", Journey::Setup),
+    // Maintainer & adapter — quality gates, retention, introspection
+    ("canary", Journey::Maintainer),
+    ("runs", Journey::Maintainer),
+    ("backup", Journey::Maintainer),
+    ("version", Journey::Maintainer),
+    ("registry", Journey::Maintainer),
+    ("commands", Journey::Maintainer),
+];
+
+/// G-26: build the command registry — groups + commands, the aggregated
+/// help surface.
+fn build_cli_registry() -> CommandRegistry {
+    let mut r = CommandRegistry::new();
+
+    let goal = r.group("goal", "goal lifecycle");
+    r.command(
+        goal,
+        "goal",
+        "create a durable goal",
+        "goal init --objective \"...\" [--cwd DIR] [--goal-doc TEXT] [--goal-id ID]",
+    );
+    r.command(
+        goal,
+        "status",
+        "project the active state",
+        "status [--goal G] [--format json]",
+    );
+    r.command(
+        goal,
+        "ui",
+        "local read-only web dashboard on 127.0.0.1",
+        "ui [--port N] [--root DIR] [--no-open]",
+    );
+    r.command(
+        goal,
+        "models",
+        "list models available from the agent",
+        "models [--format json]",
+    );
+    r.command(
+        goal,
+        "diagnose",
+        "per-goal diagnostic surface (decision / gaps / runs)",
+        "diagnose --goal G [--format json]",
+    );
+
+    let todo = r.group("todo", "todo work graph");
+    r.command(
+        todo,
+        "todo",
+        "add/update/claim/complete/archive todos",
+        "todo add|update|claim|complete|archive --goal G ...",
+    );
+    r.subcommand(
+        "todo",
+        "add",
+        "add a todo (hard checks: --verify gate, --acceptance tokens; --class / --owner scope)",
+        "add --goal G --text \"...\" [--priority P0|P1|P2] [--blocks T] [--verify \"cmd\"] [--acceptance \"a,b\"] [--owner A] [--class C]",
+    );
+    r.subcommand(
+        "todo",
+        "update",
+        "revise a todo's text/contract (non-interrupting, picked up next turn; --class is immutable)",
+        "update --goal G --todo-id T [--text \"...\"] [--priority P] [--blocks T] [--acceptance \"a,b\"] [--owner A]",
+    );
+    r.subcommand(
+        "todo",
+        "complete",
+        "close a todo — requires --no-follow-up | --successor and non-empty --evidence",
+        "complete --goal G --todo-id T --no-follow-up | --successor T2 [--evidence \"...\"] [--force]",
+    );
+    r.subcommand(
+        "todo",
+        "supersede",
+        "mark a todo obsolete with a reason",
+        "supersede --goal G --todo-id T --reason \"...\"",
+    );
+    r.command(
+        todo,
+        "gate",
+        "resolve a user gate",
+        "gate resolve --goal G --todo-id G1 --decision \"...\"",
+    );
+    r.command(
+        todo,
+        "replan",
+        "ack a replan obligation / list obligations / inspect or set the replan rule set",
+        "replan ack --goal G --delta-kind ... | replan obligations --goal G | replan rules show|set --goal G",
+    );
+    r.command(
+        todo,
+        "frontier",
+        "goal-frontier projection (G13): frontier + outcome segments + replan rule + terminal judgement + semantic history",
+        "frontier show --goal G [--format json]",
+    );
+    r.command(
+        todo,
+        "lease",
+        "task lease lifecycle (claim/renew/release/expire/status)",
+        "lease claim|renew|release|expire|status --goal G --todo-id T [--agent-id A] [--force (claim)] [--format json (status)]",
+    );
+    r.command(
+        todo,
+        "task-graph",
+        "todo dependency graph (G-14)",
+        "task-graph --goal G [--format json]",
+    );
+
+    let agent = r.group("agent", "agent sessions");
+    r.command(
+        agent,
+        "agent",
+        "register/onboard agents (parallel-worker identity)",
+        "agent onboard --goal G --agent-id A | list --goal G",
+    );
+    r.subcommand(
+        "agent",
+        "onboard",
+        "register a peer + declare the workspace-guard write set",
+        "onboard --goal G --agent-id A [--workspace p1,p2]",
+    );
+    r.subcommand(
+        "agent",
+        "list",
+        "registered agents + live lease status",
+        "list --goal G [--format json]",
+    );
+    r.command(
+        agent,
+        "scope",
+        "identity-scoped agent frontier (G-16)",
+        "scope --goal G --agent-id A [--exclude X]",
+    );
+    r.command(
+        agent,
+        "lane",
+        "agent lane recommendation (G-16)",
+        "lane --goal G --agent-id A",
+    );
+    r.command(
+        agent,
+        "supervisor",
+        "supervisor register|steer|events|watch (G-16)",
+        "supervisor register|steer|events|watch --goal G ...",
+    );
+    r.subcommand(
+        "supervisor",
+        "register",
+        "bind your session so workers push intervention reports to you",
+        "register --goal G --session-id S",
+    );
+    r.subcommand(
+        "supervisor",
+        "steer",
+        "durable next-boundary guidance; --interrupt for urgent redirection",
+        "steer --goal G [--agent-id A] [--interrupt] --instruction \"...\"",
+    );
+    r.subcommand(
+        "supervisor",
+        "events",
+        "read the supervisor event projection (gates / completions / failures / progress)",
+        "events --goal G [--format json]",
+    );
+    r.subcommand(
+        "supervisor",
+        "watch",
+        "non-LLM watchdog: death detection and durable batched notification delivery",
+        "watch --goal G [--once]",
+    );
+    r.subcommand_flags(
+        "supervisor",
+        "watch",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--once",
+                "one reconciliation instead of a persistent watcher",
+                "boolean",
+            ),
+        ],
+    );
+    r.command(
+        agent,
+        "report",
+        "worker mid-run progress note (ledger event, projection-side consumption — never a push)",
+        "report --goal G --agent-id A [--todo-id T] --message \"...\"",
+    );
+    r.command(
+        agent,
+        "worker",
+        "list/stop/tail goal workers (ledger stop signal + gRPC abort — not pkill)",
+        "worker list --goal G [--format json] | worker stop --goal G [--agent-id A | --all] [--delete] | worker tail --goal G --agent-id A [--lines N]",
+    );
+    r.subcommand(
+        "worker",
+        "list",
+        "registered workers + backing session + running/ended/idle",
+        "list --goal G [--format json]",
+    );
+    r.subcommand(
+        "worker",
+        "stop",
+        "stop worker(s) cleanly (ledger signal + gRPC abort); --delete also reclaims the session",
+        "stop --goal G [--agent-id A | --all] [--delete]",
+    );
+    r.subcommand(
+        "worker",
+        "tail",
+        "stream a worker's live turn log (condensed tool/usage view; --raw for verbatim .live.jsonl)",
+        "tail --goal G [--agent-id A] [--lines N] [--raw]",
+    );
+
+    let ops = r.group("ops", "operations / diagnostics");
+    r.command(
+        ops,
+        "version",
+        "print version + schema surface (G-27)",
+        "version",
+    );
+    r.command(
+        ops,
+        "doctor",
+        "run the diagnostic surface (smoke + ledger + agent probe)",
+        "doctor [--goal G] [--agent-addr ADDR]",
+    );
+    r.command(
+        ops,
+        "history",
+        "goal run history (ledger-derived)",
+        "history --goal G [--format json]",
+    );
+    r.command(
+        ops,
+        "turn",
+        "render the per-turn envelope for a todo",
+        "turn --goal G --todo-id T [--agent-id A]",
+    );
+    r.command(
+        ops,
+        "todo-event",
+        "event history of one todo",
+        "todo-event --goal G --todo-id T [--format json]",
+    );
+    r.command(
+        ops,
+        "evidence-log",
+        "evidence trail (attached + run + completion evidence)",
+        "evidence-log --goal G [--todo-id T] [--format json]",
+    );
+    r.command(ops, "backup", "back up a goal", "backup --goal G");
+    r.command(
+        ops,
+        "authority",
+        "set authority declaration",
+        "authority set --goal G --write-scope ... [--requires-approval ...]",
+    );
+    r.command(
+        ops,
+        "profile",
+        "set execution profile",
+        "profile set --goal G --outcome-floor N",
+    );
+    r.command(
+        ops,
+        "quota",
+        "quota should-run / usage / spend / decisions",
+        "quota should-run --goal G [--format json] | usage [--goal G] [--all] | spend --goal G  | decisions --goal G [--limit N]",
+    );
+    r.command(
+        ops,
+        "scheduler",
+        "scheduler tick/show/record-host-failure/ack/liveness",
+        "scheduler tick|show|record-host-failure|ack|liveness --goal G [--agent-id A] [--threshold-secs N (liveness)] [--format json (show|liveness)]",
+    );
+    r.command(
+        ops,
+        "store",
+        "event-store schema migration / ledger integrity / read-model repair",
+        "store migrate|verify|bridge --goal G [--repair|--format json (verify)]",
+    );
+    r.command(
+        ops,
+        "backfill",
+        "markdown backfill into the event ledger",
+        "backfill --goal G [--from PATH] [--privacy LEVEL] [--dry-run]",
+    );
+    r.command(
+        ops,
+        "privacy",
+        "privacy-graded projection",
+        "privacy --goal G [--level LEVEL] [--json]",
+    );
+    r.command(
+        ops,
+        "runs",
+        "run history lifecycle (history/compact/index/retention/stale)",
+        "runs history|compact|index|retention|stale --goal G [--keep N] [--cutoff TS] [--rebuild]",
+    );
+    r.command(
+        ops,
+        "heartbeat-prompt",
+        "render the per-turn re-entry packet",
+        "heartbeat-prompt --goal G [--agent-id A]",
+    );
+    r.command(
+        ops,
+        "worker-bridge",
+        "run the worker bridge",
+        "worker-bridge --goal G [--agent-id A] [--max-turns N]",
+    );
+    r.command(
+        ops,
+        "run",
+        "drive one bounded gRPC turn (--agent-id for lease coordination, or --anonymous; auto-registers)",
+        "run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--max-incomplete-retries N] [--lease-secs N] [--force-workspace] [--resume-session ID] [--no-title] [--anonymous]",
+    );
+
+    let work_items = r.group(
+        "work-items",
+        "attention / operator inbox (G-15) / delivery outcome closure (P0-2)",
+    );
+    r.command(
+        work_items,
+        "attention",
+        "project the attention queue",
+        "attention [--goal G] [--all] [--format json]",
+    );
+    r.command(
+        work_items,
+        "inbox",
+        "project the operator inbox urgency",
+        "inbox --project DIR [--scope addressed_only|configured_chat_all] [--name NAME] [--format json]",
+    );
+    r.command(
+        work_items,
+        "delivery",
+        "post-delivery outcome closure (P0-2): delivered → verified/failed/rework + follow-through",
+        "delivery status --goal G [--format json] | record --goal G --todo-id T --outcome verified|failed|rework [--note N] | followthrough --goal G [--turns N]",
+    );
+
+    let cli = r.group("cli", "command registry");
+    r.command(
+        cli,
+        "registry",
+        "inspect the CLI registry (groups/commands)",
+        "registry [--format json|--json] [--include-experimental]",
+    );
+    r.command(
+        cli,
+        "commands",
+        "grouped operator command reference (P1-9 journey view)",
+        "commands [--format json|--json] [--include-experimental]",
+    );
+
+    let canary = r.group("canary", "canary smoke (G-20)");
+    r.command(
+        canary,
+        "canary",
+        "run a smoke profile (release gate default) or the premerge CI gate",
+        "canary smoke [--profile core-control-plane|release-gate|premerge] [--json] | canary premerge [--json]",
+    );
+
+    // ── per-flag help (rendered by `<command> --help` / `<command> <sub>
+    //    --help`) — defaults, constraints, and gotchas sourced from each
+    //    handler so the help text can never drift from the code. ──────────
+
+    r.flags(
+        "goal",
+        &[
+            (
+                "--objective TEXT",
+                "goal objective",
+                "required; this is the durable goal statement",
+            ),
+            (
+                "--cwd DIR",
+                "working directory for the goal",
+                "defaults to the process cwd",
+            ),
+            (
+                "--goal-doc TEXT",
+                "seed the GOAL.md workbench",
+                "written to <cwd>/GOAL.md when given",
+            ),
+            (
+                "--goal-id ID",
+                "pin the goal id",
+                "defaults to an auto-generated id; re-init with the same id is idempotent",
+            ),
+        ],
+    );
+
+    r.flags(
+        "status",
+        &[
+            (
+                "--goal G",
+                "limit the projection to one goal",
+                "omitted → every registered goal",
+            ),
+            (
+                "--format json",
+                "machine-readable projection",
+                "goal + todos with priority/class/status/blocks + terminal flag",
+            ),
+        ],
+    );
+
+    r.flags(
+        "ui",
+        &[
+            (
+                "--port N",
+                "listen port",
+                "default 7717; 0 picks a free port",
+            ),
+            (
+                "--root DIR",
+                "state root to serve",
+                "defaults to the goal state root",
+            ),
+            (
+                "--no-open",
+                "do not open the browser",
+                "the dashboard is strictly read-only (GET only)",
+            ),
+        ],
+    );
+
+    r.flags(
+        "models",
+        &[(
+            "--format json",
+            "machine-readable model list",
+            "auth.json/models.json merged with the built-in catalog",
+        )],
+    );
+
+    r.flags(
+        "diagnose",
+        &[
+            ("--goal G", "goal to diagnose", "required"),
+            (
+                "--format json",
+                "machine-readable diagnostic",
+                "decision + open todos/gates + projection gap + recent runs",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "todo",
+        "add",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--text TEXT", "todo text", "required; must be non-empty"),
+            ("--parent T", "parent todo id", "same goal; at most 3 levels; grouping only, not a dependency"),
+            ("--priority P0|P1|P2", "priority (P0 urgent)", "defaults to P1; also prefixes the text with [P0]/[P1]/[P2]"),
+            ("--blocks T", "ids that block THIS todo", "comma-separated; `--blocks A` means A blocks this todo, not the reverse — a bare `--blocks` reads as `true` and is rejected"),
+            ("--verify CMD", "validator command", "e.g. `cargo check -p ...`; advisory for code-like todos so uncompilable work can't be marked done"),
+            ("--acceptance a,b", "completion contract tokens", "evidence must contain every token (case-insensitive) before `todo complete` accepts"),
+            ("--owner A", "pin the todo to agent A", "absent → shared pool any worker may claim"),
+            ("--class C", "task class", "see --role; combo is validated (advancement|monitor|blocker|coordination|user_gate|user_action)"),
+            ("--role R", "actor role", "agent|user; valid combos: agent+advancement/monitor/blocker/coordination, any+user_gate, user+user_action"),
+            ("--gate-question Q", "gate question", "for user_gate; defaults to the text"),
+            ("--action-kind K", "free-form action tag", "optional"),
+            ("--defer-secs N", "defer N seconds from now", "marks the todo Deferred with a real resume_when deadline"),
+            ("--resume-when N", "defer N seconds or text hint", "numeric N = real deadline (same as --defer-secs); non-numeric = text hint with a 1h placeholder"),
+            ("--title T", "short title", "optional"),
+            ("--task-repository R", "task repository label", "optional"),
+            ("--continuation-policy P", "continuation policy", "optional"),
+            ("--required-write-scope P", "task write scopes", "comma-separated paths relative to goal cwd; overrides agent workspace for this task; omit for agent fallback"),
+            ("--goal-bound", "goal-bound flag", "boolean"),
+            ("--global-gate", "global gate flag", "boolean; a user_gate + global_gate implies goal_bound"),
+            ("--note TEXT", "free-form note", "optional"),
+            ("--monitor-target T", "monitor target", "G-12 monitor metadata"),
+            ("--monitor-policy P", "monitor policy", "G-12 monitor metadata"),
+            ("--cadence C", "monitor cadence", "e.g. 15m/1h/2d; drives the first due time"),
+            ("--max-validation-attempts N", "validation retry cap", "clamped to >= 1"),
+        ],
+    );
+
+    r.subcommand_flags(
+        "todo",
+        "update",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--todo-id T", "todo id", "required"),
+            ("--text TEXT", "replace the text", "optional"),
+            (
+                "--status S",
+                "status",
+                "open|blocked|deferred|superseded; `done` is rejected (use `todo complete`)",
+            ),
+            (
+                "--priority P0|P1|P2",
+                "priority",
+                "validated against P0|P1|P2",
+            ),
+            (
+                "--blocks T",
+                "replace the blocking set",
+                "comma-separated; `--blocks \"\"` clears it; absent → untouched",
+            ),
+            (
+                "--acceptance a,b",
+                "replace the acceptance contract",
+                "optional",
+            ),
+            ("--owner A", "reassign the owner", "optional"),
+            ("--evidence E", "attach evidence", "optional"),
+            ("--note TEXT", "note", "optional"),
+            (
+                "--resume-when N",
+                "defer or text hint",
+                "numeric N = defer N seconds; non-numeric = text hint (no deadline) with a warning",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "todo",
+        "complete",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--todo-id T", "todo id", "required"),
+            (
+                "--no-follow-up",
+                "declare no successor",
+                "advancement todos need this OR --successor",
+            ),
+            (
+                "--successor T2",
+                "declare the successor todo",
+                "alternative to --no-follow-up",
+            ),
+            (
+                "--evidence E",
+                "what actually landed",
+                "advancement todos require non-empty evidence unless --force",
+            ),
+            (
+                "--force",
+                "override evidence/acceptance/gate checks",
+                "explicit operator closeout only",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "todo",
+        "supersede",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--todo-id T",
+                "todo id",
+                "required; must be unfinished (done todos refuse)",
+            ),
+            (
+                "--reason R",
+                "why it is obsolete",
+                "optional; also stops any detached run holding this todo",
+            ),
+        ],
+    );
+
+    r.flags(
+        "gate",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--todo-id G1",
+                "the user_gate todo id",
+                "required; fails closed on non-gate todos",
+            ),
+            (
+                "--decision D",
+                "the operator decision",
+                "required; recorded and flows into blocked todos' packets",
+            ),
+            ("--note N", "decision note", "optional"),
+        ],
+    );
+
+    r.flags(
+        "replan",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--delta-kind K", "frontier-changing delta kind", "ack requires at least one frontier-changing kind (vision_patch|no_followup|successor_or_supersede|runnable_todo_set|...)"),
+            ("--format json", "machine-readable output", "for `replan obligations` / `replan rules show`"),
+            ("--rule-ids R1,R2", "explicit rule set for `replan rules set`", "full replace; `--rule-ids \"\"` resets to the default set"),
+        ],
+    );
+
+    r.flags(
+        "frontier",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--format json",
+                "machine-readable frontier projection",
+                "outcome segments + replan rule + terminal judgement + semantic history",
+            ),
+        ],
+    );
+
+    r.flags(
+        "lease",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--todo-id T", "todo id", "required"),
+            ("--agent-id A", "agent id", "defaults to `default-agent`"),
+            (
+                "--lease-secs N",
+                "lease length in seconds",
+                "claim/renew only",
+            ),
+            (
+                "--force",
+                "override the workspace conflict guard",
+                "claim only; degrades parallel claims to serial",
+            ),
+            (
+                "--format json",
+                "machine-readable status",
+                "for `lease status`",
+            ),
+        ],
+    );
+
+    r.flags(
+        "task-graph",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--format json",
+                "machine-readable graph",
+                "nodes + edges + topological order; cycles fail closed",
+            ),
+        ],
+    );
+
+    r.flags(
+        "agent",
+        &[
+            ("--goal G", "goal id", "required for `agent register`"),
+            (
+                "--agent-id A",
+                "agent id",
+                "required; auto-registered on first `run` use",
+            ),
+            (
+                "--workspace P",
+                "declared write set",
+                "comma-separated paths; drives the P0-1 workspace guard",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "agent",
+        "onboard",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--agent-id A", "agent id", "required"),
+            (
+                "--workspace P",
+                "declared write set",
+                "comma-separated paths",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "agent",
+        "list",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--format json",
+                "machine-readable agent list",
+                "agent → status + workspaces + capabilities + last-active",
+            ),
+        ],
+    );
+
+    r.flags(
+        "scope",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--agent-id A", "agent id", "required"),
+            ("--exclude X", "todo ids to exclude", "comma-separated"),
+        ],
+    );
+
+    r.flags(
+        "lane",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--agent-id A", "agent id", "required"),
+        ],
+    );
+
+    r.subcommand_flags(
+        "supervisor",
+        "register",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--session-id S",
+                "supervisor agent session id",
+                "required; the up-channel target workers push intervention reports to",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "supervisor",
+        "steer",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--agent-id A",
+                "target worker",
+                "omitted → broadcast to all workers",
+            ),
+            (
+                "--instruction TEXT",
+                "idempotent guidance",
+                "required; delivered at next boundary, acknowledged after writeback",
+            ),
+            (
+                "--interrupt",
+                "abort in-flight turn for urgent guidance",
+                "boolean; default false",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "supervisor",
+        "events",
+        &[("--goal G", "goal id", "required")],
+    );
+
+    r.flags(
+        "report",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--agent-id A",
+                "reporting worker",
+                "optional; truncated to 128 chars",
+            ),
+            (
+                "--todo-id T",
+                "related todo",
+                "optional; truncated to 128 chars",
+            ),
+            (
+                "--message TEXT",
+                "the milestone note",
+                "required; truncated to 500 chars; projection-only (never a push)",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "worker",
+        "list",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--format json",
+                "machine-readable worker list",
+                "agent → backing session + running/ended/idle status",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "worker",
+        "stop",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--agent-id A",
+                "one worker to stop",
+                "either --agent-id or --all is required",
+            ),
+            (
+                "--all",
+                "stop every worker with a live session",
+                "broadcast stop signal",
+            ),
+            (
+                "--delete",
+                "also reclaim the backing agent session",
+                "a later `run` then starts fresh",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "worker",
+        "tail",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--agent-id A",
+                "one worker's latest run",
+                "omitted → latest run across all workers",
+            ),
+            ("--lines N", "how many events to show", "default 20"),
+            (
+                "--raw",
+                "dump the .live.jsonl verbatim",
+                "condensed tool/usage view is the default",
+            ),
+            ("--format json", "machine-readable", "same as --raw"),
+        ],
+    );
+
+    r.flags(
+        "doctor",
+        &[
+            (
+                "--goal G",
+                "limit ledger/decision checks to one goal",
+                "omitted → every registered goal",
+            ),
+            (
+                "--agent-addr ADDR",
+                "probe agent gRPC reachability",
+                "omitted → the agent probe is skipped",
+            ),
+        ],
+    );
+
+    r.flags(
+        "history",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--format json",
+                "machine-readable run history",
+                "ledger-derived RunRecord list",
+            ),
+        ],
+    );
+
+    r.flags(
+        "turn",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--todo-id T", "todo id", "required"),
+            ("--agent-id A", "agent id", "optional; scopes the decision"),
+        ],
+    );
+
+    r.flags(
+        "todo-event",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--todo-id T", "todo id", "required"),
+            (
+                "--format json",
+                "machine-readable event history",
+                "events touching this todo",
+            ),
+        ],
+    );
+
+    r.flags(
+        "evidence-log",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--todo-id T", "limit to one todo", "omitted → all todos"),
+            (
+                "--format json",
+                "machine-readable evidence trail",
+                "attached + run + completion evidence",
+            ),
+        ],
+    );
+
+    r.flags(
+        "backup",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--list",
+                "list existing backups",
+                "mutually exclusive with --restore",
+            ),
+            (
+                "--restore DIR",
+                "restore a point-in-time snapshot",
+                "replaces current state",
+            ),
+        ],
+    );
+
+    r.flags(
+        "authority",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--write-scope P",
+                "declared write scope",
+                "comma-separated paths",
+            ),
+            (
+                "--require-approval K",
+                "approval-gated action kinds",
+                "comma-separated",
+            ),
+        ],
+    );
+
+    r.flags(
+        "profile",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--outcome-floor N",
+                "outcome floor streak threshold",
+                "must be a number",
+            ),
+        ],
+    );
+
+    r.flags(
+        "quota",
+        &[
+            (
+                "--goal G",
+                "goal id",
+                "required for should-run/usage/spend/decisions",
+            ),
+            (
+                "--agent-id A",
+                "scope the decision",
+                "`quota should-run` only",
+            ),
+            (
+                "--all",
+                "aggregate across every goal",
+                "`quota usage` only; alternative to --goal",
+            ),
+            (
+                "--limit N",
+                "how many decisions to show",
+                "`quota decisions` only; default 10",
+            ),
+            (
+                "--format json",
+                "machine-readable output",
+                "should-run/usage/decisions",
+            ),
+        ],
+    );
+
+    r.flags(
+        "scheduler",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--agent-id A", "agent id", "defaults to `codex-app`"),
+            (
+                "--progression 15,30,60",
+                "backoff progression minutes",
+                "tick only; bootstrap only — sets the sequence on the FIRST tick, ignored once state exists",
+            ),
+            ("--action A", "tick action", "tick/ack; default tick_next"),
+            (
+                "--threshold-secs N",
+                "liveness threshold",
+                "liveness only; default 2h (7200s)",
+            ),
+            (
+                "--target-rrule R",
+                "target RRULE",
+                "record-host-failure only; required",
+            ),
+            (
+                "--observed-rrule R",
+                "observed host RRULE",
+                "record-host-failure only",
+            ),
+            (
+                "--failure-kind K",
+                "failure kind",
+                "record-host-failure only; required",
+            ),
+            (
+                "--failure-count N",
+                "failure count",
+                "record-host-failure only; default 1",
+            ),
+            ("--rrule R", "RRULE for the ack", "ack only"),
+            (
+                "--source S",
+                "ack source",
+                "ack only; default scheduler_cli",
+            ),
+            ("--format json", "machine-readable output", "show/liveness"),
+        ],
+    );
+
+    r.flags(
+        "store",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--format json",
+                "machine-readable verify report",
+                "verify only",
+            ),
+            (
+                "--repair",
+                "rebuild a drifted run index",
+                "verify only; non-destructive",
+            ),
+        ],
+    );
+
+    r.flags(
+        "backfill",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--from PATH",
+                "source markdown workbench",
+                "omitted → the active state markdown is derived",
+            ),
+            (
+                "--privacy L",
+                "public_safe|local_private|private_pointer",
+                "default local_private",
+            ),
+            (
+                "--dry-run",
+                "print the events without appending",
+                "read-only preview",
+            ),
+        ],
+    );
+
+    r.flags(
+        "privacy",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--level L", "privacy tier", "default public_safe"),
+            (
+                "--format json",
+                "machine-readable projections",
+                "includes the privacy report + public-safe markdown + status cache",
+            ),
+        ],
+    );
+
+    r.flags(
+        "runs",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--keep N",
+                "how many latest runs to keep",
+                "compact/retention; default 50",
+            ),
+            (
+                "--cutoff TS",
+                "archive runs before this epoch",
+                "compact only",
+            ),
+            (
+                "--rebuild",
+                "rebuild the index from run files",
+                "index only",
+            ),
+            ("--format json", "machine-readable output", "history only"),
+        ],
+    );
+
+    r.flags(
+        "heartbeat-prompt",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--agent-id A", "agent id", "optional; scopes the decision"),
+        ],
+    );
+
+    r.flags(
+        "worker-bridge",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--agent-id A", "agent id", "optional"),
+            ("--max-turns N", "max turn iterations", "default 6"),
+        ],
+    );
+
+    r.flags(
+        "run",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--agent-id A", "worker identity for lease coordination", "REQUIRED for coordinated runs; auto-registered on first use; use a unique id per concurrent worker"),
+            ("--anonymous", "legacy uncoordinated one-shot", "claims nothing and hides nothing — two agentless runs deterministically race on the same todo"),
+            ("--model M", "model override", "sets the session model before the turn loop"),
+            ("--thinking-level L", "thinking level override", "sets the session thinking level before the turn loop"),
+            ("--max-turns N", "max turn iterations", "default 6"),
+            ("--max-incomplete-retries N", "incomplete retry cap", "default 3"),
+            ("--lease-secs N", "task lease length", "default 4h (14400s)"),
+            ("--force-workspace", "force workspace override", "boolean"),
+            ("--no-title", "do not name a session this run creates", "by default the first answer of a NEW session generates and saves a title (one extra model call); a resumed session is never renamed"),
+            ("--resume-session ID", "resume this exact agent session", "fresh is the default; a dead id falls back to fresh automatically"),
+            ("--parent-session ID", "parent conversation for a fresh worker", "defaults to the goal's supervisor session; does not copy context or reparent resumed sessions"),
+            ("--detach", "internal: marks the detached child", "the run re-executes itself detached by default; set FUTURE_GOAL_NO_DETACH=1 to run foreground"),
+        ],
+    );
+
+    r.flags(
+        "attention",
+        &[
+            (
+                "--goal G",
+                "one goal's attention item",
+                "alternative to --all",
+            ),
+            ("--all", "every registered goal", "alternative to --goal"),
+            (
+                "--format json",
+                "machine-readable attention queue",
+                "includes role-succession hints",
+            ),
+        ],
+    );
+
+    r.flags(
+        "inbox",
+        &[
+            (
+                "--project DIR",
+                "project directory",
+                "defaults to the process cwd",
+            ),
+            (
+                "--scope S",
+                "addressed_only|configured_chat_all",
+                "default addressed_only",
+            ),
+            ("--name NAME", "operator display name", "default operator"),
+            (
+                "--format json",
+                "machine-readable urgency",
+                "content is never returned",
+            ),
+        ],
+    );
+
+    r.flags(
+        "delivery",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--todo-id T", "todo id", "record only; required"),
+            (
+                "--outcome O",
+                "delivered|verified|failed|rework",
+                "record only; required; transition validated against current state",
+            ),
+            ("--note N", "outcome note", "record only"),
+            (
+                "--turns N",
+                "follow-through threshold",
+                "followthrough only; default 3",
+            ),
+            ("--format json", "machine-readable output", "status only"),
+        ],
+    );
+
+    r.flags(
+        "registry",
+        &[
+            (
+                "--format json",
+                "machine-readable registry",
+                "groups + commands",
+            ),
+            (
+                "--include-experimental",
+                "include experimental commands",
+                "hidden by default",
+            ),
+        ],
+    );
+
+    r.flags(
+        "commands",
+        &[
+            (
+                "--format json",
+                "machine-readable journey view",
+                "five operator journeys",
+            ),
+            (
+                "--include-experimental",
+                "include experimental commands",
+                "hidden by default",
+            ),
+        ],
+    );
+
+    r.flags(
+        "canary",
+        &[
+            (
+                "--profile P",
+                "smoke profile",
+                "core-control-plane|release-gate|premerge; default release-gate",
+            ),
+            (
+                "--json",
+                "machine-readable result",
+                "fails closed (non-zero exit) on any check failure",
+            ),
+        ],
+    );
+
+    // P1-9: journey metadata overlay (presentation only — the registry
+    // itself stays the flat machine catalog).
+    for (name, journey) in JOURNEY_ASSIGNMENTS {
+        r.set_journey(name, *journey);
+    }
+
+    r
+}
+
+fn cli_help(registry: &CommandRegistry, include_experimental: bool) -> Result<()> {
+    let mut text = registry.render_help(include_experimental);
+    // When invoked as `future goal`, adapt the USAGE line to the actual
+    // invocation (the standalone binary keeps "future-goal").
+    if prog() != "future-goal" {
+        text = text.replacen(
+            "USAGE: future-goal <command> [args]",
+            &format!("USAGE: {} <command> [args]", prog()),
+            1,
+        );
+    }
+    print!("{text}");
+    Ok(())
+}
+
+/// P0-3②: render the per-command help for `<command> --help` — the command's
+/// summary + usage + per-flag details from the registry (pure, unit-testable;
+/// the caller prints).
+fn render_command_help(
+    registry: &CommandRegistry,
+    command: &str,
+    include_experimental: bool,
+) -> String {
+    if let Some((group, def)) = registry.find(command, include_experimental) {
+        let mark = if def.experimental {
+            " (experimental)"
+        } else {
+            ""
+        };
+        let mut out = format!(
+            "{} — {}{}\n\nusage: {}\n\ngroup: {} — {}\n",
+            def.name, def.summary, mark, def.usage, group.name, group.summary
+        );
+        if !def.flags.is_empty() {
+            out.push_str("\nflags:\n");
+            out.push_str(&render_flags(&def.flags));
+        }
+        if !def.subcommands.is_empty() {
+            out.push_str("\nsubcommands:\n");
+            for sub in &def.subcommands {
+                out.push_str(&format!(
+                    "  {:<14} {}\n      usage: {} {}\n",
+                    sub.name, sub.summary, def.name, sub.usage
+                ));
+            }
+        }
+        out.push_str(&format!("\nfull command list: {} --help\n", prog()));
+        out
+    } else {
+        // Unreachable: main_from_args validates the command before help.
+        format!("unknown command `{command}` (try `{} --help`)\n", prog())
+    }
+}
+
+/// Render one flag list: `<flag>  what` per line, `notes` (defaults /
+/// constraints / gotchas) indented on the following line. Over-long flag
+/// tokens wrap onto their own line; `what` and `notes` align to the same
+/// column.
+fn render_flags(flags: &[FlagHelp]) -> String {
+    const WIDTH: usize = 24;
+    let mut out = String::new();
+    for f in flags {
+        if f.flag.len() >= WIDTH {
+            out.push_str(&format!("  {}\n", f.flag));
+            out.push_str(&format!("  {:<WIDTH$} {}\n", "", f.what));
+        } else {
+            out.push_str(&format!("  {:<WIDTH$} {}\n", f.flag, f.what));
+        }
+        if !f.notes.is_empty() {
+            out.push_str(&format!("  {:<WIDTH$} {}\n", "", f.notes));
+        }
+    }
+    out
+}
+
+/// Render `<command> <sub> --help` — the exact usage of one verb (steer /
+/// update / stop / …) so an AI orchestrator discovers its flags directly
+/// instead of parsing a merged top-level usage line.
+fn render_subcommand_help(
+    registry: &CommandRegistry,
+    command: &str,
+    sub: &str,
+    include_experimental: bool,
+) -> String {
+    match registry.find_subcommand(command, sub, include_experimental) {
+        Some((group, parent, def)) => {
+            let mut out = format!(
+                "{} {} — {}\n\nusage: {} {}\n\ngroup: {} — {}\n",
+                parent.name,
+                def.name,
+                def.summary,
+                parent.name,
+                def.usage,
+                group.name,
+                group.summary,
+            );
+            if !def.flags.is_empty() {
+                out.push_str("\nflags:\n");
+                out.push_str(&render_flags(&def.flags));
+            }
+            out.push_str(&format!("\nfull command list: {} --help\n", prog()));
+            out
+        }
+        None => format!(
+            "unknown subcommand `{sub}` for `{command}` (try `{} {command} --help`)\n",
+            prog()
+        ),
+    }
+}
+
+// ── goal ───────────────────────────────────────────────────────────────────
+
+async fn cmd_goal(store: &mut Store, args: &[String]) -> Result<()> {
+    // goal cancel / goal delete (lifecycle management)
+    if args.first().map(|s| s.as_str()) == Some("cancel") {
+        return cmd_goal_cancel(store, &args[1..]).await;
+    }
+    if args.first().map(|s| s.as_str()) == Some("delete") {
+        return cmd_goal_delete(store, &args[1..]).await;
+    }
+    let mut objective = None;
+    let mut cwd = None;
+    let mut goal_id = None;
+    let mut goal_doc = None;
+    reject_unknown_flags(args, &["--cwd", "--goal-doc", "--goal-id", "--objective"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--objective" {
+            objective = Some(v);
+        } else if k == "--cwd" {
+            cwd = Some(v);
+        } else if k == "--goal-id" {
+            goal_id = Some(v);
+        } else if k == "--goal-doc" {
+            goal_doc = Some(v);
+        }
+    });
+    let objective = objective.ok_or_else(|| anyhow::anyhow!("goal init requires --objective"))?;
+    let goal_id = goal_id.unwrap_or_else(|| gen_id("goal"));
+    let cwd = cwd.unwrap_or_else(|| {
+        std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    });
+    // Idempotent re-init: an already-registered goal returns its existing
+    // state — re-running `goal init` with the same --goal-id must not
+    // duplicate the onboarding bootstrap todo.
+    if store.registered(&goal_id) {
+        println!("goal {goal_id} already exists — continuing (no duplicate bootstrap)");
+        return Ok(());
+    }
+    let mut goal = Goal::new(&goal_id, &objective, &cwd);
+    let ts = now_epoch();
+    goal.created_at = ts;
+    store.register(&goal)?;
+    store.append(Event::GoalStarted {
+        goal_id: goal_id.clone(),
+        ts,
+    })?;
+    if let Some(doc) = goal_doc {
+        let _ = std::fs::write(
+            std::path::Path::new(&cwd).join("GOAL.md"),
+            format!("{doc}\n"),
+        );
+    }
+    // Bootstrap auto-adds an onboarding-connection-validation todo.
+    let onboarding = Todo::advancement(
+        &gen_id("todo"),
+        "[P1] Run `future goal status` for this goal and record the goal \
+         count as evidence, or declare an explicit no-follow-up rationale.",
+    )
+    .at_priority(crate::state::Priority::P1)
+    .with_action_kind("onboarding_connection_validation");
+    store.append(Event::TodoAdded {
+        goal_id: goal_id.clone(),
+        todo: onboarding.clone(),
+        ts,
+    })?;
+    store.set_next_action(&goal_id, &onboarding.text)?;
+    refresh_next_action(store, &goal_id)?;
+    sync_compat(store, &goal_id);
+    println!("goal {} created ✔ (root {})", goal_id, root_dir());
+    Ok(())
+}
+
+/// `goal cancel --goal G [--reason ...]` — stop automation while retaining
+/// state (the reference: cancel keeps the goal reviewable; automation stops).
+async fn cmd_goal_cancel(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut reason = "cancelled by user".to_string();
+    reject_unknown_flags(args, &["--goal", "--reason"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--reason" {
+            reason = v;
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    store.append(Event::GoalCancelled {
+        goal_id: goal_id.clone(),
+        reason: reason.clone(),
+        ts: crate::state::now_epoch(),
+    })?;
+    refresh_next_action(store, &goal_id)?;
+    // Cancelled goals never run — surface that as the Next Action.
+    let next_action = "goal cancelled — automation stopped, state retained";
+    store.set_next_action(&goal_id, next_action)?;
+    sync_compat(store, &goal_id);
+    // Default-detached runs are real processes: stopping automation means
+    // stopping them (ledger signal + gRPC abort of in-flight turns), not just
+    // flipping the goal status a running client would only see at its next
+    // turn boundary.
+    let stopped = stop_goal_workers(store, &goal_id, None).await?;
+    let workers_note = if stopped > 0 {
+        format!("; {stopped} detached run(s) signalled to stop")
+    } else {
+        String::new()
+    };
+    println!("goal {goal_id} cancelled ✔ (automation stopped, state retained — reason: {reason}){workers_note}");
+    Ok(())
+}
+
+/// `goal delete --goal G [--force]` — remove the registry entry + state.
+/// Irreversible; requires --force (tip: `goal cancel` keeps state).
+async fn cmd_goal_delete(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut force = false;
+    reject_unknown_flags(args, &["--force", "--goal"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--force" {
+            force = true;
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    if !force {
+        bail!(
+            "goal delete is irreversible — pass --force to delete goal {goal_id} \
+             (tip: use `goal cancel` to stop automation while keeping state)"
+        );
+    }
+    // Stop any live detached run BEFORE removing the state: after deletion the
+    // run client can no longer read the ledger it tails (it would spin on a
+    // missing events file), and its writebacks would target a deleted goal.
+    stop_goal_workers(store, &goal_id, None).await?;
+    store.delete_goal(&goal_id)?;
+    println!("goal {goal_id} deleted ✔ (registry entry + state removed)");
+    Ok(())
+}
+
+// ── todo ───────────────────────────────────────────────────────────────────
+
+async fn cmd_todo(store: &mut Store, args: &[String]) -> Result<()> {
+    if args.is_empty() {
+        bail!("todo requires add|claim|complete");
+    }
+    match args[0].as_str() {
+        "add" => todo_add(store, &args[1..]),
+        "claim" => todo_claim(store, &args[1..]),
+        "complete" => todo_complete(store, &args[1..]),
+        "archive" => todo_archive(store, &args[1..]),
+        "supersede" => todo_supersede(store, &args[1..]).await,
+        "update" => todo_update(store, &args[1..]),
+        other => bail!("unknown todo subcommand `{other}`"),
+    }
+}
+
+/// O4: heuristic for the `todo add` advisory hint — does the text look like a
+/// code/implementation task that should carry a `--verify` validator? Matches
+/// coding keywords (worktree / commit / cargo / clippy / 测试 / 代码 …) or a
+/// `.rs` source path. Advisory only; never changes CLI semantics.
+fn looks_like_code_todo(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    if lower.contains(".rs") {
+        return true;
+    }
+    const CODE_WORDS: &[&str] = &[
+        "worktree", "commit", "cargo", "clippy", "rustfmt", "test", "tests", "compile", "build",
+        "lint", "refactor", "patch", "crate", "git", "merge", "code", "debug",
+    ];
+    const CODE_ZH: &[&str] = &["测试", "代码", "编译", "修复"];
+    CODE_ZH.iter().any(|k| text.contains(k))
+        || lower
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|tok| CODE_WORDS.contains(&tok))
+}
+
+/// O5: heuristic for the `todo add` advisory hint — does the text look like an
+/// external-delivery task (platform submission, scored attempt, quota-bounded
+/// side effect) whose completion should carry an `--acceptance` contract?
+/// Advisory only; never changes CLI semantics.
+fn looks_like_external_delivery(text: &str) -> bool {
+    const DELIVERY_WORDS: &[&str] = &[
+        "submit",
+        "submission",
+        "attempt",
+        "scored",
+        "acceptance",
+        "quota",
+        "platform",
+    ];
+    const DELIVERY_ZH: &[&str] = &["提交", "评分", "配额", "验收", "排行榜", "上分"];
+    let lower = text.to_lowercase();
+    DELIVERY_ZH.iter().any(|k| text.contains(k))
+        || lower
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|tok| DELIVERY_WORDS.contains(&tok))
+}
+
+/// Assignment may precede registration; warn rather than silently changing
+/// identity or forbidding the normal plan-then-onboard workflow.
+fn owner_assignment_warning(goal: &Goal, owner: &str) -> Option<String> {
+    if owner.is_empty() || goal.registered_agents.iter().any(|id| id == owner) {
+        return None;
+    }
+    let similar = goal
+        .registered_agents
+        .iter()
+        .find(|id| id.eq_ignore_ascii_case(owner));
+    Some(match similar {
+        Some(id) => format!("owner `{owner}` is not registered; IDs are case-sensitive. Did you mean `{id}`? Use `todo update --goal {} --todo-id T --owner {id}` or register the exact owner.", goal.goal_id),
+        None => format!("owner `{owner}` is not registered yet; only that exact case-sensitive ID can run this todo. Onboard `{owner}` or update --owner before dispatch.")
+    })
+}
+
+fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut role = "agent".to_string();
+    let mut class = "advancement".to_string();
+    let mut text = None;
+    let mut gate_question = None;
+    let mut blocks: Vec<String> = vec![];
+    let mut priority = None;
+    let mut action_kind = None;
+    let mut deferred_secs = 0u64;
+    let mut title = None;
+    let mut task_repository = None;
+    let mut continuation_policy = None;
+    let mut write_scopes = vec![];
+    let mut goal_bound = false;
+    let mut global_gate = false;
+    let mut resume_when_cond = None;
+    let mut note = None;
+    let mut monitor_target = None;
+    let mut monitor_policy = None;
+    let mut cadence = None;
+    let mut verify: Option<String> = None;
+    let mut max_validation_attempts: Option<u32> = None;
+    let mut acceptance: Option<String> = None;
+    let mut owner: Option<String> = None;
+    let mut parent_id: Option<String> = None;
+    reject_unknown_flags(
+        args,
+        &[
+            "--acceptance",
+            "--action-kind",
+            "--blocks",
+            "--cadence",
+            "--class",
+            "--continuation-policy",
+            "--defer-secs",
+            "--gate-question",
+            "--global-gate",
+            "--goal",
+            "--goal-bound",
+            "--max-validation-attempts",
+            "--monitor-policy",
+            "--monitor-target",
+            "--note",
+            "--owner",
+            "--parent",
+            "--priority",
+            "--required-write-scope",
+            "--resume-when",
+            "--role",
+            "--task-repository",
+            "--text",
+            "--title",
+            "--verify",
+        ],
+    )?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal-bound" {
+            goal_bound = true;
+        } else if k == "--global-gate" {
+            global_gate = true;
+        } else if k == "--resume-when" {
+            resume_when_cond = Some(v);
+        } else if k == "--note" {
+            note = Some(v);
+        } else if k == "--monitor-target" {
+            monitor_target = Some(v);
+        } else if k == "--monitor-policy" {
+            monitor_policy = Some(v);
+        } else if k == "--cadence" {
+            cadence = Some(v);
+        } else if k == "--verify" {
+            verify = Some(v);
+        } else if k == "--acceptance" {
+            acceptance = Some(v);
+        } else if k == "--max-validation-attempts" {
+            max_validation_attempts = v.parse().ok();
+        } else if k == "--owner" {
+            owner = Some(v);
+        } else if k == "--parent" {
+            parent_id = Some(v);
+        } else if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--role" {
+            role = v;
+        } else if k == "--class" {
+            class = v;
+        } else if k == "--text" {
+            text = Some(v);
+        } else if k == "--gate-question" {
+            gate_question = Some(v);
+        } else if k == "--blocks" {
+            blocks = v
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        } else if k == "--priority" {
+            priority = Some(v);
+        } else if k == "--action-kind" {
+            action_kind = Some(v);
+        } else if k == "--defer-secs" {
+            deferred_secs = v.parse().unwrap_or(0);
+        } else if k == "--title" {
+            title = Some(v);
+        } else if k == "--task-repository" {
+            task_repository = Some(v);
+        } else if k == "--continuation-policy" {
+            continuation_policy = Some(v);
+        } else if k == "--required-write-scope" {
+            write_scopes = v.split(',').map(|s| s.trim().to_string()).collect();
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let text = text.ok_or_else(|| anyhow::anyhow!("--text required"))?;
+    // Input validation — previously the CLI silently accepted garbage: empty
+    // text, unknown classes/roles (which fell through to `advancement`), and
+    // bogus priorities (silently remapped to P1). All of that enters the
+    // ledger and only explodes much later.
+    if text.trim().is_empty() {
+        bail!("--text must be non-empty");
+    }
+    let valid_combo = matches!(
+        (role.as_str(), class.as_str()),
+        ("agent", "advancement")
+            | ("agent", "monitor")
+            | ("agent", "blocker")
+            | ("agent", "coordination")
+            | (_, "user_gate")
+            | ("user", "user_action")
+    );
+    if !valid_combo {
+        bail!(
+            "unknown --role/--class combo `{role}`/`{class}` (agent: advancement|monitor|blocker|coordination; user_gate: any role; user: user_action)"
+        );
+    }
+    if let Some(p) = &priority {
+        if !matches!(p.to_uppercase().as_str(), "P0" | "P1" | "P2") {
+            bail!("unknown --priority `{p}` (P0|P1|P2)");
+        }
+    }
+    // Bare `--blocks` at end-of-line is parsed as the literal "true" by
+    // parse_pairs' value-less flag convention; no generated todo id is ever
+    // "true", so reject it loudly instead of writing a dangling dependency
+    // that later fails task-graph with "references unknown todo `true`".
+    if blocks.iter().any(|b| b == "true") {
+        bail!("--blocks requires a comma-separated todo id list (bare `--blocks` reads as `true`)");
+    }
+    // O4: advisory hint — code-like todos without a validator can be marked
+    // done by an agent even when the code does not compile. Computed before
+    // `verify` is moved into the todo below.
+    let wants_verify_hint = verify.is_none() && looks_like_code_todo(&text);
+    // O5: advisory hint — external-delivery todos (submit/提交 …) whose
+    // completion contract is a text convention unless `--acceptance` pins it.
+    let wants_acceptance_hint = acceptance.is_none() && looks_like_external_delivery(&text);
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    // Parent links are immutable after creation, so adding a new id cannot
+    // form a cycle. Reject broken legacy chains and a fourth level as well.
+    let mut ancestor = parent_id.as_deref();
+    let mut depth = 1;
+    while let Some(id) = ancestor {
+        let parent = goal
+            .todos
+            .iter()
+            .find(|todo| todo.id == id)
+            .ok_or_else(|| anyhow::anyhow!("parent todo {id} not found in goal {goal_id}"))?;
+        depth += 1;
+        if depth > 3 {
+            bail!("todo hierarchy supports at most 3 levels");
+        }
+        ancestor = parent.parent_id.as_deref();
+    }
+    let id = gen_id("todo");
+    let mut todo = match (role.as_str(), class.as_str()) {
+        ("agent", "advancement") => Todo::advancement(&id, &text),
+        ("agent", "monitor") => Todo::monitor(&id, &text, std::time::Duration::from_secs(60)),
+        ("user", "user_gate") | (_, "user_gate") => {
+            let q = gate_question.unwrap_or_else(|| text.clone());
+            let b: Vec<&str> = blocks.iter().map(|s| s.as_str()).collect();
+            Todo::user_gate(&id, &q, &b)
+        }
+        ("user", "user_action") => Todo::user_action(&id, &text),
+        ("agent", "blocker") => {
+            let b: Vec<&str> = blocks.iter().map(|s| s.as_str()).collect();
+            Todo::blocker(&id, &text, &b)
+        }
+        ("agent", "coordination") => Todo::coordination(&id, &text),
+        _ => Todo::advancement(&id, &text),
+    };
+    todo.parent_id = parent_id;
+    // Owner assignment: `--owner X` declares this todo is for agent X (see
+    // `Todo::owner`). Optional — absent = shared pool.
+    if let Some(aid) = &owner {
+        if let Some(warning) = owner_assignment_warning(&goal, aid) {
+            eprintln!("warning: {warning}");
+        }
+        todo = todo.owned_by(aid);
+    }
+    // Apply --blocks for every task class (previously only user_gate/blocker
+    // attached them; advancement/monitor silently dropped the dependency chain).
+    if !blocks.is_empty() {
+        let b: Vec<&str> = blocks.iter().map(|s| s.as_str()).collect();
+        todo = todo.blocking(&b);
+    }
+    todo.goal_bound = goal_bound;
+    todo.global_gate = global_gate;
+    // reference rule: user_gate + global_gate implies goal_bound=true.
+    if todo.global_gate && todo.class == crate::state::TaskClass::UserGate {
+        todo.goal_bound = true;
+    }
+    if let Some(rw) = resume_when_cond {
+        todo.resume_when_text = Some(rw.clone());
+        todo.status = crate::state::TodoStatus::Deferred;
+        // Numeric `--resume-when N` defers N seconds from now (real deadline,
+        // same semantics as --defer-secs); non-numeric keeps legacy +3600s
+        // placeholder (text hint only) — and warns about it (P0-3④).
+        match parse_resume_when(&rw) {
+            ResumeWhen::Defer(secs) => {
+                todo.resume_when =
+                    Some(std::time::SystemTime::now() + std::time::Duration::from_secs(secs));
+            }
+            ResumeWhen::TextHint(text) => {
+                eprintln!(
+                    "{}",
+                    resume_when_text_hint_warning(
+                        &text,
+                        "a 1-hour placeholder deadline is applied"
+                    )
+                );
+                todo.resume_when =
+                    Some(std::time::SystemTime::now() + std::time::Duration::from_secs(3600));
+            }
+        }
+    }
+    if let Some(n) = note {
+        todo.note = Some(n);
+    }
+    if deferred_secs > 0 {
+        todo.status = crate::state::TodoStatus::Deferred;
+        todo.resume_when =
+            Some(std::time::SystemTime::now() + std::time::Duration::from_secs(deferred_secs));
+    }
+    if let Some(p) = priority {
+        let pr = match p.to_uppercase().as_str() {
+            "P0" => crate::state::Priority::P0,
+            "P2" => crate::state::Priority::P2,
+            _ => crate::state::Priority::P1,
+        };
+        todo.priority = pr;
+        // reference convention: todo text carries the [P0]/[P1]/[P2] prefix.
+        let tag = format!("[{pr}] ");
+        if !todo.text.starts_with(&tag) {
+            todo.text = format!("{tag}{}", todo.text);
+            if todo.title == todo.text.trim_start_matches(&tag) || todo.title.starts_with(&tag) {
+                todo.title = format!("{tag}{}", todo.title.trim_start_matches(&tag));
+            }
+        }
+    }
+    if let Some(a) = action_kind {
+        todo.action_kind = Some(a);
+    }
+    if let Some(v) = verify {
+        todo.validator = Some(v);
+    }
+    if let Some(a) = acceptance {
+        todo.acceptance = Some(a);
+    }
+    if let Some(n) = max_validation_attempts {
+        todo.max_validation_attempts = n.max(1);
+    }
+    // G-12: monitor metadata (target / policy / cadence). Cadence drives the
+    // first due time via the scheduler cadence parser (15m/1h/2d or class).
+    if let Some(t) = monitor_target {
+        todo.monitor_target = Some(t);
+    }
+    if let Some(p) = monitor_policy {
+        todo.monitor_policy = Some(p);
+    }
+    if let Some(c) = cadence {
+        todo.monitor_cadence = Some(c.clone());
+        if let Some(secs) = crate::scheduler::state::monitor_cadence_secs(&c) {
+            todo.resume_when =
+                Some(std::time::SystemTime::now() + std::time::Duration::from_secs(secs));
+        }
+    }
+    if let Some(t) = title {
+        todo.title = t;
+    }
+    if let Some(r) = task_repository {
+        todo.task_repository = Some(r);
+    }
+    if let Some(cp) = continuation_policy {
+        todo.continuation_policy = Some(cp);
+    }
+    if !write_scopes.is_empty() {
+        todo.required_write_scope = write_scopes;
+    }
+    store.append_todo_change(Event::TodoAdded {
+        goal_id: goal_id.clone(),
+        todo,
+        ts: now_epoch(),
+    })?;
+    refresh_next_action(store, &goal_id)?;
+    sync_compat(store, &goal_id);
+    println!("todo {id} added to {goal_id} ✔");
+    // O4: pure reminder after a successful add; no semantic change.
+    if wants_verify_hint {
+        eprintln!("hint: 实现类 todo 建议挂 --verify \"cargo check -p ...\"，防不编译代码被标完成");
+    }
+    // O5: advisory hint for external-delivery todos (submit/提交 …) — the
+    // completion contract is a text convention unless `--acceptance` pins it.
+    if wants_acceptance_hint {
+        eprintln!(
+            "hint: 外部交付类 todo 建议挂 --acceptance \"attempt,scored\"（关单时 evidence 必须包含全部子串，防空交付）"
+        );
+    }
+    Ok(())
+}
+
+fn todo_claim(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut todo_id = None;
+    let mut agent_id = None;
+    let mut lease_secs = 3600u64;
+    let mut force = false;
+    reject_unknown_flags(
+        args,
+        &[
+            "--agent-id",
+            "--force",
+            "--goal",
+            "--lease-secs",
+            "--todo-id",
+        ],
+    )?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--lease-secs" {
+            lease_secs = v.parse().unwrap_or(3600);
+        } else if k == "--force" {
+            force = true;
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let agent = agent_id.unwrap_or_else(|| "default-agent".to_string());
+    if !goal.is_registered_agent(Some(&agent)) {
+        bail!("agent `{agent}` is not registered for goal {goal_id} — `{} agent register --goal {goal_id} --agent-id {agent}` first", prog());
+    }
+    let now = crate::state::now_epoch();
+    // Existence + status gate (replayed state): unknown todos and done/
+    // superseded todos refuse before the atomic claim below, which rechecks
+    // ownership, terminal status, leases and task write conflicts under lock.
+    let t = goal
+        .todo(&todo_id)
+        .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found in goal {goal_id}"))?;
+    if t.status != TodoStatus::Open {
+        bail!("todo {todo_id} cannot be claimed: not open");
+    }
+    // Atomic claim: check + append under ONE exclusive ledger lock
+    // (try_claim_todo), closing the replay→claim→append TOCTOU window that
+    // previously let concurrent `todo claim` processes all win the same
+    // todo. Dead holders are reclaimed inside via the pid probe.
+    let claimed = store
+        .try_claim_todo_with_workspace(&goal_id, &todo_id, &agent, lease_secs, None, force)?
+        .claimed;
+    if !claimed {
+        bail!("todo {todo_id} cannot be claimed: another agent holds a live lease");
+    }
+    let expires = now + lease_secs;
+    refresh_next_action(store, &goal_id)?;
+    sync_compat(store, &goal_id);
+    println!("todo {todo_id} claimed by {agent} until epoch {expires} ✔");
+    Ok(())
+}
+
+/// Parse a `--workspace` flag value into normalized absolute paths
+/// (comma-separated; empty entries dropped).
+fn parse_workspaces(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(crate::agents::workspace_guard::normalize_workspace_path)
+        .collect()
+}
+
+/// `loopx agent register --goal G --agent-id A [--workspace p1,p2]` —
+/// register a peer (LoopX: coordination.registered_agents; precondition for
+/// quota --agent-id). `--workspace` declares the P0-1 guard write set.
+fn cmd_agent(store: &mut Store, args: &[String]) -> Result<()> {
+    match args.first().map(|s| s.as_str()) {
+        Some("onboard") => return cmd_agent_onboard(store, &args[1..]),
+        Some("list") => return cmd_agent_list(store, &args[1..]),
+        // `agent register` is the legacy spelled-out form of bare `agent`
+        // (the positional word is ignored); keep it as a no-op passthrough.
+        Some("register") => {}
+        // Any other bare word (not a flag) is an unknown subcommand — it must
+        // NOT silently fall through to register (which would register an agent
+        // named after the subcommand).
+        Some(word) if !word.starts_with('-') => {
+            bail!(
+                "unknown agent subcommand `{word}` (try `{} agent --help`)",
+                prog()
+            )
+        }
+        _ => {}
+    }
+    let mut goal_id = None;
+    let mut agent_id = None;
+    let mut workspaces = vec![];
+    reject_unknown_flags(args, &["--agent-id", "--goal", "--workspace"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--workspace" {
+            workspaces = parse_workspaces(&v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let agent_id = agent_id.ok_or_else(|| anyhow::anyhow!("--agent-id required"))?;
+    store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    store.append(Event::AgentRegistered {
+        goal_id: goal_id.clone(),
+        agent_id: agent_id.clone(),
+        workspaces: workspaces.clone(),
+        ts: crate::state::now_epoch(),
+    })?;
+    if workspaces.is_empty() {
+        println!("agent `{agent_id}` registered for {goal_id} ✔");
+    } else {
+        println!("agent `{agent_id}` registered for {goal_id} (workspaces={workspaces:?}) ✔");
+    }
+    Ok(())
+}
+
+/// `loopx agent onboard --goal G --agent-id A [--workspace p1,p2]` —
+/// register a peer and declare the P0-1 workspace-guard write set.
+fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut agent_id = None;
+    let mut workspaces = vec![];
+    reject_unknown_flags(args, &["--agent-id", "--goal", "--workspace"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--workspace" {
+            workspaces = parse_workspaces(&v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let agent_id = agent_id.ok_or_else(|| anyhow::anyhow!("--agent-id required"))?;
+    store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    store.append(Event::AgentOnboarded {
+        goal_id: goal_id.clone(),
+        agent_id: agent_id.clone(),
+        capabilities: vec![],
+        workspaces: workspaces.clone(),
+        ts: crate::state::now_epoch(),
+    })?;
+    println!("agent `{agent_id}` onboarded (capabilities=[] workspaces={workspaces:?}) ✔");
+    Ok(())
+}
+
+/// `future goal agent list --goal G` — registered agents + their current
+/// execution status. Status is derived from the live task-lease ledger:
+/// `running` = the agent holds a live lease on a todo right now (shown with
+/// the lease's remaining time); `idle` = registered but holding no lease.
+/// Also shows declared capabilities and the agent's most recent activity.
+/// Intended as the pre-flight check before `agent register`/`onboard`, so
+/// parallel workers reuse existing ids instead of re-registering the same
+/// one (each concurrent run needs its own unique id).
+fn cmd_agent_list(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    reject_unknown_flags(args, &["--format", "--goal", "--json"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+
+    // Event-derived metadata: most recent activity timestamp per agent
+    // (registration, onboarding, or any lease transition).
+    let now = now_epoch();
+    let mut last_active: HashMap<String, u64> = HashMap::new();
+    for ev in store.events(&goal_id).unwrap_or_default() {
+        let (agent, ts) = match &ev.event {
+            Event::AgentRegistered { agent_id, ts, .. }
+            | Event::AgentOnboarded { agent_id, ts, .. }
+            | Event::TodoClaimed { agent_id, ts, .. }
+            | Event::TodoRenewed { agent_id, ts, .. }
+            | Event::TodoReleased { agent_id, ts, .. } => (agent_id.as_str(), *ts),
+            _ => continue,
+        };
+        last_active
+            .entry(agent.to_string())
+            .and_modify(|t| *t = (*t).max(ts))
+            .or_insert(ts);
+    }
+
+    if goal.registered_agents.is_empty() {
+        println!("no agents registered for {goal_id}");
+        return Ok(());
+    }
+    let rows = agent_list_rows(&goal, &last_active, now);
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    println!(
+        "agents registered for {goal_id} ({}):",
+        goal.registered_agents.len()
+    );
+    println!(
+        "  {:<12} {:<8} {:<28} {:<24} {:<14} {:<12}",
+        "agent_id", "status", "work-on", "workspaces", "capabilities", "last-active"
+    );
+    for row in &rows {
+        let work_label = if row.work_on.is_empty() {
+            "-".to_string()
+        } else {
+            row.work_on.join("; ")
+        };
+        let ws_label = if row.workspaces.is_empty() {
+            "-".to_string()
+        } else {
+            row.workspaces.join(",")
+        };
+        let caps = if row.capabilities.is_empty() {
+            "-".to_string()
+        } else {
+            row.capabilities.join(",")
+        };
+        let last = row
+            .last_active_ts
+            .map(|ts| format!("{} ago", human_dur(now.saturating_sub(ts))))
+            .unwrap_or_else(|| "-".to_string());
+        println!(
+            "  {:<12} {:<8} {:<28} {:<24} {:<14} {:<12}",
+            row.agent_id, row.status, work_label, ws_label, caps, last
+        );
+    }
+    // P0-1: live workspace conflicts — who occupies the paths you declared.
+    let mut any_conflict = false;
+    for row in &rows {
+        let conflicts =
+            crate::agents::workspace_guard::live_workspace_conflicts(&goal, &row.agent_id, now);
+        for c in &conflicts {
+            any_conflict = true;
+            println!(
+                "⚠ workspace conflict: {} ↔ {} share {} (holder lease expires in {})",
+                row.agent_id,
+                c.holder_agent_id,
+                c.overlapping_paths.join(", "),
+                human_dur(c.holder_lease_expires_at.saturating_sub(now))
+            );
+        }
+    }
+    if any_conflict {
+        println!("hint: conflicting claims need `--force` — or wait for the holder's lease");
+    }
+    println!(
+        "hint: agent ids are goal-scoped; check this list before `agent register`/`onboard` \
+         to avoid duplicate ids (each parallel worker needs its own unique id)"
+    );
+    Ok(())
+}
+
+/// One row of the `agent list` projection (P0-3③: serializable so the
+/// command has a `--format json` form; also keeps the text table testable).
+#[derive(Debug, Clone, serde::Serialize)]
+struct AgentListRow {
+    agent_id: String,
+    /// "running" = holds a live lease; "idle" = registered, no live lease.
+    status: String,
+    /// Human-readable live lease labels (todo id + remaining time).
+    work_on: Vec<String>,
+    /// P0-1 declared workspace write set (display-shortened; a `✍` suffix
+    /// marks paths the agent currently occupies under a live lease).
+    workspaces: Vec<String>,
+    capabilities: Vec<String>,
+    last_active_ts: Option<u64>,
+}
+
+/// Shorten a workspace path for the agent-list table: `$HOME` → `~`.
+fn shorten_home(path: &str) -> String {
+    let home = crate::compat::home_dir();
+    if !home.is_empty() && path.starts_with(&home) {
+        // Windows renders the tail with `\`; this is report text, so it is
+        // normalized to `/`.
+        #[cfg(windows)]
+        let rest = path[home.len()..].replace('\\', "/");
+        #[cfg(not(windows))]
+        let rest = path[home.len()..].to_string();
+        return format!("~{rest}");
+    }
+    path.to_string()
+}
+
+/// Build the agent-list projection rows (event-derived last-active map +
+/// live lease scan). Pure, unit-testable.
+fn agent_list_rows(goal: &Goal, last_active: &HashMap<String, u64>, now: u64) -> Vec<AgentListRow> {
+    goal.registered_agents
+        .iter()
+        .map(|aid| {
+            let mut work: Vec<String> = Vec::new();
+            for t in goal.todos.iter() {
+                if !matches!(t.status, TodoStatus::Done | TodoStatus::Superseded)
+                    && t.claimed_by.as_deref() == Some(aid.as_str())
+                    && t.lease_expires_at.map(|e| e > now).unwrap_or(false)
+                    && t.holder_pid.is_none_or(crate::compat::pid_alive)
+                {
+                    let left = t.lease_expires_at.unwrap().saturating_sub(now);
+                    work.push(format!("{} (lease {} left)", t.id, human_dur(left)));
+                }
+            }
+            let status = if work.is_empty() { "idle" } else { "running" };
+            let occupying = !work.is_empty();
+            let profile = goal.agent_profiles.iter().find(|p| p.id == *aid);
+            let caps = profile.map(|p| p.capabilities.clone()).unwrap_or_default();
+            let workspaces = profile
+                .map(|p| {
+                    p.workspaces
+                        .iter()
+                        .map(|w| {
+                            let short = shorten_home(w);
+                            if occupying {
+                                format!("{short} ✍")
+                            } else {
+                                short
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            AgentListRow {
+                agent_id: aid.clone(),
+                status: status.to_string(),
+                work_on: work,
+                workspaces,
+                capabilities: caps,
+                last_active_ts: last_active.get(aid).copied(),
+            }
+        })
+        .collect()
+}
+
+/// P0-3③: JSON projection of one todo's lease state
+/// (`lease status --format json`). Pure, unit-testable.
+fn lease_status_json(
+    todo_id: &str,
+    status: &crate::work_items::task_lease::LeaseStatus,
+) -> serde_json::Value {
+    use crate::work_items::task_lease::LeaseStatus;
+    match status {
+        LeaseStatus::Free => serde_json::json!({"todo_id": todo_id, "lease": "free"}),
+        LeaseStatus::Active { owner, expires_at } => serde_json::json!({
+            "todo_id": todo_id, "lease": "active", "owner": owner, "expires_at": expires_at,
+        }),
+        LeaseStatus::Expired { owner, expires_at } => serde_json::json!({
+            "todo_id": todo_id, "lease": "expired", "owner": owner, "expired_at": expires_at,
+        }),
+    }
+}
+
+/// Compact human duration ("59s" / "4m12s" / "3h59m") for lease/activity
+/// display in `agent list`.
+fn human_dur(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut todo_id = None;
+    let mut no_follow_up = false;
+    let mut successor = None;
+    let mut evidence = None;
+    let mut force = false;
+    reject_unknown_flags(
+        args,
+        &[
+            "--evidence",
+            "--force",
+            "--goal",
+            "--no-follow-up",
+            "--successor",
+            "--todo-id",
+        ],
+    )?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        } else if k == "--no-follow-up" {
+            no_follow_up = true;
+        } else if k == "--force" {
+            force = true;
+        } else if k == "--successor" {
+            successor = Some(v);
+        } else if k == "--evidence" {
+            evidence = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
+    let mut goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    // reference completion contract: a completed advancement todo must declare
+    // closure intent — successor OR no-follow-up; silent completion is rejected.
+    let t = goal
+        .todo(&todo_id)
+        .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found"))?;
+    // Idempotency: re-completing an already-done todo is a no-op (writes
+    // nothing) — previously each repeat double-appended TodoCompleted +
+    // DeliveryOutcomeRecorded events, silently fattening the ledger.
+    if t.status == TodoStatus::Done {
+        println!("todo {todo_id} is already done — nothing to do");
+        return Ok(());
+    }
+    if t.status == TodoStatus::Superseded {
+        bail!("todo {todo_id} was superseded — nothing to complete");
+    }
+    // Gates are decision points, not work items: they are resolved via
+    // `gate resolve` (which records the operator's decision), never marked
+    // "done" via `todo complete`. Closing a gate here would bypass the
+    // decision-recording contract — this is the manual-close counterpart to
+    // the run loop's gate handling (see the gate-freeze note below).
+    if t.class == TaskClass::UserGate {
+        bail!(
+            "todo {todo_id} is a user gate — resolve it with `future goal gate resolve \
+             --goal {goal_id} --todo-id {todo_id} --decision \"...\"`, not `todo complete`"
+        );
+    }
+    if t.class == TaskClass::Advancement && !no_follow_up && successor.is_none() {
+        bail!(
+            "agent todo completion must declare --no-follow-up or --successor \
+             (completion policy, successor, and no-follow-up contracts are enforced)"
+        );
+    }
+    // Gate enforcement at the CLI too — aligned with the run loop's semantics:
+    // any OPEN user gate freezes gated work (decision step 1 → AskUser) until
+    // it is resolved. Completing a non-gate todo while a gate is open would
+    // bypass that contract; the run loop already refuses to schedule it, this
+    // closes the manual `todo complete` bypass. Resolving the gate itself is
+    // the gate's own path (`gate resolve`) — gates are never completed here.
+    if t.class != TaskClass::UserGate && t.class != TaskClass::Blocker {
+        let open_gates: Vec<String> = if goal.is_blocked(t) {
+            goal.open_gates().map(|g| g.id.clone()).collect()
+        } else {
+            Vec::new()
+        };
+        if !open_gates.is_empty() {
+            bail!(
+                "todo {todo_id} cannot be completed while open gate(s) [{}] are pending — \
+                 resolve them first (`future goal gate resolve --goal {goal_id} --todo-id <gate> --decision \"...\"`)",
+                open_gates.join(", ")
+            );
+        }
+    }
+    let is_advancement = t.class == TaskClass::Advancement;
+    let completion_basis = if force {
+        "operator_override"
+    } else if t.validator.is_some() {
+        "manual_review; machine validator NOT executed"
+    } else {
+        "manual_review"
+    };
+    // Shared with automatic writeback. Only this explicit manual path can
+    // override the evidence floor; a normal model return cannot bypass it.
+    if !force {
+        if let Some(error) = crate::completion::evidence_error(t, evidence.as_deref().unwrap_or(""))
+        {
+            bail!("{error}");
+        }
+    }
+    let successors = successor.clone().into_iter().collect::<Vec<_>>();
+    store.append(Event::TodoCompleted {
+        goal_id: goal_id.clone(),
+        todo_id: todo_id.clone(),
+        no_follow_up,
+        successor_ids: successors.clone(),
+        evidence: evidence.clone(),
+        ts: now_epoch(),
+    })?;
+    // P0-2①: a completed advancement todo is a delivery pending verification
+    // ("delivered ≠ succeeded") — record the outcome signal so it can be
+    // resolved (verified/failed/rework) and aged by the follow-through scan.
+    if is_advancement {
+        let delivered_turn = goal.history.iter().map(|r| r.turn).max().unwrap_or(0);
+        let seq = goal
+            .delivery_state(&todo_id)
+            .map(|d| d.seq + 1)
+            .unwrap_or(1);
+        store.append(Event::DeliveryOutcomeRecorded {
+            goal_id: goal_id.clone(),
+            todo_id: todo_id.clone(),
+            outcome: crate::work_items::delivery_outcome::OUTCOME_DELIVERED.to_string(),
+            note: Some(format!("completion_basis={completion_basis}")),
+            delivered_turn,
+            seq,
+            ts: now_epoch(),
+        })?;
+    }
+    complete_todo(&mut goal, &todo_id, no_follow_up, successors);
+    if let Some(ev) = &evidence {
+        if let Some(t) = goal.todo_mut(&todo_id) {
+            t.evidence = Some(ev.clone());
+        }
+    }
+    refresh_next_action(store, &goal_id)?;
+    sync_compat(store, &goal_id);
+    println!("todo {todo_id} → done (no_follow_up={no_follow_up}) ✔");
+    Ok(())
+}
+
+// ── gate ───────────────────────────────────────────────────────────────────
+
+fn cmd_gate(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut todo_id = None;
+    let mut decision = None;
+    let mut note = None;
+    reject_unknown_flags(args, &["--decision", "--goal", "--note", "--todo-id"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        } else if k == "--decision" {
+            decision = Some(v);
+        } else if k == "--note" {
+            note = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
+    let decision = decision.ok_or_else(|| anyhow::anyhow!("--decision required"))?;
+    let mut goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    // Fail closed on unknown / non-gate todos — a typo'd id must not write
+    // a phantom GateResolved event (previously the command printed ✔ for
+    // any todo id, silently corrupting the gate audit trail).
+    let t = goal
+        .todo(&todo_id)
+        .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found in goal {goal_id}"))?;
+    if t.class != crate::state::TaskClass::UserGate {
+        bail!("todo {todo_id} is not a user_gate — gate resolve only applies to user_gate todos");
+    }
+    store.append(Event::GateResolved {
+        goal_id: goal_id.clone(),
+        todo_id: todo_id.clone(),
+        decision: decision.clone(),
+        note: note.clone(),
+        ts: now_epoch(),
+    })?;
+    if let Some(t) = goal.todo_mut(&todo_id) {
+        t.status = TodoStatus::Done;
+        t.decision = Some(decision);
+        t.note = note.or(t.note.take());
+    }
+    refresh_next_action(store, &goal_id)?;
+    sync_compat(store, &goal_id);
+    println!("gate {todo_id} resolved ✔ (decision recorded, flows into blocked todos' packets)");
+    Ok(())
+}
+
+// ── backup / authority ─────────────────────────────────────────────────────
+
+/// `loopx backup --goal G [--list] [--restore <dir>]` — point-in-time state
+/// snapshots (LoopX: state_backup).
+fn cmd_backup(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut list = false;
+    let mut restore = None;
+    reject_unknown_flags(args, &["--goal", "--list", "--restore"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--list" {
+            list = true;
+        } else if k == "--restore" {
+            restore = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    if list {
+        for b in store.backups(&goal_id) {
+            println!("{b}");
+        }
+        return Ok(());
+    }
+    if let Some(dir) = restore {
+        store.restore_goal(&goal_id, &dir)?;
+        println!("restored {goal_id} from {dir} ✔");
+        return Ok(());
+    }
+    let dest = store.backup_goal(&goal_id)?;
+    println!("backup created: {dest} ✔");
+    Ok(())
+}
+
+/// `loopx authority --goal G [--write-scope /path] [--require-approval publish]`
+/// — declare goal authority (write scope + approval-gated action kinds).
+fn cmd_authority(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut write_scope = None;
+    let mut require = None;
+    reject_unknown_flags(args, &["--goal", "--require-approval", "--write-scope"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--write-scope" {
+            write_scope = Some(v);
+        } else if k == "--require-approval" {
+            require = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let mut goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    if let Some(ws) = write_scope {
+        goal.authority.write_scope = ws.split(',').map(|s| s.trim().to_string()).collect();
+    }
+    if let Some(ra) = require {
+        goal.authority.requires_approval = ra.split(',').map(|s| s.trim().to_string()).collect();
+    }
+    store
+        .append(Event::AuthoritySet {
+            goal_id: goal_id.clone(),
+            write_scope: goal.authority.write_scope.clone(),
+            requires_approval: goal.authority.requires_approval.clone(),
+            ts: crate::state::now_epoch(),
+        })
+        .ok();
+    println!(
+        "authority set: write_scope={:?} requires_approval={:?} ✔",
+        goal.authority.write_scope, goal.authority.requires_approval
+    );
+    Ok(())
+}
+
+// ── replan ─────────────────────────────────────────────────────────────────
+
+/// `loopx replan ack --goal G --delta-kind vision_patch|no_followup|...`
+/// Records a replan acknowledgment. Clearing a replan obligation requires a
+/// frontier-changing delta (LoopX: replan ACK contract).
+/// `loopx replan obligations --goal G` lists the unfulfilled replan
+/// obligations (G-13 bookkeeping).
+/// `loopx replan rules show|set --goal G [--rule-ids R1,R2,...]` inspects or
+/// updates the goal's replan rule set (G13 ②).
+fn cmd_replan(store: &mut Store, args: &[String]) -> Result<()> {
+    if args.first().map(|s| s.as_str()) == Some("rules") {
+        return cmd_replan_rules(store, &args[1..]);
+    }
+    if args.first().map(|s| s.as_str()) == Some("obligations") {
+        let mut goal_id = None;
+        reject_unknown_flags(&args[1..], &["--format", "--goal", "--json"])?;
+        parse_pairs(&args[1..], |k, v| {
+            if k == "--goal" {
+                goal_id = Some(v)
+            }
+        });
+        let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+        let goal = store
+            .replay(&goal_id)?
+            .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+        let obligations = crate::work_items::replan_obligation::unfulfilled_obligations(&goal);
+        if wants_json(&args[1..]) {
+            println!("{}", serde_json::to_string_pretty(&obligations)?);
+            return Ok(());
+        }
+        if obligations.is_empty() {
+            println!("no unfulfilled replan obligations for {goal_id}");
+            return Ok(());
+        }
+        println!("unfulfilled replan obligations ({goal_id}):");
+        for obligation in &obligations {
+            print_obligation(obligation);
+        }
+        return Ok(());
+    }
+    let mut goal_id = None;
+    let mut delta_kinds: Vec<String> = vec![];
+    reject_unknown_flags(args, &["--delta-kind", "--goal"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--delta-kind" {
+            delta_kinds.push(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    if delta_kinds.is_empty() {
+        bail!("replan ack requires --delta-kind (vision_patch|no_followup|successor_or_supersede|runnable_todo_set|...)");
+    }
+    if !delta_kinds
+        .iter()
+        .any(|k| crate::state::delta_kind_changes_frontier(k))
+    {
+        bail!("--delta-kind must change the machine-visible frontier; got {delta_kinds:?}");
+    }
+    store.append(Event::ReplanAcked {
+        goal_id: goal_id.clone(),
+        delta_kinds: delta_kinds.clone(),
+        ts: crate::state::now_epoch(),
+    })?;
+    println!("replan ack recorded (delta_kinds={delta_kinds:?}) ✔");
+    Ok(())
+}
+
+/// `loopx replan rules show --goal G [--format json]` — the goal's active
+/// replan rule set, the ordered policy table with per-rule match status,
+/// and the selected rule decision (disposition → replan decision +
+/// obligation).
+/// `loopx replan rules set --goal G [--rule-ids R1,R2,...]` — declare an
+/// explicit rule set (full replace; `--rule-ids ""` resets to the default
+/// set) via a `ReplanRuleSetUpdated` event.
+fn cmd_replan_rules(store: &mut Store, args: &[String]) -> Result<()> {
+    let sub = args.first().map(|s| s.as_str());
+    match sub {
+        Some("show") => {}
+        Some("set") => {}
+        _ => bail!("replan rules subcommand must be `show` or `set`"),
+    }
+    let mut goal_id = None;
+    let mut rule_ids: Option<String> = None;
+    reject_unknown_flags(&args[1..], &["--format", "--goal", "--json", "--rule-ids"])?;
+    parse_pairs(&args[1..], |k, v| match k {
+        "--goal" => goal_id = Some(v),
+        "--rule-ids" => rule_ids = Some(v),
+        _ => {}
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    if sub == Some("set") {
+        let ids: Vec<String> = match rule_ids {
+            Some(raw) => {
+                if raw.trim().is_empty() {
+                    vec![]
+                } else {
+                    raw.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                }
+            }
+            None => vec![],
+        };
+        // Validate against the builtin vocabulary up front (unknown ids are
+        // allowed — selection skips them — but typos deserve a warning).
+        for id in &ids {
+            if !crate::decision::goal_frontier::replan_rules::is_known_rule(id) {
+                println!("warning: unknown rule id `{id}` — selection will skip it");
+            }
+        }
+        store
+            .replay(&goal_id)?
+            .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+        store.append(Event::ReplanRuleSetUpdated {
+            goal_id: goal_id.clone(),
+            rule_set_version:
+                crate::decision::goal_frontier::replan_rules::DEFAULT_REPLAN_RULE_SET_VERSION
+                    .to_string(),
+            rule_ids: ids.clone(),
+            ts: crate::state::now_epoch(),
+        })?;
+        if ids.is_empty() {
+            println!("replan rule set reset to the default set ✔");
+        } else {
+            println!("replan rule set updated (rule_ids={ids:?}) ✔");
+        }
+        return Ok(());
+    }
+    // show
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let active = crate::decision::goal_frontier::replan_rules::active_rule_set(&goal);
+    let facts = crate::decision::goal_frontier::replan_rules::facts_for_goal(&goal);
+    let decision = crate::decision::goal_frontier::replan_rules::select_replan_rule(&goal);
+    if wants_json(&args[1..]) {
+        let table: Vec<serde_json::Value> = active
+            .effective_rule_ids()
+            .iter()
+            .map(|id| {
+                serde_json::json!({
+                    "rule": id,
+                    "selected": id == &decision.rule,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schema_version": crate::decision::goal_frontier::replan_rules::DEFAULT_REPLAN_RULE_SET_VERSION,
+                "goal_id": goal_id,
+                "rule_set": active,
+                "table": table,
+                "facts": {
+                    "existing_replan_required": facts.existing_replan_required,
+                    "blocking_user_open_count": facts.blocking_user_open_count,
+                    "succession_gap_count": facts.succession_gap_count,
+                    "acceptance_gap_count": facts.acceptance_gap_count,
+                    "selectable_frontier_advancement": facts.selectable_frontier_advancement,
+                    "monitor_count": facts.monitor_count,
+                    "monitor_no_change_streak_triggered": facts.monitor_no_change_streak_triggered,
+                    "monitor_only_lane": facts.monitor_only_lane,
+                },
+                "decision": decision,
+            }))?
+        );
+        return Ok(());
+    }
+    println!(
+        "replan rule set ({goal_id}) — version {}:",
+        active.schema_version
+    );
+    for id in active.effective_rule_ids() {
+        let mark = if id == decision.rule {
+            "◀ selected"
+        } else {
+            ""
+        };
+        println!("  {id} {mark}");
+    }
+    println!(
+        "decision: rule={} derives_obligation={} obligation={} reason=\"{}\"",
+        decision.rule,
+        decision.derives_obligation,
+        decision.obligation_kind.as_deref().unwrap_or("-"),
+        decision.reason
+    );
+    Ok(())
+}
+
+// ── frontier (G13) ────────────────────────────────────────────────────────
+
+/// `loopx frontier show --goal G [--format json]` — the composed goal
+/// frontier: the existing frontier projection plus the four G13 layers
+/// (outcome segments / replan rule decision / terminal judgement /
+/// semantic history).
+fn cmd_frontier(store: &Store, args: &[String]) -> Result<()> {
+    if args.first().map(|s| s.as_str()) != Some("show") {
+        bail!(
+            "frontier subcommand must be `show` (try `{} frontier show --help`)",
+            prog()
+        );
+    }
+    let mut goal_id = None;
+    reject_unknown_flags(&args[1..], &["--format", "--goal", "--json"])?;
+    parse_pairs(&args[1..], |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v)
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let show = crate::decision::goal_frontier::frontier_show(&goal);
+    if wants_json(&args[1..]) {
+        println!("{}", serde_json::to_string_pretty(&show)?);
+        return Ok(());
+    }
+    let fp = &show.frontier_projection;
+    println!("goal frontier ({goal_id}):");
+    println!(
+        "  lane={} replan_required={} unclaimed_advancement={} acceptance_gaps={} monitors_open={} monitors_due={}",
+        show.lane,
+        fp.replan_required,
+        fp.unclaimed_advancement,
+        fp.acceptance_gaps,
+        fp.monitors_open,
+        fp.monitors_due
+    );
+    for assignment in &show.todo_assignments {
+        if let Some(owner) = assignment.owner.as_deref() {
+            println!(
+                "  todo {} owner={}{}",
+                assignment.todo_id,
+                owner,
+                if assignment.owner_registered == Some(false) {
+                    " (not registered; IDs are case-sensitive)"
+                } else {
+                    ""
+                }
+            );
+        }
+    }
+    if show.outcome_segments.is_empty() {
+        println!("  outcome_segments: (no runs yet)");
+    } else {
+        let segments = show
+            .outcome_segments
+            .iter()
+            .map(|s| format!("{} [{} ×{}]", s.segment_id, s.kind, s.length))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("  outcome_segments: {segments}");
+    }
+    println!(
+        "  replan rule: {} (derives_obligation={}{})",
+        show.replan_rule.rule,
+        show.replan_rule.derives_obligation,
+        show.replan_rule
+            .obligation_kind
+            .as_deref()
+            .map(|k| format!(", obligation={k}"))
+            .unwrap_or_default()
+    );
+    if show.terminal_judgement.terminal {
+        println!("  terminal: yes (kind=no_followup, source=validated_goal_closure)");
+    } else {
+        println!(
+            "  terminal: no ({} gap(s)):",
+            show.terminal_judgement.gaps.len()
+        );
+        for gap in &show.terminal_judgement.gaps {
+            println!("    - [{}] {}", gap.kind, gap.description);
+        }
+    }
+    let recent: Vec<&crate::decision::goal_frontier::semantic_history::SemanticEvent> =
+        show.semantic_history.iter().rev().take(5).collect();
+    println!("  semantic_history (last {}):", recent.len());
+    for e in recent.iter().rev() {
+        println!("    {} {} — {}", e.ts, e.kind, e.summary);
+    }
+    Ok(())
+}
+
+// ── profile ────────────────────────────────────────────────────────────────
+
+/// `loopx profile set --goal G [--outcome-floor N]` — set execution profile
+/// knobs (outcome floor streak threshold, etc).
+fn cmd_profile(store: &mut Store, args: &[String]) -> Result<()> {
+    if args.first().map(|s| s.as_str()) != Some("set") {
+        bail!("profile subcommand must be `set`");
+    }
+    let mut goal_id = None;
+    let mut outcome_floor = None;
+    reject_unknown_flags(&args[1..], &["--goal", "--outcome-floor"])?;
+    parse_pairs(&args[1..], |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--outcome-floor" {
+            outcome_floor = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let mut goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    if let Some(n) = outcome_floor {
+        let n: u32 = n
+            .parse()
+            .map_err(|_| anyhow::anyhow!("--outcome-floor must be a number"))?;
+        goal.execution_profile.outcome_floor_streak_threshold = n;
+    }
+    // Persist the profile via an idempotent re-registration event (registry
+    // carries the profile; simplest durable home for the prototype).
+    store
+        .append(Event::ProfileSet {
+            goal_id: goal_id.clone(),
+            outcome_floor_streak_threshold: goal.execution_profile.outcome_floor_streak_threshold,
+            ts: crate::state::now_epoch(),
+        })
+        .ok();
+    println!(
+        "profile set: outcome_floor_streak_threshold={} ✔",
+        goal.execution_profile.outcome_floor_streak_threshold
+    );
+    Ok(())
+}
+
+// ── status ─────────────────────────────────────────────────────────────────
+
+fn cmd_status(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_filter = None;
+    let mut format = String::new();
+    reject_unknown_flags(args, &["--format", "--goal"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_filter = Some(v)
+        } else if k == "--format" {
+            format = v;
+        }
+    });
+    if format == "json" {
+        return print_status_json(store, goal_filter);
+    }
+    if let Some(g) = goal_filter {
+        let goal = store
+            .replay(&g)?
+            .ok_or_else(|| anyhow::anyhow!("goal {g} not found"))?;
+        print_goal_status(&goal);
+        print_ledger_read_note(store, &g);
+        return Ok(());
+    }
+    if store.registry().is_empty() {
+        println!("no goals registered (root {})", root_dir());
+        return Ok(());
+    }
+    for entry in store.registry() {
+        if let Ok(Some(goal)) = store.replay(&entry.goal_id) {
+            print_goal_status(&goal);
+            print_ledger_read_note(store, &entry.goal_id);
+            println!();
+        }
+    }
+    Ok(())
+}
+
+/// O1: surface the ledger read diagnostics note (unknown-kind lines skipped
+/// because this binary is older than the ledger) below a goal's status.
+fn print_ledger_read_note(store: &Store, goal_id: &str) {
+    if let Some(note) = store.ledger_read_diagnostics(goal_id).and_then(|d| {
+        d.get("note")
+            .and_then(|n| n.as_str())
+            .map(|s| s.to_string())
+    }) {
+        println!("note      : {note}");
+    }
+}
+
+// ── ui ─────────────────────────────────────────────────────────────────────
+
+/// `goal ui [--port N] [--root DIR] [--no-open]` — serve the local web
+/// dashboard. Strictly read-only (GET only) over the goal state root
+/// (`.future/goal/`); run mutations stay in the CLI. Binds 127.0.0.1.
+async fn cmd_webui(args: &[String]) -> Result<()> {
+    let mut port: u16 = 7717;
+    let mut root: Option<String> = None;
+    let mut open_browser = true;
+    reject_unknown_flags(args, &["--port", "--root", "--no-open"])?;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--no-open" => {
+                open_browser = false;
+                i += 1;
+            }
+            "--port" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--port requires a value"))?;
+                port = v
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("--port must be 0-65535 (0 picks a free port)"))?;
+                i += 2;
+            }
+            "--root" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--root requires a value"))?;
+                root = Some(v.clone());
+                i += 2;
+            }
+            other => bail!("unknown argument `{other}`"),
+        }
+    }
+    let root = root.unwrap_or_else(root_dir);
+    crate::webui::run_server(root, port, open_browser).await
+}
+
+/// `goal status --format json` — machine-readable projection (goal, todos
+/// with priority/class/status/blocks, terminal flag). Added because piping
+/// the human-readable status used to silently yield nothing scriptable.
+fn print_status_json(store: &Store, goal_filter: Option<String>) -> Result<()> {
+    let mut out = vec![];
+    let ids: Vec<String> = match &goal_filter {
+        Some(g) => vec![g.clone()],
+        None => store.registry().iter().map(|e| e.goal_id.clone()).collect(),
+    };
+    for gid in ids {
+        let goal = store
+            .replay(&gid)?
+            .ok_or_else(|| anyhow::anyhow!("goal {gid} not found"))?;
+        out.push(serde_json::json!({
+            "goal_id": goal.goal_id,
+            "objective": goal.objective,
+            "status": goal.status,
+            "ledger_read_diagnostics": store.ledger_read_diagnostics(&gid),
+            "turn_no_progress": goal.turn_no_progress.iter().map(|np| serde_json::json!({
+                "todo_id": np.todo_id,
+                "agent_id": np.agent_id,
+                "idle_secs": np.idle_secs,
+                "tool_calls_total": np.tool_calls_total,
+                "ts": np.ts,
+            })).collect::<Vec<_>>(),
+            "todos": goal.todos.iter().map(|t| serde_json::json!({
+                "id": t.id,
+                "text": t.text,
+                "class": format!("{:?}", t.class),
+                "status": status_label(t),
+                "priority": format!("{:?}", t.priority),
+                "blocks": t.blocked_by_gate.clone().unwrap_or_default(),
+                "owner": t.owner,
+                "claimed_by": t.claimed_by,
+                "lease_expires_at": t.lease_expires_at,
+                "holder_pid": t.holder_pid,
+            })).collect::<Vec<_>>(),
+        }));
+    }
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
+}
+
+fn print_goal_status(goal: &Goal) {
+    println!("goal      : {}", goal.goal_id);
+    println!("objective : {}", goal.objective);
+    println!(
+        "todos     : {}",
+        goal.todos
+            .iter()
+            .map(|t| format!("{}={}", t.id, status_label(t)))
+            .collect::<Vec<_>>()
+            .join("  ")
+    );
+    println!(
+        "gaps      : {}",
+        if goal.acceptance.is_empty() {
+            "(none)".to_string()
+        } else {
+            goal.acceptance
+                .iter()
+                .map(|g| {
+                    format!(
+                        "{}{}",
+                        g.id,
+                        if g.satisfied { "=satisfied" } else { "=OPEN" }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("  ")
+        }
+    );
+    let next = goal.next_action.as_deref().unwrap_or("-");
+    println!("next      : {next}");
+    for line in crate::cli_projection::monitor_metadata_lines(goal) {
+        println!("{line}");
+    }
+    if let Some(gap) = crate::store::projection_gap(goal) {
+        println!("⚠ projection gap: {gap}");
+    }
+    // The lineage warning, next to `next` because it is the thing about to
+    // happen: dispatching a fresh worker now mints a session with no parent, and
+    // `parent_session_id` is written once at creation and never repaired. Better
+    // to see it here than to notice a flat session tree afterwards.
+    if goal.supervisor_session_id.is_none() && !goal.todos.is_empty() {
+        println!(
+            "⚠ supervisor: none registered — a worker dispatched now gets a session with no \
+             parent; fix with: future goal supervisor register --goal {} --session-id \
+             <your-session-id>",
+            goal.goal_id
+        );
+    }
+    let s = goal.todo_summary();
+    println!(
+        "summary   : user open={} done={} | agent open={} done={} | monitor={} | closure_proof={}",
+        s.user_open,
+        s.user_done,
+        s.agent_open,
+        s.agent_done,
+        s.monitor_open,
+        if s.terminal_closure_proof.all_todos_done {
+            "valid"
+        } else {
+            "pending"
+        }
+    );
+    println!(
+        "terminal  : {} (validated closure, not open_count)",
+        goal.terminal_closure().is_some()
+    );
+    let spent: u64 = goal.history.len() as u64;
+    println!("spent     : {spent} turns");
+    // O3: idle-turn no-progress breaches (recent last) — the orchestrator's
+    // signal to nudge the worker on its next turn.
+    for np in goal.turn_no_progress.iter().rev().take(3) {
+        println!(
+            "no-progress: turn todo={} agent={} idle={}s tools={} ts={}",
+            np.todo_id,
+            np.agent_id.as_deref().unwrap_or("anonymous"),
+            np.idle_secs,
+            np.tool_calls_total,
+            np.ts
+        );
+    }
+}
+
+fn status_label(t: &Todo) -> &'static str {
+    if t.status == TodoStatus::Done {
+        if t.no_follow_up {
+            "done(no-follow-up)"
+        } else if !t.successor_ids.is_empty() {
+            "done(+successor)"
+        } else {
+            "done"
+        }
+    } else if t.status == TodoStatus::Superseded {
+        "superseded"
+    } else {
+        match t.class {
+            TaskClass::Advancement => "open",
+            TaskClass::UserGate => "GATE",
+            TaskClass::UserAction => "action",
+            TaskClass::Monitor => "monitor",
+            TaskClass::Blocker => "blocker",
+            TaskClass::Coordination => "coord",
+        }
+    }
+}
+
+// ── quota ─────────────────────────────────────────────────────────────────
+
+fn cmd_quota(store: &Store, args: &[String]) -> Result<()> {
+    match args.first().map(|s| s.as_str()) {
+        Some("should-run") => quota_should_run(store, &args[1..]),
+        Some("usage") => quota_usage(store, &args[1..]),
+        Some("spend") => quota_spend(store, &args[1..]),
+        Some("decisions") => quota_decisions(store, &args[1..]),
+        _ => bail!("quota subcommand must be `should-run`, `usage`, `spend`, or `decisions`"),
+    }
+}
+
+/// `loopx quota decisions --goal G [--limit N] [--format json]` — the
+/// persisted decision_summary projection (P1-1②): recent compact decisions
+/// (newest first) read straight from the ledger, so status/TUI/desktop-style
+/// consumers reuse the kernel's decision without re-running it.
+fn quota_decisions(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut format_json = false;
+    let mut limit = 10usize;
+    reject_unknown_flags(args, &["--format", "--goal", "--limit"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--format" {
+            format_json = v == "json";
+        } else if k == "--limit" {
+            limit = v.parse().unwrap_or(10);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let events = store.events(&goal_id)?;
+    let summaries = crate::quota::decision_summary::decision_summaries(&events);
+    let recent: Vec<_> = summaries.into_iter().rev().take(limit).collect();
+    if format_json {
+        println!("{}", serde_json::to_string_pretty(&recent)?);
+        return Ok(());
+    }
+    if recent.is_empty() {
+        println!("goal {goal_id}: no decision summaries recorded yet (run a turn first)");
+        return Ok(());
+    }
+    for s in recent {
+        println!(
+            "turn={} decision={} action={} code={} selected={} slots={}/{}",
+            s.turn,
+            s.decision,
+            s.effective_action,
+            s.reason_code,
+            s.selected_todo.as_deref().unwrap_or("-"),
+            s.spent_slots,
+            s.allowed_slots
+        );
+    }
+    Ok(())
+}
+
+/// `loopx quota should-run --goal G [--format json] [--agent-id A]` — emit
+/// the typed ShouldRunPacket. Text mode renders the CLI projection (G-9):
+/// decision banner + quota breakdown by spend source + scheduler hint +
+/// stall hint + arbitration. JSON mode emits the full typed packet.
+fn quota_should_run(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut format_json = false;
+    let mut agent_id = None;
+    reject_unknown_flags(args, &["--agent-id", "--format", "--goal"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--format" {
+            format_json = v == "json";
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let packet = decide_for(&goal, SystemTime::now(), agent_id.as_deref());
+    if format_json {
+        println!("{}", serde_json::to_string_pretty(&packet)?);
+        return Ok(());
+    }
+    let breakdown = crate::quota::usage_summary::breakdown(&goal.history);
+    let stall = crate::quota::stall_repair::detect_stall(&goal);
+    let usage =
+        crate::quota::usage_summary::build_usage_summary(&goal_id, &goal.history, now_epoch());
+    print!(
+        "{}",
+        crate::cli_projection::render_quota_projection(&packet, Some(&breakdown), stall.as_ref())
+    );
+    print!("{}", crate::cli_projection::render_usage_summary(&usage));
+    Ok(())
+}
+
+/// `loopx quota usage --goal G [--format json]` — 24h/7d usage summary
+/// (P1 acceptance: spend by source is queryable + the quota command renders
+/// the usage summary).
+fn quota_usage(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut format_json = false;
+    let mut all = false;
+    reject_unknown_flags(args, &["--all", "--format", "--goal"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--format" {
+            format_json = v == "json";
+        } else if k == "--all" {
+            all = true;
+        }
+    });
+    let now = now_epoch();
+    if let Some(g) = goal_id {
+        let goal = store
+            .replay(&g)?
+            .ok_or_else(|| anyhow::anyhow!("goal {g} not found"))?;
+        let summary = crate::quota::usage_summary::build_usage_summary(&g, &goal.history, now);
+        if format_json {
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        } else {
+            print!("{}", crate::cli_projection::render_usage_summary(&summary));
+        }
+        return Ok(());
+    }
+    if !all {
+        bail!("quota usage requires --goal G or --all");
+    }
+    // Aggregate across every registered goal (reference run_history projection).
+    let rows: Vec<(&str, Vec<crate::state::RunRecord>)> = store
+        .registry()
+        .iter()
+        .filter_map(|e| {
+            store
+                .replay(&e.goal_id)
+                .ok()
+                .flatten()
+                .map(|g| (e.goal_id.as_str(), g.history))
+        })
+        .collect();
+    let refs: Vec<(&str, &[crate::state::RunRecord])> = rows
+        .iter()
+        .map(|(id, history)| (*id, history.as_slice()))
+        .collect();
+    let summary = crate::quota::usage_summary::build_usage_summary_for_goals(&refs, now);
+    if format_json {
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+    } else {
+        print!("{}", crate::cli_projection::render_usage_summary(&summary));
+    }
+    Ok(())
+}
+
+/// `loopx quota spend --goal G` — per-source slot spend breakdown.
+fn quota_spend(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    reject_unknown_flags(args, &["--goal"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v)
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let b = crate::quota::usage_summary::breakdown(&goal.history);
+    println!(
+        "spend: allowed={} spent={} (run={} agent={} heartbeat={})",
+        b.allowed_slots,
+        b.spent_slots,
+        b.source_count(crate::quota::slot_accounting::SlotSpendSource::Run),
+        b.source_count(crate::quota::slot_accounting::SlotSpendSource::Agent),
+        b.source_count(crate::quota::slot_accounting::SlotSpendSource::Heartbeat),
+    );
+    Ok(())
+}
+
+// ── scheduler (G-10) ───────────────────────────────────────────────────────
+
+/// `loopx scheduler <tick|show|record-host-failure> --goal G [--agent-id A]`
+/// — drive the persisted scheduler state machine across decision cycles.
+async fn cmd_scheduler(store: &mut Store, args: &[String]) -> Result<()> {
+    match args.first().map(|s| s.as_str()) {
+        Some("tick") => scheduler_tick(store, &args[1..]).await,
+        Some("show") => scheduler_show(store, &args[1..]),
+        Some("record-host-failure") => scheduler_record_failure(store, &args[1..]),
+        Some("ack") => scheduler_ack(store, &args[1..]),
+        Some("liveness") => scheduler_liveness(store, &args[1..]),
+        _ => bail!(
+            "scheduler subcommand must be `tick`, `show`, `record-host-failure`, `ack`, or `liveness`"
+        ),
+    }
+}
+
+/// `loopx scheduler ack --goal G [--agent-id A] --action tick_next
+/// [--cadence-class C] [--rrule R] [--source S]` — record the host
+/// scheduler's acknowledgement that it applied the cadence hint (P1-1③;
+/// LoopX `scheduler_ack`). Projection-only audit event; scheduler state
+/// itself is still owned by `scheduler tick`.
+fn scheduler_ack(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut agent_id = None;
+    let mut action = None;
+    let mut cadence_class = String::new();
+    let mut rrule = None;
+    let mut source = "scheduler_cli".to_string();
+    reject_unknown_flags(
+        args,
+        &[
+            "--action",
+            "--agent-id",
+            "--cadence-class",
+            "--goal",
+            "--rrule",
+            "--source",
+        ],
+    )?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--action" {
+            action = Some(v);
+        } else if k == "--cadence-class" {
+            cadence_class = v;
+        } else if k == "--rrule" {
+            rrule = Some(v);
+        } else if k == "--source" {
+            source = v;
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let action = action.ok_or_else(|| anyhow::anyhow!("--action required"))?;
+    store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let agent = agent_id.unwrap_or_else(|| "codex-app".to_string());
+    store.append(Event::SchedulerAcked {
+        goal_id: goal_id.clone(),
+        agent_id: agent.clone(),
+        action: action.clone(),
+        cadence_class,
+        rrule: rrule.clone(),
+        source,
+        ts: now_epoch(),
+    })?;
+    println!(
+        "scheduler ack recorded: goal={goal_id} agent={agent} action={action} rrule={}",
+        rrule.as_deref().unwrap_or("-")
+    );
+    Ok(())
+}
+
+fn scheduler_scope(
+    store: &Store,
+    args: &[String],
+    default_agent: &str,
+) -> Result<(String, String)> {
+    let mut goal_id = None;
+    let mut agent_id = None;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let agent = agent_id.unwrap_or_else(|| default_agent.to_string());
+    Ok((goal_id, agent))
+}
+
+/// `loopx scheduler tick --goal G [--agent-id A] [--cadence-class hourly]
+/// [--progression 15,30,60] [--action tick_next]` — load the persisted state
+/// (or bootstrap it from the cadence profile), advance the progression, and
+/// write the new state. Restart-safe: progression persists across cycles.
+/// P1-3: each tick also lands a `SchedulerTicked` heartbeat (liveness), the
+/// monitor poll plan, and a dead-worker push (see [`notify_dead_holders`]).
+async fn scheduler_tick(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut progression: Vec<i64> = vec![];
+    let mut action = "tick_next".to_string();
+    reject_unknown_flags(args, &["--action", "--agent-id", "--goal", "--progression"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--progression" {
+            progression = v
+                .split(',')
+                .filter_map(|s| s.trim().parse::<i64>().ok())
+                .filter(|m| *m > 0)
+                .collect();
+        } else if k == "--action" {
+            action = v;
+        }
+    });
+    let (goal_id, agent) = scheduler_scope(store, args, "codex-app")?;
+    let goal_dir = store.goal_dir(&goal_id);
+    use crate::scheduler::state as st;
+    let state_key = st::CODEX_APP_STATEFUL_BACKOFF_STATE_KEY;
+    let surface = st::CODEX_APP_SURFACE;
+    let now = now_epoch();
+
+    // Bootstrap: first tick for this (goal, agent) builds the initial state
+    // from the cadence profile; later ticks advance the persisted cursor.
+    let state = st::load_scheduler_state(&goal_dir, &agent, surface, state_key);
+    if state.is_none() {
+        let identity = st::identity_signature(&goal_id, &agent, surface);
+        let intervals = if progression.is_empty() {
+            st::MONITOR_WAIT_PROGRESSION_MINUTES.to_vec()
+        } else {
+            progression
+        };
+        let initial_minutes = intervals.first().copied().unwrap_or(15);
+        let initial_rrule = st::rrule_for_minutes(initial_minutes);
+        let state = st::build_scheduler_state(
+            &goal_id,
+            &agent,
+            surface,
+            state_key,
+            &st::reset_token(&action, &identity, &initial_rrule),
+            &identity,
+            0,
+            intervals,
+            &initial_rrule,
+            now,
+            vec![],
+        )
+        .expect("bootstrap scheduler state matches its own scope");
+        st::write_scheduler_state(&goal_dir, &state)?;
+        print!("{}", crate::cli_projection::render_scheduler_state(&state));
+        println!(
+            "→ bootstrapped (initial rrule {}); next tick advances progression",
+            initial_rrule
+        );
+        record_tick_heartbeat(store, &goal_id, &agent, &action, &state)?;
+        print_monitor_poll_plan(store, &goal_id)?;
+        notify_dead_holders(store, &goal_id).await?;
+        return Ok(());
+    }
+
+    let mut state = state.unwrap();
+    // `--progression` only shapes the bootstrap state (the first tick). Once
+    // state exists the persisted cursor owns the sequence, so a progression
+    // flag here is a silent no-op — warn instead of pretending it applied.
+    if !progression.is_empty() {
+        eprintln!(
+            "note: --progression only applies on the FIRST tick (bootstrap); \
+             scheduler state already exists for {goal_id} — progression unchanged"
+        );
+    }
+    let rrule = st::apply_next_progression(&mut state, now);
+    st::write_scheduler_state(&goal_dir, &state)?;
+    print!("{}", crate::cli_projection::render_scheduler_state(&state));
+    match rrule {
+        Some(r) => println!("→ advanced progression to {r} (persisted)"),
+        None => println!("→ no progression (single-execution cadence)"),
+    }
+    record_tick_heartbeat(store, &goal_id, &agent, &action, &state)?;
+    print_monitor_poll_plan(store, &goal_id)?;
+    notify_dead_holders(store, &goal_id).await?;
+    Ok(())
+}
+
+/// P1-3①: land the tick heartbeat event (the liveness check's data source).
+fn record_tick_heartbeat(
+    store: &mut Store,
+    goal_id: &str,
+    agent: &str,
+    action: &str,
+    state: &crate::scheduler::state::SchedulerState,
+) -> Result<()> {
+    store.append(Event::SchedulerTicked {
+        goal_id: goal_id.to_string(),
+        agent_id: agent.to_string(),
+        action: action.to_string(),
+        rrule: if state.last_applied_rrule.is_empty() {
+            None
+        } else {
+            Some(state.last_applied_rrule.clone())
+        },
+        ts: now_epoch(),
+    })?;
+    Ok(())
+}
+
+/// P1-3②: project the monitor poll plan after each tick (the tick-driven
+/// poll policy executor — due monitors with target/policy/cadence and
+/// no-spend eligibility; the run loop executes the actual observation).
+fn print_monitor_poll_plan(store: &Store, goal_id: &str) -> Result<()> {
+    let Some(goal) = store.replay(goal_id)? else {
+        return Ok(());
+    };
+    let plan = crate::scheduler::monitor_poll::build_poll_plan(&goal, std::time::SystemTime::now());
+    if plan.due_monitors.is_empty() && plan.stalled_monitors.is_empty() {
+        if let Some(next) = plan.next_due_at {
+            let wait = next.saturating_sub(now_epoch());
+            println!("→ monitor poll plan: none due (next poll in {wait}s)");
+        }
+        return Ok(());
+    }
+    println!(
+        "→ monitor poll plan: {} due, {} stalled",
+        plan.due_monitors.len(),
+        plan.stalled_monitors.len()
+    );
+    for item in &plan.due_monitors {
+        println!(
+            "   poll {} (target={}, policy={}, overdue {}s{})",
+            item.todo_id,
+            item.target.as_deref().unwrap_or("-"),
+            item.policy.as_deref().unwrap_or("default"),
+            item.overdue_secs,
+            if item.no_spend_if_unchanged {
+                ", no-spend on unchanged"
+            } else {
+                ""
+            }
+        );
+    }
+    for id in &plan.stalled_monitors {
+        println!("   stalled {id} (decision kernel replans)");
+    }
+    Ok(())
+}
+
+/// `loopx scheduler liveness --goal G [--agent-id A] [--threshold-secs N]
+/// [--format json]` — P1-3① automation liveness check: compare now against
+/// the latest tick heartbeat (event log ∪ persisted scheduler state). A
+/// breach records an `AutomationLivenessAlert` (cooldown-deduped) and drops
+/// an operator-inbox alert file; the attention projection escalates the
+/// goal until a fresh heartbeat recovers the automation.
+fn scheduler_liveness(store: &mut Store, args: &[String]) -> Result<()> {
+    use crate::scheduler::liveness as lv;
+    let mut threshold = lv::DEFAULT_LIVENESS_THRESHOLD_SECS;
+    reject_unknown_flags(
+        args,
+        &[
+            "--agent-id",
+            "--format",
+            "--goal",
+            "--json",
+            "--threshold-secs",
+        ],
+    )?;
+    parse_pairs(args, |k, v| {
+        if k == "--threshold-secs" {
+            if let Ok(n) = v.parse::<u64>() {
+                if n > 0 {
+                    threshold = n;
+                }
+            }
+        }
+    });
+    let (goal_id, agent) = scheduler_scope(store, args, "codex-app")?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let now = now_epoch();
+    // Last heartbeat = max(heartbeat event ts, persisted state updated_at)
+    // — the state file predates heartbeat events (back-compat).
+    let mut last_tick = goal.scheduler_heartbeats.get(&agent).copied();
+    use crate::scheduler::state as st;
+    if let Some(s) = st::load_scheduler_state(
+        &store.goal_dir(&goal_id),
+        &agent,
+        st::CODEX_APP_SURFACE,
+        st::CODEX_APP_STATEFUL_BACKOFF_STATE_KEY,
+    ) {
+        last_tick = Some(last_tick.map_or(s.updated_at, |t| t.max(s.updated_at)));
+    }
+    let eval = lv::evaluate_liveness(&goal_id, &agent, last_tick, now, threshold);
+    let mut alert_note = String::new();
+    if eval.state == lv::LIVENESS_BREACH {
+        let alerts: Vec<u64> = goal
+            .liveness_alerts
+            .iter()
+            .filter(|a| a.agent_id == agent)
+            .map(|a| a.ts)
+            .collect();
+        if lv::alert_due(alerts.iter().max().copied(), now) {
+            store.append(Event::AutomationLivenessAlert {
+                goal_id: goal_id.clone(),
+                agent_id: agent.clone(),
+                elapsed_secs: eval.elapsed_secs.unwrap_or(0),
+                threshold_secs: threshold,
+                consecutive: alerts.len() as u32 + 1,
+                ts: now,
+            })?;
+            write_liveness_inbox_alert(&goal, &agent, &eval);
+            alert_note =
+                " → alert recorded (attention escalates; operator inbox notified)".to_string();
+        } else {
+            alert_note = " (alert suppressed: cooldown)".to_string();
+        }
+    }
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&eval)?);
+        return Ok(());
+    }
+    match eval.state.as_str() {
+        lv::LIVENESS_BREACH => println!(
+            "liveness: BREACH goal={goal_id} agent={agent} silent={}s threshold={}s{alert_note}",
+            eval.elapsed_secs.unwrap_or(0),
+            threshold
+        ),
+        lv::LIVENESS_NO_HEARTBEAT => println!(
+            "liveness: no heartbeat for goal={goal_id} agent={agent} (automation never ticked — run `scheduler tick` to install)"
+        ),
+        _ => println!(
+            "liveness: alive goal={goal_id} agent={agent} last tick {}s ago (threshold {}s)",
+            eval.elapsed_secs.unwrap_or(0),
+            threshold
+        ),
+    }
+    Ok(())
+}
+
+/// Best-effort operator-inbox alert file (LoopX: breach → operator_inbox).
+/// Written under the goal's project `.future/goal/inbox/` so the `inbox`
+/// urgency projection surfaces it as a direct mention.
+fn write_liveness_inbox_alert(
+    goal: &crate::state::Goal,
+    agent: &str,
+    eval: &crate::scheduler::liveness::LivenessEvaluation,
+) {
+    let inbox = std::path::Path::new(&goal.cwd)
+        .join(".future")
+        .join("goal")
+        .join("inbox");
+    if std::fs::create_dir_all(&inbox).is_err() {
+        return;
+    }
+    let clean = |s: &str| {
+        s.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+    };
+    let path = inbox.join(format!(
+        "liveness-{}-{}-{}.json",
+        clean(&goal.goal_id),
+        clean(agent),
+        now_epoch()
+    ));
+    let payload = serde_json::json!({
+        "message_id": format!("liveness-{}-{}", clean(&goal.goal_id), now_epoch()),
+        "create_time": now_epoch().to_string(),
+        "content": format!(
+            "@operator automation liveness breach: goal {} agent {} silent {}s (> {}s threshold) — check/restart the host automation",
+            goal.goal_id,
+            agent,
+            eval.elapsed_secs.unwrap_or(0),
+            eval.threshold_secs
+        ),
+    });
+    if let Ok(text) = serde_json::to_string_pretty(&payload) {
+        let _ = std::fs::write(path, format!("{text}\n"));
+    }
+}
+
+/// `loopx scheduler show --goal G [--agent-id A] [--format json]` — print the
+/// persisted scheduler state (or "no state yet").
+fn scheduler_show(store: &Store, args: &[String]) -> Result<()> {
+    reject_unknown_flags(args, &["--agent-id", "--format", "--goal", "--json"])?;
+    let (goal_id, agent) = scheduler_scope(store, args, "codex-app")?;
+    use crate::scheduler::state as st;
+    let state = st::load_scheduler_state(
+        &store.goal_dir(&goal_id),
+        &agent,
+        st::CODEX_APP_SURFACE,
+        st::CODEX_APP_STATEFUL_BACKOFF_STATE_KEY,
+    );
+    match state {
+        Some(s) => {
+            if wants_json(args) {
+                println!("{}", serde_json::to_string_pretty(&s)?);
+            } else {
+                print!("{}", crate::cli_projection::render_scheduler_state(&s));
+            }
+        }
+        None => println!(
+            "no scheduler state for goal {goal_id} agent {agent} (run `scheduler tick` first)"
+        ),
+    }
+    Ok(())
+}
+
+/// `loopx scheduler record-host-failure --goal G --agent-id A
+/// --target-rrule "FREQ=MINUTELY;INTERVAL=15" --observed-rrule "..."
+/// --failure-kind host_stale_rrule` — merge a host-update failure into the
+/// retained cache (bounded, TTL'd; reference scheduler state).
+fn scheduler_record_failure(store: &Store, args: &[String]) -> Result<()> {
+    let mut target_rrule = None;
+    let mut observed_rrule = None;
+    let mut failure_kind = None;
+    let mut count = 1u32;
+    reject_unknown_flags(
+        args,
+        &[
+            "--agent-id",
+            "--failure-count",
+            "--failure-kind",
+            "--goal",
+            "--observed-rrule",
+            "--target-rrule",
+        ],
+    )?;
+    parse_pairs(args, |k, v| {
+        if k == "--target-rrule" {
+            target_rrule = Some(v);
+        } else if k == "--observed-rrule" {
+            observed_rrule = Some(v);
+        } else if k == "--failure-kind" {
+            failure_kind = Some(v);
+        } else if k == "--failure-count" {
+            count = v.parse().unwrap_or(1);
+        }
+    });
+    let (goal_id, agent) = scheduler_scope(store, args, "codex-app")?;
+    let target_rrule = target_rrule.ok_or_else(|| anyhow::anyhow!("--target-rrule required"))?;
+    let observed_rrule = observed_rrule.unwrap_or_default();
+    let failure_kind = failure_kind.ok_or_else(|| anyhow::anyhow!("--failure-kind required"))?;
+    use crate::scheduler::state as st;
+    let goal_dir = store.goal_dir(&goal_id);
+    let state_key = st::CODEX_APP_STATEFUL_BACKOFF_STATE_KEY;
+    let surface = st::CODEX_APP_SURFACE;
+    let now = now_epoch();
+    let existing = st::load_scheduler_state(&goal_dir, &agent, surface, state_key);
+    let mut failures = existing
+        .as_ref()
+        .map(|s| s.host_update_failures.clone())
+        .unwrap_or_default();
+    let failure = st::HostUpdateFailure {
+        schema_version: st::SCHEDULER_HOST_UPDATE_FAILURE_SCHEMA_VERSION.to_string(),
+        target_rrule: st::normalize_scheduler_rrule(&target_rrule),
+        observed_host_rrule: st::normalize_scheduler_rrule(&observed_rrule),
+        failure_kind,
+        failed_at: crate::compat::rfc3339(now),
+        failure_count: count,
+    };
+    failures = st::merge_host_update_failure(&failures, failure, now);
+    let state = match existing {
+        Some(mut s) => {
+            s.host_update_failures = failures;
+            s.updated_at = now;
+            s
+        }
+        None => {
+            // No state yet: bootstrap from the observed rrule so the failure
+            // has a home (reference tolerates a state-less failure record by
+            // keeping the failure list on the next build).
+            let identity = st::identity_signature(&goal_id, &agent, surface);
+            st::build_scheduler_state(
+                &goal_id,
+                &agent,
+                surface,
+                state_key,
+                &st::reset_token("tick_next", &identity, &target_rrule),
+                &identity,
+                0,
+                vec![15],
+                &st::normalize_scheduler_rrule(&target_rrule),
+                now,
+                failures,
+            )
+            .expect("bootstrap scheduler state matches its own scope")
+        }
+    };
+    st::write_scheduler_state(&goal_dir, &state)?;
+    println!(
+        "host update failure recorded (kind={} target={} observed={}) → {} retained",
+        state
+            .host_update_failures
+            .last()
+            .map(|f| f.failure_kind.clone())
+            .unwrap_or_default(),
+        state
+            .host_update_failures
+            .last()
+            .map(|f| f.target_rrule.clone())
+            .unwrap_or_default(),
+        state
+            .host_update_failures
+            .last()
+            .map(|f| f.observed_host_rrule.clone())
+            .unwrap_or_default(),
+        state.host_update_failures.len()
+    );
+    Ok(())
+}
+
+// ── run (one bounded gRPC turn + writeback) ────────────────────────────────
+
+/// `future-goal models [--format json]` — list models available from the
+/// agent (auth.json / models.json merged with the built-in catalog).
+async fn cmd_models(args: &[String]) -> Result<()> {
+    reject_unknown_flags(args, &["--format", "--json"])?;
+    let json = args.iter().any(|a| a == "--format" || a == "--json");
+    let mut client =
+        crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await?;
+    let data = client.list_models().await?;
+    let models = data["models"].as_array().cloned().unwrap_or_default();
+    let default_model = data["defaultModel"].as_str().unwrap_or("");
+    if json {
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
+    println!("Available models (default: {}):", default_model);
+    for m in &models {
+        let id = m["id"].as_str().unwrap_or("");
+        let provider = m["provider"].as_str().unwrap_or("");
+        let label = m["label"].as_str().unwrap_or(id);
+        let full = if provider.is_empty() {
+            id.to_string()
+        } else {
+            format!("{provider}/{id}")
+        };
+        let thinking = m["thinkingLevel"].as_str().unwrap_or("off");
+        let ctx = m["contextWindow"].as_i64().unwrap_or(0);
+        let recommended = m["recommended"].as_bool().unwrap_or(false);
+        let is_default = m["isDefault"].as_bool().unwrap_or(false);
+        let mut flags = String::new();
+        if is_default {
+            flags.push_str(" [default]");
+        }
+        if recommended {
+            flags.push_str(" [recommended]");
+        }
+        println!("- {full}  {label}  thinking={thinking} ctx={ctx}{flags}");
+    }
+    Ok(())
+}
+
+/// Default task-lease length for a `run` turn (4h — long LLM/compute turns
+/// routinely exceed the old 1h lease, which would let another worker steal
+/// the todo mid-turn once the lease expired).
+const DEFAULT_RUN_LEASE_SECS: u64 = 4 * 3600;
+
+/// Grace window (ms) the detached-run parent waits before probing the child
+/// with `try_wait`. Long enough for a mis-dispatched re-exec to fail at CLI
+/// parse time (e.g. `Unknown option: --goal`), short enough to not delay the
+/// orchestrator returning while a healthy child is still starting up.
+const DETACH_LIVENESS_GRACE_MS: u64 = 120;
+
+/// Resolve run identity (G-27): `run` REQUIRES `--agent-id` so the lease
+/// mechanism actually engages — an anonymous run claims nothing and hides
+/// nothing, so two agentless runs deterministically race on the same todo.
+/// An id that is not yet registered is auto-registered on first use (replay
+/// is idempotent, so `run` never needs a separate `agent register` step).
+/// Auto-registration declares the process cwd as the agent's P0-1 workspace
+/// (parallel runs launched from the same checkout then trip the workspace
+/// guard instead of silently overwriting each other). `--anonymous` opts
+/// back into the legacy uncoordinated one-shot path.
+/// Returns the resolved agent id (None for `--anonymous`).
+pub fn ensure_run_identity(
+    store: &mut Store,
+    goal_id: &str,
+    agent_id: Option<&str>,
+    anonymous: bool,
+) -> Result<Option<String>> {
+    match (agent_id, anonymous) {
+        (Some(aid), _) => {
+            let goal = store
+                .replay(goal_id)?
+                .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+            if !goal.is_registered_agent(Some(aid)) {
+                let cwd = std::env::current_dir()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let workspaces = auto_register_workspaces(&cwd);
+                store.append(Event::AgentRegistered {
+                    goal_id: goal_id.to_string(),
+                    agent_id: aid.to_string(),
+                    workspaces,
+                    ts: now_epoch(),
+                })?;
+                println!("agent `{aid}` auto-registered for {goal_id} ✔");
+            }
+            Ok(Some(aid.to_string()))
+        }
+        (None, true) => {
+            println!(
+                "⚠ anonymous run: no lease coordination — parallel runs may race on the same todo"
+            );
+            Ok(None)
+        }
+        (None, false) => bail!(
+            "run requires --agent-id <name> (or --anonymous for an uncoordinated one-shot run); \
+             check existing ids with `{} agent list --goal {goal_id}`",
+            prog()
+        ),
+    }
+}
+
+async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut model = None;
+    let mut thinking = None;
+    let mut max_turns = 6u32;
+    let mut max_incomplete_retries = crate::executor::DEFAULT_MAX_INCOMPLETE_RETRIES;
+    let mut agent_id = None;
+    let mut anonymous = false;
+    let mut lease_secs = DEFAULT_RUN_LEASE_SECS;
+    let mut force_workspace = false;
+    // First-turn title for the session this run creates. On by default (the
+    // desktop app's behaviour, which the goal plane lacked); `--no-title` opts out
+    // of the extra model call. A resumed session is never renamed.
+    let mut no_title = false;
+    // Session retention: the CALLER decides resume-vs-fresh, never the kernel.
+    // The default is ALWAYS a fresh session; the ONLY way to resume is an
+    // explicit pin `--resume-session <id>` (goal-level `session_retention` is
+    // a single field written by whichever run finished last, so an implicit
+    // "resume the retained session" would hand one worker's session to
+    // another under parallel workers). A pinned id that is no longer alive
+    // falls back to a fresh session.
+    let mut resume_session: Option<String> = None;
+    let mut parent_session: Option<String> = None;
+    reject_unknown_flags(
+        args,
+        &[
+            "--agent-id",
+            "--anonymous",
+            "--detach",
+            "--force-workspace",
+            "--goal",
+            "--lease-secs",
+            "--max-incomplete-retries",
+            "--max-turns",
+            "--model",
+            "--no-title",
+            "--parent-session",
+            "--resume-session",
+            "--thinking-level",
+        ],
+    )?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--model" {
+            model = Some(v);
+        } else if k == "--thinking-level" {
+            thinking = Some(v);
+        } else if k == "--max-turns" {
+            max_turns = v.parse().unwrap_or(6);
+        } else if k == "--max-incomplete-retries" {
+            max_incomplete_retries = v
+                .parse()
+                .unwrap_or(crate::executor::DEFAULT_MAX_INCOMPLETE_RETRIES);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--lease-secs" {
+            lease_secs = v.parse().unwrap_or(DEFAULT_RUN_LEASE_SECS);
+        } else if k == "--anonymous" {
+            anonymous = true;
+        } else if k == "--force-workspace" {
+            force_workspace = true;
+        } else if k == "--no-title" {
+            no_title = true;
+        } else if k == "--resume-session" {
+            resume_session = Some(v);
+        } else if k == "--parent-session" {
+            parent_session = Some(v);
+        }
+    });
+    // Detached dispatch (ARCHITECTURE.md "Runs are detached"): by default the
+    // run process re-executes ITSELF in the background so the orchestrating
+    // agent never blocks on a todo. The detached child (`--detach`) writes its
+    // own log under <root>/detached/<goal>/ and runs the foreground turn loop;
+    // the parent exits immediately after printing the child pid (lease+pid
+    // liveness supervises it from there). `--detach` marks the child.
+    // Opt-outs: `FUTURE_GOAL_NO_DETACH=1` (tests / embedders), or any `--detach`
+    // (the child runs foreground). Re-exec only makes sense from the real
+    // CLI binaries — under a test harness `current_exe` is the test binary,
+    // so detach is skipped there too (exe stem check below).
+    let detach_requested = args.iter().any(|a| a == "--detach");
+    let exe_stem = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .unwrap_or_default();
+    let from_cli_binary = exe_stem == "future-goal" || exe_stem == "future";
+    let no_detach_env = std::env::var("FUTURE_GOAL_NO_DETACH").ok().as_deref() == Some("1");
+    let should_detach = !detach_requested && from_cli_binary && !no_detach_env;
+    if should_detach {
+        let goal_for_dir = goal_id
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+        crate::agents::supervision::ensure_watchdog(store, &goal_for_dir)?;
+        let run_log_dir = std::path::PathBuf::from(store.root_path())
+            .join("detached")
+            .join(&goal_for_dir);
+        std::fs::create_dir_all(&run_log_dir)?;
+        let ts = now_epoch();
+        let who = agent_id.clone().unwrap_or_else(|| "anonymous".to_string());
+        let log_path = run_log_dir.join(format!("{who}-{ts}.log"));
+        let exe = std::env::current_exe()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "future-goal".to_string());
+        let mut cmd = std::process::Command::new(&exe);
+        let child_args = detached_child_args(&exe_stem, args);
+        cmd.args(&child_args);
+        // Platform-neutral detachment: own process group (POSIX process_group
+        // / Windows CREATE_NEW_PROCESS_GROUP|DETACHED_PROCESS), stdio routed
+        // to the log file so the parent's terminal stays clean.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            const DETACHED_PROCESS: u32 = 0x0000_0008;
+            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+        }
+        let log = std::fs::File::create(&log_path)?;
+        cmd.stdout(log.try_clone()?)
+            .stderr(log)
+            .stdin(std::process::Stdio::null());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("spawn detached run (log {}): {e}", log_path.display()))?;
+        // Defensive liveness check: `spawn` succeeding only means the process
+        // was created, not that it re-dispatched correctly. A bad re-exec
+        // (e.g. the child drops a group layer and lands on an unrelated
+        // command) makes the child exit instantly with a usage error while the
+        // parent would otherwise print a fake pid and return success. Give the
+        // child a short grace window, then reject a fast-exit so the
+        // orchestrator sees the failure instead of a dead worker it must
+        // discover later.
+        tokio::time::sleep(std::time::Duration::from_millis(DETACH_LIVENESS_GRACE_MS)).await;
+        return enforce_detach_liveness(&mut child, &who, &log_path);
+    }
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+
+    // Identity gate BEFORE any gRPC/session work — fail fast with a hint
+    // (and stays unit-testable without an agent server).
+    let agent_id = ensure_run_identity(store, &goal_id, agent_id.as_deref(), anonymous)?;
+
+    let mut client =
+        crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await?;
+    let goal0 = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+
+    // ── Session retention: the CALLER decides resume-vs-fresh, never the
+    //    kernel. The kernel records WHY the last run was interrupted
+    //    (`session_retention` on the goal, advisory) and keeps the session id
+    //    on disk. Fresh is the default; the only resume path is an explicit
+    //    `--resume-session <id>` pin, which falls back to fresh when the
+    //    pinned id is no longer alive.
+    let want_session: Option<String> = resume_session.clone();
+    // Human-readable session title for agent session lists: the goal
+    // objective, bounded so long objectives don't produce unwieldy names.
+    let session_title = crate::decision::truncate(&goal0.objective, 60);
+    // Derived worker conversations belong to their caller/supervisor. This
+    // is lineage only: a fresh worker still has an isolated context.
+    let parent_session = parent_session
+        .as_deref()
+        .or(goal0.supervisor_session_id.as_deref());
+    // Whether this invocation minted the session (as opposed to resuming a
+    // live one). A freshly minted session that never reaches a prompt belongs
+    // to no one: see the unused-session cleanup after the turn loop.
+    let mut created_session = false;
+    let session_id = match want_session {
+        Some(id) if client.session_alive(&id).await => {
+            println!("   ⤺ resuming session {id}");
+            id
+        }
+        Some(id) => {
+            println!("   ⚠ retained session {id} is no longer alive — starting fresh");
+            created_session = true;
+            if let Some(warning) = missing_parent_warning(parent_session, &goal_id) {
+                eprintln!("{warning}");
+            }
+            client
+                .new_child_session(&goal0.cwd, &session_title, parent_session)
+                .await?
+        }
+        None => {
+            created_session = true;
+            if let Some(warning) = missing_parent_warning(parent_session, &goal_id) {
+                eprintln!("{warning}");
+            }
+            client
+                .new_child_session(&goal0.cwd, &session_title, parent_session)
+                .await?
+        }
+    };
+    // Bind agent-id → session-id in the ledger BEFORE any prompt. This is the
+    // authoritative mapping `worker stop`/`worker list` use to locate this
+    // worker's backing agent session — recorded first so a prompt/parse
+    // failure (or a client kill) that leaves the turn orphaned can still be
+    // discovered and aborted (the `.live.jsonl` run_header is only written
+    // AFTER a prompt ack returns a run_id, so it cannot see such orphans).
+    // Anonymous runs (no --agent-id) have no stable id to bind.
+    if let Some(aid) = agent_id.as_deref() {
+        store.append(Event::WorkerSessionBound {
+            goal_id: goal_id.clone(),
+            agent_id: aid.to_string(),
+            session_id: session_id.clone(),
+            ts: crate::state::now_epoch(),
+        })?;
+    }
+    if let Some(m) = model {
+        client.set_model(&session_id, &m).await?;
+    }
+    if let Some(l) = thinking {
+        client.set_thinking_level(&session_id, &l).await?;
+    }
+
+    // Run the turn loop. Session lifecycle: the session is never deleted —
+    // the kernel records the retention state (id + failure classification +
+    // resumable advisory) on the goal and lets the NEXT caller decide
+    // resume-vs-fresh via --resume-session.
+    let mut last_failure_kind: Option<crate::state::FailureKind> = None;
+    // Set by `run_turns` the moment a turn actually reaches the model. Stays
+    // false when the goal plane breaks out before executing anything (wait/terminal
+    // decision, workspace conflict, no claimable todo).
+    let mut executed_turn = false;
+    // Down-channel steering: watch the ledger for supervisor steering
+    // instructions targeting THIS worker and abort the session mid-turn so the
+    // next turn drains the instruction into its envelope. Aborted after the
+    // run loop.
+    let steer_handle = tokio::spawn(steer_worker_watch(
+        store.goal_dir(&goal_id).join("events.jsonl"),
+        agent_id.clone(),
+        session_id.clone(),
+    ));
+    let result = run_turns(
+        &mut client,
+        store,
+        &goal_id,
+        &session_id,
+        max_turns,
+        lease_secs,
+        agent_id.as_deref(),
+        max_incomplete_retries,
+        force_workspace,
+        &mut last_failure_kind,
+        &mut executed_turn,
+        !no_title,
+        created_session,
+    )
+    .await;
+    steer_handle.abort();
+
+    // A session we minted but never prompted is an empty husk: nothing ran, so
+    // nothing references it — but it still shows up in `session list` / the
+    // desktop sidebar under the goal objective, and no later pass heals it
+    // (a session with no entries never reappears in `list_sessions`). Drop it
+    // instead of leaving a permanently-unrepairable empty conversation. Common
+    // causes: the workspace guard refusing turn 1 (degrade-to-serial) or a
+    // wait/terminal first decision. Best-effort — a delete failure must not
+    // fail the run itself.
+    let discarded_unused_session = created_session && !executed_turn;
+    if discarded_unused_session {
+        match client.delete_session(&session_id).await {
+            Ok(()) => println!("   ↦ discarded unused session {session_id} (no turn ran)"),
+            Err(e) => println!("   ⚠ could not discard unused session {session_id}: {e}"),
+        }
+    }
+
+    // Post-run supervision: sweep dead holders (best-effort — the run's own
+    // writeback already landed; a lost notification must not fail it).
+    let _ = supervise_after_run(store, &goal_id).await;
+
+    // Record the retention state (the kernel's advisory, not a directive).
+    let resumable = matches!(
+        last_failure_kind,
+        Some(crate::state::FailureKind::InfraRecoverable)
+    );
+    let reason = match last_failure_kind {
+        None => "turns completed or no turn ran".to_string(),
+        Some(crate::state::FailureKind::InfraRecoverable) => {
+            "interrupted by a recoverable event (e.g. HTTP 429 / transient disconnect / operator stop) — LLM state intact".to_string()
+        }
+        Some(crate::state::FailureKind::ScienceVerifyFailed) => {
+            "verify gate rejected the output — reasoning produced a bad artifact".to_string()
+        }
+        Some(crate::state::FailureKind::HardError) => {
+            "turn ended in a non-recoverable error — reasoning state is broken".to_string()
+        }
+        Some(crate::state::FailureKind::None) => "succeeded".to_string(),
+    };
+    let retention = crate::state::SessionRetention {
+        session_id: session_id.clone(),
+        failure_kind: last_failure_kind.unwrap_or(crate::state::FailureKind::None),
+        resumable,
+        reason,
+        ended_at: now_epoch(),
+    };
+    if let Ok(Some(mut g)) = store.replay(&goal_id) {
+        g.session_retention = Some(retention);
+        let goal_dir = store.goal_dir(&goal_id);
+        if let Err(e) = crate::compat::write_active_state(&goal_dir, &g) {
+            println!("   ⚠ failed to persist session retention (best-effort): {e}");
+        }
+    }
+
+    // Session retention: never delete a session that did work. A session (and
+    // its accumulated exploration) stays on the agent; the NEXT caller decides
+    // resume-vs-fresh explicitly. The default is a fresh session; the only
+    // resume path is an explicit pin (`--resume-session <id>`), so this
+    // resumable classification is advisory data for the orchestrator's own
+    // judgment, not a directive. The one exception is a session this run
+    // minted and never prompted — discarded above, so there is nothing to
+    // resume and saying otherwise would point at a deleted id.
+    if discarded_unused_session {
+        println!("   ↦ no session retained (the unused one was discarded)");
+    } else if resumable {
+        println!(
+            "   ⤺ session {session_id} retained (resumable) — resume it with --resume-session {session_id}"
+        );
+    } else {
+        println!(
+            "   ⤺ session {session_id} retained — resume it with --resume-session {session_id}"
+        );
+    }
+    result
+}
+
+/// Claim the packet's selected todo under a lease BEFORE executing —
+/// atomically (check+append under one lock) so two concurrent
+/// `run --agent-id` workers can never both win the same todo; on contention,
+/// re-decide against the fresh ledger and pick the next runnable todo (up to
+/// 3 re-decides). Returns the claimed todo id, or None when the fresh ledger
+/// has no executable selection for this turn.
+fn claim_selected_with_lease(
+    store: &mut Store,
+    goal_id: &str,
+    packet: &mut crate::contract::ShouldRunPacket,
+    agent_id: Option<&str>,
+    lease_secs: u64,
+    force_workspace: bool,
+) -> Result<Option<String>> {
+    let mut todo_id_opt = None;
+    for _ in 0..3 {
+        let Some(tid) = packet
+            .interaction_contract
+            .agent_channel
+            .selected_todo
+            .clone()
+        else {
+            break;
+        };
+        match &agent_id {
+            Some(aid) => {
+                if store
+                    .try_claim_todo_with_workspace(
+                        goal_id,
+                        &tid,
+                        aid,
+                        lease_secs,
+                        Some(std::process::id()),
+                        force_workspace,
+                    )?
+                    .claimed
+                {
+                    todo_id_opt = Some(tid);
+                    break;
+                }
+                println!("   ⚔ claim race lost on {tid} — re-deciding");
+                let fresh = store
+                    .replay(goal_id)?
+                    .ok_or_else(|| goal_vanished_error(goal_id))?;
+                *packet = decide_for(&fresh, SystemTime::now(), agent_id);
+                if packet.interaction_contract.mode != crate::contract::TurnMode::BoundedDelivery
+                    && packet.interaction_contract.mode != crate::contract::TurnMode::MonitorPoll
+                {
+                    todo_id_opt = None;
+                    break;
+                }
+            }
+            None => {
+                todo_id_opt = Some(tid);
+                break;
+            }
+        }
+    }
+    Ok(todo_id_opt)
+}
+
+/// One `run` = one bounded turn loop against a fresh agent session. `cmd_run`
+/// owns the session lifecycle (create before, retain after); this function
+/// only executes turns and writes back their ledger effects.
+///
+/// `max_incomplete_retries`: consecutive `incomplete` turns (model stream
+/// truncated mid-reply) tolerated on the same todo before the run stops; each
+/// retried turn gets an explicit continue note injected into its envelope.
+///
+/// `last_failure_kind`: out-parameter set to the failure classification of the
+/// LAST executed turn (`None` when no turn ran this invocation) — the caller
+/// uses it to decide session retention (resume vs fresh), never the kernel.
+///
+/// Enqueue an intervention report to the registered supervisor session (the
+/// up channel). Dual-mode: the note is FIRST written to the ledger
+/// ([`crate::store::Event::SupervisorNote`]) — durable, replayable, and
+/// visible to `supervisor events` / `status` even when the push is lost or the
+/// supervisor is busy — and THEN pushed to the supervisor session, which only
+/// wakes an IDLE supervisor (an active orchestrator drains it late).
+/// `dedup_key` doubles as the prompt idempotency key (re-sending the same key
+/// is a no-op on the agent) AND is recorded on the ledger note so the two
+/// channels correlate. No supervisor registered → the note is still ledgered
+/// (a later `supervisor register` reads it back); only the push is skipped.
+#[doc(hidden)] // test-visible seam
+#[allow(clippy::too_many_arguments)]
+pub async fn notify_supervisor(
+    store: &mut Store,
+    client: &mut crate::agent_client::AgentClient,
+    goal_id: &str,
+    supervisor_session_id: Option<&str>,
+    kind: &str,
+    todo_id: &str,
+    message: &str,
+    dedup_key: &str,
+) {
+    if let Err(e) =
+        crate::agents::supervision::queue(store, goal_id, kind, todo_id, message, dedup_key)
+    {
+        eprintln!("supervisor note persistence failed: {e}");
+        return;
+    }
+    // A production watchdog coalesces concurrent notes. Foreground embedders
+    // without one retain immediate delivery, with the same durable retry path.
+    if supervisor_session_id.is_some() && !crate::agents::supervision::running(store, goal_id) {
+        if let Err(e) = crate::agents::supervision::flush(store, goal_id, client).await {
+            eprintln!("supervisor outbox retained for retry: {e}");
+        }
+    }
+}
+
+/// Report a worker stop that never reached a turn-boundary writeback (a
+/// transport failure propagating before writeback). That exit skips the normal
+/// ②/③ up-channel reports, so the supervisor would otherwise be left polling a
+/// worker that already stopped. Idempotency is keyed on `todo_id` + `kind`, so
+/// a relaunch that hits the same stop re-notifies only once.
+#[doc(hidden)] // test-visible seam
+pub async fn notify_infra_stop(
+    store: &mut Store,
+    client: &mut crate::agent_client::AgentClient,
+    goal_id: &str,
+    supervisor_session_id: Option<&str>,
+    todo_id: &str,
+    kind: &str,
+    detail: &str,
+) {
+    notify_supervisor(
+        store,
+        client,
+        goal_id,
+        supervisor_session_id,
+        "infra_stopped",
+        todo_id,
+        &format!(
+            "[future-goal] goal {goal_id}: todo {todo_id} stopped before completion ({kind}) — {detail}"
+        ),
+        &format!("infra_stopped:{todo_id}:{kind}:{}", std::process::id()),
+    )
+    .await;
+}
+
+/// Dead-worker push (the host-died case the recoverable infra stops above
+/// cannot reach): a worker that died mid-slice (SIGKILL / crash / host
+/// failure) executes no code, so the `transport` /
+/// `incomplete_budget` reports never fire. The scheduler tick is the periodic
+/// trigger that notices a lease whose holder pid is gone and pushes a report
+/// to the registered supervisor, so the orchestrator is prompted to relaunch
+/// rather than only discovering the dead worker on its next `status` poll.
+/// Best-effort: no supervisor, no reachable agent, or no dead holders is a
+/// no-op (the tick itself never fails over a lost notification).
+#[doc(hidden)] // test-visible seam
+pub async fn notify_dead_holders(store: &mut Store, goal_id: &str) -> Result<()> {
+    // Persist before attempting any connection: agent downtime must not erase
+    // the very observation needed to recover once it comes back.
+    crate::agents::supervision::record_dead_holders(store, goal_id)?;
+    if !crate::agents::supervision::running(store, goal_id) {
+        if let Ok(mut client) =
+            crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await
+        {
+            let _ = crate::agents::supervision::flush(store, goal_id, &mut client).await;
+        }
+    }
+    Ok(())
+}
+
+/// Best-effort post-run supervision — the run process itself is a live actor,
+/// so its exit is a natural point to run the dead-holder sweep without
+/// depending on an explicit `scheduler tick` (which no orchestrator actually
+/// runs). The single side effect is idempotent and a no-op on failure, so it
+/// can never fail the run's own writeback:
+///
+/// - **Dead-holder sweep** — `notify_dead_holders` pushes `host_died` to the
+///   registered supervisor for any lease whose holder pid is gone (a
+///   SIGKILL'd/crashed worker executes no code, so it cannot self-report).
+///   This is the single supervision signal the single-process model needs:
+///   the orchestrator is the only live actor, and this sweep is what lets a
+///   dead worker surface without a cron.
+async fn supervise_after_run(store: &mut Store, goal_id: &str) -> Result<()> {
+    // Dead-holder sweep is best-effort: a lost notification must never fail
+    // the run that already wrote back.
+    let _ = notify_dead_holders(store, goal_id).await;
+    Ok(())
+}
+
+/// The desktop app's preference file (`~/.future/app/app.db`) owns
+/// `titleLanguage` — the same source `future session title` and `future run`
+/// read, so a goal-plane-minted session is named in the language the user chose
+/// rather than a hard-coded one. English when the store has never been written
+/// or cannot be read.
+fn app_title_language() -> Option<String> {
+    let conn = future_app_settings::connect_existing().ok().flatten()?;
+    if !future_app_settings::table_exists(&conn).ok()? {
+        return None;
+    }
+    future_app_settings::read(&conn).ok().map(|settings| {
+        // The agent accepts only `en`/`zh`; anything else falls back.
+        match settings.title_language.as_str() {
+            "zh" => "zh".to_string(),
+            _ => "en".to_string(),
+        }
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_turns(
+    client: &mut crate::agent_client::AgentClient,
+    store: &mut Store,
+    goal_id: &str,
+    session_id: &str,
+    max_turns: u32,
+    lease_secs: u64,
+    agent_id: Option<&str>,
+    max_incomplete_retries: u32,
+    force_workspace: bool,
+    last_failure_kind: &mut Option<crate::state::FailureKind>,
+    executed_turn: &mut bool,
+    auto_title: bool,
+    created_session: bool,
+) -> Result<()> {
+    let mut turn = 0u32;
+    // P2: goal-monotonic turn counter. `turn` below restarts at 1 on every
+    // `run` process, so a worker relaunched across runs (or resumed after a
+    // timeout) would re-emit `turn-1` heartbeat receipts and decision
+    // summaries, making cross-run provenance unreadable from the ledger. The
+    // number of already-recorded decision summaries equals the count of turns
+    // that have STARTED on this goal (timeout turns included, because the
+    // receipt is written before the turn executes), so offset the local
+    // counter by it to obtain a goal-wide monotonic turn number.
+    let base_turn = store
+        .events(goal_id)
+        .map(|events| crate::quota::decision_summary::decision_summaries(&events).len() as u32)
+        .unwrap_or(0);
+    // Continue note for the NEXT turn: set when the previous turn ended
+    // incomplete; consumed exactly once by the next execute_turn call.
+    let mut next_continue_note: Option<String> = None;
+    // Down-channel steering cursor: the ts of the last `pending_steer` we
+    // injected into a turn envelope (0 = none yet). A steer is injected only
+    // once — when its ts advances past this cursor.
+    let mut last_steer_ts: u64 = 0;
+    // P1-2③: read-model self-healing — a drifted run index means run-history
+    // consumers (status, stale-latest-run, run history projection) read stale
+    // state; rebuild it from the run files before the first decision and
+    // record the ProjectionRepaired audit event.
+    run_index_self_heal(store, goal_id)?;
+    // Worker stop scan cursor: only `worker_stopped` events appended AFTER
+    // this run started can stop it (a stale stop must not kill future runs).
+    let stop_events_path = store.goal_dir(goal_id).join("events.jsonl");
+    let mut stop_scan_offset = std::fs::metadata(&stop_events_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    loop {
+        // Turn-boundary check: an operator-issued `worker_stopped` ledger
+        // event (worker stop cmd) makes this run client exit cleanly —
+        // distinct from steering, which drains an instruction and continues.
+        let (stop_requested, new_offset) =
+            worker_stop_requested(&stop_events_path, stop_scan_offset, agent_id);
+        stop_scan_offset = new_offset;
+        if stop_requested {
+            // An operator stop is an intentional interruption, not a science
+            // failure: classify it infra-recoverable so the retention record
+            // marks the session resumable and a relaunch with the default
+            // policy continues the same context (unless the operator also
+            // passed --delete, which reclaims the session).
+            *last_failure_kind = Some(crate::state::FailureKind::InfraRecoverable);
+            println!("   ■ worker stop received — exiting run loop (session retained)");
+            break;
+        }
+        turn += 1;
+        if turn > max_turns {
+            bail!("max-turns ({max_turns}) reached without validated closure");
+        }
+        // Goal-wide turn number: `turn` is local to this run process, so every
+        // persisted reference (decision summary, heartbeat receipt, run record,
+        // client_request_id) must use the offset value to stay distinguishable
+        // across runs.
+        let global_turn = base_turn + turn;
+        let goal = store
+            .replay(goal_id)?
+            .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found (deleted while running?)"))?;
+        let mut packet = decide_for(&goal, SystemTime::now(), agent_id);
+        // P1-1②③: persist the compact decision projection + the heartbeat
+        // receipt for this turn (projection-only; replay ignores both).
+        crate::quota::decision_summary::record_turn_decision(
+            store,
+            &packet,
+            agent_id,
+            global_turn,
+        )?;
+        println!(
+            "── turn {global_turn}: decision={} mode={} | {}",
+            packet.decision,
+            packet.interaction_contract.mode.as_str(),
+            packet.reason
+        );
+        let mode = packet.interaction_contract.mode;
+        if mode == crate::contract::TurnMode::Terminal {
+            println!("✔ validated closure — goal stops");
+            break;
+        }
+        if mode == crate::contract::TurnMode::Replan {
+            if let Some(gap) = crate::store::projection_gap(&goal) {
+                println!("↻ self-repair: {gap}");
+                store.set_next_action(goal_id, "all todos complete; no further action")?;
+                continue;
+            }
+            println!("↻ replan required — no auto path; stopping (see status)");
+            break;
+        }
+        if mode == crate::contract::TurnMode::AskUser {
+            let q = packet
+                .interaction_contract
+                .user_channel
+                .question
+                .clone()
+                .unwrap_or_default();
+            println!("⟳ USER GATE: {q}");
+            // Up-channel ①: a user gate needs the supervisor's decision.
+            // ARCHITECTURE.md "Workers escalate; they never decide whether a
+            // human is needed" cuts both ways: the escalation is a signal to
+            // the orchestrator, not a freeze. The decision kernel already
+            // computed a gate-independent fallback (delivery_allowed =
+            // has_fallback) — run it instead of stopping, so gate-wait costs
+            // no dead time. With no fallback (or an anonymous run, which
+            // cannot claim), stop as before.
+            let gate_ids = &packet.interaction_contract.user_channel.todo_ids;
+            let key = format!("ask_user:{}", gate_ids.join(","));
+            notify_supervisor(
+                store,
+                client,
+                goal_id,
+                goal.supervisor_session_id.as_deref(),
+                "ask_user",
+                &gate_ids.join(","),
+                &format!(
+                    "[future-goal] goal {goal_id} needs your decision on user gate(s): {}. Question: {q}",
+                    gate_ids.join(", ")
+                ),
+                &key,
+            )
+            .await;
+            let fallback = packet
+                .interaction_contract
+                .agent_channel
+                .fallback_todo
+                .clone();
+            match fallback {
+                Some(fb) if packet.interaction_contract.agent_channel.delivery_allowed => {
+                    println!(
+                        "   ↳ gate-independent fallback {fb} keeps running while the gate waits"
+                    );
+                    packet.interaction_contract.agent_channel.selected_todo = Some(fb);
+                    // Fall through to the claim/execute path below with the
+                    // fallback selected — this turn still counts as bounded
+                    // delivery on the fallback todo.
+                }
+                _ => break,
+            }
+        }
+        if mode == crate::contract::TurnMode::WaitMonitor {
+            println!("   waiting… (monitor not due)");
+            break;
+        }
+
+        // bounded_delivery / monitor_poll: execute one turn (or a gated turn's
+        // gate-independent fallback selected above).
+        // Claim with a lease BEFORE executing — atomically (check+append under
+        // one lock) so two concurrent `run --agent-id` workers can never both
+        // win the same todo; on contention, re-decide against the fresh
+        // ledger and pick the next runnable todo (up to 3 re-decides).
+        //
+        // Guard the actual selected task and append its write-set audit inside
+        // the atomic claim; a stale pre-claim workspace check races peer claims.
+        let Some(todo_id) = claim_selected_with_lease(
+            store,
+            goal_id,
+            &mut packet,
+            agent_id,
+            lease_secs,
+            force_workspace,
+        )?
+        else {
+            println!("   no selected todo; stopping");
+            break;
+        };
+        let goal = store
+            .replay(goal_id)?
+            .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found (deleted while running?)"))?;
+        let todo = goal.todo(&todo_id).unwrap().clone();
+        let boundary = store
+            .replay(goal_id)?
+            .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found (deleted while running?)"))?;
+        let runs_dir = std::path::PathBuf::from(store.root_path()).join("runs");
+        let _ = std::fs::create_dir_all(&runs_dir);
+        // O3: progress signals for this turn (tool starts observed on the
+        // stream; read at turn end, including the budget-truncation path).
+        let progress = std::sync::Arc::new(TurnProgressTracker::new(now_epoch()));
+        // Down-channel steering: drain a NEW pending_steer into this turn's
+        // note (a steer whose ts is newer than the last one we injected, and
+        // whose target matches this worker). The same instruction is never
+        // re-injected across turns. A broadcast (agent_id None) targets every
+        // worker; a specific agent_id targets only the matching worker.
+        let steer_note = goal.pending_steer.as_ref().and_then(|s| {
+            let targets_this_worker = match (agent_id, s.agent_id.as_deref()) {
+                (_, None) => true,
+                (Some(me), Some(target)) => me == target,
+                (None, Some(_)) => false,
+            };
+            if !targets_this_worker || s.ts <= last_steer_ts {
+                return None;
+            }
+            last_steer_ts = s.ts;
+            Some(format!(
+                "SUPERVISOR STEERING (new instructions — follow them now, superseding the prior plan):\n{}",
+                s.instruction
+            ))
+        });
+        let controls = crate::agents::control::pending(store, goal_id, agent_id)?;
+        let mut notes: Vec<String> = steer_note.into_iter().collect();
+        notes.extend(controls.iter().map(|c| {
+            format!(
+                "SUPERVISOR STEERING [{}] (idempotent guidance; a retry may repeat it):\n{}",
+                c.id, c.text
+            )
+        }));
+        notes.extend(
+            store
+                .events(goal_id)?
+                .iter()
+                .rev()
+                .filter_map(|entry| match &entry.event {
+                    Event::ProgressReported {
+                        todo_id: reported,
+                        message,
+                        ..
+                    } if reported == &todo_id => Some(format!(
+                        "Reported milestone (claim, verify against artifacts): {}",
+                        crate::decision::truncate(message, 600)
+                    )),
+                    _ => None,
+                })
+                .take(2),
+        );
+        notes.extend(next_continue_note.take());
+        let turn_note = (!notes.is_empty()).then(|| notes.join("\n\n"));
+        // Past this point the turn reaches the model, so the session is in use
+        // and must outlive the run (see the unused-session cleanup in `cmd_run`).
+        *executed_turn = true;
+        let turn_future = execute_turn(
+            client,
+            session_id,
+            &boundary,
+            agent_id,
+            &todo,
+            global_turn,
+            goal.history.last(),
+            true,
+            Some(runs_dir),
+            Some(&progress),
+            turn_note.as_deref(),
+        );
+        let record = match turn_future.await {
+            Ok(rec) => rec,
+            Err(e) => {
+                // A gRPC transport failure (h2 reset, stream error, connect
+                // loss …) never reached a writeback, so the ②/③ up-channel
+                // reports are skipped. Report the infra stop and mark it
+                // resumable before re-propagating, so the supervisor isn't
+                // left polling a dead worker.
+                *last_failure_kind = Some(crate::state::FailureKind::InfraRecoverable);
+                notify_infra_stop(
+                    store,
+                    client,
+                    goal_id,
+                    goal.supervisor_session_id.as_deref(),
+                    &todo_id,
+                    "transport",
+                    &format!("{e}"),
+                )
+                .await;
+                return Err(e);
+            }
+        };
+        println!(
+            "   run={} state={} tools=[{}] cost=¥{:.4}",
+            record.run_id,
+            record.terminal_state,
+            record.tools.join(", "),
+            record.cost_delta
+        );
+        println!(
+            "   live log: .future/goal/runs/{}.live.jsonl",
+            record.run_id
+        );
+        if let Some(v) = &record.validation {
+            println!(
+                "   validation: status={} ok={} ({}), exit={}",
+                validation_status_label(&v.status),
+                v.ok,
+                v.summary,
+                v.exit_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            );
+        }
+        // Rate-limit backoff: an HTTP-429 turn is a throttle event, not a
+        // science result — retrying it immediately re-hits the same overload.
+        // Sleep before the writeback/exit so the orchestrator's relaunch
+        // lands on a cooled-down engine instead of burning another turn.
+        if record.terminal_state == "error"
+            && crate::executor::is_rate_limit_error(record.error.as_deref())
+        {
+            println!(
+                "   ⏳ rate-limited (HTTP 429) — backing off {}s before writeback so a relaunch doesn't re-hit the throttle",
+                crate::executor::RATE_LIMIT_BACKOFF_SECS
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(
+                crate::executor::RATE_LIMIT_BACKOFF_SECS,
+            ))
+            .await;
+        }
+        // Reconcile current state: the contract may have changed while the
+        // worker ran. Completing this slice never invents dependency edges to
+        // other runnable tasks and never means the whole goal is complete.
+        let mut g = store
+            .replay(goal_id)?
+            .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found (deleted while running?)"))?;
+        let mut record = record;
+        if let Some(current) = g.todo(&todo_id) {
+            crate::completion::check_record(current, &mut record);
+            if current.validator != goal.todo(&todo_id).and_then(|t| t.validator.clone()) {
+                record.error = Some(
+                    "completion contract changed during execution: rerun the current validator"
+                        .into(),
+                );
+            }
+        }
+        let successors = g
+            .todo(&todo_id)
+            .map(|t| t.successor_ids.clone())
+            .unwrap_or_default();
+        let no_follow_up = successors.is_empty();
+        let already_closed = g
+            .todo(&todo_id)
+            .is_none_or(|t| matches!(t.status, TodoStatus::Done | TodoStatus::Superseded));
+        let succeeded = !already_closed && crate::executor::turn_succeeded(&record);
+        let completion = succeeded.then(|| (no_follow_up, successors.clone()));
+        let monitor_changed = if mode == crate::contract::TurnMode::MonitorPoll {
+            Some(record.evidence.to_uppercase().contains("EXISTS"))
+        } else {
+            None
+        };
+        // G-7: stamp the spend source on the ledger entry before writeback
+        // so quota accounting classifies it (run/agent/heartbeat).
+        record.spend_source = Some(
+            crate::quota::slot_accounting::classify_mode(mode)
+                .as_str()
+                .to_string(),
+        );
+        // A: stamp the failure classification — the repair budget keys on it,
+        // and the caller (cmd_run) uses it to decide session retention.
+        record.failure_kind = Some(crate::executor::classify_failure(&record));
+        *last_failure_kind = record.failure_kind;
+        if already_closed {
+            // Keep spend/run evidence without reopening or re-completing a todo
+            // closed manually or superseded while this turn was in flight.
+            g.history.push(record.clone());
+        } else {
+            writeback(&mut g, &record, monitor_changed, completion);
+        }
+        store.append_run(goal_id, &record)?;
+        // Project-local per-run mirror (runs/ under the goal state dir).
+        let _ = crate::compat::write_run(&store.goal_dir(goal_id), goal_id, &record);
+        store.append(Event::RunRecorded {
+            goal_id: goal_id.to_string(),
+            record: record.clone(),
+            ts: now_epoch(),
+        })?;
+        // Ack only after durable writeback. A transport failure/crash before
+        // this point must leave the instruction available to a restarted run.
+        if record.terminal_state == "completed" {
+            for instruction in &controls {
+                store.append(Event::ControlAcknowledged {
+                    goal_id: goal_id.to_string(),
+                    instruction_id: instruction.id.clone(),
+                    agent_id: agent_id.map(str::to_owned),
+                    ts: now_epoch(),
+                })?;
+            }
+            if let Some(steer) = &goal.pending_steer {
+                if steer.ts == last_steer_ts {
+                    store.append(Event::SteerConsumed {
+                        goal_id: goal_id.to_string(),
+                        agent_id: steer.agent_id.clone(),
+                        steer_ts: steer.ts,
+                        ts: now_epoch(),
+                    })?;
+                }
+            }
+        }
+        // O3: normal turn end — evaluate the no-progress window and ledger
+        // the breach (detection + bookkeeping; no auto-injection).
+        record_no_progress_if_idle(store, goal_id, &todo_id, agent_id, &progress)?;
+        // G-3: quota spend lands as a durable event alongside the run ledger
+        // (source mirrors slot accounting; monitor no-change never spends).
+        if monitor_changed != Some(false) {
+            store
+                .append(Event::QuotaSpent {
+                    goal_id: goal_id.to_string(),
+                    run_id: record.run_id.clone(),
+                    todo_id: todo_id.clone(),
+                    source: record
+                        .spend_source
+                        .clone()
+                        .unwrap_or_else(|| "run".to_string()),
+                    slots: 1,
+                    ts: now_epoch(),
+                })
+                .expect("quota spend append only fails on disk IO");
+        }
+        // G-8: monitor poll results land as durable events (decision-path
+        // writeback): changed closes the monitor, no_change advances the
+        // counter — replayed exactly via store::apply.
+        if mode == crate::contract::TurnMode::MonitorPoll {
+            let (result, no_change_count) = crate::decision::monitor_poll_classification(
+                monitor_changed.unwrap_or(false),
+                goal.todo(&todo_id)
+                    .map(|t| t.consecutive_no_change)
+                    .unwrap_or(0),
+            );
+            store.append(Event::MonitorPolled {
+                goal_id: goal_id.to_string(),
+                todo_id: todo_id.clone(),
+                result: result.to_string(),
+                no_change_count,
+                ts: now_epoch(),
+            })?;
+            println!("   poll result: {result} (no_change_count={no_change_count})");
+        }
+        if succeeded && mode != crate::contract::TurnMode::MonitorPoll {
+            // First-turn title for a session this invocation MINTED. A resumed
+            // session (`--resume-session`, or a pinned id that was still
+            // alive) is somebody else's conversation by definition and is
+            // never renamed — same rule as `future run --session`.
+            //
+            // Best-effort: a title is an extra model call that can be refused,
+            // time out or return nothing. It runs only after the writeback and
+            // must never change the turn's outcome, so a failure is reported
+            // and dropped. `Ok(None)` is the ordinary "not on its first turn"
+            // outcome and is silent — a resumed-looking session with history
+            // must not spam a warning on every turn.
+            if auto_title && created_session {
+                let language = app_title_language().unwrap_or_else(|| "en".to_string());
+                match client.title_first_turn(session_id, &language).await {
+                    Ok(Some(title)) => println!("   ✎ session titled: {title}"),
+                    Ok(None) => {}
+                    Err(e) => println!("   ⚠ first-turn title skipped: {e}"),
+                }
+            }
+            store.append(Event::TodoCompleted {
+                goal_id: goal_id.to_string(),
+                todo_id: todo_id.clone(),
+                no_follow_up,
+                successor_ids: successors.clone(),
+                evidence: Some(record.evidence.clone()),
+                ts: now_epoch(),
+            })?;
+            // Up-channel ②: a todo completed — tell the supervisor (state
+            // transition keyed on the todo id, so re-notification across runs
+            // is deduped).
+            notify_supervisor(
+                store,
+                client,
+                goal_id,
+                g.supervisor_session_id.as_deref(),
+                "completed",
+                &todo_id,
+                &crate::completion::notice(
+                    &g,
+                    &record,
+                    agent_id,
+                    session_id,
+                    &std::path::PathBuf::from(store.root_path())
+                        .join("runs")
+                        .join(format!("{}.live.jsonl", record.run_id)),
+                ),
+                &format!("completed:{todo_id}:{}", record.run_id),
+            )
+            .await;
+            // P0-2①: a completed advancement todo is a delivery pending
+            // verification — record the outcome signal at this turn.
+            record_delivery_if_advancement(store, &g, goal_id, &todo_id, record.turn)?;
+        } else {
+            // ARCHITECTURE-SIMPLIFICATION: the repair budget no longer stops
+            // the run loop — a failed todo stays runnable (the failure count
+            // is surfaced as an advisory in the delivery reason, and the agent
+            // decides whether to supersede / re-split). Only the validation
+            // budget (a `--verify` gate that keeps failing) still bounds the
+            // loop, because that is a correctness floor, not a policy rule.
+            //
+            // Up-channel ③: a science/hard failure needs the supervisor's
+            // intervention. Infra-recoverable (429 / truncation) is NOT
+            // reported — those are throttle events the loop backs off from,
+            // not plan problems.
+            if matches!(
+                record.failure_kind,
+                Some(crate::state::FailureKind::ScienceVerifyFailed)
+                    | Some(crate::state::FailureKind::HardError)
+            ) {
+                let attempts = g.todo(&todo_id).map(|t| t.failed_attempts).unwrap_or(0);
+                // The failure text must reflect the actual failure, not the
+                // LLM's terminal state. A verify-gate rejection ends the turn
+                // with terminal_state == "completed" and error == None, so a
+                // naive `error.unwrap_or(terminal_state)` fallback misreports
+                // it as "error: completed". Report the failure kind instead:
+                // for a verify-gate rejection include the validator's exit
+                // code; otherwise use the error (or terminal state) as-is.
+                let failure_text = match record.failure_kind {
+                    Some(crate::state::FailureKind::ScienceVerifyFailed) => {
+                        match &record.validation {
+                            Some(v) if !v.ok => format!(
+                                "verify gate rejected (exit {})",
+                                v.exit_code
+                                    .map(|c| c.to_string())
+                                    .unwrap_or_else(|| "-".to_string())
+                            ),
+                            _ => "verify-gate rejected the output".to_string(),
+                        }
+                    }
+                    _ => record
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| record.terminal_state.clone()),
+                };
+                notify_supervisor(
+                    store,
+                    client,
+                    goal_id,
+                    g.supervisor_session_id.as_deref(),
+                    "failed",
+                    &todo_id,
+                    &format!(
+                        "[future-goal] goal {goal_id}: todo {todo_id} failed (attempt {attempts}) — error: {failure_text}",
+                    ),
+                    &format!("failed:{todo_id}:{attempts}"),
+                )
+                .await;
+            }
+            let stop = g
+                .todo(&todo_id)
+                .map(|t| {
+                    if t.validator.is_some() && t.failed_attempts >= t.max_validation_attempts {
+                        println!(
+                            "   ✘ validation budget exhausted ({}/{}) — stopping (verify gate keeps failing; fix the gate or supersede)",
+                            t.failed_attempts, t.max_validation_attempts
+                        );
+                        return true;
+                    }
+                    false
+                })
+                .unwrap_or(false);
+            if stop {
+                break;
+            }
+        }
+        // Incomplete retry: a truncated model stream is an infra event, not a
+        // science failure — the todo stays runnable (no repair budget spent)
+        // and the next turn gets an explicit continue note so the agent picks
+        // up where it left off instead of restarting. Bounded: N consecutive
+        // incomplete turns on the same todo stop the run (the stream keeps
+        // dying mid-turn — relaunch with a fresh session or a lower thinking
+        // level).
+        if record.terminal_state == "incomplete" {
+            let streak = crate::executor::incomplete_streak(&g.history, &todo_id);
+            match crate::executor::incomplete_continue_note(
+                streak,
+                max_incomplete_retries,
+                &todo_id,
+            ) {
+                Some(note) => {
+                    println!(
+                        "   ↻ turn incomplete (stream truncated, attempt {streak}/{max_incomplete_retries}) — next turn continues where it left off"
+                    );
+                    next_continue_note = Some(note);
+                }
+                None => {
+                    println!(
+                        "   ✘ incomplete retry budget exhausted ({streak}/{max_incomplete_retries}) — the model stream keeps truncating mid-turn; stopping (relaunch later or reduce --thinking-level)"
+                    );
+                    // A worker that exhausts its incomplete-retry budget
+                    // stops mid-task: report it up-channel (the `break`
+                    // otherwise leaves the supervisor blind to the stop).
+                    // Keyed on the streak so a relaunch that re-exhausts
+                    // re-notifies at the new streak value.
+                    notify_infra_stop(
+                        store,
+                        client,
+                        goal_id,
+                        g.supervisor_session_id.as_deref(),
+                        &todo_id,
+                        "incomplete_budget",
+                        &format!(
+                            "the model stream keeps truncating mid-turn ({streak}/{max_incomplete_retries})"
+                        ),
+                    )
+                    .await;
+                    break;
+                }
+            }
+        }
+        // P0-2②: outcome_followthrough — auto-derive a follow-up todo for any
+        // delivery left unverified past the threshold, then refresh the read
+        // model when the follow-up(s) joined the frontier.
+        g = run_followthrough_and_refresh(store, goal_id, g)?;
+        // Sync Next Action to the frontier (avoid projection gap).
+        let next_text = next_action_text(&g);
+        store.set_next_action(goal_id, &next_text)?;
+        println!("   ✔ writeback ok — next action synced");
+    }
+    Ok(())
+}
+
+// ── Down-channel steering watcher ──────────────────────────────────────────
+
+/// Does the goal ledger contain a `worker_stopped` event at/after `offset`
+/// targeting this worker (`agent_id` match, or a broadcast with none)?
+/// Returns `(stopped, new_offset)` — callers scan incrementally so a stop
+/// issued BEFORE this run started does not kill it. Pure + unit-testable.
+fn worker_stop_requested(
+    events_path: &std::path::Path,
+    offset: u64,
+    agent_id: Option<&str>,
+) -> (bool, u64) {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(meta) = std::fs::metadata(events_path) else {
+        return (false, offset);
+    };
+    if meta.len() <= offset {
+        return (false, offset);
+    }
+    let mut buf = String::new();
+    let read = (|| -> std::io::Result<()> {
+        let mut f = std::fs::File::open(events_path)?;
+        f.seek(SeekFrom::Start(offset))?;
+        f.read_to_string(&mut buf)?;
+        Ok(())
+    })();
+    if read.is_err() {
+        return (false, offset);
+    }
+    let new_offset = meta.len();
+    let stopped = buf.lines().any(|line| {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            return false;
+        };
+        if v.get("kind").and_then(|k| k.as_str()) != Some("worker_stopped") {
+            return false;
+        }
+        match (agent_id, v.get("agent_id").and_then(|a| a.as_str())) {
+            (Some(me), Some(target)) => me == target,
+            (_, None) => true,
+            (None, Some(_)) => false,
+        }
+    });
+    (stopped, new_offset)
+}
+
+/// One down-channel poll step: read newly appended ledger lines since `offset`
+/// and, when a `WorkerSteered` event targeting THIS worker (matching
+/// `agent_id`, or a broadcast with none) appears, abort the running session so
+/// the next turn drains the steering instruction into its envelope. Returns
+/// the new offset. Extracted from the watch loop for testability.
+#[doc(hidden)] // test-visible seam for steer_worker_watch
+pub async fn steer_worker_poll_once(
+    events_path: &std::path::Path,
+    offset: u64,
+    agent_id: Option<&str>,
+    client: &mut Option<crate::agent_client::AgentClient>,
+    session_id: &str,
+) -> u64 {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(meta) = std::fs::metadata(events_path) else {
+        return offset;
+    };
+    if meta.len() <= offset {
+        return offset;
+    }
+    let mut buf = String::new();
+    let read = (|| -> std::io::Result<()> {
+        let mut f = std::fs::File::open(events_path)?;
+        f.seek(SeekFrom::Start(offset))?;
+        f.read_to_string(&mut buf)?;
+        Ok(())
+    })();
+    if read.is_err() {
+        return offset;
+    }
+    let Some(complete_bytes) = buf.rfind('\n').map(|i| i + 1) else {
+        return offset;
+    };
+    let new_offset = offset + complete_bytes as u64;
+    for line in buf[..complete_bytes].lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let kind = v.get("kind").and_then(|k| k.as_str());
+        let instruction = if kind == Some("control_issued") {
+            let instruction = &v["instruction"];
+            if instruction["interrupt"] != true {
+                continue;
+            }
+            instruction
+        } else if kind == Some("worker_steered") {
+            &v
+        } else {
+            continue;
+        };
+        // Broadcast (agent_id absent) targets every worker; a specific
+        // agent_id targets only the matching worker.
+        let targets_this_worker = match (
+            agent_id,
+            instruction.get("agent_id").and_then(|a| a.as_str()),
+        ) {
+            (Some(me), Some(target)) => me == target,
+            (_, None) => true,
+            (None, Some(_)) => false,
+        };
+        if !targets_this_worker {
+            continue;
+        }
+        if client.is_none() {
+            *client = crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr())
+                .await
+                .ok();
+        }
+        if let Some(c) = client.as_mut() {
+            if c.abort(session_id).await.is_err() {
+                *client = None;
+                return offset; // retry undelivered interrupt; never lose the event
+            }
+        } else {
+            return offset;
+        }
+    }
+    new_offset
+}
+
+/// Down-channel steering watcher: tail the goal ledger; when the supervisor
+/// issues a `WorkerSteered` instruction targeting this worker, abort the
+/// running session so the bounded-turn loop ends the current run and drains
+/// the instruction into the next turn's envelope. Runs as a background task
+/// for the duration of one run; never completes on its own (all error paths
+/// retry).
+async fn steer_worker_watch(
+    events_path: std::path::PathBuf,
+    agent_id: Option<String>,
+    session_id: String,
+) {
+    let mut offset = std::fs::metadata(&events_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let mut client: Option<crate::agent_client::AgentClient> = None;
+    #[cfg(test)]
+    let mut polls = 0usize;
+    loop {
+        tokio::time::sleep(steer_watch_interval()).await;
+        offset = steer_worker_poll_once(
+            &events_path,
+            offset,
+            agent_id.as_deref(),
+            &mut client,
+            &session_id,
+        )
+        .await;
+        #[cfg(test)]
+        {
+            polls += 1;
+            if steer_watch_test_should_stop(polls) {
+                break;
+            }
+        }
+    }
+}
+
+/// Down-channel watch poll cadence (short under cfg(test) so the seam test
+/// runs instantly without tokio's test-util time control).
+fn steer_watch_interval() -> std::time::Duration {
+    #[cfg(test)]
+    {
+        std::time::Duration::from_millis(1)
+    }
+    #[cfg(not(test))]
+    {
+        std::time::Duration::from_secs(2)
+    }
+}
+
+/// Test seam: bounds the (otherwise infinite) steer watch loop so tests can
+/// drive one poll and observe a clean exit.
+#[cfg(test)]
+static STEER_WATCH_MAX_POLLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn steer_watch_test_should_stop(polls: usize) -> bool {
+    let max = STEER_WATCH_MAX_POLLS.load(std::sync::atomic::Ordering::Relaxed);
+    max > 0 && polls >= max
+}
+
+/// O3: evaluate the no-progress window at turn end (normal or budget-truncated)
+/// and append a `TurnNoProgress` ledger event when breached. Detection +
+/// bookkeeping only — nudging the worker is the orchestrator's job via a
+/// `todo update` (picked up at the next turn).
+fn record_no_progress_if_idle(
+    store: &mut Store,
+    goal_id: &str,
+    todo_id: &str,
+    agent_id: Option<&str>,
+    progress: &TurnProgressTracker,
+) -> Result<()> {
+    let now = now_epoch();
+    let snap = progress.snapshot();
+    let threshold = crate::state::no_progress_idle_secs();
+    let Some(idle_secs) = crate::executor::no_progress_idle_secs(
+        snap.turn_start_at,
+        snap.last_write_tool_at,
+        now,
+        threshold,
+    ) else {
+        return Ok(());
+    };
+    store.append(Event::TurnNoProgress {
+        goal_id: goal_id.to_string(),
+        todo_id: todo_id.to_string(),
+        agent_id: agent_id.map(String::from),
+        idle_secs,
+        tool_calls_total: snap.tool_calls_total,
+        ts: now,
+    })?;
+    println!(
+        "   ⏳ TurnNoProgress: no write-class tool started for {idle_secs}s (threshold {threshold}s, {} tool calls)",
+        snap.tool_calls_total
+    );
+    Ok(())
+}
+
+// ── store (G-3 / G-6) ─────────────────────────────────────────────────────
+
+/// `loopx store <migrate|verify|bridge> --goal G` — event-store schema
+/// migration, ledger id/conflict integrity, and the fail-closed migration
+/// bridge status (G-6).
+fn cmd_store(store: &mut Store, args: &[String]) -> Result<()> {
+    match args.first().map(|s| s.as_str()) {
+        Some("migrate") => {
+            let goal_id = goal_arg(args)?;
+            let report = crate::migration::apply_migrations(&store.goal_dir(&goal_id), &goal_id)?;
+            println!(
+                "migrated {goal_id}: {} → {} ({} lines, backup {})",
+                report.from, report.to, report.migrated_lines, report.backup_path
+            );
+            println!("rollback: {}", report.rollback_plan);
+            Ok(())
+        }
+        Some("verify") => {
+            let mut goal_id = None;
+            let mut repair = false;
+            reject_unknown_flags(args, &["--format", "--goal", "--json", "--repair"])?;
+            parse_pairs(args, |k, v| {
+                if k == "--goal" {
+                    goal_id = Some(v);
+                } else if k == "--repair" {
+                    repair = true;
+                }
+            });
+            let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+            let report = store.verify(&goal_id)?;
+            // P1-2①: run-index drift detection (read-model self-diagnosis)
+            // alongside the ledger integrity check.
+            let drift =
+                crate::runtime::run_index::detect_index_drift(&store.root_path(), &goal_id)?;
+            // P1-2③: `--repair` rebuilds a drifted index (non-destructive)
+            // and records the ProjectionRepaired audit event.
+            let repaired = if repair {
+                crate::runtime::run_index::repair_index_if_drifted(store, &goal_id)?
+            } else {
+                None
+            };
+            if wants_json(args) {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "ledger": report,
+                        "run_index_drift": drift,
+                        "repaired": repaired,
+                    }))?
+                );
+                return Ok(());
+            }
+            println!(
+                "ledger {goal_id}: schema={} events={} unique={} idempotent_dups={} legacy_without_id={} skipped_unknown_kinds={} conflicts={:?} → {}",
+                report.schema_version,
+                report.total_events,
+                report.unique_events,
+                report.idempotent_duplicates,
+                report.legacy_lines_without_id,
+                report.skipped_unknown_kinds,
+                report.conflicts,
+                if report.ok { "ok" } else { "CONFLICT" }
+            );
+            if report.skipped_unknown_kinds > 0 {
+                println!(
+                    "note: {} unknown-kind event(s) [{}] skipped by the read path — binary older than ledger, please upgrade",
+                    report.skipped_unknown_kinds,
+                    report.unknown_kinds.join(", ")
+                );
+            }
+            println!(
+                "run_index {goal_id}: rows={} files={} missing={} stale={} duplicates={} → {}",
+                drift.index_rows,
+                drift.run_files,
+                drift.missing_rows,
+                drift.stale_rows,
+                drift.duplicate_rows,
+                if drift.repair_recommended {
+                    "DRIFT (repair with `store verify --repair`)"
+                } else {
+                    "ok"
+                }
+            );
+            if let Some(outcome) = repaired {
+                println!(
+                    "repaired run_index {goal_id}: {} drift rows → rebuilt {} rows (backup {})",
+                    outcome.drift.drift_count,
+                    outcome.rebuilt.rows_written,
+                    if outcome.rebuilt.backup_path.is_empty() {
+                        "none (index was missing)"
+                    } else {
+                        outcome.rebuilt.backup_path.as_str()
+                    }
+                );
+            } else if repair {
+                println!("repair: no drift — nothing to rebuild");
+            }
+            Ok(())
+        }
+        Some("bridge") => {
+            let goal_id = goal_arg(args)?;
+            let goal_dir = store.goal_dir(&goal_id);
+            let bridge = crate::migration::migration_bridge_status(store, &goal_id, &goal_dir);
+            println!(
+                "migration bridge {goal_id}: stage={} promotion_allowed={}",
+                bridge.stage, bridge.promotion_allowed
+            );
+            println!("  next_action: {}", bridge.next_action);
+            println!(
+                "  checks: event_read_path={} active_state_projection={} dual_read_parity={} rollback={} canary={} idempotency={} public_boundary={} head_matches={}",
+                bridge.checks.event_read_path_ready,
+                bridge.checks.active_state_projection_ready,
+                bridge.checks.dual_read_parity_clean,
+                bridge.checks.rollback_plan_recorded,
+                bridge.checks.bounded_canary_passed,
+                bridge.checks.idempotency_conflicts_clean,
+                bridge.checks.public_boundary_clean,
+                bridge.checks.event_projection_head_matches_store,
+            );
+            println!(
+                "  missing: shadow={:?} canary={:?} promotion={:?}",
+                bridge.missing_for_shadow, bridge.missing_for_canary, bridge.missing_for_promotion
+            );
+            Ok(())
+        }
+        _ => bail!("store subcommand must be `migrate`, `verify`, or `bridge`"),
+    }
+}
+
+fn goal_arg(args: &[String]) -> Result<String> {
+    reject_unknown_flags(args, &["--goal"])?;
+    let mut goal_id = None;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v)
+        }
+    });
+    goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))
+}
+
+// ── backfill (G-3) ────────────────────────────────────────────────────────
+
+/// `loopx backfill --goal G [--from PATH] [--privacy public_safe|local_private|private_pointer]
+/// [--dry-run]` — reconstruct idempotent events from an ACTIVE_GOAL_STATE.md
+/// workbench (read-only import with source_ref/section/line provenance).
+fn cmd_backfill(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut from = None;
+    let mut privacy = "local_private".to_string();
+    let mut dry_run = false;
+    reject_unknown_flags(args, &["--dry-run", "--from", "--goal", "--privacy"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--from" {
+            from = Some(v);
+        } else if k == "--privacy" {
+            privacy = v;
+        } else if k == "--dry-run" {
+            dry_run = true;
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let level: crate::projection::privacy::PrivacyLevel =
+        privacy.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+    let markdown = match from {
+        Some(path) => {
+            std::fs::read_to_string(&path).map_err(|e| anyhow::anyhow!("read {path}: {e}"))?
+        }
+        None => crate::backfill::active_state_markdown(&goal.cwd, &goal_id)?,
+    };
+    let outcome = crate::backfill::backfill_todo_events(&markdown, &goal_id, level)?;
+    if dry_run {
+        println!(
+            "backfill dry-run: {goal_id} → {} todos, {} events (not appended)",
+            outcome.todo_count, outcome.event_count
+        );
+        for event in &outcome.events {
+            println!(
+                "  {} [{}] {}:{} — {}",
+                event.event_id,
+                event.privacy.as_str(),
+                event.source_section,
+                event.source_line,
+                backfill_event_label(&event.event)
+            );
+        }
+        return Ok(());
+    }
+    let mut appended = 0usize;
+    for event in &outcome.events {
+        store.append_with_meta(
+            event.event.clone(),
+            Some(event.event_id.clone()),
+            Some(crate::backfill::MARKDOWN_BACKFILL_PRODUCER.to_string()),
+            Some(event.source_ref.clone()),
+            Some(event.source_section.clone()),
+            Some(event.source_line),
+            Some(event.privacy.as_str().to_string()),
+        )?;
+        appended += 1;
+    }
+    sync_compat(store, &goal_id);
+    println!(
+        "backfill {goal_id}: {} todos → {} events appended (producer={}, privacy={}) ✔",
+        outcome.todo_count,
+        appended,
+        crate::backfill::MARKDOWN_BACKFILL_PRODUCER,
+        level.as_str()
+    );
+    Ok(())
+}
+
+// ── privacy (G-4) ─────────────────────────────────────────────────────────
+
+/// `loopx privacy --goal G [--level LEVEL] [--json]` — grade the goal's
+/// todos by privacy tier, render the multi-projection (public-safe markdown
+/// + status cache), and persist the status cache.
+fn cmd_privacy(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut level = "public_safe".to_string();
+    let mut format_json = false;
+    reject_unknown_flags(args, &["--format", "--goal", "--level"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--level" {
+            level = v;
+        } else if k == "--format" {
+            format_json = v == "json";
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let privacy: crate::projection::privacy::PrivacyLevel =
+        level.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+    let goal_dir = store.goal_dir(&goal_id);
+    let projections = crate::projection::build_projections(&goal, privacy, &goal_dir);
+    // Persist the status cache projection (multi-projection write path).
+    // build_projections always populates the cache.
+    let cache = projections
+        .status_cache
+        .as_ref()
+        .expect("status cache is always built");
+    crate::projection::status_cache::write_status_cache(&goal_dir, cache)?;
+    if format_json {
+        println!("{}", serde_json::to_string_pretty(&projections)?);
+        return Ok(());
+    }
+    let report = &projections.privacy_report;
+    println!(
+        "privacy {goal_id}: overall={} items={} (public={} private={} pointer={})",
+        report.overall.as_str(),
+        report.item_count,
+        report.public_safe_count,
+        report.local_private_count,
+        report.private_pointer_count
+    );
+    for item in &report.items {
+        println!(
+            "  {} → {} {}",
+            item.todo_id,
+            item.level.as_str(),
+            if item.private_fields.is_empty() {
+                String::new()
+            } else {
+                format!("(private fields: {})", item.private_fields.join(","))
+            }
+        );
+    }
+    println!(
+        "--- public-safe projection (level={}) ---",
+        privacy.as_str()
+    );
+    println!("{}", projections.public_markdown);
+    let digest = crate::projection::status_cache::ledger_digest(&goal_dir);
+    let cache = crate::projection::status_cache::read_status_cache(&goal_dir);
+    if let Some(cache) = cache {
+        println!(
+            "--- status cache: ledger_digest={} stale={} ---",
+            cache.ledger_digest,
+            crate::projection::status_cache::status_cache_stale(&cache, &digest)
+        );
+    }
+    Ok(())
+}
+
+// ── lease (G-13) ──────────────────────────────────────────────────────────
+
+/// `loopx lease <claim|renew|release|expire|status> --goal G --todo-id T
+/// [--agent-id A] [--lease-secs N]` — the task-lease state machine over the
+/// event base (TodoClaimed + TodoRenewed/TodoReleased/TodoExpired).
+fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
+    let sub = args.first().map(|s| s.as_str()).ok_or_else(|| {
+        anyhow::anyhow!("lease requires a subcommand (claim|renew|release|expire|status)")
+    })?;
+    let json = wants_json(args);
+    let mut goal_id = None;
+    let mut todo_id = None;
+    let mut agent_id = None;
+    let mut lease_secs = 0u64;
+    let mut force = false;
+    reject_unknown_flags(
+        &args[1..],
+        &[
+            "--agent-id",
+            "--force",
+            "--format",
+            "--goal",
+            "--json",
+            "--lease-secs",
+            "--todo-id",
+        ],
+    )?;
+    parse_pairs(&args[1..], |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--lease-secs" {
+            lease_secs = v.parse().unwrap_or(0);
+        } else if k == "--force" {
+            force = true;
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
+    let mut goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let agent = agent_id.unwrap_or_else(|| "default-agent".to_string());
+    use crate::work_items::task_lease as lease;
+    let now = crate::state::now_epoch();
+
+    if sub == "status" {
+        let todo = goal
+            .todo(&todo_id)
+            .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found"))?;
+        let status = lease::lease_status(todo, now);
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&lease_status_json(&todo_id, &status))?
+            );
+            return Ok(());
+        }
+        match status {
+            lease::LeaseStatus::Free => println!("todo {todo_id}: lease FREE"),
+            lease::LeaseStatus::Active { owner, expires_at } => {
+                println!("todo {todo_id}: lease ACTIVE (owner={owner} expires_at={expires_at})")
+            }
+            lease::LeaseStatus::Expired { owner, expires_at } => {
+                println!("todo {todo_id}: lease EXPIRED (owner={owner} expired_at={expires_at})")
+            }
+        }
+        return Ok(());
+    }
+
+    let todo_status_open = goal
+        .todo(&todo_id)
+        .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found"))?
+        .status
+        == TodoStatus::Open;
+    match sub {
+        "claim" => {
+            if !todo_status_open {
+                bail!("task lease requires an open todo");
+            }
+            // Atomic claim (same TOCTOU-safe path as `todo claim`): check +
+            // append and workspace guard under one ledger lock.
+            let outcome = store.try_claim_todo_with_workspace(
+                &goal_id, &todo_id, &agent, lease_secs, None, force,
+            )?;
+            if !outcome.claimed {
+                bail!("todo already has an active lease held by another agent");
+            }
+            let expires = now + crate::work_items::task_lease::normalize_ttl(lease_secs)?;
+            sync_compat(store, &goal_id);
+            println!(
+                "todo {todo_id} lease acquired by {agent} until {expires} {}✔",
+                if outcome.stolen {
+                    "(steal after expiry) "
+                } else {
+                    ""
+                }
+            );
+        }
+        "renew" => {
+            let todo = goal
+                .todo_mut(&todo_id)
+                .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found"))?;
+            let _ = lease::renew(todo, &agent, lease_secs, now)?;
+            let expires = todo.lease_expires_at.unwrap_or(now);
+            store.append(Event::TodoRenewed {
+                goal_id: goal_id.clone(),
+                todo_id: todo_id.clone(),
+                agent_id: agent.clone(),
+                lease_expires_at: expires,
+                ts: now,
+            })?;
+            sync_compat(store, &goal_id);
+            println!("todo {todo_id} lease renewed by {agent} until {expires} ✔");
+        }
+        "release" => {
+            let todo = goal
+                .todo_mut(&todo_id)
+                .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found"))?;
+            let op = lease::release(todo, &agent, now)?;
+            if !matches!(op, lease::LeaseOp::Released { missing: true }) {
+                store.append(Event::TodoReleased {
+                    goal_id: goal_id.clone(),
+                    todo_id: todo_id.clone(),
+                    agent_id: agent.clone(),
+                    ts: now,
+                })?;
+            }
+            sync_compat(store, &goal_id);
+            println!("todo {todo_id} lease released by {agent} ✔");
+        }
+        "expire" => {
+            let todo = goal
+                .todo_mut(&todo_id)
+                .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found"))?;
+            let op = lease::expire(todo, now)?;
+            if matches!(op, lease::LeaseOp::Expired { had_lease: true }) {
+                store.append(Event::TodoExpired {
+                    goal_id: goal_id.clone(),
+                    todo_id: todo_id.clone(),
+                    ts: now,
+                })?;
+            }
+            sync_compat(store, &goal_id);
+            println!("todo {todo_id} lease expiry recorded ✔");
+        }
+        _ => bail!("lease subcommand must be claim|renew|release|expire|status"),
+    }
+    Ok(())
+}
+fn cmd_runs(store: &Store, args: &[String]) -> Result<()> {
+    let sub = args.first().map(|s| s.as_str()).ok_or_else(|| {
+        anyhow::anyhow!("runs requires a subcommand (history|compact|index|retention|stale)")
+    })?;
+    let mut goal_id = None;
+    let mut keep = 50usize;
+    let mut cutoff = None;
+    let mut rebuild = false;
+    let mut format_json = false;
+    reject_unknown_flags(
+        &args[1..],
+        &["--cutoff", "--format", "--goal", "--keep", "--rebuild"],
+    )?;
+    parse_pairs(&args[1..], |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--keep" {
+            keep = v.parse().unwrap_or(50);
+        } else if k == "--cutoff" {
+            cutoff = Some(v);
+        } else if k == "--rebuild" {
+            rebuild = true;
+        } else if k == "--format" {
+            format_json = v == "json";
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let root = store.root_path();
+    use crate::runtime as rt;
+
+    match sub {
+        "history" => {
+            let projection = rt::run_history::build_run_history(&root, &goal_id, now_epoch())?;
+            match projection {
+                Some(p) => {
+                    if format_json {
+                        println!("{}", serde_json::to_string_pretty(&p)?);
+                    } else {
+                        println!(
+                            "run history {goal_id}: {} runs (24h={} 7d={}) latest={:?}",
+                            p.sample_run_count,
+                            p.totals.events_24h,
+                            p.totals.events_7d,
+                            p.latest.as_ref().map(|r| r.classification.as_str())
+                        );
+                        println!("  by_class_24h: {:?}", p.totals.by_class_24h);
+                        println!("  by_class_7d:  {:?}", p.totals.by_class_7d);
+                    }
+                }
+                None => println!("no run history for {goal_id} (runtime {root})"),
+            }
+        }
+        "compact" => {
+            let report = match cutoff {
+                Some(c) => rt::run_compaction::archive_runs_before(
+                    &root,
+                    &goal_id,
+                    c.parse()
+                        .map_err(|_| anyhow::anyhow!("--cutoff must be epoch secs"))?,
+                )?,
+                None => rt::run_compaction::archive_keeping_latest(&root, &goal_id, keep)?,
+            };
+            println!(
+                "compaction {goal_id}: archived {} runs (recoverable, never deleted), kept {} → {}",
+                report.archived.len(),
+                report.kept,
+                report.archive_dir
+            );
+        }
+        "index" => {
+            if rebuild {
+                let report = rt::run_index::rebuild_index(&root, &goal_id)?;
+                println!(
+                    "index rebuilt {goal_id}: {} rows (backup {}) non_destructive={}",
+                    report.rows_written, report.backup_path, report.non_destructive
+                );
+                return Ok(());
+            }
+            let index = rt::index_path(&root, &goal_id);
+            let report = rt::run_index::detect_duplicates(&index)?;
+            println!(
+                "index {goal_id}: {} rows, {} duplicate group(s), repairable={}",
+                report.total_rows,
+                report.duplicate_groups.len(),
+                report.repairable
+            );
+            for group in &report.duplicate_groups {
+                println!(
+                    "  {} lines {:?} → {} ({})",
+                    group.duplicate_kind, group.line_numbers, group.action, group.severity
+                );
+            }
+        }
+        "retention" => {
+            let policy = rt::run_context_retention::retention_policy(keep, None);
+            let report =
+                rt::run_context_retention::retention_report(&root, &goal_id, &policy, now_epoch())?;
+            println!(
+                "retention {goal_id}: keep_latest={} total={} retained={} candidates={}",
+                policy.keep_latest,
+                report.total,
+                report.retained,
+                report.candidates.len()
+            );
+            for candidate in &report.candidates {
+                println!("  candidate: {candidate}");
+            }
+        }
+        "stale" => {
+            let goal = store
+                .replay(&goal_id)?
+                .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+            let goal_dir = store.goal_dir(&goal_id);
+            match rt::stale_latest_run::stale_latest_run(&goal, &goal_dir) {
+                Some(warning) => {
+                    println!(
+                        "⚠ {} (severity={}): {} (state@{} vs latest run@{})",
+                        warning.kind,
+                        warning.severity,
+                        warning.reason,
+                        warning.active_state_updated_at.unwrap_or(0),
+                        warning.latest_run_recorded_at.unwrap_or(0)
+                    );
+                    println!("  → {}", warning.recommended_action);
+                }
+                None => println!("no stale-latest-run warning for {goal_id}"),
+            }
+        }
+        _ => bail!("runs subcommand must be history|compact|index|retention|stale"),
+    }
+    Ok(())
+}
+
+// ── helpers ────────────────────────────────────────────────────────────────
+
+/// Print one replan obligation line pair (todo-bound or free-floating).
+fn print_obligation(obligation: &crate::work_items::replan_obligation::ReplanObligation) {
+    println!("  [{}] {}", obligation.kind, obligation.evidence,);
+    if let Some(todo_id) = &obligation.todo_id {
+        println!(
+            "       todo_id={todo_id} raised_at={}",
+            obligation.raised_at
+        );
+    } else {
+        println!("       raised_at={}", obligation.raised_at);
+    }
+}
+
+/// The goal disappeared between decide and claim (deleted mid-run).
+fn goal_vanished_error(goal_id: &str) -> anyhow::Error {
+    anyhow::anyhow!("goal {goal_id} not found (deleted while running?)")
+}
+
+/// Auto-registration workspace declaration: the process cwd (P0-1 write set),
+/// empty when the cwd could not be resolved (deleted directory / failure).
+fn auto_register_workspaces(cwd: &str) -> Vec<String> {
+    if cwd.is_empty() {
+        vec![]
+    } else {
+        vec![crate::agents::workspace_guard::normalize_workspace_path(
+            cwd,
+        )]
+    }
+}
+
+/// P1-2③: run-index self-heal seam at run start. The run index is no longer
+/// a persisted append-only file (writers stopped appending it — that was the
+/// cross-process interleave drift source — and readers derive it from the run
+/// files on disk via `run_index::load_run_index`). There is therefore nothing
+/// to self-heal at run start; the seam is kept as a no-op so the run path's
+/// intent stays explicit. The legacy `runs index` / `store verify --repair`
+/// commands still rebuild an index.jsonl on demand for human inspection.
+fn run_index_self_heal(_store: &mut Store, _goal_id: &str) -> Result<()> {
+    Ok(())
+}
+
+/// P0-2①: a completed advancement todo is a delivery pending verification —
+/// record the outcome signal at this turn. Non-advancement completions carry
+/// no delivery signal (monitor/gate work is not a shipped artifact).
+fn record_delivery_if_advancement(
+    store: &mut Store,
+    goal: &crate::state::Goal,
+    goal_id: &str,
+    todo_id: &str,
+    turn: u32,
+) -> Result<()> {
+    if !goal
+        .todo(todo_id)
+        .map(|t| t.class == crate::state::TaskClass::Advancement)
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    let seq = goal.delivery_state(todo_id).map(|d| d.seq + 1).unwrap_or(1);
+    store.append(Event::DeliveryOutcomeRecorded {
+        goal_id: goal_id.to_string(),
+        todo_id: todo_id.to_string(),
+        outcome: crate::work_items::delivery_outcome::OUTCOME_DELIVERED.to_string(),
+        note: None,
+        delivered_turn: turn,
+        seq,
+        ts: now_epoch(),
+    })?;
+    Ok(())
+}
+
+/// P0-2②: run the delivery follow-through check, print any auto-created
+/// follow-up todos, and refresh the read model when they joined the frontier
+/// (so the Next Action sync cannot project a gap).
+fn run_followthrough_and_refresh(
+    store: &mut Store,
+    goal_id: &str,
+    goal: crate::state::Goal,
+) -> Result<crate::state::Goal> {
+    let followups = run_followthrough_check(
+        store,
+        goal_id,
+        crate::work_items::delivery_outcome::DEFAULT_FOLLOWTHROUGH_TURNS,
+    )?;
+    for followup in &followups {
+        println!("   ↻ follow-through: todo {followup} auto-created (unverified delivery)");
+    }
+    if followups.is_empty() {
+        Ok(goal)
+    } else {
+        store
+            .replay(goal_id)?
+            .ok_or_else(|| goal_vanished_error(goal_id))
+    }
+}
+
+/// One-line summary of a backfilled event for `backfill --dry-run` output.
+fn backfill_event_label(event: &Event) -> String {
+    match event {
+        Event::TodoAdded { todo, .. } => format!("add {}", todo.id),
+        Event::TodoClaimed { todo_id, .. } => format!("claim {todo_id}"),
+        Event::TodoCompleted { todo_id, .. } => format!("complete {todo_id}"),
+        _ => "?".to_string(),
+    }
+}
+/// Print the status projection, rendered for the CLI (G-9).
+fn validation_status_label(status: &crate::state::ValidationStatus) -> &'static str {
+    match status {
+        crate::state::ValidationStatus::Passed => "passed",
+        crate::state::ValidationStatus::Progress => "progress",
+        crate::state::ValidationStatus::Failed => "failed",
+        crate::state::ValidationStatus::Inconclusive => "inconclusive",
+        crate::state::ValidationStatus::Unavailable => "unavailable",
+        crate::state::ValidationStatus::NotRequired => "not_required",
+    }
+}
+
+/// P0-3①: reject unknown `--flags` instead of silently ignoring them.
+///
+/// Every command handler validates its argument list against the flags it
+/// actually parses, so a typo (`--gaol`) fails loudly with a help hint
+/// instead of being silently swallowed (which used to surface as a
+/// confusing "--goal required" or, worse, as silently ignored input).
+/// `--help` and the global `--include-experimental` are always allowed.
+fn reject_unknown_flags(args: &[String], known: &[&str]) -> Result<()> {
+    for a in args {
+        if !a.starts_with("--") || a == "--help" || a == "--include-experimental" {
+            continue;
+        }
+        if !known.contains(&a.as_str()) {
+            bail!("unknown flag `{a}` (try `{} --help`)", prog());
+        }
+    }
+    Ok(())
+}
+
+/// P0-3③: does the arg list request JSON output? Accepts both `--json`
+/// and `--format json` so every read-only command speaks the same dialect.
+fn wants_json(args: &[String]) -> bool {
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--json" {
+            return true;
+        }
+        if args[i] == "--format" && args.get(i + 1).map(|s| s.as_str()) == Some("json") {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// P0-3④: classify a `--resume-when` value — numeric N means "defer N
+/// seconds from now" (a real deadline); anything else is a text-only hint.
+#[derive(Debug, PartialEq)]
+enum ResumeWhen {
+    Defer(u64),
+    TextHint(String),
+}
+
+fn parse_resume_when(value: &str) -> ResumeWhen {
+    match value.trim().parse::<u64>() {
+        Ok(secs) => ResumeWhen::Defer(secs),
+        Err(_) => ResumeWhen::TextHint(value.to_string()),
+    }
+}
+
+/// P0-3④: the warning printed when `--resume-when` is a text hint —
+/// previously the no-deadline behavior was silent (FUTURE.md known quirk).
+fn resume_when_text_hint_warning(value: &str, consequence: &str) -> String {
+    format!(
+        "warning: `--resume-when \"{value}\"` is not numeric — storing it as a text hint only \
+         ({consequence}). Use a numeric value (seconds) to schedule a real deadline."
+    )
+}
+
+fn parse_pairs(args: &[String], mut f: impl FnMut(&str, String)) {
+    let mut i = 0;
+    while i < args.len() {
+        let k = args[i].as_str();
+        if k.starts_with("--") {
+            // boolean flags (no value) are followed by another flag or end.
+            if matches!(
+                k,
+                "--no-follow-up"
+                    | "--anonymous"
+                    | "--detach"
+                    | "--interrupt"
+                    | "--once"
+                    | "--no-title"
+                    | "--force-workspace"
+                    | "--help"
+                    | "-h"
+            ) {
+                f(k, "true".to_string());
+                i += 1;
+            } else if i + 1 < args.len() && !args[i + 1].starts_with("--") {
+                f(k, args[i + 1].clone());
+                i += 2;
+            } else {
+                f(k, "true".to_string());
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+}
+
+/// `loopx heartbeat-prompt --goal G [--agent-id A]` — render the per-turn
+/// re-entry packet for a host executor (reference heartbeat contract).
+fn cmd_heartbeat(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut agent_id = None;
+    reject_unknown_flags(args, &["--agent-id", "--goal"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let packet = decide_for(&goal, SystemTime::now(), agent_id.as_deref());
+    print!(
+        "{}",
+        crate::heartbeat::render_heartbeat_prompt(&goal, &packet)
+    );
+    Ok(())
+}
+
+/// `loopx worker-bridge --goal G [--agent-id A] [--max-turns N]` — run the
+/// stdio worker contract (packet out, result in, writeback).
+async fn cmd_worker_bridge(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut agent_id = None;
+    let mut max_turns = 6u32;
+    reject_unknown_flags(args, &["--agent-id", "--goal", "--max-turns"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--max-turns" {
+            max_turns = v.parse().unwrap_or(6);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    crate::worker_bridge::run_bridge(
+        store,
+        &crate::worker_bridge::BridgeOptions {
+            goal_id,
+            agent_id,
+            max_turns,
+        },
+    )
+    .await
+}
+
+/// Join todo ids for CLI display (empty → "(none)").
+fn join_ids(ids: &[String]) -> String {
+    if ids.is_empty() {
+        "(none)".to_string()
+    } else {
+        ids.join(", ")
+    }
+}
+
+/// One worker's backing agent session, resolved from a `run_header` line in
+/// `.future/goal/runs/*.live.jsonl`. This is the goal plane's own, deterministic
+/// agent-id ↔ session-id tie — the source of truth for `worker stop`/`list`,
+/// never `ls -t` mtime guessing.
+#[derive(Debug, Clone, serde::Serialize)]
+struct WorkerSession {
+    agent_id: String,
+    session_id: String,
+    run_id: String,
+    todo_id: String,
+    wall_ts: u64,
+    /// Populated by `worker list` (not `stop`): whether the agent currently
+    /// has this session streaming (an in-flight run).
+    streaming: bool,
+}
+
+/// Scan `.future/goal/runs/*.live.jsonl` for `run_header` lines belonging to
+/// `goal_id`, and collapse to the most recent session per agent (max wall_ts).
+/// Pure + unit-testable; the caller injects the runs dir (the `root_path`/
+/// `runs` subdir).
+fn scan_worker_sessions(runs_dir: &std::path::Path, goal_id: &str) -> Vec<WorkerSession> {
+    let mut by_agent: std::collections::HashMap<String, WorkerSession> =
+        std::collections::HashMap::new();
+    let Ok(entries) = std::fs::read_dir(runs_dir) else {
+        return vec![];
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() || !path.to_string_lossy().ends_with(".live.jsonl") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        // The run_header is always the FIRST line.
+        let Some(first) = text.lines().next() else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(first) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("run_header") {
+            continue;
+        }
+        if v.get("goal_id").and_then(|g| g.as_str()) != Some(goal_id) {
+            continue;
+        }
+        let Some(agent_id) = v.get("agent_id").and_then(|a| a.as_str()) else {
+            continue;
+        };
+        let session_id = v.get("session_id").and_then(|s| s.as_str()).unwrap_or("");
+        let run_id = v.get("run_id").and_then(|s| s.as_str()).unwrap_or("");
+        let todo_id = v.get("todo_id").and_then(|s| s.as_str()).unwrap_or("");
+        let wall_ts = v.get("wall_ts").and_then(|n| n.as_u64()).unwrap_or(0);
+        let fresh = WorkerSession {
+            agent_id: agent_id.to_string(),
+            session_id: session_id.to_string(),
+            run_id: run_id.to_string(),
+            todo_id: todo_id.to_string(),
+            wall_ts,
+            streaming: false,
+        };
+        match by_agent.get(agent_id) {
+            Some(prev) if prev.wall_ts >= fresh.wall_ts => {}
+            _ => {
+                by_agent.insert(agent_id.to_string(), fresh);
+            }
+        }
+    }
+    let mut out: Vec<WorkerSession> = by_agent.into_values().collect();
+    out.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
+    out
+}
+
+/// Merge the authoritative agent→session bindings from the goal ledger
+/// (`WorkerSessionBound`, folded into `Goal.worker_sessions`) with the
+/// `.live.jsonl` run-header scan (which carries run_id/todo_id/wall_ts
+/// metadata). The ledger binding wins for `session_id` because it is written
+/// BEFORE the first prompt, so it also covers orphans the header scan cannot
+/// see (a prompt/parse failure or a client kill before the run_header is
+/// written). For old ledgers with no bindings, the scan alone is the fallback.
+fn bound_worker_sessions(
+    goal: &crate::state::Goal,
+    runs_dir: &std::path::Path,
+    goal_id: &str,
+) -> Vec<WorkerSession> {
+    let scanned = scan_worker_sessions(runs_dir, goal_id);
+    let mut out: Vec<WorkerSession> = Vec::new();
+    let mut bound_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (agent_id, session_id) in &goal.worker_sessions {
+        bound_ids.insert(agent_id.clone());
+        let meta = scanned.iter().find(|s| &s.agent_id == agent_id);
+        out.push(WorkerSession {
+            agent_id: agent_id.clone(),
+            session_id: session_id.clone(),
+            run_id: meta.map(|s| s.run_id.clone()).unwrap_or_default(),
+            todo_id: meta.map(|s| s.todo_id.clone()).unwrap_or_default(),
+            wall_ts: meta.map(|s| s.wall_ts).unwrap_or(0),
+            streaming: false,
+        });
+    }
+    // Agents the header scan knows about but that have no ledger binding yet
+    // (old ledgers, or a run that wrote a header before this build introduced
+    // the binding) still surface via the scan.
+    for s in scanned {
+        if !bound_ids.contains(&s.agent_id) {
+            out.push(s);
+        }
+    }
+    out.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
+    out
+}
+
+/// `future goal worker list --goal G [--format json]` — the registered workers
+/// of a goal, each mapped to its current backing agent session and whether the
+/// agent is streaming it right now (an in-flight run). This is the goal plane's
+/// deterministic agent-id ↔ session-id surface (fills the gap where the
+/// supervisor completion report does not carry the session id).
+async fn cmd_worker(store: &mut Store, args: &[String]) -> Result<()> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("");
+    match sub {
+        "list" => cmd_worker_list(&*store, &args[1..]).await,
+        "stop" | "kill" => cmd_worker_stop(store, &args[1..]).await,
+        "tail" => cmd_worker_tail(&*store, &args[1..]).await,
+        other => bail!(
+            "unknown worker subcommand `{other}` (try `{} worker --help`)",
+            prog()
+        ),
+    }
+}
+
+/// `future goal worker tail --goal G [--agent-id A] [--lines N]` — render the
+/// most recent lines of a worker's live turn log
+/// (`.future/goal/runs/<run_id>.live.jsonl`), the goal plane's own per-run
+/// observability stream. This is the orchestrator's window into what a worker
+/// is *actually doing* (tool calls, prompts, streaming) so it can decide
+/// whether to steer / stop / let it run — without hand-tailing the file.
+/// `--agent-id` picks one worker's latest run; without it, the latest run
+/// across all workers on the goal. Default `--lines 20`.
+async fn cmd_worker_tail(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut agent_id = None;
+    let mut lines = 20usize;
+    reject_unknown_flags(
+        args,
+        &[
+            "--goal",
+            "--agent-id",
+            "--lines",
+            "--raw",
+            "--format",
+            "--json",
+        ],
+    )?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--lines" {
+            lines = v.parse().unwrap_or(20);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let runs_dir = std::path::PathBuf::from(store.root_path()).join("runs");
+    let sessions = bound_worker_sessions(&goal, &runs_dir, &goal_id);
+
+    // Pick the target run: the requested agent's latest, else the latest
+    // across all workers (max wall_ts).
+    let target = match agent_id.as_deref() {
+        Some(aid) => sessions
+            .iter()
+            .filter(|s| s.agent_id == aid && !s.run_id.is_empty())
+            .max_by_key(|s| s.wall_ts)
+            .ok_or_else(|| anyhow::anyhow!("no run found for worker `{aid}` on goal {goal_id}"))?,
+        None => sessions
+            .iter()
+            .filter(|s| !s.run_id.is_empty())
+            .max_by_key(|s| s.wall_ts)
+            .ok_or_else(|| anyhow::anyhow!("no runs yet for goal {goal_id}"))?,
+    };
+    let path = runs_dir.join(format!("{}.live.jsonl", target.run_id));
+    if !path.is_file() {
+        bail!("live log not found: {}", path.display());
+    }
+    let text = std::fs::read_to_string(&path)?;
+    let raw = wants_json(args) || args.iter().any(|a| a == "--raw");
+    if raw {
+        let all: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        let start = all.len().saturating_sub(lines);
+        println!(
+            "worker {} run {} ({} line(s), showing last {}) — {}",
+            target.agent_id,
+            target.run_id,
+            all.len(),
+            all.len() - start,
+            path.display()
+        );
+        for line in &all[start..] {
+            println!("{line}");
+        }
+        return Ok(());
+    }
+    // Condensed view: the events an orchestrator actually scans — the run
+    // header, tool calls, token usage, and the worker's visible text — with
+    // the high-frequency streaming deltas (text_chunk / thinking_delta /
+    // tool_delta) collapsed away. `--raw` / `--format json` dumps the log
+    // verbatim instead.
+    let events = condense_live_log(&text);
+    let start = events.len().saturating_sub(lines);
+    println!(
+        "worker {} run {} ({} event(s), showing last {}) — {}",
+        target.agent_id,
+        target.run_id,
+        events.len(),
+        events.len() - start,
+        path.display()
+    );
+    for ev in &events[start..] {
+        println!("{ev}");
+    }
+    Ok(())
+}
+
+/// Collapse a `.live.jsonl` stream into the lines an orchestrator scans:
+/// run header, tool start/end, token usage, and visible assistant text.
+/// Streaming deltas (text_chunk / thinking_delta / tool_delta) are dropped.
+/// Pure + unit-testable.
+fn condense_live_log(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        match ty {
+            "run_header" => out.push("[run start]".to_string()),
+            "tool_start" => {
+                let tool = v.get("tool").and_then(|t| t.as_str()).unwrap_or("?");
+                out.push(format!("[tool →] {tool}"));
+            }
+            "tool_end" => out.push("[tool ✓]".to_string()),
+            "usage" => {
+                if let Some(u) = v.get("usage") {
+                    let total = u.get("total_tokens").and_then(|t| t.as_u64()).unwrap_or(0);
+                    let cost = u.get("credit_cost").and_then(|c| c.as_f64()).unwrap_or(0.0);
+                    out.push(format!("[usage] {total} tokens, ¥{cost:.4}"));
+                }
+            }
+            "user_message" => out.push("[prompt]".to_string()),
+            "agent_start" => out.push("[agent start]".to_string()),
+            "agent_end" => out.push("[agent end]".to_string()),
+            _ => {}
+        }
+    }
+    out
+}
+
+async fn cmd_worker_list(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    reject_unknown_flags(args, &["--goal", "--format", "--json"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let runs_dir = std::path::PathBuf::from(store.root_path()).join("runs");
+    let mut sessions = bound_worker_sessions(&goal, &runs_dir, &goal_id);
+
+    // Cross-reference the agent's live streaming set so we can report which
+    // workers actually have an in-flight run right now.
+    let mut streaming: Vec<String> = vec![];
+    if let Ok(mut client) =
+        crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await
+    {
+        streaming = client.list_streaming_sessions().await.unwrap_or_default();
+    }
+    for s in &mut sessions {
+        s.streaming = streaming.iter().any(|sid| sid == &s.session_id);
+    }
+
+    // Also surface registered agents with NO live run yet (idle / between turns).
+    let mut seen: std::collections::HashSet<String> =
+        sessions.iter().map(|s| s.agent_id.clone()).collect();
+    for aid in &goal.registered_agents {
+        if seen.insert(aid.clone()) {
+            sessions.push(WorkerSession {
+                agent_id: aid.clone(),
+                session_id: String::new(),
+                run_id: String::new(),
+                todo_id: String::new(),
+                wall_ts: 0,
+                streaming: false,
+            });
+        }
+    }
+    sessions.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
+
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&sessions)?);
+        return Ok(());
+    }
+    println!("workers for {goal_id}:");
+    println!(
+        "  {:<16} {:<9} {:<40} {:<22} run_id",
+        "agent_id", "status", "session_id", "todo_id"
+    );
+    for s in &sessions {
+        let status = if s.streaming {
+            "running"
+        } else if s.session_id.is_empty() {
+            "idle"
+        } else {
+            "ended"
+        };
+        let sid = if s.session_id.is_empty() {
+            "-".to_string()
+        } else {
+            s.session_id.clone()
+        };
+        let tid = if s.todo_id.is_empty() {
+            "-".to_string()
+        } else {
+            s.todo_id.clone()
+        };
+        let rid = if s.run_id.is_empty() {
+            "-".to_string()
+        } else {
+            s.run_id.clone()
+        };
+        println!(
+            "  {:<16} {:<9} {:<40} {:<22} {}",
+            s.agent_id, status, sid, tid, rid
+        );
+    }
+    Ok(())
+}
+
+/// `future goal worker stop --goal G [--agent-id A | --all] [--delete]` —
+/// stop a worker by writing a `WorkerStopped` event to the goal ledger (the
+/// authoritative in-band stop signal the `run` client tails at every turn
+/// boundary — NOT `pkill`), then aborting any in-flight agent session over
+/// gRPC so the current turn ends promptly instead of running to completion.
+/// The run client exits its loop at the next turn boundary and retains the
+/// session (resumable per `--resume-session`); `--delete` also reclaims the
+/// backing agent session afterwards so a later `run` starts fresh. `--all`
+/// broadcasts the stop to every worker with a live session for this goal.
+async fn cmd_worker_stop(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut agent_id = None;
+    let mut all = false;
+    let mut delete = false;
+    reject_unknown_flags(args, &["--goal", "--agent-id", "--all", "--delete"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--all" {
+            all = true;
+        } else if k == "--delete" {
+            delete = true;
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    if !all && agent_id.is_none() {
+        bail!("specify --agent-id A (one worker) or --all (every worker)");
+    }
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let runs_dir = std::path::PathBuf::from(store.root_path()).join("runs");
+    // Authoritative agent→session bindings (ledger) merged with the run-header
+    // scan, so a worker whose turn is orphaned (prompt failed before the
+    // run_header was written) is still discovered and aborted.
+    let sessions = bound_worker_sessions(&goal, &runs_dir, &goal_id);
+
+    // Select targets: the named agent, or every worker with a live session.
+    let targets: Vec<WorkerSession> = match agent_id.as_deref() {
+        Some(a) => sessions
+            .iter()
+            .filter(|s| s.agent_id == a)
+            .cloned()
+            .collect(),
+        None => sessions.clone(),
+    };
+    if targets.is_empty() {
+        println!(
+            "no live worker session(s) found for {goal_id} — nothing to stop (workers may already be idle)"
+        );
+        // Nothing to abort means nothing can still be mid-turn, so the claims
+        // this agent still holds are only keeping peers out. (This is the case
+        // that bit: a worker finished its turn, its lease stayed active for
+        // hours of TTL, and only the owner may release it — the owner being the
+        // worker the operator just stopped.)
+        if let Some(a) = agent_id.as_deref() {
+            for todo_id in release_leases_of_stopped(store, &goal_id, &[a.to_string()])? {
+                println!("  ↦ released todo {todo_id} (no live worker held it)");
+            }
+            refresh_next_action(store, &goal_id)?;
+            sync_compat(store, &goal_id);
+        }
+        return Ok(());
+    }
+
+    // The stop signal is the LEDGER EVENT: the run client tails events.jsonl
+    // and exits at its next turn boundary. Append BEFORE aborting so the stop
+    // is durable even if the abort fails (the turn then ends on its own and
+    // the run client still exits at the boundary).
+    if all {
+        store.append(Event::WorkerStopped {
+            goal_id: goal_id.clone(),
+            agent_id: None,
+            ts: crate::state::now_epoch(),
+        })?;
+        println!(
+            "■ stop broadcast to every worker of {goal_id} — run clients exit at their next turn boundary"
+        );
+    } else if let Some(a) = agent_id.as_deref() {
+        store.append(Event::WorkerStopped {
+            goal_id: goal_id.clone(),
+            agent_id: Some(a.to_string()),
+            ts: crate::state::now_epoch(),
+        })?;
+        println!(
+            "■ stop sent to worker {a} of {goal_id} — run client exits at its next turn boundary"
+        );
+    }
+
+    let stopped = abort_worker_sessions(&targets, delete).await;
+    // The workers are gone; their leases would otherwise block peers until the
+    // TTL lapses, with nobody able to release them (only the owner may).
+    for todo_id in release_leases_of_stopped(store, &goal_id, &stopped)? {
+        println!("  ↦ released todo {todo_id} (its worker was stopped)");
+    }
+    refresh_next_action(store, &goal_id)?;
+    sync_compat(store, &goal_id);
+    Ok(())
+}
+
+/// What to say when a worker session is about to be minted with no parent
+/// conversation. `None` when there is a parent, so the caller can print
+/// unconditionally.
+///
+/// A worker's `parent_session_id` is written once at creation and nothing
+/// reparents it later ("does not copy context or reparent resumed sessions"),
+/// so a worker dispatched before the goal had a supervisor session registered
+/// is a root conversation forever: the TUI's `/tree` shows it beside the goal it
+/// belongs to instead of under it, and no retry repairs that.
+///
+/// Observed: one goal's twelve workers all came out parentless because
+/// `supervisor register` was skipped at setup, while three sibling goals —
+/// registered right after `goal init` — had every worker attached.
+///
+/// Warned rather than refused: a goal with no supervisor is a state the goal plane
+/// already supports on purpose (the worker runs; its reports are ledgered and
+/// not pushed — see `run_without_supervisor_sends_no_report`). Turning that into
+/// a hard stop would forbid a documented mode to protect a metadata field; the
+/// trap is worth surfacing loudly, not worth blocking dispatch over.
+fn missing_parent_warning(parent_session: Option<&str>, goal_id: &str) -> Option<String> {
+    parent_session.is_none().then(|| {
+        format!(
+            "⚠ worker session has no parent conversation: {goal_id} has no supervisor session \
+             registered and no --parent-session was given, so this session is minted as a root \
+             conversation and cannot be reparented later.\n\
+             \x20  Fix it once for the goal (copy YOUR current session id, not a worker's):\n\
+             \x20  future goal supervisor register --goal {goal_id} --session-id <your-session-id>"
+        )
+    })
+}
+
+/// gRPC abort for the given worker sessions (and optional session reclaim).
+/// The ledger `worker_stopped` event (appended by the caller BEFORE this) is
+/// the durable stop signal the run client exits on at its turn boundary; the
+/// abort interrupts the in-flight turn NOW. Best-effort on unreachable agents.
+///
+/// Returns the agent ids whose session was actually aborted — the callers use
+/// that to release the leases those workers held, and must not release a lease
+/// for a worker that may still be running (see
+/// [`release_leases_of_stopped`]).
+async fn abort_worker_sessions(targets: &[WorkerSession], delete: bool) -> Vec<String> {
+    let mut stopped: Vec<String> = Vec::new();
+    if targets.is_empty() {
+        return stopped;
+    }
+    let Ok(mut client) =
+        crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await
+    else {
+        println!(
+            "⚠ agent unreachable — stop rides the ledger signal alone; leases keep their TTL \
+             (a worker that may still be mid-turn must not lose its claim)"
+        );
+        return stopped;
+    };
+    for t in targets {
+        match client.abort(&t.session_id).await {
+            Ok(()) => {
+                println!(
+                    "✗ aborted agent session {} (agent {} / todo {})",
+                    t.session_id, t.agent_id, t.todo_id
+                );
+                if !t.agent_id.is_empty() && !stopped.contains(&t.agent_id) {
+                    stopped.push(t.agent_id.clone());
+                }
+            }
+            Err(e) => {
+                println!(
+                    "⚠ abort failed for agent {} (session {}): {}",
+                    t.agent_id, t.session_id, e
+                );
+            }
+        }
+        if delete && !t.session_id.is_empty() {
+            match client.delete_session(&t.session_id).await {
+                Ok(()) => println!("  ↦ deleted session {}", t.session_id),
+                Err(e) => println!("  ⚠ delete failed for {}: {}", t.session_id, e),
+            }
+        }
+    }
+    stopped
+}
+
+/// Drop the todo leases held by workers that have just been stopped.
+///
+/// A stopped worker can neither renew nor complete its lease, so leaving it in
+/// place tells every peer the todo is still being worked on: the workspace
+/// guard refuses to hand those paths to anyone else ("retry after the holder
+/// releases its lease") and only the owner may release — and the owner is gone.
+/// The lease therefore goes away here, so a peer can claim immediately instead
+/// of waiting out a TTL of hours.
+///
+/// Only for agents whose abort actually landed: if the agent was unreachable the
+/// original worker may still be mid-turn, and its lease is exactly what keeps
+/// two agents off the same todo until the TTL lapses.
+fn release_leases_of_stopped(
+    store: &mut Store,
+    goal_id: &str,
+    stopped_agents: &[String],
+) -> Result<Vec<String>> {
+    if stopped_agents.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(goal) = store.replay(goal_id)? else {
+        return Ok(Vec::new());
+    };
+    let now = crate::state::now_epoch();
+    let held: Vec<(String, String)> = goal
+        .todos
+        .iter()
+        .filter_map(|todo| {
+            let owner = todo.claimed_by.as_deref()?;
+            if !stopped_agents.iter().any(|a| a == owner) {
+                return None;
+            }
+            matches!(
+                crate::work_items::task_lease::lease_status(todo, now),
+                crate::work_items::task_lease::LeaseStatus::Active { .. }
+            )
+            .then(|| (todo.id.clone(), owner.to_string()))
+        })
+        .collect();
+    let mut released = Vec::new();
+    for (todo_id, owner) in held {
+        store.append(Event::TodoReleased {
+            goal_id: goal_id.to_string(),
+            todo_id: todo_id.clone(),
+            agent_id: owner,
+            ts: now,
+        })?;
+        released.push(todo_id);
+    }
+    Ok(released)
+}
+
+/// Cancel/delete/supersede companion: stop every live worker of `goal_id`
+/// (optionally just one agent) so an in-flight detached run cannot keep
+/// writing back after the board changed under it. Appends the SAME
+/// `worker_stopped` ledger signal `worker stop` uses (the run client exits at
+/// its next turn boundary), then gRPC-aborts the in-flight turns. Returns the
+/// number of workers signalled.
+async fn stop_goal_workers(
+    store: &mut Store,
+    goal_id: &str,
+    agent_id: Option<&str>,
+) -> Result<usize> {
+    let goal = match store.replay(goal_id)? {
+        Some(g) => g,
+        None => return Ok(0),
+    };
+    let runs_dir = std::path::PathBuf::from(store.root_path()).join("runs");
+    let sessions = bound_worker_sessions(&goal, &runs_dir, goal_id);
+    let targets: Vec<WorkerSession> = match agent_id {
+        Some(a) => sessions
+            .iter()
+            .filter(|s| s.agent_id == a)
+            .cloned()
+            .collect(),
+        None => sessions,
+    };
+    if targets.is_empty() {
+        return Ok(0);
+    }
+    store.append(Event::WorkerStopped {
+        goal_id: goal_id.to_string(),
+        agent_id: agent_id.map(str::to_string),
+        ts: crate::state::now_epoch(),
+    })?;
+    println!(
+        "■ stop signal sent to {} worker(s) of {goal_id} — run clients exit at their next turn boundary",
+        targets.len()
+    );
+    let stopped = abort_worker_sessions(&targets, false).await;
+    for todo_id in release_leases_of_stopped(store, goal_id, &stopped)? {
+        println!("  ↦ released todo {todo_id} (its worker was stopped)");
+    }
+    refresh_next_action(store, goal_id)?;
+    sync_compat(store, goal_id);
+    Ok(targets.len())
+}
+
+/// `loopx scope --goal G --agent-id A [--exclude X]` — the identity-scoped
+/// frontier. P3 acceptance: two agents under one goal each hold a frontier
+/// that never crosses into the other's claimed slices.
+fn cmd_scope(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut agent_id = None;
+    let mut exclude: Vec<String> = vec![];
+    reject_unknown_flags(args, &["--agent-id", "--exclude", "--goal"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--exclude" {
+            exclude = v.split(',').map(|s| s.to_string()).collect();
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let agent_id = agent_id.ok_or_else(|| anyhow::anyhow!("--agent-id required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let frontier = crate::agents::scope::identity_scoped_frontier(&goal, &agent_id, &exclude);
+    println!(
+        "agent scope `{}` (task_scope={}):",
+        frontier.agent_id, frontier.task_scope
+    );
+    println!(
+        "  visible agent todos : {}",
+        join_ids(&frontier.visible_agent_todo_ids)
+    );
+    println!(
+        "  claimed by self     : {}",
+        join_ids(&frontier.claimed_todo_ids)
+    );
+    println!(
+        "  other agent claims  : {}  ← outside this frontier",
+        join_ids(&frontier.other_agent_claimed_ids)
+    );
+    println!(
+        "  open user gates     : {}",
+        join_ids(&frontier.open_user_gate_ids)
+    );
+    println!(
+        "  unclaimed advancement: {}",
+        frontier.unclaimed_advancement_count
+    );
+    Ok(())
+}
+
+/// `loopx lane --goal G --agent-id A` — compact agent lane recommendation.
+fn cmd_lane(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut agent_id = None;
+    reject_unknown_flags(args, &["--agent-id", "--goal"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let agent_id = agent_id.ok_or_else(|| anyhow::anyhow!("--agent-id required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    match crate::agents::lane::compact_agent_lane_recommendation(&goal, &agent_id) {
+        Some(rec) => {
+            println!(
+                "agent lane `{}` ({}): classification={} generated_at={}",
+                rec.agent_id, rec.progress_scope, rec.classification, rec.generated_at
+            );
+            if let Some(action) = &rec.recommended_action {
+                println!("  recommended action: {action}");
+            }
+        }
+        None => println!("no lane run for agent `{agent_id}` yet"),
+    }
+    Ok(())
+}
+
+/// `loopx supervisor <propose|receipt|events|register|steer> --goal G ...` —
+/// supervisor proposal/receipt events (projection-only) plus the bidirectional
+/// messaging primitives: `register` binds the supervisor's session id (the
+/// up-channel target), `steer` issues a mid-turn interrupt (the down-channel).
+async fn cmd_supervisor(store: &mut Store, args: &[String]) -> Result<()> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("");
+    match sub {
+        "watch" => {
+            reject_unknown_flags(&args[1..], &["--goal", "--once"])?;
+            let mut goal = None;
+            parse_pairs(&args[1..], |k, v| {
+                if k == "--goal" {
+                    goal = Some(v);
+                }
+            });
+            let goal = goal.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+            crate::agents::supervision::watch(store, &goal, args.iter().any(|a| a == "--once"))
+                .await?;
+        }
+        "events" => {
+            let mut goal_id = None;
+            reject_unknown_flags(&args[1..], &["--goal"])?;
+            parse_pairs(&args[1..], |k, v| {
+                if k == "--goal" {
+                    goal_id = Some(v);
+                }
+            });
+            let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+            let projection =
+                crate::agents::supervisor::build_supervisor_event_projection(store, &goal_id)?;
+            println!("{}", serde_json::to_string_pretty(&projection)?);
+        }
+        // `supervisor register --goal G --session-id <id>` — bind the
+        // supervising agent's session id to this goal (the up-channel target
+        // workers enqueue their intervention reports to).
+        "register" => {
+            let mut goal_id = None;
+            let mut session_id = None;
+            reject_unknown_flags(&args[1..], &["--goal", "--session-id"])?;
+            parse_pairs(&args[1..], |k, v| {
+                if k == "--goal" {
+                    goal_id = Some(v);
+                } else if k == "--session-id" {
+                    session_id = Some(v);
+                }
+            });
+            let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+            let session_id = session_id.ok_or_else(|| anyhow::anyhow!("--session-id required"))?;
+            store.append(Event::SupervisorRegistered {
+                goal_id: goal_id.clone(),
+                session_id: session_id.to_string(),
+                ts: now_epoch(),
+            })?;
+            crate::agents::supervision::ensure_watchdog(store, &goal_id)?;
+            println!("supervisor registered (session {session_id})");
+        }
+        // `supervisor steer --goal G [--agent-id A] --instruction <text>` —
+        // issue a mid-turn steering instruction: the running worker is
+        // interrupted and redirected to the new instruction.
+        "steer" => {
+            let mut goal_id = None;
+            let mut agent_id = None;
+            let mut instruction = None;
+            reject_unknown_flags(
+                &args[1..],
+                &["--agent-id", "--goal", "--instruction", "--interrupt"],
+            )?;
+            let interrupt = args.iter().any(|a| a == "--interrupt");
+            parse_pairs(&args[1..], |k, v| {
+                if k == "--goal" {
+                    goal_id = Some(v);
+                } else if k == "--agent-id" {
+                    agent_id = Some(v);
+                } else if k == "--instruction" {
+                    instruction = Some(v);
+                }
+            });
+            let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+            let instruction =
+                instruction.ok_or_else(|| anyhow::anyhow!("--instruction required"))?;
+            let target = agent_id.clone();
+            store.append(Event::ControlIssued {
+                goal_id: goal_id.clone(),
+                instruction: crate::agents::control::Instruction {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    agent_id: target.clone(),
+                    text: instruction.clone(),
+                    interrupt,
+                },
+                ts: now_epoch(),
+            })?;
+            let target = target.as_deref().unwrap_or("all workers");
+            println!("steer issued → {target}: {instruction}");
+        }
+        _ => bail!("supervisor subcommand must be events|register|steer|watch"),
+    }
+    Ok(())
+}
+
+/// `report --goal G --agent-id A [--todo-id T] --message "..."` — a worker's
+/// best-effort mid-run progress note, appended to the goal ledger as
+/// `ProgressReported`. Deliberately the opposite of the push channel:
+/// no gate, no status transition, no supervisor notification — the event is
+/// projection-only (consumed via `supervisor events --goal G` or a ledger
+/// tail), so a busy worker can narrate milestones (submitted attempt,
+/// waiting on score) without spamming the supervisor session. Idempotency is
+/// the content-derived event id: an identical report within the same second
+/// is a no-op; distinct moments always append (each is a separate milestone).
+/// The message is free text, truncated to a sane bound for ledger hygiene.
+fn cmd_report(store: &mut Store, args: &[String]) -> Result<()> {
+    reject_unknown_flags(args, &["--agent-id", "--goal", "--message", "--todo-id"])?;
+    let mut goal_id = None;
+    let mut agent_id = None;
+    let mut todo_id = None;
+    let mut message = None;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        } else if k == "--message" {
+            message = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let message = message.ok_or_else(|| anyhow::anyhow!("--message required"))?;
+    // The goal must exist — a report to a phantom goal is a typo, not an
+    // append into a ledger that would never be read.
+    store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let message = crate::decision::truncate(&message, 500);
+    let agent_id = crate::decision::truncate(&agent_id.unwrap_or_default(), 128);
+    let todo_id = crate::decision::truncate(&todo_id.unwrap_or_default(), 128);
+    store.append(Event::ProgressReported {
+        goal_id: goal_id.clone(),
+        agent_id,
+        todo_id,
+        message,
+        ts: now_epoch(),
+    })?;
+    println!("progress reported to goal {goal_id}");
+    Ok(())
+}
+
+// ── task-graph (G-14) ──────────────────────────────────────────────────────
+
+/// `loopx task-graph --goal G` — the todo dependency graph with topological
+/// order; cycles fail closed.
+fn cmd_task_graph(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    reject_unknown_flags(args, &["--format", "--goal", "--json"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v)
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let graph = crate::work_items::task_graph::build_task_graph(&goal)
+        .map_err(|e| anyhow::anyhow!("task graph failed closed: {e}"))?;
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&graph)?);
+        return Ok(());
+    }
+    println!(
+        "task graph: {} nodes, {} edges",
+        graph.nodes.len(),
+        graph.edges.len()
+    );
+    for e in &graph.edges {
+        println!("  {} → {}", e.from, e.to);
+    }
+    if let Some(cycle) = &graph.cycle {
+        println!("⚠ cycle: {}", cycle.join(" → "));
+    } else if let Some(order) = &graph.topological_order {
+        println!("topological order: {}", order.join(" → "));
+    }
+    Ok(())
+}
+
+// ── attention / inbox (G-15) ───────────────────────────────────────────────
+
+/// `loopx attention [--goal G] [--all]` — project the attention queue.
+fn cmd_attention(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut all = false;
+    reject_unknown_flags(args, &["--all", "--format", "--goal", "--json"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--all" {
+            all = true;
+        }
+    });
+    let mut items = vec![];
+    if let Some(g) = goal_id {
+        if let Some(goal) = store.replay(&g)? {
+            if let Some(item) = crate::work_items::attention::goal_attention_item(&goal) {
+                items.push(item);
+            }
+        }
+    } else if all {
+        for entry in store.registry() {
+            if let Ok(Some(goal)) = store.replay(&entry.goal_id) {
+                if let Some(item) = crate::work_items::attention::goal_attention_item(&goal) {
+                    items.push(item);
+                }
+            }
+        }
+    } else {
+        bail!("attention requires --goal G or --all");
+    }
+    let queue = crate::work_items::attention::build_attention_queue(items);
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&queue)?);
+        return Ok(());
+    }
+    println!(
+        "attention queue: {} item(s) | user/controller={} controller={} codex={} monitor={}",
+        queue.item_count,
+        queue.needs_user_or_controller,
+        queue.needs_controller,
+        queue.needs_codex,
+        queue.watching_monitor
+    );
+    for item in &queue.items {
+        println!(
+            "  [{}] {} waiting_on={} severity={}",
+            item.goal_id, item.status, item.waiting_on, item.severity
+        );
+        println!("      → {}", item.recommended_action);
+    }
+    Ok(())
+}
+
+/// `loopx inbox --project DIR [--scope S] [--name NAME]` — project the
+/// operator inbox urgency from `.loopx/inbox/*.json` events (content never
+/// returned).
+fn cmd_inbox(store: &Store, args: &[String]) -> Result<()> {
+    let mut project = std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| ".".to_string());
+    let mut scope = "addressed_only".to_string();
+    let mut name = "operator".to_string();
+    reject_unknown_flags(
+        args,
+        &["--format", "--json", "--name", "--project", "--scope"],
+    )?;
+    parse_pairs(args, |k, v| {
+        if k == "--project" {
+            project = v;
+        } else if k == "--scope" {
+            scope = v;
+        } else if k == "--name" {
+            name = v;
+        }
+    });
+    let config = crate::work_items::operator_inbox::OperatorInboxConfig {
+        enabled: true,
+        capture_scope: scope,
+        inbox_dir: "inbox".to_string(),
+        operator_display_name: name,
+        reply_enabled: true,
+    };
+    let pending = crate::work_items::operator_inbox::load_pending_inbox_events(&project, "inbox")
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let urgency =
+        crate::work_items::operator_inbox::project_operator_inbox_urgency(&config, &pending);
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&urgency)?);
+        return Ok(());
+    }
+    println!(
+        "operator inbox: enabled={} pending={} question={} mention={} reply={} attention_required={} reply_due={}",
+        urgency.enabled,
+        urgency.pending_count,
+        urgency.direct_question_count,
+        urgency.direct_mention_count,
+        urgency.reply_to_operator_count,
+        urgency.attention_required_count,
+        urgency.reply_due
+    );
+    let _ = store;
+    Ok(())
+}
+
+// ── delivery (P0-2: post-delivery outcome closure) ────────────────────────
+
+/// `delivery <status|record|followthrough>` — the P0-2 signal chain:
+/// delivered → verified/failed/rework, plus the manual follow-through scan
+/// (the run path also scans automatically after every turn).
+fn cmd_delivery(store: &mut Store, args: &[String]) -> Result<()> {
+    match args.first().map(|s| s.as_str()) {
+        Some("status") => delivery_status(store, &args[1..]),
+        Some("record") => delivery_record(store, &args[1..]),
+        Some("followthrough") => delivery_followthrough(store, &args[1..]),
+        _ => bail!("delivery subcommand must be `status`, `record`, or `followthrough`"),
+    }
+}
+
+/// `delivery status --goal G [--format json]` — the per-work-item delivery
+/// outcome read model (state, age in turns, follow-through linkage).
+fn delivery_status(store: &Store, args: &[String]) -> Result<()> {
+    reject_unknown_flags(args, &["--format", "--goal", "--json"])?;
+    let mut goal_id = None;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v)
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let current_turn = goal.history.iter().map(|r| r.turn).max().unwrap_or(0);
+    if wants_json(args) {
+        let items: Vec<serde_json::Value> = goal
+            .delivery_states
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "todo_id": d.todo_id,
+                    "todo_text": goal.todo(&d.todo_id).map(|t| t.text.clone()),
+                    "outcome": d.outcome,
+                    "delivered_turn": d.delivered_turn,
+                    "turns_since_delivery": current_turn.saturating_sub(d.delivered_turn),
+                    "pending_verification": d.outcome
+                        == crate::work_items::delivery_outcome::OUTCOME_DELIVERED,
+                    "followthrough_todo_id": d.followthrough_todo_id,
+                    "note": d.note,
+                    "updated_at": d.updated_at,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&items)?);
+        return Ok(());
+    }
+    if goal.delivery_states.is_empty() {
+        println!(
+            "no deliveries recorded for goal {goal_id} (a delivery is recorded when an advancement todo completes)"
+        );
+        return Ok(());
+    }
+    println!(
+        "deliveries for {goal_id} (current turn {current_turn}, follow-through threshold {} turns):",
+        crate::work_items::delivery_outcome::DEFAULT_FOLLOWTHROUGH_TURNS
+    );
+    for d in &goal.delivery_states {
+        let age = current_turn.saturating_sub(d.delivered_turn);
+        let pending = d.outcome == crate::work_items::delivery_outcome::OUTCOME_DELIVERED;
+        let follow = d
+            .followthrough_todo_id
+            .as_deref()
+            .map(|f| format!(" follow-through={f}"))
+            .unwrap_or_default();
+        let age = if pending {
+            format!(" age={age}turns")
+        } else {
+            String::new()
+        };
+        let note = d
+            .note
+            .as_deref()
+            .map(|n| format!(" note={n}"))
+            .unwrap_or_default();
+        println!(
+            "  {} [{}] delivered_turn={}{}{}{}",
+            d.todo_id, d.outcome, d.delivered_turn, age, follow, note
+        );
+    }
+    Ok(())
+}
+
+/// `delivery record --goal G --todo-id T --outcome <delivered|verified|
+/// failed|rework> [--note ...]` — manual outcome writeback (the operator /
+/// validator verification signal). Transitions are validated against the
+/// current state before the event lands.
+fn delivery_record(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut todo_id = None;
+    let mut outcome_raw = None;
+    let mut note = None;
+    reject_unknown_flags(args, &["--goal", "--note", "--outcome", "--todo-id"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        } else if k == "--outcome" {
+            outcome_raw = Some(v);
+        } else if k == "--note" {
+            note = Some(v);
+        }
+    });
+    use crate::work_items::delivery_outcome as dov;
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
+    let outcome_raw = outcome_raw.ok_or_else(|| anyhow::anyhow!("--outcome required"))?;
+    let outcome = dov::normalize_outcome(&outcome_raw).ok_or_else(|| {
+        anyhow::anyhow!(
+            "--outcome must be one of: {}",
+            dov::DELIVERY_OUTCOME_CHOICES.join(", ")
+        )
+    })?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    if goal.todo(&todo_id).is_none() {
+        bail!("todo {todo_id} not found in goal {goal_id}");
+    }
+    dov::validate_transition(goal.delivery_state(&todo_id), outcome)
+        .map_err(|e| anyhow::anyhow!("delivery {todo_id}: {e}"))?;
+    let current_turn = goal.history.iter().map(|r| r.turn).max().unwrap_or(0);
+    let seq = goal
+        .delivery_state(&todo_id)
+        .map(|d| d.seq + 1)
+        .unwrap_or(1);
+    store.append(Event::DeliveryOutcomeRecorded {
+        goal_id: goal_id.clone(),
+        todo_id: todo_id.clone(),
+        outcome: outcome.to_string(),
+        note: note.clone(),
+        delivered_turn: current_turn,
+        seq,
+        ts: now_epoch(),
+    })?;
+    println!("delivery {todo_id} → {outcome} ✔");
+    // The follow-through todo this delivery spawned ("verify the delivery of
+    // X") has now been served: recording a resolution IS that verification,
+    // which is the operator action its text names. Leaving it open kept
+    // `all_todos_done` false, so a goal whose work was finished could never
+    // reach terminal closure — bookkeeping nobody could satisfy, because
+    // nothing else ever completed it.
+    if dov::is_resolution(outcome) {
+        if let Some(followup) = goal
+            .delivery_state(&todo_id)
+            .and_then(|delivery| delivery.followthrough_todo_id.clone())
+        {
+            let still_open = goal
+                .todo(&followup)
+                .is_some_and(|todo| todo.status != crate::state::TodoStatus::Done);
+            if still_open {
+                store.append(Event::TodoCompleted {
+                    goal_id: goal_id.clone(),
+                    todo_id: followup.clone(),
+                    no_follow_up: true,
+                    successor_ids: Vec::new(),
+                    evidence: Some(format!("delivery {todo_id} → {outcome}")),
+                    ts: now_epoch(),
+                })?;
+                println!("follow-through todo {followup} closed ✔ (delivery {todo_id} resolved)");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `delivery followthrough --goal G [--turns N]` — manually run the
+/// outcome_followthrough scan (P0-2②); the run path calls the same driver
+/// automatically after every turn.
+fn delivery_followthrough(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut turns = crate::work_items::delivery_outcome::DEFAULT_FOLLOWTHROUGH_TURNS;
+    reject_unknown_flags(args, &["--goal", "--turns"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--turns" {
+            turns = v.parse().unwrap_or(turns);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let created = run_followthrough_check(store, &goal_id, turns)?;
+    if created.is_empty() {
+        println!("no overdue deliveries (all deliveries resolved or under {turns} turns old)");
+    } else {
+        for id in created {
+            println!("follow-through todo {id} auto-created ✔ (unverified delivery aged past {turns} turns)");
+        }
+    }
+    Ok(())
+}
+
+/// P0-2② outcome_followthrough driver: scan delivered-but-unverified work
+/// items and auto-derive a follow-up todo for each one overdue by at least
+/// `threshold` turns. Fires exactly once per delivery cycle — the
+/// `FollowthroughCreated` event stamps the source delivery. Returns the ids
+/// of the follow-up todos created.
+fn run_followthrough_check(
+    store: &mut Store,
+    goal_id: &str,
+    threshold: u32,
+) -> Result<Vec<String>> {
+    use crate::work_items::delivery_outcome as dov;
+    let goal = store
+        .replay(goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let current_turn = goal.history.iter().map(|r| r.turn).max().unwrap_or(0);
+    let overdue = dov::overdue_deliveries(&goal, current_turn, threshold);
+    let mut created = Vec::new();
+    for od in overdue {
+        let followup = followthrough_todo(&od, current_turn, threshold);
+        let followup_id = followup.id.clone();
+        store.append(Event::TodoAdded {
+            goal_id: goal_id.to_string(),
+            todo: followup,
+            ts: now_epoch(),
+        })?;
+        store.append(Event::FollowthroughCreated {
+            goal_id: goal_id.to_string(),
+            source_todo_id: od.todo_id.clone(),
+            followup_todo_id: followup_id.clone(),
+            turns_overdue: od.turns_overdue,
+            ts: now_epoch(),
+        })?;
+        created.push(followup_id);
+    }
+    Ok(created)
+}
+
+/// Build the follow-through todo for one overdue delivery. It is
+/// orchestration bookkeeping (the operator must resolve the source delivery
+/// via `delivery record`), NOT worker work — so it is `Coordination` class
+/// and never enters the shared worker frontier. Deriving it as
+/// `Advancement` would (a) let an idle worker claim it and (b) make its own
+/// completion record a new unverified delivery, which then derives its own
+/// follow-through 3 turns later — an unbounded cascade.
+fn followthrough_todo(
+    od: &crate::work_items::delivery_outcome::OverdueDelivery,
+    current_turn: u32,
+    threshold: u32,
+) -> Todo {
+    use crate::work_items::delivery_outcome as dov;
+    let followup_id = gen_id("todo");
+    let mut todo = Todo::coordination(&followup_id, &dov::followthrough_todo_text(od));
+    todo.note = Some(format!(
+        "auto-created by outcome_followthrough (source {}, turn {current_turn}, threshold {threshold})",
+        od.todo_id
+    ));
+    todo
+}
+/// `loopx registry [--format json|--json] [--include-experimental]` — inspect
+/// the CLI registry (groups + commands) — the aggregated help surface.
+fn cmd_registry(registry: &CommandRegistry, args: &[String]) -> Result<()> {
+    reject_unknown_flags(args, &["--format", "--json"])?;
+    let include_experimental = args.iter().any(|a| a == "--include-experimental");
+    if wants_json(args) {
+        let payload: serde_json::Value = registry
+            .groups()
+            .iter()
+            .enumerate()
+            .map(|(idx, g)| {
+                let cmds: Vec<serde_json::Value> = registry
+                    .commands_in(idx, include_experimental)
+                    .iter()
+                    .map(|c| {
+                        serde_json::json!({
+                            "name": c.name,
+                            "summary": c.summary,
+                            "usage": c.usage,
+                            "experimental": c.experimental,
+                        })
+                    })
+                    .collect();
+                serde_json::json!({ "group": g.name, "summary": g.summary, "commands": cmds })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+    println!(
+        "CLI registry: {} groups, {} commands{}",
+        registry.group_count(),
+        registry.command_count(include_experimental),
+        if include_experimental {
+            " (incl. experimental)"
+        } else {
+            ""
+        }
+    );
+    for (idx, group) in registry.groups().iter().enumerate() {
+        let cmds = registry.commands_in(idx, include_experimental);
+        if cmds.is_empty() {
+            continue;
+        }
+        println!("── {} ──", group.name);
+        for c in cmds {
+            println!("  {:<24} {}", c.name, c.summary);
+        }
+    }
+    Ok(())
+}
+
+/// P1-9: `future goal commands` — the operator journey view (LoopX `loopx
+/// commands` five-group presentation). The registry stays the flat machine
+/// catalog; this is a pure presentation overlay over the same metadata.
+fn cmd_commands(registry: &CommandRegistry, args: &[String]) -> Result<()> {
+    reject_unknown_flags(args, &["--format", "--json"])?;
+    let include_experimental = args.iter().any(|a| a == "--include-experimental");
+    if wants_json(args) {
+        let payload: Vec<serde_json::Value> = Journey::ALL
+            .iter()
+            .map(|j| {
+                let cmds: Vec<serde_json::Value> = registry
+                    .commands_in_journey(*j, include_experimental)
+                    .iter()
+                    .map(|c| {
+                        serde_json::json!({
+                            "name": c.name,
+                            "summary": c.summary,
+                            "usage": c.usage,
+                            "experimental": c.experimental,
+                        })
+                    })
+                    .collect();
+                serde_json::json!({
+                    "journey": j.key(),
+                    "title": j.title(),
+                    "summary": j.summary(),
+                    "commands": cmds,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+    print!("{}", registry.render_journeys(include_experimental));
+    Ok(())
+}
+
+// ── P4: canary smoke (G-20) ────────────────────────────────────────────────
+
+/// `loopx canary smoke [--profile X] [--json]` — run a smoke profile
+/// (default release-gate). Fails closed when any check fails.
+/// `loopx canary premerge [--json]` — P1-6 CI merge gate (isolated root).
+fn cmd_canary(store: &Store, args: &[String]) -> Result<()> {
+    match args.first().map(String::as_str) {
+        Some("premerge") => cmd_canary_premerge(&args[1..]),
+        Some("smoke") => cmd_canary_smoke(store, &args[1..]),
+        Some(other) if !other.starts_with('-') => {
+            anyhow::bail!("unknown canary subcommand `{other}` (expected `smoke` or `premerge`)")
+        }
+        // Legacy bare `canary` (or flags first) keeps the smoke default.
+        _ => cmd_canary_smoke(store, args),
+    }
+}
+
+/// `loopx canary smoke [--profile X] [--json]` — run a smoke profile
+/// (default release-gate). Fails closed when any check fails.
+fn cmd_canary_smoke(store: &Store, args: &[String]) -> Result<()> {
+    let mut profile = None;
+    let mut json = false;
+    reject_unknown_flags(args, &["--json", "--profile"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--profile" {
+            profile = Some(v);
+        } else if k == "--json" {
+            json = true;
+        }
+    });
+    let profile = profile.unwrap_or_else(|| "release-gate".to_string());
+    let result = crate::canary::run_smoke(store, &profile)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
+    println!(
+        "canary smoke `{}` (suite {}): {} check(s)",
+        result.profile_id,
+        result.suite,
+        result.checks.len()
+    );
+    for check in &result.checks {
+        println!(
+            "  [{}] {:<24} {}",
+            if check.passed { "ok" } else { "FAIL" },
+            check.id,
+            check.detail
+        );
+    }
+    println!(
+        "result: {}",
+        if result.all_passed {
+            "ALL PASSED"
+        } else {
+            "FAILED"
+        }
+    );
+    if !result.all_passed {
+        anyhow::bail!("canary smoke `{profile}` failed");
+    }
+    Ok(())
+}
+
+/// `loopx canary premerge [--json]` — the P1-6 CI merge gate. Runs against an
+/// isolated temporary state root (never the operator's live root) with a
+/// seeded fixture goal so the run is non-vacuous, then applies the release
+/// gate's all-passed rule. Exits non-zero when the gate fails.
+fn cmd_canary_premerge(args: &[String]) -> Result<()> {
+    let mut json = false;
+    reject_unknown_flags(args, &["--json"])?;
+    parse_pairs(args, |k, _v| {
+        if k == "--json" {
+            json = true;
+        }
+    });
+    let report = crate::canary::run_premerge_gate_isolated()?;
+    render_premerge_gate(&report, json)
+}
+
+/// Render the premerge gate report and fail the command when the gate did not
+/// pass. Extracted so the failure arm is unit-testable with a failing report.
+fn render_premerge_gate(report: &crate::canary::PremergeGateReport, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(report)?);
+    } else {
+        println!(
+            "canary premerge (suite {}): {} check(s) over {} goal(s)",
+            report.run.suite,
+            report.run.checks.len(),
+            report.gate.goals_checked
+        );
+        for check in &report.run.checks {
+            println!(
+                "  [{}] {:<24} {}",
+                if check.passed { "ok" } else { "FAIL" },
+                check.id,
+                check.detail
+            );
+        }
+        println!(
+            "gate: {} — {}",
+            if report.gate.passed { "PASS" } else { "FAIL" },
+            report.gate.reason
+        );
+    }
+    if !report.gate.passed {
+        anyhow::bail!("canary premerge gate failed: {}", report.gate.reason);
+    }
+    Ok(())
+}
+
+// ── P4: diagnostics & command surface (G-27) ───────────────────────────────
+
+/// `loopx version` — version + schema surface.
+fn cmd_version(store: &Store, args: &[String]) -> Result<()> {
+    reject_unknown_flags(args, &[])?;
+    println!("future-goal {}", env!("CARGO_PKG_VERSION"));
+    println!("crate  : future-goal");
+    println!("schemas:");
+    println!("  canary_smoke_run_v0 (G-20)");
+    println!("  canary_premerge_gate_v0 (P1-6)");
+    println!("  future_goal_turn_envelope_v0 (G-9)");
+    println!("  scheduler_arbitration_v0 (G-2/G-11)");
+    let _ = store;
+    Ok(())
+}
+
+/// `future-goal diagnose --goal G [--format json]` — per-goal diagnostic
+/// surface: current decision, open todos/gates, projection gaps, closure
+/// status, and recent run evidence.
+fn cmd_diagnose(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut format_json = false;
+    reject_unknown_flags(args, &["--format", "--goal"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--format" {
+            format_json = v == "json";
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let packet = decide_for(&goal, SystemTime::now(), None);
+    if format_json {
+        let diag = serde_json::json!({
+            "goal_id": goal.goal_id,
+            "objective": goal.objective,
+            "status": goal.status,
+            "decision": packet.decision,
+            "mode": packet.interaction_contract.mode.as_str(),
+            "reason": packet.reason,
+            "open_todos": goal.todos.iter().filter(|t| t.status == TodoStatus::Open).count(),
+            "open_gates": goal.open_gates().count(),
+            "projection_gap": crate::store::projection_gap(&goal),
+            "terminal": goal.terminal_closure().is_some(),
+            "runs": goal.history.len(),
+            "ledger_read_diagnostics": store.ledger_read_diagnostics(&goal_id),
+            "recent_evidence": goal.history.iter().rev().take(3).map(|r| serde_json::json!({
+                "turn": r.turn, "todo": r.todo_id, "state": r.terminal_state,
+                "tools": r.tools, "cost": r.cost_delta, "evidence": crate::decision::truncate(&r.evidence, 200),
+            })).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&diag)?);
+        return Ok(());
+    }
+    println!("== diagnose {goal_id} ==");
+    println!("objective : {}", goal.objective);
+    println!(
+        "status    : {} | terminal: {}",
+        goal.status,
+        goal.terminal_closure().is_some()
+    );
+    println!(
+        "decision  : {} / {} | {}",
+        packet.decision,
+        packet.interaction_contract.mode.as_str(),
+        packet.reason
+    );
+    println!(
+        "todos     : {} open / {} gates",
+        goal.todos
+            .iter()
+            .filter(|t| t.status == TodoStatus::Open)
+            .count(),
+        goal.open_gates().count()
+    );
+    if let Some(gap) = crate::store::projection_gap(&goal) {
+        println!("gap       : {gap}");
+    }
+    if let Some(note) = store.ledger_read_diagnostics(&goal_id).and_then(|d| {
+        d.get("note")
+            .and_then(|n| n.as_str())
+            .map(|s| s.to_string())
+    }) {
+        println!("note      : {note}");
+    }
+    for r in goal.history.iter().rev().take(3) {
+        println!(
+            "run       : #{} todo={} state={} cost=¥{:.4} tools=[{}]",
+            r.turn,
+            r.todo_id,
+            r.terminal_state,
+            r.cost_delta,
+            r.tools.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// `loopx doctor [--goal G] [--agent-addr ADDR]` — run the diagnostic
+/// surface: canary release-gate + per-goal ledger/decision checks.
+async fn cmd_doctor(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_filter = None;
+    let mut agent_addr = None;
+    reject_unknown_flags(args, &["--agent-addr", "--goal"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_filter = Some(v);
+        } else if k == "--agent-addr" {
+            agent_addr = Some(v);
+        }
+    });
+    println!("doctor: state root {}", store.root_path());
+    let mut failures: Vec<String> = vec![];
+    // Release-gate smoke (the deterministic surface).
+    let smoke = crate::canary::run_smoke(store, "release-gate")?;
+    for check in &smoke.checks {
+        let mark = if check.passed { "ok" } else { "FAIL" };
+        println!("  [{mark}] {:<24} {}", check.id, check.detail);
+        if !check.passed {
+            failures.push(format!("smoke.{}", check.id));
+        }
+    }
+    // Per-goal ledger + decision checks.
+    let goals: Vec<String> = match &goal_filter {
+        Some(g) => vec![g.clone()],
+        None => store.registry().iter().map(|e| e.goal_id.clone()).collect(),
+    };
+    for goal_id in goals {
+        match store.replay(&goal_id) {
+            Ok(Some(goal)) => {
+                let verify = store.verify(&goal_id)?;
+                println!(
+                    "  goal {}: {} event(s) ({} unique, {} conflict(s)), {} todo(s)",
+                    goal_id,
+                    verify.total_events,
+                    verify.unique_events,
+                    verify.conflicts.len(),
+                    goal.todos.len()
+                );
+                if !verify.ok {
+                    failures.push(format!("goal {goal_id} ledger conflicts"));
+                }
+                if let Some(gap) = crate::store::projection_gap(&goal) {
+                    failures.push(format!("goal {goal_id}: {gap}"));
+                }
+            }
+            Ok(None) => failures.push(format!("goal {goal_id} not found")),
+            Err(e) => failures.push(format!("goal {goal_id}: {e}")),
+        }
+    }
+    // gRPC reachability probe (only when --agent-addr is given). Awaited
+    // directly — a nested block_on here would panic inside console::run's
+    // runtime (the probe used to build its own current_thread runtime).
+    if let Some(addr) = &agent_addr {
+        let probe = async {
+            let mut client = crate::agent_client::AgentClient::connect(addr).await?;
+            let session = client.new_session("/tmp", "loop doctor probe").await?;
+            let totals = client.session_totals(&session).await?;
+            anyhow::Ok(format!(
+                "session {session} live (tokens_in={} tokens_out={})",
+                totals.tokens_in, totals.tokens_out
+            ))
+        }
+        .await;
+        match probe {
+            Ok(detail) => println!("  [ok] agent gRPC {addr}: {detail}"),
+            Err(e) => {
+                println!("  [FAIL] agent gRPC {addr}: {e}");
+                failures.push("agent gRPC unreachable".to_string());
+            }
+        }
+    } else {
+        println!("  (agent gRPC probe skipped; pass --agent-addr to check)");
+    }
+    if failures.is_empty() {
+        println!("doctor: ALL CHECKS PASSED");
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "doctor: {} failure(s): {}",
+            failures.len(),
+            failures.join("; ")
+        )
+    }
+}
+
+/// `loopx history --goal G` — the goal's run history (ledger-derived) +
+/// decision summary per run.
+fn cmd_history(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    reject_unknown_flags(args, &["--format", "--goal", "--json"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&goal.history)?);
+        return Ok(());
+    }
+    if goal.history.is_empty() {
+        println!("goal {goal_id}: no runs recorded");
+        return Ok(());
+    }
+    println!(
+        "goal {goal_id} run history ({} run(s)):",
+        goal.history.len()
+    );
+    for record in &goal.history {
+        let state = record.terminal_state.as_str();
+        let tools = if record.tools.is_empty() {
+            "".to_string()
+        } else {
+            format!(" tools={}", record.tools.join(","))
+        };
+        let evidence = if record.evidence.trim().is_empty() {
+            String::new()
+        } else {
+            format!(
+                " evidence=\"{}\"",
+                crate::decision::truncate(&record.evidence, 60)
+            )
+        };
+        println!(
+            "  #{} todo={} state={}{}{} tokens={}+{} cost={:.4}",
+            record.turn,
+            record.todo_id,
+            state,
+            tools,
+            evidence,
+            record.tokens_in_delta,
+            record.tokens_out_delta,
+            record.cost_delta
+        );
+    }
+    Ok(())
+}
+
+/// `loopx turn --goal G --todo-id T [--agent-id A]` — render the per-turn
+/// envelope (instruction + context + evidence + decision summary) the agent
+/// would receive for this todo.
+fn cmd_turn(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut todo_id = None;
+    let mut agent_id = None;
+    reject_unknown_flags(args, &["--agent-id", "--goal", "--todo-id"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let todo = goal
+        .todo(&todo_id)
+        .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found in goal {goal_id}"))?;
+    let packet =
+        crate::decision::decide_for(&goal, std::time::SystemTime::now(), agent_id.as_deref());
+    let prev = goal.history.last().filter(|r| r.todo_id == todo_id);
+    let envelope = crate::turn_envelope::compose_turn_envelope(&goal, todo, prev);
+    println!("{envelope}");
+    // The worker prompt no longer carries the kernel's scheduling internals
+    // (ARCHITECTURE.md "Not in the envelope"), so surface the decision summary
+    // separately to keep `turn`'s operator visibility into what the kernel
+    // decided for this todo.
+    println!("{}", crate::cli_projection::render_decision_line(&packet));
+    println!("reason: {}", packet.reason);
+    if let Some(arb) = &packet.scheduler_arbitration {
+        println!("arbitration: {}", arb.disposition.as_str());
+    }
+    Ok(())
+}
+
+/// `loopx todo-event --goal G --todo-id T` — the event history of one todo.
+fn cmd_todo_event(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut todo_id = None;
+    reject_unknown_flags(args, &["--format", "--goal", "--json", "--todo-id"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
+    let events = store.events(&goal_id)?;
+    let relevant: Vec<&crate::store::StoredEvent> = events
+        .iter()
+        .filter(|se| event_touches_todo(&se.event, &todo_id))
+        .collect();
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&relevant)?);
+        return Ok(());
+    }
+    if relevant.is_empty() {
+        println!("todo {todo_id}: no events in goal {goal_id}");
+        return Ok(());
+    }
+    println!(
+        "todo {todo_id} event history ({} event(s)):",
+        relevant.len()
+    );
+    for se in relevant {
+        println!("  {}", describe_event(&se.event));
+    }
+    Ok(())
+}
+
+/// Does an event reference this todo id?
+fn event_touches_todo(event: &crate::store::Event, todo_id: &str) -> bool {
+    use crate::store::Event;
+    match event {
+        Event::TodoAdded { todo, .. } => todo.id == todo_id,
+        Event::TodoCompleted { todo_id: id, .. }
+        | Event::TodoSuperseded { todo_id: id, .. }
+        | Event::TodoClaimed { todo_id: id, .. }
+        | Event::TodoArchived { todo_id: id, .. }
+        | Event::MonitorPolled { todo_id: id, .. }
+        | Event::QuotaSpent { todo_id: id, .. }
+        | Event::EvidenceAttached { todo_id: id, .. }
+        | Event::TodoRenewed { todo_id: id, .. }
+        | Event::TodoReleased { todo_id: id, .. }
+        | Event::TodoExpired { todo_id: id, .. }
+        | Event::WorkspaceLockAcquired { todo_id: id, .. }
+        | Event::DeliveryOutcomeRecorded { todo_id: id, .. }
+        | Event::GateResolved { todo_id: id, .. } => id == todo_id,
+        Event::FollowthroughCreated {
+            source_todo_id,
+            followup_todo_id,
+            ..
+        } => source_todo_id == todo_id || followup_todo_id == todo_id,
+        Event::RunRecorded { record, .. } => record.todo_id == todo_id,
+        Event::TurnNoProgress { todo_id: id, .. } => id == todo_id,
+        Event::HeartbeatReceiptRecorded { todo_id: id, .. } => id.as_deref() == Some(todo_id),
+        _ => false,
+    }
+}
+
+/// One-line description of an event (todo-event / evidence-log surface).
+fn describe_event(event: &crate::store::Event) -> String {
+    use crate::store::Event;
+    let kind = match event {
+        Event::GoalStarted { .. } => "goal_started",
+        Event::SteerConsumed { .. } => "steer_consumed",
+        Event::ControlIssued { .. } => "control_issued",
+        Event::ControlAcknowledged { .. } => "control_acknowledged",
+        Event::SupervisorBatchPrepared { .. } => "supervisor_batch_prepared",
+        Event::SupervisorBatchDelivered { .. } => "supervisor_batch_delivered",
+        Event::TodoAdded { .. } => "todo_added",
+        Event::TodoCompleted {
+            todo_id,
+            no_follow_up,
+            successor_ids,
+            ..
+        } => {
+            return format!(
+                "todo_completed todo={todo_id} no_follow_up={no_follow_up} successors={}",
+                successor_ids.join(",")
+            );
+        }
+        Event::TodoSuperseded { todo_id, .. } => {
+            return format!("todo_superseded todo={todo_id}");
+        }
+        Event::TodoUpdated { todo_id, .. } => {
+            return format!("todo_updated todo={todo_id}");
+        }
+        Event::GoalCancelled { .. } => {
+            return "goal_cancelled".to_string();
+        }
+        Event::GateResolved {
+            todo_id, decision, ..
+        } => {
+            return format!("gate_resolved todo={todo_id} decision=\"{decision}\"");
+        }
+        Event::GapSatisfied { gap_id, .. } => {
+            return format!("gap_satisfied gap={gap_id}");
+        }
+        Event::RunRecorded { record, .. } => {
+            return format!(
+                "run_recorded todo={} state={} tokens={}+{}",
+                record.todo_id,
+                record.terminal_state,
+                record.tokens_in_delta,
+                record.tokens_out_delta
+            );
+        }
+        Event::TodoClaimed {
+            todo_id, agent_id, ..
+        } => {
+            return format!("todo_claimed todo={todo_id} agent={agent_id}");
+        }
+        Event::AgentRegistered { agent_id, .. } => {
+            return format!("agent_registered agent={agent_id}");
+        }
+        Event::AgentOnboarded {
+            agent_id,
+            capabilities,
+            ..
+        } => {
+            return format!(
+                "agent_onboarded agent={agent_id} capabilities={}",
+                capabilities.join(",")
+            );
+        }
+        Event::WorkspaceLockAcquired {
+            agent_id,
+            todo_id,
+            paths,
+            forced,
+            ..
+        } => {
+            return format!(
+                "workspace_lock agent={agent_id} todo={todo_id} paths={}{}",
+                paths.join(","),
+                if *forced { " (forced)" } else { "" }
+            );
+        }
+        Event::ReplanAcked { delta_kinds, .. } => {
+            return format!("replan_acked deltas={}", delta_kinds.join(","));
+        }
+        Event::ProfileSet {
+            outcome_floor_streak_threshold,
+            ..
+        } => {
+            return format!("profile_set outcome_floor={outcome_floor_streak_threshold}");
+        }
+        Event::AuthoritySet {
+            write_scope,
+            requires_approval,
+            ..
+        } => {
+            return format!(
+                "authority_set write_scope={} requires_approval={}",
+                write_scope.join(","),
+                requires_approval.join(",")
+            );
+        }
+        Event::TodoArchived { todo_id, .. } => {
+            return format!("todo_archived todo={todo_id}");
+        }
+        Event::MonitorPolled {
+            todo_id,
+            result,
+            no_change_count,
+            ..
+        } => {
+            return format!(
+                "monitor_polled todo={todo_id} result={result} no_change_count={no_change_count}"
+            );
+        }
+        Event::TurnNoProgress {
+            todo_id,
+            agent_id,
+            idle_secs,
+            tool_calls_total,
+            ..
+        } => {
+            return format!(
+                "turn_no_progress todo={todo_id} agent={} idle={idle_secs}s tool_calls={tool_calls_total}",
+                agent_id.as_deref().unwrap_or("anonymous")
+            );
+        }
+        Event::QuotaSpent {
+            run_id,
+            todo_id,
+            source,
+            slots,
+            ..
+        } => {
+            return format!(
+                "quota_spent run={run_id} todo={todo_id} source={source} slots={slots}"
+            );
+        }
+        Event::EvidenceAttached { todo_id, .. } => {
+            return format!("evidence_attached todo={todo_id}");
+        }
+        Event::TodoRenewed {
+            todo_id, agent_id, ..
+        } => {
+            return format!("todo_renewed todo={todo_id} agent={agent_id}");
+        }
+        Event::TodoReleased {
+            todo_id, agent_id, ..
+        } => {
+            return format!("todo_released todo={todo_id} agent={agent_id}");
+        }
+        Event::TodoExpired { todo_id, .. } => {
+            return format!("todo_expired todo={todo_id}");
+        }
+        Event::DeliveryOutcomeRecorded {
+            todo_id, outcome, ..
+        } => {
+            return format!("delivery_outcome todo={todo_id} outcome={outcome}");
+        }
+        Event::FollowthroughCreated {
+            source_todo_id,
+            followup_todo_id,
+            ..
+        } => {
+            return format!(
+                "followthrough_created source={source_todo_id} followup={followup_todo_id}"
+            );
+        }
+        Event::DecisionSummaryRecorded { summary, .. } => {
+            return format!(
+                "decision_summary decision={} action={} code={} turn={}",
+                summary.decision, summary.effective_action, summary.reason_code, summary.turn
+            );
+        }
+        Event::HeartbeatReceiptRecorded {
+            agent_id,
+            turn_instance_id,
+            todo_id,
+            ..
+        } => {
+            return format!(
+                "heartbeat_receipt agent={} turn={} todo={}",
+                agent_id.as_deref().unwrap_or("anonymous"),
+                turn_instance_id,
+                todo_id.as_deref().unwrap_or("-")
+            );
+        }
+        Event::SchedulerAcked {
+            agent_id,
+            action,
+            rrule,
+            ..
+        } => {
+            return format!(
+                "scheduler_ack agent={agent_id} action={action} rrule={}",
+                rrule.as_deref().unwrap_or("-")
+            );
+        }
+        Event::SchedulerTicked {
+            agent_id,
+            action,
+            rrule,
+            ..
+        } => {
+            return format!(
+                "scheduler_tick agent={agent_id} action={action} rrule={}",
+                rrule.as_deref().unwrap_or("-")
+            );
+        }
+        Event::AutomationLivenessAlert {
+            agent_id,
+            elapsed_secs,
+            threshold_secs,
+            consecutive,
+            ..
+        } => {
+            return format!(
+                "liveness_alert agent={agent_id} silent={elapsed_secs}s threshold={threshold_secs}s alert#{consecutive}"
+            );
+        }
+        Event::ProjectionRepaired {
+            projection,
+            drift_count,
+            rows_written,
+            ..
+        } => {
+            return format!(
+                "projection_repaired projection={projection} drift={drift_count} rows_written={rows_written}"
+            );
+        }
+        Event::ReplanRuleSetUpdated {
+            rule_set_version,
+            rule_ids,
+            ..
+        } => {
+            return format!(
+                "replan_rule_set_updated version={rule_set_version} rules={}",
+                rule_ids.join(",")
+            );
+        }
+        Event::SupervisorRegistered { session_id, .. } => {
+            return format!("supervisor_registered session={session_id}");
+        }
+        Event::WorkerSteered {
+            agent_id,
+            instruction,
+            ..
+        } => {
+            return format!(
+                "worker_steered agent={} instruction=\"{}\"",
+                agent_id.as_deref().unwrap_or("broadcast"),
+                instruction
+            );
+        }
+        Event::WorkerStopped { agent_id, .. } => {
+            return format!(
+                "worker_stopped agent={}",
+                agent_id.as_deref().unwrap_or("broadcast")
+            );
+        }
+        Event::WorkerSessionBound {
+            agent_id,
+            session_id,
+            ..
+        } => {
+            return format!("worker_session_bound agent={agent_id} session={session_id}");
+        }
+        Event::ProgressReported {
+            agent_id,
+            todo_id,
+            message,
+            ..
+        } => {
+            return format!(
+                "progress_reported agent={agent_id} todo={todo_id} message=\"{message}\""
+            );
+        }
+        Event::SupervisorNote {
+            todo_id,
+            note_kind,
+            message,
+            ..
+        } => {
+            return format!(
+                "supervisor_note kind={note_kind} todo={todo_id} message=\"{message}\""
+            );
+        }
+    };
+    kind.to_string()
+}
+
+/// `loopx evidence-log --goal G [--todo-id T]` — the evidence trail:
+/// EvidenceAttached events + run evidence per todo.
+fn cmd_evidence_log(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut todo_id = None;
+    reject_unknown_flags(args, &["--format", "--goal", "--json", "--todo-id"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let events = store.events(&goal_id)?;
+    let entries = collect_evidence_entries(&events, todo_id.as_deref());
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+        return Ok(());
+    }
+    for entry in &entries {
+        let evidence = crate::decision::truncate(&entry.evidence, 200);
+        match entry.source.as_str() {
+            "attached" => println!("[attached] todo={}: {evidence}", entry.todo_id),
+            "run" => println!(
+                "[run #{}] todo={}: {evidence}",
+                entry.turn.unwrap_or_default(),
+                entry.todo_id
+            ),
+            _ => println!("[completed] todo={}: {evidence}", entry.todo_id),
+        }
+    }
+    if entries.is_empty() {
+        println!(
+            "goal {goal_id}: no evidence recorded{}",
+            todo_id
+                .map(|t| format!(" for todo {t}"))
+                .unwrap_or_default()
+        );
+    } else {
+        println!("({} evidence item(s))", entries.len());
+    }
+    Ok(())
+}
+
+/// One evidence-log entry (P0-3③: serializable so `evidence-log` has a
+/// `--format json` form; the text view renders the same rows truncated).
+#[derive(Debug, Clone, serde::Serialize)]
+struct EvidenceEntry {
+    /// attached | run | completed
+    source: String,
+    todo_id: String,
+    turn: Option<u32>,
+    evidence: String,
+}
+
+/// Project the evidence-bearing events of a goal into evidence-log rows
+/// (optionally filtered to one todo). Pure, unit-testable.
+fn collect_evidence_entries(
+    events: &[crate::store::StoredEvent],
+    todo_filter: Option<&str>,
+) -> Vec<EvidenceEntry> {
+    let matches = |tid: &str| todo_filter.map(|t| t == tid).unwrap_or(true);
+    let mut out = Vec::new();
+    for se in events {
+        use crate::store::Event;
+        match &se.event {
+            Event::EvidenceAttached {
+                todo_id: tid,
+                evidence,
+                ..
+            } if matches(tid) => out.push(EvidenceEntry {
+                source: "attached".to_string(),
+                todo_id: tid.clone(),
+                turn: None,
+                evidence: evidence.clone(),
+            }),
+            Event::RunRecorded { record, .. }
+                if matches(&record.todo_id) && !record.evidence.trim().is_empty() =>
+            {
+                out.push(EvidenceEntry {
+                    source: "run".to_string(),
+                    todo_id: record.todo_id.clone(),
+                    turn: Some(record.turn),
+                    evidence: record.evidence.clone(),
+                });
+            }
+            Event::TodoCompleted {
+                todo_id: tid,
+                evidence: Some(evidence),
+                ..
+            } if matches(tid) => out.push(EvidenceEntry {
+                source: "completed".to_string(),
+                todo_id: tid.clone(),
+                turn: None,
+                evidence: evidence.clone(),
+            }),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `loopx todo archive --goal G --todo-id T` — archive a todo
+/// (LoopX: archive_state "archived").
+fn todo_archive(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut todo_id = None;
+    reject_unknown_flags(args, &["--goal", "--todo-id"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
+    let mut goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    goal.archive_todo(&todo_id);
+    store
+        .append(Event::TodoArchived {
+            goal_id: goal_id.clone(),
+            todo_id: todo_id.clone(),
+            ts: crate::state::now_epoch(),
+        })
+        .ok();
+    refresh_next_action(store, &goal_id)?;
+    sync_compat(store, &goal_id);
+    println!("todo {todo_id} archived ✔");
+    Ok(())
+}
+
+/// `todo supersede --goal G --todo-id T [--reason ...]` — mark an unfinished
+/// todo superseded (obsolete; runnable frontier and closure both ignore it).
+async fn todo_supersede(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut todo_id = None;
+    let mut reason = None;
+    reject_unknown_flags(args, &["--goal", "--reason", "--todo-id"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        } else if k == "--reason" {
+            reason = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
+    let mut goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let Some(target) = goal.todo(&todo_id) else {
+        bail!("todo {todo_id} not found in goal {goal_id}");
+    };
+    if target.status == crate::state::TodoStatus::Done {
+        bail!("todo {todo_id} is already done — supersede only applies to unfinished todos");
+    }
+    goal.supersede(&todo_id);
+    store.append(Event::TodoSuperseded {
+        goal_id: goal_id.clone(),
+        todo_id: todo_id.clone(),
+        ts: crate::state::now_epoch(),
+    })?;
+    refresh_next_action(store, &goal_id)?;
+    sync_compat(store, &goal_id);
+    // If a detached run is executing THIS todo, stop it: its in-flight turn is
+    // now wasted work, and a late writeback must not fight the supersede
+    // (replay also guards: a late TodoCompleted never resurrects a superseded
+    // todo). The event-signal + gRPC abort is the same channel `worker stop`
+    // uses; the holder pid probe is not needed here — the ledger signal is
+    // authoritative and pid-less orphans are already handled by liveness.
+    if let Some(holder) = goal.todo(&todo_id).and_then(|t| t.claimed_by.clone()) {
+        let stopped = stop_goal_workers(store, &goal_id, Some(&holder)).await?;
+        if stopped > 0 {
+            println!("  ■ holder {holder} signalled to stop (todo superseded mid-run)");
+        }
+    }
+    println!(
+        "todo {todo_id} superseded ✔{}",
+        reason
+            .as_deref()
+            .map(|r| format!(" (reason: {r})"))
+            .unwrap_or_default()
+    );
+    Ok(())
+}
+
+/// `todo update --goal G --todo-id T [--text ...] [--status open|blocked|deferred|superseded]
+/// [--evidence ...] [--note ...] [--priority P0|P1|P2] [--resume-when ...]` — field-level
+/// update on an open todo. `--status done` is rejected (completion policy is
+/// enforced by `todo complete`).
+fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut todo_id = None;
+    let mut text = None;
+    let mut status = None;
+    let mut evidence = None;
+    let mut note = None;
+    let mut priority = None;
+    let mut resume_when = None;
+    let mut blocks: Option<Vec<String>> = None;
+    let mut acceptance: Option<String> = None;
+    let mut owner: Option<String> = None;
+    reject_unknown_flags(
+        args,
+        &[
+            "--acceptance",
+            "--blocks",
+            "--evidence",
+            "--goal",
+            "--note",
+            "--owner",
+            "--priority",
+            "--resume-when",
+            "--status",
+            "--text",
+            "--todo-id",
+        ],
+    )?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        } else if k == "--text" {
+            text = Some(v);
+        } else if k == "--status" {
+            status = Some(v);
+        } else if k == "--evidence" {
+            evidence = Some(v);
+        } else if k == "--note" {
+            note = Some(v);
+        } else if k == "--priority" {
+            priority = Some(v);
+        } else if k == "--resume-when" {
+            resume_when = Some(v);
+        } else if k == "--blocks" {
+            // `--blocks a,b` replaces the blocking set; `--blocks ""` clears
+            // it (empty string → Some(vec![])); absent → leave untouched.
+            let trimmed = v.trim();
+            blocks = Some(if trimmed.is_empty() {
+                vec![]
+            } else {
+                trimmed
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            });
+        } else if k == "--acceptance" {
+            acceptance = Some(v);
+        } else if k == "--owner" {
+            owner = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
+    // Same bare-flag trap as todo add: a value-less `--blocks` parses as
+    // the literal "true" — never a real todo id, so reject it loudly.
+    if let Some(ids) = &blocks {
+        if ids.iter().any(|b| b == "true") {
+            bail!("--blocks requires a comma-separated todo id list (bare `--blocks` reads as `true`)");
+        }
+    }
+    if let Some(p) = &priority {
+        if !matches!(p.to_uppercase().as_str(), "P0" | "P1" | "P2") {
+            bail!("unknown --priority `{p}` (P0|P1|P2)");
+        }
+    }
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    if goal.todo(&todo_id).is_none() {
+        anyhow::bail!("todo {todo_id} not found in goal {goal_id}");
+    }
+    if let Some(owner) = owner.as_deref() {
+        if let Some(warning) = owner_assignment_warning(&goal, owner) {
+            eprintln!("warning: {warning}");
+        }
+    }
+    if status.as_deref() == Some("done") {
+        bail!(
+            "todo update --status done is not allowed — use `todo complete --no-follow-up|--successor` \
+             (completion policy, successor, and no-follow-up contracts are enforced)"
+        );
+    }
+    // `--resume-when N` with a numeric N means "defer N seconds from now"
+    // (same semantics as `--defer-secs`), so a deferred/monitor todo actually
+    // becomes due. A non-numeric value keeps the legacy text-only behavior
+    // (resume_when_text hint, no real deadline) — and now warns about it
+    // (P0-3④) instead of silently scheduling nothing.
+    let resume_when_parsed = resume_when
+        .as_deref()
+        .map(|rw| match parse_resume_when(rw) {
+            ResumeWhen::Defer(secs) => format!("defer:{secs}"),
+            ResumeWhen::TextHint(text) => {
+                eprintln!(
+                    "{}",
+                    resume_when_text_hint_warning(
+                        &text,
+                        "no deadline is scheduled; the todo stays deferred until updated again"
+                    )
+                );
+                text
+            }
+        });
+    store.append_todo_change(Event::TodoUpdated {
+        goal_id: goal_id.clone(),
+        todo_id: todo_id.clone(),
+        text: text.clone(),
+        status: status.clone(),
+        evidence: evidence.clone(),
+        note: note.clone(),
+        priority: priority.clone(),
+        resume_when: resume_when_parsed,
+        blocks: blocks.clone(),
+        acceptance: acceptance.clone(),
+        owner: owner.clone(),
+        ts: crate::state::now_epoch(),
+    })?;
+    refresh_next_action(store, &goal_id)?;
+    sync_compat(store, &goal_id);
+    println!("todo {todo_id} updated ✔");
+    Ok(())
+}
+
+/// Re-exec argument vector for the detached child (`cmd_run`).
+///
+/// The child re-enters the CLI dispatcher with the command name prepended: our
+/// args start at `run`'s flags (we ARE `cmd_run`), so the command name must be
+/// put back. The unified `future` binary dispatches on the FIRST arg as a group
+/// name — `future goal run …` reaches `cmd_run`, but `future run …` falls
+/// through to the unrelated one-shot `future run` command (which rejects
+/// `--goal` with "Unknown option: --goal" and exits immediately). The
+/// standalone `future-goal` binary has no such group layer, so `loop` is
+/// prepended only when re-execing the `future` binary.
+fn detached_child_args(exe_stem: &str, args: &[String]) -> Vec<String> {
+    let mut child_args: Vec<String> = Vec::with_capacity(args.len() + 3);
+    if exe_stem == "future" {
+        child_args.push("goal".to_string());
+    }
+    child_args.push("run".to_string());
+    child_args.extend(args.iter().cloned());
+    child_args.push("--detach".to_string());
+    child_args
+}
+
+/// Enforce the detached-child liveness guard: `spawn` succeeding only means the
+/// process was created, so a child that already exited means the re-exec
+/// mis-dispatched. The parent must report that instead of printing a plausible
+/// pid for a worker that is already dead. A child that is still running is
+/// announced and left to the normal detached supervision; a `try_wait` error is
+/// not a crash signal either, so it takes the same path.
+fn enforce_detach_liveness(
+    child: &mut std::process::Child,
+    who: &str,
+    log_path: &std::path::Path,
+) -> Result<()> {
+    match try_wait_detached(child) {
+        Ok(Some(status)) => bail!(
+            "detached run exited immediately ({status}) — check {} for the real error; re-exec may have mis-dispatched",
+            log_path.display()
+        ),
+        Ok(None) | Err(_) => {
+            println!(
+                "⏏ detached run pid={} (agent {who}) — log {}",
+                child.id(),
+                log_path.display()
+            );
+            Ok(())
+        }
+    }
+}
+
+/// The detached child's liveness probe, with a test-only interposition.
+///
+/// In production this is exactly `Child::try_wait`. Its `Err` arm needs the OS
+/// to refuse the wait on a child that just spawned, and whether a child is still
+/// running is a scheduling race, so a unit test arms [`detach_probe`] with a
+/// chosen outcome and the guard's decision for each outcome is asserted. The
+/// hook is compiled out of every non-test build.
+fn try_wait_detached(
+    child: &mut std::process::Child,
+) -> std::io::Result<Option<std::process::ExitStatus>> {
+    #[cfg(test)]
+    if let Some(injected) = detach_probe::take() {
+        return injected;
+    }
+    child.try_wait()
+}
+
+/// Test-only interposition for [`try_wait_detached`]. One arming covers one
+/// probe.
+#[cfg(test)]
+mod detach_probe {
+    use std::cell::RefCell;
+    use std::io;
+    use std::process::ExitStatus;
+
+    thread_local! {
+        static NEXT: RefCell<Option<io::Result<Option<ExitStatus>>>> = const { RefCell::new(None) };
+    }
+
+    /// Supply the next probe's outcome: a reaped child (`Ok(Some(..))`), a live
+    /// child (`Ok(None)`), or an OS wait failure (`Err(..)`).
+    pub(super) fn arm(result: io::Result<Option<ExitStatus>>) {
+        NEXT.with(|cell| *cell.borrow_mut() = Some(result));
+    }
+
+    /// Drop a leftover arming, so a test that must observe the real
+    /// `Child::try_wait` cannot read a previous test's outcome.
+    pub(super) fn clear() {
+        NEXT.with(|cell| *cell.borrow_mut() = None);
+    }
+
+    pub(super) fn take() -> Option<io::Result<Option<ExitStatus>>> {
+        NEXT.with(|cell| cell.borrow_mut().take())
+    }
+}
+
+// ── in-module coverage tests ───────────────────────────────────────────────
+// Helpers and render paths that the CLI surface cannot reach (private fns,
+// defensive arms, non-todo event descriptions, the `future goal` prog name).
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::state::{Goal, RunRecord, TaskClass, Todo, TodoStatus};
+    use crate::store::Event;
+
+    fn record(todo_id: &str) -> RunRecord {
+        RunRecord {
+            agent_id: None,
+            turn: 1,
+            todo_id: todo_id.to_string(),
+            run_id: "run-1".to_string(),
+            terminal_state: "completed".to_string(),
+            error: None,
+            tokens_in_delta: 1,
+            tokens_out_delta: 2,
+            cost_delta: 0.1,
+            tools: vec!["shell".to_string()],
+            evidence: "proof".to_string(),
+            recorded_at: 1_700_000_000,
+            spend_source: Some("run".to_string()),
+            failure_kind: None,
+            truncation: None,
+            validation: None,
+        }
+    }
+
+    #[test]
+    fn next_action_text_shows_shared_pool_todo_first() {
+        let mut g = Goal::new("g", "o", "/tmp");
+        g.add(Todo::advancement("T1", "shared work"));
+        assert_eq!(next_action_text(&g), "shared work");
+    }
+
+    #[test]
+    fn next_action_text_names_owners_when_only_owner_scoped_remain() {
+        // Regression: an all-owner-scoped goal read as
+        // "all todos complete; no further action" because the shared-pool
+        // frontier (agent_id=None) dropped every owner-scoped todo. The next
+        // line must surface the owners instead of claiming completion.
+        let mut g = Goal::new("g", "o", "/tmp");
+        let mut a = Todo::advancement("T1", "owned A");
+        a.owner = Some("solver-a".to_string());
+        let mut b = Todo::advancement("T2", "owned B");
+        b.owner = Some("solver-b".to_string());
+        g.add(a);
+        g.add(b);
+        let next = next_action_text(&g);
+        assert!(
+            next.contains("owner-scoped") && next.contains("solver-a") && next.contains("solver-b"),
+            "next line must name pending owners, got: {next}"
+        );
+        assert!(
+            !next.contains("all todos complete"),
+            "must not claim completion: {next}"
+        );
+    }
+
+    #[test]
+    fn next_action_text_reports_complete_only_when_nothing_pending() {
+        let g = Goal::new("g", "o", "/tmp");
+        assert_eq!(
+            next_action_text(&g),
+            "all todos complete; no further action"
+        );
+    }
+
+    fn all_events(todo_id: &str) -> Vec<Event> {
+        vec![
+            Event::GoalStarted {
+                goal_id: "g".into(),
+                ts: 1,
+            },
+            Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement(todo_id, "task"),
+                ts: 1,
+            },
+            Event::TodoCompleted {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                no_follow_up: true,
+                successor_ids: vec!["s1".into()],
+                evidence: Some("e".into()),
+                ts: 1,
+            },
+            Event::TodoSuperseded {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                ts: 1,
+            },
+            Event::TodoUpdated {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                text: Some("t".into()),
+                status: None,
+                evidence: None,
+                note: None,
+                priority: None,
+                resume_when: None,
+                blocks: None,
+                acceptance: None,
+                owner: None,
+                ts: 1,
+            },
+            Event::GoalCancelled {
+                goal_id: "g".into(),
+                reason: "r".into(),
+                ts: 1,
+            },
+            Event::GateResolved {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                decision: "d".into(),
+                note: None,
+                ts: 1,
+            },
+            Event::GapSatisfied {
+                goal_id: "g".into(),
+                gap_id: "gap1".into(),
+                ts: 1,
+            },
+            Event::RunRecorded {
+                goal_id: "g".into(),
+                record: record(todo_id),
+                ts: 1,
+            },
+            Event::TodoClaimed {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                agent_id: "a".into(),
+                lease_expires_at: 9,
+                holder_pid: None,
+                ts: 1,
+            },
+            Event::AgentRegistered {
+                goal_id: "g".into(),
+                agent_id: "a".into(),
+                workspaces: vec![],
+                ts: 1,
+            },
+            Event::AgentOnboarded {
+                goal_id: "g".into(),
+                agent_id: "a".into(),
+                capabilities: vec!["shell".into()],
+                workspaces: vec![],
+                ts: 1,
+            },
+            Event::ReplanAcked {
+                goal_id: "g".into(),
+                delta_kinds: vec!["vision_patch".into()],
+                ts: 1,
+            },
+            Event::ProfileSet {
+                goal_id: "g".into(),
+                outcome_floor_streak_threshold: 2,
+                ts: 1,
+            },
+            Event::AuthoritySet {
+                goal_id: "g".into(),
+                write_scope: vec!["src".into()],
+                requires_approval: vec!["publish".into()],
+                ts: 1,
+            },
+            Event::TodoArchived {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                ts: 1,
+            },
+            Event::MonitorPolled {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                result: "changed".into(),
+                no_change_count: 0,
+                ts: 1,
+            },
+            Event::QuotaSpent {
+                goal_id: "g".into(),
+                run_id: "r1".into(),
+                todo_id: todo_id.into(),
+                source: "run".into(),
+                slots: 1,
+                ts: 1,
+            },
+            Event::EvidenceAttached {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                evidence: "e".into(),
+                ts: 1,
+            },
+            Event::TodoRenewed {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                agent_id: "a".into(),
+                lease_expires_at: 9,
+                ts: 1,
+            },
+            Event::TodoReleased {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                agent_id: "a".into(),
+                ts: 1,
+            },
+            Event::TodoExpired {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                ts: 1,
+            },
+            Event::FollowthroughCreated {
+                goal_id: "g".into(),
+                source_todo_id: todo_id.into(),
+                followup_todo_id: "fu".into(),
+                turns_overdue: 2,
+                ts: 1,
+            },
+            Event::DecisionSummaryRecorded {
+                goal_id: "g".into(),
+                summary: crate::quota::decision_summary::DecisionSummary {
+                    schema_version: "quota_decision_summary_v0".into(),
+                    goal_id: "g".into(),
+                    agent_id: None,
+                    decision: "run".into(),
+                    should_run: true,
+                    effective_action: "bounded_delivery".into(),
+                    reason_code: "runnable".into(),
+                    mode: "bounded_delivery".into(),
+                    state: "active".into(),
+                    selected_todo: Some(todo_id.into()),
+                    spent_slots: 1,
+                    allowed_slots: 10,
+                    normal_delivery_allowed: true,
+                    recovery_delivery_allowed: false,
+                    self_repair_allowed: false,
+                    safe_bypass_allowed: false,
+                    safe_bypass_kind: None,
+                    blocked_action_scope: None,
+                    turn: 1,
+                },
+                ts: 1,
+            },
+            Event::HeartbeatReceiptRecorded {
+                goal_id: "g".into(),
+                agent_id: Some("a".into()),
+                turn_instance_id: "turn-1".into(),
+                todo_id: Some(todo_id.into()),
+                decision: "run".into(),
+                reason_code: "runnable".into(),
+                ts: 1,
+            },
+            Event::SchedulerAcked {
+                goal_id: "g".into(),
+                agent_id: "a".into(),
+                action: "tick_next".into(),
+                cadence_class: "monitor_backoff".into(),
+                rrule: Some("FREQ=MINUTELY;INTERVAL=15".into()),
+                source: "scheduler_cli".into(),
+                ts: 1,
+            },
+            Event::SchedulerTicked {
+                goal_id: "g".into(),
+                agent_id: "a".into(),
+                action: "tick_next".into(),
+                rrule: Some("FREQ=MINUTELY;INTERVAL=15".into()),
+                ts: 1,
+            },
+            Event::AutomationLivenessAlert {
+                goal_id: "g".into(),
+                agent_id: "a".into(),
+                elapsed_secs: 3600,
+                threshold_secs: 900,
+                consecutive: 1,
+                ts: 1,
+            },
+            Event::TurnNoProgress {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                agent_id: Some("a".into()),
+                idle_secs: 60,
+                tool_calls_total: 3,
+                ts: 1,
+            },
+            Event::ReplanRuleSetUpdated {
+                goal_id: "g".into(),
+                rule_set_version:
+                    crate::decision::goal_frontier::replan_rules::DEFAULT_REPLAN_RULE_SET_VERSION
+                        .to_string(),
+                rule_ids: vec!["r1".into()],
+                ts: 1,
+            },
+            Event::WorkerStopped {
+                goal_id: "g".into(),
+                agent_id: Some("a".into()),
+                ts: 1,
+            },
+            Event::WorkerSessionBound {
+                goal_id: "g".into(),
+                agent_id: "a".into(),
+                session_id: "sess-a".into(),
+                ts: 1,
+            },
+            // Control-plane / supervisor-surface variants. These were missing
+            // from this list, which silently broke the "every variant" claim of
+            // `describe_event_covers_every_variant` and left the matrix test
+            // below blind to them.
+            Event::WorkerSteered {
+                goal_id: "g".into(),
+                agent_id: Some("a".into()),
+                instruction: "focus".into(),
+                ts: 1,
+            },
+            Event::SteerConsumed {
+                goal_id: "g".into(),
+                agent_id: Some("a".into()),
+                steer_ts: 1,
+                ts: 1,
+            },
+            Event::ControlIssued {
+                goal_id: "g".into(),
+                instruction: crate::agents::control::Instruction {
+                    id: "i1".into(),
+                    agent_id: Some("a".into()),
+                    text: "hold".into(),
+                    interrupt: true,
+                },
+                ts: 1,
+            },
+            Event::ControlAcknowledged {
+                goal_id: "g".into(),
+                instruction_id: "i1".into(),
+                agent_id: Some("a".into()),
+                ts: 1,
+            },
+            Event::SupervisorRegistered {
+                goal_id: "g".into(),
+                session_id: "sess-sup".into(),
+                ts: 1,
+            },
+            Event::SupervisorBatchPrepared {
+                goal_id: "g".into(),
+                batch_id: "b1".into(),
+                session_id: "sess-sup".into(),
+                note_keys: vec!["k1".into()],
+                message: "batch".into(),
+                ts: 1,
+            },
+            Event::SupervisorBatchDelivered {
+                goal_id: "g".into(),
+                batch_id: "b1".into(),
+                ts: 1,
+            },
+            Event::SupervisorNote {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                note_kind: "completed".into(),
+                message: "note".into(),
+                dedup_key: "d1".into(),
+                ts: 1,
+            },
+            Event::ProgressReported {
+                goal_id: "g".into(),
+                agent_id: "a".into(),
+                todo_id: todo_id.into(),
+                message: "halfway".into(),
+                ts: 1,
+            },
+            Event::DeliveryOutcomeRecorded {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                outcome: "verified".into(),
+                note: Some("ok".into()),
+                delivered_turn: 1,
+                seq: 1,
+                ts: 1,
+            },
+            Event::ProjectionRepaired {
+                goal_id: "g".into(),
+                projection: "run_index".into(),
+                drift_count: 1,
+                missing_rows: 1,
+                stale_rows: 0,
+                duplicate_rows: 0,
+                rows_written: 1,
+                backup_path: "b.jsonl".into(),
+                ts: 1,
+            },
+            Event::WorkspaceLockAcquired {
+                goal_id: "g".into(),
+                agent_id: "a".into(),
+                todo_id: todo_id.into(),
+                paths: vec!["src/lib.rs".into()],
+                forced: false,
+                ts: 1,
+            },
+        ]
+    }
+
+    #[test]
+    fn describe_event_covers_every_variant() {
+        // Two properties a stub cannot satisfy: a description must never be
+        // empty, and no two variants may render the same line — `evidence-log`
+        // and `todo-event` consumers key off these strings, so collapsing two
+        // arms (or `return "x"`) must fail here rather than in the CLI output.
+        // The kind strings themselves are deliberately NOT duplicated here; the
+        // per-variant contract tests below (`describe_event_renders_*`) pin those.
+        let mut described = std::collections::BTreeSet::new();
+        for ev in all_events("todo_1") {
+            let s = describe_event(&ev);
+            assert!(!s.is_empty(), "{ev:?}");
+            assert!(described.insert(s.clone()), "duplicate description: {s:?}");
+        }
+        // The list really does reach the whole surface: the control-plane kinds
+        // added after the first coverage pass must be described, not skipped.
+        for kind in [
+            "steer_consumed",
+            "control_issued",
+            "control_acknowledged",
+            "supervisor_batch_prepared",
+            "supervisor_batch_delivered",
+            "supervisor_note",
+            "progress_reported",
+        ] {
+            assert!(
+                described.iter().any(|s| s.starts_with(kind)),
+                "{kind} missing from all_events/describe_event"
+            );
+        }
+    }
+
+    #[test]
+    fn event_touches_todo_matrix() {
+        let mut wrongly_touched = false;
+        for ev in all_events("todo_1") {
+            let _touches = event_touches_todo(&ev, "todo_1");
+            // No event variant may match a different todo id.
+            wrongly_touched |= event_touches_todo(&ev, "todo_other");
+        }
+        assert!(!wrongly_touched);
+        assert!(event_touches_todo(
+            &Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("todo_1", "task"),
+                ts: 1,
+            },
+            "todo_1"
+        ));
+        assert!(!event_touches_todo(
+            &Event::GoalStarted {
+                goal_id: "g".into(),
+                ts: 1
+            },
+            "todo_1"
+        ));
+    }
+
+    #[test]
+    fn human_dur_ranges() {
+        assert_eq!(human_dur(59), "59s");
+        assert_eq!(human_dur(90), "1m30s");
+        assert_eq!(human_dur(3600), "1h0m");
+        assert_eq!(human_dur(3705), "1h1m");
+    }
+
+    #[test]
+    fn status_label_matrix() {
+        let mut t = Todo::advancement("t", "x");
+        t.status = TodoStatus::Done;
+        t.no_follow_up = true;
+        assert_eq!(status_label(&t), "done(no-follow-up)");
+        t.no_follow_up = false;
+        t.successor_ids = vec!["s".into()];
+        assert_eq!(status_label(&t), "done(+successor)");
+        t.successor_ids = vec![];
+        assert_eq!(status_label(&t), "done");
+        t.status = TodoStatus::Superseded;
+        assert_eq!(status_label(&t), "superseded");
+        for (class, label) in [
+            (TaskClass::Advancement, "open"),
+            (TaskClass::UserGate, "GATE"),
+            (TaskClass::UserAction, "action"),
+            (TaskClass::Monitor, "monitor"),
+            (TaskClass::Blocker, "blocker"),
+            (TaskClass::Coordination, "coord"),
+        ] {
+            let mut t = Todo::advancement("t", "x");
+            t.class = class;
+            assert_eq!(status_label(&t), label);
+        }
+    }
+
+    #[tokio::test]
+    async fn steer_worker_watch_loop_exits_via_test_seam() {
+        // Two polls: the first does not stop (false edge), the second does.
+        STEER_WATCH_MAX_POLLS.store(2, std::sync::atomic::Ordering::Relaxed);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        steer_worker_watch(path, None, "sess".to_string()).await;
+        STEER_WATCH_MAX_POLLS.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+    #[tokio::test]
+    async fn claim_loop_breaks_when_nothing_is_selected() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        let mut store = Store::open(&root).unwrap();
+        let goal = crate::state::Goal::new("g", "obj", "/tmp");
+        store.register(&goal).unwrap();
+        store
+            .append(Event::GoalStarted {
+                goal_id: "g".into(),
+                ts: 1,
+            })
+            .unwrap();
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: crate::state::Todo::advancement("t1", "w"),
+                ts: 2,
+            })
+            .unwrap();
+        let g = store.replay("g").unwrap().unwrap();
+        // No selection: the claim loop exits immediately, nothing claimed.
+        let mut packet = decide_for(&g, SystemTime::now(), Some("racer"));
+        packet.interaction_contract.agent_channel.selected_todo = None;
+        let r = claim_selected_with_lease(&mut store, "g", &mut packet, Some("racer"), 3600, false)
+            .unwrap();
+        assert_eq!(r, None);
+    }
+
+    #[test]
+    fn claim_loop_stops_when_the_re_decide_changes_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        let mut store = Store::open(&root).unwrap();
+        let goal = crate::state::Goal::new("g", "obj", "/tmp");
+        store.register(&goal).unwrap();
+        store
+            .append(Event::GoalStarted {
+                goal_id: "g".into(),
+                ts: 1,
+            })
+            .unwrap();
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: crate::state::Todo::advancement("t1", "w"),
+                ts: 2,
+            })
+            .unwrap();
+        // A live lease held by ANOTHER agent: the atomic claim fails.
+        store
+            .append(Event::TodoClaimed {
+                goal_id: "g".into(),
+                todo_id: "t1".into(),
+                agent_id: "other".into(),
+                lease_expires_at: crate::state::now_epoch() + 3600,
+                holder_pid: None,
+                ts: 3,
+            })
+            .unwrap();
+        let g = store.replay("g").unwrap().unwrap();
+        let mut packet = decide_for(&g, SystemTime::now(), Some("racer"));
+        // Force a stale selection (as if t1 were free at decide time).
+        packet.interaction_contract.agent_channel.selected_todo = Some("t1".to_string());
+        packet.interaction_contract.mode = crate::contract::TurnMode::BoundedDelivery;
+        let r = claim_selected_with_lease(&mut store, "g", &mut packet, Some("racer"), 3600, false)
+            .unwrap();
+        // The fresh decide filters other-claimed todos → mode change → stop.
+        assert_eq!(r, None);
+    }
+
+    #[test]
+    fn print_obligation_with_and_without_todo() {
+        let base = crate::work_items::replan_obligation::ReplanObligation {
+            schema_version: "replan_obligation_v0".to_string(),
+            kind: "surface_only_progress_streak".to_string(),
+            goal_id: "g".to_string(),
+            todo_id: None,
+            raised_at: 7,
+            evidence: "e".to_string(),
+            cleared: false,
+            cleared_reason: None,
+            cleared_at: None,
+        };
+        print_obligation(&base);
+        let bound = crate::work_items::replan_obligation::ReplanObligation {
+            todo_id: Some("t1".to_string()),
+            ..base.clone()
+        };
+        print_obligation(&bound);
+    }
+
+    #[test]
+    fn registry_render_skips_groups_with_no_visible_commands() {
+        let mut registry = CommandRegistry::new();
+        let g = registry.group("exp-only", "experimental-only group");
+        registry.command_experimental(g, "exp-cmd", "experimental", "exp-cmd");
+        // Without --include-experimental the group renders no commands and is
+        // skipped; with it, the group header prints.
+        cmd_registry(&registry, &[]).unwrap();
+        cmd_registry(&registry, &["--include-experimental".to_string()]).unwrap();
+    }
+
+    #[test]
+    fn goal_vanished_error_message() {
+        let e = goal_vanished_error("g1");
+        assert!(format!("{e:#}").contains("deleted while running"));
+    }
+
+    #[test]
+    fn backfill_event_label_covers_the_catch_all() {
+        let ghost = Event::GoalCancelled {
+            goal_id: "g".to_string(),
+            reason: "r".to_string(),
+            ts: 1,
+        };
+        assert_eq!(backfill_event_label(&ghost), "?");
+    }
+
+    #[test]
+    fn label_fns_cover_every_variant() {
+        use crate::state::ValidationStatus;
+        let statuses = [
+            (ValidationStatus::Passed, "passed"),
+            (ValidationStatus::Progress, "progress"),
+            (ValidationStatus::Failed, "failed"),
+            (ValidationStatus::Inconclusive, "inconclusive"),
+            (ValidationStatus::Unavailable, "unavailable"),
+            (ValidationStatus::NotRequired, "not_required"),
+        ];
+        for (status, label) in statuses {
+            assert_eq!(validation_status_label(&status), label);
+        }
+    }
+
+    #[test]
+    fn parse_pairs_edge_cases() {
+        let mut seen: Vec<(String, String)> = vec![];
+        parse_pairs(
+            &[
+                "--flag".to_string(),     // boolean-ish flag at end
+                "positional".to_string(), // skipped
+                "--key".to_string(),
+                "value".to_string(),
+                "--no-follow-up".to_string(), // known boolean, followed by value-less
+                "--after-bool".to_string(),
+            ],
+            |k, v| seen.push((k.to_string(), v)),
+        );
+        // "--flag" is followed by a non-flag arg → consumes it as its value
+        // (parse_pairs has no arity table; only the four known booleans are
+        // value-less).
+        assert!(seen.contains(&("--flag".to_string(), "positional".to_string())));
+        assert!(seen.contains(&("--key".to_string(), "value".to_string())));
+        assert!(seen.contains(&("--no-follow-up".to_string(), "true".to_string())));
+        // "--after-bool" at the end gets "true".
+        assert!(seen.contains(&("--after-bool".to_string(), "true".to_string())));
+        assert!(!seen.iter().any(|(k, _)| k == "positional"));
+    }
+
+    #[test]
+    fn join_ids_both() {
+        assert_eq!(join_ids(&[]), "(none)");
+        assert_eq!(join_ids(&["a".to_string(), "b".to_string()]), "a, b");
+    }
+
+    #[test]
+    fn print_goal_status_full() {
+        // Acceptance gaps (satisfied + open), monitor metadata, projection
+        // gap, history — every print arm.
+        let mut goal = Goal::new("g1", "objective", "/tmp")
+            .with_acceptance(vec![("gap1", "needs proof"), ("gap2", "more proof")]);
+        goal.satisfy_gap("gap2");
+        goal.todos.push(Todo::advancement("t1", "open task"));
+        let mut mon = Todo::monitor("m1", "watch", std::time::Duration::from_secs(60));
+        mon.monitor_target = Some("file:x".into());
+        mon.monitor_policy = Some("exists".into());
+        mon.monitor_cadence = Some("15m".into());
+        goal.todos.push(mon);
+        goal.history.push(record("t1"));
+        // No next_action → "-" arm; the frontier disagrees → projection gap.
+        print_goal_status(&goal);
+        goal.next_action = Some("open task".into());
+        print_goal_status(&goal);
+    }
+
+    #[test]
+    fn prog_and_help_surface() {
+        // prog() falls back to the standalone name before run() sets it, or
+        // reflects the OnceLock afterwards — either way it is exercised.
+        let _ = prog();
+        // cli_help adapts the USAGE line when invoked as `future goal`.
+        let _ = PROG.set("future goal".to_string());
+        let registry = build_cli_registry();
+        cli_help(&registry, false).unwrap();
+        cli_help(&registry, true).unwrap();
+    }
+
+    #[test]
+    fn root_dir_env_override() {
+        std::env::set_var("FUTURE_GOAL_ROOT", "/tmp/loop-root-dir-test");
+        assert_eq!(root_dir(), "/tmp/loop-root-dir-test");
+        std::env::remove_var("FUTURE_GOAL_ROOT");
+        // Component-wise: the cwd-relative root uses the platform separator.
+        assert!(
+            std::path::Path::new(&root_dir()).ends_with(".future/goal"),
+            "{}",
+            root_dir()
+        );
+    }
+
+    #[test]
+    fn gen_id_format() {
+        let id = gen_id("todo");
+        assert!(id.starts_with("todo_"), "{id}");
+        assert_eq!(id.len(), "todo_".len() + 12);
+    }
+
+    #[test]
+    fn print_status_json_paths() {
+        let dir = std::env::temp_dir().join(format!(
+            "future-goal-console-json-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.to_string_lossy().into_owned();
+        let mut store = Store::open(&root).unwrap();
+        let goal = Goal::new("gj", "json goal", "/tmp");
+        store.register(&goal).unwrap();
+        store
+            .append(Event::GoalStarted {
+                goal_id: "gj".into(),
+                ts: 1,
+            })
+            .unwrap();
+        // No filter → iterates the registry; with filter → single goal;
+        // unknown filter → error.
+        print_status_json(&store, None).unwrap();
+        print_status_json(&store, Some("gj".to_string())).unwrap();
+        assert!(print_status_json(&store, Some("goal_nope".to_string())).is_err());
+    }
+
+    #[test]
+    fn sync_helpers_tolerate_missing_goals() {
+        let dir = std::env::temp_dir().join(format!(
+            "future-goal-console-sync-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.to_string_lossy().into_owned();
+        let mut store = Store::open(&root).unwrap();
+        // sync_compat on a goal with no ledger → Ok no-op; refresh_next_action
+        // on the same → not-found error.
+        sync_compat(&store, "goal_ghost");
+        assert!(refresh_next_action(&store, "goal_ghost").is_err());
+        // And the write path for a real goal (produces ACTIVE_GOAL_STATE.md).
+        let goal = Goal::new("gs", "sync goal", "/tmp");
+        store.register(&goal).unwrap();
+        store
+            .append(Event::GoalStarted {
+                goal_id: "gs".into(),
+                ts: 1,
+            })
+            .unwrap();
+        refresh_next_action(&store, "gs").unwrap();
+        sync_compat(&store, "gs");
+        assert!(store.goal_dir("gs").join("ACTIVE_GOAL_STATE.md").exists());
+    }
+}
+
+// ── P0-3 CLI quirks tests ─────────────────────────────────────────────────
+
+#[cfg(test)]
+mod cli_quirks_tests {
+    use super::*;
+
+    fn tmp_store(tag: &str) -> Store {
+        let dir = std::env::temp_dir().join(format!(
+            "future-goal-p03-{tag}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        Store::open(dir.to_string_lossy().as_ref()).unwrap()
+    }
+
+    fn open_goal_with_todo(store: &mut Store, goal_id: &str) {
+        let goal = Goal::new(goal_id, "objective", "/tmp");
+        store.register(&goal).unwrap();
+        let ts = goal.created_at;
+        store
+            .append(Event::GoalStarted {
+                goal_id: goal_id.into(),
+                ts,
+            })
+            .unwrap();
+        store
+            .append(Event::TodoAdded {
+                goal_id: goal_id.into(),
+                todo: Todo::advancement("t1", "shared work"),
+                ts,
+            })
+            .unwrap();
+    }
+
+    // ① unknown flags are rejected, not silently ignored ───────────────────
+
+    #[test]
+    fn reject_unknown_flags_accepts_known_and_positionals() {
+        let args = vec!["--goal".to_string(), "g1".to_string(), "status".to_string()];
+        assert!(reject_unknown_flags(&args, &["--goal"]).is_ok());
+    }
+
+    #[test]
+    fn reject_unknown_flags_fails_loudly_on_typo() {
+        let args = vec!["--gaol".to_string(), "g1".to_string()];
+        let err = reject_unknown_flags(&args, &["--goal"]).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("unknown flag `--gaol`"), "got: {msg}");
+        assert!(msg.contains("--help"), "hint missing: {msg}");
+    }
+
+    #[test]
+    fn reject_unknown_flags_allows_help_and_global_flags() {
+        let args = vec!["--help".to_string(), "--include-experimental".to_string()];
+        assert!(reject_unknown_flags(&args, &["--goal"]).is_ok());
+    }
+
+    #[test]
+    fn unknown_flag_errors_end_to_end_on_read_and_write_commands() {
+        let mut store = tmp_store("e2e-unknown");
+        open_goal_with_todo(&mut store, "g1");
+        // read-only command
+        let err = cmd_status(&store, &["--bogus".to_string()]).unwrap_err();
+        assert!(format!("{err}").contains("unknown flag `--bogus`"));
+        // write command
+        let err = todo_update(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--todo-id".to_string(),
+                "t1".to_string(),
+                "--bogus".to_string(),
+            ],
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("unknown flag `--bogus`"));
+    }
+
+    // ② subcommand --help renders from the registry ────────────────────────
+
+    #[test]
+    fn render_command_help_shows_usage_for_registered_command() {
+        let registry = build_cli_registry();
+        let help = render_command_help(&registry, "status", false);
+        assert!(help.contains("status [--goal G]"), "got: {help}");
+        assert!(help.contains("usage: "), "got: {help}");
+        assert!(help.contains("group: goal"), "got: {help}");
+    }
+
+    #[test]
+    fn render_command_help_unknown_command_falls_back() {
+        let registry = build_cli_registry();
+        let help = render_command_help(&registry, "nope-not-a-command", false);
+        assert!(help.contains("unknown command"), "got: {help}");
+    }
+
+    #[test]
+    fn render_command_help_lists_subcommands() {
+        let registry = build_cli_registry();
+        let help = render_command_help(&registry, "supervisor", false);
+        assert!(help.contains("subcommands:"), "got: {help}");
+        assert!(help.contains("steer"), "got: {help}");
+        assert!(help.contains("--instruction"), "got: {help}");
+        let whelp = render_command_help(&registry, "worker", false);
+        assert!(whelp.contains("tail"), "got: {whelp}");
+    }
+
+    #[test]
+    fn render_command_help_lists_per_flag_details() {
+        let registry = build_cli_registry();
+        // `run` carries the richest flag surface: defaults + constraints.
+        let help = render_command_help(&registry, "run", false);
+        assert!(help.contains("flags:"), "got: {help}");
+        assert!(help.contains("--max-turns N"), "got: {help}");
+        assert!(help.contains("default 6"), "got: {help}");
+        assert!(help.contains("--resume-session ID"), "got: {help}");
+        // a command without flags (version) renders no `flags:` section.
+        let vhelp = render_command_help(&registry, "version", false);
+        assert!(!vhelp.contains("\nflags:\n"), "got: {vhelp}");
+    }
+
+    #[test]
+    fn render_subcommand_help_lists_per_flag_details() {
+        let registry = build_cli_registry();
+        let help = render_subcommand_help(&registry, "worker", "stop", false);
+        assert!(help.contains("flags:"), "got: {help}");
+        assert!(help.contains("--all"), "got: {help}");
+        assert!(help.contains("--delete"), "got: {help}");
+    }
+
+    #[test]
+    fn render_subcommand_help_shows_exact_verb_usage() {
+        let registry = build_cli_registry();
+        let help = render_subcommand_help(&registry, "supervisor", "steer", false);
+        assert!(help.contains("supervisor steer"), "got: {help}");
+        assert!(help.contains("--instruction"), "got: {help}");
+        assert!(help.contains("--agent-id"), "got: {help}");
+        // unknown verb → fallback error
+        let bad = render_subcommand_help(&registry, "supervisor", "nope", false);
+        assert!(bad.contains("unknown subcommand"), "got: {bad}");
+    }
+
+    #[test]
+    fn condense_live_log_drops_streaming_deltas_keeps_tools_and_usage() {
+        let log = concat!(
+            "{\"type\":\"run_header\",\"idx\":0}\n",
+            "{\"type\":\"text_chunk\",\"idx\":1}\n",
+            "{\"type\":\"thinking_delta\",\"idx\":2}\n",
+            "{\"type\":\"tool_start\",\"idx\":3,\"tool\":\"write\"}\n",
+            "{\"type\":\"tool_delta\",\"idx\":4}\n",
+            "{\"type\":\"tool_end\",\"idx\":5}\n",
+            "{\"type\":\"usage\",\"idx\":6,\"usage\":{\"total_tokens\":100,\"credit_cost\":0.001}}\n",
+            "{\"type\":\"agent_end\",\"idx\":7}\n",
+            "not json\n",
+        );
+        let out = condense_live_log(log);
+        assert_eq!(
+            out,
+            vec![
+                "[run start]".to_string(),
+                "[tool →] write".to_string(),
+                "[tool ✓]".to_string(),
+                "[usage] 100 tokens, ¥0.0010".to_string(),
+                "[agent end]".to_string(),
+            ],
+            "got: {out:?}"
+        );
+    }
+
+    #[test]
+    fn render_command_help_marks_experimental_commands() {
+        let mut registry = CommandRegistry::new();
+        let ops = registry.group("ops", "operations");
+        registry.command_experimental(ops, "doctor-x", "experimental probe", "doctor-x --goal G");
+        let help = render_command_help(&registry, "doctor-x", true);
+        assert!(help.contains("(experimental)"), "got: {help}");
+    }
+
+    #[test]
+    fn shorten_home_contracts_the_home_prefix() {
+        // Same resolution the shortening uses; the tail is joined with the
+        // platform separator but always rendered with `/`.
+        let home = crate::compat::home_dir();
+        assert!(!home.is_empty(), "no home directory to shorten against");
+        assert_eq!(
+            shorten_home(&format!(
+                "{home}{sep}sub{sep}dir",
+                sep = std::path::MAIN_SEPARATOR
+            )),
+            "~/sub/dir"
+        );
+        // A path outside HOME is returned unchanged.
+        assert_eq!(shorten_home("/definitely/not/home"), "/definitely/not/home");
+    }
+
+    // P1-9: journey metadata + grouped command reference ──────────────────
+
+    #[test]
+    fn journey_assignments_cover_every_static_command() {
+        use std::collections::HashSet;
+        let registry = build_cli_registry();
+        let assigned: HashSet<&str> = JOURNEY_ASSIGNMENTS.iter().map(|(n, _)| *n).collect();
+        for c in registry.commands(true) {
+            assert!(
+                assigned.contains(c.name.as_str()),
+                "registered command `{}` has no journey assignment",
+                c.name
+            );
+        }
+        for name in &assigned {
+            assert!(
+                registry.find(name, true).is_some(),
+                "journey assignment `{name}` matches no registered command"
+            );
+        }
+    }
+
+    #[test]
+    fn commands_reference_groups_by_journey() {
+        let registry = build_cli_registry();
+        let text = registry.render_journeys(false);
+        for title in [
+            "Start here",
+            "Daily operator",
+            "Goal driver",
+            "Setup & automation",
+            "Maintainer & adapter",
+        ] {
+            assert!(text.contains(title), "missing journey `{title}`: {text}");
+        }
+        // spot-check placement
+        let starter = text.find("goal init --objective").unwrap();
+        let daily_pos = text.find("── Daily operator ──").unwrap();
+        assert!(starter < daily_pos, "goal must be in Start here: {text}");
+        let run_pos = text.find("run --goal G --agent-id A").unwrap();
+        assert!(run_pos > daily_pos, "run must come after daily: {text}");
+    }
+
+    /// `--no-title` is documented where the user reads the flags, including
+    /// its cost (one extra model call) and its boundary (existing sessions).
+    #[test]
+    fn run_help_documents_the_title_opt_out() {
+        let registry = build_cli_registry();
+        let (_, command) = registry.find("run", true).expect("run is registered");
+        let text = command
+            .flags
+            .iter()
+            .map(|f| format!("{} {} {}", f.flag, f.what, f.notes))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("--no-title"), "{text}");
+        assert!(
+            text.contains("one extra model call"),
+            "the help must state the cost: {text}"
+        );
+        assert!(
+            text.contains("resumed session is never renamed"),
+            "the help must state the boundary: {text}"
+        );
+        // The usage line advertises it too.
+        assert!(command.usage.contains("--no-title"), "{}", command.usage);
+    }
+
+    #[test]
+    fn cmd_commands_rejects_unknown_flags() {
+        let registry = build_cli_registry();
+        let err = cmd_commands(&registry, &["--journey".to_string()]).unwrap_err();
+        assert!(format!("{err}").contains("unknown flag `--journey`"));
+    }
+
+    // ③ --format json detection + read-only JSON projections ───────────────
+
+    #[test]
+    fn wants_json_detects_both_dialects() {
+        assert!(wants_json(&["--json".to_string()]));
+        assert!(wants_json(&["--format".to_string(), "json".to_string()]));
+        assert!(!wants_json(&["--format".to_string(), "text".to_string()]));
+        assert!(!wants_json(&["--goal".to_string(), "g1".to_string()]));
+        assert!(!wants_json(&[]));
+    }
+
+    #[test]
+    fn lease_status_json_projects_all_three_states() {
+        use crate::work_items::task_lease::LeaseStatus;
+        let free = lease_status_json("t1", &LeaseStatus::Free);
+        assert_eq!(free["lease"], "free");
+        assert_eq!(free["todo_id"], "t1");
+        let active = lease_status_json(
+            "t1",
+            &LeaseStatus::Active {
+                owner: "alice".to_string(),
+                expires_at: 123,
+            },
+        );
+        assert_eq!(active["lease"], "active");
+        assert_eq!(active["owner"], "alice");
+        assert_eq!(active["expires_at"], 123);
+        let expired = lease_status_json(
+            "t1",
+            &LeaseStatus::Expired {
+                owner: "bob".to_string(),
+                expires_at: 99,
+            },
+        );
+        assert_eq!(expired["lease"], "expired");
+        assert_eq!(expired["expired_at"], 99);
+    }
+
+    #[test]
+    fn agent_list_rows_marks_live_lease_holder_running() {
+        let mut goal = Goal::new("g1", "objective", "/tmp");
+        goal.registered_agents = vec!["alice".to_string(), "bob".to_string()];
+        goal.agent_profiles = vec![crate::state::AgentProfile {
+            id: "alice".to_string(),
+            capabilities: vec!["code".to_string()],
+            workspaces: vec![],
+        }];
+        let mut todo = Todo::advancement("t1", "work");
+        todo.claimed_by = Some("alice".to_string());
+        todo.lease_expires_at = Some(2_000);
+        goal.todos.push(todo);
+        let mut last_active = HashMap::new();
+        last_active.insert("alice".to_string(), 900u64);
+        let rows = agent_list_rows(&goal, &last_active, 1_000);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].agent_id, "alice");
+        assert_eq!(rows[0].status, "running");
+        assert_eq!(rows[0].work_on.len(), 1);
+        assert_eq!(rows[0].capabilities, vec!["code".to_string()]);
+        assert_eq!(rows[0].last_active_ts, Some(900));
+        assert_eq!(rows[1].agent_id, "bob");
+        assert_eq!(rows[1].status, "idle");
+        // rows serialize (the --format json path)
+        let json = serde_json::to_string(&rows).unwrap();
+        assert!(json.contains("\"status\":\"running\""));
+    }
+
+    #[test]
+    fn collect_evidence_entries_covers_all_sources_and_filter() {
+        use crate::store::StoredEvent;
+        let mk = |event: Event| StoredEvent {
+            event_id: String::new(),
+            producer: None,
+            source_ref: None,
+            source_section: None,
+            source_line: None,
+            privacy: None,
+            fencing_token: None,
+            event,
+        };
+        let events = vec![
+            mk(Event::GoalStarted {
+                goal_id: "g1".into(),
+                ts: 0,
+            }),
+            mk(Event::EvidenceAttached {
+                goal_id: "g1".into(),
+                todo_id: "t1".into(),
+                evidence: "attached-ev".into(),
+                ts: 1,
+            }),
+            mk(Event::RunRecorded {
+                goal_id: "g1".into(),
+                record: crate::state::RunRecord {
+                    agent_id: None,
+                    turn: 3,
+                    todo_id: "t2".into(),
+                    run_id: "r1".into(),
+                    validation: None,
+                    terminal_state: "continue".into(),
+                    error: None,
+                    tokens_in_delta: 0,
+                    tokens_out_delta: 0,
+                    cost_delta: 0.0,
+                    tools: vec![],
+                    evidence: "run-ev".into(),
+                    recorded_at: 2,
+                    spend_source: None,
+                    failure_kind: None,
+                    truncation: None,
+                },
+                ts: 2,
+            }),
+            mk(Event::TodoCompleted {
+                goal_id: "g1".into(),
+                todo_id: "t1".into(),
+                no_follow_up: true,
+                successor_ids: vec![],
+                evidence: Some("completed-ev".into()),
+                ts: 3,
+            }),
+        ];
+        let all = collect_evidence_entries(&events, None);
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].source, "attached");
+        assert_eq!(all[1].source, "run");
+        assert_eq!(all[1].turn, Some(3));
+        assert_eq!(all[2].source, "completed");
+        let filtered = collect_evidence_entries(&events, Some("t1"));
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().all(|e| e.todo_id == "t1"));
+        // entries serialize (the --format json path)
+        assert!(serde_json::to_string(&all).is_ok());
+    }
+
+    #[test]
+    fn json_flags_accepted_end_to_end_on_new_read_commands() {
+        let mut store = tmp_store("e2e-json");
+        open_goal_with_todo(&mut store, "g1");
+        let json = "--format".to_string();
+        let val = "json".to_string();
+        // lease status
+        cmd_lease(
+            &mut store,
+            &[
+                "status".to_string(),
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--todo-id".to_string(),
+                "t1".to_string(),
+                json.clone(),
+                val.clone(),
+            ],
+        )
+        .unwrap();
+        // agent list (empty registry → text "no agents"; json flag accepted)
+        cmd_agent_list(
+            &store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                json.clone(),
+                val.clone(),
+            ],
+        )
+        .unwrap();
+        // task-graph
+        cmd_task_graph(
+            &store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                json.clone(),
+                val.clone(),
+            ],
+        )
+        .unwrap();
+        // history
+        cmd_history(
+            &store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                json.clone(),
+                val.clone(),
+            ],
+        )
+        .unwrap();
+        // todo-event
+        cmd_todo_event(
+            &store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--todo-id".to_string(),
+                "t1".to_string(),
+                json.clone(),
+                val.clone(),
+            ],
+        )
+        .unwrap();
+        // evidence-log
+        cmd_evidence_log(
+            &store,
+            &["--goal".to_string(), "g1".to_string(), json.clone(), val],
+        )
+        .unwrap();
+        // replan obligations
+        cmd_replan(
+            &mut store,
+            &[
+                "obligations".to_string(),
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--json".to_string(),
+            ],
+        )
+        .unwrap();
+    }
+
+    // ④ text --resume-when warns (no deadline) ─────────────────────────────
+
+    #[test]
+    fn parse_resume_when_classifies_numeric_vs_text() {
+        assert_eq!(parse_resume_when("300"), ResumeWhen::Defer(300));
+        assert_eq!(parse_resume_when("  60  "), ResumeWhen::Defer(60));
+        assert_eq!(
+            parse_resume_when("when the build is green"),
+            ResumeWhen::TextHint("when the build is green".to_string())
+        );
+    }
+
+    #[test]
+    fn resume_when_text_hint_warning_names_value_and_consequence() {
+        let w = resume_when_text_hint_warning("next week", "no deadline is scheduled");
+        assert!(w.contains("`--resume-when \"next week\"`"), "got: {w}");
+        assert!(w.contains("text hint only"), "got: {w}");
+        assert!(w.contains("no deadline is scheduled"), "got: {w}");
+        assert!(w.contains("numeric value (seconds)"), "got: {w}");
+    }
+
+    #[test]
+    fn todo_update_text_resume_when_defers_without_deadline() {
+        let mut store = tmp_store("e2e-resume-text");
+        open_goal_with_todo(&mut store, "g1");
+        todo_update(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--todo-id".to_string(),
+                "t1".to_string(),
+                "--resume-when".to_string(),
+                "after review".to_string(),
+            ],
+        )
+        .unwrap();
+        let goal = store.replay("g1").unwrap().unwrap();
+        let todo = goal.todo("t1").unwrap();
+        assert_eq!(todo.status, crate::state::TodoStatus::Deferred);
+        assert_eq!(todo.resume_when_text.as_deref(), Some("after review"));
+        // text hint → NO real deadline
+        assert!(todo.resume_when.is_none());
+    }
+
+    #[test]
+    fn todo_update_numeric_resume_when_sets_real_deadline() {
+        let mut store = tmp_store("e2e-resume-num");
+        open_goal_with_todo(&mut store, "g1");
+        let before = SystemTime::now();
+        todo_update(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--todo-id".to_string(),
+                "t1".to_string(),
+                "--resume-when".to_string(),
+                "120".to_string(),
+            ],
+        )
+        .unwrap();
+        let goal = store.replay("g1").unwrap().unwrap();
+        let todo = goal.todo("t1").unwrap();
+        assert_eq!(todo.status, crate::state::TodoStatus::Deferred);
+        let deadline = todo.resume_when.expect("numeric sets a deadline");
+        assert!(deadline >= before + std::time::Duration::from_secs(120));
+    }
+
+    #[tokio::test]
+    async fn supervise_after_run_is_best_effort() {
+        let mut store = tmp_store("supervise");
+        open_goal_with_todo(&mut store, "g_sup");
+
+        // A goal with no supervisor and no dead holders is a clean no-op.
+        supervise_after_run(&mut store, "g_sup").await.unwrap();
+
+        // An unknown goal (replay returns None) and an unreachable agent are
+        // both absorbed — the supervision step never fails the run's writeback.
+        supervise_after_run(&mut store, "goal_nope").await.unwrap();
+    }
+}
+
+// ── P0-1 workspace guard CLI contract tests ───────────────────────────────
+
+#[cfg(test)]
+mod workspace_guard_cli_tests {
+    use super::*;
+
+    fn tmp_store(tag: &str) -> Store {
+        let dir = std::env::temp_dir().join(format!(
+            "future-goal-p01-{tag}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        Store::open(dir.to_string_lossy().as_ref()).unwrap()
+    }
+
+    fn open_goal(store: &mut Store, goal_id: &str, todo_ids: &[&str]) {
+        let goal = Goal::new(goal_id, "objective", "/tmp");
+        store.register(&goal).unwrap();
+        let ts = goal.created_at;
+        store
+            .append(Event::GoalStarted {
+                goal_id: goal_id.into(),
+                ts,
+            })
+            .unwrap();
+        for id in todo_ids {
+            store
+                .append(Event::TodoAdded {
+                    goal_id: goal_id.into(),
+                    todo: Todo::advancement(id, "work"),
+                    ts,
+                })
+                .unwrap();
+        }
+    }
+
+    fn onboard(store: &mut Store, goal: &str, agent: &str, workspace: &str) {
+        cmd_agent_onboard(
+            store,
+            &[
+                "--goal".to_string(),
+                goal.to_string(),
+                "--agent-id".to_string(),
+                agent.to_string(),
+                "--workspace".to_string(),
+                workspace.to_string(),
+            ],
+        )
+        .unwrap();
+    }
+
+    fn claim_args(goal: &str, todo: &str, agent: &str, extra: &[&str]) -> Vec<String> {
+        let mut v = vec![
+            "--goal".to_string(),
+            goal.to_string(),
+            "--todo-id".to_string(),
+            todo.to_string(),
+            "--agent-id".to_string(),
+            agent.to_string(),
+        ];
+        v.extend(extra.iter().map(|s| s.to_string()));
+        v
+    }
+
+    fn lock_events(store: &Store, goal: &str) -> Vec<(String, String, bool)> {
+        store
+            .events(goal)
+            .unwrap()
+            .iter()
+            .filter_map(|se| match &se.event {
+                Event::WorkspaceLockAcquired {
+                    agent_id,
+                    todo_id,
+                    forced,
+                    ..
+                } => Some((agent_id.clone(), todo_id.clone(), *forced)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// An absolute, non-existent workspace path (a bare `/...` is relative on
+    /// Windows and would be anchored to the cwd instead).
+    fn client_fixture(name: &str) -> String {
+        if cfg!(windows) {
+            format!(r"C:\definitely\not\here\{name}")
+        } else {
+            format!("/definitely/not/here/{name}")
+        }
+    }
+
+    #[test]
+    fn register_and_onboard_workspace_roundtrip_through_replay() {
+        let mut store = tmp_store("declare");
+        open_goal(&mut store, "g1", &[]);
+        let wt1 = client_fixture("wt1");
+        let wt2 = client_fixture("wt2");
+        cmd_agent(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--agent-id".to_string(),
+                "a1".to_string(),
+                "--workspace".to_string(),
+                wt1.clone(),
+            ],
+        )
+        .unwrap();
+        onboard(&mut store, "g1", "a2", &wt2);
+        let goal = store.replay("g1").unwrap().unwrap();
+        assert_eq!(
+            crate::agents::workspace_guard::agent_workspaces(&goal, "a1"),
+            vec![wt1]
+        );
+        assert_eq!(
+            crate::agents::workspace_guard::agent_workspaces(&goal, "a2"),
+            vec![wt2]
+        );
+    }
+
+    #[test]
+    fn legacy_agent_registered_event_without_workspaces_replays_empty() {
+        // Old ledger line (pre-P0-1) — no `workspaces` field.
+        let json = r#"{"kind":"agent_registered","goal_id":"g1","agent_id":"old","ts":1}"#;
+        let event: Event = serde_json::from_str(json).unwrap();
+        assert!(
+            matches!(
+                &event,
+                Event::AgentRegistered { workspaces, .. } if workspaces.is_empty()
+            ),
+            "wrong variant or non-empty workspaces: {event:?}"
+        );
+    }
+
+    #[test]
+    fn report_appends_progress_event_and_rejects_phantom_goal() {
+        let mut store = tmp_store("report");
+        open_goal(&mut store, "g1", &["t1"]);
+
+        // Happy path: appends ProgressReported; replay kanban untouched.
+        cmd_report(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--agent-id".to_string(),
+                "worker-a".to_string(),
+                "--todo-id".to_string(),
+                "t1".to_string(),
+                "--message".to_string(),
+                "submitted attempt 34444, waiting on score".to_string(),
+            ],
+        )
+        .unwrap();
+        let events = store.events("g1").unwrap();
+        let reported: Vec<&Event> = events
+            .iter()
+            .filter_map(|se| match &se.event {
+                e @ Event::ProgressReported { .. } => Some(e),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reported.len(), 1);
+        if let Event::ProgressReported {
+            agent_id,
+            todo_id,
+            message,
+            ..
+        } = reported[0]
+        {
+            assert_eq!(agent_id, "worker-a");
+            assert_eq!(todo_id, "t1");
+            assert_eq!(message, "submitted attempt 34444, waiting on score");
+        }
+        // Projection-only: the todo kanban is not mutated by a report.
+        let goal = store.replay("g1").unwrap().unwrap();
+        assert_eq!(goal.todos.len(), 1);
+        assert_eq!(goal.todos[0].status, crate::state::TodoStatus::Open);
+
+        // Missing --message → hard error.
+        let err = cmd_report(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--agent-id".to_string(),
+                "worker-a".to_string(),
+            ],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("--message required"));
+
+        // Phantom goal → hard error (a report to a nonexistent goal is a typo).
+        let err = cmd_report(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "nope".to_string(),
+                "--agent-id".to_string(),
+                "worker-a".to_string(),
+                "--message".to_string(),
+                "hello".to_string(),
+            ],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not found"));
+
+        // Unknown flag → hard error (CLI strictness).
+        let err = cmd_report(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--bogus".to_string(),
+                "x".to_string(),
+            ],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("unknown flag"));
+    }
+
+    #[test]
+    fn report_message_is_bounded_for_ledger_hygiene() {
+        let mut store = tmp_store("report-trunc");
+        open_goal(&mut store, "g1", &[]);
+        let long = "x".repeat(5000);
+        cmd_report(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--agent-id".to_string(),
+                "worker-a".to_string(),
+                "--message".to_string(),
+                long.clone(),
+            ],
+        )
+        .unwrap();
+        let events = store.events("g1").unwrap();
+        let reported = events
+            .iter()
+            .find_map(|se| match &se.event {
+                Event::ProgressReported { message, .. } => Some(message.clone()),
+                _ => None,
+            })
+            .unwrap();
+        // truncate caps at 500 chars + an ellipsis marker.
+        assert!(reported.len() <= 503, "message must be bounded");
+        assert!(
+            reported.starts_with(&"x".repeat(500)),
+            "message must keep the first 500 chars"
+        );
+    }
+
+    #[test]
+    fn claim_refuses_on_live_workspace_conflict_and_stays_serial() {
+        let mut store = tmp_store("conflict");
+        open_goal(&mut store, "g1", &["t1", "t2"]);
+        onboard(&mut store, "g1", "agent-a", "/definitely/not/here/wt1");
+        onboard(&mut store, "g1", "agent-b", "/definitely/not/here/wt1");
+        // agent-b claims t1 first (a is idle → no conflict).
+        todo_claim(&mut store, &claim_args("g1", "t1", "agent-b", &[])).unwrap();
+        // agent-a claiming t2 in the same workspace must be refused.
+        let err = todo_claim(&mut store, &claim_args("g1", "t2", "agent-a", &[])).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("workspace conflict"), "got: {msg}");
+        assert!(msg.contains("agent-b"), "holder missing: {msg}");
+        assert!(msg.contains("--force"), "force hint missing: {msg}");
+        // No claim for t2 landed in the ledger.
+        let goal = store.replay("g1").unwrap().unwrap();
+        assert!(goal.todo("t2").unwrap().claimed_by.is_none());
+    }
+
+    #[test]
+    fn claim_force_overrides_conflict_and_records_forced_lock() {
+        let mut store = tmp_store("force");
+        open_goal(&mut store, "g1", &["t1", "t2"]);
+        onboard(&mut store, "g1", "agent-a", "/definitely/not/here/wt1");
+        onboard(&mut store, "g1", "agent-b", "/definitely/not/here/wt1");
+        todo_claim(&mut store, &claim_args("g1", "t1", "agent-b", &[])).unwrap();
+        todo_claim(&mut store, &claim_args("g1", "t2", "agent-a", &["--force"])).unwrap();
+        let goal = store.replay("g1").unwrap().unwrap();
+        assert_eq!(
+            goal.todo("t2").unwrap().claimed_by.as_deref(),
+            Some("agent-a")
+        );
+        let locks = lock_events(&store, "g1");
+        assert_eq!(locks.len(), 2, "one lock per workspace-declaring claim");
+        assert_eq!(locks[0], ("agent-b".to_string(), "t1".to_string(), false));
+        assert_eq!(locks[1], ("agent-a".to_string(), "t2".to_string(), true));
+    }
+
+    #[test]
+    fn claim_without_conflict_records_unforced_lock_only_for_declaring_agents() {
+        let mut store = tmp_store("lock");
+        open_goal(&mut store, "g1", &["t1", "t2"]);
+        onboard(&mut store, "g1", "agent-a", "/definitely/not/here/wt1");
+        // agent-b registers WITHOUT a workspace declaration.
+        cmd_agent(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--agent-id".to_string(),
+                "agent-b".to_string(),
+            ],
+        )
+        .unwrap();
+        todo_claim(&mut store, &claim_args("g1", "t1", "agent-a", &[])).unwrap();
+        todo_claim(&mut store, &claim_args("g1", "t2", "agent-b", &[])).unwrap();
+        let locks = lock_events(&store, "g1");
+        assert_eq!(
+            locks,
+            vec![("agent-a".to_string(), "t1".to_string(), false)],
+            "undeclared agents leave no lock record (fail-open)"
+        );
+    }
+
+    #[test]
+    fn disjoint_workspaces_claim_freely() {
+        let mut store = tmp_store("disjoint");
+        open_goal(&mut store, "g1", &["t1", "t2"]);
+        onboard(&mut store, "g1", "agent-a", "/definitely/not/here/wt1");
+        onboard(&mut store, "g1", "agent-b", "/definitely/not/here/wt2");
+        todo_claim(&mut store, &claim_args("g1", "t1", "agent-b", &[])).unwrap();
+        todo_claim(&mut store, &claim_args("g1", "t2", "agent-a", &[])).unwrap();
+    }
+
+    #[test]
+    fn lease_claim_applies_the_same_guard() {
+        let mut store = tmp_store("lease-guard");
+        open_goal(&mut store, "g1", &["t1", "t2"]);
+        onboard(&mut store, "g1", "agent-a", "/definitely/not/here/wt1");
+        onboard(&mut store, "g1", "agent-b", "/definitely/not/here/wt1");
+        let lease_args = |todo: &str, agent: &str, extra: &[&str]| {
+            let mut v = vec!["claim".to_string()];
+            v.extend(claim_args("g1", todo, agent, &["--lease-secs", "3600"]));
+            v.extend(extra.iter().map(|s| s.to_string()));
+            v
+        };
+        cmd_lease(&mut store, &lease_args("t1", "agent-b", &[])).unwrap();
+        let err = cmd_lease(&mut store, &lease_args("t2", "agent-a", &[])).unwrap_err();
+        assert!(format!("{err}").contains("workspace conflict"));
+        cmd_lease(&mut store, &lease_args("t2", "agent-a", &["--force"])).unwrap();
+        let locks = lock_events(&store, "g1");
+        assert_eq!(locks.len(), 2);
+        assert!(locks[1].2, "forced lease claim must record forced=true");
+    }
+
+    #[test]
+    fn agent_list_rows_show_declared_workspaces_and_occupancy() {
+        let mut goal = Goal::new("g1", "objective", "/tmp");
+        goal.registered_agents = vec!["alice".to_string()];
+        goal.agent_profiles = vec![crate::state::AgentProfile {
+            id: "alice".to_string(),
+            capabilities: vec![],
+            workspaces: vec!["/repo/wt1".to_string()],
+        }];
+        // idle: declared, not occupied.
+        let rows = agent_list_rows(&goal, &HashMap::new(), 1_000);
+        assert_eq!(rows[0].workspaces, vec!["/repo/wt1".to_string()]);
+        // running: occupancy marker on the declared path.
+        let mut todo = Todo::advancement("t1", "work");
+        todo.claimed_by = Some("alice".to_string());
+        todo.lease_expires_at = Some(2_000);
+        goal.todos.push(todo);
+        let rows = agent_list_rows(&goal, &HashMap::new(), 1_000);
+        assert_eq!(rows[0].workspaces, vec!["/repo/wt1 ✍".to_string()]);
+        let json = serde_json::to_string(&rows).unwrap();
+        assert!(json.contains("workspaces"));
+    }
+
+    #[test]
+    fn describe_event_renders_workspace_lock() {
+        let event = Event::WorkspaceLockAcquired {
+            goal_id: "g1".to_string(),
+            agent_id: "a1".to_string(),
+            todo_id: "t1".to_string(),
+            paths: vec!["/repo/wt1".to_string()],
+            forced: true,
+            ts: 1,
+        };
+        let text = describe_event(&event);
+        assert!(text.contains("workspace_lock"), "got: {text}");
+        assert!(text.contains("a1"), "got: {text}");
+        assert!(text.contains("(forced)"), "got: {text}");
+        // todo-event filtering picks the lock event up for its todo.
+        assert!(event_touches_todo(&event, "t1"));
+        assert!(!event_touches_todo(&event, "t2"));
+    }
+}
+
+#[cfg(test)]
+mod read_model_repair_cli_tests {
+    use super::*;
+
+    #[test]
+    fn describe_event_renders_projection_repair() {
+        let event = Event::ProjectionRepaired {
+            goal_id: "g1".to_string(),
+            projection: "run_index".to_string(),
+            drift_count: 2,
+            missing_rows: 1,
+            stale_rows: 1,
+            duplicate_rows: 0,
+            rows_written: 3,
+            backup_path: "/tmp/backup.jsonl".to_string(),
+            ts: 1,
+        };
+        let text = describe_event(&event);
+        assert!(text.contains("projection_repaired"), "got: {text}");
+        assert!(text.contains("run_index"), "got: {text}");
+        assert!(text.contains("drift=2"), "got: {text}");
+        // The repair audit is goal-scoped, not todo-scoped.
+        assert!(!event_touches_todo(&event, "t1"));
+    }
+
+    #[test]
+    fn describe_event_renders_supervisor_register_and_steer() {
+        let registered = Event::SupervisorRegistered {
+            goal_id: "g1".to_string(),
+            session_id: "sup-sess".to_string(),
+            ts: 1,
+        };
+        let text = describe_event(&registered);
+        assert!(text.contains("supervisor_registered"), "got: {text}");
+        assert!(text.contains("sup-sess"), "got: {text}");
+        assert!(!event_touches_todo(&registered, "t1"));
+
+        let broadcast = Event::WorkerSteered {
+            goal_id: "g1".to_string(),
+            agent_id: None,
+            instruction: "re-check".to_string(),
+            ts: 1,
+        };
+        let text = describe_event(&broadcast);
+        assert!(text.contains("worker_steered"), "got: {text}");
+        assert!(text.contains("broadcast"), "got: {text}");
+        assert!(!event_touches_todo(&broadcast, "t1"));
+
+        let targeted = Event::WorkerSteered {
+            goal_id: "g1".to_string(),
+            agent_id: Some("worker-a".to_string()),
+            instruction: "re-check".to_string(),
+            ts: 1,
+        };
+        let text = describe_event(&targeted);
+        assert!(text.contains("worker-a"), "got: {text}");
+    }
+
+    #[test]
+    fn describe_event_renders_anonymous_agent_fallbacks() {
+        let stopped = describe_event(&Event::WorkerStopped {
+            goal_id: "g1".to_string(),
+            agent_id: None,
+            ts: 1,
+        });
+        assert!(
+            stopped.contains("worker_stopped agent=broadcast"),
+            "got: {stopped}"
+        );
+
+        let no_progress = describe_event(&Event::TurnNoProgress {
+            goal_id: "g1".to_string(),
+            todo_id: "t1".to_string(),
+            agent_id: None,
+            idle_secs: 900,
+            tool_calls_total: 0,
+            ts: 1,
+        });
+        assert!(
+            no_progress.contains("agent=anonymous"),
+            "got: {no_progress}"
+        );
+
+        let heartbeat = describe_event(&Event::HeartbeatReceiptRecorded {
+            goal_id: "g1".to_string(),
+            agent_id: None,
+            turn_instance_id: "ti".to_string(),
+            todo_id: None,
+            decision: "run".to_string(),
+            reason_code: String::new(),
+            ts: 1,
+        });
+        assert!(heartbeat.contains("agent=anonymous"), "got: {heartbeat}");
+        assert!(heartbeat.contains("todo=-"), "got: {heartbeat}");
+    }
+}
+#[cfg(test)]
+mod event_touch_filter_tests {
+    use super::*;
+
+    #[test]
+    fn todo_filter_covers_delivery_and_followthrough_events() {
+        let delivery = Event::DeliveryOutcomeRecorded {
+            goal_id: "g1".into(),
+            todo_id: "t1".into(),
+            outcome: "verified".into(),
+            note: None,
+            delivered_turn: 3,
+            seq: 1,
+            ts: 1,
+        };
+        assert!(event_touches_todo(&delivery, "t1"));
+        assert!(!event_touches_todo(&delivery, "t2"));
+        let follow = Event::FollowthroughCreated {
+            goal_id: "g1".into(),
+            source_todo_id: "t1".into(),
+            followup_todo_id: "t9".into(),
+            turns_overdue: 4,
+            ts: 1,
+        };
+        // Visible from BOTH the source delivery and the derived follow-up.
+        assert!(event_touches_todo(&follow, "t1"));
+        assert!(event_touches_todo(&follow, "t9"));
+        assert!(!event_touches_todo(&follow, "t2"));
+    }
+}
+
+#[cfg(test)]
+mod residual_branch_tests {
+    use super::*;
+    use crate::state::{Goal, Todo};
+    use crate::store::{Event, Store};
+
+    fn tmp_store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        let store = Store::open(&root).unwrap();
+        (dir, store)
+    }
+
+    fn registered(store: &mut Store, id: &str) {
+        let goal = Goal::new(id, "obj", "/tmp");
+        store.register(&goal).unwrap();
+        store
+            .append(Event::GoalStarted {
+                goal_id: id.into(),
+                ts: 1,
+            })
+            .unwrap();
+    }
+
+    // ── todo_complete: a user gate is resolved via `gate resolve`, never ────
+    // ── marked done via `todo complete` (M1: decision points are not work) ──
+    #[test]
+    fn todo_complete_rejects_user_gate() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::user_gate("gate1", "approve deploy?", &[]),
+                ts: 2,
+            })
+            .unwrap();
+        let args = vec![
+            "--goal".to_string(),
+            "g".to_string(),
+            "--todo-id".to_string(),
+            "gate1".to_string(),
+            "--no-follow-up".to_string(),
+            "--evidence".to_string(),
+            "x".to_string(),
+        ];
+        let err = todo_complete(&mut store, &args).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("user gate"), "got: {msg}");
+        assert!(msg.contains("gate resolve"), "got: {msg}");
+    }
+
+    // ── print_monitor_poll_plan: goal-vanished early return ────────────────
+    #[test]
+    fn monitor_poll_plan_missing_goal_returns_ok() {
+        let (_dir, store) = tmp_store();
+        // Goal never registered → replay() returns Ok(None) → early return.
+        print_monitor_poll_plan(&store, "goal_missing").unwrap();
+    }
+
+    // ── record_tick_heartbeat: empty rrule → None branch ───────────────────
+    #[test]
+    fn record_tick_heartbeat_empty_rrule_records_none() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        let state = crate::scheduler::state::SchedulerState {
+            schema_version: String::new(),
+            goal_id: "g".into(),
+            agent_id: "a".into(),
+            surface: String::new(),
+            state_key: String::new(),
+            reset_token: String::new(),
+            identity_signature: String::new(),
+            progression_index: 0,
+            progression_minutes: vec![],
+            last_applied_rrule: String::new(),
+            updated_at: 0,
+            host_update_failures: vec![],
+        };
+        record_tick_heartbeat(&mut store, "g", "a", "tick_next", &state).unwrap();
+        // The heartbeat landed; empty rrule projected as no recurrence.
+        let goal = store.replay("g").unwrap().unwrap();
+        assert!(goal.todos.is_empty());
+    }
+
+    // ── write_liveness_inbox_alert: create_dir_all failure → early return ──
+    #[test]
+    fn liveness_inbox_alert_bails_when_inbox_dir_is_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("not-a-dir");
+        std::fs::write(&blocker, "x").unwrap();
+        let goal = Goal::new("g", "obj", &blocker.to_string_lossy());
+        let eval = crate::scheduler::liveness::evaluate_liveness("g", "a", Some(1), 1000, 60);
+        // `.future/goal/inbox` cannot be created under a regular file.
+        write_liveness_inbox_alert(&goal, "a", &eval);
+    }
+
+    // ── auto_register_workspaces: empty vs non-empty cwd ───────────────────
+    #[test]
+    fn auto_register_workspaces_empty_cwd_declares_nothing() {
+        assert!(auto_register_workspaces("").is_empty());
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            auto_register_workspaces(dir.path().join("w").to_str().unwrap()),
+            vec![crate::agents::workspace_guard::normalize_workspace_path_at(
+                "w",
+                dir.path()
+            )]
+        );
+    }
+
+    // ── record_delivery_if_advancement: advancement vs non-advancement ─────
+    #[test]
+    fn record_delivery_only_for_advancement_todos() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        // Non-advancement (monitor) todo → early return, no delivery event.
+        let mut goal = store.replay("g").unwrap().unwrap();
+        goal.todos.push(Todo::monitor(
+            "m1",
+            "watch",
+            std::time::Duration::from_secs(60),
+        ));
+        record_delivery_if_advancement(&mut store, &goal, "g", "m1", 3).unwrap();
+        // Advancement todo → records a delivery outcome.
+        let mut goal = store.replay("g").unwrap().unwrap();
+        goal.todos.push(Todo::advancement("t1", "ship"));
+        record_delivery_if_advancement(&mut store, &goal, "g", "t1", 3).unwrap();
+        let goal = store.replay("g").unwrap().unwrap();
+        assert!(goal.delivery_state("t1").is_some());
+        assert!(goal.delivery_state("m1").is_none());
+    }
+
+    fn seed_overdue_delivery(store: &mut Store) {
+        store
+            .append(Event::DeliveryOutcomeRecorded {
+                goal_id: "g".into(),
+                todo_id: "t1".into(),
+                outcome: crate::work_items::delivery_outcome::OUTCOME_DELIVERED.into(),
+                note: None,
+                delivered_turn: 1,
+                seq: 1,
+                ts: 2,
+            })
+            .unwrap();
+        let run = crate::state::RunRecord {
+            agent_id: None,
+            turn: 4,
+            todo_id: "t1".into(),
+            run_id: "run-1".into(),
+            terminal_state: "completed".into(),
+            error: None,
+            tokens_in_delta: 1,
+            tokens_out_delta: 2,
+            cost_delta: 0.1,
+            tools: vec!["shell".into()],
+            evidence: "proof".into(),
+            recorded_at: 1,
+            spend_source: Some("run".into()),
+            failure_kind: None,
+            truncation: None,
+            validation: None,
+        };
+        std::fs::write(
+            store.goal_dir("g").join("runs.jsonl"),
+            format!("{}\n", serde_json::to_string(&run).unwrap()),
+        )
+        .unwrap();
+    }
+
+    // ── run_followthrough_and_refresh: empty vs overdue-delivery ────────────
+    #[test]
+    fn followthrough_refresh_no_overdue_returns_same_goal() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        let goal = store.replay("g").unwrap().unwrap();
+        let next = run_followthrough_and_refresh(&mut store, "g", goal).unwrap();
+        assert!(next.todos.is_empty());
+    }
+
+    #[test]
+    fn followthrough_refresh_overdue_creates_followup_and_refreshes() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        seed_overdue_delivery(&mut store);
+        let goal = store.replay("g").unwrap().unwrap();
+        let next = run_followthrough_and_refresh(&mut store, "g", goal).unwrap();
+        assert!(
+            next.todos.iter().any(|t| t.text.contains("Follow-through")),
+            "a follow-through todo joined the frontier"
+        );
+    }
+
+    // ── a fresh worker never mints a parentless session silently ───────────
+    //
+    // Observed: one goal's twelve workers all came out with no
+    // `parent_session_id` because `supervisor register` was skipped at setup,
+    // while three sibling goals registered right after `goal init` had every
+    // worker attached. The session still ran, so nothing surfaced until the
+    // session tree was read afterwards.
+    #[tokio::test]
+    async fn worker_stop_releases_a_gone_workers_claims_through_the_command() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t1", "write the thing"),
+                ts: 2,
+            })
+            .unwrap();
+        let now = crate::state::now_epoch();
+        store
+            .append(Event::TodoClaimed {
+                goal_id: "g".into(),
+                todo_id: "t1".into(),
+                agent_id: "worker-a".into(),
+                lease_expires_at: now + 3600,
+                holder_pid: Some(4242),
+                ts: now,
+            })
+            .unwrap();
+
+        // No bound session and no run header → nothing to abort. That is the
+        // "worker already finished its turn" case, where the lease alone is
+        // what blocks the next claim.
+        cmd_worker_stop(
+            &mut store,
+            &[
+                "--goal".into(),
+                "g".into(),
+                "--agent-id".into(),
+                "worker-a".into(),
+            ],
+        )
+        .await
+        .expect("stop runs without a session");
+
+        let goal = store.replay("g").unwrap().unwrap();
+        assert!(
+            goal.todo("t1").unwrap().claimed_by.is_none(),
+            "the claim came back: {:?}",
+            goal.todo("t1").unwrap().claimed_by
+        );
+    }
+
+    // ── a fresh worker never mints a parentless session silently ───────────
+    //
+    // Observed: one goal's twelve workers all came out with no
+    // `parent_session_id` because `supervisor register` was skipped at setup,
+    // while three sibling goals registered right after `goal init` had every
+    // worker attached. The session still ran, so nothing surfaced until the
+    // session tree was read afterwards — and `parent_session_id` is written once
+    // and never repaired, so there was nothing to fix afterwards either.
+    //
+    // Warned rather than refused: `agent_run_drive::run_without_supervisor_sends_no_report`
+    // shows a supervisor-less goal is a mode the loop supports on purpose, so
+    // this must surface the trap without forbidding the dispatch.
+    #[test]
+    fn a_fresh_worker_without_a_parent_says_so_and_names_the_fix() {
+        let warning =
+            missing_parent_warning(None, "goal_x").expect("no parent is worth saying out loud");
+        assert!(
+            warning.contains("supervisor register --goal goal_x --session-id"),
+            "the warning names the command that fixes it: {warning}"
+        );
+        assert!(
+            warning.contains("cannot be reparented later"),
+            "and why it has to be fixed now: {warning}"
+        );
+        assert!(
+            warning.contains("your-session-id"),
+            "and whose id to copy (not a worker's): {warning}"
+        );
+    }
+
+    #[test]
+    fn a_fresh_worker_with_a_parent_has_nothing_to_warn_about() {
+        assert_eq!(
+            missing_parent_warning(Some("20260101-000000-abc"), "goal_x"),
+            None
+        );
+    }
+
+    // ── worker stop frees the leases its workers held ───────────────────────
+    #[test]
+    fn stopping_a_worker_releases_the_lease_it_held() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t1", "write the thing"),
+                ts: 2,
+            })
+            .unwrap();
+        let now = crate::state::now_epoch();
+        store
+            .append(Event::TodoClaimed {
+                goal_id: "g".into(),
+                todo_id: "t1".into(),
+                agent_id: "worker-a".into(),
+                lease_expires_at: now + 3600,
+                holder_pid: Some(4242),
+                ts: now,
+            })
+            .unwrap();
+
+        let released = release_leases_of_stopped(&mut store, "g", &["worker-a".to_string()])
+            .expect("release runs");
+        assert_eq!(released, vec!["t1"], "the stopped worker's todo came back");
+
+        let goal = store.replay("g").unwrap().unwrap();
+        let todo = goal.todo("t1").unwrap();
+        assert!(
+            todo.claimed_by.is_none(),
+            "a lease nobody can renew must not keep blocking peers: {:?}",
+            todo.claimed_by
+        );
+        assert!(todo.lease_expires_at.is_none());
+    }
+
+    /// Only agents that were actually stopped lose their claims: an unreachable
+    /// agent's worker may still be mid-turn, and its lease is what keeps a
+    /// second agent off the same todo until the TTL lapses.
+    #[test]
+    fn stopping_does_not_release_another_agents_lease() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t1", "write the thing"),
+                ts: 2,
+            })
+            .unwrap();
+        let now = crate::state::now_epoch();
+        store
+            .append(Event::TodoClaimed {
+                goal_id: "g".into(),
+                todo_id: "t1".into(),
+                agent_id: "worker-b".into(),
+                lease_expires_at: now + 3600,
+                holder_pid: Some(4242),
+                ts: now,
+            })
+            .unwrap();
+
+        let released = release_leases_of_stopped(&mut store, "g", &["worker-a".to_string()])
+            .expect("release runs");
+        assert!(
+            released.is_empty(),
+            "worker-b was not stopped: {released:?}"
+        );
+        let goal = store.replay("g").unwrap().unwrap();
+        assert_eq!(
+            goal.todo("t1").and_then(|t| t.claimed_by.clone()),
+            Some("worker-b".to_string())
+        );
+    }
+
+    /// An abort that never landed (agent unreachable) reports no stopped agents,
+    /// so nothing is released — the caller sees an empty list.
+    #[test]
+    fn no_stopped_agents_releases_nothing() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        let released = release_leases_of_stopped(&mut store, "g", &[]).unwrap();
+        assert!(released.is_empty());
+    }
+
+    // ── the follow-through a delivery spawned is closed by resolving it ─────
+    //
+    // Observed on a finished goal: seven "Follow-through: verify the delivery of
+    // X" todos stayed open although every source delivery had a recorded
+    // outcome, so `all_todos_done` never held and the goal could not reach
+    // terminal closure. Recording the resolution IS the verification the todo
+    // asks for, so it has to close it.
+    #[test]
+    fn resolving_a_delivery_closes_its_followthrough_todo() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t1", "ship it"),
+                ts: 2,
+            })
+            .unwrap();
+        seed_overdue_delivery(&mut store);
+        let goal = store.replay("g").unwrap().unwrap();
+        run_followthrough_and_refresh(&mut store, "g", goal).unwrap();
+        let followup = store
+            .replay("g")
+            .unwrap()
+            .unwrap()
+            .delivery_state("t1")
+            .and_then(|d| d.followthrough_todo_id.clone())
+            .expect("the overdue delivery spawned a follow-through todo");
+
+        delivery_record(
+            &mut store,
+            &[
+                "--goal".into(),
+                "g".into(),
+                "--todo-id".into(),
+                "t1".into(),
+                "--outcome".into(),
+                crate::work_items::delivery_outcome::OUTCOME_VERIFIED.into(),
+            ],
+        )
+        .unwrap();
+
+        let goal = store.replay("g").unwrap().unwrap();
+        let todo = goal.todo(&followup).expect("still present");
+        assert_eq!(
+            todo.status,
+            crate::state::TodoStatus::Done,
+            "the follow-through is satisfied by the resolution"
+        );
+        assert!(todo.no_follow_up, "bookkeeping closes without a successor");
+        assert!(
+            todo.evidence.as_deref() == Some("delivery t1 → verified"),
+            "the evidence names what resolved it: {:?}",
+            todo.evidence
+        );
+    }
+
+    /// The reset case: a *fresh* delivery starts a new cycle and must not be
+    /// read as a resolution — the follow-through for the previous cycle was
+    /// already dropped by the fold, and a new one is minted when this one ages.
+    #[test]
+    fn a_fresh_delivery_does_not_close_anything() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t1", "ship it"),
+                ts: 2,
+            })
+            .unwrap();
+
+        delivery_record(
+            &mut store,
+            &[
+                "--goal".into(),
+                "g".into(),
+                "--todo-id".into(),
+                "t1".into(),
+                "--outcome".into(),
+                crate::work_items::delivery_outcome::OUTCOME_DELIVERED.into(),
+            ],
+        )
+        .unwrap();
+
+        let goal = store.replay("g").unwrap().unwrap();
+        assert_eq!(
+            goal.todo("t1").map(|t| t.status),
+            Some(crate::state::TodoStatus::Open),
+            "delivering is not completing"
+        );
+        assert!(goal.todo("t1").unwrap().completed_at.is_none());
+    }
+
+    /// A resolution with no follow-through to close (the delivery was verified
+    /// before the threshold fired) must stay a no-op, not invent a completion.
+    #[test]
+    fn resolving_a_delivery_without_a_followthrough_is_a_no_op() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t1", "ship it"),
+                ts: 2,
+            })
+            .unwrap();
+        store
+            .append(Event::DeliveryOutcomeRecorded {
+                goal_id: "g".into(),
+                todo_id: "t1".into(),
+                outcome: crate::work_items::delivery_outcome::OUTCOME_DELIVERED.into(),
+                note: None,
+                delivered_turn: 0,
+                seq: 1,
+                ts: 3,
+            })
+            .unwrap();
+
+        delivery_record(
+            &mut store,
+            &[
+                "--goal".into(),
+                "g".into(),
+                "--todo-id".into(),
+                "t1".into(),
+                "--outcome".into(),
+                crate::work_items::delivery_outcome::OUTCOME_FAILED.into(),
+            ],
+        )
+        .unwrap();
+
+        let goal = store.replay("g").unwrap().unwrap();
+        assert_eq!(goal.todos.len(), 1, "nothing was minted or completed");
+        assert_eq!(
+            goal.todo("t1").map(|t| t.status),
+            Some(crate::state::TodoStatus::Open)
+        );
+    }
+
+    // ── follow-through todo class: coordination, never shared-pool work ─────
+    #[test]
+    fn followthrough_todo_is_coordination_not_advancement() {
+        let od = crate::work_items::delivery_outcome::OverdueDelivery {
+            todo_id: "t1".into(),
+            delivered_turn: 1,
+            turns_overdue: 3,
+            todo_text: "ship".into(),
+        };
+        let t = followthrough_todo(&od, 4, 3);
+        assert_eq!(t.class, crate::state::TaskClass::Coordination);
+        assert!(t.owner.is_none());
+        assert!(t.text.contains("Follow-through"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn followthrough_refresh_read_only_ledger_hits_error_edge() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        seed_overdue_delivery(&mut store);
+        let ledger = store.goal_dir("g").join("events.jsonl");
+        let mut perms = std::fs::metadata(&ledger).unwrap().permissions();
+        perms.set_mode(0o444);
+        std::fs::set_permissions(&ledger, perms).unwrap();
+        let goal = store.replay("g").unwrap().unwrap();
+        let err = run_followthrough_and_refresh(&mut store, "g", goal).unwrap_err();
+        assert!(format!("{err:#}").contains("append"), "{err:#}");
+        let mut perms = std::fs::metadata(&ledger).unwrap().permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&ledger, perms).unwrap();
+    }
+
+    // ── render_premerge_gate: failing gate hits the bail arm ────────────────
+    #[test]
+    fn render_premerge_gate_failing_report_bails() {
+        let report = crate::canary::PremergeGateReport {
+            schema_version: "v1".into(),
+            gate: crate::canary::GateDecision {
+                gate: "premerge".into(),
+                passed: false,
+                goals_checked: 1,
+                failed_checks: vec!["root_writable".into()],
+                reason: "root_writable check failed".into(),
+            },
+            run: crate::canary::SmokeRunResult {
+                schema_version: "v1".into(),
+                profile_id: "premerge".into(),
+                suite: "premerge".into(),
+                all_passed: false,
+                checks: vec![crate::canary::SmokeCheckOutcome {
+                    id: "root_writable".into(),
+                    module: "state".into(),
+                    passed: false,
+                    detail: "root NOT writable".into(),
+                }],
+            },
+        };
+        let err = render_premerge_gate(&report, false).unwrap_err();
+        assert!(format!("{err:#}").contains("gate failed"), "{err:#}");
+    }
+
+    // ── fault seams: IO/error-propagation arms no ordinary fixture can aim ──
+
+    /// `run_followthrough_and_refresh`'s `?` on the follow-through scan: its
+    /// first ledger write fails, so the error must propagate before the second
+    /// half of the `TodoAdded`/`FollowthroughCreated` pair is written. A
+    /// half-recorded follow-through would claim a delivery was resolved for a
+    /// todo that never joined the frontier.
+    #[test]
+    fn followthrough_write_fault_propagates_and_leaves_no_half_state() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        seed_overdue_delivery(&mut store);
+        let before = store.raw_ledger_lines("g").unwrap();
+        let goal = store.replay("g").unwrap().unwrap();
+
+        let _armed = crate::store::write_fault::fail_next_append("todo_added");
+        let err = run_followthrough_and_refresh(&mut store, "g", goal).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("injected ledger write failure"), "{msg}");
+
+        // No half state: the ledger is byte-identical and no follow-through
+        // todo exists, so a retry starts from the same place.
+        assert_eq!(store.raw_ledger_lines("g").unwrap(), before);
+        assert!(store
+            .replay("g")
+            .unwrap()
+            .unwrap()
+            .todos
+            .iter()
+            .all(|t| !t.text.contains("Follow-through")));
+    }
+
+    /// A ledger write that fails while persisting the compact decision must
+    /// abort the turn before any model work: `executed` never flips, no run is
+    /// recorded, and neither half of the decision/receipt pair lands.
+    #[tokio::test]
+    async fn decision_write_fault_aborts_the_turn_before_any_work() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t1", "work"),
+                ts: 2,
+            })
+            .unwrap();
+
+        let mut client = crate::agent_client::AgentClient::unreachable_for_test();
+        let _armed = crate::store::write_fault::fail_next_append("decision_summary_recorded");
+        let mut last_failure_kind = None;
+        let mut executed = false;
+        let err = run_turns(
+            &mut client,
+            &mut store,
+            "g",
+            "session-1",
+            5,
+            3600,
+            Some("agent-a"),
+            0,
+            false,
+            &mut last_failure_kind,
+            &mut executed,
+            false,
+            true,
+        )
+        .await
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("injected ledger write failure"), "{msg}");
+        assert!(
+            !executed,
+            "no model work may run after the decision write failed"
+        );
+        assert!(
+            last_failure_kind.is_none(),
+            "a refused ledger write is not a science failure"
+        );
+
+        let kinds: Vec<String> = store
+            .events("g")
+            .unwrap()
+            .into_iter()
+            .filter_map(|stored| {
+                serde_json::to_value(&stored.event).ok().and_then(|value| {
+                    value
+                        .get("kind")
+                        .and_then(|kind| kind.as_str())
+                        .map(str::to_string)
+                })
+            })
+            .collect();
+        for absent in [
+            "decision_summary_recorded",
+            "heartbeat_receipt_recorded",
+            "run_recorded",
+        ] {
+            assert!(
+                !kinds.iter().any(|kind| kind.as_str() == absent),
+                "`{absent}` must not be in the ledger: {kinds:?}"
+            );
+        }
+    }
+
+    /// `release_leases_of_stopped` for a goal that is gone: nothing to release,
+    /// no error, and no ledger write. The paired control (a live lease on a
+    /// known goal) shows the empty result is the missing-goal branch and not a
+    /// return every input takes.
+    #[test]
+    fn release_leases_of_stopped_reports_nothing_for_a_vanished_goal() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t1", "work"),
+                ts: 2,
+            })
+            .unwrap();
+        let now = crate::state::now_epoch();
+        store
+            .append(Event::TodoClaimed {
+                goal_id: "g".into(),
+                todo_id: "t1".into(),
+                agent_id: "worker-a".into(),
+                lease_expires_at: now + 3600,
+                holder_pid: Some(1),
+                ts: now,
+            })
+            .unwrap();
+
+        let before = store.raw_ledger_lines("g").unwrap();
+        let released =
+            release_leases_of_stopped(&mut store, "goal-that-vanished", &["worker-a".into()])
+                .unwrap();
+        assert!(released.is_empty(), "{released:?}");
+        assert_eq!(
+            store.raw_ledger_lines("g").unwrap(),
+            before,
+            "a vanished goal must not produce a release event"
+        );
+
+        // Control: the same call on the live goal DOES release, so the empty
+        // result above is the missing-goal arm.
+        let released = release_leases_of_stopped(&mut store, "g", &["worker-a".into()]).unwrap();
+        assert_eq!(released, vec!["t1".to_string()]);
+    }
+
+    /// The seam targets ONE event kind: an append of a different kind is not
+    /// failed. Without this, the fault tests would be measuring "everything
+    /// failed" rather than "this write failed".
+    #[test]
+    fn write_fault_only_fails_the_armed_event_kind() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        let _armed = crate::store::write_fault::fail_next_append("decision_summary_recorded");
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t1", "work"),
+                ts: 2,
+            })
+            .expect("an unarmed kind must not be failed");
+        assert_eq!(store.replay("g").unwrap().unwrap().todos.len(), 1);
+    }
+
+    /// The unified `future` binary dispatches on its first argument as a group
+    /// name, so a detached re-exec from it must be `future goal run …`; the
+    /// standalone `future-goal` binary must not gain that layer.
+    #[test]
+    fn detached_child_args_prepend_the_group_only_for_the_unified_binary() {
+        let args: Vec<String> = ["--goal", "g"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            detached_child_args("future", &args),
+            ["goal", "run", "--goal", "g", "--detach"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            detached_child_args("future-goal", &args),
+            ["run", "--goal", "g", "--detach"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// `Child::try_wait` cannot be made to fail on demand, and whether a spawned
+    /// child has already exited is a scheduling race. The probe's outcomes are
+    /// therefore supplied deterministically and the guard's decision for each
+    /// is asserted — including the real OS read, so the seam is not shadowing
+    /// production.
+    #[test]
+    fn detach_liveness_guard_decides_from_the_probe_outcome() {
+        let log = std::path::Path::new("detached-child.log");
+
+        // A genuinely reaped child is reported by the OS and rejected.
+        let mut reaped = trivial_child();
+        let status = reaped.wait().unwrap();
+        detach_probe::clear();
+        let err = enforce_detach_liveness(&mut reaped, "anonymous", log).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("exited immediately"), "{msg}");
+        assert!(
+            msg.contains(&status.to_string()),
+            "the real exit status must be reported: {msg}"
+        );
+
+        // Still running: the normal detached supervision owns the child.
+        let mut running = trivial_child();
+        detach_probe::arm(Ok(None));
+        enforce_detach_liveness(&mut running, "anonymous", log).unwrap();
+        let _ = running.kill();
+        let _ = running.wait();
+
+        // An OS wait failure is not a crash signal.
+        let mut unknown = trivial_child();
+        detach_probe::arm(Err(std::io::Error::other("injected try_wait failure")));
+        enforce_detach_liveness(&mut unknown, "anonymous", log).unwrap();
+        let _ = unknown.kill();
+        let _ = unknown.wait();
+    }
+
+    fn trivial_child() -> std::process::Child {
+        #[cfg(windows)]
+        let program = "cmd";
+        #[cfg(windows)]
+        let args = ["/C", "exit 0"];
+        #[cfg(unix)]
+        let program = "sh";
+        #[cfg(unix)]
+        let args = ["-c", "exit 0"];
+        std::process::Command::new(program)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("trivial child spawns")
+    }
+}
+
+#[cfg(test)]
+mod todo_verify_hint_tests {
+    use super::looks_like_code_todo;
+
+    #[test]
+    fn code_keywords_detect_implementation_todos() {
+        // ASCII keywords (case-insensitive), Chinese keywords, and .rs paths.
+        for text in [
+            "cargo check -p future-goal",
+            "Commit worktree changes",
+            "clippy 全绿",
+            "写测试用例",
+            "修改代码",
+            "修复编译错误",
+            "refactor console.rs",
+            "fix orchestration/goal/src/console.rs",
+            "merge main 后补回归",
+        ] {
+            assert!(
+                looks_like_code_todo(text),
+                "{text:?} should look like a code todo"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_todos_do_not_trigger_the_hint() {
+        for text in [
+            "整理会议纪要",
+            "ship the widget",
+            "gate one",
+            "approve the plan",
+            "latest release notes", // "test" substring inside "latest" must not match
+            "version 1.2.3 bump",
+        ] {
+            assert!(
+                !looks_like_code_todo(text),
+                "{text:?} should not look like a code todo"
+            );
+        }
+    }
+
+    #[test]
+    fn scan_worker_sessions_parses_run_headers_and_keeps_latest_per_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs = dir.path().join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+
+        let header = |sid: &str, agent: &str, ts: u64| {
+            format!(
+                "{{\"type\":\"run_header\",\"idx\":0,\"wall_ts\":{ts},\"run_id\":\"r-{sid}\",\"session_id\":\"{sid}\",\"agent_id\":\"{agent}\",\"todo_id\":\"todo-{agent}\",\"goal_id\":\"g1\"}}\n"
+            )
+        };
+        // Two runs for worker-a (the later ts wins), one for worker-b, one foreign goal.
+        std::fs::write(
+            runs.join("ra1.live.jsonl"),
+            header("sess-a1", "worker-a", 100),
+        )
+        .unwrap();
+        std::fs::write(
+            runs.join("ra2.live.jsonl"),
+            header("sess-a2", "worker-a", 200),
+        )
+        .unwrap();
+        std::fs::write(
+            runs.join("rb.live.jsonl"),
+            header("sess-b", "worker-b", 150),
+        )
+        .unwrap();
+        std::fs::write(
+            runs.join("foreign.live.jsonl"),
+            header("sess-f", "worker-f", 999),
+        )
+        .unwrap();
+        // Non-run_header first line must be skipped.
+        std::fs::write(runs.join("noise.live.jsonl"), "{\"type\":\"tool_start\"}\n").unwrap();
+
+        // Rewrite the foreign goal's header with goal_id g2 so it is excluded.
+        let foreign = "{\"type\":\"run_header\",\"wall_ts\":999,\"run_id\":\"r-f\",\"session_id\":\"sess-f\",\"agent_id\":\"worker-f\",\"todo_id\":\"t-f\",\"goal_id\":\"g2\"}\n"
+            .to_string();
+        std::fs::write(runs.join("foreign.live.jsonl"), foreign).unwrap();
+
+        let sessions = super::scan_worker_sessions(&runs, "g1");
+        let by_agent: std::collections::HashMap<&str, &str> = sessions
+            .iter()
+            .map(|s| (s.agent_id.as_str(), s.session_id.as_str()))
+            .collect();
+        assert_eq!(
+            by_agent.len(),
+            2,
+            "foreign goal and noise must be excluded: {sessions:?}"
+        );
+        assert_eq!(
+            by_agent.get("worker-a"),
+            Some(&"sess-a2"),
+            "latest run must win"
+        );
+        assert_eq!(by_agent.get("worker-b"), Some(&"sess-b"));
+        assert!(!by_agent.contains_key("worker-f"));
+    }
+
+    #[test]
+    fn worker_stop_requested_matches_target_broadcast_and_respects_offset() {
+        let dir = tempfile::tempdir().unwrap();
+        let events = dir.path().join("events.jsonl");
+        let line = |kind: &str, agent: Option<&str>| {
+            let agent_field = agent
+                .map(|a| format!(",\"agent_id\":\"{a}\""))
+                .unwrap_or_default();
+            format!("{{\"kind\":\"{kind}\"{agent_field},\"ts\":1}}\n")
+        };
+        std::fs::write(
+            &events,
+            format!(
+                "{}{}{}",
+                line("worker_steered", Some("worker-a")),
+                line("worker_stopped", Some("worker-a")),
+                line("worker_stopped", Some("worker-b")),
+            ),
+        )
+        .unwrap();
+
+        // A targeted stop reaches only its worker; steering is never a stop.
+        let (stopped_a, offset_a) = super::worker_stop_requested(&events, 0, Some("worker-a"));
+        assert!(stopped_a);
+        let (stopped_b, _) = super::worker_stop_requested(&events, 0, Some("worker-b"));
+        assert!(stopped_b);
+        let (stopped_c, _) = super::worker_stop_requested(&events, 0, Some("worker-c"));
+        assert!(!stopped_c, "an unrelated worker must ignore others' stops");
+
+        // A stop issued BEFORE the run started (offset beyond it) must not kill it.
+        let (stopped_after, _) = super::worker_stop_requested(&events, offset_a, Some("worker-a"));
+        assert!(
+            !stopped_after,
+            "stale stops before run start must be ignored"
+        );
+
+        // A broadcast (no agent_id) reaches every worker.
+        let broadcast = dir.path().join("broadcast.jsonl");
+        std::fs::write(&broadcast, line("worker_stopped", None)).unwrap();
+        let (stopped_bc, _) = super::worker_stop_requested(&broadcast, 0, Some("worker-c"));
+        assert!(stopped_bc, "broadcast stop must reach every worker");
+
+        // Missing file: no stop, offset unchanged.
+        let missing = dir.path().join("nope.jsonl");
+        let (stopped_m, off_m) = super::worker_stop_requested(&missing, 7, Some("worker-a"));
+        assert!(!stopped_m);
+        assert_eq!(off_m, 7);
+    }
+
+    #[test]
+    fn worker_stop_requested_read_error_and_foreign_agent_arms() {
+        let dir = tempfile::tempdir().unwrap();
+        let events = dir.path().join("events.jsonl");
+
+        // Non-UTF8 content → read_to_string fails → no stop, offset unchanged.
+        std::fs::write(&events, [0xffu8, 0xfe, 0xfd]).unwrap();
+        let (stopped, off) = super::worker_stop_requested(&events, 0, Some("worker-a"));
+        assert!(!stopped);
+        assert_eq!(off, 0);
+
+        // A non-JSON line is skipped; a stop targeting a NAMED worker is
+        // ignored by an anonymous caller (agent_id None).
+        std::fs::write(
+            &events,
+            "{broken\n{\"kind\":\"worker_stopped\",\"agent_id\":\"worker-a\",\"ts\":1}\n",
+        )
+        .unwrap();
+        let (stopped_anon, _) = super::worker_stop_requested(&events, 0, None);
+        assert!(!stopped_anon, "anonymous caller ignores targeted stops");
+    }
+
+    #[test]
+    fn scan_worker_sessions_skips_bad_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs = dir.path().join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+
+        // Path filter: a non-`.live.jsonl` file and a directory are skipped.
+        std::fs::write(runs.join("notes.txt"), "not a run\n").unwrap();
+        std::fs::create_dir_all(runs.join("subdir")).unwrap();
+        // Non-UTF8 content → read_to_string fails → skipped.
+        std::fs::write(runs.join("bad.live.jsonl"), [0xffu8, 0xfe, 0xfd]).unwrap();
+        // Empty file → no first line → skipped.
+        std::fs::write(runs.join("empty.live.jsonl"), "").unwrap();
+        // Non-JSON first line → skipped.
+        std::fs::write(runs.join("broken.live.jsonl"), "{broken\n").unwrap();
+        // run_header with no agent_id → skipped.
+        std::fs::write(
+            runs.join("noagent.live.jsonl"),
+            "{\"type\":\"run_header\",\"goal_id\":\"g1\"}\n",
+        )
+        .unwrap();
+
+        let sessions = super::scan_worker_sessions(&runs, "g1");
+        assert!(
+            sessions.is_empty(),
+            "all bad files must be skipped: {sessions:?}"
+        );
+    }
+
+    #[test]
+    fn bound_worker_sessions_surfaces_orphaned_bindings_and_prefers_ledger_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs = dir.path().join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+
+        let header = |sid: &str, agent: &str, run_id: &str, todo_id: &str| {
+            format!(
+                "{{\"type\":\"run_header\",\"wall_ts\":1,\"run_id\":\"{run_id}\",\"session_id\":\"{sid}\",\"agent_id\":\"{agent}\",\"todo_id\":\"{todo_id}\",\"goal_id\":\"g1\"}}\n"
+            )
+        };
+        // worker-a has a scanned header (older session) AND a newer ledger binding.
+        std::fs::write(
+            runs.join("a.live.jsonl"),
+            header("sess-a-old", "worker-a", "r-a", "todo-a"),
+        )
+        .unwrap();
+        // worker-b has ONLY a ledger binding — no .live.jsonl (orphaned turn).
+
+        let mut goal = crate::state::Goal::new("g1", "obj", "/tmp");
+        goal.worker_sessions
+            .insert("worker-a".to_string(), "sess-a-new".to_string());
+        goal.worker_sessions
+            .insert("worker-b".to_string(), "sess-b-orphan".to_string());
+
+        let sessions = super::bound_worker_sessions(&goal, &runs, "g1");
+        let by_agent: std::collections::HashMap<&str, &super::WorkerSession> =
+            sessions.iter().map(|s| (s.agent_id.as_str(), s)).collect();
+
+        // Orphaned binding surfaces even without a run header.
+        assert_eq!(
+            by_agent.get("worker-b").map(|s| s.session_id.as_str()),
+            Some("sess-b-orphan"),
+            "an orphaned turn (binding with no run header) must be discoverable"
+        );
+        // Ledger binding wins over the scanned (stale) session id, but the
+        // scanned run_id/todo_id metadata is still carried over.
+        let a = by_agent.get("worker-a").unwrap();
+        assert_eq!(a.session_id, "sess-a-new");
+        assert_eq!(a.run_id, "r-a");
+        assert_eq!(a.todo_id, "todo-a");
+        assert_eq!(sessions.len(), 2);
+    }
+
+    #[test]
+    fn todo_parent_is_persisted_and_limited_to_three_levels() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = crate::store::Store::open(dir.path().to_str().unwrap()).unwrap();
+        let goal = crate::state::Goal::new("tree", "obj", dir.path().to_str().unwrap());
+        store.register(&goal).unwrap();
+        store
+            .append(crate::store::Event::GoalStarted {
+                goal_id: "tree".into(),
+                ts: 1,
+            })
+            .unwrap();
+        let mut parent: Option<String> = None;
+        for depth in 1..=4 {
+            let mut args: Vec<String> = vec![
+                "--goal".into(),
+                "tree".into(),
+                "--text".into(),
+                format!("level {depth}"),
+            ];
+            if let Some(id) = &parent {
+                args.extend(["--parent".into(), id.clone()]);
+            }
+            let result = super::todo_add(&mut store, &args);
+            if depth == 4 {
+                assert!(result.unwrap_err().to_string().contains("3 levels"));
+            } else {
+                result.unwrap();
+                let replay = store.replay("tree").unwrap().unwrap();
+                let todo = replay.todos.last().unwrap();
+                assert_eq!(todo.parent_id, parent);
+                parent = Some(todo.id.clone());
+            }
+        }
+        let args: Vec<String> = ["--goal", "tree", "--text", "orphan", "--parent", "missing"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert!(super::todo_add(&mut store, &args)
+            .unwrap_err()
+            .to_string()
+            .contains("not found"));
+        assert_eq!(store.replay("tree").unwrap().unwrap().todos.len(), 3);
+        let mut old =
+            serde_json::to_value(crate::state::Todo::advancement("old", "legacy")).unwrap();
+        old.as_object_mut().unwrap().remove("parent_id");
+        assert!(serde_json::from_value::<crate::state::Todo>(old)
+            .unwrap()
+            .parent_id
+            .is_none());
+    }
+
+    #[test]
+    fn worker_session_bound_event_folds_latest_session() {
+        use crate::store::Event;
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = crate::store::Store::open(dir.path().to_str().unwrap()).unwrap();
+        let mut goal = crate::state::Goal::new("g1", "obj", "/tmp");
+        goal.registered_agents = vec!["w1".to_string()];
+        store.register(&goal).unwrap();
+        store
+            .append(Event::GoalStarted {
+                goal_id: "g1".to_string(),
+                ts: 1,
+            })
+            .unwrap();
+        store
+            .append(Event::WorkerSessionBound {
+                goal_id: "g1".to_string(),
+                agent_id: "w1".to_string(),
+                session_id: "sess-1".to_string(),
+                ts: 1,
+            })
+            .unwrap();
+        store
+            .append(Event::WorkerSessionBound {
+                goal_id: "g1".to_string(),
+                agent_id: "w1".to_string(),
+                session_id: "sess-2".to_string(),
+                ts: 2,
+            })
+            .unwrap();
+        let goal = store.replay("g1").unwrap().unwrap();
+        assert_eq!(
+            goal.worker_sessions.get("w1").map(String::as_str),
+            Some("sess-2"),
+            "latest binding must win"
+        );
+    }
+}
+
+#[cfg(test)]
+mod worker_tail_tests {
+    use super::condense_live_log;
+
+    /// The condensed view keeps the events an orchestrator acts on and drops the
+    /// streaming deltas that would otherwise bury them. Malformed lines and
+    /// event types a newer executor writes must be skipped, never fatal.
+    #[test]
+    fn condensed_view_keeps_signals_and_drops_streaming_deltas() {
+        let log = [
+            r#"{"type":"run_header","run_id":"r1"}"#,
+            r#"{"type":"agent_start"}"#,
+            r#"{"type":"text_chunk","text":"STREAMED-DELTA"}"#,
+            r#"{"type":"thinking_delta","text":"THINKING-DELTA"}"#,
+            r#"{"type":"tool_start","tool":"shell"}"#,
+            r#"{"type":"tool_delta","tool":"shell"}"#,
+            r#"{"type":"tool_end"}"#,
+            r#"{"type":"usage","usage":{"total_tokens":1234,"credit_cost":0.5}}"#,
+            r#"{"type":"user_message"}"#,
+            r#"{"type":"agent_end"}"#,
+            r#"{"type":"some_future_event","payload":1}"#,
+            "not json at all",
+        ]
+        .join("\n");
+        let out = condense_live_log(&log);
+        assert_eq!(out.len(), 7, "one line per retained event: {out:?}");
+        assert_eq!(out[0], "[run start]");
+        assert!(
+            out.iter()
+                .any(|l| l.starts_with("[tool ") && l.ends_with("shell")),
+            "{out:?}"
+        );
+        assert!(out.iter().any(|l| l.contains("1234 tokens")), "{out:?}");
+        assert!(out.contains(&"[prompt]".to_string()), "{out:?}");
+        assert!(out.contains(&"[agent end]".to_string()), "{out:?}");
+        assert!(
+            !out.iter()
+                .any(|l| l.contains("STREAMED-DELTA") || l.contains("THINKING-DELTA")),
+            "streaming deltas leaked into the view: {out:?}"
+        );
+    }
+
+    #[test]
+    fn condensed_view_tolerates_empty_partial_and_payloadless_lines() {
+        assert!(condense_live_log("").is_empty());
+        assert!(condense_live_log("\n   \n").is_empty());
+        // `usage` without a usage object, and `tool_start` without a tool name.
+        assert!(condense_live_log(r#"{"type":"usage"}"#).is_empty());
+        let unnamed = condense_live_log(r#"{"type":"tool_start"}"#);
+        assert_eq!(unnamed.len(), 1, "{unnamed:?}");
+        assert!(unnamed[0].ends_with('?'), "{unnamed:?}");
+    }
+}

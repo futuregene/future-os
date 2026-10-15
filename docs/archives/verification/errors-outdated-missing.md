@@ -64,7 +64,7 @@ Suggested wording: "startup components: `future-agent`（agent）、`future-chan
 
 | Claim | Location | Basis |
 |---|---|---|
-| `make test # cargo test (agent + loop control plane)`（zh：「agent + loop 控制面」） | docs/build-and-install.md L182；zh L168 | Makefile `test:` = test-agent + test-channels + test-cli + test-tui + test-desktop + test-desktop-rust + test-mobile（Makefile L203-229）。**There is no test-loop target**，loop is not in make test |
+| `make test # cargo test (agent + goal control plane)`（zh：「agent + loop 控制面」） | docs/build-and-install.md L182；zh L168 | Makefile `test:` = test-agent + test-channels + test-cli + test-tui + test-desktop + test-desktop-rust + test-mobile（Makefile L203-229）。**There is no test-loop target**，loop is not in make test |
 | （same file, development section）`make test # cargo test (agent)` | docs/build-and-install.md L194；zh L180 | same as above，actually 7 suites |
 
 → Both changed to「all 7 suites: agent, channels, CLI, TUI, GUI, GUI Rust, mobile」（zh same）. `make clean`（removes build artifacts + installed binaries）、`future init`（installs skills + links local commands on macOS/Linux）、mold（x86_64-linux only）、loop is a workspace member（Cargo.toml L17）— these statements re-checked and correct.
@@ -152,11 +152,11 @@ Both statements are individually true（different artifacts）. Suggest Installa
 
 → ✅ **Fixed (todo_bcf715c7cc0e)**: en/zh Installation.md changed to「the official signed release pipeline signs the macOS/Windows installers and Apple-notarizes macOS；the current download builds are neither signed nor notarized — first-launch warnings are in the FAQ」.
 
-### B9. future-loop CLI overview presentation outdated (minor) —— ✅ fixed (todo_63c718c2a3d5)
+### B9. future-goal CLI overview presentation outdated (minor) —— ✅ fixed (todo_63c718c2a3d5)
 
 | Claim | Location | Basis |
 |---|---|---|
-| CLI overview presented as `ops <cmd>`、`work-items <cmd>`、`cli registry` groups | docs/loop-control-plane.md L115-127 | Actual `future-loop` dispatches **flat top-level commands**（orchestration/loop/src/main.rs L93-137，42 top-level commands total）；`ops`/`work-items`/`cli` are only help group names in the registry（cli/registry.rs），**not runnable commands**. The listed lower-level commands（goal/todo/gate/capability/extension/handoff/benchmark protocol|run|ledger/replay record|run|corpus/canary smoke/version/doctor/history/turn/todo-event/evidence-log/backup/…）all exist ✓，only the presentation hierarchy needs correction（document L127 already has the「run with no args for full help」hint — low severity） |
+| CLI overview presented as `ops <cmd>`、`work-items <cmd>`、`cli registry` groups | docs/goal-control-plane.md L115-127 | Actual `future-goal` dispatches **flat top-level commands**（orchestration/goal/src/main.rs L93-137，42 top-level commands total）；`ops`/`work-items`/`cli` are only help group names in the registry（cli/registry.rs），**not runnable commands**. The listed lower-level commands（goal/todo/gate/capability/extension/handoff/benchmark protocol|run|ledger/replay record|run|corpus/canary smoke/version/doctor/history/turn/todo-event/evidence-log/backup/…）all exist ✓，only the presentation hierarchy needs correction（document L127 already has the「run with no args for full help」hint — low severity） |
 
 → This round（todo_63c718c2a3d5）compared against `build_cli_registry()`（main.rs L176-471）one by one and corrected the CLI overview（en/zh in lockstep）:
 
@@ -164,7 +164,7 @@ Both statements are individually true（different artifacts）. Suggest Installa
 - **extension missing `upgrade`**: actual surface is `install|upgrade|enable|disable|rollback|status|capabilities`（L2597 `"install" | "upgrade"` same branch）→ added to the extension row
 - **`cli registry` missing `--include-experimental`**: actual `registry [--json] [--include-experimental]`（main.rs L466）→ added
 
-All other checks passed: `todo add|claim|complete|supersede|update|archive`（L613-618）、`gate resolve`、`replan ack`、`lease`、`task-graph`、`agent onboard/scope/lane/supervisor`、`capability list|propose|commands` + `catalog`、`handoff [--write]`、`benchmark protocol|run|ledger`、`replay record|run|corpus build|run`、`canary smoke [--profile core-control-plane|extension-runtime|release-gate]`、all 19 ops-group commands、quota three sources run/agent/heartbeat（quota/slot_accounting.rs L42-44）、nine dispositions（decision/）、`--class monitor --cadence`（L655-660）、`--verify/--max-validation-attempts`（L656-657）、backup `--restore`（L991-1002）、state layout registry.json + goals/<id>/events.jsonl + ACTIVE_GOAL_STATE.md + runs/、`cargo build -p future-loop`、`scripts/install-future-loop.sh` all ✓
+All other checks passed: `todo add|claim|complete|supersede|update|archive`（L613-618）、`gate resolve`、`replan ack`、`lease`、`task-graph`、`agent onboard/scope/lane/supervisor`、`capability list|propose|commands` + `catalog`、`handoff [--write]`、`benchmark protocol|run|ledger`、`replay record|run|corpus build|run`、`canary smoke [--profile core-control-plane|extension-runtime|release-gate]`、all 19 ops-group commands、quota three sources run/agent/heartbeat（quota/slot_accounting.rs L42-44）、nine dispositions（decision/）、`--class monitor --cadence`（L655-660）、`--verify/--max-validation-attempts`（L656-657）、backup `--restore`（L991-1002）、state layout registry.json + goals/<id>/events.jsonl + ACTIVE_GOAL_STATE.md + runs/、`cargo build -p future-goal`、`scripts/install-future-goal.sh` all ✓
 
 ---
 
@@ -192,12 +192,12 @@ All of fact-inventory §14b's I-1..I-7 handled:
 - **I-1** Models.md regeneration note → resolved（todo_bcf715c7cc0e：`make generate-models` comment written into the script template and file headers）.
 - **I-2** Linux page decision → **stays macOS+Windows**: release.yml publishes only macOS（arm64+x64 dmg/updater）+ Windows（x64 setup）；the Linux portable package is tester-only — no Linux wiki page.
 - **I-3** added **docs/channels-config.md / zh**: unified reference for `~/.future/channels/config.json` — schema of the three blocks `agent`/`feishu`/`dingtalk`, all defaults and legal values（field-by-field checked against channels/src/config.rs + feishu/policy.rs；dm_policy=open|disabled|allowlist、group_policy=open|disabled|allowlist、first-run writes a template and exits、9 local slash commands、unknown slashes forwarded、Feishu keepalive 30s / DingTalk 20s、DingTalk webhook new-message replies）.
-- **I-4** loop-control-plane.md / zh adds「Multi-agent workflow / 多 agent 工作流」section：complete examples for `agent`（registration + `onboard --capability`）、`scope`（identity boundary frontier output）、`lane`、`supervisor propose|receipt|events`、`handoff [--write]`（delivery contract + HANDOFF.md）、`task-graph`、`attention [--goal|--all]`、`inbox --project`；and notes these are **flat top-level commands**（main.rs L94/L119-127 top-level dispatch；the agent/todo/work-items groups in help output are display only）.
+- **I-4** goal-control-plane.md / zh adds「Multi-agent workflow / 多 agent 工作流」section：complete examples for `agent`（registration + `onboard --capability`）、`scope`（identity boundary frontier output）、`lane`、`supervisor propose|receipt|events`、`handoff [--write]`（delivery contract + HANDOFF.md）、`task-graph`、`attention [--goal|--all]`、`inbox --project`；and notes these are **flat top-level commands**（main.rs L94/L119-127 top-level dispatch；the agent/todo/work-items groups in help output are display only）.
 - **I-5** added **docs/README.md / zh**: docs directory navigation index（top-level guide table, wiki page inventory, dist live documents, internal working documents, how to keep documentation correct）.
 - **I-6** added **docs/tui.md / zh**: TUI usage documentation — 17 usable slash commands（/export /import are stubs）、8 keyboard shortcuts、settings.json/keybindings.json/debug.log/write.log paths（`write.log` written only when `PI_TUI_WRITE_LOG=1`，see tui/src/tui.ts L282-287；no crash.log）、common troubleshooting（per tui/src/app.ts etc）.
-- **I-7** added **docs/directory-layout.md / zh**: complete `~/.future/` layout — agent（settings/models/auth/sessions/skills/logs）、channels、tui、app（app.db/images/review）、workspaces/chat、loop（FUTURE_LOOP_ROOT overridable）、bin；plus notes on `~/.agents/skills/` and project-local `.future/`（loop、approval_rule.json）.
+- **I-7** added **docs/directory-layout.md / zh**: complete `~/.future/` layout — agent（settings/models/auth/sessions/skills/logs）、channels、tui、app（app.db/images/review）、workspaces/chat、loop（FUTURE_GOAL_ROOT overridable）、bin；plus notes on `~/.agents/skills/` and project-local `.future/`（loop、approval_rule.json）.
 
-> Cross-link closure: docs/README.md（index）⇄ tui.md ⇄ directory-layout.md ⇄ channels-config.md ⇄ loop-control-plane.md ⇄ wiki pages，no dangling links（`grep -rn '](…' docs/*.md` spot-check passed）.
+> Cross-link closure: docs/README.md（index）⇄ tui.md ⇄ directory-layout.md ⇄ channels-config.md ⇄ goal-control-plane.md ⇄ wiki pages，no dangling links（`grep -rn '](…' docs/*.md` spot-check passed）.
 
 ---
 
@@ -207,18 +207,18 @@ All of fact-inventory §14b's I-1..I-7 handled:
 |---|---|
 | TUI 8 keyboard shortcuts | ✓ README L122-131 exactly matches source: ctrl+c interrupt/quit、ctrl+p cycle models、ctrl+r browse sessions、ctrl+t cycle thinking、tab complete、enter submit/accept、escape close overlay、↑↓ scroll（tui/src/app.ts L226-232；help-screen.ts same） |
 | agent port | ✓ default `127.0.0.1:50051`（agent/src/main.rs L14）；CLI/TUI/channels default connections match |
-| config paths | ✓ `~/.future/agent/auth.json` format `{"provider":{"type":"api_key","key":…}}` + optional `baseUrl`（agent/src/auth/mod.rs serde）；`~/.future/agent/models.json` `providers{apiKey,baseUrl,models[{id,name,contextWindow}]}`（agent/src/models/mod.rs L402-432）；`~/.future/channels/config.json`（channels/src/config.rs default_path）；TUI local `~/.future/tui/settings.json`；loop state root `~/.future/loop/`（FUTURE_LOOP_ROOT overridable） |
+| config paths | ✓ `~/.future/agent/auth.json` format `{"provider":{"type":"api_key","key":…}}` + optional `baseUrl`（agent/src/auth/mod.rs serde）；`~/.future/agent/models.json` `providers{apiKey,baseUrl,models[{id,name,contextWindow}]}`（agent/src/models/mod.rs L402-432）；`~/.future/channels/config.json`（channels/src/config.rs default_path）；TUI local `~/.future/tui/settings.json`；loop state root `~/.future/goal/`（FUTURE_GOAL_ROOT overridable） |
 | channels config defaults | ✓ grpc_addr=http://127.0.0.1:50051、model=future/deepseek-v4-pro、thinking_level=xhigh、permission_level=all；feishu dm_policy=allowlist、group_policy=disabled、require_mention/streaming/resolve_sender_names=true、max_image_mb=10、typing_indicator=false；dingtalk domain=api.dingtalk.com；no config.json → writes template and exits（config.rs all defaults + main.rs behavior） |
 | channels slash commands | ✓ 9 per bridge: /new /status /stop /model /models /compact /effort /cwd /help（feishu/bridge.rs L424-714；dingtalk/bridge.rs L141-262） |
 | DingTalk keepalive 20s | ✓ PING_INTERVAL_SECS=20（dingtalk/dingtalk_ws.rs L32） |
 | toolchain versions | ✓ rust-toolchain.toml `1.97.0`；.nvmrc `24`；.cargo/config.toml：mold only on x86_64-unknown-linux-gnu、windows-msvc /DEBUG:NONE（「mold required on x86_64、not needed on ARM Linux」correct） |
-| remaining Makefile targets | ✓ install/install-desktop/install-agent|tui|cli|desktop|channels|skills|loop、uninstall、build*（agent/tui/cli/desktop/desktop-dist/channels/mobile）、package-desktop、run-agent|tui|cli|desktop|channels、generate-models、generate-proto、fmt、clean all exist；install prefix per-OS correct（macOS /opt/homebrew/bin、Linux /usr/local/bin sudo、Windows %USERPROFILE%\.future\bin）；install-skills symlinks/Windows copies；install-loop → scripts/install-future-loop.sh；scripts/（build-desktop-macos.sh、build-desktop-windows-portable.ps1、build-desktop-windows-installer.ps1、start-desktop-windows.bat）all exist |
+| remaining Makefile targets | ✓ install/install-desktop/install-agent|tui|cli|desktop|channels|skills|loop、uninstall、build*（agent/tui/cli/desktop/desktop-dist/channels/mobile）、package-desktop、run-agent|tui|cli|desktop|channels、generate-models、generate-proto、fmt、clean all exist；install prefix per-OS correct（macOS /opt/homebrew/bin、Linux /usr/local/bin sudo、Windows %USERPROFILE%\.future\bin）；install-skills symlinks/Windows copies；install-loop → scripts/install-future-goal.sh；scripts/（build-desktop-macos.sh、build-desktop-windows-portable.ps1、build-desktop-windows-installer.ps1、start-desktop-windows.bat）all exist |
 | build-desktop-macos.sh | ✓ auto-signs with the unique Developer ID、`--identity`/`--out-dir`/`--notary-profile` options match B4's description |
 | CLI run options | ✓ --model supports `model:thinking`、--thinking off/minimal/low/medium/high/xhigh、@<path> file inclusion、--continue/-c、--cwd、--mode text|json、--no-session（cli/src/commands/run.ts help text） |
 | CLI tools | ✓ list / describe / call（--key value、--args '<json>'、--stdin、--output、--timeout etc） |
 | `future init` | ✓ = installs builtin skills + links future/future-agent into ~/.future/bin on macOS/Linux（cli/src/index.ts L41-46 help text）— build-and-install B14 description correct |
-| future-loop command surface | ✓ 42 top-level commands（main.rs L93-137）；goal init/cancel/delete（L494-586）、todo add/claim/complete/supersede/update/archive（L613-618）、gate、capability/catalog、extension install|upgrade|enable|disable|rollback|status|capabilities（L2593-2670）、handoff（L2958）、benchmark protocol|run|ledger（L3393-3395）、replay record|run|corpus build|run（L3610-3614）、canary smoke --profile（L3631-）、run --goal/--model/--thinking-level/--max-turns（L375）、todo add --verify/--max-validation-attempts（L656-657）all exist |
-| install-future-loop.sh | ✓ CLI → ~/.local/bin/future-loop、skill → ~/.future/agent/skills/future-loop/SKILL.md、`future-loop status` verification |
+| future-goal command surface | ✓ 42 top-level commands（main.rs L93-137）；goal init/cancel/delete（L494-586）、todo add/claim/complete/supersede/update/archive（L613-618）、gate、capability/catalog、extension install|upgrade|enable|disable|rollback|status|capabilities（L2593-2670）、handoff（L2958）、benchmark protocol|run|ledger（L3393-3395）、replay record|run|corpus build|run（L3610-3614）、canary smoke --profile（L3631-）、run --goal/--model/--thinking-level/--max-turns（L375）、todo add --verify/--max-validation-attempts（L656-657）all exist |
+| install-future-goal.sh | ✓ CLI → ~/.local/bin/future-goal、skill → ~/.future/agent/skills/future-goal/SKILL.md、`future-goal status` verification |
 | proto | ✓ proto/future.proto exists；generated code committed（agent/src/grpc/generated/proto.rs、channels/src/generated/proto.rs）；make generate-proto regenerates agent+channels+desktop/src-tauri+tui |
 
 ---
@@ -239,14 +239,14 @@ All of fact-inventory §14b's I-1..I-7 handled:
 
 ### F1. zh/en consistency
 
-- Paired documents' heading structures compared one by one（excluding shell comment lines inside code fences）: README（10/10）、docs/README（6/6）、tui（5/5）、directory-layout（9/9）、channels-config（8/8）、loop-control-plane（**19/19**，h1/h2/h3 all equal；the initial 15 vs 14 difference came from `#` comment lines inside code blocks, not headings）、build-and-install（19/19）、wiki-prompt（23/23）. All consistent.
+- Paired documents' heading structures compared one by one（excluding shell comment lines inside code fences）: README（10/10）、docs/README（6/6）、tui（5/5）、directory-layout（9/9）、channels-config（8/8）、goal-control-plane（**19/19**，h1/h2/h3 all equal；the initial 15 vs 14 difference came from `#` comment lines inside code blocks, not headings）、build-and-install（19/19）、wiki-prompt（23/23）. All consistent.
 - Key-fact spot checks consistent: TUI slash-command tables en/zh both 17 usable + 2 stubs（/export /import）；shortcuts 4 items（ctrl+p/t/r/c）verbatim equal；channels-config default-value tables en/zh numbers equal（50051、deepseek-v4-pro、xhigh、10MiB、30s/20s）.
 
 ### F2. Link validity
 
 - Full link check（16 md files: docs/*.md + README*），0 broken links. The checker strips inline code and code fences first（wiki-prompt's `[x](Quick-Start)` **syntax examples** are inside backticks, not real links；Quick-Start.md actually exists in both en/zh directories）.
 - wiki cross-links + anchor checks（en/zh 13 pages each，including `#anchor` resolution to GitHub slugs），0 errors.
-- New-document cross-reference closure（docs/README ⇄ tui ⇄ directory-layout ⇄ channels-config ⇄ loop-control-plane ⇄ wiki）all reachable.
+- New-document cross-reference closure（docs/README ⇄ tui ⇄ directory-layout ⇄ channels-config ⇄ goal-control-plane ⇄ wiki）all reachable.
 
 ### F3. Change list（7383eca1..HEAD，15 commits，all pushed to the branch）
 
@@ -255,13 +255,13 @@ All of fact-inventory §14b's I-1..I-7 handled:
 | 05a9a575 | README en/zh full re-check completion marker（B3 wrap-up） |
 | dd14b60a | loop skill：long turns exceed the default shell timeout — blocking run + explicit timeout |
 | 9cac0b48 | build-and-install en/zh：make test/lint/fmt/generate-proto scope + skill count 14（A5/B2/B5/B6） |
-| 3a587ad4 | loop-control-plane en/zh：CLI overview aligned with the actual command surface（B9：goal adds models/diagnose、extension adds upgrade、cli registry adds --include-experimental） |
+| 3a587ad4 | goal-control-plane en/zh：CLI overview aligned with the actual command surface（B9：goal adds models/diagnose、extension adds upgrade、cli registry adds --include-experimental） |
 | 9512b972 | wiki-prompt en/zh：CLI command surface/binary name/packaging/inventory fully aligned（A1/A2/B4 + Models.md generation note） |
 | c7c95d03 | all wiki pages en/zh：CLI.md rewritten、Feishu/DingTalk（A3/A4/B7）、Installation（B8）、Settings page counts、Models.md generated-header note |
 | fff6c18b | architecture-audit marked as point-in-time snapshot + dist readmes verified（X10） |
 | 8fe97b57 | loop code fix：streaming text UTF-8 boundary truncation（panic fix） |
 | b19bf933 | loop skill：explicit「reflect and improve」step after every turn（superagent proactive replanning） |
-| 950039f1 | **missing documents filled in（C3/I-1..I-7）**: docs/README（index）、tui、directory-layout、channels-config、loop-control-plane multi-agent section |
+| 950039f1 | **missing documents filled in（C3/I-1..I-7）**: docs/README（index）、tui、directory-layout、channels-config、goal-control-plane multi-agent section |
 | a2b7105c | tui/directory-layout en/zh：crash.log fact correction → write.log（written only when PI_TUI_WRITE_LOG=1），4 files |
 
 Leftovers（see §E）: GUI feature-claim verification（Using-FutureOS/Settings/Skills/Quick-Start page content，✅ verified todo_cab9a84ced24）、TUI help-screen vs completion-list inconsistency（✅ fixed commit 042a7d07，todo_b98a9381ad9e）.
@@ -325,7 +325,7 @@ The verification process is also recorded in fact-inventory.md：EH3/EQ1/EQ5/EU1
 
 ## H. 2026-08-18 re-check: loop docs, skill count, directory layout（branch `docs/claude-md-improvements`）
 
-> Checked item by item against the current worktree source（the loop control plane has deleted the capability/extension ecosystem and the default state root is now the project-local `<cwd>/.future/loop/`；skills/builtin has 15 future-* skills）.
+> Checked item by item against the current worktree source（the goal control plane has deleted the capability/extension ecosystem and the default state root is now the project-local `<cwd>/.future/goal/`；skills/builtin has 15 future-* skills）.
 
 ### H1. Fixed (this round)
 
@@ -333,17 +333,17 @@ The verification process is also recorded in fact-inventory.md：EH3/EQ1/EQ5/EU1
 |---|---|---|
 | loop doc「three todo categories」outdated | five categories: advancement / user-gate / user-action / monitor / blocker（en/zh core-concepts table） | state.rs `TaskClass` enum 5 variants；console.rs L824 `--role/--class` validation copy |
 | loop doc「PLAN_REVIEW checkpoints are agent-resolved」has no source basis | deleted；changed to user-action semantics（`user_action` is shown to the user but does **not** freeze the agent，decision/mod.rs L111-114 comment + UserChannel branch） | whole-repo grep `PLAN_REVIEW` 0 hits |
-| loop doc「three-end experience」（TUI/GUI/mobile show loop state）contradicts code | changed to「loop state is CLI-first」：state is project-local、TUI/GUI/mobile/IM have no built-in loop view、driven via the `/future-loop` skill orchestrating the `future loop` command | desktop/src、mobile/src、tui/src have no future_loop references（grep 0 hits）；loop state readable only via CLI |
+| loop doc「three-end experience」（TUI/GUI/mobile show loop state）contradicts code | changed to「loop state is CLI-first」：state is project-local、TUI/GUI/mobile/IM have no built-in loop view、driven via the `/future-goal` skill orchestrating the `future goal` command | desktop/src、mobile/src、tui/src have no future_goal references（grep 0 hits）；loop state readable only via CLI |
 | loop doc「channel-bridge messages can trigger loop operations、gates reply into chat」has no integration code | changed to「any client can drive it via the skill；bridge and loop have no native integration」 | channels/src has no loop integration（grep 0 hits） |
-| loop doc CLI group inventory outdated | corrected against actual `future loop registry` output：agent group adds `list`、ops group adds `serve-status`、removed「quality group」replaced by handoff / cli / benchmark / replay / canary five groups（10 groups 43 commands count unchanged） | `./target/debug/future loop registry` actual output；cli/registry.rs |
+| loop doc CLI group inventory outdated | corrected against actual `future goal registry` output：agent group adds `list`、ops group adds `serve-status`、removed「quality group」replaced by handoff / cli / benchmark / replay / canary five groups（10 groups 43 commands count unchanged） | `./target/debug/future goal registry` actual output；cli/registry.rs |
 | loop doc gate example missing required `--text` | added `--text`（`--gate-question` defaults to `--text`） | console.rs `--text required` |
-| directory-layout claims loop state root defaults to `~/.future/loop/` | actual default is `<cwd>/.future/loop/`（project-local），`FUTURE_LOOP_ROOT` overrides；`~/.future/loop/` no longer used. Section title and body changed、`loop/` row removed from the `~/.future/` tree | console.rs `root_dir()` L56-66（no home fallback） |
-| console.rs module comment「State lives under `--root` (default `~/.future/loop/`)」 | changed to project-local `<cwd>/.future/loop/`（the `--root` flag also does not exist） | console.rs `root_dir()` |
-| build-and-install「install all future-* skills (14)」 | → 15（skills/builtin now includes future-loop） | `ls skills/builtin/` 15 directories |
+| directory-layout claims loop state root defaults to `~/.future/goal/` | actual default is `<cwd>/.future/goal/`（project-local），`FUTURE_GOAL_ROOT` overrides；`~/.future/goal/` no longer used. Section title and body changed、`loop/` row removed from the `~/.future/` tree | console.rs `root_dir()` L56-66（no home fallback） |
+| console.rs module comment「State lives under `--root` (default `~/.future/goal/`)」 | changed to project-local `<cwd>/.future/goal/`（the `--root` flag also does not exist） | console.rs `root_dir()` |
+| build-and-install「install all future-* skills (14)」 | → 15（skills/builtin now includes future-goal） | `ls skills/builtin/` 15 directories |
 | build-and-install「development (from source)」section duplicated twice（the second is the outdated version: make test=cargo test (agent)、lint missing GUI/mobile） | deleted the outdated copy；`make fmt` comment changed to `cargo fmt --all (workspace) + desktop/src-tauri + mobile`（en/zh） | Makefile `fmt:` = cargo fmt --all + src-tauri + fmt-mobile |
-| wiki Skills.md builtin table missing Loop（14 items） | added the **Loop** row（en/zh），skill total 15 | skills/builtin/future-loop（v3.0.2） |
+| wiki Skills.md builtin table missing Loop（14 items） | added the **Loop** row（en/zh），skill total 15 | skills/builtin/future-goal（v3.0.2） |
 | wiki-prompt builtin-skill example list contains 3 nonexistent skills（Hand-drawn posters/slides、Subagent） | replaced with the actual 15（including Loop） | skills/builtin/ directory actual |
-| README「14+ skills」、docs/README loop row「extensions」 | README → 15+ and adds the `/future-loop` example；docs/README loop row「扩展与多 agent」→「交付闭环、多 agent」（extension/capability commands deleted，`future loop extension status` reports unknown command） | actual CLI 0 hits for extension/capability |
+| README「14+ skills」、docs/README loop row「extensions」 | README → 15+ and adds the `/future-goal` example；docs/README loop row「扩展与多 agent」→「交付闭环、多 agent」（extension/capability commands deleted，`future goal extension status` reports unknown command） | actual CLI 0 hits for extension/capability |
 
 ### H2. Verified correct (for later todos to skip)
 
@@ -355,7 +355,7 @@ The verification process is also recorded in fact-inventory.md：EH3/EQ1/EQ5/EU1
 
 ### H3. Skills-repo leftover → resolved（future-skills#14，v3.0.3）
 
-- the skills submodule's future-loop/SKILL.md「PLAN_REVIEW checkpoints are agent-resolved」
+- the skills submodule's future-goal/SKILL.md「PLAN_REVIEW checkpoints are agent-resolved」
   was fixed upstream（future-skills#14，squash-merged，b045032），the same batch also fixed
   `agent register`（actually `onboard|list|contract|recipe|succession|collective`）
   and `canary [--premerge]`（actually `canary smoke [--profile …] | canary premerge`）；
@@ -367,7 +367,7 @@ The verification process is also recorded in fact-inventory.md：EH3/EQ1/EQ5/EU1
 
 > Verified item by item against the current worktree（HEAD `41a02ac4`）: root README/SECURITY/CLAUDE、
 > docs/ guides and wiki、docs/dist、module READMEs、desktop/CLAUDE and DEV_MD.
-> Note: **section H (2026-08-18)「10 groups 43 commands」is outdated** — the loop control plane
+> Note: **section H (2026-08-18)「10 groups 43 commands」is outdated** — the goal control plane
 > further slimmed its CLI surface after the capability/extension ecosystem deletion.
 
 ### I1. Fixed (this round)
@@ -376,10 +376,10 @@ The verification process is also recorded in fact-inventory.md：EH3/EQ1/EQ5/EU1
 |---|---|---|
 | README/SECURITY sandbox three-tier names | 「off / manual / macOS Seatbelt」→「`off` / `manual` / `sandbox`」；SECURITY known-gaps updated（Windows now has a restricted-token sandbox、Linux has no sandbox） | agent/src/sandbox/mod.rs `SandboxTier{Off,Manual,Sandbox}`；`platform_sandbox_availability()` includes a windows probe；agent/src/sandbox/windows/ directory exists（#342） |
 | CLAUDE.md local main branch name | `dev` → `main`（`git branch` actual output only has `main`） | `git branch` output |
-| loop-control-plane CLI panorama | 「10 groups 43 commands」→「7 groups 40 commands」；removed handoff/benchmark/replay groups and serve-status；agent group removed top-level `list`（actually an `agent list` subcommand）、adds `worker`；goal group adds `ui` | `future loop registry` actual：goal5/todo6/agent5/ops18/work-items3/cli2/canary1 |
+| goal-control-plane CLI panorama | 「10 groups 43 commands」→「7 groups 40 commands」；removed handoff/benchmark/replay groups and serve-status；agent group removed top-level `list`（actually an `agent list` subcommand）、adds `worker`；goal group adds `ui` | `future goal registry` actual：goal5/todo6/agent5/ops18/work-items3/cli2/canary1 |
 | tui/directory-layout debug.log | 「always written」→ written only when `PI_DEBUG_REDRAW=1` | tui/src/app.rs `log_redraw`（returns when `PI_DEBUG_REDRAW` != "1"） |
 | long-run-evidence-ledger crate name | `future-channels` → `future-channel`（4 places en + 4 places zh） | channels/Cargo.toml `name = "future-channel"`（this name since PR #150） |
-| orchestration/loop/UPSTREAM.md | removed the deleted「explore graph, pr_review_queue」 | loop/src whole-repo grep 0 hits（capability ecosystem deleted） |
+| orchestration/goal/UPSTREAM.md | removed the deleted「explore graph, pr_review_queue」 | loop/src whole-repo grep 0 hits（capability ecosystem deleted） |
 | packages/rpc/README proto path | `../proto/future.proto` → `proto/future.proto` | packages/rpc/build.rs `rerun-if-changed=proto/future.proto` |
 | desktop/CLAUDE.md | ①sandbox「(macOS only)」removed（Windows supported now）②dangling `DEV_MD/PLAN.md` → `agent_providers/validate.rs` ③`agent_providers.rs` → `agent_providers/` directory ④doc-map sizes + plan docs completed | GeneralPage.tsx `useSandboxAvailability`+`isWindows`；agent_providers/ directory；DEV_MD has no PLAN.md |
 

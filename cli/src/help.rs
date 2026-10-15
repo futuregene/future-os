@@ -28,7 +28,7 @@ Apps (run the FutureOS components — same as their standalone binaries):
   agent     Start the agent gRPC server (future-agent)
   tui       Launch the terminal UI (future-tui)
   channel   Start the IM channel bridge (future-channel)
-  loop      Loop control plane: goals/todos/gates (future-loop)
+  goal      Goal control plane: goals/todos/gates (future-goal)
 
 Quick start:
   future init                                Initialize Future OS
@@ -56,7 +56,7 @@ Run 'future <group> --help' for per-group details.
   future session --help      Session management options
   future agent --help        Agent server options (gRPC addr, logging, profiling)
   future tui --help          TUI options (print mode, list models, etc.)
-  future loop --help         Loop control plane commands
+  future goal --help         Goal control plane commands
   future version --json      Build identity: version, commit, target
   future --version           Print version and exit"#;
 
@@ -370,7 +370,7 @@ Execution:
   `--wait` blocks until the run reaches a terminal state and prints its
   status, thread/session ids, and result summary.
 
-Not to be confused with `future loop todo` (long-running goals with evidence
+Not to be confused with `future goal todo` (long-running goals with evidence
 and gates). Tasks are fixed actions with triggers."#;
 
 /// `future version --help` output.

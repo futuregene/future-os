@@ -712,12 +712,12 @@
     {
       "id": "p008",
       "gold": [
-        "future-loop"
+        "future-goal"
       ],
       "needs_skill": true,
-      "reason": "Cross-reply repo task tracking with todos, artifacts, and human gates matches future-loop.",
+      "reason": "Cross-reply repo task tracking with todos, artifacts, and human gates matches future-goal.",
       "raw": [
-        "future-loop"
+        "future-goal"
       ],
       "parse_mode": "json",
       "durationMs": 18092,

@@ -28,7 +28,7 @@ What I did find:
 
 | # | finding | severity | who |
 |---|---|---|---|
-| **F-A** | **The whole measurement was taken on a tree 29 commits behind `origin/main`.** 21 files inside the reviewed scopes — including `remote/commands.rs` (4 of the 7 dead guards), `remote_host/business/history.rs:221`, `remote_host/files.rs`, `orchestration/loop/src/agents/supervision.rs` — are **different upstream** (#846…#873). Every line-anchored waiver in those files will be re-anchored (or invalidated) by the mandatory pre-PR merge, and the numbers in §"before/after" are not the numbers of the tree that will be measured. | **blocks the final gate run** | supervisor |
+| **F-A** | **The whole measurement was taken on a tree 29 commits behind `origin/main`.** 21 files inside the reviewed scopes — including `remote/commands.rs` (4 of the 7 dead guards), `remote_host/business/history.rs:221`, `remote_host/files.rs`, `orchestration/goal/src/agents/supervision.rs` — are **different upstream** (#846…#873). Every line-anchored waiver in those files will be re-anchored (or invalidated) by the mandatory pre-PR merge, and the numbers in §"before/after" are not the numbers of the tree that will be measured. | **blocks the final gate run** | supervisor |
 | **F-B** | `agent/src/rpc/mod.rs` 413–420 is registered `unreachable-in-this-environment` with the reason "this host always has a builtin default". **That is false and I can build the counterexample from the file's own fixtures.** Both the 3826-entry builtin catalog (0 entries carry an `api_key`) and the doc's own test comment ("CI has none and the assertion failed") show the arm executes on a credential-less host. | **waiver falsified → rework** | w-ag-rpc |
 | **F-C** | `docs/testing/module-tauri-bridge.md` registers **10 files (~140 lines)** as `unreachable-in-this-environment` and then says of those same rows in §"the gate passes structurally, not on merit": they "are **reachable in principle** with more scripted-mock fixtures and store setups" and "need **no new harness**". That is the category-vs-admission contradiction, at the largest scale in the repo. | **10 false registrations → rework or re-category** | w-tau-bridge |
 | **F-D** | `docs/testing/module-tauri-terminal.md`'s DSR row (`terminal/server.rs` 1953-1957) is registered `unreachable-by-construction` and explained by "**the first guard fires** … so the second cannot execute". The measurement proves the **opposite**: the second guard's body (1983-1987) has counts, the first's (1953-1957) does not. The two symmetric guards are scheduling-dependent, not construction-dependent. The proposed deletion is *safe* (it is a duplicated test guard, not production code), but its stated justification is wrong and the category is wrong. | **wrong reason + wrong category → rework the row** | w-tau-term |
@@ -170,12 +170,12 @@ first `#[cfg(test)]`), 21 files, all inspected:
 | file | lines | what it actually is | verdict |
 |---|---|---|---|
 | `desktop/src-tauri/src/windows_power.rs` | 14 | the `if/else if` chain in `power_wnd_proc` **moved verbatim** into the pure `fn power_action(message, wparam) -> PowerAction`, with the wnd-proc now a `match`. Every condition (`WM_POWERBROADCAST`+`PBT_APMSUSPEND`, the three resume codes, `WM_QUERYENDSESSION`) survives, same order, same effect; `Ignore => {}` matches the old fall-through. | **relocation, not deletion.** The motive is testability (a real `WM_*` cannot be delivered to a test's window), and the extracted mapping now has a strong boundary test. Correct. |
-| `orchestration/loop/src/console.rs` | 39 | `detached_child_args` extraction (the `future`-only `loop` prepend at old 4289-4295) and the `try_wait` probe behind the documented `#[cfg(test)]` insertion point (old 4328-4332). The module doc's own §2i describes both and says the production branch is unchanged. | **extraction for testability** (the `try_wait` seam I did not line-by-line verify — see §9). |
+| `orchestration/goal/src/console.rs` | 39 | `detached_child_args` extraction (the `future`-only `loop` prepend at old 4289-4295) and the `try_wait` probe behind the documented `#[cfg(test)]` insertion point (old 4328-4332). The module doc's own §2i describes both and says the production branch is unchanged. | **extraction for testability** (the `try_wait` seam I did not line-by-line verify — see §9). |
 | `agent/src/skill_reco/mod.rs` | 2 | `attempt_call(&HTTP_CLIENT, &endpoint, ..)` extraction so transport outcomes can be driven against a local socket. | **extraction.** |
 | `desktop/src-tauri/src/scheduler/mod.rs` | 1 | `pub fn start(app: tauri::AppHandle)` → `start<R: tauri::Runtime>(app: AppHandle<R>)`. | **type generalisation to permit `tauri::test::mock_app()`.** Not "widening a type to dodge an error arm"; behaviour identical. |
 | `channels/src/session_store.rs` | 1 | `pending.persist(&self.path)?` → `persist_with_retry(pending, &self.path)?`, adding 20×5 ms retries for Windows `AccessDenied` on `MoveFileEx`. | **a production behaviour change** (retry/latency), justified by a real data-loss bug the flaky test exposed. Not a coverage-motivated deletion — but it is a *product* change riding in a coverage PR, and it is **not** upstream, so it needs its own review. Flagged for the supervisor. |
 | `agent/src/sandbox/linux/{runner,request,plan,glob_scan}.rs` | 43 | `#[cfg(all(test, unix))]` attributes and fixture bodies moved/regated; additions (601) far exceed deletions (50) and the tests still exist. | **re-gating, not deletion.** |
-| `cli/src/browser/windows_process.rs`, `channels/src/providers/*_tests.rs`, `channels/src/{test_support,session_store}.rs`, `orchestration/loop/src/compat.rs`, `channels/src/dingtalk/bridge.rs`, `agent/src/rpc/session_prompt/tests.rs` | 28 | argument/format rewrites, sleep/`WsAction` constants, tracing-argument lines, a `?` on a lock-file path. No `if`/`match` arm, `return`, or error branch disappeared. | no guard lost |
+| `cli/src/browser/windows_process.rs`, `channels/src/providers/*_tests.rs`, `channels/src/{test_support,session_store}.rs`, `orchestration/goal/src/compat.rs`, `channels/src/dingtalk/bridge.rs`, `agent/src/rpc/session_prompt/tests.rs` | 28 | argument/format rewrites, sleep/`WsAction` constants, tracing-argument lines, a `?` on a lock-file path. No `if`/`match` arm, `return`, or error branch disappeared. | no guard lost |
 | `desktop/src-tauri/src/remote/test_support.rs` | 12 | a helper body split (`open_secure_channel` out of `secure_pair`) — the doc's own §weak-tests-fixed names it. | refactor |
 
 **Conclusion: no production guard was deleted for coverage.** The class of change this goal
@@ -197,8 +197,8 @@ instance the supervisor already has):
 | # | location | category used | the sentence that contradicts it |
 |---|---|---|---|
 | 1 | `docs/testing/module-tauri-bridge.md` §5.1 — **10 files**: `import.rs` (16), `prompt.rs` (11), `queries.rs` (18), `run_control.rs` (12), `session.rs` (25), `reconciliation.rs` (18), `persist.rs` (2), `headless.rs` (14), `approval.rs` (1), `review.rs` (23) ≈ **140 lines** | `unreachable-in-this-environment` | §"the gate passes structurally, not on merit": "The rows in §5.1 that are labelled `unreachable-in-this-environment` for a *missing fixture* rather than for a missing OS/network/service are the weakest claims in this document: … are **reachable in principle** with more scripted-mock fixtures and store setups than I wrote in this run … because they need **no new harness**", followed by a per-file recipe. The document is honest about it; the *category* is still wrong and the rows are real coverage gaps. |
-| 2 | `docs/testing/module-loop.md:616` (`orchestration/loop/src/agents/supervision.rs`, 6 UE lines) vs `module-loop.md:686` | `unreachable-in-this-environment` | §8 "Next useful checks": "the supervision ones are **reachable with an unusable `supervision/` dir (a regular FILE where the dir belongs, as `supervision_fault_points` already does portably)**". The doc gives the recipe *and names the existing test that already does it portably*, then files the lines as environment-unreachable. |
-| 3 | `docs/testing/module-loop.md:472` and `:532` (`console.rs` `4987, 4991-4994`) | `unreachable-in-this-environment` | the row's own parenthetical: "**(reachable but disproportionate)**" — "Covering it means a **45 s test**". A 45 s wall-clock sleep is deterministic and producible; it is expensive, not impossible. Nothing in the category definition covers "slow". |
+| 2 | `docs/testing/module-goal.md:616` (`orchestration/goal/src/agents/supervision.rs`, 6 UE lines) vs `module-goal.md:686` | `unreachable-in-this-environment` | §8 "Next useful checks": "the supervision ones are **reachable with an unusable `supervision/` dir (a regular FILE where the dir belongs, as `supervision_fault_points` already does portably)**". The doc gives the recipe *and names the existing test that already does it portably*, then files the lines as environment-unreachable. |
+| 3 | `docs/testing/module-goal.md:472` and `:532` (`console.rs` `4987, 4991-4994`) | `unreachable-in-this-environment` | the row's own parenthetical: "**(reachable but disproportionate)**" — "Covering it means a **45 s test**". A 45 s wall-clock sleep is deterministic and producible; it is expensive, not impossible. Nothing in the category definition covers "slow". |
 | 4 | `docs/testing/module-agent-sandbox.md:106` (`agent/src/sandbox/linux/request.rs`) | `unreachable-in-this-environment` | the reason itself argues the other category: "the guard is **unreachable by construction** for valid input (kept as defence in depth)". Category and reason disagree on the *axis*; this row belongs in `unreachable-by-construction`. |
 | 5 | `docs/testing/module-tauri-remote.md:105` (`remote_host/availability.rs`) | `unreachable-in-this-environment` | "The **durable fix is to inject the probe**; until then the branch cannot be driven." That is a missing seam, not a platform/socket/service; keep the *category* only if the owner can say why the probe cannot be injected at all. Weakest row in that document after the DSR one. |
 | 6 | `docs/testing/module-agent-sandbox.md:114` (`agent/src/sandbox/mod.rs`, the pwsh-7 arm) | `unreachable-in-this-environment` | the reason mixes a real environmental claim ("this host has only Windows PowerShell 5.1") with a **testability** one ("`windows_shell()` is a `OnceLock` initialised once per process"). The `OnceLock` half is fixable by ordering or a child process, i.e. by a fixture. |
@@ -261,7 +261,7 @@ the evidence), `module-tauri-terminal.md:696` (a `select!`-bias argument, i.e. c
    `long_work_is_not_mistaken_for_a_long_unary_rpc` asserting `command_policy("unknown")`
    is `None`. That is the right shape of proof. **SURVIVED (not exhaustively re-derived).**
 
-### 6.2 `module-loop.md` — the 8 rows marked challenged
+### 6.2 `module-goal.md` — the 8 rows marked challenged
 
 * The 8 `unreachable-by-construction` rows (§6c) each carry an invariant, and I checked the two
   the doc marks as "NOTE: adding X would revive this arm": `5006-5009` (two replays of the same
@@ -402,7 +402,7 @@ Two measurement-level risks that this reconciliation *does* surface:
    re-anchor every line-numbered waiver in the 21 upstream-changed files (at minimum
    `remote/commands.rs`, `remote_host/business/history.rs`, `remote_host/files.rs`,
    `remote_host/lean.rs`, `agent/src/rpc/commands/mod.rs`,
-   `orchestration/loop/src/agents/supervision.rs`).
+   `orchestration/goal/src/agents/supervision.rs`).
 2. **F-B** — `agent/src/rpc/mod.rs` 413-420: either add the no-auth fixture test (it exists in
    the module already, minus the `auth.json` write) or re-register the row with a true reason.
    As it stands the registration is false and `agent-rpc`'s green is structural.
@@ -411,7 +411,7 @@ Two measurement-level risks that this reconciliation *does* surface:
    is too much to leave on a category the document itself disowns.
 4. **F-D** — `module-tauri-terminal.md`: restate the 1953-1957 row (scheduling, not
    construction) and fix the test's ordering or delete the redundant guard as *test* hygiene;
-   `module-loop.md:532` (45 s) and `:616` (supervision, fixture already exists) and
+   `module-goal.md:532` (45 s) and `:616` (supervision, fixture already exists) and
    `module-agent-sandbox.md:106` (label axis) likewise.
 
 **Judgement calls for the supervisor, not defects:** the `channels/src/session_store.rs`
@@ -428,7 +428,7 @@ be testable".
    merged `AccessEpoch`/`Transport` code: if upstream #846…#873 changed `commit`/`invalidate`
    or added an `await` on those paths, the proofs move from "unsound but unexploitable" to
    plainly exploitable.
-3. Verify the `#[cfg(test)]` seams I did **not** line-audit: `orchestration/loop`'s `Store`
+3. Verify the `#[cfg(test)]` seams I did **not** line-audit: `orchestration/goal`'s `Store`
    write-fault interposition and `try_wait` insertion point (the doc claims they "change no
    production branch" — that is checkable with `git diff HEAD` on those hunks, and it is the
    one place where a seam could hide a real branch change).
@@ -439,7 +439,7 @@ be testable".
 ## 10. Executed checks added after the first pass
 
 The first handoff was rejected on the acceptance contract, which is a **case-insensitive
-substring check on the completion *evidence* field** (`orchestration/loop/src/completion.rs:21-29`;
+substring check on the completion *evidence* field** (`orchestration/goal/src/completion.rs:21-29`;
 `--acceptance` is documented at `console.rs:725`), not a check on this document — so the tokens
 have to travel in the handoff, and `python .future/cov100/verify.py dimensions` must exit 0.
 Both are now true. This section records the two checks I had listed as *not done*, now run.

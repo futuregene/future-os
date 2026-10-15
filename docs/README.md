@@ -15,14 +15,14 @@
 
 | Doc | What it covers |
 |---|---|
-| [Build & Install](guide/build-and-install.md) ([中文](guide/build-and-install.zh-CN.md)) | Prerequisites, per-platform toolchains (macOS / Linux / Windows), `make` targets, GUI packaging, `future-loop` install, skills install |
+| [Build & Install](guide/build-and-install.md) ([中文](guide/build-and-install.zh-CN.md)) | Prerequisites, per-platform toolchains (macOS / Linux / Windows), `make` targets, GUI packaging, `future-goal` install, skills install |
 | [TUI](guide/tui.md) ([中文](guide/tui.zh-CN.md)) | The terminal UI (`future-tui`): slash commands, keyboard shortcuts, settings |
 | [Channels configuration](guide/channels-config.md) ([中文](guide/channels-config.zh-CN.md)) | Unified reference for `~/.future/channels/config.json` (agent / providers / Feishu / DingTalk blocks, defaults) |
 | [Channel providers](guide/channels-providers.md) ([中文](guide/channels-providers.zh-CN.md)) | Shared-bridge channels: capability matrix, per-channel config, maturity, diagnostics, proactive send |
 | [Channel provider contract](guide/channels-provider-contract.md) ([中文](guide/channels-provider-contract.zh-CN.md)) | Adding a channel: the provider traits, the inbound/outbound boundary, config, errors, tests and coverage |
 | [Desktop Agent](guide/desktop-agent.md) ([zh](guide/desktop-agent.zh-CN.md)) | Embedded/external hosting, exit scope, CLI clients, development launchers, logs and update recovery |
 | [Headless Desktop](guide/desktop-headless.md) ([中文](guide/desktop-headless.zh-CN.md)) | Foreground `futureos-headless` startup, terminal login/pairing QR codes and links, Ctrl+C, GUI-free server builds and troubleshooting |
-| [Directory layout](guide/directory-layout.md) ([中文](guide/directory-layout.zh-CN.md)) | What lives where under `~/.future/` (agent, channels, TUI, GUI, loop) |
+| [Directory layout](guide/directory-layout.md) ([中文](guide/directory-layout.zh-CN.md)) | What lives where under `~/.future/` ((agent, channels, TUI, GUI, goal)) |
 | [Session history recall](guide/session-history.md) ([中文](guide/session-history.zh-CN.md)) | Read-only history search/entry reads, byte paging, and post-compaction model guidance |
 | [Self-inspection](guide/self-inspection.md) ([中文](guide/self-inspection.zh-CN.md)) | Reading an agent's own state (settings, skills, tools, sessions) and the user–agent record, and changing global settings from the CLI |
 | [Mobile latency diagnosis](guide/mobile-latency-diagnosis.md) ([中文](guide/mobile-latency-diagnosis.zh-CN.md)) | Mobile end-to-end latency measurement and diagnosis |
@@ -35,12 +35,12 @@ entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.
 
 | Doc | What it covers |
 |---|---|
-| [Loop Control Plane](architecture/loop-control-plane.md) ([中文](architecture/loop-control-plane.zh-CN.md)) | `future-loop` — goals/todos/gates/monitors, should-run kernel, quota, event sourcing, delivery closure, multi-agent, supervisor/worker messaging, web dashboard |
-| [Long-Run Evidence Ledger](architecture/long-run-evidence-ledger.md) ([中文](architecture/long-run-evidence-ledger.zh-CN.md)) | Accountability record for long-range loop goals — wall clock, spend, validation results, explicit boundaries per closed goal |
+| [Goal Control Plane](architecture/goal-control-plane.md) ([中文](architecture/goal-control-plane.zh-CN.md)) | `future-goal` — goals/todos/gates/monitors, should-run kernel, quota, event sourcing, delivery closure, multi-agent, supervisor/worker messaging, web dashboard |
+| [Long-Run Evidence Ledger](architecture/long-run-evidence-ledger.md) ([中文](architecture/long-run-evidence-ledger.zh-CN.md)) | Accountability record for long-range goal-plane goals — wall clock, spend, validation results, explicit boundaries per closed goal |
 | [SQLite migration](architecture/sqlite-migration.md) ([中文](architecture/sqlite-migration.zh-CN.md)) | Agent/desktop SQLite storage layout and migration policy |
 | [Desktop embedded Agent development plan](architecture/embedded-agent-development.md) ([中文](architecture/embedded-agent-development.zh-CN.md)) | Complete in-process Agent, service/host lifecycle, locks, shutdown, updates/installers, development tooling and phased acceptance |
 | [Response outcomes](architecture/response-outcomes.md) ([中文](architecture/response-outcomes.zh-CN.md)) | End-of-response outcome semantics (stop / refusal / filter / pause) |
-| [loop/](architecture/loop/README.md) | The `future-loop` crate: [architecture](architecture/loop/ARCHITECTURE.md) (en/zh), [upstream attribution](../orchestration/loop/UPSTREAM.md), [decision-kernel snapshot](architecture/loop/snapshots.md) |
+| [goal/](architecture/goal/README.md) | The `future-goal` crate: [architecture](architecture/goal/ARCHITECTURE.md) (en/zh), [upstream attribution](../orchestration/goal/UPSTREAM.md), [decision-kernel snapshot](architecture/goal/snapshots.md) |
 | [Shared packages](architecture/packages.md) ([中文](architecture/packages.zh-CN.md)) | `packages/` conventions: npm/workspace packages and crate boundaries |
 | [Channel test coverage](architecture/channels-test-coverage.md) ([中文](architecture/channels-test-coverage.zh-CN.md)) | What the channel framework's tests promise, and the 22 lines that are deliberately not covered, with the reason for each |
 | [RPC crate](architecture/rpc.md) ([中文](architecture/rpc.zh-CN.md)) | `packages/rpc` — the protobuf wire contract (single source of truth) |
@@ -97,7 +97,7 @@ dates/commits, not current source. Kept for provenance — do not rewrite them
 to match today's code.
 
 - [bughunt/](archives/bughunt/README.md) — bug-hunt evidence and fix records
-  (agent / apps / cli / loop-tui), incl. model-output provenance JSONs
+  (agent / apps / cli / goal-tui), incl. model-output provenance JSONs
 - [verification/](archives/verification/errors-outdated-missing.md) — dated
   doc↔source verification snapshots: fact inventory, error/outdated/missing
   lists, [doc↔code mismatch audit](archives/verification/doc-code-mismatches.md),
@@ -161,7 +161,7 @@ archived under `archives/verification/` (e.g. the 2026-09-16
   `BILINGUAL_PENDING` debt list must be empty. Markdown outside `docs/` is
   allowed only for the paths in `WHITELIST`, and `EXTRA_PAIR_SCOPED` requires
   a pair for a few of them
-  (`SECURITY*`, `THIRD_PARTY_NOTICES*`, `orchestration/loop/UPSTREAM*`).
+  (`SECURITY*`, `THIRD_PARTY_NOTICES*`, `orchestration/goal/UPSTREAM*`).
 - `make test-docs-check` runs the gate's own regression tests, including
   negative controls (they fail if the checker stops detecting violations).
 - Nothing runs the checker automatically: it is not wired into CI or

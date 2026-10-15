@@ -4,7 +4,7 @@
 	test-desktop test-desktop-rust test-mobile \
 	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt \
 	check-docs test-docs-check \
-	run-agent run-tui run-cli run-desktop run-mobile-android run-mobile-ios run-channels run-loop \
+	run-agent run-tui run-cli run-desktop run-mobile-android run-mobile-ios run-channels run-goal \
 	profile-agent-build profile-agent profile-quick profile-heap \
 	generate-models generate-proto \
 	install install-cli install-desktop install-skills update-skills uninstall package-desktop clean setup
@@ -46,9 +46,9 @@ RUST_TOOLCHAIN := $(shell node -e "const m=require('fs').readFileSync('$(CURDIR)
 CARGO_PINNED := rustup run $(RUST_TOOLCHAIN) cargo
 
 # ─── Install ────────────────────────────────────────────────────────────────
-# The unified `future` CLI embeds agent/tui/channel/loop; the desktop bundles
+# The unified `future` CLI embeds agent/tui/channel/goal; the desktop bundles
 # it for CLI tools and maintenance; Desktop hosts Agent in process by default.
-# Standalone future-agent/-tui/-channel/-loop
+# Standalone future-agent/-tui/-channel/-goal
 # binaries are dev-only (cargo run -p <crate>) — install puts exactly two files
 # in PREFIX: `future` and `future-desktop`.
 
@@ -93,7 +93,7 @@ else
 endif
 	@echo "Removed installed binaries from $(PREFIX)"
 
-# Symlink the built-in skill bundles (skills/builtin/*, incl. future-loop)
+# Symlink the built-in skill bundles (skills/builtin/*, incl. future-goal)
 # into the agent's skills directory (orphaned links are pruned). Uses the
 # submodule commits already checked out, so `make install` needs no network;
 # `make update-skills` pulls the submodule's remote first.
@@ -273,7 +273,7 @@ fmt:
 
 # ─── Run ────────────────────────────────────────────────────────────────────
 # Kept as `cd <crate> && cargo run` on purpose: the process cwd is user-visible
-# (TUI footer, loop status root).
+# (TUI footer, goal status root).
 
 # Bare --log-file (no value) enables file logging at the default location,
 # ~/.future/agent/logs/agent.log; console output stays on the terminal.
@@ -289,8 +289,8 @@ run-cli:
 run-channels:
 	cd channels && cargo run
 
-run-loop:
-	cd orchestration/loop && cargo run
+run-goal:
+	cd orchestration/goal && cargo run
 
 run-desktop:
 ifeq ($(OS),windows)
@@ -425,7 +425,7 @@ help:
 	@echo "  check-desktop / check-mobile        Lint + typecheck + tests without building apps"
 	@echo "  check-docs / test-docs-check        Docs placement/pairing/links gate + its regression tests"
 	@echo "  fmt                                 Format Rust code"
-	@echo "  run-agent / -tui / -cli / -channels / -loop   Run a component (debug build)"
+	@echo "  run-agent / -tui / -cli / -channels / -goal   Run a component (debug build)"
 	@echo "  run-desktop / run-mobile-android / run-mobile-ios   Run an app in dev mode"
 	@echo "  profile-agent / profile-quick / profile-heap  CPU/heap profiling (PROFILE_SECS=30)"
 	@echo "  generate-models                     Fetch model data, regenerate Rust catalog + wiki docs"

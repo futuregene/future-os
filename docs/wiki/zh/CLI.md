@@ -208,7 +208,7 @@ socket（见[多实例运行](../../guide/directory-layout.zh-CN.md#多实例运
 ```bash
 future tui                # 终端界面
 future channel            # IM 渠道桥：飞书 / 钉钉
-future loop status        # loop 控制面：goal/todo/gate
+future goal status        # goal 控制面：goal/todo/gate
 ```
 
 ### `session` —— 管理会话

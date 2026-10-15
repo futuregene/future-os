@@ -821,7 +821,7 @@ rule for the module). **Verified by replaying the generator's own selection logi
 across all 8 modules; after it there are zero.** The rule for future edits here: when a
 row grows long, do not let it contain another dimension's bare word.
 * **The longest-cell rule can still quote the wrong *row* of the right dimension.** It
-does so today in `module-loop.md` (which also serves `future-loop` and `future-rpc`):
+does so today in `module-goal.md` (which also serves `future-goal` and `future-rpc`):
 `boundary` resolves to a `store_api_drive` test-table row (503 chars) rather than the
 doc's own `boundary` row (276), `error-path` to a row labelled `dimensions` (327 vs 241),
 and `property` to a `steer_poll_arms` row (559 vs 214) — six matrix cells that name a

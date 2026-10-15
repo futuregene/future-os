@@ -28,18 +28,18 @@ Dimensions: `boundary`, `error-path`, `concurrency`, `property`, `platform-cfg`,
 | future-cli | `property` | `commands::skills` — `read_skill_md_version` table over the frontmatter grammar, `fetch_skills` round-trip of the catalogue shape, `list --json` document shape (`camelCase` keys, `null` for absent); `commands::session_history` — … | module-cli.md |
 | future-cli | `platform-cfg` | `commands::auth::windows_device_code_flow` — the whole device-code flow on Windows via the unspawnable-URL technique, and `opener_command`'s exact `cmd /c start "" <url>` shape; `browser::safari::safari_manager` — the Windows … | module-cli.md |
 | future-cli | `serialization` | `commands::auth` — the device-code and token payloads decode from the HTTP mock, and the saved `auth.json` is asserted key by key (existing `type` preserved, other providers untouched); `commands::skills` — the catalogue parses … | module-cli.md |
-| future-loop | `boundary` | the append integrity boundary: the same `event_id` with **different** content fails closed (`StateEventConflictError`, `store.rs:1360`) while identical content is an idempotent no-op; `append_todo_change` refuses a non-todo event … | module-loop.md |
-| future-loop | `error-path` | `compat::tests::write_active_state_reports_an_unusable_goal_dir_and_a_held_lock` + the two removal-refusal tests; `validator::tests::failure_carries_diagnostics`; `console_refusal_edges` (three tests, ~25 commands); … | module-loop.md |
-| future-loop | `concurrency` | `compat::tests::concurrent_acquires_all_succeed` (4 threads × 150 rounds; the §2 fix); `validator::tests::cancelling_validation_reaps_the_owned_process` (unix); `tests/claim_lease_contract.rs` | module-loop.md |
-| future-loop | `property` | the steering seam's no-progress arms, whose shared property is that an interrupt must never be LOST: a missing ledger, nothing appended since the offset, and a **partially written line** (no trailing newline) all return the OLD … | module-loop.md |
-| future-loop | `platform-cfg` | the four `compat.rs` tests (Windows delete-pending vs unix `EEXIST`/`EISDIR`); `validator.rs` `#[cfg(unix)]` timeout/cancel/reap; `workspace_guard.rs` UNC/`\\?\` prefix handling (**OPEN**) | module-loop.md |
-| future-loop | `serialization` | `tests/full_schema_contract.rs`, `tests/schema_alignment_contract.rs`, `tests/event_ledger_contract.rs`; `condensed_view_*` (unknown event type, malformed line, `usage` payload shape) | module-loop.md |
-| future-rpc | `boundary` | the append integrity boundary: the same `event_id` with **different** content fails closed (`StateEventConflictError`, `store.rs:1360`) while identical content is an idempotent no-op; `append_todo_change` refuses a non-todo event … | module-loop.md |
-| future-rpc | `error-path` | `compat::tests::write_active_state_reports_an_unusable_goal_dir_and_a_held_lock` + the two removal-refusal tests; `validator::tests::failure_carries_diagnostics`; `console_refusal_edges` (three tests, ~25 commands); … | module-loop.md |
-| future-rpc | `concurrency` | `compat::tests::concurrent_acquires_all_succeed` (4 threads × 150 rounds; the §2 fix); `validator::tests::cancelling_validation_reaps_the_owned_process` (unix); `tests/claim_lease_contract.rs` | module-loop.md |
-| future-rpc | `property` | the steering seam's no-progress arms, whose shared property is that an interrupt must never be LOST: a missing ledger, nothing appended since the offset, and a **partially written line** (no trailing newline) all return the OLD … | module-loop.md |
-| future-rpc | `platform-cfg` | the four `compat.rs` tests (Windows delete-pending vs unix `EEXIST`/`EISDIR`); `validator.rs` `#[cfg(unix)]` timeout/cancel/reap; `workspace_guard.rs` UNC/`\\?\` prefix handling (**OPEN**) | module-loop.md |
-| future-rpc | `serialization` | `tests/full_schema_contract.rs`, `tests/schema_alignment_contract.rs`, `tests/event_ledger_contract.rs`; `condensed_view_*` (unknown event type, malformed line, `usage` payload shape) | module-loop.md |
+| future-goal | `boundary` | the append integrity boundary: the same `event_id` with **different** content fails closed (`StateEventConflictError`, `store.rs:1360`) while identical content is an idempotent no-op; `append_todo_change` refuses a non-todo event … | module-goal.md |
+| future-goal | `error-path` | `compat::tests::write_active_state_reports_an_unusable_goal_dir_and_a_held_lock` + the two removal-refusal tests; `validator::tests::failure_carries_diagnostics`; `console_refusal_edges` (three tests, ~25 commands); … | module-goal.md |
+| future-goal | `concurrency` | `compat::tests::concurrent_acquires_all_succeed` (4 threads × 150 rounds; the §2 fix); `validator::tests::cancelling_validation_reaps_the_owned_process` (unix); `tests/claim_lease_contract.rs` | module-goal.md |
+| future-goal | `property` | the steering seam's no-progress arms, whose shared property is that an interrupt must never be LOST: a missing ledger, nothing appended since the offset, and a **partially written line** (no trailing newline) all return the OLD … | module-goal.md |
+| future-goal | `platform-cfg` | the four `compat.rs` tests (Windows delete-pending vs unix `EEXIST`/`EISDIR`); `validator.rs` `#[cfg(unix)]` timeout/cancel/reap; `workspace_guard.rs` UNC/`\\?\` prefix handling (**OPEN**) | module-goal.md |
+| future-goal | `serialization` | `tests/full_schema_contract.rs`, `tests/schema_alignment_contract.rs`, `tests/event_ledger_contract.rs`; `condensed_view_*` (unknown event type, malformed line, `usage` payload shape) | module-goal.md |
+| future-rpc | `boundary` | the append integrity boundary: the same `event_id` with **different** content fails closed (`StateEventConflictError`, `store.rs:1360`) while identical content is an idempotent no-op; `append_todo_change` refuses a non-todo event … | module-goal.md |
+| future-rpc | `error-path` | `compat::tests::write_active_state_reports_an_unusable_goal_dir_and_a_held_lock` + the two removal-refusal tests; `validator::tests::failure_carries_diagnostics`; `console_refusal_edges` (three tests, ~25 commands); … | module-goal.md |
+| future-rpc | `concurrency` | `compat::tests::concurrent_acquires_all_succeed` (4 threads × 150 rounds; the §2 fix); `validator::tests::cancelling_validation_reaps_the_owned_process` (unix); `tests/claim_lease_contract.rs` | module-goal.md |
+| future-rpc | `property` | the steering seam's no-progress arms, whose shared property is that an interrupt must never be LOST: a missing ledger, nothing appended since the offset, and a **partially written line** (no trailing newline) all return the OLD … | module-goal.md |
+| future-rpc | `platform-cfg` | the four `compat.rs` tests (Windows delete-pending vs unix `EEXIST`/`EISDIR`); `validator.rs` `#[cfg(unix)]` timeout/cancel/reap; `workspace_guard.rs` UNC/`\\?\` prefix handling (**OPEN**) | module-goal.md |
+| future-rpc | `serialization` | `tests/full_schema_contract.rs`, `tests/schema_alignment_contract.rs`, `tests/event_ledger_contract.rs`; `condensed_view_*` (unknown event type, malformed line, `usage` payload shape) | module-goal.md |
 | future-tui | `boundary` | **`suggest_skill` with an empty candidate set and an empty query; a null/number/absent description; Unicode+CJK query and skill name**; **an OSC 8 URL with `BEL`/`ST`/newline/NUL/tab vs a Unicode URL**; **an incomplete escape … | module-tui.md |
 | future-tui | `error-path` | **`suggest_skill` declines on a tonic `Unavailable` and on `success:false`, and on 6 malformed payload shapes**; **a draft file whose name cannot be created (not retried, path named)**; **a control-bearing link URL**; … | module-tui.md |
 | future-tui | `concurrency` | **`prepending_history_shifts_the_viewport_and_notifies_the_owner` (callback fires exactly once)**; **`dropping_the_owned_agent_kills_its_child` (real child + external liveness observer, both directions)**; … | module-tui.md |
@@ -78,15 +78,15 @@ would be worse than an empty cell, because it would look like evidence. So
 every backticked identifier in these rows was checked against the tree
 (`.future/cov100/check-matrix-evidence.py`): 22 of 23 resolve to real code.
 
-The one that does not is `console_refusal_edges` in the future-loop /
+The one that does not is `console_refusal_edges` in the future-goal /
 future-rpc `error-path` cells — it is a **prose label**, used in
-`module-loop.md` to name a group of three tests, not a test name; the test it
+`module-goal.md` to name a group of three tests, not a test name; the test it
 refers to is `worker_tail_condensed_raw_and_refusal_edges`. The extractor copied
 the label faithfully, so this is a docs imprecision inherited from the source
 doc, not fabricated evidence.
 
-Two structural notes: `future-rpc`'s cells are identical to `future-loop`'s
-because both are measured from `module-loop.md` (the crate shares that waiver
+Two structural notes: `future-rpc`'s cells are identical to `future-goal`'s
+because both are measured from `module-goal.md` (the crate shares that waiver
 doc), so rpc's row is not rpc-specific evidence; and `desktop` aggregates six
 subtree docs (`desktop-*.md`, `module-tauri-*.md`), so its cells quote whichever
 of those recorded the richest evidence for that dimension.

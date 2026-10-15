@@ -583,9 +583,9 @@ jobs:
           app="$(find "$mnt" -maxdepth 1 -type d -name '*.app' -print -quit)"
           [[ -n "$app" ]] || { echo "DMG contains no app bundle." >&2; exit 1; }
           cp docs/dist/readme-macos.txt "$mnt/Readme.txt"
-          mkdir -p "$mnt/licenses/loop"
+          mkdir -p "$mnt/licenses/goal"
           cp LICENSE "$mnt/licenses/"
-          cp orchestration/loop/LICENSE orchestration/loop/NOTICE orchestration/loop/UPSTREAM.md "$mnt/licenses/loop/"
+          cp orchestration/goal/LICENSE orchestration/goal/NOTICE orchestration/goal/UPSTREAM.md "$mnt/licenses/goal/"
           codesign --force --sign - "$app"
           hdiutil detach "$mnt"
           hdiutil convert "$work" -format UDZO -o "$out"

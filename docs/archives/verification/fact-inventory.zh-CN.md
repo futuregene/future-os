@@ -31,8 +31,8 @@
 | 2 | README.zh-CN.md | 138 | 用户文档（根） | zh |
 | 3 | docs/build-and-install.md | 206 | 用户文档（构建/安装） | en |
 | 4 | docs/build-and-install.zh-CN.md | 190 | 用户文档（构建/安装） | zh |
-| 5 | docs/loop-control-plane.md | 179 | 用户文档（功能指南） | en |
-| 6 | docs/loop-control-plane.zh-CN.md | 128 | 用户文档（功能指南） | zh |
+| 5 | docs/goal-control-plane.md | 179 | 用户文档（功能指南） | en |
+| 6 | docs/goal-control-plane.zh-CN.md | 128 | 用户文档（功能指南） | zh |
 | 7 | docs/wiki-prompt.md | 229 | **生成提示词**（给 AI，非用户文档） | zh |
 | 8 | docs/wiki-prompt-en.md | 229 | **生成提示词**（给 AI，非用户文档） | en |
 | 9-21 | docs/wiki/en/*.md（13 个） | 见 §7 | 用户文档（wiki） | en |
@@ -76,7 +76,7 @@ Using-FutureOS、Settings、Skills、CLI、FAQ、Feishu、DingTalk、Models、_S
 | # | 声明 | 位置 |
 |---|---|---|
 | RZ1 | 「内置 1000+ 模型，覆盖 100+ Provider」 | L23 |
-| RZ2 | 模型配置三途径（同 R3，链接指向 docs/wiki/zh/ 与 docs/loop-control-plane.zh-CN.md、docs/build-and-install.zh-CN.md） | L43-77 |
+| RZ2 | 模型配置三途径（同 R3，链接指向 docs/wiki/zh/ 与 docs/goal-control-plane.zh-CN.md、docs/build-and-install.zh-CN.md） | L43-77 |
 | RZ3 | agent 监听 `127.0.0.1:50051`；`future-agent`/`future-tui` | L80-89 |
 | RZ4 | 斜杠命令表（同 R6，12 个） | L100-113（表头 L100） |
 | RZ5 | 快捷键表（同 R7） | L117-126（表头 L117） |
@@ -102,7 +102,7 @@ Using-FutureOS、Settings、Skills、CLI、FAQ、Feishu、DingTalk、Models、_S
 | B10 | Windows 桌面应用：sidecar 以 host triple 命名（future-agent-$triple.exe / future-$triple.exe）→ `npx tauri build --no-bundle` → 复制 futureos.exe → **future-desktop.exe** | L110-122 |
 | B11 | Windows 安装包：`node scripts\version.mjs --set-bundle` + `npm run tauri:build` → **NSIS .exe**（bundle\nsis\） | L124-128 |
 | B12 | 脚本说明：`scripts/start-desktop-windows.bat` 开发模式；`build-desktop-macos.sh`/`build-desktop-windows-portable.ps1`/`build-desktop-windows-installer.ps1` 复刻 CI 流水线（DMG/便携 zip/NSIS），需 protoc；产物含 GUI+agent+CLI，**不含 TUI** | L130-133 |
-| B13 | loop 控制面：`orchestration/loop`，`cargo build -p future-loop`（debug→target/debug，release→target/release）；`bash scripts/install-future-loop.sh` → **~/.local/bin/future-loop** + **~/.future/agent/skills/**；`future-loop status` 验证 | L135-155 |
+| B13 | loop 控制面：`orchestration/goal`，`cargo build -p future-goal`（debug→target/debug，release→target/release）；`bash scripts/install-future-goal.sh` → **~/.local/bin/future-goal** + **~/.future/agent/skills/**；`future-goal status` 验证 | L135-155 |
 | B14 | 技能安装：`make install-skills`（内置 skills/ 子模块符号链接）；`future skills install`（**约 13 个**）；`future init`（装技能 + macOS/Linux 链接本地命令）；符号链接进 `~/.future/agent/skills/`；`future skills list`/`future skills update` | L162-178（`future skills install` L171，`future skills update` L177） |
 | B15 | 验证：`make test`（cargo test agent + loop）、`make lint`（agent+channels+TUI+CLI+GUI） | L168-171 |
 | B16 | 开发：`make build/lint/fmt/test/clean` | L174-183 |
@@ -118,17 +118,17 @@ proto L180-190。**无内容差异**（除链接指向 .zh-CN 版本）。
 
 ---
 
-## 5. docs/loop-control-plane.md（en）
+## 5. docs/goal-control-plane.md（en）
 
 | # | 声明 | 位置 |
 |---|---|---|
-| L1 | 定位：本地控制面，位于 `orchestration/loop`，`future-loop` CLI + `/future-loop` agent 技能 | L5-7 |
-| L2 | **`future-loop` 是 loopx（github.com/huangruiteng/loopx）的 Rust 改写版**，针对 FutureOS 适配扩展（项目本地状态、gRPC 执行桥、quota 内核、扩展与多 agent） | L8-11 |
-| L3 | 目标：`goal init / cancel / delete`，状态在 `<cwd>/.future/loop/`，事件账本 + 重放 | L40-41 |
+| L1 | 定位：本地控制面，位于 `orchestration/goal`，`future-goal` CLI + `/future-goal` agent 技能 | L5-7 |
+| L2 | **`future-goal` 是 loopx（github.com/huangruiteng/loopx）的 Rust 改写版**，针对 FutureOS 适配扩展（项目本地状态、gRPC 执行桥、quota 内核、扩展与多 agent） | L8-11 |
+| L3 | 目标：`goal init / cancel / delete`，状态在 `<cwd>/.future/goal/`，事件账本 + 重放 | L40-41 |
 | L4 | Todos：`todo add / claim / complete / supersede / update / archive`；advancement/user-gate/monitor/blocker 类别；`--blocks` 依赖链；claim+租约；完成契约（每个完成 todo 声明后继或显式 no-follow-up） | L42-45 |
 | L5 | 人工门禁：`gate resolve` | L47 |
 | L6 | 监控：`--class monitor --cadence ...`，无变化退避 | L49 |
-| L7 | 决策内核：`future-loop run`，纯函数可注入时钟，**九种 disposition**（terminal/monitor-wait/active work/consistency repair/human gate/quiet wait/…），fail-closed | L54-60 |
+| L7 | 决策内核：`future-goal run`，纯函数可注入时钟，**九种 disposition**（terminal/monitor-wait/active work/consistency repair/human gate/quiet wait/…），fail-closed | L54-60 |
 | L8 | 额度：run/agent/heartbeat 三来源 slot 记账、24h/7d 汇总、stall repair | L62-65 |
 | L9 | 调度：节奏归一化（`once / hourly / daily / weekly` 或 `15m / 1h / 2d`）、原子持久化、host 失败跟踪 | L67-68 |
 | L10 | 事件溯源：内容寻址事件 id、幂等追加、fail-closed 冲突检测；`QuotaSpent`/`EvidenceAttached` 事件；markdown 回填 | L72-76 |
@@ -137,12 +137,12 @@ proto L180-190。**无内容差异**（除链接指向 .zh-CN 版本）。
 | L13 | 扩展与多 agent：能力框架（declared→installed→enabled→ready）、能力门禁（run/ask-owner/repair-bridge/skip）、扩展 manifest + install/enable/disable/rollback + readiness doctor（v1 声明式不执行代码）、identity 范围多 agent、supervisor 提案/回执、任务租约、交接文档交付契约、todo 依赖图、attention queue/operator inbox | L88-108 |
 | L14 | 诊断：benchmark（protocol/run/ledger）、replay（record/run、corpus）、canary（`core-control-plane`/`extension-runtime`/`release-gate`）；`version`/`doctor`/`history`/`turn`/`todo-event`/`evidence-log`、`backup`/恢复 | L110-113 |
 | L15 | **CLI 一览**（命令面，逐条核验对象）：goal / todo / agent / capability / extension / ops / work-items / handoff / benchmark / replay / canary / cli（子命令详见原文 L115-127） | L115-127 |
-| L16 | 技能模式快速开始：`/future-loop <目标>`；`future-loop run --max-turns 1` | L132-144 |
-| L17 | 直连示例：`future-loop goal init --objective ... --cwd ...`；`todo add --goal <id> --text ... --priority P0 [--blocks ...] [--verify "test -f report.md"]`；`status --goal <id>`；`run --goal <id> --model future/deepseek-v4-flash --max-turns 1` | L148-155 |
-| L18 | 状态布局：`registry.json`（真相源）、`goals/<id>/events.jsonl`、`goals/<id>/ACTIVE_GOAL_STATE.md`（参考兼容投影）、`runs/`；运行时状态不写出项目外；`.future/loop/` 加 .gitignore | L159-167 |
-| L19 | 安装：`bash scripts/install-future-loop.sh` 或 `cargo build -p future-loop` | L171-173 |
+| L16 | 技能模式快速开始：`/future-goal <目标>`；`future-goal run --max-turns 1` | L132-144 |
+| L17 | 直连示例：`future-goal goal init --objective ... --cwd ...`；`todo add --goal <id> --text ... --priority P0 [--blocks ...] [--verify "test -f report.md"]`；`status --goal <id>`；`run --goal <id> --model future/deepseek-v4-flash --max-turns 1` | L148-155 |
+| L18 | 状态布局：`registry.json`（真相源）、`goals/<id>/events.jsonl`、`goals/<id>/ACTIVE_GOAL_STATE.md`（参考兼容投影）、`runs/`；运行时状态不写出项目外；`.future/goal/` 加 .gitignore | L159-167 |
+| L19 | 安装：`bash scripts/install-future-goal.sh` 或 `cargo build -p future-goal` | L171-173 |
 
-## 6. docs/loop-control-plane.zh-CN.md（zh）
+## 6. docs/goal-control-plane.zh-CN.md（zh）
 
 与 en 一致（L1-L19 镜像），行号：L7 定位、L11-14 loopx 改写、L40-49 目标/todos/门禁/监控、
 L54-60 内核、L62-80 额度/调度/事件溯源、L84-86 独立验证、L88-108 扩展多 agent、
@@ -392,7 +392,7 @@ zh 页面与 en 内容一致，行号基本镜像（zh 多 1 行于 Feishu L205�
 | X9 | **思考级别集合** | README「off ↔ xhigh」；wiki CLI.md `--thinking` 列 off/minimal/low/medium/high/xhigh（EC5）；README 未列全级别 | §1/§8 |
 | X10 | **architecture-audit 时效** | 审计基准 dev @ 8aa82925（2026-08-05）与当前工作树关系需核验；若源码已变，file:line 可能失效 | §10-A0 |
 | — | **X10 已裁决（2026-08-06，todo_41f779819879）** | 审计为**时点快照**：文档与首批修复同批入库（commit `306cf05f`）——报告 01 H2/H3/H4、报告 04 H1/H2/H4 已在该 commit 修复（代码注释引用审计编号）；仍成立高危项：报告 01 H1/H5、报告 04 H3。file:line 已漂移，README 顶部已加时效性说明并逐条标注 ✅（详见 errors-outdated-missing.md §E） | |
-| X11 | **loop CLI 命令面** | loop-control-plane.md L15 CLI 一览 vs 实际 `future-loop --help`（本轮已见 goal/todo/ops/cli 等组在跑，完整命令面需核验） | §5 |
+| X11 | **loop CLI 命令面** | goal-control-plane.md L15 CLI 一览 vs 实际 `future-goal --help`（本轮已见 goal/todo/ops/cli 等组在跑，完整命令面需核验） | §5 |
 | — | **X11 已裁决（2026-08-06，todo_63c718c2a3d5）** | 与 `build_cli_registry()`（main.rs L176-471）逐一比对：goal 组缺 `models`/`diagnose`、extension 缺 `upgrade`、`cli registry` 缺 `--include-experimental`，已修正 en/zh 两份 CLI 一览（B9 详录）。其余全部一致 | |
 | X12 | **`future init` 行为** | build-and-install B14：`future init` = 安装技能 + macOS/Linux 链接本地命令；需核验 cli 源码 | §3 |
 
@@ -405,13 +405,13 @@ zh 页面与 en 内容一致，行号基本镜像（zh 多 1 行于 Feishu L205�
 | TUI 斜杠命令（12 个） | R6 / RZ4 | README.md L100-114 |
 | TUI 快捷键（8 个） | R7 / RZ5 | README.md L118-130 |
 | agent 端口 127.0.0.1:50051 | R4 / RZ3 / EFE6 / EDT5 | README L89；wiki Feishu L70-87、DingTalk L56-73 |
-| 配置路径 ~/.future/agent/{auth,models}.json、~/.future/channels/config.json、~/.future/loop/ | R3 / EFE6 / EDT5 / L18 | README L46-79；wiki Feishu L51-87 |
+| 配置路径 ~/.future/agent/{auth,models}.json、~/.future/channels/config.json、~/.future/goal/ | R3 / EFE6 / EDT5 / L18 | README L46-79；wiki Feishu L51-87 |
 | 工具链版本：Rust 1.97+、Node 24+、Bun | B1 / B3-B8 | build-and-install L12-18, L30-86 |
 | .cargo/config.toml mold 声明 | B6 | build-and-install L67；.cargo/config.toml |
 | Makefile 目标面（install/install-desktop/package-desktop/build-*/run-*/generate-*/install-skills/install-loop…） | B4-B17 / X7 | build-and-install 全文；Makefile |
 | CLI 命令面（auth/agent/run/tools/skills/channel + 各选项） | EC5 / W12 / X1/X2/X4 | wiki CLI.md L37-93；wiki-prompt L175-185 |
 | channels 配置与斜杠命令 | EFE6-EFE10 / EDT5-EDT7 | wiki Feishu/DingTalk |
-| future-loop CLI 命令面 | L15 / X11 | loop-control-plane.md L115-127 |
+| future-goal CLI 命令面 | L15 / X11 | goal-control-plane.md L115-127 |
 | proto（future.proto、生成代码、generate-proto） | B17 | build-and-install L186-206 |
 | GUI 功能声明（批准机制/设置页/技能清单/4图25MiB/Artifacts 等） | EU5-EU9 / ES3-ES8 / ESK3 / EQ3 | wiki Using-FutureOS/Settings/Skills/Quick-Start |
 | 生成文件（Models.md） | EM1-EM3 | scripts/generate_models.py L231-331 |
@@ -438,7 +438,7 @@ zh 页面与 en 内容一致，行号基本镜像（zh 多 1 行于 Feishu L205�
 | I-1 | Models.md 缺「如何再生成」说明（生成器脚本、命令、是否自动同步） | scripts/generate_models.py；EM1-EM3 | ✅ 已解决（todo_bcf715c7cc0e：脚本+文件头注释） |
 | I-2 | dist readme 有 Linux 版，但 wiki 无 Linux 页面——产品平台口径需决策（加 Linux 页 vs 维持 macOS+Windows） | docs/dist/readme-linux*.txt | ✅ 已裁决：**维持 macOS+Windows**——release.yml 只发布 macOS（arm64+x64 dmg/updater）+ Windows（x64 setup），Linux 便携包为 tester-only，无需 wiki 页 |
 | I-3 | 无 channels 配置的完整参考文档（Feishu/DingTalk 各自成篇，无统一 config.json schema 参考页） | EFE6/EDT5 | ✅ 已解决：新建 docs/channels-config.md + zh（schema 全字段/默认值，依据 channels/src/config.rs 逐字段核实） |
-| I-4 | loop-control-plane 指南未覆盖 `agent` 命令组（onboard/scope/lane/supervisor）与 handoff 用法示例 | loop-control-plane.md L115-127 | ✅ 已解决：en/zh 新增「Multi-agent workflow / 多 agent 工作流」章节（agent onboard/注册、scope、lane、supervisor propose|receipt|events、handoff [--write]、task-graph、attention/inbox 示例）；并注明这些为扁平顶层命令（帮助里的 agent/todo/work-items 分组仅为展示） |
+| I-4 | goal-control-plane 指南未覆盖 `agent` 命令组（onboard/scope/lane/supervisor）与 handoff 用法示例 | goal-control-plane.md L115-127 | ✅ 已解决：en/zh 新增「Multi-agent workflow / 多 agent 工作流」章节（agent onboard/注册、scope、lane、supervisor propose|receipt|events、handoff [--write]、task-graph、attention/inbox 示例）；并注明这些为扁平顶层命令（帮助里的 agent/todo/work-items 分组仅为展示） |
 | I-5 | docs/ 顶层无索引 README（除 architecture-audit 外）——docs 目录缺导航 | 目录结构 | ✅ 已解决：新建 docs/README.md + zh（顶层指南表、wiki 清单、dist 说明、内部工作文档） |
 | I-6 | 无 TUI 使用文档（wiki 刻意不含 TUI，但 README 有 TUI 斜杠命令/快捷键） | README R6/R7 | ✅ 已解决：新建 docs/tui.md + zh（17 个斜杠命令、8 快捷键、settings/keybindings/log 路径、排障） |
 | I-7 | 无 `.future/` 目录完整布局文档（agent/channels/tui/app/workspaces 各子目录职责） | CLAUDE.md；配置路径核验面 | ✅ 已解决：新建 docs/directory-layout.md + zh（agent/models/auth/sessions/skills/logs、channels、tui、app(db/images/review)、workspaces/chat、loop、bin；另注 ~/.agents/skills 与项目本地 .future/） |

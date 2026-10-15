@@ -5,7 +5,7 @@
 > 设计日期：2026-10-13。源码基线：`88fe90a8`。
 > 状态：阶段一至六及阶段八代码/文档收尾已完成。macOS 验收见第 10.7 节，用户报告 Windows 全量单测通过见第 10.8 节。阶段七自动化验收、daily 包和阶段八最终原生 CI 记录见第 10.9–10.14 节；正式签名/公证、原生 Linux 沙箱、真实安装升级、完整 GUI 工具交互和性能对比仍待发布验收。
 
-Desktop 在默认本地端点没有外部 Agent 且成功取得实例锁时，以 Rust library 的方式在自己的进程内运行完整 Agent。兼容外部服务继续连接，不兼容或持锁不可用的服务明确报错。外部 Agent、CLI、TUI、channels 和 loop 继续使用统一 RPC。改动的主要目的，是减少 Windows 启动和升级过程中 Desktop 与 sidecar 生命周期不同步的问题，同时保留实例锁、完整工具能力、持久化和外部客户端接入。
+Desktop 在默认本地端点没有外部 Agent 且成功取得实例锁时，以 Rust library 的方式在自己的进程内运行完整 Agent。兼容外部服务继续连接，不兼容或持锁不可用的服务明确报错。外部 Agent、CLI、TUI、channels 和 goal 继续使用统一 RPC。改动的主要目的，是减少 Windows 启动和升级过程中 Desktop 与 sidecar 生命周期不同步的问题，同时保留实例锁、完整工具能力、持久化和外部客户端接入。
 
 实施应先提取服务层，再接入宿主，最后切换开发、构建与升级链路。第一版保持现有存储格式和业务 RPC，保留打包的 `future` CLI。单独裁剪 CLI、迁移数据库和修改工具权限不属于本次目标。
 
@@ -27,7 +27,7 @@ Desktop 在默认本地端点没有外部 Agent 且成功取得实例锁时，�
 
 ### 1.2 退出与客户端
 
-内置模式下，退出 Desktop 会结束该 Agent 上所有客户端的任务，包括 CLI、TUI、手机、channels 和 loop 发起的任务。退出提示使用 Agent 的全局活动快照，覆盖运行、排队、等待审批和会修改会话的长时操作。用户选择继续运行时，不提前关闭接单入口。
+内置模式下，退出 Desktop 会结束该 Agent 上所有客户端的任务，包括 CLI、TUI、手机、channels 和 goal 发起的任务。退出提示使用 Agent 的全局活动快照，覆盖运行、排队、等待审批和会修改会话的长时操作。用户选择继续运行时，不提前关闭接单入口。
 
 用户确认强制退出后，先停止接单、取消全部相关工作、等待持久化与清理，再退出。清理超过总期限时，由宿主执行进程级强制退出；不承诺异常退出也能送达取消事件。正常取消必须把明确终态和退出原因发送给客户端。
 
@@ -73,7 +73,7 @@ headless Desktop ─┼── future-agent 服务层 ── RPC、runtime、存�
 future agent ─────┤
 future-agent ─────┘
 
-CLI / TUI / channels / loop / Desktop bridge ── 统一 RPC ── 活跃 Agent
+CLI / TUI / channels / goal / Desktop bridge ── 统一 RPC ── 活跃 Agent
 ```
 
 在 `agent/src/service/` 提取服务层，模块名为实施时的建议组织：`config`、`instance`、`startup`、`activity`、`shutdown` 和后台工作登记。GUI/headless 复用不依赖 Tauri 的宿主管理部分，GUI 仅负责窗口、提示和事件适配。
@@ -274,7 +274,7 @@ Linux helper 请求版本、真实隔离执行与取消须有原生集成验证�
 
 实现位于 [service](../../agent/src/service/mod.rs)，CLI 参数、维护、日志、信号、profiling 保留在 [cli](../../agent/src/cli.rs)。[startup](../../agent/src/service/startup.rs)复用原 engine、SQLite 导入和 AppState 初始化；[instance](../../agent/src/service/instance.rs)保持锁路径、Windows 字节协议与 metadata 字段；正常路径不再泄漏锁对象，失败停机则保留所有权直到宿主进程退出。Ready 在初始化、绑定与 server 首次成功 poll 后通知。共享 Unix transport 修复预绑定后未 poll 就取消时的 socket 清理。
 
-[隔离服务回归](../../agent/tests/service_startup.rs)覆盖实际 TCP/本地 IPC、锁冲突、同 scope 重复初始化、取消、损坏存储、端点占用和原格式导入。已有生命周期测试迁到对应模块，审批中断回归由服务级停机测试覆盖。本地通过 Agent/RPC 和 CLI/TUI/channels/loop 的 `clippy --all-targets -D warnings`，以及 `dhat-heap` feature 的静态编译、fmt 与 diff 检查。2026-10-14 的本地单测与集成验收记录见第 10.4 节；原生 Windows/Linux 与 CI 回归结果尚未取得。
+[隔离服务回归](../../agent/tests/service_startup.rs)覆盖实际 TCP/本地 IPC、锁冲突、同 scope 重复初始化、取消、损坏存储、端点占用和原格式导入。已有生命周期测试迁到对应模块，审批中断回归由服务级停机测试覆盖。本地通过 Agent/RPC 和 CLI/TUI/channels/goal 的 `clippy --all-targets -D warnings`，以及 `dhat-heap` feature 的静态编译、fmt 与 diff 检查。2026-10-14 的本地单测与集成验收记录见第 10.4 节；原生 Windows/Linux 与 CI 回归结果尚未取得。
 
 阶段一保留存储实现、schema、protobuf、两个二进制入口和 CLI flag 声明。阶段二增加 writer 关闭和后台工作登记，仍不改变 schema、持久化格式或业务 RPC。全局 broadcaster 的订阅通过服务级关闭信号结束；丢弃 serving future 会使停机失败，不能作为成功清理的依据。Desktop 在阶段四接入。
 
@@ -314,7 +314,7 @@ CLI 接入完整停机，保留原有 Ctrl-C 第二次中断/5 秒独立强制�
 
 CLI/TUI 保持已有显示版本；门禁使用共享 `EXPECTED_AGENT_VERSION`。协调构建取注入的 `FUTURE_VERSION`，裸 Cargo 开发构建取 RPC/Agent 的 `0.0.0` release 基准，避免 CLI/TUI 的 `0.0.2` 显示版本误拒绝同源码服务。真实服务隔离回归使用这一共享预期版本验证握手，未来调整 Cargo release 基准时必须同步 Agent/RPC。
 
-GUI、headless、CLI 和 TUI 的业务请求及事件订阅统一使用 `VerifiedAgentClient`，每次派发前重新核对 readiness。已验证 Channel 禁止透明重连到替换服务；新物理连接必须重新握手。请求携带预期实例及数据根 header，Agent 在命令转换、接单和订阅初始化之前验证。旧的直接 RPC 调用仍可省略 header；已接入门禁的客户端始终发送它们。Desktop 缓存按端点及数据根配置区分，校验失败清除缓存，状态 UI 显示具体阻塞原因。channels/loop 保留原客户端接口，未在此阶段切换连接封装。
+GUI、headless、CLI 和 TUI 的业务请求及事件订阅统一使用 `VerifiedAgentClient`，每次派发前重新核对 readiness。已验证 Channel 禁止透明重连到替换服务；新物理连接必须重新握手。请求携带预期实例及数据根 header，Agent 在命令转换、接单和订阅初始化之前验证。旧的直接 RPC 调用仍可省略 header；已接入门禁的客户端始终发送它们。Desktop 缓存按端点及数据根配置区分，校验失败清除缓存，状态 UI 显示具体阻塞原因。channels/goal 保留原客户端接口，未在此阶段切换连接封装。
 
 只有默认本地连接明确返回端点不存在或拒绝连接，且现有实例锁可以取得时，`select_agent` 才产生不可自行构造的 `LocalStartPermit`。握手失败、版本/协议/schema/数据根不符、锁占用或权限错误、未知连接错误及显式端点失败均直接报错。预检不创建或改写锁文件、不初始化数据库；`AgentService::with_local_start` 消耗许可并重新取得权威锁，抢锁失败发生在宿主初始化回调之前。现有 sidecar 启动也复查许可，并显式传递 `--grpc-addr auto`。这段记录描述阶段三完成时的范围：该阶段未切换默认运行模式，内置宿主随后由阶段四接入。
 
@@ -405,7 +405,7 @@ Linux helper 继续由当前宿主可执行文件进入，保留统一 CLI 的 `
 | D1 | 正常取消后重开、强制结束后重开、停机中进程崩溃 | SQLite 事务保持一致；未完成运行收敛；历史保留 |
 | C1 | CLI 接入内置、Desktop 真退出、CLI/TUI 重连、新实例替换 | 取消与断线可理解；重新握手；旧游标和队列状态失效 |
 | C2 | 外部模式退出与重启；显式远端不可达；不兼容重连 | 外部任务按归属处理；无默认端点接管；业务门禁有效 |
-| C3 | 手机、channels、loop 长连接在停机与重新启动期间 | 断线与取消不记为成功；审批和队列状态收敛；新实例重新握手 |
+| C3 | 手机、channels、goal 长连接在停机与重新启动期间 | 断线与取消不记为成功；审批和队列状态收敛；新实例重新握手 |
 | U1 | 下载、签名、解包或安装启动失败 | 下载/验签不打断任务；停机后失败有明确恢复路径 |
 | U2 | 升级中有 CLI/技能进程、旧孤儿 sidecar、其他安装持锁服务 | 保留文件检查、范围授权、租约与退出码，不产生混合版本 |
 | U3 | 替换失败、加载探测失败、手动重装、先卸载再升级、卸载清理超时 | 可执行文件回滚；用户数据不删；安装/卸载结果真实 |
@@ -621,7 +621,7 @@ Windows 专项 [38672888594](https://github.com/futuregene/future-os/actions/run
 | Windows | 6 | 10 | 9 | 9 |
 | macOS | 6 | 10 | 9 | 9 |
 
-三份 `summary.json` 和分组日志已归档于 `agent/target/phase7-ci-results/native-{linux,windows,macos}/`。首轮的 Agent、CLI/TUI、channels/RPC/loop/tasks、前端以及 fmt/Clippy 检查通过；Linux GUI 全量中 `scheduler::tests::a_spawned_job_fires_at_its_deadline_and_reanchors` 失败（1,804 通过、1 失败、12 ignored）。该用例未持有与全局后台清理相同的 fixture guard，其他并行用例可取消它的循环。`887c5b77` 给两个启动后台循环的调度器用例加上已有 HomeGuard，保持产品调度不变；[Desktop Rust 范围复验](https://github.com/futuregene/future-os/actions/runs/38673788870) 单独验证此修复和 headless feature 检查。
+三份 `summary.json` 和分组日志已归档于 `agent/target/phase7-ci-results/native-{linux,windows,macos}/`。首轮的 Agent、CLI/TUI、channels/RPC/goal/tasks、前端以及 fmt/Clippy 检查通过；Linux GUI 全量中 `scheduler::tests::a_spawned_job_fires_at_its_deadline_and_reanchors` 失败（1,804 通过、1 失败、12 ignored）。该用例未持有与全局后台清理相同的 fixture guard，其他并行用例可取消它的循环。`887c5b77` 给两个启动后台循环的调度器用例加上已有 HomeGuard，保持产品调度不变；[Desktop Rust 范围复验](https://github.com/futuregene/future-os/actions/runs/38673788870) 单独验证此修复和 headless feature 检查。
 
 macOS 本地真实打包还发现：在已有 mode 0644 编译占位文件上执行 `cp` 会保留不可执行权限，使 app 正常但包内 CLI 无法运行。Unix 开发、打包、Makefile 和发布 CI 的 CLI 暂存统一改用 `install -m 755`；此问题必须以重新封装后的包内 CLI smoke 验收，不能只验证源码目录中的 CLI。
 

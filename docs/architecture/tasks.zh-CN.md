@@ -2,13 +2,13 @@
 
 > 任务 = 一个可复用的工作单元（prompt + 工作目录 + 模型/思考等级 + 全权限），由**触发器**决定何时运行；每次运行产生一条普通会话，并留下运行台账与 prompt 版本历史。
 
-与 `future loop` 的边界：loop = 长期目标 + 证据 + 门禁 + 多 agent 编排；tasks = **固定动作 + 触发器**，触发即跑。两者不共享表、不互相替代。
+与 `future goal` 的边界：goal = 长期目标 + 证据 + 门禁 + 多 agent 编排；tasks = **固定动作 + 触发器**，触发即跑。两者不共享表、不互相替代。
 
 ---
 
 ## 0. 定位
 
-- **位置**：新增 crate `orchestration/tasks`（crate 名 `future-tasks`），与 `orchestration/loop` 同层。
+- **位置**：新增 crate `orchestration/tasks`（crate 名 `future-tasks`），与 `orchestration/goal` 同层。
 - **宿主**：desktop（GUI）与 headless desktop 已接，共用同一份 tick 循环；TUI 未接；mobile 不 host，走 desktop 远程桥。
 - **分层**：确定性内核（`next_due` / join / claim / 截断）全是纯函数，与 host 无关；执行器只有一份，host 差异收敛成 `Notifier` 闭包（见 §8）。
 
@@ -17,17 +17,17 @@
 
 ---
 
-## 1. 借鉴 loop 的设计（该抄什么 / 不该抄什么）
+## 1. 借鉴 goal 控制面的设计（该抄什么 / 不该抄什么）
 
-| Loop 的做法 | Tasks 的对应 |
+| Goal 控制面的做法 | Tasks 的对应 |
 |---|---|
 | 内核确定性、agent 只做判断（floors/signals/bounds） | claim/`next_due`/join/`truncate`、prompt 版本写入（`prompt_change_revisions`）都是纯函数 |
 | "先提交、后尽力刷新"（`sync_compat`） | 通知失败不回滚已提交的运行（`notify` 不参与结果判定） |
 | turn envelope：schema 头 + 上游预算 + 头尾截断 + 索引永不丢 | 任务信封 `future_tasks_run_envelope_v1`（schema 头 + 身份/run/trigger/settings 块 + 上游摘要预算/索引保留 + Instruction + 完成契约）；全文指针命令 `future task output <run-id>` |
 | 独立 task class 防 frontier 误认领 | `task_runs.kind`（`main`/`manual`/`chain`）分开 |
-| 独立状态根（`<cwd>/.future/loop/`） | 独立状态根 `<home>/.future/tasks/`（独立 SQLite，不进 app.db） |
+| 独立状态根（`<cwd>/.future/goal/`） | 独立状态根 `<home>/.future/tasks/`（独立 SQLite，不进 app.db） |
 
-**不抄**：fencing token、多 agent 竞争、claim-stealing、事件溯源 JSONL（用 SQLite ACID）、monitor cadence（loop 已有）、quota/should-run（简化为 tick 的 claim 判定）。
+**不抄**：fencing token、多 agent 竞争、claim-stealing、事件溯源 JSONL（用 SQLite ACID）、monitor cadence（goal 控制面已有）、quota/should-run（简化为 tick 的 claim 判定）。
 
 ---
 
@@ -184,7 +184,7 @@ tick（30s，墙上时钟；`Run now` 写入 pending_request_at 后会把循环�
 
 ### 5.1 运行信封（`future_tasks_run_envelope_v1`）
 
-每次运行的首条 prompt = 信封 + 任务自己的 prompt + 完成契约，格式与 loop 的 turn envelope 同构（纯文本块，非 XML 标签）：
+每次运行的首条 prompt = 信封 + 任务自己的 prompt + 完成契约，格式与 goal 控制面的 turn envelope 同构（纯文本块，非 XML 标签）：
 
 ```
 ── future_tasks_run_envelope_v1 ──
@@ -287,7 +287,7 @@ future task prompt log|apply|revert <id|name> [revision-id]
 - **prompt 版本**：`prompt log` 按版本号列出全部版本，标出生效中的那版；`prompt apply <revision-id>` 把任一历史版本重新生效（写一条新的 `rollback` 版本，被替换那版留成 `superseded`），已经是生效版本时是 no-op；`prompt revert` 回到上一版。
 - `runs` 与 `prompt log` 对**已删除任务**仍可读（按 id 或名字）：`remove` 是软删，台账与版本历史正是审计要的东西；`list` 里则不再出现。
 - `enable` 会为 schedule 重算下次时间（暂停跨过时间点的任务否则永不触发）；`remove` 软删并清掉指向它的依赖边。
-- 帮助里明确与 `future loop todo` 区分。
+- 帮助里明确与 `future goal todo` 区分。
 
 **实现与文档必须一致**：`cli/src/commands/task.rs` 有一个测试逐行解析 `help::TASK_HELP`，
 要求它与分发器列出**同一批**子命令（双向集合相等）。这是为已经真实发生过的一类缺陷设的闸门：
@@ -335,7 +335,7 @@ HOME=/tmp/try FUTURE_AGENT_GRPC_ADDR=127.0.0.1:5099 \
 
 ## 12. 明确不做
 
-每年触发器；cron 表达式与命名时区；多对一之外的高级编排（fan-out 是普通 todo 的事）；OS 常驻服务；shell/loop/skill 类动作；系统通知；每任务工具白名单（全权限是唯一策略）。
+每年触发器；cron 表达式与命名时区；多对一之外的高级编排（fan-out 是普通 todo 的事）；OS 常驻服务；shell/goal/skill 类动作；系统通知；每任务工具白名单（全权限是唯一策略）。
 
 ---
 
