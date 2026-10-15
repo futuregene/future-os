@@ -94,9 +94,15 @@ endif
 	@echo "Removed installed binaries from $(PREFIX)"
 
 # Symlink the built-in skill bundles (skills/builtin/*, incl. future-goal)
-# into the agent's skills directory (orphaned links are pruned). Uses the
-# submodule commits already checked out, so `make install` needs no network;
-# `make update-skills` pulls the submodule's remote first.
+# into the agent's skills directory. Only *orphaned* links are pruned: a link
+# whose target no longer exists. Everything else in that directory is the
+# user's, and is left alone — pruning by "is this name in skills/builtin?"
+# also deleted skills the user installed from elsewhere (e.g. life-journal),
+# which are linked from their own repository rather than from the submodule.
+# A builtin whose directory the submodule drops (future-loop on the rename to
+# future-goal) is a dangling link afterwards, so it is still pruned.
+# Uses the submodule commits already checked out, so `make install` needs no
+# network; `make update-skills` pulls the submodule's remote first.
 install-skills:
 	git submodule update --init skills
 ifeq ($(OS),windows)
@@ -116,10 +122,10 @@ else
 	done
 	@for link in "$${HOME}/.future/agent/skills"/*; do \
 		[ -L "$$link" ] || continue; \
-		name=$$(basename "$$link"); \
-		if [ ! -d "skills/builtin/$$name" ]; then \
-			rm -rf "$$link"; \
-			echo "  ✗ $$name (removed)"; \
+		if [ ! -e "$$link" ]; then \
+			name=$$(basename "$$link"); \
+			rm -f "$$link"; \
+			echo "  ✗ $$name (orphaned link removed)"; \
 		fi; \
 	done
 endif
