@@ -1,19 +1,13 @@
 //! Deterministic kernel for `future-tasks`.
 //!
 //! Everything here is a pure function of the inputs: no I/O, no clock, no
-//! agent. `next_due` computes schedule anchors; `join_claim` decides whether
-//! a task's dependency edges have fired; `compose_upstream_block` builds the
-//! fan-in evidence block (loop-style budget + head/tail truncation + index
-//! retention); `truncate` is the shared byte-budget truncator.
+//! agent. `next_due` computes schedule anchors, `prompt_change_revisions`
+//! decides what a prompt edit must record, and `truncate` is the shared
+//! byte-budget truncator.
 
-use crate::types::{DepJoin, Task, TaskDep, TaskDepState};
+use crate::types::Task;
 use chrono::{Datelike, NaiveDate};
 use serde::Deserialize;
-
-/// Shared byte budget across all upstream sources (loop: `UPSTREAM_EVIDENCE_CHARS`).
-pub const UPSTREAM_SUMMARY_CHARS: usize = 1_200;
-/// Budget below which a source still gets an index entry but no snippet.
-pub const MIN_SNIPPET_CHARS: usize = 12;
 
 /// The status a stored row carried when it was a *suggestion*. Nothing writes it
 /// any more (the prompt-suggestion pass is gone), but a database from before the
@@ -27,8 +21,6 @@ pub const RESULT_SUMMARY_CHARS: usize = 2_000;
 /// answer, kept so a run stays readable after its conversation is gone —
 /// head…tail, and large enough for a report rather than a paragraph.
 pub const RUN_OUTPUT_CHARS: usize = 16_000;
-/// Maximum chain depth when cycle-checking (defense in depth).
-pub const MAX_DEP_DEPTH: usize = 32;
 
 /// Truncate to `max` bytes, keeping the head (context) and tail (conclusion)
 /// with a single `…` marker. Byte-budget safe for any UTF-8 content.
@@ -302,49 +294,6 @@ pub fn deletes_run_conversation(task: &Task) -> bool {
         && task.session_policy == crate::types::SessionPolicy::New
 }
 
-// ─── join claim ───────────────────────────────────────────────────────────
-
-/// Decide whether a task's dependency edges have fired, and which runs to
-/// consume. Pure: the caller persists the consumption.
-///
-/// Returns `Some(consume)` when the task should trigger; `consume` is the list
-/// of `(upstream_task_id, run_id)` pairs to clear from `task_dep_state`.
-pub fn join_claim(
-    task: &Task,
-    deps: &[TaskDep],
-    states: &[TaskDepState],
-) -> Option<Vec<(String, String)>> {
-    if deps.is_empty() {
-        return None;
-    }
-    match task.dep_join {
-        DepJoin::All => {
-            let mut consume = Vec::new();
-            for dep in deps {
-                let st = states.iter().find(|s| {
-                    s.task_id == dep.task_id && s.upstream_task_id == dep.upstream_task_id
-                })?;
-                let run_id = st.satisfied_run_id.clone()?;
-                consume.push((dep.upstream_task_id.clone(), run_id));
-            }
-            Some(consume)
-        }
-        DepJoin::Any => {
-            let mut consume = Vec::new();
-            for dep in deps {
-                if let Some(st) = states.iter().find(|s| {
-                    s.task_id == dep.task_id && s.upstream_task_id == dep.upstream_task_id
-                }) {
-                    if let Some(run_id) = &st.satisfied_run_id {
-                        consume.push((dep.upstream_task_id.clone(), run_id.clone()));
-                    }
-                }
-            }
-            (!consume.is_empty()).then_some(consume)
-        }
-    }
-}
-
 /// The revision rows a prompt change must leave behind, in insert order.
 ///
 /// Returns an empty list when the prompt is unchanged, so callers can treat a
@@ -414,103 +363,6 @@ pub fn prompt_change_revisions(
     rows
 }
 
-/// Whether a finished upstream run satisfies a dependency edge.
-pub fn run_satisfies(dep_on: crate::types::DepOn, run_status: crate::types::RunStatus) -> bool {
-    use crate::types::{DepOn, RunStatus};
-    matches!(
-        (dep_on, run_status),
-        (DepOn::Success, RunStatus::Completed)
-            | (DepOn::Failure, RunStatus::Failed)
-            | (DepOn::Completed, RunStatus::Completed | RunStatus::Failed)
-    )
-}
-
-/// Cycle-check: following `deps` from `task_id`, do we reach `task_id` again?
-/// Iterative DFS with depth cap; pure.
-pub fn would_cycle(task_id: &str, deps: &[TaskDep]) -> bool {
-    let mut stack: Vec<(String, usize)> = vec![(task_id.to_string(), 0)];
-    let mut visited = std::collections::HashSet::new();
-    while let Some((id, depth)) = stack.pop() {
-        if depth > MAX_DEP_DEPTH {
-            return true;
-        }
-        if !visited.insert(id.clone()) {
-            continue;
-        }
-        for dep in deps.iter().filter(|d| d.upstream_task_id == id) {
-            if dep.task_id == task_id {
-                return true;
-            }
-            stack.push((dep.task_id.clone(), depth + 1));
-        }
-    }
-    false
-}
-
-// ─── upstream block (fan-in evidence) ────────────────────────────────────
-
-/// One upstream source for the envelope: task id, name, run id, status, and
-/// the stored (already 2000-char truncated) result summary.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UpstreamSource {
-    pub task_id: String,
-    pub task_name: String,
-    pub run_id: String,
-    pub status: crate::types::RunStatus,
-    pub finished_at: Option<i64>,
-    pub result_summary: Option<String>,
-}
-
-/// Compose the fan-in upstream block. Every source gets an index entry; the
-/// snippets share `UPSTREAM_SUMMARY_CHARS` fairly, truncated head…tail.
-/// Sources whose budget is below `MIN_SNIPPET_CHARS` keep the index line with
-/// an empty snippet (loop's "index retention" rule).
-pub fn compose_upstream_block(sources: &[UpstreamSource]) -> String {
-    if sources.is_empty() {
-        return String::new();
-    }
-    let per_source = UPSTREAM_SUMMARY_CHARS / sources.len().max(1);
-    let mut lines = Vec::new();
-    for src in sources {
-        let summary = src.result_summary.as_deref().unwrap_or("[no summary]");
-        let snippet = if per_source >= MIN_SNIPPET_CHARS {
-            truncate(summary, per_source)
-        } else {
-            String::new()
-        };
-        let finished = src
-            .finished_at
-            .map(|ms| {
-                chrono::DateTime::from_timestamp_millis(ms)
-                    .map(|d| d.with_timezone(&chrono::Local).to_rfc3339())
-                    .unwrap_or_default()
-            })
-            .unwrap_or_default();
-        lines.push(format!(
-            "- upstream {} \"{}\" [run {} status={} finished={}]: {}",
-            src.task_id,
-            src.task_name,
-            src.run_id,
-            run_status_label(src.status),
-            finished,
-            snippet
-        ));
-    }
-    let mut out = String::new();
-    out.push_str(
-        "Upstream results: (summaries only — read a source's full output before relying on it)\n",
-    );
-    for line in lines {
-        out.push_str(&line);
-        out.push('\n');
-    }
-    out.push_str(
-        "Full output of one source: future task output <run-id>     (--format json / --tail N)\n",
-    );
-    out.push_str("Run ledger of one source:  future task runs <task-id> --limit 20\n");
-    out
-}
-
 /// `RunKind` as the envelope spells it (lowercase, like every other label).
 fn run_kind_label(kind: crate::types::RunKind) -> &'static str {
     use crate::types::RunKind;
@@ -518,16 +370,6 @@ fn run_kind_label(kind: crate::types::RunKind) -> &'static str {
         RunKind::Main => "main",
         RunKind::Manual => "manual",
         RunKind::Chain => "chain",
-    }
-}
-
-fn run_status_label(status: crate::types::RunStatus) -> &'static str {
-    use crate::types::RunStatus;
-    match status {
-        RunStatus::Running => "running",
-        RunStatus::Completed => "completed",
-        RunStatus::Failed => "failed",
-        RunStatus::Skipped => "skipped",
     }
 }
 
@@ -634,33 +476,27 @@ pub const COMPLETION_CONTRACT: &str = "\n\nCompletion contract:\n\
 - This run is unattended: nobody answers mid-run. Make a reasonable choice, record it, and carry on — do not end by asking a question.\n\
 - Close with a short report: it becomes this run's summary. State what you did, the artifacts and paths, what is new versus earlier runs, and what is still uncertain.\n";
 
-/// The whole prompt for one run: envelope + upstream evidence + the task's
-/// prompt + the completion contract.
+/// The whole prompt for one run: envelope + the task's prompt + the completion
+/// contract.
 ///
-/// The pieces are public on their own (the header and the fan-in block have
-/// their own tests and reasons), but a host should compose through this so the
-/// order and the separators exist in exactly one place.
+/// The pieces are public on their own (the header has its own tests and
+/// reasons), but a host should compose through this so the order and the
+/// separators exist in exactly one place.
 ///
 /// `started_at_ms` anchors every run that has no scheduled occurrence. Only
-/// `RunKind::Main` has a `due_at`; a manual, chain, test or reflection run has
-/// none, and a task prompt derives its target date from the envelope — so
-/// without the fallback those runs would have to guess from the wall clock,
-/// which is exactly what the prompts tell the agent not to do. For those kinds
-/// the run's own start *is* the occurrence.
+/// `RunKind::Main` has a `due_at`; a manual, test or legacy chain run has none,
+/// and a task prompt derives its target date from the envelope — so without the
+/// fallback those runs would have to guess from the wall clock, which is exactly
+/// what the prompts tell the agent not to do. For those kinds the run's own
+/// start *is* the occurrence.
 pub fn compose_run_prompt(
     task: &Task,
     kind: crate::types::RunKind,
     due_ms: Option<i64>,
     occurrence: Option<i64>,
     started_at_ms: i64,
-    upstream: &[UpstreamSource],
 ) -> String {
     let mut out = compose_envelope_header(task, kind, due_ms.or(Some(started_at_ms)), occurrence);
-    let upstream = compose_upstream_block(upstream);
-    if !upstream.is_empty() {
-        out.push_str(&upstream);
-        out.push('\n');
-    }
     out.push_str(INSTRUCTION_BANNER);
     out.push_str(&task.prompt);
     out.push_str(COMPLETION_CONTRACT);
@@ -670,7 +506,7 @@ pub fn compose_run_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{DepOn, RunStatus, SessionPolicy, SessionRetention, Task, TriggerKind};
+    use crate::types::{SessionPolicy, SessionRetention, Task, TriggerKind};
     use chrono::{Local, NaiveDate, TimeZone, Timelike};
 
     fn task(trigger: serde_json::Value, kind: TriggerKind) -> Task {
@@ -688,7 +524,6 @@ mod tests {
             thread_id: None,
             trigger_kind: kind,
             trigger_json: trigger,
-            dep_join: crate::types::DepJoin::All,
             next_due_at: None,
             pending_request_at: None,
             pending_origin: None,
@@ -1002,146 +837,6 @@ mod tests {
         }
     }
 
-    // ─── join_claim ───────────────────────────────────────────────────────
-
-    fn dep(task: &str, upstream: &str, on: DepOn) -> TaskDep {
-        TaskDep {
-            task_id: task.into(),
-            upstream_task_id: upstream.into(),
-            on,
-        }
-    }
-
-    fn state(task: &str, upstream: &str, run: Option<&str>) -> TaskDepState {
-        TaskDepState {
-            task_id: task.into(),
-            upstream_task_id: upstream.into(),
-            satisfied_run_id: run.map(|s| s.to_string()),
-            satisfied_at: run.map(|_| 1_000),
-        }
-    }
-
-    #[test]
-    fn join_all_fires_when_every_edge_satisfied() {
-        let mut t = task(serde_json::json!({}), TriggerKind::Manual);
-        t.dep_join = crate::types::DepJoin::All;
-        let deps = vec![dep("C", "A", DepOn::Success), dep("C", "B", DepOn::Success)];
-        // Only A satisfied → no fire.
-        let states = vec![state("C", "A", Some("trn_a")), state("C", "B", None)];
-        assert!(join_claim(&t, &deps, &states).is_none());
-        // Both satisfied → fire, consume both.
-        let states = vec![
-            state("C", "A", Some("trn_a")),
-            state("C", "B", Some("trn_b")),
-        ];
-        let consume = join_claim(&t, &deps, &states).unwrap();
-        assert_eq!(consume.len(), 2);
-    }
-
-    #[test]
-    fn join_any_fires_on_first_edge() {
-        let mut t = task(serde_json::json!({}), TriggerKind::Manual);
-        t.dep_join = crate::types::DepJoin::Any;
-        let deps = vec![dep("C", "A", DepOn::Success), dep("C", "B", DepOn::Failure)];
-        let states = vec![state("C", "A", None), state("C", "B", Some("trn_b"))];
-        let consume = join_claim(&t, &deps, &states).unwrap();
-        assert_eq!(consume, vec![("B".to_string(), "trn_b".to_string())]);
-    }
-
-    #[test]
-    fn a_task_without_dependencies_has_nothing_to_join() {
-        let t = task(serde_json::json!({}), TriggerKind::Manual);
-        assert!(join_claim(&t, &[], &[]).is_none());
-    }
-
-    #[test]
-    fn an_edge_with_no_recorded_progress_blocks_the_join() {
-        // `all`: an edge that was never satisfied stops the whole join, whether
-        // it has a state row or no row at all.
-        let mut t = task(serde_json::json!({}), TriggerKind::Manual);
-        t.dep_join = crate::types::DepJoin::All;
-        let deps = vec![dep("C", "A", DepOn::Success), dep("C", "B", DepOn::Success)];
-        let satisfied = vec![state("C", "A", Some("trn_a")), state("C", "B", None)];
-        assert!(join_claim(&t, &deps, &satisfied).is_none());
-        let absent = vec![state("C", "A", Some("trn_a"))];
-        assert!(join_claim(&t, &deps, &absent).is_none());
-
-        // `any`: an edge with no row is simply not a reason to fire, but another
-        // edge that did fire still is.
-        t.dep_join = crate::types::DepJoin::Any;
-        let consume = join_claim(&t, &deps, &satisfied).unwrap();
-        assert_eq!(consume, vec![("A".to_string(), "trn_a".to_string())]);
-        let partial = vec![state("C", "B", Some("trn_b"))];
-        let consume = join_claim(&t, &deps, &partial).unwrap();
-        assert_eq!(consume, vec![("B".to_string(), "trn_b".to_string())]);
-    }
-
-    #[test]
-    fn run_satisfies_edge_conditions() {
-        assert!(run_satisfies(DepOn::Success, RunStatus::Completed));
-        assert!(!run_satisfies(DepOn::Success, RunStatus::Failed));
-        assert!(run_satisfies(DepOn::Failure, RunStatus::Failed));
-        assert!(!run_satisfies(DepOn::Failure, RunStatus::Completed));
-        assert!(run_satisfies(DepOn::Completed, RunStatus::Completed));
-        assert!(run_satisfies(DepOn::Completed, RunStatus::Failed));
-        assert!(!run_satisfies(DepOn::Completed, RunStatus::Skipped));
-    }
-
-    // ─── cycle check ──────────────────────────────────────────────────────
-
-    #[test]
-    fn detects_self_cycle() {
-        let deps = vec![dep("A", "A", DepOn::Success)];
-        assert!(would_cycle("A", &deps));
-    }
-
-    #[test]
-    fn detects_indirect_cycle() {
-        let deps = vec![
-            dep("B", "A", DepOn::Success),
-            dep("C", "B", DepOn::Success),
-            dep("A", "C", DepOn::Success),
-        ];
-        assert!(would_cycle("A", &deps));
-    }
-
-    #[test]
-    fn acyclic_chain_is_fine() {
-        let deps = vec![dep("B", "A", DepOn::Success), dep("C", "B", DepOn::Success)];
-        assert!(!would_cycle("A", &deps));
-        assert!(!would_cycle("C", &deps));
-    }
-
-    #[test]
-    fn a_diamond_reaches_a_node_twice_without_looping() {
-        // Both A and B depend on X, and C depends on both — so C is reached from
-        // two paths. The walk must terminate on the second visit rather than
-        // recursing forever.
-        let deps = vec![
-            dep("A", "X", DepOn::Success),
-            dep("B", "X", DepOn::Success),
-            dep("C", "A", DepOn::Success),
-            dep("C", "B", DepOn::Success),
-        ];
-        assert!(!would_cycle("X", &deps));
-        assert!(!would_cycle("C", &deps));
-    }
-
-    #[test]
-    fn a_chain_past_the_depth_cap_counts_as_a_cycle() {
-        // Dependents of n0 chain past MAX_DEP_DEPTH; the walk must stop and
-        // report a cycle rather than traversing forever.
-        let mut deps = Vec::new();
-        for i in 0..(MAX_DEP_DEPTH + 5) {
-            deps.push(dep(
-                &format!("n{}", i + 1),
-                &format!("n{i}"),
-                DepOn::Success,
-            ));
-        }
-        assert!(would_cycle("n0", &deps));
-    }
-
     // ─── truncate ─────────────────────────────────────────────────────────
 
     #[test]
@@ -1174,80 +869,6 @@ mod tests {
         assert_eq!(truncate(&"é".repeat(10), 2), "é".to_string());
         assert_eq!(truncate(&"é".repeat(10), 3), "é".to_string());
         assert_eq!(truncate(&"ab".repeat(10), 1), "a".to_string());
-    }
-
-    // ─── upstream block ───────────────────────────────────────────────────
-
-    #[test]
-    fn an_empty_fan_in_composes_nothing() {
-        assert_eq!(compose_upstream_block(&[]), "");
-    }
-
-    #[test]
-    fn upstream_block_keeps_index_when_budget_exhausted() {
-        let mut sources = Vec::new();
-        for i in 0..20 {
-            sources.push(UpstreamSource {
-                task_id: format!("tsk_{i}"),
-                task_name: format!("task {i}"),
-                run_id: format!("trn_{i}"),
-                status: RunStatus::Completed,
-                finished_at: Some(1_000),
-                result_summary: Some("x".repeat(500)),
-            });
-        }
-        let block = compose_upstream_block(&sources);
-        // Every source keeps its index line even though 1200/20 = 60 < 500.
-        for i in 0..20 {
-            assert!(
-                block.contains(&format!("upstream tsk_{i}")),
-                "missing index for {i}"
-            );
-            assert!(
-                block.contains(&format!("trn_{i}")),
-                "missing run id for {i}"
-            );
-        }
-        assert!(block.contains("future task output"));
-    }
-
-    #[test]
-    fn a_wide_fan_in_drops_snippets_but_never_the_index() {
-        // Past UPSTREAM_SUMMARY_CHARS / MIN_SNIPPET_CHARS sources the per-source
-        // budget is too small for any snippet; the index line must survive.
-        let sources: Vec<UpstreamSource> = (0..120)
-            .map(|i| UpstreamSource {
-                task_id: format!("tsk_{i}"),
-                task_name: format!("t{i}"),
-                run_id: format!("trn_{i}"),
-                status: RunStatus::Completed,
-                finished_at: Some(1_000),
-                result_summary: Some("y".repeat(100)),
-            })
-            .collect();
-        let block = compose_upstream_block(&sources);
-        assert!(block.contains("upstream tsk_0"), "{block}");
-        assert!(block.contains("upstream tsk_119"), "{block}");
-        assert!(
-            !block.contains("yyy"),
-            "no snippet survives a 10-byte budget"
-        );
-    }
-
-    #[test]
-    fn a_source_without_a_summary_or_finish_time_still_gets_a_line() {
-        let block = compose_upstream_block(&[UpstreamSource {
-            task_id: "tsk_a".into(),
-            task_name: "bare".into(),
-            run_id: "trn_a".into(),
-            status: RunStatus::Failed,
-            finished_at: None,
-            result_summary: None,
-        }]);
-        assert!(block.contains("upstream tsk_a \"bare\""), "{block}");
-        assert!(block.contains("[no summary]"), "{block}");
-        assert!(block.contains("status=failed"), "{block}");
-        assert!(block.contains("finished=]"), "{block}");
     }
 
     // ─── envelope header ──────────────────────────────────────────────────
@@ -1345,7 +966,7 @@ mod tests {
         let mut t = task(serde_json::json!({}), TriggerKind::Manual);
         t.prompt = "summarise the week".into();
 
-        let plain = compose_run_prompt(&t, crate::types::RunKind::Manual, None, None, 0, &[]);
+        let plain = compose_run_prompt(&t, crate::types::RunKind::Manual, None, None, 0);
         assert!(
             plain.contains("Instruction:\nsummarise the week"),
             "{plain}"
@@ -1366,33 +987,6 @@ mod tests {
             plain.find("summarise the week").unwrap() < plain.find("Completion contract").unwrap(),
             "{plain}"
         );
-        assert!(!plain.contains("Upstream results"), "{plain}");
-
-        // A fan-in run keeps the upstream block between context and instruction.
-        let with_upstream = compose_run_prompt(
-            &t,
-            crate::types::RunKind::Chain,
-            None,
-            None,
-            0,
-            &[UpstreamSource {
-                task_id: "tsk_a".into(),
-                task_name: "upstream".into(),
-                run_id: "trn_a".into(),
-                status: RunStatus::Completed,
-                finished_at: None,
-                result_summary: Some("wrote reports/a.md".into()),
-            }],
-        );
-        let upstream_at = with_upstream.find("Upstream results").expect("upstream");
-        assert!(
-            upstream_at < with_upstream.find("Instruction:").unwrap(),
-            "{with_upstream}"
-        );
-        assert!(
-            with_upstream.contains("status=completed"),
-            "{with_upstream}"
-        );
     }
 
     #[test]
@@ -1405,15 +999,14 @@ mod tests {
             Some(1_760_000_000_000),
             None,
             1_760_000_100_000,
-            &[],
         );
         assert!(scheduled.contains("due=20"), "{scheduled}");
 
-        // A manual run has no scheduled occurrence: its own start time anchors
-        // it, so a prompt that derives its target date from the envelope never
-        // has to fall back to guessing from the wall clock.
+        // A run with no scheduled occurrence of its own (manual, or a legacy
+        // chain row) is anchored by its start time, so a prompt that derives its
+        // target date from the envelope never has to guess from the wall clock.
         for kind in [crate::types::RunKind::Manual, crate::types::RunKind::Chain] {
-            let run = compose_run_prompt(&t, kind, None, None, 1_760_000_000_000, &[]);
+            let run = compose_run_prompt(&t, kind, None, None, 1_760_000_000_000);
             assert!(
                 run.contains("due=20"),
                 "{kind:?} run has no date anchor: {run}"
@@ -1428,7 +1021,6 @@ mod tests {
             Some(1_760_000_000_000),
             None,
             1_760_090_000_000,
-            &[],
         );
         assert_eq!(
             due_field(&late),
@@ -1443,7 +1035,6 @@ mod tests {
                 None,
                 None,
                 1_760_090_000_000,
-                &[],
             )),
             "the fallback really uses the start time"
         );

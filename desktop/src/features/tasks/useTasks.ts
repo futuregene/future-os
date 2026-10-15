@@ -1,7 +1,7 @@
 import type { TaskBackend } from "./taskBackend";
 import { useCallback, useEffect, useState } from "react";
 import { useTauriEvent } from "../../lib/useTauriEvent";
-import { localTaskBackend, reconcileDeps } from "./taskBackend";
+import { localTaskBackend } from "./taskBackend";
 
 /** Task rows as the Tauri backend serializes them. */
 export interface TaskRunView {
@@ -36,8 +36,11 @@ export interface TaskView {
   conversationMode: string;
   triggerKind: string;
   trigger: Record<string, unknown>;
-  depJoin: string;
-  /** How many upstream dependencies this task waits on. */
+  /**
+   * Always 0. Task dependencies were removed; the field stays because a phone
+   * of an older build reads `depCount` to label a task's trigger, and an absent
+   * field would leave it showing a trigger kind that no longer exists.
+   */
   depCount: number;
   nextDueAt: number | null;
   /** An explicit request is waiting for the tick (the task was busy). */
@@ -56,26 +59,11 @@ export interface TaskInput {
   conversationMode?: string;
   triggerKind?: string;
   trigger?: Record<string, unknown>;
-  depJoin?: string;
   enabled?: boolean;
-}
-
-export interface TaskDepView {
-  upstreamTaskId: string;
-  upstreamName: string;
-  on: string;
-  satisfied: boolean;
-}
-
-/** One dependency edge as the form holds it (upstream + condition). */
-export interface TaskDepInput {
-  upstreamTaskId: string;
-  on: string;
 }
 
 /**
  * The task list and the actions on it, over whichever backend it was given.
- *
  * The backend defaults to this app's own store, so every existing call site
  * keeps working unchanged; passing another one points the same state machine at
  * a paired host. `reload` is part of the result so a remote panel can refresh on
@@ -150,39 +138,6 @@ export function useTasks(backend: TaskBackend = localTaskBackend) {
     [backend],
   );
 
-  const listDeps = useCallback(
-    (id: string) => backend.listDeps(id),
-    [backend],
-  );
-
-  const setDep = useCallback(
-    (id: string, upstreamTaskId: string, on: string) =>
-      backend.setDep(id, upstreamTaskId, on),
-    [backend],
-  );
-
-  const removeDep = useCallback(
-    (id: string, upstreamTaskId: string) =>
-      backend.removeDep(id, upstreamTaskId),
-    [backend],
-  );
-
-  /**
-   * Make a task's dependency edges say exactly this, and nothing else.
-   *
-   * A form holds the whole set the user wants, so the write is a reconciliation
-   * rather than add/remove calls poured out of the UI: an edge that is kept as
-   * it was is not written again (rewriting it would be a no-op that still
-   * touches the row), a changed condition is one call, and an edge the user
-   * dropped is removed. The comparison runs against the store's current edges,
-   * not the ones the form was opened with — a CLI or phone write in between must
-   * not be silently reverted.
-   */
-  const saveDeps = useCallback(async (id: string, wanted: TaskDepInput[]) => {
-    await reconcileDeps(backend, id, wanted);
-    await reload();
-  }, [backend, reload]);
-
   return {
     backend,
     tasks,
@@ -195,9 +150,5 @@ export function useTasks(backend: TaskBackend = localTaskBackend) {
     setEnabled,
     runNow,
     listRuns,
-    listDeps,
-    saveDeps,
-    setDep,
-    removeDep,
   };
 }

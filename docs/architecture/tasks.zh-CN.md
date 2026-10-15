@@ -10,7 +10,7 @@
 
 - **位置**：新增 crate `orchestration/tasks`（crate 名 `future-tasks`），与 `orchestration/goal` 同层。
 - **宿主**：desktop（GUI）与 headless desktop 已接，共用同一份 tick 循环；TUI 未接；mobile 不 host，走 desktop 远程桥。
-- **分层**：确定性内核（`next_due` / join / claim / 截断）全是纯函数，与 host 无关；执行器只有一份，host 差异收敛成 `Notifier` 闭包（见 §8）。
+- **分层**：确定性内核（`next_due` / 截断 / prompt 版本）全是纯函数，与 host 无关；执行器只有一份，host 差异收敛成 `Notifier` 闭包（见 §8）。
 
 > **本版落地范围**：内核 + store + `future task` CLI（见 §9）+ desktop tick 与面板 + headless + mobile 桥与页面 + `future-scheduled-task` 技能。
 > **设计保留、尚未实现**：TUI host、`threads.task_id` 徽标（§2）、实例级 `.lock`（当前靠单 host + `has_running_run` 的 overlap 判定，足以避免重复执行）。
@@ -21,10 +21,10 @@
 
 | Goal 控制面的做法 | Tasks 的对应 |
 |---|---|
-| 内核确定性、agent 只做判断（floors/signals/bounds） | claim/`next_due`/join/`truncate`、prompt 版本写入（`prompt_change_revisions`）都是纯函数 |
+| 内核确定性、agent 只做判断（floors/signals/bounds） | `next_due`/`truncate`、prompt 版本写入（`prompt_change_revisions`）都是纯函数 |
 | "先提交、后尽力刷新"（`sync_compat`） | 通知失败不回滚已提交的运行（`notify` 不参与结果判定） |
-| turn envelope：schema 头 + 上游预算 + 头尾截断 + 索引永不丢 | 任务信封 `future_tasks_run_envelope_v1`（schema 头 + 身份/run/trigger/settings 块 + 上游摘要预算/索引保留 + Instruction + 完成契约）；全文指针命令 `future task output <run-id>` |
-| 独立 task class 防 frontier 误认领 | `task_runs.kind`（`main`/`manual`/`chain`）分开 |
+| turn envelope：schema 头 + 完成契约 | 任务信封 `future_tasks_run_envelope_v1`（schema 头 + 身份/run/trigger/settings 块 + Instruction + 完成契约）；全文指针命令 `future task output <run-id>` |
+| 独立 task class 防 frontier 误认领 | `task_runs.kind`（`main`/`manual`；`chain` 是更早运行的遗留取值）分开 |
 | 独立状态根（`<cwd>/.future/goal/`） | 独立状态根 `<home>/.future/tasks/`（独立 SQLite，不进 app.db） |
 
 **不抄**：fencing token、多 agent 竞争、claim-stealing、事件溯源 JSONL（用 SQLite ACID）、monitor cadence（goal 控制面已有）、quota/should-run（简化为 tick 的 claim 判定）。
@@ -57,39 +57,24 @@ CREATE TABLE tasks (
   thread_id        TEXT,                      -- session_policy=existing 时的宿主会话绑定（懒建）
   trigger_kind     TEXT NOT NULL,             -- manual | schedule
   trigger_json     TEXT NOT NULL,
-  dep_join         TEXT NOT NULL DEFAULT 'all',  -- all | any
+  dep_join         TEXT NOT NULL DEFAULT 'all',  -- 遗留列，不再读写
   next_due_at      INTEGER,                   -- 仅 schedule；NULL=不再触发
   last_run_at      INTEGER,
-  pending_request_at INTEGER,                 -- 待执行的显式/链式触发（tick 消费）
-  pending_origin   TEXT,                      -- ui | cli | chain | schedule
+  pending_request_at INTEGER,                 -- 待执行的显式触发（tick 消费）
+  pending_origin   TEXT,                      -- ui | cli | schedule
   pending_actor    TEXT,                      -- agent:<sid> / user / cli / task:<id>
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER
 );
 CREATE UNIQUE INDEX tasks_active_name ON tasks(name) WHERE deleted_at IS NULL;
 
-CREATE TABLE task_deps (                      -- 下游任务依赖的上游任务
-  task_id          TEXT NOT NULL REFERENCES tasks(id),
-  upstream_task_id TEXT NOT NULL REFERENCES tasks(id),
-  on               TEXT NOT NULL,             -- success | failure | completed
-  PRIMARY KEY (task_id, upstream_task_id),
-  FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-  FOREIGN KEY (upstream_task_id) REFERENCES tasks(id) ON DELETE CASCADE
-);
-
-CREATE TABLE task_dep_state (                 -- 凑齐进度（join=all 用）
-  task_id          TEXT NOT NULL,
-  upstream_task_id TEXT NOT NULL,
-  satisfied_run_id TEXT,                      -- NULL = 这条边还没到
-  satisfied_at     INTEGER,
-  PRIMARY KEY (task_id, upstream_task_id),
-  FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
-);
+-- `task_deps` / `task_dep_state` 是**遗留表**：依赖图已整体移除（见 §12），
+-- 没有任何代码再读写它们；保留是为了不让既有库因为一次没人要求的迁移丢行。
 
 CREATE TABLE task_runs (
   id             TEXT PRIMARY KEY,            -- trn_...
   task_id        TEXT NOT NULL REFERENCES tasks(id),
-  kind           TEXT NOT NULL,               -- main | manual | chain
-  origin         TEXT NOT NULL,               -- schedule | ui | cli | chain
+  kind           TEXT NOT NULL,               -- main | manual（chain 为遗留）
+  origin         TEXT NOT NULL,               -- schedule | ui | cli（chain 为遗留）
   actor          TEXT,                        -- agent:<sid> / user / cli / task:<id>
   due_at         INTEGER,                     -- 仅 kind=main
   status         TEXT NOT NULL,               -- running|completed|failed|skipped
@@ -100,7 +85,7 @@ CREATE TABLE task_runs (
   session_deleted INTEGER NOT NULL DEFAULT 0,  -- 会话已按 §6.1 删除（id 同时清空）
   feedback       TEXT, feedback_note TEXT,    -- good | bad + 备注
   started_at INTEGER, finished_at INTEGER, error_message TEXT,
-  UNIQUE(task_id, due_at)                     -- NULL 互不冲突：manual/chain 不受约束
+  UNIQUE(task_id, due_at)                     -- NULL 互不冲突：手动运行不受约束
 );
 
 CREATE TABLE task_prompt_revisions (
@@ -141,20 +126,6 @@ CREATE TABLE task_prompt_revisions (
 - **短月**：monthly `day > 当月天数` 时顺延到当月最后一天；UI/CLI 常驻可见此规则。
 - **once**：跑完 `enabled=0`。
 
-## 4. 依赖（deps）与 join
-
-`dep_join ∈ all | any`，每条边 `on ∈ success | failure | completed`。
-
-- **边的满足**：上游 run 到终态 → 命中该边 `on` → 记 `task_dep_state.satisfied_run_id = run_id`（每边只记最近一次）。`skipped`/`test` 不记。
-- **claim 判定**（tick 内）：
-  - `all`：所有边都有 `satisfied_run_id` → 触发并**清空全部边**。
-  - `any`：至少一条边有标记 → 触发并**清空当时已满足的边**。
-- **手动 run 永不消费边标记**；只有链式触发（`kind=chain`）消费。
-- **任务运行中**：凑齐也不消费，挂到下个 tick——链式触发是"挂起等待"，不像定时触发那样"跳过"。
-- **环检测**：claim 时沿 deps 回溯，命中自身即标 `failed("cycle")`（深度上限 32）；写入时仅早提示。
-- **触发器只有一种选择**（三个客户端）：`手动 / 依赖触发 / 一次性 / 每隔 N 分钟 / 每天 / 每周 / 每月`。选「依赖触发」就是 `trigger_kind=manual` + 有边；下面的依赖编辑器随选择出现，边为空时它提示先添加上游。存储上 `trigger_kind` 与依赖边是**正交的**（CLI 可以只给 `--daily --depends-on A`），所以一个既有定时又有上游的任务仍然把边显示出来，并附一句说明（否则边既看不见也删不掉）；在编辑器里换回定时**不会**顺手删边（草稿保留整组依赖，保存时照写）。列表/摘要的触发标签据此区分：仅依赖触发且无自身定时的任务显示「依赖触发」而不是「手动」。
-- **谁来写边**：三个地方共用同一套语义与同一条拒绝路径（先算上这条边的完整图，`would_cycle` 就拒）——`future task add/edit --depends-on A[:success|failure|completed]`（edit 是**整组替换**）、桌面编辑器的「依赖触发」块、手机编辑器（能力 `task_deps_v1`）。前端都把依赖当成“整组期望值”提交：写入按当前库里的边做调和（保留不变的不重写、改条件改一条、删边删一条、新边补一条），而不是把 UI 事件顺序当成写入顺序。手机端点与桌面面板共用同一份 `tasks.db`，所以三个入口的权限/校验一致。
-
 ## 5. 执行链路（tick → claim → 执行）
 
 ```
@@ -168,17 +139,16 @@ tick（30s，墙上时钟；`Run now` 写入 pending_request_at 后会把循环�
       └─ execute：
            1. session_policy 分支：new→新建会话 / existing→打开 tasks.thread_id（懒建）
            2. existing 模式：等会话空闲，保留现有上下文
-           3. 合成信封（`future_tasks_run_envelope_v1`：身份/run/trigger/settings 块 + 上游摘要预算 1200 + 索引保留 + 全文指针 → `Instruction:` → 完成契约）
+           3. 合成信封（`future_tasks_run_envelope_v1`：身份/run/trigger/settings 块 → `Instruction:` → 完成契约）
            4. provision + run_prompt（permission="all"，sandbox tier="off"）
            5. 收尾：task_runs ← status/finished_at/result_summary
                     + result_text（整段回答；先落盘，再谈删会话）
-                    + 标记上游边（命中 on）
            6. session_retention=delete 时删掉这次运行的会话，并记
               session_deleted / 清 thread_id、session_id（删失败则保留，只记日志）
            7. notify（host 决定：GUI 发事件 / headless 只写台账）
 ```
 
-**崩溃残留**：启动对账把 `status='running'` 且进程已死的 run 标 `failed("interrupted")`；链式等待在与上游收尾同一个 SQLite 事务里，进程死在中间不丢触发。
+**崩溃残留**：启动对账把 `status='running'` 且进程已死的 run 标 `failed("interrupted")`。
 
 **重叠**：任务在跑时新触发记 `skipped`（不排队）。
 
@@ -193,7 +163,6 @@ run: kind=main | due=2026-10-07T09:00:00+08:00
 trigger: {"mode":"weekly","days":["mon","fri"],"time":"10:00"}
 run settings: cwd=/Users/... | conversation=workspace | session=new (fresh conversation per run) | model=... | thinking=high
 
-Upstream results: (summaries only …)          ← 仅有上游依赖时
 - upstream tsk_a "upstream" [run trn_b status=completed finished=...]: …
 Full output of one source: future task output <run-id> …
 
@@ -205,7 +174,7 @@ Completion contract:
 - 结尾写一份简短报告（它就是本次 run 的 result_summary）：做了什么、产物与路径、与之前运行的新增、仍不确定的事。
 ```
 
-要点：**身份与运行上下文的唯一可信来源**（"什么时候跑的""跑在哪个模型/目录"）；chat 任务没有目录时**不打印空 `cwd=`**；`session=existing` 标明复用同一会话，保留现有上下文；上游块保留索引与预算规则（见 §1 表格）。
+要点：**身份与运行上下文的唯一可信来源**（"什么时候跑的""跑在哪个模型/目录"）；chat 任务没有目录时**不打印空 `cwd=`**；`session=existing` 标明复用同一会话，保留现有上下文。
 
 ## 6. 会话策略
 
@@ -268,7 +237,6 @@ future task show <id|name> [--json] [--prompt]
 future task add --name N --prompt P|--prompt-file F [--cwd D]
                 [--model M] [--thinking L] [--session new|existing]
                 [--conversation workspace|chat]
-                [--depends-on A[:success|failure|completed]]… [--join-any]
                 (--manual | --at | --every | --daily | --weekly | --monthly)
 future task edit <id|name> [any add flag] [--enable|--disable]
 future task enable|disable <id|name>
@@ -277,7 +245,6 @@ future task run <id|name> [--wait] [--timeout 15m] [--json]
 future task runs <id|name> [--limit N] [--json]
 future task output <run-id> [--tail N] [--json]
 future task feedback <run-id> good|bad [--note "…"]
-future task upstream|deps <id|name> [--json]
 future task prompt log|apply|revert <id|name> [revision-id]
 ```
 
@@ -286,7 +253,7 @@ future task prompt log|apply|revert <id|name> [revision-id]
 - `output <run-id>` 是信封里“全文指针”的实现：优先读取台账保存的该次运行正文，删除会话后仍可读取；仅没有保存正文的旧运行回退到会话最后一条 assistant 文本。先打印任务/状态/prompt 版本/会话身份，再打印正文；回退读取复用会话时，如果它后来被其它 run 使用，会提示那个 run 的 id，避免归属误认。`--tail N` 只看结尾。
 - **prompt 版本**：`prompt log` 按版本号列出全部版本，标出生效中的那版；`prompt apply <revision-id>` 把任一历史版本重新生效（写一条新的 `rollback` 版本，被替换那版留成 `superseded`），已经是生效版本时是 no-op；`prompt revert` 回到上一版。
 - `runs` 与 `prompt log` 对**已删除任务**仍可读（按 id 或名字）：`remove` 是软删，台账与版本历史正是审计要的东西；`list` 里则不再出现。
-- `enable` 会为 schedule 重算下次时间（暂停跨过时间点的任务否则永不触发）；`remove` 软删并清掉指向它的依赖边。
+- `enable` 会为 schedule 重算下次时间（暂停跨过时间点的任务否则永不触发）；`remove` 软删（它的运行记录与会话都保留）。
 - 帮助里明确与 `future goal todo` 区分。
 
 **实现与文档必须一致**：`cli/src/commands/task.rs` 有一个测试逐行解析 `help::TASK_HELP`，
@@ -307,22 +274,21 @@ HOME=/tmp/try FUTURE_AGENT_GRPC_ADDR=127.0.0.1:5099 \
   cargo test --lib tasks::tests::serve_pending_runs_until_idle -- --ignored --nocapture
 ```
 
-- 技能里引用的命令必须限定在 §9 已实现的那批——首版技能描述了一批不存在的子命令（`edit`/`feedback`/`prompt log`/`upstream`/`--depends-on`），
+- 技能里引用的命令必须限定在 §9 已实现的那批——首版技能描述了一批不存在的子命令（`edit`/`feedback`/`prompt log`），
   已按实际实现修正。
 - **技能与 CLI 的版本对齐没有自动化守卫**：skills 是独立仓库且父仓库的 CI 不检出该 submodule，
   所以"技能写了、CLI 没有"只能靠人核对（或本文件的 §9 与技能一起改）。父仓库里那条帮助/分发一致性测试覆盖不了跨仓库这一层。
 - 内置反省已整体移除（见 §7a）；技能不得承诺自动生成提示词优化提案。
 
-**已实现的配套命令（与技能同步）**：`edit` / `enable` / `disable` / `remove` / `feedback` / `upstream` / `prompt log|apply|revert`。
+**已实现的配套命令（与技能同步）**：`edit` / `enable` / `disable` / `remove` / `feedback` / `prompt log|apply|revert`。
 
 ## 11. UI
 
 - **desktop（已实现）**：左侧导航「定时任务」（`ActivityRail` 展开/收起两种形态都有；位置在「技能」之后、「手机遥控」之前，与需要长期维护的条目同类）；面板含列表、编辑器（prompt/cwd/模型/思考等级/会话策略/5 种触发 + 短月提示）与运行台账。定时任务页是自己的两栏视图（列表 + 详情），所以**不显示右侧上下文面板**（那描述的是当前会话，不是定时任务）。
-- **详情页默认顺序**：打开一个任务先看到**它做过什么**——运行记录（每条一张卡）；任务的**定义**（设置、提示词正文、依赖）另作一层。理由：详情页是被点开来看结果的，定义是低频的、且改定义有专门的编辑器（「编辑」按钮 / 新建表单），不该把历史挤出首屏。新建定时任务没有历史可放，所以表单直接展开。
+- **详情页默认顺序**：打开一个任务先看到**它做过什么**——运行记录（每条一张卡）；任务的**定义**（设置、提示词正文）另作一层。理由：详情页是被点开来看结果的，定义是低频的、且改定义有专门的编辑器（「编辑」按钮 / 新建表单），不该把历史挤出首屏。新建定时任务没有历史可放，所以表单直接展开。
   - **桌面**：定义收在最后一条「设置」折叠行后面，点开才渲染（不是滚过去，折叠时那些节点根本不在 DOM 里）。
   - **mobile**：定义是**单独一页**（详情页的「设置」按钮推上去，即 `TaskForm` 的 `settingsOpen` 一层），进去后不再渲染运行记录；系统返回手势（Android）或头部返回箭头退回详情，保存成功也回到详情（保存失败留在表单上，草稿即重试）。手机不照搬折叠：折叠行虽在运行记录上方，展开的字段却排在运行记录**之后**，而定义本身有两三屏，等于把「改设置」埋在一长段历史下面。
-- **mobile（已实现）**：Settings 栈内「定时任务设置」页（入口文案从「定时任务」改成「定时任务设置」，与「模型」「提供商」这类设置项同形，点进去是设置而不是导航），由 `tasks_v1` 能力门控；列表不带 prompt 正文（wire 预算），详情单独取；含运行记录与依赖状态。依赖的**编辑**另由 `task_deps_v1` 门控（`set_task_dep`/`remove_task_dep` 两条命令 + 能力位）：老桌面端只显示只读依赖列表并提示升级，新桌面端在编辑器里有与桌面同形的「依赖触发」块（逐边条件 + 新增/移除 + 多上游 join）。
-- **依赖编辑器（两端）**：它是触发器选项的一部分（选「依赖触发」才出现，已有上游时也保留），草稿持有整组依赖、保存时调和；候选列表是其它仍存活的任务（新建时无自身 id，所以是全部任务）；成环由后端拒绝（两头看到同一条错误文案），因此前端无需拉取全图；新增边默认「成功之后」。
+- **mobile（已实现）**：Settings 栈内「定时任务设置」页（入口文案从「定时任务」改成「定时任务设置」，与「模型」「提供商」这类设置项同形，点进去是设置而不是导航），由 `tasks_v1` 能力门控；列表不带 prompt 正文（wire 预算），详情单独取；含运行记录。
 
 两个客户端共用同一套表单规则：新建定时任务默认**对话会话**（因此不要求目录；切到工作区会话才要），模型与思考等级**必须显式选择**（没有“默认”选项，未选时保存被拒并说明缺哪项），模型列表只给用户在「模型」页启用的那批（任务已绑定但被停用的模型仍保留可选，避免编辑其它字段时静默改写）。
 
@@ -335,7 +301,7 @@ HOME=/tmp/try FUTURE_AGENT_GRPC_ADDR=127.0.0.1:5099 \
 
 ## 12. 明确不做
 
-每年触发器；cron 表达式与命名时区；多对一之外的高级编排（fan-out 是普通 todo 的事）；OS 常驻服务；shell/goal/skill 类动作；系统通知；每任务工具白名单（全权限是唯一策略）。
+**已移除**：任务之间的依赖（边、join、链式运行、`--depends-on`/`--join-any` 两个 flag，以及两端编辑器里的依赖块）——定时任务只由自己的计划或手动触发。**不在范围内**：cron 表达式与命名时区；任务之间的编排；OS 常驻服务；shell/goal/skill 类动作；系统通知；每任务工具白名单（全权限是唯一策略）。
 
 ---
 
@@ -344,5 +310,5 @@ HOME=/tmp/try FUTURE_AGENT_GRPC_ADDR=127.0.0.1:5099 \
 - desktop 是唯一执行者（headless desktop 是同实现少通知）；CLI/mobile 只排队/读写状态。
 - 全权限是 v1 唯一策略（`permission_level="all"` + `sandbox tier="off"`）。
 - 五种触发 + 短月顺延月末。
-- 手动 run 不消费依赖边；链式触发才消费。
+- 手动 run 不消费任何标记：依赖边已不存在。
 - prompt 版本写入只有一个入口（`prompt_change_revisions`），任何时刻只有一个版本生效。

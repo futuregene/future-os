@@ -30,7 +30,11 @@ export interface RemoteTaskRow {
   trigger: Record<string, unknown>;
   nextDueAt?: number | null;
   queued?: boolean;
-  /** How many upstream dependencies this task waits on (absent on an older desktop). */
+  /**
+   * Always 0 from a desktop that has been updated: task dependencies were
+   * removed there. The field stays in the type because the desktop still sends
+   * it (an older one sends a real count), and this app no longer acts on it.
+   */
   depCount?: number;
   latestRun?: RemoteTaskRun | null;
 }
@@ -45,12 +49,4 @@ export interface RemoteTaskDetail extends RemoteTaskRow {
   /** `keep` (default) or `delete`; only meaningful with `sessionPolicy: "new"`. */
   sessionRetention?: string;
   conversationMode?: string;
-  depJoin: string;
-}
-
-export interface RemoteTaskDep {
-  upstreamTaskId: string;
-  upstreamName: string;
-  on: string;
-  satisfied: boolean;
 }
