@@ -13870,11 +13870,12 @@ mod tests {
         /// Scripted get_state responses, popped front-to-back (agent-restart
         /// scenarios); the built-in default replies once it drains.
         state_script: Option<std::sync::Arc<std::sync::Mutex<Vec<String>>>>,
-        /// While this is `false` the mock answers `list_models` with a
-        /// failure — a deterministic "agent not up yet" for the connect-retry
-        /// test. (TCP refusal timing is not portable: Windows can hold the
-        /// SYNs sent to a just-closed port until the next listener binds,
-        /// which made the retry setup connect on its very first attempt.)
+        /// While this is `false` the mock answers the connect probe
+        /// (`get_agent_readiness`, and `list_models` for the callers that read
+        /// the catalog) with a failure — a deterministic "agent not up yet" for
+        /// the connect-retry test. (TCP refusal timing is not portable: Windows
+        /// can hold the SYNs sent to a just-closed port until the next listener
+        /// binds, which made the retry setup connect on its very first attempt.)
         not_ready: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
         /// Page script for `get_session_entries`, keyed by the `before` cursor
         /// the client sent (`i64::MAX` = the tail read). A cursor the script
@@ -13957,7 +13958,7 @@ mod tests {
                     }
                 }
             }
-            if cmd.r#type == "list_models"
+            if (cmd.r#type == "list_models" || cmd.r#type == "get_agent_readiness")
                 && self
                     .not_ready
                     .as_ref()
@@ -15397,7 +15398,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn wait_for_agent_retries_until_agent_appears() {
-        // The mock rejects `list_models` until 1.3 s in: the first
+        // The mock rejects the connect probe until 1.3 s in: the first
         // try_connects fail (showing the retry message) before the agent
         // answers. The readiness flip is mock-driven rather than a late TCP
         // bind — a just-closed Windows port can hold connects until the next

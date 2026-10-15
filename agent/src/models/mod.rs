@@ -805,6 +805,23 @@ fn is_openai_compatible_api(api: &str) -> bool {
     )
 }
 
+/// Does `provider/id` equal `target`, without building the joined string?
+///
+/// `resolve` tests this against every candidate in the catalog, and the
+/// embedded built-in catalog holds ~3.8k models — `format!("{provider}/{id}")`
+/// allocated a `String` per comparison, which made `list_models` (one
+/// availability check per model: ~3.8k × ~1.9k comparisons) the most
+/// CPU-expensive unary command in the product. Slicing the target instead
+/// costs no allocation and returns exactly the same answer for every input,
+/// including an empty provider (`format!` would yield `"/id"`; `strip_prefix("")`
+/// is the identity and the leading `/` is then required).
+fn matches_qualified_id(provider: &str, id: &str, target: &str) -> bool {
+    target
+        .strip_prefix(provider)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .is_some_and(|rest| rest == id)
+}
+
 /// Registry provides model resolution.
 pub struct Registry {
     // Shared, parsed-once built-in catalog (see `builtin_models_shared`).
@@ -1074,7 +1091,7 @@ impl Registry {
             .user
             .iter()
             .chain(self.builtin.iter())
-            .find(|m| format!("{}/{}", m.provider, m.id) == id)
+            .find(|m| matches_qualified_id(&m.provider, &m.id, id))
             .cloned()
         {
             self.apply_override(&mut model);
@@ -1965,6 +1982,38 @@ mod tests {
         let resolved = reg.resolve(&first.id);
         assert!(resolved.is_some());
         assert_eq!(resolved.unwrap().id, first.id);
+    }
+
+    /// The qualified lookup is allocation-free, so it must answer exactly like
+    /// the `format!("{provider}/{id}") == target` comparison it replaced — for
+    /// every shape the resolver can see, including the two that a naive
+    /// rewrite gets wrong: an empty provider (joined form starts with `/`) and
+    /// a model id that itself contains slashes (splitting on the FIRST `/`
+    /// would truncate the id).
+    #[test]
+    fn qualified_match_matches_the_allocating_form_everywhere() {
+        for (provider, id, target) in [
+            ("openai", "gpt-4o", "openai/gpt-4o"),
+            ("openai", "gpt-4o", "openai/gpt-4o-mini"),
+            ("openai", "gpt-4o", "gpt-4o"),
+            ("openai", "gpt-4o", "openai/"),
+            ("openai", "", "openai/"),
+            ("openai", "", "openai"),
+            ("", "gpt-4o", "/gpt-4o"),
+            ("", "gpt-4o", "gpt-4o"),
+            ("a/b", "c", "a/b/c"),
+            ("first", "family/model", "first/family/model"),
+            ("second", "family/model", "first/family/model"),
+            ("special", "unique/slash", "special/unique/slash"),
+            ("special", "unique/slash", "unique/slash"),
+            ("openai", "gpt-4o", ""),
+        ] {
+            assert_eq!(
+                super::matches_qualified_id(provider, id, target),
+                format!("{provider}/{id}") == target,
+                "provider={provider:?} id={id:?} target={target:?}"
+            );
+        }
     }
 
     #[test]

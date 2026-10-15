@@ -489,6 +489,41 @@ fn list_models_uses_id_label_for_unnamed_model() {
     assert_eq!(model["label"], "unnamed-model");
 }
 
+/// The two `list_models` filters are a conjunction, and the cheap one
+/// (`output` contains text) runs first purely for cost. A reorder must not
+/// change the set — in particular, "user-defined" does not exempt a model from
+/// the text-output requirement.
+#[test]
+fn list_models_applies_the_text_output_filter_to_user_models() {
+    let _home = TestHome::new();
+    let state = make_app_state();
+    {
+        let mut registry = state.model_registry.write();
+        registry.test_insert(crate::models::Model {
+            id: "user-text".to_string(),
+            provider: "custom".to_string(),
+            output: vec!["text".to_string()],
+            ..Default::default()
+        });
+        registry.test_insert(crate::models::Model {
+            id: "user-image-only".to_string(),
+            provider: "custom".to_string(),
+            output: vec!["image".to_string()],
+            ..Default::default()
+        });
+    }
+    let resp = parse_response(&handle_command_internal(&state, make_cmd("list_models")));
+    let models = resp["data"]["models"].as_array().unwrap();
+    assert!(
+        models.iter().any(|m| m["id"] == "user-text"),
+        "a keyless user model with text output is listed"
+    );
+    assert!(
+        !models.iter().any(|m| m["id"] == "user-image-only"),
+        "a user model without text output is still excluded"
+    );
+}
+
 #[test]
 fn list_models_lists_keyless_user_models() {
     // A user model from models.json with no apiKey (e.g. a local endpoint)

@@ -143,14 +143,22 @@ pub(crate) fn list_models_response(
     // under ~900 unusable entries.  Models the user explicitly configured in
     // models.json are always listed: they are intentional even when keyless
     // (e.g. a local Ollama-style endpoint that needs no key at all).
+    //
+    // The text-output filter runs FIRST because the availability check is by
+    // far the most expensive test here: it resolves one `provider/id` against
+    // the whole catalog for every candidate, and only ~50 of the ~3.8k built-in
+    // models declare `text` output. Filtering on `output` (a small Vec we
+    // already own) first drops ~99% of those resolutions. Both predicates are
+    // pure reads and the conjunction is order-independent, so this is the same
+    // set, only cheaper.
     let mut models: Vec<crate::models::Model> = registry
         .all_models()
         .into_iter()
+        .filter(|model| model.output.iter().any(|o| o == "text"))
         .filter(|model| {
             registry.is_user_defined(model)
                 || registry.is_model_available(&format!("{}/{}", model.provider, model.id))
         })
-        .filter(|model| model.output.iter().any(|o| o == "text"))
         .collect();
 
     models.sort_by(|left, right| {

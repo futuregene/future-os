@@ -237,12 +237,20 @@ impl GrpcClient {
 
     // ─── Event streaming ───────────────────────────────────────────────
 
-    /// Lightweight connectivity check (`tryConnect`): `list_models` unary
-    /// with a 3 s deadline. Returns true if the agent is reachable.
+    /// Lightweight connectivity check (`tryConnect`): `get_agent_readiness`
+    /// unary with a 3 s deadline. Returns true if the agent is reachable.
+    ///
+    /// The check must stay as cheap as the question it asks ("is the agent
+    /// there?"). It used to send `list_models`, which resolves every catalog
+    /// model against the registry — half a second of agent CPU per probe,
+    /// paid on each 1 s `wait_for_agent` retry and on every 10 s heartbeat.
+    /// `get_agent_readiness` exists for exactly this: it reports the agent's
+    /// identity and version without touching session hydration, skill
+    /// discovery or the model catalog.
     pub async fn try_connect(&self) -> bool {
         let cmd = RpcCommand {
             id: now_id(),
-            r#type: "list_models".to_string(),
+            r#type: "get_agent_readiness".to_string(),
             ..Default::default()
         };
         execute_unary(&self.inner.addr, cmd, TRY_CONNECT_TIMEOUT_SEC)
@@ -1407,10 +1415,13 @@ async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
 }
 
 /// `tryConnect()` unary (used by the reconnect poll and heartbeat).
+///
+/// Same probe as [`GrpcClient::try_connect`] — see there for why it is
+/// `get_agent_readiness` and not a catalog read.
 async fn try_connect_unary(addr: &str) -> bool {
     let cmd = RpcCommand {
         id: now_id(),
-        r#type: "list_models".to_string(),
+        r#type: "get_agent_readiness".to_string(),
         ..Default::default()
     };
     execute_unary(addr, cmd, TRY_CONNECT_TIMEOUT_SEC)
@@ -2386,9 +2397,11 @@ mod tests {
             }
         }
         let requests = requests.lock().unwrap();
+        // Ignore the client's own background probes (the heartbeat/connect
+        // check): this assertion is about the per-session call pairs.
         let relevant: Vec<_> = requests
             .iter()
-            .filter(|cmd| cmd.r#type != "list_models")
+            .filter(|cmd| !matches!(cmd.r#type.as_str(), "list_models" | "get_agent_readiness"))
             .collect();
         assert_eq!(relevant.len(), 12);
         for (pair, session_id) in relevant.chunks_exact(2).zip([
@@ -3561,7 +3574,7 @@ mod tests {
         let addr = spawn_api_mock(ApiMock {
             stream_fails: true,
             unary_delay_ms: 800,
-            fail_with: StdHashMap::from([("list_models".to_string(), String::new())]),
+            fail_with: StdHashMap::from([("get_agent_readiness".to_string(), String::new())]),
             ..Default::default()
         })
         .await;
