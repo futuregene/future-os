@@ -1,9 +1,13 @@
 use super::*;
 
+mod re_pair;
 mod shutdown;
 mod start;
 mod state;
 mod status;
+
+#[allow(unused_imports)]
+pub(crate) use self::re_pair::re_pair;
 
 #[cfg(test)]
 pub(super) use self::shutdown::notify_mobile_unpair;

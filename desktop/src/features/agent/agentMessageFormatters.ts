@@ -29,6 +29,18 @@ export function userStoppedNotice(): string {
   return i18n.t("agent:failure.userStopped");
 }
 
+/**
+ * The backend's termination kind for a run the Agent QUEUED behind one already
+ * executing: the prompt was accepted and the reply is still coming, so this is
+ * liveness, not a failure. Callers must branch on it BEFORE turning `complete:
+ * false` into any failure presentation — including {@link responseTerminationError},
+ * whose fallback would otherwise label an accepted run "response did not
+ * complete".
+ */
+export function isQueuedRunKind(kind?: string | null): boolean {
+  return kind === "run_queued";
+}
+
 export function responseTerminationError(kind?: string | null): string {
   const codes: Record<string, string> = {
     upstream_disconnected: "UPSTREAM_DISCONNECTED",
