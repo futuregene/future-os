@@ -23,7 +23,12 @@ const FUTURE_MODELS_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 pub const APP_UPDATE_EVENT: &str = "scheduler-app-update";
 pub const FUTURE_BALANCE_EVENT: &str = "scheduler-future-balance";
-pub const FUTURE_AUTH_INVALID_EVENT: &str = "scheduler-future-auth-invalid";
+/// The window's view of the account is stale and must be re-read from the
+/// source of truth. Sent when the platform rejects the stored credential *and*
+/// when there is no stored credential at all — the second case is the one a
+/// window cannot notice by itself, because the file can be emptied from outside
+/// the app (`future auth logout`, a TUI logout, another process editing it).
+pub const FUTURE_AUTH_CHANGED_EVENT: &str = "scheduler-future-auth-changed";
 pub const FUTURE_MODELS_EVENT: &str = "scheduler-future-models";
 
 static APP_UPDATE_JOB: LazyLock<FixedIntervalJob> =
@@ -144,6 +149,49 @@ fn future_signed_in() -> bool {
         .is_some_and(|key| !key.is_empty())
 }
 
+/// What one hourly account pass has to say to the window.
+#[cfg(feature = "gui")]
+enum BalancePass {
+    /// Signed in, and the platform answered: these are the current credits.
+    Balance(FutureBalance),
+    /// This window has to re-read the account. Either the stored credential is
+    /// gone — removed from outside the app, which this window cannot notice on
+    /// its own — or the platform rejected it.
+    AccountChanged,
+    /// Signed in, and the fetch failed for a reason that is not an
+    /// authorization rejection: nothing here for the window to act on.
+    Silent,
+}
+
+/// The hourly account pass, split from its WebView so the policy — what the
+/// window must be told — is testable without an app and without a network call.
+#[cfg(feature = "gui")]
+async fn balance_pass<F, Fut>(signed_in: bool, fetch: F) -> BalancePass
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<FutureBalance, AppError>>,
+{
+    if !signed_in {
+        // Silence here is what let a window keep showing an account and a
+        // balance it no longer had: the credential can be dropped by `future
+        // auth logout`, a TUI logout, or anything else that writes auth.json,
+        // and this hourly pass is the only recurring observer of that file.
+        return BalancePass::AccountChanged;
+    }
+    match fetch().await {
+        Ok(balance) => BalancePass::Balance(balance),
+        Err(error) => {
+            let rejected = crate::future_login::is_auth_rejection(&error);
+            eprintln!("FutureOS scheduled balance refresh failed: {error}");
+            if rejected {
+                BalancePass::AccountChanged
+            } else {
+                BalancePass::Silent
+            }
+        }
+    }
+}
+
 /// Start the three process-lifetime maintenance loops. Their first automatic
 /// runs happen after one full interval; existing startup/login/manual paths use
 /// the `*_now` functions below and reset the matching deadline.
@@ -169,19 +217,14 @@ pub fn start<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     spawn_fixed_interval(&FUTURE_BALANCE_JOB, move || {
         let app = balance_app.clone();
         async move {
-            if !future_signed_in() {
-                return;
-            }
-            match crate::future_login::fetch_balance().await {
-                Ok(balance) => {
+            match balance_pass(future_signed_in(), crate::future_login::fetch_balance).await {
+                BalancePass::Balance(balance) => {
                     let _ = app.emit(FUTURE_BALANCE_EVENT, balance);
                 }
-                Err(error) => {
-                    if crate::future_login::is_auth_rejection(&error) {
-                        let _ = app.emit(FUTURE_AUTH_INVALID_EVENT, ());
-                    }
-                    eprintln!("FutureOS scheduled balance refresh failed: {error}");
+                BalancePass::AccountChanged => {
+                    let _ = app.emit(FUTURE_AUTH_CHANGED_EVENT, ());
                 }
+                BalancePass::Silent => {}
             }
         }
     });
@@ -466,8 +509,50 @@ mod tests {
         assert!(FUTURE_MODELS_JOB.next_due() > before);
         assert_eq!(APP_UPDATE_EVENT, "scheduler-app-update");
         assert_eq!(FUTURE_BALANCE_EVENT, "scheduler-future-balance");
-        assert_eq!(FUTURE_AUTH_INVALID_EVENT, "scheduler-future-auth-invalid");
+        assert_eq!(FUTURE_AUTH_CHANGED_EVENT, "scheduler-future-auth-changed");
         assert_eq!(FUTURE_MODELS_EVENT, "scheduler-future-models");
+    }
+
+    /// The hourly account pass must tell the window to re-read the account when
+    /// the stored credential is gone — the case that used to be silent, and the
+    /// only way a window can end up showing an account and a balance that are no
+    /// longer there. A credential the platform *rejects* needs the same re-read;
+    /// any other failure is this desktop's own business.
+    #[cfg(feature = "gui")]
+    #[tokio::test]
+    async fn the_account_pass_announces_a_credential_that_is_gone_or_rejected() {
+        // Signed out: the pass short-circuits, so the injected fetch is never
+        // consulted — its sentinel credits must not be what the window sees.
+        assert!(matches!(
+            balance_pass(false, || async { Ok(FutureBalance { credits: -1.0 }) }).await,
+            BalancePass::AccountChanged
+        ));
+
+        assert!(matches!(
+            balance_pass(true, || async { Ok(FutureBalance { credits: 7.5 }) }).await,
+            BalancePass::Balance(balance) if balance.credits == 7.5
+        ));
+
+        assert!(matches!(
+            balance_pass(true, || async {
+                Err(AppError::Remote {
+                    status: 401,
+                    code: None,
+                    message: "rejected".to_string(),
+                })
+            })
+            .await,
+            BalancePass::AccountChanged
+        ));
+
+        // Offline is not an account answer: the last-known balance stands.
+        assert!(matches!(
+            balance_pass(true, || async {
+                Err(AppError::RemoteTransport("offline".to_string()))
+            })
+            .await,
+            BalancePass::Silent
+        ));
     }
 
     /// The server build's maintenance loop: the catalogue job's body is gated on

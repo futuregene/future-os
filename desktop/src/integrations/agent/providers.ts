@@ -102,17 +102,29 @@ export async function upsertCustomProvider(input: {
   return cacheAgentProviders(await invokeCommand<ProvidersView>("upsert_custom_provider", { input }));
 }
 
+/**
+ * Editing the FutureOS provider by hand — its key, or the base URL the account
+ * lives on — changes the account itself, so the app-wide account state (email,
+ * balance, sign-in gate) must re-read rather than keep showing what it last saw.
+ *
+ * Both built-in edit paths file through here on purpose: only one of them used
+ * to, and the drift silently left a stale account on screen for the path the
+ * Providers page actually uses.
+ */
+function announceFutureProviderChange(id: string) {
+  if (id !== FUTURE_PROVIDER_ID)
+    return;
+  clearFutureProfileCache();
+  clearFutureBalanceCache();
+  emitFutureEvent("future-auth-changed", undefined);
+}
+
 export async function updateBuiltinProviderKey(input: {
   id: string;
   apiKey?: string | null;
 }) {
   const view = cacheAgentProviders(await invokeCommand<ProvidersView>("update_builtin_provider_key", { input }));
-  // Setting the FutureOS key by hand (Providers page) changes the account too.
-  if (input.id === FUTURE_PROVIDER_ID) {
-    clearFutureProfileCache();
-    clearFutureBalanceCache();
-    emitFutureEvent("future-auth-changed", undefined);
-  }
+  announceFutureProviderChange(input.id);
   return view;
 }
 
@@ -122,7 +134,9 @@ export async function updateBuiltinProvider(input: {
   apiKey?: string | null;
   updateApiKey: boolean;
 }) {
-  return cacheAgentProviders(await invokeCommand<ProvidersView>("update_builtin_provider", { input }));
+  const view = cacheAgentProviders(await invokeCommand<ProvidersView>("update_builtin_provider", { input }));
+  announceFutureProviderChange(input.id);
+  return view;
 }
 
 export async function setBuiltinProviderBaseUrl(input: {
