@@ -868,6 +868,10 @@ it("takes the batch's checkbox on a host's row, and ticks instead of opening it"
 
   const checkbox = view.container.querySelector<HTMLInputElement>("input[type='checkbox']")!;
   expect(checkbox.checked).toBe(true);
+  // The checkbox replaces the row's actions trigger, as it does on a local row:
+  // the `…` would otherwise appear on hover under the pointer that is ticking
+  // rows, offering rename/delete/fork for the row being ticked.
+  expect(view.container.querySelector("button[aria-haspopup='menu']")).toBeNull();
   await act(async () => checkbox.click());
   expect(selectable).toHaveBeenCalled();
   expect(toggle).toHaveBeenCalledTimes(1);
