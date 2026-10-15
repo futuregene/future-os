@@ -3,7 +3,7 @@
 > [中文](embedded-agent-development.zh-CN.md)
 >
 > Design date: 2026-10-13. Source baseline: `88fe90a8`.
-> Status: phases one through six are implemented. Section 10.7 records macOS acceptance; section 10.8 records the user's successful Windows unit-test run. Phase seven is in progress: native lifecycle CI, update fixtures, macOS ad-hoc packaging and Linux/Windows daily unsigned package checks passed (sections 10.9-10.13). Phase eight, release signing/notarization, native Linux sandbox acceptance, real installation/upgrades and performance comparisons remain pending.
+> Status: phases one through six and phase-eight code/documentation cleanup are complete. Section 10.7 records macOS acceptance and 10.8 the user's successful Windows unit-test run. Phase-seven automation, daily packages and final phase-eight native CI are recorded in 10.9-10.14. Release signing/notarization, native Linux sandbox, actual installation/upgrades, full GUI tool interaction and performance comparisons remain release acceptance items.
 > API sketches and acceptance matrices describe the complete target.
 
 Desktop will run the complete Agent inside its Rust process when the default
@@ -1227,8 +1227,26 @@ passed. ESLint retains one existing JSDoc warning in unchanged
 `desktop/shot/main.tsx` with exit 0. No local unit tests ran. Launcher edits now
 trigger Desktop/native lifecycle CI. Dry-runs cover auto/external, invalid/uppercase modes,
 zero/overflow/overlong/invalid ports and a relative output path containing spaces, each
-bounded to 30 seconds. Native scope revalidation remains to be run/recorded,
-without repeating unrelated full suites.
+bounded to 30 seconds.
+
+Final source `0df3e57e9cc7ae9d021c99b5d559c743bdc2386d` passed the entire
+[CI run 38687367055](https://github.com/futuregene/future-os/actions/runs/38687367055).
+This is `scope=agent-lifecycle`, not a full-repository unit-test rerun.
+Intermediate `8991af34` run `38687237715` was superseded/cancelled, not a code
+failure. Results:
+
+| Native platform | Launcher dry-run | RPC gates | Service startup | Production CLI discovery | GUI host | Headless host |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Linux | 8 | 6 | 10 | 4 | 10 | 10 |
+| Windows (bat/PowerShell) | 8 | 6 | 10 | 3 | 10 | 10 |
+| macOS | 8 | 6 | 10 | 4 | 10 | 10 |
+
+All 8 Linux `headless_cli` entry/signal integration cases passed, as did CI
+fmt/Clippy and three-platform GUI/headless compilation. Native logs/summaries
+are in `agent/target/phase8-ci-results/native-{linux,windows,macos}/`; the entry
+log is `headless-cli-0df3e57e.log`. Counts include fixture entry points rather
+than entirely disjoint user scenarios; compile time is not product performance.
+Phase-eight code/documentation cleanup is complete.
 
 Development Ctrl+C interrupts the toolchain: Unix TERM may escalate to KILL after
 10 seconds for this process group, without guaranteeing complete Agent cleanup.

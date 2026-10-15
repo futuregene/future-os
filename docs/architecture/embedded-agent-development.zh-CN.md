@@ -3,7 +3,7 @@
 > [English](embedded-agent-development.md)
 >
 > 设计日期：2026-10-13。源码基线：`88fe90a8`。
-> 状态：阶段一至六已实现。macOS 验收见第 10.7 节；用户报告 Windows 全量单测通过，见第 10.8 节。阶段七进行中：原生生命周期 CI、升级 fixture、macOS ad-hoc 打包和 Linux/Windows daily 未签名包验证已通过，见第 10.9–10.13 节。阶段八、正式签名/公证、原生 Linux 沙箱、真实安装升级和性能对比尚未完成。
+> 状态：阶段一至六及阶段八代码/文档收尾已完成。macOS 验收见第 10.7 节，用户报告 Windows 全量单测通过见第 10.8 节。阶段七自动化验收、daily 包和阶段八最终原生 CI 记录见第 10.9–10.14 节；正式签名/公证、原生 Linux 沙箱、真实安装升级、完整 GUI 工具交互和性能对比仍待发布验收。
 
 Desktop 在默认本地端点没有外部 Agent 且成功取得实例锁时，以 Rust library 的方式在自己的进程内运行完整 Agent。兼容外部服务继续连接，不兼容或持锁不可用的服务明确报错。外部 Agent、CLI、TUI、channels 和 loop 继续使用统一 RPC。改动的主要目的，是减少 Windows 启动和升级过程中 Desktop 与 sidecar 生命周期不同步的问题，同时保留实例锁、完整工具能力、持久化和外部客户端接入。
 
@@ -699,7 +699,17 @@ Windows 两份包也通过公开 OSS 地址下载回本地、校验大小和 SHA
 | iOS/Android 启动脚本（2 份） | 审查 SDK/模拟器/Metro 入口，没有 Desktop Agent 启停逻辑 | Shell 语法；本轮没有构建移动 SDK 或运行模拟器 |
 | 4 份桌面打包脚本及 Makefile | 保留 CLI 暂存、维护副本、旧安装兼容；更新便携版说明与失效注释 | 源码审查；Shell/PowerShell 解析，不等于本轮重新执行四种本地打包 |
 
-所有 14 份 PowerShell 脚本解析通过；Desktop GUI/headless all-target Clippy（`-D warnings`）、两套 fmt、Desktop ESLint/typecheck、actionlint 和 262 份文档校验通过。ESLint 有一条未修改文件 `desktop/shot/main.tsx` 的既有 JSDoc warning，退出码 0。没有在本地运行单元测试。启动入口变更现触发 Desktop 和原生生命周期 CI；dry-run 覆盖 auto/external、非法模式、0/超界/非法端口、含空格的相对输出目录，每条有 30 秒上限。原生专项复验待执行/记录，不复跑无关全量套件。
+所有 14 份 PowerShell 脚本解析通过；Desktop GUI/headless all-target Clippy（`-D warnings`）、两套 fmt、Desktop ESLint/typecheck、actionlint 和 262 份文档校验通过。ESLint 有一条未修改文件 `desktop/shot/main.tsx` 的既有 JSDoc warning，退出码 0。没有在本地运行单元测试。启动入口变更现触发 Desktop 和原生生命周期 CI；dry-run 覆盖 auto/external、非法/大写模式、0/超界/过长/非法端口、含空格的相对输出目录，每条有 30 秒上限。
+
+最终源码 `0df3e57e9cc7ae9d021c99b5d559c743bdc2386d` 的 [CI 38687367055](https://github.com/futuregene/future-os/actions/runs/38687367055) 整体成功。此为 `scope=agent-lifecycle` 专项，不是重跑全仓单测；中间版本 `8991af34` 的 run `38687237715` 被最终版本替代并取消，不记为代码失败。结果如下：
+
+| 原生平台 | 启动 dry-run | RPC 门禁 | 服务启动 | 生产 CLI 查找器 | GUI 宿主 | headless 宿主 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Linux | 8 | 6 | 10 | 4 | 10 | 10 |
+| Windows（经 bat/PowerShell） | 8 | 6 | 10 | 3 | 10 | 10 |
+| macOS | 8 | 6 | 10 | 4 | 10 | 10 |
+
+Linux `headless_cli` 入口/信号集成 8 例通过，CI fmt/Clippy 及三平台 GUI/headless 编译通过。三平台日志和摘要在 `agent/target/phase8-ci-results/native-{linux,windows,macos}/`，入口日志为 `headless-cli-0df3e57e.log`。计数包含 fixture 入口，不表示独立用户场景数；构建时间不作为产品性能数据。阶段八代码与文档收尾完成。
 
 开发 Ctrl+C 是工具链中断：Unix 发送 TERM，超过 10 秒可能 KILL 本次进程组，不承诺 Agent 完整清理；正常清理由应用内退出触发。真实 headless 信号语义保持原有有界清理。阶段七未完成的真实安装、正式签名、原生沙箱与性能验收继续保留，阶段八代码完成不等于发布批准。
 
