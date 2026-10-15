@@ -648,11 +648,13 @@ mod dispatch_tests {
                 .is_some_and(|list| list.iter().any(|w| w["id"] == json!(created))),
             "the answered catalogue contains the created row"
         );
-        // The stored spelling is the directory's canonical path.
-        let canonical = std::fs::canonicalize(&dir)
-            .expect("canonicalize the hosted directory")
-            .display()
-            .to_string();
+        // The stored spelling is the directory's canonical path, in the ordinary
+        // Windows spelling rather than the `\\?\` extended-length one.
+        let canonical = crate::store::strip_verbatim_prefix(
+            std::fs::canonicalize(&dir).expect("canonicalize the hosted directory"),
+        )
+        .display()
+        .to_string();
         assert_eq!(data["workspace"]["path"], json!(canonical));
         assert_eq!(crate::store::list_workspaces().expect("list").len(), 1);
 

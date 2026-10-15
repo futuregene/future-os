@@ -1236,7 +1236,16 @@ async fn a_supervisor_gives_up_after_its_window() {
     let desktop_id = fx.paired.creds.desktop_id.clone();
 
     let handle = spawn_supervisor(desktop_id.clone(), None);
-    tokio::time::timeout(std::time::Duration::from_secs(20), handle)
+    // The budget is counted in *attempts*, and each one pays a real connect to a
+    // broker that is not there. async-nats caps a single attempt at its own
+    // `connection_timeout` (5 s), and the budget is 18 attempts, so the whole
+    // window can legitimately take ~90 s. On Windows loopback it also costs real
+    // seconds before a connect to a closed port is refused — the SYN is
+    // retransmitted rather than answered with a RST (measured ~2 s per attempt
+    // here, against an immediate refusal on macOS). The deadline is therefore
+    // "the budget plus room", deliberately not a stopwatch on how fast the host
+    // says no: what this test proves is that the loop *ends*.
+    tokio::time::timeout(std::time::Duration::from_secs(150), handle)
         .await
         .expect("the supervisor must stop once its window is spent")
         .expect("no panic");

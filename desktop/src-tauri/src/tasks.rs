@@ -1589,8 +1589,15 @@ mod tests {
             .map(|c| c.cwd.clone())
             .collect();
         for cwd in &touched {
+            // Built from the platform's own separator: the stored path is a real
+            // `Path`, so on Windows the components are split by `\`.
+            let chat_root = format!(
+                "workspaces{}chat{}",
+                std::path::MAIN_SEPARATOR,
+                std::path::MAIN_SEPARATOR
+            );
             assert!(
-                cwd.contains("workspaces/chat/") && !cwd.trim().is_empty(),
+                cwd.contains(&chat_root) && !cwd.trim().is_empty(),
                 "not the conversation's workspace: {cwd}"
             );
         }

@@ -670,14 +670,31 @@ mod tests {
 
     /// `TestHome::drop` takes the `None` arm (removes HOME) when no HOME was
     /// set before the fixture was created.
+    ///
+    /// `HOME` is process-global, so *both* ends of this test take `TEST_HOME_LOCK`:
+    /// reading the previous value while another test's `TestHome` is published would
+    /// capture that fixture's directory, and restoring it after the lock is gone
+    /// would publish a path its owner has already deleted — the next
+    /// `HOME`-reading test (a terminal cwd fallback, say) then resolves a directory
+    /// that no longer exists. `TestHome::new` takes the same non-reentrant lock
+    /// itself, so the guard is only held around the two raw `HOME` touches.
     #[test]
     fn test_home_drop_removes_home_when_unset_before() {
-        let saved = std::env::var("HOME").ok();
+        let saved = {
+            let _lock = crate::TEST_HOME_LOCK
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            std::env::var("HOME").ok()
+        };
         let mut home = TestHome::new("no-prev-home");
         home.prev_home = None;
         drop(home);
-        if let Some(saved) = saved {
-            std::env::set_var("HOME", saved);
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        match saved {
+            Some(saved) => std::env::set_var("HOME", saved),
+            None => std::env::remove_var("HOME"),
         }
     }
 }
