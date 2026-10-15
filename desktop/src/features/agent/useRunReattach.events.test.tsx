@@ -198,6 +198,31 @@ describe("useRunReattach runtime updates", () => {
     sending.harness.unmount();
   });
 
+  it("stays armed through a local send and writes the moment it releases the view", async () => {
+    // A prompt the Agent accepts as QUEUED returns at the ack with its run still in
+    // flight and nothing left driving it: `activeRunId` was already set while the
+    // send owned the view, so the handoff changes no dependency — re-attach has to
+    // be armed ALREADY, with its write gate refusing every projection until the
+    // lock drops.
+    const { harness, sending } = setup();
+    await settleTicks();
+    // The preview's own write gate, as the live tick sees it.
+    const gate = () => {
+      const calls = project.mock.calls;
+      return (calls[calls.length - 1]![3] as () => boolean)();
+    };
+
+    sending().current = true;
+    expect(gate()).toBe(false);
+
+    // The send returns here; this run's first push is what paints it.
+    sending().current = false;
+    emit("thread-runtime-updated", running());
+    await settleTicks();
+    expect(gate()).toBe(true);
+    harness.unmount();
+  });
+
   it("registers no listeners at all without a thread", async () => {
     // boundary: no conversation is open yet, so every effect must bail out.
     const { harness, refreshRecentRun, reloadThreadHistory } = setup({ threadId: null, activeRunId: null });

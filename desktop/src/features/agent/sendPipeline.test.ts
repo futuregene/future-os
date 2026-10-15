@@ -599,6 +599,74 @@ it("does not refresh the sidebar when a failed send was superseded", async () =>
   expect(assistants.some(m => m.runError !== undefined)).toBe(false);
 });
 
+describe("runSendPipeline queued behind a running reply", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(buildReferenceContext).mockResolvedValue("");
+    vi.mocked(createRun).mockResolvedValue(storedRun());
+    vi.mocked(listRunEvents).mockResolvedValue([]);
+  });
+
+  /** The Agent's ack when the session was already executing a run. */
+  function queuedReply() {
+    return {
+      content: "",
+      complete: false,
+      terminationKind: "run_queued" as const,
+      sessionId: "session-1",
+    };
+  }
+
+  it("keeps the accepted run alive instead of reporting an unfinished reply", async () => {
+    // Regression: a prompt sent while the session's OTHER run was still executing
+    // is accepted (`queue_position` ack) and its own run is simply queued. The
+    // invoke returns immediately with `complete: false` and the run_queued kind,
+    // which used to be read as a truncated stream: the run was CASed `failed`
+    // with "[RESPONSE_UNCONFIRMED] response did not complete" and the bubble
+    // showed "回复意外结束" while the Agent went on to answer it.
+    vi.mocked(getRun).mockResolvedValue(storedRun());
+    vi.mocked(sendPromptToFutureAgent).mockResolvedValue(queuedReply());
+    const setMessages = vi.fn();
+    const deps = makeDeps(setMessages);
+
+    await runSendPipeline(deps, { content: "is it done yet?", attachments: [] });
+
+    // The run is alive on the Agent: never settled as a failure.
+    expect(updateRunStatus).not.toHaveBeenCalled();
+    // Still driven by the re-attach path, so the bubble stays streaming and
+    // carries no failure presentation.
+    const assistant = foldMessages(setMessages).filter(message => message.role === "assistant").pop();
+    expect(assistant?.status).toBe("streaming");
+    expect(assistant?.terminationNotice).toBeUndefined();
+    expect(assistant?.terminationTitle).toBeUndefined();
+    expect(assistant?.runError).toBeUndefined();
+    expect(assistant?.content).toBe("");
+    // Not "thinking" either: waiting for a queue slot is not this run's work.
+    expect(assistant?.thinkingActive).toBe(false);
+  });
+
+  it("hands the queued run to the re-attach path without a final render", async () => {
+    // The pipeline stops owning the stream: no settle-time sidebar refresh (the
+    // re-attach machinery drives from here), and the send reports as delivered so
+    // the composer keeps no draft. `createRun`'s own activity ping is the only
+    // one.
+    vi.mocked(getRun).mockResolvedValue(storedRun());
+    vi.mocked(sendPromptToFutureAgent).mockResolvedValue(queuedReply());
+    const setMessages = vi.fn();
+    const deps = makeDeps(setMessages);
+
+    await runSendPipeline(deps, { content: "is it done yet?", attachments: [] });
+
+    expect(deps.refreshRecentRun).not.toHaveBeenCalled();
+    expect(deps.onThreadActivity).toHaveBeenCalledTimes(2);
+    // The optimistic pair is left in place (the run's events are not read for a
+    // final render), so the conversation keeps the message the user sent.
+    const messages = foldMessages(setMessages);
+    expect(messages.filter(message => message.role === "user").map(message => message.content))
+      .toEqual(["is it done yet?"]);
+  });
+});
+
 describe("send acceptance timing", () => {
   it("acknowledges before the response finishes and keeps the run active", async () => {
     vi.mocked(createRun).mockResolvedValue(storedRun());
