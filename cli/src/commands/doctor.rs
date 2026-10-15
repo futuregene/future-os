@@ -1429,12 +1429,18 @@ mod tests {
             .responses
             .insert("list_sessions".into(), "{\"sessions\":[]}".into());
         let addr = crate::test_server::spawn_mock(agent).await;
-        // All five binaries resolvable on PATH (fake versions); prepend so
-        // the `which` binary itself stays resolvable. `which` runs
-        // `where <name>.exe` on Windows, so the fixture's names must carry the
-        // platform's executable suffix there or the lookup never matches.
+        // All five binaries resolvable on PATH; prepend so the `which` binary
+        // itself stays resolvable. Windows looks for `.exe` files and doctor
+        // runs each one with `--version`, so use a real executable there.
         let bin_dir = dir.path().join("bin");
         tokio::fs::create_dir_all(&bin_dir).await.unwrap();
+        #[cfg(windows)]
+        let windows_executable = std::path::PathBuf::from(
+            std::env::var_os("SystemRoot")
+                .or_else(|| std::env::var_os("WINDIR"))
+                .expect("Windows system directory"),
+        )
+        .join("System32/where.exe");
         let suffix = if cfg!(windows) { ".exe" } else { "" };
         for name in [
             "future",
@@ -1444,6 +1450,11 @@ mod tests {
             "future-channel",
         ] {
             let path = bin_dir.join(format!("{name}{suffix}"));
+            #[cfg(windows)]
+            tokio::fs::copy(&windows_executable, &path)
+                .await
+                .expect("copy a valid Windows executable for the PATH fixture");
+            #[cfg(unix)]
             tokio::fs::write(&path, "#!/bin/sh\necho \"future v1.0.0\"\n")
                 .await
                 .unwrap();
