@@ -1,0 +1,41 @@
+name: Development launchers
+
+on:
+  push:
+    paths:
+      - 'scripts/dev/start-desktop-*'
+      - 'scripts/tests/test-rust-cache.mjs'
+      - '.github/workflows/dev-launchers.yml'
+  pull_request:
+    paths:
+      - 'scripts/dev/start-desktop-*'
+      - 'scripts/tests/test-rust-cache.mjs'
+      - '.github/workflows/dev-launchers.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unix-launchers:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Check syntax
+        run: |
+          bash -n scripts/dev/start-desktop-common.sh
+          node --check scripts/dev/start-desktop-rust-cache.mjs
+      - name: Cache fault recovery regression
+        run: node --test scripts/tests/test-rust-cache.mjs
+      - name: Dry-run has no cache probes or build side effects
+        run: |
+          DRY_RUN=1 RUSTC_WRAPPER=/nonexistent/sccache bash scripts/dev/start-desktop-macos.sh
+          DRY_RUN=1 RUSTC_WRAPPER=/nonexistent/sccache bash scripts/dev/start-desktop-linux.sh

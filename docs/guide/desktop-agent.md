@@ -85,6 +85,20 @@ Vite port: an occupied port fails without choosing another or killing its owner.
 Relative CARGO_TARGET_DIR values resolve against the repository root and are
 exported as absolute paths.
 
+On macOS/Linux, the launcher checks `sccache` selected through `RUSTC_WRAPPER`,
+`RUSTC_WORKSPACE_WRAPPER` or their `CARGO_BUILD_*` environment aliases before
+building. A failed/missing cache or a probe exceeding 10 seconds is bypassed for
+this launch only if direct rustc succeeds. CLI, optional Cargo checks and Tauri
+inherit the bypass. Healthy caches and other wrappers remain enabled. Original
+diagnostics are saved to `.logs/rust-cache-preflight.log`; no cache files, shared
+servers or global configuration are changed. Real compiler/build failures retain
+the existing error behavior; the launcher never retries an entire Desktop session.
+This preflight does not parse Cargo TOML configuration or recover cache failures
+that begin after the probe. For a wrapper configured only in Cargo TOML, run
+`RUSTC_WRAPPER='' RUSTC_WORKSPACE_WRAPPER='' ./scripts/dev/start-desktop-macos.sh`
+(use the Linux entry point there) to bypass wrappers explicitly for one launch.
+The Windows launcher does not currently perform this cache preflight.
+
 Quit from the app for coordinated cleanup. Development-script Ctrl+C interrupts
 the toolchain. Unix cleanup targets only this launch's process group and can
 force termination after its deadline; it does not guarantee normal app cleanup,

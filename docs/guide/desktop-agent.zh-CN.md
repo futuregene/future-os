@@ -43,6 +43,10 @@ macOS/Linux 使用 `scripts/dev/start-desktop-macos.sh` 或 `scripts/dev/start-d
 
 `DRY_RUN=1` 只打印配置；`BUILD_CLI=0` 跳过 CLI 构建；`RUN_CHECKS=1` 运行静态检查，不跑单元测试；`DESKTOP_DEV_PORT` 指定 Vite 端口。端口占用直接失败，不自动换端口或结束占用者。相对 `CARGO_TARGET_DIR` 从仓库根解析并转换为绝对路径。
 
+macOS/Linux 启动前会检查通过 `RUSTC_WRAPPER`、`RUSTC_WORKSPACE_WRAPPER` 或对应 `CARGO_BUILD_*` 环境变量选择的 `sccache`。缓存程序失败、缺失或检查超过 10 秒时，只有直接调用 rustc 成功才会在本次启动中绕过缓存；CLI 构建、可选 Cargo 检查和 Tauri 都继承该设置。正常缓存和其他 wrapper 保持原样，原始诊断写入 `.logs/rust-cache-preflight.log`，不修改缓存文件、共享服务或全局配置。真实编译错误仍按原有方式报错，不自动重启整个 Desktop 会话。
+
+该检查不解析 Cargo TOML 配置，也不处理检查通过之后才发生的缓存故障。如果 wrapper 只在 Cargo TOML 中配置，可使用 `RUSTC_WRAPPER='' RUSTC_WORKSPACE_WRAPPER='' ./scripts/dev/start-desktop-macos.sh` 临时绕过（Linux 使用相应入口）。Windows 启动脚本目前不执行此缓存检查。
+
 应用内退出用于协调清理。开发脚本的 Ctrl+C 中断开发工具链；Unix 清理仅作用于本次启动的进程组，超时可能强杀。它不保证等同应用内正常退出，不扫描、终止外部 Agent，也不改写数据库或锁。真实 headless 程序直接处理 Ctrl+C，参见[无头模式指南](desktop-headless.zh-CN.md)。
 
 ## 本次改动说明与验收范围

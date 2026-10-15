@@ -29,6 +29,7 @@ Local development sessions. Desktop starts its embedded Agent by default;
 - `start-desktop-linux.sh` — Linux Tauri desktop dev session with the embedded Agent.
 - `start-desktop-macos.sh` — macOS equivalent of the above.
 - `start-desktop-common.sh` — shared macOS/Linux implementation, owned dev process group and CLI staging.
+- `start-desktop-rust-cache.mjs` — macOS/Linux preflight for environment-configured sccache; bypasses a failed cache for this launch only after direct rustc succeeds.
 - `start-desktop-windows.bat` / `start-desktop-windows.ps1` — Windows wrapper and implementation.
 - `start-mobile-android.sh` — Expo/Android dev session (SDK checks, prebuild, Gradle or Metro).
 - `start-mobile-ios.sh` — Expo/iOS dev session (CocoaPods, prebuild, Xcode build or Metro).
