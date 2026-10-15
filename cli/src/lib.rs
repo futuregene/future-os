@@ -322,9 +322,20 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
         return catch(out, commands::doctor::doctor(out)).await;
     }
 
-    // printHelp();
-    out.log(help::MAIN_HELP);
-    0
+    // printHelp(): bare `future`, `--help`, `-h` and `help` print the main help
+    // and succeed. Only these: everything above is a known group.
+    if matches!(group, None | Some("--help" | "-h" | "help")) {
+        out.log(help::MAIN_HELP);
+        return 0;
+    }
+    // An unknown group used to fall through to the same help with exit 0, which
+    // turned a typo - or a group removed by a rename - into a silent no-op:
+    // `future loop status` printed the help, exited 0, and looked like it had
+    // run. Report it like any other unknown input instead.
+    let name = group.unwrap_or_default();
+    out.log_err(&format!("Unknown group: {name}\n"));
+    out.log_err("Run 'future --help' for the list of groups.");
+    1
 }
 
 /// Port of `main().catch(...)`: a rejected command promise becomes
@@ -423,11 +434,60 @@ mod tests {
         assert_eq!(stderr, "");
     }
 
+    /// The help invocations keep printing the main help and succeeding.
     #[tokio::test]
-    async fn unknown_group_prints_main_help() {
-        let (code, stdout, _) = run(&["bogus"]).await;
-        assert_eq!(code, 0);
-        assert_eq!(stdout, format!("{}\n", help::MAIN_HELP));
+    async fn help_invocations_print_main_help() {
+        for args in [&["--help"][..], &["-h"][..], &["help"][..]] {
+            let (code, stdout, stderr) = run(args).await;
+            assert_eq!(code, 0, "{args:?}");
+            assert_eq!(stdout, format!("{}\n", help::MAIN_HELP), "{args:?}");
+            assert_eq!(stderr, "", "{args:?}");
+        }
+    }
+
+    /// An unknown group is an error, not a silent help print: it must not exit 0
+    /// (a removed group would otherwise look like it had run).
+    #[tokio::test]
+    async fn unknown_group_is_an_error() {
+        let (code, stdout, stderr) = run(&["bogus"]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "", "help must not be printed as if it succeeded");
+        assert!(stderr.contains("Unknown group: bogus"), "{stderr}");
+        // `future loop status` — the removed group - reports the same way rather
+        // than looking like it ran.
+        let (code, stdout, stderr) = run(&["loop", "status"]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        assert!(stderr.contains("Unknown group: loop"), "{stderr}");
+    }
+
+    /// Every group the help advertises must still be dispatched, so the new
+    /// error path cannot swallow a real one.
+    #[tokio::test]
+    async fn advertised_groups_still_dispatch() {
+        for group in [
+            "init",
+            "config",
+            "desktop",
+            "workspace",
+            "auth",
+            "account",
+            "run",
+            "skills",
+            "task",
+            "tools",
+            "models",
+            "session",
+            "doctor",
+            "version",
+        ] {
+            let (_, stdout, stderr) = run(&[group, "--help"]).await;
+            assert!(
+                !stderr.contains("Unknown group"),
+                "`{group}` must still be a known group: {stderr}"
+            );
+            assert!(!stdout.is_empty(), "`{group} --help` printed nothing");
+        }
     }
 
     #[tokio::test]
