@@ -95,11 +95,15 @@ fn main() {
   const env = { ...process.env, RUSTC_WRAPPER: wrapper, RUSTC_WORKSPACE_WRAPPER: '',
     CARGO_TARGET_DIR: join(root, 'target'), CACHE_TEST_CALLS: join(root, 'calls'), CACHE_TEST_FAILURE: join(root, 'fail') };
   delete env.CARGO_CACHE_RUSTC_INFO;
+  // A first-ever compiler failure happens before Cargo creates target/. The
+  // persistent replay requires an existing target, as in a developer checkout.
+  mkdirSync(env.CARGO_TARGET_DIR);
   writeFileSync(env.CACHE_TEST_FAILURE, 'temporary failure');
   const cargo = () => spawnSync('cargo', ['check', '--offline'], { cwd: root, env, encoding: 'utf8', timeout: 60000 });
   const first = cargo();
   assert.notEqual(first.status, 0, first.stderr);
   assert.match(first.stderr, /sccache: error: Operation not permitted/);
+  assert.ok(existsSync(join(env.CARGO_TARGET_DIR, '.rustc_info.json')), 'failed probe must have been persisted');
   const calls = readFileSync(env.CACHE_TEST_CALLS, 'utf8');
   rmSync(env.CACHE_TEST_FAILURE);
   const replay = cargo();
