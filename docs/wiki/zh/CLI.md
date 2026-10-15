@@ -134,6 +134,7 @@ future run "介绍一下这个项目"
 | `--cwd <dir>` | 设置工作目录。 |
 | `--mode json` | 以 JSON 而非文本打印回答。 |
 | `--verbose` | 把进度与工具调用写到 stderr。 |
+| `--no-title` | 不为本次新建的会话生成标题。默认会在首答之后用一次模型调用生成并保存标题；已有会话（`--session`/`--continue`/`--fork`）从不改名。 |
 | `--grpc-addr <addr>` | 显式指定 Agent 的 TCP 地址（默认每用户本地 IPC；也可用 `FUTURE_AGENT_GRPC_ADDR`）。 |
 | `--no-session` | 本次不保存为会话。 |
 
@@ -146,6 +147,13 @@ future run --tools read,shell "读一下 README 并列出文件"
 ```
 
 完整选项见 `future run --help`。
+
+`future run` 在**它自己新建的会话**首答结束后会生成并保存标题（一次额外的模型调用，可能耗时数十
+秒并消耗额度），使用的生成器与桌面端、`future session title` 相同；语言取桌面设置里的
+`titleLanguage`。通过 `--session`、`--continue` 或 `--fork` 接入的**已有会话一律不改名**。
+生成期间如果你改了名字、又发了一轮，或会话已经开始跑下一次，过期的建议会被丢弃（不会覆盖你的
+命名）；生成失败只会在 stderr 记一行，run 本身仍然成功，答案照常输出。不需要这个行为时用
+`--no-title` 关掉。
 
 ### `skills` —— 管理能力包
 

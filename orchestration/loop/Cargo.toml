@@ -20,6 +20,10 @@ path = "src/main.rs"
 # future-rpc crate, so building this crate (and anything that depends on it,
 # e.g. the unified `future` CLI) does NOT need protoc.
 future-rpc = { path = "../../packages/rpc" }
+# The desktop app's settings schema (keys, defaults, app.db path): the loop
+# reads `titleLanguage` from the same store `future session title` / `future
+# run` do, so a generated session title speaks the language the user chose.
+future-app-settings = { path = "../../packages/app-settings" }
 tonic.workspace = true
 # test-util: paused time (tokio::time::advance) for the webui server/SSE tests.
 tokio = { workspace = true, features = ["test-util"] }

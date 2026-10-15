@@ -141,6 +141,7 @@ Useful options and forms:
 | `--cwd <dir>` | Set the working directory. |
 | `--mode json` | Print the answer as JSON instead of text. |
 | `--verbose` | Write progress and tool calls to stderr. |
+| `--no-title` | Do not name a session this run creates. By default the first answer of a NEW session generates and saves a title; an existing session (`--session`/`--continue`/`--fork`) is never renamed. |
 | `--grpc-addr <addr>` | Explicit agent TCP address (default: per-user local IPC; also `FUTURE_AGENT_GRPC_ADDR`). |
 | `--no-session` | Don't save this exchange as a session. |
 
@@ -153,6 +154,15 @@ future run --tools read,shell "Read the README and list files"
 ```
 
 Run `future run --help` for every option.
+
+After the first answer of a session `future run` **created**, the run generates and saves a
+title: one extra model call (it can take tens of seconds and spend credits) using the same
+generator as the desktop app and `future session title`, in the desktop app's `titleLanguage`.
+A session attached through `--session`, `--continue` or `--fork` is **never** renamed. If you
+rename the conversation, send another turn, or the session starts running again while the title
+is being generated, the stale suggestion is discarded rather than written over your name. A
+title failure is reported on stderr and ignored — the run still succeeds and the answer is
+printed in full. Use `--no-title` to turn the behaviour off.
 
 ### `skills` — manage capability packs
 
