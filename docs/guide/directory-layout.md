@@ -1,8 +1,8 @@
 # Directory layout: what lives under `~/.future/`
 
 FutureOS keeps most persistent user state under `~/.future/` (on Windows:
-`%USERPROFILE%\.future\`). Loop state defaults to the project, and Linux runtime
-IPC can live under `XDG_RUNTIME_DIR`, as described below. This page maps each subdirectory to the component
+`%USERPROFILE%\.future\`). Loop state defaults to the project. This page maps
+each subdirectory to the component
 that owns it and what it stores. Paths below use the macOS/Linux form; the
 Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 
@@ -45,7 +45,7 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 ├── remote_pending_revokes.json # desktop revoke compensation (pair IDs + platform, no tokens)
 ├── approval_rule.json         # user-level path approval rules
 ├── windows-capabilities.json  # Windows sandbox ACL cleanup metadata
-├── run/agent.sock             # Unix IPC fallback (not used by Windows)
+├── run/agent.sock             # Unix IPC endpoint (not used by Windows)
 └── bin/                       # CLI / agent links: `future`, `future-agent` (see below)
 ```
 
@@ -91,11 +91,14 @@ vars:
 
 ## IPC, approval rules and Windows cleanup
 
-Unix socket selection: explicit `FUTURE_AGENT_SOCKET`, otherwise the FutureOS
-home's own `<home>/run/agent.sock` when `FUTURE_HOME` is set (the XDG runtime
-directory is per-user, not per-instance, so a redirected instance must not bind
-there), otherwise on Linux `$XDG_RUNTIME_DIR/future/agent.sock` when set,
-otherwise `~/.future/run/agent.sock` (also the macOS default). Windows uses a
+Unix socket selection: explicit `FUTURE_AGENT_SOCKET`, otherwise the
+instance's FutureOS home always owns its endpoint — `<home>/run/agent.sock`
+(redirected via `FUTURE_HOME`, defaulting to `~/.future/run/agent.sock`). A
+shared runtime directory such as `$XDG_RUNTIME_DIR` is deliberately not used:
+it is per-user rather than per-instance, and on hosts without a systemd login
+session it may not be creatable or writable at all. If the FutureOS home sits
+on a filesystem that cannot host Unix sockets (e.g. NFS), point `FUTURE_HOME`
+at a directory on a local filesystem. Windows uses a
 per-user named pipe, not a socket file — tagged with the FutureOS home when one
 is redirected. `future agent --grpc-addr <host:port>` explicitly selects
 TCP; clients may override with `FUTURE_AGENT_GRPC_ADDR` (channels use

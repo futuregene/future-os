@@ -50,8 +50,8 @@ Wiki 不必单独创建 TUI 页，仓库已有 `docs/guide/tui*.md`；CLI 页可
    Windows 受限令牌写保护；网络开放。Linux 无 seccomp 且缺失/动态路径存在检测型限制；
    Windows 有读取/ACL/删除限制。披露 `auth.json` 例外，不能将可用 probe 或历史 smoke PASS
    写成所有环境已完成发布与安全认证。
-3. **默认本地 IPC。**Unix 依次考虑 `FUTURE_AGENT_SOCKET`、Linux `XDG_RUNTIME_DIR` 和 HOME
-   回退；Windows 使用每用户命名管道。TCP 显式启用。TUI/Desktop 可启动 sidecar，但只拥有
+3. **默认本地 IPC。**Unix 依次考虑 `FUTURE_AGENT_SOCKET`，否则始终由实例的
+   FutureOS home 持有端点（`<home>/run/agent.sock`）；Windows 使用每用户命名管道。TCP 显式启用。TUI/Desktop 可启动 sidecar，但只拥有
    自己启动的 Agent，不负责终止外部管理的进程。
 4. **区分正式版和测试包。**正式 macOS/Windows release 工作流签名，macOS 还公证；未签名
    测试产物单独说明。`readme-macos.txt` 注入未签名 DMG，不能证明所有当前 release 都未签名。

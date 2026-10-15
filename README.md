@@ -150,11 +150,12 @@ workflows. `uninstall` / `update` and friends are in the
 The terminal and CLI clients are thin gRPC clients. They connect over
 **per-user local IPC** by default (a Unix-domain socket on macOS/Linux,
 a current-user-only named pipe on Windows). Unix honors `FUTURE_AGENT_SOCKET`;
-Linux otherwise uses `$XDG_RUNTIME_DIR/future/agent.sock` when set, falling
-back to `~/.future/run/agent.sock` (also the macOS default). An Agent started
-with its own FutureOS home (`future agent --home DIR`) is addressed by that
-home instead — see
+otherwise the endpoint always lives under the instance's FutureOS home:
+`~/.future/run/agent.sock` by default, `<FUTURE_HOME>/run/agent.sock` for an
+instance started with its own home (`future agent --home DIR`) — see
 [isolated instances](docs/guide/directory-layout.md#running-several-isolated-instances-future_home).
+If the FutureOS home sits on a filesystem that cannot host Unix sockets (e.g.
+NFS), point `FUTURE_HOME` at a directory on a local filesystem.
 Desktop GUI/headless first attach to a compatible external Agent; when the default
 endpoint is absent and its instance lock is free, they run the complete Agent in
 their own process. Incompatible or locked/unavailable services produce an error

@@ -3,10 +3,13 @@
 The TUI is the terminal client: `future-tui`. It is a thin gRPC client that
 connects over **per-user local IPC** by default (Unix-domain socket on
 macOS/Linux, a current-user-only named pipe on Windows). Unix honors
-`FUTURE_AGENT_SOCKET`; Linux otherwise uses `$XDG_RUNTIME_DIR/future/agent.sock`
-when set, falling back to `~/.future/run/agent.sock` (the macOS default). With
-`FUTURE_HOME` set it joins the Agent at `<FUTURE_HOME>/run/agent.sock` — see
-[isolated instances](directory-layout.md#running-several-isolated-instances-future_home). If no agent is reachable, the TUI launches one as a sidecar and
+`FUTURE_AGENT_SOCKET`; otherwise the endpoint always lives under the
+instance's FutureOS home: `~/.future/run/agent.sock` by default,
+`<FUTURE_HOME>/run/agent.sock` with `FUTURE_HOME` set — see
+[isolated instances](directory-layout.md#running-several-isolated-instances-future_home).
+If the FutureOS home sits on a filesystem that cannot host Unix sockets (e.g.
+NFS), point `FUTURE_HOME` at a directory on a local filesystem. If no agent is
+reachable, the TUI launches one as a sidecar and
 shuts it down on exit — no manual startup needed. You can still run the
 agent yourself:
 
