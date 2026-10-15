@@ -900,7 +900,18 @@ mod gui {
                 match_windows_caption_color(app);
                 // The window is created hidden (`"visible": false` in tauri.conf.json)
                 // so the taskbar never flashes Tauri's default (blurry, upscaled) icon
-                // before the crisp one above is in place. Reveal after instance locking.
+                // before the crisp one above is in place. Tauri creates configured
+                // windows just before `setup`, when the runtime reaches Ready.
+                // The instance guard is already held before `app.run` is entered.
+                // Showing between Builder::build and app.run silently misses this
+                // window because it has not been created yet.
+                if let Some(window) = tauri::Manager::get_webview_window(app, "main") {
+                    if let Err(error) = window.show() {
+                        eprintln!("FutureOS main window could not be shown: {error}");
+                    }
+                } else {
+                    eprintln!("FutureOS main window was not created during setup");
+                }
                 Ok(())
             })
             .invoke_handler(tauri::generate_handler![
@@ -1070,10 +1081,6 @@ mod gui {
         if let Err(error) = terminal::server::bind() {
             eprintln!("FutureOS terminal server bind failed: {error}");
         }
-        if let Some(window) = tauri::Manager::get_webview_window(&app, "main") {
-            let _ = window.show();
-        }
-
         // Keep the Windows console attached until startup errors can be reported.
         #[cfg(target_os = "windows")]
         unsafe {
