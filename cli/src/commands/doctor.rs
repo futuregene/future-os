@@ -1287,10 +1287,10 @@ mod tests {
     ///
     /// Windows half of `doctor_detects_agent_binary_not_running_as_issue`
     /// (whose fixture is a `#!/bin/sh` script): `which` runs
-    /// `where future-agent.exe`, which matches on name and extension alone, so
-    /// a placeholder file is enough for the component to count as present —
-    /// and `get_binary_version` then fails to spawn it, which is deterministic
-    /// and starts no process at all.
+    /// `where future-agent.exe`, which matches on name and extension alone.
+    /// Use a real Windows executable under that name: `get_binary_version`
+    /// runs it, and an invalid placeholder can raise a modal compatibility
+    /// error instead of failing silently on Windows.
     #[cfg(windows)]
     #[tokio::test]
     async fn doctor_reports_an_unreachable_agent_with_a_binary_on_path() {
@@ -1302,9 +1302,15 @@ mod tests {
         ]);
         let bin_dir = dir.path().join("fake-bin");
         tokio::fs::create_dir_all(&bin_dir).await.unwrap();
-        tokio::fs::write(bin_dir.join("future-agent.exe"), b"placeholder")
-            .await
-            .unwrap();
+        let windows_dir = std::env::var_os("SystemRoot")
+            .or_else(|| std::env::var_os("WINDIR"))
+            .expect("Windows system directory");
+        tokio::fs::copy(
+            std::path::PathBuf::from(windows_dir).join("System32/where.exe"),
+            bin_dir.join("future-agent.exe"),
+        )
+        .await
+        .expect("copy a valid Windows executable for the PATH fixture");
         let mut paths = vec![bin_dir];
         if let Some(p) = std::env::var_os("PATH") {
             paths.extend(std::env::split_paths(&p));
