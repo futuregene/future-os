@@ -13,20 +13,28 @@ permissions: read-all
 # to re-run on the merged result, so a post-merge run would be redundant.
 on:
   pull_request:
-  # Lets you run the whole PR-check suite manually from the Actions tab
-  # (e.g. to verify a cross-platform fix on a feature branch without a PR).
+  # Full PR-check suite by default; Windows-only scope avoids rebuilding Rust
+  # and rerunning unrelated suites while iterating on offline update fixtures.
   workflow_dispatch:
+    inputs:
+      scope:
+        description: Full CI, or only offline Windows installer/update fixtures.
+        required: false
+        type: choice
+        default: all
+        options:
+          - all
+          - windows-update
 
 # Re-pushing a branch cancels its stale run; release tags are unaffected
 # (this workflow never triggers on tags anyway).
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ inputs.scope || 'all' }}
   cancel-in-progress: true
 
 jobs:
-  # On PRs, run only the suites affected by the changed paths. Manual
-  # dispatches are deliberately full runs: the escape hatch for dependency/
-  # runner changes that do not show up in a source diff.
+  # On PRs, run only affected suites. Manual default runs cover everything;
+  # the explicit windows-update scope only runs offline installer fixtures.
   changes:
     name: Detect affected checks
     runs-on: ubuntu-latest
@@ -44,14 +52,16 @@ jobs:
       proto: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.proto == 'true' || steps.filter.outputs.ci == 'true' }}
       desktop_tauri: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_tauri == 'true' || steps.filter.outputs.ci == 'true' }}
       agent_lifecycle: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.agent_lifecycle == 'true' || steps.filter.outputs.ci == 'true' }}
-      windows_update: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.windows_update == 'true' || steps.filter.outputs.ci == 'true' }}
+      windows_update: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.windows_update == 'true' || steps.filter.outputs.ci == 'true' || (github.event_name == 'workflow_dispatch' && inputs.scope == 'windows-update') }}
       desktop_frontend: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_frontend == 'true' || steps.filter.outputs.ci == 'true' }}
       mobile: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.mobile == 'true' || steps.filter.outputs.ci == 'true' }}
     steps:
       - id: force
         shell: bash
+        env:
+          REQUESTED_SCOPE: ${{ inputs.scope }}
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" || "$REQUESTED_SCOPE" == "windows-update" ]]; then
             echo "all=false" >> "$GITHUB_OUTPUT"
           else
             echo "all=true" >> "$GITHUB_OUTPUT"

@@ -319,7 +319,7 @@ try {
 
     Write-Host 'Testing failed post-install health check rollback...'
     $unloadable = New-Install 'rollback after health check'
-    Assert-Equal (Wait-Exit (Start-Installer $unloadable '/S /FAILHEALTH')) 5 'Unloadable desktop reports failure'
+    Assert-Equal (Wait-Exit (Start-Installer $unloadable '/S /FAILHEALTH')) 5 'Failed desktop health probe reports failure'
     Assert-Equal (Get-FileHash -LiteralPath (Join-Path $unloadable 'future.exe')).Hash $fixtureHash 'Health failure restores old Agent'
     Assert-Equal (Get-FileHash -LiteralPath (Join-Path $unloadable 'futureos.exe')).Hash $fixtureHash 'Health failure restores old desktop'
     Assert-Equal (Test-Path (Join-Path $unloadable 'installed.marker')) $false 'Health failure does not report completion'

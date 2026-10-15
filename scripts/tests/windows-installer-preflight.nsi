@@ -48,8 +48,10 @@ Section
   SetErrorLevel 5
   Abort
   StrCmp $FailHealth 1 0 +4
-  FileOpen $0 "$INSTDIR\futureos.exe" w
-  FileWrite $0 "not an executable"
+  ; A valid executable reports a failed health probe. Malformed EXEs can raise
+  ; modal compatibility dialogs and block unattended Windows validation.
+  FileOpen $0 "$INSTDIR\fail-health" w
+  FileWrite $0 "fail"
   FileClose $0
   !insertmacro NSIS_HOOK_POSTINSTALL
   FileOpen $0 "$INSTDIR\installed.marker" w

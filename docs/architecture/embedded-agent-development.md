@@ -893,6 +893,12 @@ checks of 260 documents passed. Lifecycle assertion regressions and native
 fixtures run in CI; no local unit-test rerun. PowerShell parsing on macOS does
 not validate Windows API/NSIS behavior.
 
+Manual CI defaults to the full scope. For Windows installer/observer fixture
+changes alone, use `gh workflow run ci.yml --ref <work-branch> -f scope=windows-update`
+to avoid repeating three-platform Rust builds and unrelated suites. PRs still
+select checks by dependency paths; a narrow manual run does not replace merge
+requirements.
+
 Agent dependency changes now trigger Desktop GUI/headless and CLI/TUI checks in
 `ci.yml`, including root manifest/lock and shared settings/workspaces/tasks
 dependencies. Linux full unit suites remain split by crate instead of repeating

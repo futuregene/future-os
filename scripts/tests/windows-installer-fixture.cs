@@ -10,6 +10,11 @@ internal static class InstallerFixture
     private static int Main(string[] args)
     {
 #if INSTALLER_NEW
+        if (args.Length == 1 && args[0] == "--help" &&
+            File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "fail-health")))
+        {
+            return 5;
+        }
         // Keep the installer payload observably different from the old fixture
         // so rollback tests prove restoration rather than compare equal files.
         if (args.Length == 1 && args[0] == "--fixture-new")

@@ -204,7 +204,7 @@ futureos_preinstall_lease_acquired:
   ; backup/deletion/extraction. Unsupported old maintenance also fails closed.
   StrCpy $R0 ResetSandbox
   Call FutureOSRunPreflight
-  StrCmp $R1 0 futureos_preinstall_cleanup_done
+  StrCmp $R1 0 futureos_preinstall_cleanup_done futureos_preinstall_cleanup_failed
 futureos_preinstall_cleanup_failed:
   DetailPrint "Sandbox cleanup failed; installation cancelled (exit $R1)."
   StrCpy $R0 ReleaseLease

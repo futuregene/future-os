@@ -565,6 +565,8 @@ Windows GUI/headless 同样必须顺序执行。占位 CLI 仅供编译，NSIS �
 
 本轮本地仅做静态检查：actionlint、Python 语法、四份 PowerShell 脚本的官方解析器校验、workspace fmt、`git diff --check` 以及 260 份文档结构检查通过；生命周期断言回归和原生 fixture 交给 CI，不在本地重跑单测。PowerShell 语法检查运行于 macOS，不代表 Windows API/NSIS 行为已验证。
 
+手动 CI 默认执行完整范围；仅调整 Windows 安装/观察器 fixture 时，可用 `gh workflow run ci.yml --ref <工作分支> -f scope=windows-update` 单独验收，避免重复三平台 Rust 构建和无关单测。PR 仍按路径依赖选取检查，不能用手动窄范围运行替代合并条件。
+
 `ci.yml` 的 Agent 依赖变化现在触发 Desktop GUI/headless 和 CLI/TUI 检查，根 manifest/lock 和共享 settings/workspaces/tasks 的影响也纳入过滤。Linux 全量单测继续按 crate 分组，不在三平台重复全部测试。`Rust build (Linux/Windows/macOS)` 增加 `scripts/ci/check-embedded-agent.py`，顺序运行 RPC 连接门禁、Agent `service_startup`、GUI 和 headless 的 `agent_host::tests`。fixture 在独立进程中隔离 HOME、FUTURE_HOME 和本地端点，实际覆盖 Windows pipe/Unix socket、持锁拒绝、启动取消、全局停机、CLI 来源任务终态、重启和外部所有者存活。零匹配测试视为失败；每组命令、结果、耗时和日志写入 `target/embedded-agent-ci/`，由 CI 归档。CI 将构建并发限制为 2、测试并发为 1，使用 `CARGO_PROFILE_TEST_DEBUG=1`，不扩大到三平台全量单测。
 
 新增 `Windows update fixtures` PR 检查，用临时 C# 可执行文件和 NSIS 执行安装预检、清理失败门禁、租约、回滚、卸载及独立观察器成功/启动失败/安装失败/回滚不完整场景。既有签名构建调用同一预检入口，因此也会覆盖观察器。启动失败用不存在的安装器模拟，避免执行无效 EXE 触发系统模态弹窗。这些离线 fixture 不安装真实产品、不读写开发者真实 Agent 数据，也不能替代完整安装器验收。
