@@ -99,9 +99,14 @@ export function useDesktopRuntime({
     const pairing = credentialsRef.current?.pairId;
     if (!pairing) return;
     // The machine is named in the notification because two desktops can each
-    // have a conversation with the same title.
-    void notifyTaskFinished(session, () => credentialsRef.current?.pairId === pairing, label);
-  }, [label]);
+    // have a conversation with the same title, and it is named by id because a
+    // tap on the reminder has to open the conversation on *this* machine: the
+    // phone may be reading another one by then.
+    void notifyTaskFinished(session, () => credentialsRef.current?.pairId === pairing, {
+      machine: label,
+      desktopId,
+    });
+  }, [desktopId, label]);
 
   const catalog = useSessionCatalog(clientRef, selectedRef, onTaskFinished);
   const {
