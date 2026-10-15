@@ -138,9 +138,9 @@ impl AgentClient {
         })
     }
 
-    /// A client whose transport is lazy and points at a port nothing listens
-    /// on. Tests that fail before the first RPC (e.g. a ledger write the fault
-    /// seam rejects) need the type but must never reach the network.
+    /// A test-only client with no verified transport. Tests that fail before
+    /// the first RPC (e.g. a ledger write the fault seam rejects) need the type;
+    /// reaching an RPC here fails without opening a network connection.
     #[cfg(test)]
     pub(crate) fn unreachable_for_test() -> Self {
         Self { inner: None }
