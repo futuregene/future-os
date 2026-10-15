@@ -479,7 +479,12 @@ Notes:
   are likewise not cancelled at startup but converge via
   `reconcile_interrupted_runs` + `reanimate_run` + the active-run watchdog per
   the Agent's actual state (the Agent may still be running during a GUI crash;
-  a run settles only when the Agent confirms it is gone).
+  a run settles only when the Agent confirms it is gone). Runs the GUI settled on
+  its own — a `failed` row, or the startup convergence's `cancelled`+`interrupted`
+  guess — are re-read against the same ledger afterwards, so a row written while
+  the Agent was still working on that run (an accepted-but-queued prompt returns
+  its invoke response at the ack) is restored, or settled `completed` once the
+  Agent has finished it. A user abort and a `completed` row are never re-read.
 - If an approval later produces file changes, Review Changeset shows the actual
   modification comparison.
 - P2 introduces structured `action_payload` and `sandbox_boundary` fields
