@@ -35,6 +35,11 @@ pub struct MockState {
     pub tokens_in: u64,
     pub tokens_out: u64,
     pub cost: f64,
+    /// Usage added to the reported totals by each `prompt`, so a test can make
+    /// `get_state` differ before/after a turn (a real agent's accounting grows
+    /// as it works). Default `(0, 0, 0.0)`: totals stay constant and every
+    /// delta is zero, which is what most tests want.
+    pub usage_growth: (u64, u64, f64),
     /// Live session ids (added by new_session, removed by delete_session) —
     /// lets `session_alive` probe distinguish a live session from a missing one.
     pub live_sessions: HashSet<String>,
@@ -232,8 +237,13 @@ impl FutureAgent for MockAgent {
                         "session not found".to_string(),
                     ));
                 }
+                // Mirror the agent's real `get_state` payload shape: usage
+                // lives in the nested camelCase `usage` object (SessionUsage),
+                // not in the retired top-level `tokensIn`/`tokensOut`/
+                // `totalCost` keys. Hand-writing the old shape here is what kept
+                // the control plane's zero-token accounting passing.
                 format!(
-                    "{{\"tokensIn\":{},\"tokensOut\":{},\"totalCost\":{},\"queryCount\":{},\"sessionName\":\"{}\"}}",
+                    "{{\"usage\":{{\"inputTokens\":{},\"outputTokens\":{},\"cacheReadTokens\":0,\"cacheWriteTokens\":0,\"costCny\":{}}},\"queryCount\":{},\"sessionName\":\"{}\"}}",
                     st.tokens_in, st.tokens_out, st.cost, st.query_count, st.session_name
                 )
             }
@@ -271,6 +281,11 @@ impl FutureAgent for MockAgent {
                     .push((cmd.session_id.clone(), cmd.busy_policy.clone()));
                 st.prompt_request_ids.push(cmd.client_request_id.clone());
                 st.prompt_messages.push(cmd.message.clone());
+                // A real turn bills tokens; grow the reported totals so a
+                // before/after delta is observable.
+                st.tokens_in += st.usage_growth.0;
+                st.tokens_out += st.usage_growth.1;
+                st.cost += st.usage_growth.2;
                 format!("{{\"run_id\":\"mock-run-{}\"}}", st.prompts)
             }
             "list_models" => st.models_payload.clone().unwrap_or_else(|| {
