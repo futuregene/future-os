@@ -11,6 +11,12 @@ pub struct RpcCommand {
     #[serde(rename = "type")]
     pub cmd_type: String,
 
+    // append_system_prompt — which intent the append carries (see the proto).
+    // False = recorded with the session and re-applied at every run start;
+    // true = the next run only.
+    #[serde(default)]
+    pub transient: bool,
+
     // Prompting
     #[serde(default)]
     pub message: String,

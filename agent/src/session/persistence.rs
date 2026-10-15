@@ -760,16 +760,22 @@ fn record_result(
 }
 
 /// Session-info keys that a mid-run `update_info` (rename / model / thinking /
-/// cwd / auto-compaction) may change out-of-band. The append-only run commit
-/// builds its `session_info` from values frozen at run *start*, so these keys
-/// must be re-merged from the authoritative (last) on-disk snapshot or a mid-run
-/// change is silently reverted on disk by the commit's stale snapshot.
+/// cwd / auto-compaction / append-system-prompt) may change out-of-band. The
+/// append-only run commit builds its `session_info` from values frozen at run
+/// *start*, so these keys must be re-merged from the authoritative (last)
+/// on-disk snapshot or a mid-run change is silently reverted on disk by the
+/// commit's stale snapshot.
 const SESSION_INFO_MERGE_KEYS: &[&str] = &[
     "model",
     "thinking_level",
     "session_name",
     "cwd",
     "auto_compaction",
+    // Without this entry a session-level append survived in memory but was
+    // dropped from disk by the next run's commit — i.e. it would revert on the
+    // first agent restart, which is the same silent loss the append field was
+    // added to fix.
+    "append_system_prompt",
 ];
 
 /// The authoritative (last) `session_info` content currently on disk, if any.
@@ -1183,6 +1189,16 @@ mod tests {
         persistence
             .update_info("session_name", serde_json::json!("Renamed Mid-Run"))
             .unwrap();
+        // A session-level system-prompt append is the same kind of out-of-band
+        // metadata: without it in SESSION_INFO_MERGE_KEYS the stale run-start
+        // snapshot would drop it from disk, and the setting would revert at the
+        // first agent restart.
+        persistence
+            .update_info(
+                "append_system_prompt",
+                serde_json::json!("mid-run boundary"),
+            )
+            .unwrap();
 
         // The run commit carries a session_info frozen at run START (stale model
         // + name) alongside fresh token fields, plus the terminal marker.
@@ -1216,6 +1232,7 @@ mod tests {
             .expect("a session_info entry");
         assert_eq!(last_info["model"], "mid-run-model");
         assert_eq!(last_info["session_name"], "Renamed Mid-Run");
+        assert_eq!(last_info["append_system_prompt"], "mid-run boundary");
         assert_eq!(
             last_info["tokens_out"], 888,
             "token fields from the commit must survive the merge"

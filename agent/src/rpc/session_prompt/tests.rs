@@ -480,6 +480,46 @@ fn text_turn(text: &str) -> Script {
     Script::Events(vec![text_event(text), finish_event()])
 }
 
+/// A session-level append must reach the prompt the provider is actually sent.
+///
+/// This is the regression guard for the bug that motivated the field: the old
+/// RPC wrote the append onto the live loop, and `prompt_internal` then rebuilt
+/// the prompt from scratch (`build_system_prompt`) and assigned over it, so the
+/// text never reached a request at all. Measured 2026-10-16: the goal plane's
+/// boundary note (`compose_goal_boundary`) was silently dropped for every
+/// worker, even though it injects once per session and records it as done.
+#[tokio::test(flavor = "current_thread")]
+async fn session_level_append_reaches_the_provider_prompt() {
+    let provider = ScriptedProvider::new(vec![text_turn("ok"), text_turn("ok again")]);
+    let fixture = run_fixture(provider.clone(), "append-reaches-prompt");
+    let mut session = fixture.session;
+    session.append_system_prompt("BOUNDARY-MARKER", false);
+    let _lease = session.prompt("hi", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+
+    // Scope the guards so no `MutexGuard` is held across an await point
+    // (clippy's await_holding_lock, and it is the honest structure here).
+    let first_prompt = {
+        let requests = provider.requests.lock().unwrap();
+        requests.first().expect("one request").system_prompt.clone()
+    };
+    assert!(
+        first_prompt.ends_with("BOUNDARY-MARKER"),
+        "append must land at the end of the prompt sent to the provider"
+    );
+
+    // One-shot: the next run carries it alongside the sticky text.
+    session.append_system_prompt("ONCE-MARKER", true);
+    let _lease = session.prompt("again", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    let second_prompt = {
+        let requests = provider.requests.lock().unwrap();
+        requests[1].system_prompt.clone()
+    };
+    assert!(second_prompt.ends_with("ONCE-MARKER"));
+    assert!(second_prompt.contains("BOUNDARY-MARKER"));
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn prompt_text_run_completes_and_persists() {
     let fixture = run_fixture(

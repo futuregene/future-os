@@ -399,8 +399,41 @@ pub(crate) fn handle_append_system_prompt(
     cmd: &RpcCommand,
     id: &str,
 ) -> String {
-    session.write().append_system_prompt(&cmd.system_prompt);
-    RpcResponse::ok(id, "append_system_prompt", serde_json::json!({}))
+    // `transient` distinguishes the two intents that used to share one command
+    // and one (broken) effect:
+    //   * session-level (default, `session set --append-system-prompt`, the goal
+    //     plane's boundary injection) — recorded with the session, applied to
+    //     every run until cleared with an empty string;
+    //   * one-shot (`future run --append-system-prompt`) — the next run only, so a
+    //     scripted run cannot silently retune the session for good.
+    let text = cmd.system_prompt.clone();
+    let transient = cmd.transient;
+    let (session_manager, session_id, persistence) = {
+        let mut sess = session.write();
+        sess.append_system_prompt(&text, transient);
+        (
+            sess.session_manager.clone(),
+            sess.session_id.clone(),
+            sess.persistence.clone(),
+        )
+    };
+    // Persist like `--cwd` does: the value has to survive an agent restart.
+    // A session with no journal yet (created, not yet prompted) has nothing to
+    // record into; its first run writes the initial session_info from memory and
+    // carries the value from then on.
+    if !transient && !matches!(session_manager.contains(&session_id), Ok(false)) {
+        if let Err(error) = persistence.update_info(
+            "append_system_prompt",
+            serde_json::Value::String(text.clone()),
+        ) {
+            tracing::error!("Failed to persist append_system_prompt: {error:#}");
+        }
+    }
+    RpcResponse::ok(
+        id,
+        "append_system_prompt",
+        serde_json::json!({"appendSystemPrompt": text, "transient": transient}),
+    )
 }
 
 pub(crate) fn handle_set_ephemeral(

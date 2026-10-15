@@ -56,14 +56,22 @@ Recorded with the session:
                           not exist is reported as a note, after the change.
   --model <id>            Model ID
   --thinking <level>      Thinking level: off, minimal, low, medium, high, xhigh
+  --append-system-prompt <text>
+                          Append to the system prompt, after the built-in prompt
+                          and the project context files, at the end of every
+                          run. Pass an empty string to clear it. Recorded with
+                          the session, so it survives an agent restart (the
+                          prompt itself is rebuilt at each run start, and this
+                          is applied after that rebuild).
 
 Applied to the live session (until this agent stops):
   --tools <names>         Enable exactly these tools (comma-separated).
   --no-tools              Disable every tool.
   --no-builtin-tools      Disable built-in tools only (keep extensions).
-  --system-prompt <text>  Replace the system prompt.
-  --append-system-prompt <text>
-                          Append to the system prompt.
+  --system-prompt <text>  Replace the system prompt. The prompt is rebuilt at
+                          the start of every run, so this replacement is a
+                          live-session setting only; use
+                          --append-system-prompt to add text that lasts.
   --permission <level>    Tool permission: all|workspace|none. This is the
                           approval gate; it is not the OS sandbox.
   --sandbox <tier>        Approval mode: off|manual|sandbox|auto. `sandbox` is
@@ -1164,8 +1172,8 @@ async fn set_session_command(args: &[String], out: &Output) -> Result<(), String
         }
     }
     if let Some(prompt) = &parsed.append_system_prompt {
-        match client.append_system_prompt(prompt, &target_id).await {
-            Ok(()) => applied.push(("appendSystemPrompt", "(appended)".into())),
+        match client.append_system_prompt(prompt, &target_id, false).await {
+            Ok(()) => applied.push(("appendSystemPrompt", "(recorded)".into())),
             Err(err) => {
                 failures.push(("appendSystemPrompt", missing_session_error(err, &target_id)))
             }
@@ -2400,7 +2408,7 @@ mod tests {
         assert_eq!(parsed["updated"]["contextFiles"], "off");
         assert_eq!(parsed["updated"]["autoCompaction"], "off");
         assert_eq!(parsed["updated"]["autoRetry"], "on");
-        assert_eq!(parsed["updated"]["appendSystemPrompt"], "(appended)");
+        assert_eq!(parsed["updated"]["appendSystemPrompt"], "(recorded)");
 
         // The tool list is trimmed of the spaces the user typed.
         assert_eq!(agent.seen_of("set_tools")[0].tools, vec!["read", "shell"]);

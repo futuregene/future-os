@@ -72,6 +72,17 @@ pub struct ServerSession {
     pub auto_retry: bool,
     /// Session-local opt-out of project instruction discovery (not workspace memory).
     pub no_context_files: bool,
+    /// Text appended to the *end* of the system prompt on every run. Recorded
+    /// with the session (`session set --append-system-prompt`), so it survives an
+    /// agent restart, and applied by `prompt_internal` *after*
+    /// `build_system_prompt` — which rebuilds the prompt from scratch at each run
+    /// start and therefore silently erased an append set any earlier.
+    /// The goal plane's boundary injection (`compose_goal_boundary`) lands here
+    /// too; before this field existed it reached no prompt at all.
+    pub system_prompt_append: String,
+    /// One-shot variant: applies to the next run only and is then consumed
+    /// (`future run --append-system-prompt` must not retune a session forever).
+    pub system_prompt_append_once: Option<String>,
     /// Serializes explicit manual compaction requests. The RPC acknowledgement
     /// is asynchronous, so the session itself must reject duplicate requests
     /// until the accepted operation reaches a terminal lifecycle event.
@@ -261,6 +272,8 @@ impl ServerSession {
             auto_compaction: true,
             auto_retry: true,
             no_context_files: false,
+            system_prompt_append: String::new(),
+            system_prompt_append_once: None,
             compaction_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             compaction_request: Arc::new(parking_lot::Mutex::new(None)),
             session_manager: manager,
@@ -1041,15 +1054,29 @@ impl ServerSession {
         self.agent_loop.try_write().unwrap().tools = vec![];
     }
 
-    pub fn append_system_prompt(&mut self, append: &str) {
+    pub fn append_system_prompt(&mut self, append: &str, transient: bool) {
         self.approval_gate.invalidate();
-        let current = self.agent_loop.try_read().unwrap().system_prompt.clone();
-        let new_prompt = if current.is_empty() {
-            append.to_string()
+        if transient {
+            self.system_prompt_append_once = if append.is_empty() {
+                None
+            } else {
+                Some(append.to_string())
+            };
         } else {
-            format!("{}\n{}", current, append)
-        };
-        self.agent_loop.try_write().unwrap().system_prompt = new_prompt;
+            // Empty string clears it, so a caller can undo a sticky append
+            // without restarting the agent.
+            self.system_prompt_append = append.to_string();
+        }
+    }
+
+    /// The append both slots contribute to the next run: the session-level text
+    /// first, then any one-shot note (so a single run can add to, not fight, it).
+    pub fn system_prompt_append_text(&self) -> String {
+        match (&self.system_prompt_append, &self.system_prompt_append_once) {
+            (base, None) => base.clone(),
+            (base, Some(once)) if base.trim().is_empty() => once.clone(),
+            (base, Some(once)) => format!("{base}\n{once}"),
+        }
     }
 
     pub fn set_ephemeral(&mut self, ephemeral: bool) {
@@ -1389,6 +1416,12 @@ impl ServerSession {
                 // Restore cwd from session_info (previously lost after agent restart)
                 if let Some(saved_cwd) = info.get("cwd").and_then(|v| v.as_str()) {
                     self.cwd = saved_cwd.to_string();
+                }
+                // Restore a session-level system-prompt append, so a restart
+                // does not quietly drop it (`--append-system-prompt` used to be
+                // in-memory only *and* overwritten by the next run).
+                if let Some(saved) = info.get("append_system_prompt").and_then(|v| v.as_str()) {
+                    self.system_prompt_append = saved.to_string();
                 }
                 use std::sync::atomic::Ordering;
                 let restore_i64 = |key: &str, target: &std::sync::atomic::AtomicI64| {
@@ -3806,19 +3839,40 @@ mod tests {
     }
 
     #[test]
-    fn append_system_prompt_appends() {
+    fn append_system_prompt_records_the_session_level_text() {
         let mut session = make_test_session("s1");
-        session.set_system_prompt("base");
-        session.append_system_prompt("appended");
+        // Session-level (non-transient) is *recorded*, not just applied to a live
+        // loop: the loop's prompt is rebuilt from scratch at every run start
+        // (`build_system_prompt`), so an append that is only written there is
+        // erased by the next run. Measured 2026-10-16: the goal plane's boundary
+        // injection reached no prompt at all for lack of this field.
+        session.append_system_prompt("boundary", false);
+        assert_eq!(session.system_prompt_append, "boundary");
+        assert_eq!(session.system_prompt_append_text(), "boundary");
+        // An empty string clears it, so a caller can undo a sticky append.
+        session.append_system_prompt("", false);
+        assert_eq!(session.system_prompt_append, "");
+        assert_eq!(session.system_prompt_append_text(), "");
+    }
+
+    #[test]
+    fn transient_append_applies_to_one_run_and_leaves_the_session_alone() {
+        let mut session = make_test_session("s1");
+        session.append_system_prompt("boundary", false);
+        // `future run --append-system-prompt` must not retune the session.
+        session.append_system_prompt("just this run", true);
+        assert_eq!(session.system_prompt_append, "boundary");
         assert_eq!(
-            session.agent_loop.try_read().unwrap().system_prompt,
-            "base\nappended"
+            session.system_prompt_append_text(),
+            "boundary\njust this run"
         );
-        // Appending to an empty prompt must not leave a leading newline.
+        // With nothing sticky, the one-shot text stands alone (no leading blank).
         let mut empty = make_test_session("s2");
-        empty.set_system_prompt("");
-        empty.append_system_prompt("first");
-        assert_eq!(empty.agent_loop.try_read().unwrap().system_prompt, "first");
+        empty.append_system_prompt("first", true);
+        assert_eq!(empty.system_prompt_append_text(), "first");
+        // An empty transient append is not a request to append a blank line.
+        empty.append_system_prompt("", true);
+        assert_eq!(empty.system_prompt_append_text(), "");
     }
 
     #[test]

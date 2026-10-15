@@ -92,6 +92,15 @@ pub struct RpcCommand {
     /// Custom system prompt that replaces or appends to the built-in prompt.
     #[prost(string, tag = "100")]
     pub system_prompt: ::prost::alloc::string::String,
+    /// append_system_prompt only: which intent the append carries.
+    ///    false (default) — recorded with the session and re-applied to every run
+    ///                      until cleared with an empty string.  This is what
+    ///                      `future session set --append-system-prompt` and the
+    ///                      goal plane's boundary injection want.
+    ///    true            — this run only (`future run --append-system-prompt`),
+    ///                      so a scripted run cannot retune the session for good.
+    #[prost(bool, tag = "101")]
+    pub transient: bool,
     /// List of tool names to enable (e.g. \["read", "write", "edit", "shell"\]).
     #[prost(string, repeated, tag = "110")]
     pub tools: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,

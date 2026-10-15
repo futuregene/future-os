@@ -151,10 +151,19 @@ message RpcCommand {
   // relative paths.  Defaults to ~/.future/agent/workspace.
   string cwd = 95;
 
-  // ── set_system_prompt ──────────────────────────────────────────────────
+  // ── set_system_prompt / append_system_prompt ───────────────────────────
 
   // Custom system prompt that replaces or appends to the built-in prompt.
   string system_prompt = 100;
+
+  // append_system_prompt only: which intent the append carries.
+  //   false (default) — recorded with the session and re-applied to every run
+  //                     until cleared with an empty string.  This is what
+  //                     `future session set --append-system-prompt` and the
+  //                     goal plane's boundary injection want.
+  //   true            — this run only (`future run --append-system-prompt`),
+  //                     so a scripted run cannot retune the session for good.
+  bool transient = 101;
 
   // ── set_tools / disable_tools ──────────────────────────────────────────
 

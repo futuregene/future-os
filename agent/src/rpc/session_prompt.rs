@@ -524,7 +524,7 @@ impl ServerSession {
             cwd_path,
             crate::utils::is_future_managed_dir(cwd_path),
         )?;
-        let (system_prompt, verbose, mut run_loop) = if let Some(snapshot) = accepted_snapshot {
+        let (mut system_prompt, verbose, mut run_loop) = if let Some(snapshot) = accepted_snapshot {
             let mut run_loop = snapshot.run_loop;
             self.swap_token_counters_into_loop(&mut run_loop);
             self.wire_auto_compaction(&mut run_loop, run_auto_compaction, &run_model);
@@ -586,6 +586,28 @@ impl ServerSession {
         run_loop.cumulative_cost = self.cumulative_cost.clone();
         run_loop.cumulative_cost_split = self.cumulative_cost_split.clone();
         run_loop.last_prompt_tokens = self.last_prompt_tokens.clone();
+
+        // Apply the session-level / one-shot append *here*, after the rebuild
+        // above: `build_system_prompt` assembles the built-in prompt, project
+        // context files and workspace memory from scratch at every run start, and
+        // both branches above assign its result over the prompt — so an append
+        // applied before this point (which is all the old RPC did) was erased by
+        // the very next run and reached no prompt at all. It must also cover the
+        // *local* `system_prompt` binding, because that is what `StreamContext`
+        // hands to the provider (`run_loop.system_prompt` alone would be cosmetic).
+        // Measured 2026-10-16: the goal plane's boundary note
+        // (`compose_goal_boundary`, orchestration/goal/src/executor.rs) never
+        // reached a worker, even though it injects it once per session and
+        // records `boundary_injected` as done.
+        let append = self.system_prompt_append_text();
+        if !append.trim().is_empty() {
+            system_prompt = format!("{}\n\n{}", system_prompt.trim_end(), append.trim());
+            run_loop.system_prompt = system_prompt.clone();
+            run_loop.config.system_prompt = system_prompt.clone();
+        }
+        // Consumed even when empty: a one-shot note belongs to exactly the next
+        // run, and a run that skipped it must not leak it into a later one.
+        self.system_prompt_append_once = None;
 
         // Whether the active model accepts image input (catalog modalities).
         // Uses the cached registry from ServerSession to avoid ~15% CPU overhead

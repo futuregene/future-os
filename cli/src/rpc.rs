@@ -439,9 +439,19 @@ impl RunClient {
     }
 
     /// `appendSystemPrompt(prompt, sessionId?)` — `append_system_prompt`.
-    pub async fn append_system_prompt(&self, prompt: &str, session_id: &str) -> Result<(), String> {
+    ///
+    /// `transient` picks the intent: `true` = this run only (the `future run`
+    /// flag), `false` = recorded with the session and applied to every run
+    /// (`future session set --append-system-prompt`).
+    pub async fn append_system_prompt(
+        &self,
+        prompt: &str,
+        session_id: &str,
+        transient: bool,
+    ) -> Result<(), String> {
         let cmd = RpcCommand {
             system_prompt: prompt.to_string(),
+            transient,
             ..Default::default()
         };
         self.execute_command("append_system_prompt", cmd, Some(session_id), 5)
@@ -954,7 +964,8 @@ impl RunClient {
             self.set_system_prompt(system_prompt, &session_id).await?;
         }
         if let Some(append_system_prompt) = &config.append_system_prompt {
-            self.append_system_prompt(append_system_prompt, &session_id)
+            // Transient: a run flag must not retune the session for later runs.
+            self.append_system_prompt(append_system_prompt, &session_id, true)
                 .await?;
         }
         if let Some(permission) = &config.permission {
@@ -1545,7 +1556,7 @@ mod tests {
         assert!(client.disable_tools("s").await.is_err());
         assert!(client.disable_builtin_tools("s").await.is_err());
         assert!(client.set_system_prompt("p", "s").await.is_err());
-        assert!(client.append_system_prompt("p", "s").await.is_err());
+        assert!(client.append_system_prompt("p", "s", false).await.is_err());
         assert!(client.set_ephemeral(true, "s").await.is_err());
         assert!(client.set_permission_level("auto", "s").await.is_err());
         assert!(client.set_cwd("/tmp", "s").await.is_err());
@@ -1840,7 +1851,7 @@ mod tests {
         client.disable_tools("s1").await.unwrap();
         client.disable_builtin_tools("s1").await.unwrap();
         client.set_system_prompt("p", "s1").await.unwrap();
-        client.append_system_prompt("q", "s1").await.unwrap();
+        client.append_system_prompt("q", "s1", false).await.unwrap();
         client.set_ephemeral(true, "s1").await.unwrap();
         client.set_permission_level("full", "s1").await.unwrap();
         client.set_cwd("/work", "s1").await.unwrap();

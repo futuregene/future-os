@@ -390,6 +390,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             max_sessions: cmd.max_sessions,
             name: cmd.name,
             system_prompt: cmd.system_prompt,
+            transient: cmd.transient,
             tools: cmd.tools,
             ephemeral: cmd.ephemeral,
             cwd: cmd.cwd,
