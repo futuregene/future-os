@@ -53,6 +53,10 @@ pub fn error_code(error: &crate::AppError) -> Option<&'static str> {
     match error {
         crate::AppError::RemoteTransport(_) => Some("network"),
         crate::AppError::RemoteAuthorization(_) => Some("service_authorization"),
+        // No stored account credential: the platform issues pairing codes, so
+        // the same "sign in again" answer as a rejected key — not the generic
+        // device fault an uncategorized error would be shown as.
+        crate::AppError::NotSignedIn => Some("account_authorization"),
         error if is_account_authorization_error(error) => Some("account_authorization"),
         crate::AppError::Remote { code, .. } => match code.as_deref() {
             Some("invalid_remote_credential") => Some("revoked"),

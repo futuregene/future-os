@@ -141,7 +141,12 @@ pub fn is_auth_rejection(error: &AppError) -> bool {
 pub async fn check_auth_state() -> FutureAuthState {
     match future_api_key() {
         Ok(_) => {}
-        Err(AppError::Message(_)) => {
+        // Nothing to present: the account is signed out, not broken. A
+        // `Message` still lands here too — it is how this function answered a
+        // missing key before the typed variant existed, and it covers the
+        // environment faults that stop `future_api_key` from even looking
+        // (no HOME); anything else is a recoverable `unavailable` below.
+        Err(AppError::NotSignedIn) | Err(AppError::Message(_)) => {
             return FutureAuthState {
                 status: FutureAuthStatus::SignedOut,
                 profile: None,
@@ -500,7 +505,7 @@ pub(crate) fn future_api_key() -> Result<String, AppError> {
         .map(str::trim)
         .filter(|key| !key.is_empty())
         .map(str::to_string)
-        .ok_or_else(|| AppError::Message("Not signed in to FutureOS.".to_string()))
+        .ok_or(AppError::NotSignedIn)
 }
 
 /// Fetch the signed-in account profile (`GET {platform}/client/v1/account/profile`,
@@ -710,7 +715,12 @@ mod tests {
     #[test]
     fn future_api_key_errors_when_signed_out() {
         let _home = crate::auth_store::test_support::HomeGuard::new("fl-key-signedout");
-        assert!(future_api_key().is_err());
+        let error = future_api_key().expect_err("no key means no credential");
+        // The type is what callers classify on (the Remote page tells "sign in
+        // again" apart from a device fault); the sentence is the string the
+        // frontend has always been shown.
+        assert!(matches!(error, AppError::NotSignedIn), "{error}");
+        assert_eq!(error.to_string(), "Not signed in to FutureOS.");
     }
 
     #[test]
@@ -718,6 +728,17 @@ mod tests {
         let _home = crate::auth_store::test_support::HomeGuard::new("fl-key-signedin");
         crate::auth_store::set_future_login("sekret", "https://future-os.cn/api").unwrap();
         assert_eq!(future_api_key().unwrap(), "sekret");
+    }
+
+    /// A desktop with no stored key is *signed out*, not unverifiable: the
+    /// answer never reaches the platform, so an offline machine reports the
+    /// same state it would online.
+    #[tokio::test]
+    async fn auth_state_is_signed_out_without_a_key() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-auth-signedout");
+        let state = check_auth_state().await;
+        assert!(matches!(state.status, FutureAuthStatus::SignedOut));
+        assert!(state.profile.is_none());
     }
 
     #[test]
