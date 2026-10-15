@@ -171,15 +171,32 @@ short numeric code. The graphical `futureos` entrypoint no longer accepts
 `--headless`; the standalone binary is built without GUI dependencies.
 
 **The graphical entry point accepts one flag of its own.** `futureos --re-pair`
-revokes the saved pairing and issues a fresh invitation, which the window's
-Remote page displays — the code is never printed, because a window has no
-terminal to print it to. The flag is refused without an interactive terminal: it
-cuts off the connected device the moment it runs (pairing replaces, see §2.2),
-and a script is where such a command would end up unattended. When another
-Desktop already owns the data directory, the launching process forwards its
-`argv` through the single-instance plugin and exits; the running instance
-performs the re-pair and raises its window, so the flag never needs the GUI to
-be restarted.
+revokes the saved pairing and issues a fresh invitation, which is then printed to
+the terminal that asked: the code is never printed by the window, because a
+window has no terminal to print it to.
+
+The flag is refused without an interactive terminal: it cuts off the connected
+device the moment it runs (pairing replaces, see §2.2), and a script is where such
+a command would end up unattended. Where the invitation comes from depends on who
+owns the pairing:
+
+- **No Desktop owns the data directory.** This launch becomes the Desktop and
+  performs the re-pair itself, printing the invitation to its own terminal while
+  the window's Remote page shows the same code.
+- **Another Desktop owns it** (the GUI, or a headless instance). This process
+  cannot re-pair — the pairing, the credentials and the data-directory lock belong
+  to that instance. It stays in the foreground and waits, while a short-lived child
+  (the same executable with `--re-pair --re-pair-reply <path>`) delivers the request
+  on the one channel the running instance listens to: the `argv` the
+  single-instance plugin hands over. The running Desktop writes its answer — the
+  invitation, or why there was none — to that path, and the waiting process prints
+  it. The `--re-pair-reply` flag is internal to that pair of processes.
+
+The hand-off exists because the plugin's channel is one-way: the launching process
+is terminated as soon as its `argv` is delivered, so it cannot be the one that
+prints unless it waits for an explicit answer. A running *headless* instance does
+not listen for the request at all; the wait then fails fast with that explanation
+rather than sitting out its timeout.
 
 Valid login and pairing are reused; no proactive re-pairing on every launch or
 disconnect. `--no-qr` keeps only the text link, with automatic fallback on
