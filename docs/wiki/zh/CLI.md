@@ -253,8 +253,9 @@ future session delete <id>
 `--parent` 只记录会话谱系，不复制父会话历史（那是 `fork` 的行为），且父会话必须是已存在的会话。
 
 已有记录的会话，其标题与 cwd 会立即写入；从未运行过的新会话则在首次运行时一并落盘。模型与思考
-等级属于运行快照，随下一次运行写入记录。`future run` 启动时会用自己的 `--cwd`（默认当前目录）覆盖会话 cwd，
-所以这里设的 cwd 只保持到下一次运行为止。
+等级属于运行快照，随下一次运行写入记录。`future run` 只在显式传了 `--cwd`、或该会话由这次运行新建时
+才使用自己的 cwd（新会话默认落在调用方目录）；用 `--session`/`--continue` 挂到已有会话时不会改动
+这里设的 cwd。
 
 会话数据存放在 Agent 的 SQLite 数据库 `~/.future/agent/agent.db`；`~/.future/agent/sessions/` 仅作为旧版
 JSONL 数据的导入来源保留。

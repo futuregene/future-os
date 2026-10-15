@@ -838,6 +838,15 @@ impl RunClient {
             out.write_err(&format!("Connecting to {}...\n", self.addr));
         }
 
+        // The directory a session created by this run starts in: an explicit
+        // `--cwd`, else the caller's directory. Resolved once so the
+        // `new_session` call and the post-creation `set_cwd` agree.
+        let run_cwd = config.cwd.clone().unwrap_or_else(|| {
+            std::env::current_dir()
+                .map(|d| d.display().to_string())
+                .unwrap_or_default()
+        });
+
         let mut session_id: String;
         // A freshly-created session (fork / no --session / no --continue) is
         // guaranteed idle, so the stream can subscribe before the prompt
@@ -897,7 +906,7 @@ impl RunClient {
             // Fresh session for every standalone run — isolates model/thinking/
             // tool changes so they never bleed into subsequent invocations.
             is_fresh = true;
-            let new_session = self.new_session(&config.cwd).await?;
+            let new_session = self.new_session(&run_cwd).await?;
             session_id = new_session
                 .get("sessionId")
                 .and_then(Value::as_str)
@@ -949,8 +958,16 @@ impl RunClient {
             }
             self.set_permission_level(permission, &session_id).await?;
         }
-        if !config.cwd.is_empty() {
-            self.set_cwd(&config.cwd, &session_id).await?;
+        // Rewrite the session's cwd only when the caller asked for it, or when
+        // this run created the session (a new session starts in the caller's
+        // directory, and the fresh path has always announced it with set_cwd).
+        // Attaching to an existing session via --session/--continue without
+        // --cwd leaves its recorded cwd untouched — the alternative, silently
+        // re-homing that session to the CLI's directory, moves its tools and
+        // its workspace grouping out from under the user.
+        let explicit_cwd = config.cwd.as_deref().is_some_and(|cwd| !cwd.is_empty());
+        if explicit_cwd || (is_fresh && !run_cwd.is_empty()) {
+            self.set_cwd(&run_cwd, &session_id).await?;
         }
 
         // 4. Stream + prompt. The default follow-up policy (enqueue_if_busy)
@@ -1177,7 +1194,11 @@ pub struct RunConfig {
     pub permission: Option<String>,
     pub no_session: bool,
     pub mode: String,
-    pub cwd: String,
+    /// Explicit `--cwd <dir>`. `None` means the caller did not ask for a
+    /// working directory: a session created by this run then starts in the
+    /// current directory, while an existing session keeps the cwd it already
+    /// has (the CLI's own directory must not leak into it).
+    pub cwd: Option<String>,
     pub verbose: bool,
     pub message: String,
     /// How a prompt interacts with an in-progress run: empty / `enqueue_if_busy`
@@ -1991,7 +2012,7 @@ mod tests {
     fn run_config(message: &str) -> RunConfig {
         RunConfig {
             message: message.to_string(),
-            cwd: "/tmp".to_string(),
+            cwd: Some("/tmp".to_string()),
             ..Default::default()
         }
     }
@@ -2030,7 +2051,7 @@ mod tests {
         assert!(stderr.contains("Connecting to"), "stderr: {stderr}");
         assert!(stderr.contains("Created session s-new"), "stderr: {stderr}");
         assert!(stderr.contains("Running..."), "stderr: {stderr}");
-        // set_cwd fires because cwd is non-empty.
+        // set_cwd fires for the run's explicit cwd (`run_config` sets /tmp).
         assert_eq!(agent.seen_of("set_cwd").len(), 1);
         assert_eq!(agent.seen_of("prompt")[0].message, "hello");
         assert_eq!(agent.seen_of("prompt")[0].session_id, "s-new");
@@ -2241,6 +2262,101 @@ mod tests {
         assert!(agent.seen_of("new_session").is_empty());
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
         assert!(stderr.contains("Switched to session s-explicit"));
+    }
+
+    /// Regression: `future run --session <id>` without `--cwd` must leave that
+    /// session's recorded cwd alone. The CLI used to fill the cwd with its own
+    /// directory and unconditionally call set_cwd, which re-homed the session
+    /// (and its workspace grouping) to wherever the command was typed.
+    #[tokio::test]
+    async fn run_existing_session_without_cwd_does_not_rewrite_cwd() {
+        let agent = fresh_run_agent();
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let config = RunConfig {
+            message: "hi".to_string(),
+            session: Some("s-keep".to_string()),
+            ..Default::default()
+        };
+        assert!(config.cwd.is_none(), "no --cwd means no cwd");
+        let result = client.run(&config, &out).await.expect("run");
+        assert_eq!(result.session_id, "s-keep");
+        assert_eq!(agent.seen_of("switch_session")[0].session_id, "s-keep");
+        assert_eq!(agent.seen_of("prompt")[0].session_id, "s-keep");
+        assert!(
+            agent.seen_of("set_cwd").is_empty(),
+            "set_cwd must not fire for an existing session: {:?}",
+            agent.seen_of("set_cwd")
+        );
+    }
+
+    /// The same rule on the `--continue` path.
+    #[tokio::test]
+    async fn run_continue_last_without_cwd_does_not_rewrite_cwd() {
+        let mut agent = fresh_run_agent();
+        agent.responses.insert(
+            "list_sessions".into(),
+            "{\"sessions\":[{\"id\":\"s-prev\",\"updatedAtMs\":1786233600000}]}".into(),
+        );
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let config = RunConfig {
+            message: "hi".to_string(),
+            continue_last: true,
+            ..Default::default()
+        };
+        let result = client.run(&config, &out).await.expect("run");
+        assert_eq!(result.session_id, "s-prev");
+        assert!(agent.seen_of("new_session").is_empty());
+        assert!(
+            agent.seen_of("set_cwd").is_empty(),
+            "set_cwd must not fire for a continued session: {:?}",
+            agent.seen_of("set_cwd")
+        );
+    }
+
+    /// `--cwd ""` is treated as "no cwd" (`is_empty` guard from the original
+    /// code): it must not send a set_cwd that would blank the session's cwd.
+    #[tokio::test]
+    async fn run_existing_session_with_empty_cwd_sends_no_set_cwd() {
+        let agent = fresh_run_agent();
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let config = RunConfig {
+            message: "hi".to_string(),
+            session: Some("s-keep".to_string()),
+            cwd: Some(String::new()),
+            ..Default::default()
+        };
+        client.run(&config, &out).await.expect("run");
+        assert!(
+            agent.seen_of("set_cwd").is_empty(),
+            "an empty --cwd must not rewrite the session: {:?}",
+            agent.seen_of("set_cwd")
+        );
+    }
+
+    /// An explicit `--cwd` still applies to an existing session.
+    #[tokio::test]
+    async fn run_existing_session_with_explicit_cwd_sets_it() {
+        let agent = fresh_run_agent();
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let config = RunConfig {
+            message: "hi".to_string(),
+            session: Some("s-move".to_string()),
+            cwd: Some("/work".to_string()),
+            ..Default::default()
+        };
+        client.run(&config, &out).await.expect("run");
+        let set = agent.seen_of("set_cwd");
+        assert_eq!(set.len(), 1, "explicit --cwd must be applied");
+        assert_eq!(set[0].cwd, "/work");
+        assert_eq!(set[0].session_id, "s-move");
     }
 
     #[tokio::test]
