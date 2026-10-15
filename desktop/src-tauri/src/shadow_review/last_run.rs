@@ -291,7 +291,7 @@ mod tests {
         })
         .unwrap();
 
-        let data = build_last_run_review(changeset).unwrap();
+        let data = build_last_run_review(changeset.expect("changeset is written")).unwrap();
         assert_eq!(data.snapshot_status, "complete");
         assert_eq!(data.confidence, "high");
         assert!(!data.overlapped);

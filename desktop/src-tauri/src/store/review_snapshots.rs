@@ -168,12 +168,42 @@ pub fn get_review_snapshot(
 
 /// Create-or-replace the single `run_snapshot` changeset for a Run, along with
 /// its file rows. Replacing keeps retries (§10.4) idempotent.
+///
+/// Returns `Ok(None)` when a parent row the changeset would reference is gone —
+/// the Run, its Thread, or one of its snapshots. The caller has usually read
+/// those ids moments earlier, and a delete that lands in between (deleting the
+/// conversation cascades `review_snapshots` and `runs`; retention prunes a
+/// Run's snapshots) removes them. There is then nothing left to attach a
+/// changeset to, so this is not an error: reporting it as one produced
+/// `FOREIGN KEY constraint failed` on a race the operator could do nothing
+/// about.
 pub fn upsert_run_changeset(
     input: UpsertRunChangesetInput,
-) -> Result<ReviewChangesetRecord, crate::AppError> {
+) -> Result<Option<ReviewChangesetRecord>, crate::AppError> {
     let mut conn = connect()?;
     let now = now_millis();
     let tx = conn.transaction()?;
+
+    // Every parent this changeset references, checked inside the write
+    // transaction so the answer cannot change before the insert.
+    let parents_exist: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM threads WHERE id = ?1)
+            AND EXISTS(SELECT 1 FROM runs WHERE id = ?2)
+            AND (?3 IS NULL OR EXISTS(SELECT 1 FROM workspaces WHERE id = ?3))
+            AND (?4 IS NULL OR EXISTS(SELECT 1 FROM review_snapshots WHERE id = ?4))
+            AND (?5 IS NULL OR EXISTS(SELECT 1 FROM review_snapshots WHERE id = ?5))",
+        params![
+            input.thread_id,
+            input.run_id,
+            input.workspace_id,
+            input.before_snapshot_id,
+            input.after_snapshot_id,
+        ],
+        |row| row.get(0),
+    )?;
+    if !parents_exist {
+        return Ok(None);
+    }
 
     // Drop any prior run_snapshot changeset (and its file rows) for this Run.
     let existing: Option<String> = tx
@@ -259,7 +289,10 @@ pub fn upsert_run_changeset(
 
     tx.commit()?;
 
-    loaded(get_run_changeset(&input.run_id)?, "Run changeset")
+    Ok(Some(loaded(
+        get_run_changeset(&input.run_id)?,
+        "Run changeset",
+    )?))
 }
 
 pub fn get_run_changeset(run_id: &str) -> Result<Option<ReviewChangesetRecord>, crate::AppError> {
@@ -683,12 +716,16 @@ mod tests {
         let _home = fresh_db("rsnap_upsert");
         seed_graph(&connect().expect("connect"), &["r1"]);
 
-        let first = upsert_run_changeset(changeset_input("r1", true)).expect("first upsert");
+        let first = upsert_run_changeset(changeset_input("r1", true))
+            .unwrap()
+            .expect("first upsert");
         assert_eq!(first.status, RUN_SNAPSHOT_STATUS);
         assert_eq!(first.files_changed, 1);
 
         // A retry replaces the changeset and drops the old file rows.
-        let second = upsert_run_changeset(changeset_input("r1", false)).expect("replace");
+        let second = upsert_run_changeset(changeset_input("r1", false))
+            .unwrap()
+            .expect("replace");
         assert_eq!(second.title, "Changes r1");
         assert!(get_run_changeset("r1").expect("get").is_some());
 
@@ -714,8 +751,12 @@ mod tests {
         let (_home, conn) = guarded_conn("rsnap_last");
         seed_graph(&conn, &["r1", "r2"]);
         drop(conn);
-        upsert_run_changeset(changeset_input("r1", false)).expect("upsert r1");
-        upsert_run_changeset(changeset_input("r2", false)).expect("upsert r2");
+        upsert_run_changeset(changeset_input("r1", false))
+            .unwrap()
+            .expect("upsert r1");
+        upsert_run_changeset(changeset_input("r2", false))
+            .unwrap()
+            .expect("upsert r2");
 
         let latest = get_last_run_changeset("t1").expect("last").expect("some");
         assert_eq!(latest.run_id.as_deref(), Some("r2"));
@@ -743,8 +784,12 @@ mod tests {
                  UPDATE review_snapshots SET created_at = 150 WHERE run_id = 'r2' AND phase = 'before';",
             )
             .expect("pin snapshot timestamps");
-        upsert_run_changeset(changeset_input("r1", false)).expect("changeset r1");
-        upsert_run_changeset(changeset_input("r2", false)).expect("changeset r2");
+        upsert_run_changeset(changeset_input("r1", false))
+            .unwrap()
+            .expect("changeset r1");
+        upsert_run_changeset(changeset_input("r2", false))
+            .unwrap()
+            .expect("changeset r2");
 
         mark_run_overlapped("ws1", "r1").expect("mark");
 
@@ -762,7 +807,9 @@ mod tests {
         let _home = fresh_db("rsnap_prune");
         seed_graph(&connect().expect("connect"), &["r1", "r2", "r3"]);
         for run in ["r1", "r2", "r3"] {
-            upsert_run_changeset(changeset_input(run, true)).expect("upsert");
+            upsert_run_changeset(changeset_input(run, true))
+                .unwrap()
+                .expect("upsert");
             create_review_snapshot(snapshot_input(run, "before", None)).expect("snapshot");
         }
         // A workspace-less changeset is pruned without a shadow-ref report.
@@ -795,7 +842,9 @@ mod tests {
 
         create_review_snapshot(snapshot_input("r1", "before", Some("c1"))).expect("snap r1");
         create_review_snapshot(snapshot_input("r2", "before", None)).expect("snap r2");
-        upsert_run_changeset(changeset_input("r1", false)).expect("changeset r1");
+        upsert_run_changeset(changeset_input("r1", false))
+            .unwrap()
+            .expect("changeset r1");
 
         // r1 has a changeset; only r2 is unmaterialized.
         let unmaterialized = list_unmaterialized_runs().expect("unmaterialized");
@@ -816,5 +865,41 @@ mod tests {
         assert!(list_snapshots_with_commits().expect("pinned").is_empty());
         let unmaterialized = list_unmaterialized_runs().expect("unmaterialized");
         assert_eq!(unmaterialized.len(), 1, "failed snapshots drop out too");
+    }
+
+    /// The materialize path reads a Run's snapshots, then writes a changeset
+    /// referencing their ids. A conversation deleted in between takes those
+    /// parents with it (the thread cascade deletes `review_snapshots` and
+    /// `runs`), and the insert then failed its foreign keys. Only a stray
+    /// `FOREIGN KEY constraint failed` reached the log — naming neither the Run
+    /// nor the reason — on a race the operator could not act on.
+    #[test]
+    fn upsert_with_ids_of_a_deleted_conversation_writes_nothing() {
+        let _home = fresh_db("rsnap_vanished_parents");
+        let conn = connect().expect("connect");
+        seed_graph(&conn, &["r1"]);
+        let before =
+            create_review_snapshot(snapshot_input("r1", "before", Some("c1"))).expect("before");
+        let after =
+            create_review_snapshot(snapshot_input("r1", "after", Some("c2"))).expect("after");
+        drop(conn);
+
+        // The caller now holds `before.id` / `after.id`. Deleting the thread
+        // cascades those snapshots and the Run away, exactly as deleting the
+        // conversation does.
+        let conn = connect().expect("connect");
+        super::super::threads::delete_thread_children_in(&conn, "t1").expect("thread cascade");
+        drop(conn);
+
+        let mut input = changeset_input("r1", false);
+        input.before_snapshot_id = Some(before.id);
+        input.after_snapshot_id = Some(after.id);
+        let written = upsert_run_changeset(input).expect("a vanished parent is not an error");
+
+        assert!(
+            written.is_none(),
+            "nothing can be attached to a Run that no longer exists"
+        );
+        assert!(get_run_changeset("r1").expect("get").is_none());
     }
 }
