@@ -28,6 +28,8 @@ pub enum AttachPlan {
 
 #[derive(Default)]
 pub struct MockState {
+    pub readiness_version: Option<String>,
+    pub readiness_instance: Option<String>,
     pub sessions_created: u64,
     pub prompts: u64,
     pub tokens_in: u64,
@@ -153,8 +155,32 @@ impl FutureAgent for MockAgent {
         &self,
         request: tonic::Request<RpcCommand>,
     ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
+        let metadata = request.metadata().clone();
         let cmd = request.into_inner();
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let version = st
+            .readiness_version
+            .as_deref()
+            .unwrap_or(future_rpc::connection::EXPECTED_AGENT_VERSION);
+        let instance = st
+            .readiness_instance
+            .as_deref()
+            .unwrap_or("goal-mock-agent");
+        let root = "0".repeat(64);
+        if cmd.r#type == "readiness" {
+            return Ok(response(
+                &cmd,
+                true,
+                serde_json::json!({
+                    "version": version, "agentInstanceId": instance, "dataRootId": root,
+                    "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION,
+                    "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION,
+                })
+                .to_string(),
+                String::new(),
+            ));
+        }
+        future_rpc::connection::validate_request_metadata(&metadata, version, instance, &root)?;
         st.recorded.push(cmd.r#type.clone());
         if st.grpc_error {
             return Err(tonic::Status::unavailable("mock transport failure"));
@@ -273,6 +299,19 @@ impl FutureAgent for MockAgent {
         &self,
         request: tonic::Request<StreamRequest>,
     ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
+        {
+            let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            future_rpc::connection::validate_request_metadata(
+                request.metadata(),
+                st.readiness_version
+                    .as_deref()
+                    .unwrap_or(future_rpc::connection::EXPECTED_AGENT_VERSION),
+                st.readiness_instance
+                    .as_deref()
+                    .unwrap_or("goal-mock-agent"),
+                &"0".repeat(64),
+            )?;
+        }
         let req = request.into_inner();
         // Read the delay in its own scope so the guard is not held across the await
         // (a `MutexGuard` is not `Send`, and this future must be).

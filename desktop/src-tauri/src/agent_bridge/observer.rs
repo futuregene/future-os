@@ -971,6 +971,7 @@ async fn handle_event(
                 .collect();
             stream::replace_projection_off_thread(&thread_id, Some(&local_run_id), events).await;
             if let Some(agent_end_data) = terminal_agent_end {
+                crate::desktop_shutdown::release_run(session_id, run_id);
                 if stream::agent_end_incomplete(&agent_end_data) {
                     mark_run_failed_if_active(
                         Some(&local_run_id),
@@ -1064,6 +1065,9 @@ async fn handle_event(
     // Terminal bookkeeping applies regardless of ownership — otherwise a
     // pipeline-owned run's end would wedge has_active_run forever.
     let is_terminal = matches!(event_type, "agent_end" | "error");
+    if is_terminal {
+        crate::desktop_shutdown::release_run(session_id, run_id);
+    }
 
     // Pipeline-owned runs are persisted by their collector; the observer only
     // mirrors/forwards those. Everything else is ours to project — persisted

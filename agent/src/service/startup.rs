@@ -193,9 +193,17 @@ pub(super) async fn initialize(
     engine.agent_loop.config.system_prompt = system_prompt;
 
     cancellation.check()?;
+    // Lock order is data root, then endpoint. Reserve before opening SQLite;
+    // two different roots must never replace each other's local listener.
+    #[cfg(unix)]
+    let local_endpoint = if tcp_bind.is_none() {
+        Some(future_rpc::transport::reserve_local_endpoint().await?)
+    } else {
+        None
+    };
     let manager = Arc::new(Manager::default_for(&cwd));
     manager
-        .initialize()
+        .initialize_cancellable(cancellation)
         .context("initialize Agent SQLite storage")?;
     let imports = manager.import_records()?;
     let skipped = imports
@@ -227,6 +235,7 @@ pub(super) async fn initialize(
     // default session are applied per-session in cmd_new_session.
     let state = crate::rpc::AppState {
         agent_instance_id: format!("agent_{}", uuid::Uuid::new_v4().simple()),
+        control_plane: std::sync::Arc::new(crate::rpc::ControlPlane::default()),
         data_root_id: future_rpc::connection::data_root_id(config.future_home())?,
         sessions: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
         queue_budget: Arc::new(crate::runtime::GlobalQueueBudget::defaults()),
@@ -248,7 +257,21 @@ pub(super) async fn initialize(
     config.validate_environment()?;
     let listener = match tcp_bind {
         Some((host, port)) => crate::grpc::AgentListener::bind_tcp(&host, port).await?,
-        None => crate::grpc::AgentListener::bind_local().await?,
+        None => {
+            #[cfg(unix)]
+            {
+                crate::grpc::AgentListener::Local(
+                    local_endpoint
+                        .expect("local endpoint reserved")
+                        .bind()
+                        .await?,
+                )
+            }
+            #[cfg(not(unix))]
+            {
+                crate::grpc::AgentListener::bind_local().await?
+            }
+        }
     };
     cancellation.check()?;
     Ok((state, listener))

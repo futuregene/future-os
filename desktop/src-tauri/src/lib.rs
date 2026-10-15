@@ -837,6 +837,8 @@ mod gui {
         // rustls providers. Select ring and hydrate tool environment before
         // Tauri starts threads or creates any HTTP clients.
         crate::host_environment::initialize()?;
+        let mut context = tauri::generate_context!();
+        context.config_mut().identifier = instance::gui_identifier(&context.config().identifier)?;
         let app = tauri::Builder::default()
             .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
                 // A second instance was launched — activate the existing window.
@@ -885,10 +887,18 @@ mod gui {
                 // Guard quit: if a conversation is still generating, warn before we
                 // tear the agent down. The confirmation is a native dialog (see
                 // agent_supervisor) so it survives even a hung webview.
+                if window.label() != "main" {
+                    return;
+                }
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     use tauri::Manager;
                     match agent_supervisor::on_close_requested() {
-                        agent_supervisor::QuitDecision::Proceed => {}
+                        agent_supervisor::QuitDecision::Proceed => {
+                            if !agent_supervisor::exit_authorized() {
+                                api.prevent_close();
+                                agent_supervisor::request_quit(window.app_handle().clone(), false);
+                            }
+                        }
                         agent_supervisor::QuitDecision::Confirm { open_dialog } => {
                             api.prevent_close();
                             if open_dialog {
@@ -950,6 +960,8 @@ mod gui {
                 app_build_info,
                 get_agent_status,
                 check_app_update,
+                app_maintenance_status,
+                acknowledge_update_repair,
                 install_app_update,
                 restart_after_app_update,
                 open_path,
@@ -1099,7 +1111,7 @@ mod gui {
                 terminal_server_info,
                 open_url
             ])
-            .build(tauri::generate_context!())
+            .build(context)
             .map_err(|error| AppError::from(format!("Could not start Desktop: {error}")))?;
 
         // Build initializes the single-instance plugin first, so a second GUI
@@ -1144,7 +1156,12 @@ mod gui {
             // way so a running conversation can't be torn down without warning.
             tauri::RunEvent::ExitRequested { api, .. } => {
                 match agent_supervisor::on_close_requested() {
-                    agent_supervisor::QuitDecision::Proceed => {}
+                    agent_supervisor::QuitDecision::Proceed => {
+                        if !agent_supervisor::exit_authorized() {
+                            api.prevent_exit();
+                            agent_supervisor::request_quit(app_handle.clone(), false);
+                        }
+                    }
                     agent_supervisor::QuitDecision::Confirm { open_dialog } => {
                         api.prevent_exit();
                         if open_dialog {
@@ -1154,9 +1171,9 @@ mod gui {
                 }
             }
             tauri::RunEvent::Exit => {
-                if let Err(error) = agent_supervisor::shutdown_agent_gracefully() {
-                    eprintln!("FutureOS exit cleanup failed: {error}");
-                }
+                // The ordinary exit path already waited outside the UI thread.
+                // Unexpected OS exits can only request best-effort background stop.
+                let _ = crate::desktop_shutdown::begin("exit");
             }
             _ => {}
         });

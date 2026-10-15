@@ -1,4 +1,5 @@
 import type { UpdateStatus } from "../../components/layout/hooks/useUpdateChecker";
+import type { MaintenanceStatus } from "../../integrations/tauri/useMaintenanceStatus";
 import { listen } from "@tauri-apps/api/event";
 import { Download, RefreshCw, RotateCcw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -7,6 +8,7 @@ import { Button } from "../../components/ui/Button";
 import { openExternalUrl } from "../../integrations/storage/files";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
+import { useMaintenanceStatus } from "../../integrations/tauri/useMaintenanceStatus";
 import { errorMessage } from "../../lib/errors";
 import { SettingsSection } from "./SettingsPrimitives";
 
@@ -30,8 +32,13 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
   const [progress, setProgress] = useState(0);
   const [installed, setInstalled] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
-  const needsRecovery = installError?.startsWith("Update installation failed after cleanup:") ?? false;
+
+  const { maintenance, setMaintenance, maintenanceError, setMaintenanceError } = useMaintenanceStatus();
   const [downloadError, setDownloadError] = useState<string | null>(null);
+
+  const recovery = maintenance?.update;
+  const needsRecovery = Boolean(installError && recovery?.outcome && ["failed-restored", "repair-required", "cleanup-failed"].includes(recovery.outcome));
+  const needsManualRepair = Boolean(recovery && !recovery.repairAcknowledged && (recovery.outcome === null || recovery.outcome === "repair-required" || (recovery.outcome === "interrupted" && ["installing", "awaiting-exit"].includes(recovery.stage))));
 
   // Tear down the streamed-progress listener if the page unmounts mid-download
   // (the download command itself still settles in the background).
@@ -86,12 +93,26 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
       await invokeCommand("install_app_update");
       if (mountedRef.current) {
         setProgress(100);
-        setInstalled(true);
+        const result = await invokeCommand<MaintenanceStatus>("app_maintenance_status");
+        if (mountedRef.current) {
+          setMaintenance(result ?? null);
+          setInstalled(result?.update?.outcome === "installed");
+        }
       }
     }
     catch (error) {
-      if (mountedRef.current)
+      if (mountedRef.current) {
         setInstallError(errorMessage(error));
+        try {
+          const result = await invokeCommand<MaintenanceStatus>("app_maintenance_status");
+          if (mountedRef.current)
+            setMaintenance(result ?? null);
+        }
+        catch (recoveryError) {
+          if (mountedRef.current)
+            setMaintenanceError(errorMessage(recoveryError));
+        }
+      }
     }
     finally {
       unlistenRef.current?.();
@@ -105,6 +126,19 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
     setInstallError(null);
     try {
       await invokeCommand("restart_after_app_update");
+    }
+    catch (error) {
+      setInstallError(errorMessage(error));
+    }
+  }
+
+  async function handleRepairAcknowledgement() {
+    if (!recovery)
+      return;
+    try {
+      await invokeCommand("acknowledge_update_repair", { operationId: recovery.operationId });
+      setMaintenance(await invokeCommand<MaintenanceStatus>("app_maintenance_status"));
+      setInstallError(null);
     }
     catch (error) {
       setInstallError(errorMessage(error));
@@ -146,6 +180,23 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
             </Button>
           </div>
 
+          {maintenanceError ? <p role="alert" className="text-xs text-danger">{`${t("update.maintenanceUnavailable")}: ${maintenanceError}`}</p> : null}
+          {maintenance?.cli.error ? <p role="alert" className="text-xs text-danger">{maintenance.cli.error}</p> : null}
+          {maintenance?.cli.tool
+            ? <p className="break-all text-xs text-ink-muted">{t("update.cliTool", maintenance.cli.tool)}</p>
+            : null}
+          {maintenance?.update
+            ? (
+                <div role="status" className="space-y-1 border-t border-line-soft pt-3 text-xs text-ink-muted">
+                  <p>{t("update.operation", { id: maintenance.update.operationId, stage: maintenance.update.stage, outcome: maintenance.update.outcome ?? t("update.unconfirmed") })}</p>
+                  {maintenance.update.diagnostic ? <p className="text-danger">{maintenance.update.diagnostic}</p> : null}
+                  {!maintenance.update.outcome ? <p>{t("update.awaitingResult")}</p> : null}
+                  {needsManualRepair && !downloading
+                    ? <Button onClick={() => void handleRepairAcknowledgement()} size="sm" variant="secondary">{t("update.confirmRepair")}</Button>
+                    : null}
+                </div>
+              )
+            : null}
           {checkError ? <p className="text-xs text-danger">{`${t("update.checkFailed")}: ${checkError}`}</p> : null}
 
           {status && !checking
@@ -190,7 +241,7 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
                                       : (
                                           <Button
                                             leftIcon={<Download className="size-3.5" />}
-                                            disabled={needsRecovery}
+                                            disabled={needsRecovery || Boolean(maintenanceError) || needsManualRepair}
                                             onClick={() => void handleInstall()}
                                             size="sm"
                                             variant="primary"
@@ -199,7 +250,7 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
                                           </Button>
                                         )}
                                   {installError ? <p className="text-xs text-danger">{`${t("update.installFailed")}: ${installError}`}</p> : null}
-                                  {needsRecovery
+                                  {needsRecovery && maintenance?.update?.restartSafe
                                     ? <Button onClick={() => void handleRestart()} size="sm" variant="primary">{t("update.restart")}</Button>
                                     : null}
                                 </div>

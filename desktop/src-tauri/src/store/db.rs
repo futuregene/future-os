@@ -44,8 +44,10 @@ pub(super) fn chat_workspaces_root() -> Result<PathBuf, crate::AppError> {
 
 /// `$HOME/.future/` — the FutureOS root on disk.
 pub fn future_dir() -> Result<PathBuf, crate::AppError> {
-    let home = crate::home_dir().ok_or("HOME/USERPROFILE environment variable is not set.")?;
-    Ok(PathBuf::from(home).join(".future"))
+    app_dir()?
+        .parent()
+        .map(PathBuf::from)
+        .ok_or_else(|| "Desktop app directory has no data root".into())
 }
 
 /// Root of the per-workspace shadow-review git repos (`~/.future/app/review`).

@@ -57,6 +57,7 @@ pub fn build_info() -> Value {
         "gitDirty": commit.map(|_| GIT_DIRTY == "1"),
         "buildTarget": known(BUILD_TARGET),
         "buildProfile": known(BUILD_PROFILE),
+        "desktopCapabilities": future_rpc::cli_capabilities::CliCapabilities::default(),
     })
 }
 

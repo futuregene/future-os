@@ -8,10 +8,35 @@ pub(crate) struct InstanceGuard {
     _file: File,
 }
 
+/// Namespace the native single-instance plugin by the same physical root as
+/// the file lock. The default identifier remains byte-for-byte compatible.
+#[cfg(any(feature = "gui", test))]
+pub(crate) fn gui_identifier(base: &str) -> Result<String, crate::AppError> {
+    if future_rpc::home::future_home_override().is_none() {
+        return Ok(base.into());
+    }
+    let directory = future_app_settings::app_dir().map_err(|error| error.to_string())?;
+    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let selected_root = crate::future_home_root()
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if crate::home_dir().is_some_and(|home| {
+        std::path::PathBuf::from(home)
+            .join(".future")
+            .canonicalize()
+            .is_ok_and(|default| default == selected_root)
+    }) {
+        return Ok(base.into());
+    }
+    let root_id = future_rpc::connection::data_root_id(&crate::future_home_root())
+        .map_err(|error| error.to_string())?;
+    Ok(format!("{base}.home{}", &root_id[..16]))
+}
+
 impl InstanceGuard {
     pub(crate) fn acquire() -> Result<Self, crate::AppError> {
-        let home = crate::home_dir().ok_or("HOME/USERPROFILE is not set")?;
-        Self::at(&Path::new(&home).join(".future").join("app"))
+        let directory = future_app_settings::app_dir().map_err(|error| error.to_string())?;
+        Self::at(&directory)
     }
 
     fn at(directory: &Path) -> Result<Self, crate::AppError> {
@@ -46,6 +71,56 @@ impl InstanceGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn distinct_future_homes_isolate_lock_namespace_and_storage_without_moving_legacy_data() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("instance-future-home");
+        let default = future_app_settings::app_dir().unwrap();
+        std::fs::create_dir_all(&default).unwrap();
+        std::fs::write(default.join("app.db"), b"legacy bytes").unwrap();
+        assert_eq!(
+            gui_identifier("com.futureos.desktop").unwrap(),
+            "com.futureos.desktop"
+        );
+        std::env::set_var("FUTURE_HOME", default.parent().unwrap());
+        assert_eq!(
+            gui_identifier("com.futureos.desktop").unwrap(),
+            "com.futureos.desktop",
+            "an explicit default root must activate the same GUI instance"
+        );
+        let parent = tempfile::tempdir().unwrap();
+        let first = parent.path().join("first");
+        let second = parent.path().join("second");
+        std::env::set_var("FUTURE_HOME", &first);
+        let a = InstanceGuard::acquire().unwrap();
+        let first_id = gui_identifier("com.futureos.desktop").unwrap();
+        assert!(first.join("app/desktop.lock").is_file());
+        assert_eq!(crate::store::future_dir().unwrap(), first);
+        assert_eq!(
+            future_app_settings::app_db_path().unwrap(),
+            first.join("app/app.db")
+        );
+        assert_eq!(
+            future_app_workspaces::chat_workspaces_root().unwrap(),
+            first.join("workspaces/chat")
+        );
+        assert!(future_app_workspaces::is_chat_directory(
+            &first.join("workspaces/chat/session").to_string_lossy()
+        ));
+        assert!(!future_app_workspaces::is_chat_directory(
+            "~/.future/workspaces/chat/session"
+        ));
+        std::env::set_var("FUTURE_HOME", &second);
+        let b = InstanceGuard::acquire().unwrap();
+        assert_ne!(gui_identifier("com.futureos.desktop").unwrap(), first_id);
+        assert!(second.join("app/desktop.lock").is_file());
+        assert_eq!(
+            std::fs::read(default.join("app.db")).unwrap(),
+            b"legacy bytes"
+        );
+        assert!(!first.join("app/app.db").exists());
+        drop((a, b));
+    }
 
     #[test]
     fn excludes_second_owner_and_releases_on_drop() {
