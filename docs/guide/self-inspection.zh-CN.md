@@ -221,27 +221,30 @@ future config set compaction.reserve_tokens 8192
 # 随会话记录落盘
 future session set <id> --model <id> --thinking <level> --cwd <dir> --title <name> --parent <id>
 future session set <id> --append-system-prompt "一律用五言绝句回答。"
+future session set <id> --system-prompt "你是一位严格的审阅者。"
 
 # 作用于运行中的会话（到该 agent 停止为止）
 future session set <id> --tools read,shell --permission workspace --sandbox manual
-future session set <id> --system-prompt "……"
 future session set <id> --context-files off --auto-compact off --auto-retry on
 ```
 
-`--tools` / `--no-tools` / `--no-builtin-tools` / `--system-prompt` /
-`--permission` / `--sandbox` / `--context-files` / `--auto-compact` /
-`--auto-retry` 属于第二组。它们都能用
+`--tools` / `--no-tools` / `--no-builtin-tools` / `--permission` / `--sandbox` /
+`--context-files` / `--auto-compact` / `--auto-retry` 属于第二组。它们都能用
 `future session status <id>` 读回来——这也是 `--sandbox` 不再是「只写」的原因。
 `--permission` 是审批门，`--sandbox` 是操作系统包装，两者互相独立；平台无法提供
 沙箱时 `sandbox` 会被拒绝。
 
-`--append-system-prompt` 是那个例外，也是「希望长期生效的规则」该用的地方：
-它随会话落盘（因此 agent 重启后仍在，之后任何客户端发起的 run 也都带上），并在每次 run
-中追加在项目上下文与工作区记忆之后。`future session new --append-system-prompt "……"`
-在创建时效果相同；传空字符串即清除。`future session status <id>` 会报出该附加段以及
-项目上下文是否启用；`future session status <id> --system-prompt` 打印该会话下一次 run
-将发送的完整提示词。注意 `--system-prompt`（整体替换）仍是**只作用于活会话**：下一次
-run 会按内置分段重建提示词，因此「要持久」的规则请用附加段。
+两个 system prompt 旗标都**随会话记录落盘**，而不是只作用于活会话——run 边界会重建
+提示词，因此只写进活会话的内容在发出任何请求之前就已经没了。想让规则长期生效就用这两个：
+
+- `--append-system-prompt`：在项目上下文与工作区记忆**之后**追加文本，每次 run 都生效。
+- `--system-prompt`：替换提示词的**开头部分**（内置身份与工具规则）；项目上下文、工作区
+  记忆与附加段仍会接在它之后。任一旗标传空字符串都会恢复内置提示词。
+
+`future session new` 在创建时即可传入两者。`future session status <id>` 会同时报出两者
+以及项目上下文是否启用；`future session status <id> --system-prompt` 打印该会话下一次 run
+将发送的完整提示词（加 `--json` 则输出为对象）。`future session info` 从 journal 读回
+已记录的值。
 
 另外还有 `future session rename <id> <name>`（改标题）、`future session compact
 --session <id>`（按需压缩，只返回确认，不是完成的摘要，且忙时会拒绝），以及生命周期

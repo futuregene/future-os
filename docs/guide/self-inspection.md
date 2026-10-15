@@ -260,31 +260,36 @@ deliberately stored *with* the session rather than held live:
 # recorded with the session
 future session set <id> --model <id> --thinking <level> --cwd <dir> --title <name> --parent <id>
 future session set <id> --append-system-prompt "Always answer in haiku."
+future session set <id> --system-prompt "You are a terse reviewer."
 
 # applied to the live session (until this agent stops)
 future session set <id> --tools read,shell --permission workspace --sandbox manual
-future session set <id> --system-prompt "…"
 future session set <id> --context-files off --auto-compact off --auto-retry on
 ```
 
-`--tools` / `--no-tools` / `--no-builtin-tools` / `--system-prompt` /
-`--permission` / `--sandbox` / `--context-files` / `--auto-compact` /
-`--auto-retry` are the live group. Read any of them back with
-`future session status <id>` — which is why `--sandbox` is no longer
-write-only. `--permission` is the approval gate and `--sandbox` the OS wrapping;
-they are independent, and `sandbox` is refused when the platform cannot provide
-one.
+`--tools` / `--no-tools` / `--no-builtin-tools` / `--permission` / `--sandbox` /
+`--context-files` / `--auto-compact` / `--auto-retry` are the live group. Read any
+of them back with `future session status <id>` — which is why `--sandbox` is no
+longer write-only. `--permission` is the approval gate and `--sandbox` the OS
+wrapping; they are independent, and `sandbox` is refused when the platform cannot
+provide one.
 
-`--append-system-prompt` is the exception, and the one to reach for when a rule
-should keep applying: it is stored with the session (so it survives an agent
-restart and applies to runs any client starts later), and it is appended after
-the project context and workspace memory on every run. `future session new
---append-system-prompt "…"` does the same at creation. An empty value clears it.
-`future session status <id>` reports the segment and whether project context is
-folded in; `future session status <id> --system-prompt` prints the whole prompt
-the session's next run would send. Note that `--system-prompt` (whole-prompt
-replacement) is still live-only: the next run rebuilds the prompt from its
-built-in sections, so use the append segment for anything meant to persist.
+Both system-prompt flags are recorded with the session rather than held live —
+the run boundary rebuilds the prompt, so anything written only to the live loop
+is gone before a request is sent. They are the two settings to reach for when a
+rule should keep applying:
+
+- `--append-system-prompt` adds text after the project context and workspace
+  memory, on every run.
+- `--system-prompt` replaces the prompt's opening section (the built-in identity
+  and tool rules); the project context, workspace memory and the append are still
+  added after it. An empty string restores the built-in prompt from either flag.
+
+`future session new` takes both at creation. `future session status <id>` reports
+both and whether project context is folded in; `future session status <id>
+--system-prompt` prints the whole prompt the session's next run would send (add
+`--json` for it as an object). `future session info` reads the recorded values
+back from the journal.
 
 Plus `future session rename <id> <name>` for a title, `future session compact
 --session <id>` for on-demand compaction (which acknowledges asynchronously — it

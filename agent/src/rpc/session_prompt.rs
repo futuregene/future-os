@@ -789,6 +789,7 @@ impl ServerSession {
         let source_meta = self.source_meta.clone();
         let auto_compaction = self.auto_compaction;
         let append_system_prompt = self.append_system_prompt.clone();
+        let custom_system_prompt = self.custom_system_prompt.clone();
         run_loop.clear_interrupt();
         let mut approval_gate = self.approval_gate.clone();
         let is_ephemeral = self.ephemeral;
@@ -1165,6 +1166,7 @@ impl ServerSession {
                     "session_name": resolved_name,
                     "auto_compaction": auto_compaction,
                     "append_system_prompt": append_system_prompt,
+                    "system_prompt": custom_system_prompt,
                     "parent_session_id": parent_session_id,
                     "thinking_level": session_thinking,
                     "model": session_model,
@@ -1487,6 +1489,7 @@ impl ServerSession {
             // `agent_loop.system_prompt`, overwritten at each run boundary)
             // failed to survive.
             append_prompt: self.append_system_prompt.clone(),
+            custom_prompt: self.custom_system_prompt.clone(),
             ..Default::default()
         });
         (prompt, context_files)
@@ -1602,6 +1605,7 @@ impl ServerSession {
                 "session_name": session_name,
                 "auto_compaction": self.auto_compaction,
                 "append_system_prompt": self.append_system_prompt.clone(),
+                "system_prompt": self.custom_system_prompt.clone(),
                 "parent_session_id": parent_session_id,
                 "thinking_level": self.thinking_level.clone(),
                 "model": self.model.clone(),

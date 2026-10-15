@@ -771,6 +771,7 @@ const SESSION_INFO_MERGE_KEYS: &[&str] = &[
     "cwd",
     "auto_compaction",
     "append_system_prompt",
+    "system_prompt",
 ];
 
 /// The authoritative (last) `session_info` content currently on disk, if any.

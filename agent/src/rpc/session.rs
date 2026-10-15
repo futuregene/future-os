@@ -72,6 +72,12 @@ pub struct ServerSession {
     pub auto_retry: bool,
     /// Session-local opt-out of project instruction discovery (not workspace memory).
     pub no_context_files: bool,
+    /// Whole-prompt replacement for this session (empty = use the built-in
+    /// prompt). Persisted in `session_info` and fed to `build_prompt` as its
+    /// `custom_prompt` on every run, for the same reason as
+    /// [`Self::append_system_prompt`] below: the run boundary rebuilds the live
+    /// loop's prompt, so an in-memory write never reached a request.
+    pub custom_system_prompt: String,
     /// Session-level text appended to the end of the built system prompt on
     /// every run. Persisted in `session_info`, so it survives an agent restart
     /// — unlike the live session settings, which only hold until the agent
@@ -268,6 +274,7 @@ impl ServerSession {
             auto_compaction: true,
             auto_retry: true,
             no_context_files: false,
+            custom_system_prompt: String::new(),
             append_system_prompt: String::new(),
             compaction_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             compaction_request: Arc::new(parking_lot::Mutex::new(None)),
@@ -1024,9 +1031,24 @@ impl ServerSession {
 
     pub fn set_system_prompt(&mut self, prompt: &str) {
         self.approval_gate.invalidate();
-        let mut loop_ = self.agent_loop.try_write().unwrap();
-        loop_.system_prompt = prompt.to_string();
-        loop_.config.system_prompt = prompt.to_string();
+        // Stored with the session and fed to `build_prompt` as `custom_prompt`
+        // on every run. Writing the live loop's prompt (the old behaviour) did
+        // nothing observable: `build_system_prompt` rebuilds both
+        // `loop.system_prompt` and `loop.config.system_prompt` at every run
+        // boundary, so the value was gone before any request was sent. An empty
+        // string clears the override.
+        self.custom_system_prompt = prompt.to_string();
+        // Skip the write for a session with no record on disk yet: it stores
+        // this with its first run's session_info, the same way a never-run
+        // session stores a title or cwd.
+        if !matches!(self.session_manager.contains(&self.session_id), Ok(false)) {
+            if let Err(error) = self.persistence.update_info(
+                "system_prompt",
+                serde_json::Value::String(self.custom_system_prompt.clone()),
+            ) {
+                tracing::error!("Failed to persist system prompt: {error:#}");
+            }
+        }
     }
 
     pub fn set_tools(&mut self, tool_names: &[String]) {
@@ -1394,8 +1416,12 @@ impl ServerSession {
             // correct value for a record with no session_info entry at all, and
             // for one whose entry predates the field.
             self.append_system_prompt = String::new();
+            self.custom_system_prompt = String::new();
             // Restore metadata from session_info entry
             if let Some(info) = session.get_session_info() {
+                if let Some(v) = info.get("system_prompt").and_then(|v| v.as_str()) {
+                    self.custom_system_prompt = v.to_string();
+                }
                 if let Some(tl) = info.get("thinking_level").and_then(|v| v.as_str()) {
                     self.thinking_level = tl.to_string();
                 }
@@ -2259,6 +2285,49 @@ mod tests {
         session.session_manager.save(&saved).unwrap();
         session.switch_session("append-absent").unwrap();
         assert_eq!(session.append_system_prompt, "");
+    }
+
+    /// The whole-prompt replacement is likewise persisted, and likewise cleared
+    /// before the guarded restore so a switched-to session that has none does
+    /// not inherit the previous one's.
+    #[test]
+    fn switch_session_restores_and_clears_the_system_prompt_override() {
+        let mut session = make_persistent_test_session("custom-prompt-restore");
+        let saved = crate::session::Session::snapshot(
+            "custom-prompt-restore".to_string(),
+            session.cwd.clone(),
+            "mock".to_string(),
+            String::new(),
+            String::new(),
+            vec![
+                crate::session::SessionEntry::session_info(
+                    serde_json::json!({"system_prompt": "You are terse."}),
+                    "mock".to_string(),
+                    String::new(),
+                ),
+                crate::session::SessionEntry::new_user("user", serde_json::json!("hi")),
+            ],
+        );
+        session.session_manager.save(&saved).unwrap();
+        session.switch_session("custom-prompt-restore").unwrap();
+        assert_eq!(session.custom_system_prompt, "You are terse.");
+
+        // A record without the key restores as no override, not as the text
+        // left over from the session switched away from.
+        let plain = crate::session::Session::snapshot(
+            "plain-record".to_string(),
+            session.cwd.clone(),
+            "mock".to_string(),
+            String::new(),
+            String::new(),
+            vec![crate::session::SessionEntry::new_user(
+                "user",
+                serde_json::json!("hi"),
+            )],
+        );
+        session.session_manager.save(&plain).unwrap();
+        session.switch_session("plain-record").unwrap();
+        assert_eq!(session.custom_system_prompt, "");
     }
 
     #[test]
@@ -3874,15 +3943,25 @@ mod tests {
         assert!(!session.auto_retry);
     }
 
+    /// The whole-prompt replacement is stored with the session, for the same
+    /// reason as the append segment below: `build_system_prompt` rebuilds the
+    /// live loop's prompt at every run boundary, so writing it there (which is
+    /// what this setter used to do) never reached a request. `build_prompt`
+    /// receives it as `custom_prompt` instead.
     #[test]
-    fn set_system_prompt_updates() {
+    fn set_system_prompt_stores_the_override_without_touching_the_live_prompt() {
         let mut session = make_test_session("s1");
         session.set_system_prompt("custom prompt");
-        let loop_ = session.agent_loop.try_read().unwrap();
-        assert_eq!(loop_.system_prompt, "custom prompt");
-        // The per-run config copy must agree with the live field: the prompt
-        // sent to the provider comes from `config`.
-        assert_eq!(loop_.config.system_prompt, "custom prompt");
+        assert_eq!(session.custom_system_prompt, "custom prompt");
+        // The live loop prompt is a per-run derivative and is left alone.
+        assert_ne!(
+            session.agent_loop.try_read().unwrap().system_prompt,
+            "custom prompt"
+        );
+
+        // Empty restores the built-in prompt.
+        session.set_system_prompt("");
+        assert_eq!(session.custom_system_prompt, "");
     }
 
     /// The append segment is stored with the session, not written into the live
@@ -3892,11 +3971,13 @@ mod tests {
     #[test]
     fn set_append_system_prompt_stores_the_segment_without_touching_the_live_prompt() {
         let mut session = make_test_session("s1");
-        session.set_system_prompt("base");
         session.set_append_system_prompt("appended");
         assert_eq!(session.append_system_prompt, "appended");
         // The live loop prompt is left alone: it is a per-run derivative.
-        assert_eq!(session.agent_loop.try_read().unwrap().system_prompt, "base");
+        assert_ne!(
+            session.agent_loop.try_read().unwrap().system_prompt,
+            "appended"
+        );
 
         // Empty clears it.
         session.set_append_system_prompt("");

@@ -81,8 +81,18 @@ Tool control:
   --no-builtin-tools, -nbt Disable built-in tools only (keep MCP extensions active)
 
 Prompt control:
-  --system-prompt <text>   Replace the system prompt
-  --append-system-prompt <text>  Append to the system prompt (can repeat)
+  --system-prompt <text>   Replace this session's system prompt. Recorded with
+                           the session, so it persists and applies to later runs
+                           too (an empty string restores the built-in prompt).
+  --append-system-prompt <text>
+                           Append rules to the end of this session's system
+                           prompt (can repeat). Recorded with the session, so it
+                           persists and applies to later runs too (an empty
+                           string clears it). Read either back with
+                           `future session status <id>`.
+                           On a run that creates a new session these are
+                           one-shot in practice; with --session/--continue they
+                           change that session from now on.
 
 Output:
   --mode <mode>            text (default): stream to stdout; json: one JSON object on exit
@@ -667,6 +677,17 @@ mod tests {
         );
         // --no-wait is documented and points at the wait/default distinction.
         assert!(stdout.contains("--no-wait"), "stdout: {stdout}");
+        // The prompt flags record with the session, which is why a one-shot run
+        // can change later runs too — the help has to say so, or the effect is
+        // invisible to the caller.
+        assert!(
+            stdout.contains("Recorded with\n                           the session"),
+            "the run help must state that --system-prompt persists: {stdout}"
+        );
+        assert!(
+            stdout.contains("future session status <id>"),
+            "the run help must point at the read-back: {stdout}"
+        );
 
         // No message and no @files → usage error.
         let (out, cap) = Output::memory();

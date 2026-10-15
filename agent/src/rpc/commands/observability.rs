@@ -121,6 +121,7 @@ pub(crate) fn handle_get_system_prompt(
         serde_json::json!({
             "systemPrompt": prompt,
             "appendSystemPrompt": sess.append_system_prompt,
+            "customSystemPrompt": sess.custom_system_prompt,
             "contextFiles": crate::prompt::load_project_context(&sess.cwd, !sess.no_context_files)
                 .file_names(),
             "contextFilesEnabled": !sess.no_context_files,

@@ -138,7 +138,7 @@ Useful options and forms:
 | `--tools, -t <names>` | Comma-separated tool names to enable (e.g. `read,shell`); `--no-tools` / `--no-builtin-tools` disable them. |
 | `--steer` | Interrupt the session's current run; without it, the prompt queues behind a busy run. |
 | `--no-wait` | Submit the prompt, print an ack, and exit; retrieve the result later with `future session wait <id>`. |
-| `--system-prompt`, `--append-system-prompt` | Replace or extend the system prompt. |
+| `--system-prompt`, `--append-system-prompt` | Replace or extend the system prompt. Both are recorded with the session, so they persist. |
 | `--cwd <dir>` | Set the working directory. |
 | `--mode json` | Print the answer as JSON instead of text. |
 | `--verbose` | Write progress and tool calls to stderr. |
@@ -256,23 +256,26 @@ configured *now*: the effective tool permission, the sandbox tier, context
 occupancy, loaded context files and skills, active and queued runs, and pending
 approvals). Only the second can answer a question about a session whose settings
 differ from the global defaults. `session set` writes both groups — the recorded
-options (`--model`, `--thinking`, `--cwd`, `--title`, `--parent`) and the live
-ones (`--tools`, `--no-tools`, `--no-builtin-tools`, `--system-prompt`,
-`--permission`, `--sandbox`, `--context-files`, `--auto-compact`,
-`--auto-retry`) — and `session status` reads the live ones back.
+options (`--model`, `--thinking`, `--cwd`, `--title`, `--parent`,
+`--system-prompt`, `--append-system-prompt`) and the live ones (`--tools`,
+`--no-tools`, `--no-builtin-tools`, `--permission`, `--sandbox`,
+`--context-files`, `--auto-compact`, `--auto-retry`) — and `session status` reads
+them back.
 `abort`/`cancel`/`approve`/`reject` are the CLI counterpart of the TUI's
 `/stop`, `/cancel` and `/approve`, so a run started from a script can also be
 stopped from one.
 
-`--append-system-prompt` is the exception in that split: it is stored with the
-session record, so it survives an agent restart and applies to the runs any
-client starts later, and it is appended after the project context and workspace
-memory on every run — use it for rules that should keep applying, rather than
-repeating them in each message. `future session new --append-system-prompt "…"`
-sets it at creation; an empty value clears it. `session status` reports the
-segment plus whether project context is folded in, and `session status <id>
---system-prompt` prints the whole prompt the next run would send (`--system-prompt`,
-whole-prompt replacement, stays live-only — the next run rebuilds the prompt).
+Both system-prompt flags are stored with the session record rather than held
+live: the run boundary rebuilds the prompt, so a value written only to the live
+loop is gone before a request is sent. `--append-system-prompt` adds text after
+the project context and workspace memory; `--system-prompt` replaces the
+prompt's opening section (the built-in identity and tool rules), with the
+context, memory and append still following it. Either is set at creation with
+`future session new`, and an empty value restores the built-in prompt.
+`session status` reports both plus whether project context is folded in,
+`session status <id> --system-prompt` prints the whole prompt the next run would
+send (add `--json` for it as an object), and `session info` reads the recorded
+values back.
 
 `future session history search --all --query "<text>"` searches across sessions
 instead of one, so "have we ever discussed this" does not require knowing which

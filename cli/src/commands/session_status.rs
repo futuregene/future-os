@@ -126,7 +126,7 @@ fn yes_no(flag: bool) -> &'static str {
 /// printing the whole segment would make `session status` unreadable for the
 /// multi-rule case it exists to report, and `--system-prompt` is where the full
 /// text belongs.
-fn first_line_summary(text: &str) -> String {
+pub(super) fn first_line_summary(text: &str) -> String {
     let lines: Vec<&str> = text
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -257,6 +257,15 @@ fn format_status(state: &Value, metrics: Option<&Value>) -> String {
             first_line_summary(&append)
         }
     ));
+    // A whole-prompt replacement is the rarer, more drastic state — a reader
+    // who sees it must not assume the built-in prompt is in force.
+    let custom = text(state, "customSystemPrompt");
+    if !custom.is_empty() {
+        out.push_str(&format!(
+            "  System prompt: REPLACED — {}\n",
+            first_line_summary(&custom)
+        ));
+    }
     out.push_str(&format!(
         "  Skills:        {} loaded\n",
         state["skills"].as_array().map_or(0, Vec::len)
@@ -361,6 +370,9 @@ pub(super) async fn run(args: &[String], out: &Output) -> Result<(), String> {
             .get_system_prompt(&options.session)
             .await
             .map_err(|err| super::session::missing_session_error(err, &options.session))?;
+        // `--json` keeps the machine-readable shape instead of the prose dump:
+        // a caller that asked for the full prompt in JSON gets the built text
+        // plus the fields that explain how it was assembled.
         if options.json {
             out.log(&serde_json::to_string_pretty(&prompt).map_err(|e| e.to_string())?);
             return Ok(());
@@ -563,6 +575,53 @@ mod tests {
         assert!(stdout.contains("Rule."), "{stdout}");
         // A byte count so a reader can tell a stub from a real prompt.
         assert!(stdout.contains("bytes"), "{stdout}");
+    }
+
+    /// A whole-prompt replacement is a drastic state, and the summary must say
+    /// so rather than leaving a reader to assume the built-in prompt is live.
+    #[test]
+    fn a_replaced_prompt_is_called_out() {
+        let mut state = state_payload();
+        state["customSystemPrompt"] = json!("You are terse.");
+        let rendered = format_status(&state, None);
+        assert!(
+            rendered.contains("System prompt: REPLACED — You are terse."),
+            "{rendered}"
+        );
+
+        // The built-in prompt is the default, so it gets no line at all: a
+        // "(built-in)" marker on every session would be noise.
+        let rendered = format_status(&state_payload(), None);
+        assert!(!rendered.contains("System prompt:"), "{rendered}");
+    }
+
+    /// `session status --json --system-prompt` keeps the machine-readable shape
+    /// instead of the prose dump, so a script can read the built prompt.
+    #[tokio::test]
+    async fn status_system_prompt_json_is_structured() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = MockAgent::respond("get_state", &state_payload().to_string());
+        agent.responses.insert(
+            "get_system_prompt".into(),
+            json!({
+                "systemPrompt": "You are FutureAgent.",
+                "appendSystemPrompt": "Rule.",
+                "customSystemPrompt": "",
+                "contextFiles": ["AGENTS.md"],
+                "contextFilesEnabled": true,
+            })
+            .to_string(),
+        );
+        let (_agent, _env) = spawn(agent).await;
+        let (out, cap) = Output::memory();
+        run(&args(&["s1", "--system-prompt", "--json"]), &out)
+            .await
+            .expect("status --system-prompt --json");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(parsed["systemPrompt"], "You are FutureAgent.");
+        assert_eq!(parsed["appendSystemPrompt"], "Rule.");
+        assert_eq!(parsed["contextFilesEnabled"], json!(true));
     }
 
     /// An agent too old to know `get_system_prompt` says so instead of printing
