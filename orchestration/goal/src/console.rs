@@ -3252,7 +3252,7 @@ fn print_status_json(store: &Store, goal_filter: Option<String>) -> Result<()> {
                 "id": t.id,
                 "text": t.text,
                 "class": format!("{:?}", t.class),
-                "status": status_label(t),
+                "status": status_label(&goal, t),
                 "priority": format!("{:?}", t.priority),
                 "blocks": t.blocked_by_gate.clone().unwrap_or_default(),
                 "owner": t.owner,
@@ -3273,7 +3273,7 @@ fn print_goal_status(goal: &Goal) {
         "todos     : {}",
         goal.todos
             .iter()
-            .map(|t| format!("{}={}", t.id, status_label(t)))
+            .map(|t| format!("{}={}", t.id, status_label(goal, t)))
             .collect::<Vec<_>>()
             .join("  ")
     );
@@ -3349,25 +3349,50 @@ fn print_goal_status(goal: &Goal) {
     }
 }
 
-fn status_label(t: &Todo) -> &'static str {
-    if t.status == TodoStatus::Done {
-        if t.no_follow_up {
-            "done(no-follow-up)"
-        } else if !t.successor_ids.is_empty() {
-            "done(+successor)"
-        } else {
-            "done"
+/// Compact label for the `status` projection.
+///
+/// The text board and `--format json` both call this, so the two can never
+/// disagree about a todo's state.
+///
+/// Status wins over class. Deferred and blocked todos are NOT open, and the
+/// old class-only match reported both as `open` for advancement tasks, which
+/// made the board look dispatchable while the kernel would refuse the work
+/// (`quota should-run` already answers `wait` for a not-yet-due deferred todo).
+/// The class labels (GATE / action / monitor / blocker / coord) therefore only
+/// apply while the todo really is open.
+///
+/// Blocking is asked of the goal, not read off `Todo::blocked_by_gate`: a gate
+/// may also declare the edge from its own side, so an open todo can be held
+/// with the field unset.
+fn status_label(goal: &Goal, t: &Todo) -> &'static str {
+    match t.status {
+        TodoStatus::Done => {
+            if t.no_follow_up {
+                "done(no-follow-up)"
+            } else if !t.successor_ids.is_empty() {
+                "done(+successor)"
+            } else {
+                "done"
+            }
         }
-    } else if t.status == TodoStatus::Superseded {
-        "superseded"
-    } else {
-        match t.class {
-            TaskClass::Advancement => "open",
-            TaskClass::UserGate => "GATE",
-            TaskClass::UserAction => "action",
-            TaskClass::Monitor => "monitor",
-            TaskClass::Blocker => "blocker",
-            TaskClass::Coordination => "coord",
+        TodoStatus::Superseded => "superseded",
+        // Deferred wins over a simultaneous block: the resume clock is what
+        // makes it runnable again once it lapses.
+        TodoStatus::Deferred => "deferred",
+        TodoStatus::Blocked => "blocked",
+        TodoStatus::Open => {
+            if goal.is_blocked(t) {
+                "blocked"
+            } else {
+                match t.class {
+                    TaskClass::Advancement => "open",
+                    TaskClass::UserGate => "GATE",
+                    TaskClass::UserAction => "action",
+                    TaskClass::Monitor => "monitor",
+                    TaskClass::Blocker => "blocker",
+                    TaskClass::Coordination => "coord",
+                }
+            }
         }
     }
 }
@@ -9392,17 +9417,24 @@ mod coverage_tests {
 
     #[test]
     fn status_label_matrix() {
+        let empty = Goal::new("g", "obj", "/tmp");
         let mut t = Todo::advancement("t", "x");
         t.status = TodoStatus::Done;
         t.no_follow_up = true;
-        assert_eq!(status_label(&t), "done(no-follow-up)");
+        assert_eq!(status_label(&empty, &t), "done(no-follow-up)");
         t.no_follow_up = false;
         t.successor_ids = vec!["s".into()];
-        assert_eq!(status_label(&t), "done(+successor)");
+        assert_eq!(status_label(&empty, &t), "done(+successor)");
         t.successor_ids = vec![];
-        assert_eq!(status_label(&t), "done");
+        assert_eq!(status_label(&empty, &t), "done");
         t.status = TodoStatus::Superseded;
-        assert_eq!(status_label(&t), "superseded");
+        assert_eq!(status_label(&empty, &t), "superseded");
+        // Deferred and blocked todos are not open. Reporting them as `open`
+        // offered work the kernel answers `wait` for.
+        t.status = TodoStatus::Deferred;
+        assert_eq!(status_label(&empty, &t), "deferred");
+        t.status = TodoStatus::Blocked;
+        assert_eq!(status_label(&empty, &t), "blocked");
         for (class, label) in [
             (TaskClass::Advancement, "open"),
             (TaskClass::UserGate, "GATE"),
@@ -9413,8 +9445,56 @@ mod coverage_tests {
         ] {
             let mut t = Todo::advancement("t", "x");
             t.class = class;
-            assert_eq!(status_label(&t), label);
+            assert_eq!(status_label(&empty, &t), label);
         }
+    }
+
+    /// An OPEN todo held by an unresolved predecessor must not read `open`.
+    /// Both edge directions are covered: the dependent naming the gate, and the
+    /// gate naming its dependents (which leaves the field on the dependent
+    /// unset).
+    #[test]
+    fn status_label_marks_blocked_open_todos() {
+        let mut goal = Goal::new("g", "obj", "/tmp");
+        let mut gate = Todo::advancement("gate", "approve");
+        gate.class = TaskClass::UserGate;
+        goal.add(gate);
+        // Forward edge: the dependent declares `--blocks gate`.
+        let dependent = Todo::advancement("dep", "publish").blocking(&["gate"]);
+        goal.add(dependent);
+        // The plain open todo stays open.
+        goal.add(Todo::advancement("free", "unrelated"));
+        assert_eq!(
+            status_label(&goal, goal.todo("dep").expect("dep")),
+            "blocked",
+            "a todo held by an open gate must not read open"
+        );
+        assert_eq!(
+            status_label(&goal, goal.todo("free").expect("free")),
+            "open"
+        );
+        // Reverse edge: the gate declares its dependents.
+        let mut reverse_gate = Todo::advancement("gate2", "approve 2").blocking(&["rev"]);
+        reverse_gate.class = TaskClass::UserGate;
+        goal.add(reverse_gate);
+        goal.add(Todo::advancement("rev", "held from the other side"));
+        assert!(
+            goal.todo("rev").expect("rev").blocked_by_gate.is_none(),
+            "fixture must leave the dependent's own field unset"
+        );
+        assert_eq!(
+            status_label(&goal, goal.todo("rev").expect("rev")),
+            "blocked",
+            "a reverse-edge hold must not read open"
+        );
+        // Resolving the gate releases its dependent.
+        let mut resolved = goal.clone();
+        resolved.todo_mut("gate").expect("gate").status = TodoStatus::Done;
+        assert_eq!(
+            status_label(&resolved, resolved.todo("dep").expect("dep")),
+            "open",
+            "resolving the gate must return the dependent to open"
+        );
     }
 
     #[tokio::test]
