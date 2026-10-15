@@ -3,7 +3,7 @@
 > [English](embedded-agent-development.md)
 >
 > 设计日期：2026-10-13。源码基线：`88fe90a8`。
-> 状态：阶段一至六已实现。阶段五、六首次实施时按要求只做静态检查；随后用户授权的 macOS 单测与集成验收见第 10.7 节。第 10.4/10.5 节保留历史记录，第 10.6 节说明阶段六实现。阶段七、八、原生 Windows/Linux、真实安装升级与 PR CI 仍待完成。
+> 状态：阶段一至六已实现。macOS 验收见第 10.7 节；用户报告 Windows 全量单测通过，见第 10.8 节。阶段七进行中：CI、原生生命周期及升级 fixture 的验收入口已补齐，执行和发布验收仍待完成，见第 10.9 节。阶段八、原生 Linux 沙箱、真实安装升级和性能对比尚未完成。
 
 Desktop 在默认本地端点没有外部 Agent 且成功取得实例锁时，以 Rust library 的方式在自己的进程内运行完整 Agent。兼容外部服务继续连接，不兼容或持锁不可用的服务明确报错。外部 Agent、CLI、TUI、channels 和 loop 继续使用统一 RPC。改动的主要目的，是减少 Windows 启动和升级过程中 Desktop 与 sidecar 生命周期不同步的问题，同时保留实例锁、完整工具能力、持久化和外部客户端接入。
 
@@ -368,13 +368,15 @@ Linux helper 继续由当前宿主可执行文件进入，保留统一 CLI 的 `
 
 ### 阶段七 构建 CI 与发布验收
 
-- [ ] 修正路径过滤，让 Agent 及根 manifest/lock 变化触发 Desktop GUI/headless 编译与服务集成检查；Agent 改动也触发实际依赖它的 CLI/TUI 检查。
-- [ ] 更新 Windows 生命周期断言，增加真实 IPC、停机与隔离 fixture 原生检查。
+- [x] 修正路径过滤，让 Agent 及根 manifest/lock 变化触发 Desktop GUI/headless 编译与服务集成检查；Agent 改动也触发实际依赖它的 CLI/TUI 检查。
+- [x] 更新 Windows 生命周期断言，增加真实 IPC、停机与隔离 fixture 原生检查入口（原生执行结果仍待 CI/实机记录）。
 - [ ] 构建签名 Windows NSIS/便携、macOS app/DMG、Linux deb 与静态 headless 产物。
 - [ ] 对上一发布版本、内置首次版本、相同版本修复安装和两种升级方式做完整安装 smoke。
 - [ ] 测量冷启动、线程、内存、包体和清理时间，记录与原 sidecar 基线的差异。
 
 验收：PR CI 必需检查通过，打包文件验证和原生安装 smoke 通过；未测的平台不能标为通过。覆盖率不能用不运行真实服务的 mock 结果代替生命周期验收。
+
+实施和剩余验收见第 10.9 节。前两项勾选表示代码与入口已实现，不表示三平台 CI、PowerShell/NSIS 或发布产物已经验收通过。
 
 ### 阶段八 默认切换与文档收敛
 
@@ -552,6 +554,48 @@ cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --no-default-fe
 ```
 
 Windows GUI/headless 同样必须顺序执行。占位 CLI 仅供编译，NSIS 打包必须准备真实维护代码。以上 macOS 结果不能替代 Windows named pipe、Job/ACL、PowerShell、NSIS 编译、回滚和真实升级验收。
+
+### 10.8 Windows 单测交接结果（2026-10-15）
+
+用户在 Windows 电脑报告全量测试通过；单独运行 `doctor` 用例也正常。全量并行执行时的 `running for over 60 seconds` 提醒未伴随最终失败，符合共享环境锁排队的可能性，尚无逐段耗时记录证明每项等待来源。此前两组 doctor fixture 会运行写有占位文本或 shell 脚本的 `.exe`，已在 `7b7bb7b5` 和 `420299f4` 改为有效系统程序；用户确认不再出现 16 位程序兼容性弹窗。
+
+这是一条用户实机验收记录，没有附加用例数或归档日志，不补造通过数量。Windows 全量单测不能替代独立的 PowerShell/NSIS fixture、打包生命周期、升级/回滚验收。WSL 尝试曾遇到链接工具缺失和内存不足，尚未报告 Linux 测试通过；WSL 也不替代原生 Linux 沙箱验收。
+
+### 10.9 阶段七 CI 接入与发布验收清单（2026-10-15）
+
+本轮本地仅做静态检查：actionlint、Python 语法、四份 PowerShell 脚本的官方解析器校验、workspace fmt、`git diff --check` 以及 260 份文档结构检查通过；生命周期断言回归和原生 fixture 交给 CI，不在本地重跑单测。PowerShell 语法检查运行于 macOS，不代表 Windows API/NSIS 行为已验证。
+
+`ci.yml` 的 Agent 依赖变化现在触发 Desktop GUI/headless 和 CLI/TUI 检查，根 manifest/lock 和共享 settings/workspaces/tasks 的影响也纳入过滤。Linux 全量单测继续按 crate 分组，不在三平台重复全部测试。`Rust build (Linux/Windows/macOS)` 增加 `scripts/ci/check-embedded-agent.py`，顺序运行 RPC 连接门禁、Agent `service_startup`、GUI 和 headless 的 `agent_host::tests`。fixture 在独立进程中隔离 HOME、FUTURE_HOME 和本地端点，实际覆盖 Windows pipe/Unix socket、持锁拒绝、启动取消、全局停机、CLI 来源任务终态、重启和外部所有者存活。零匹配测试视为失败；每组命令、结果、耗时和日志写入 `target/embedded-agent-ci/`，由 CI 归档。CI 将构建并发限制为 2、测试并发为 1，使用 `CARGO_PROFILE_TEST_DEBUG=1`，不扩大到三平台全量单测。
+
+新增 `Windows update fixtures` PR 检查，用临时 C# 可执行文件和 NSIS 执行安装预检、清理失败门禁、租约、回滚、卸载及独立观察器成功/启动失败/安装失败/回滚不完整场景。既有签名构建调用同一预检入口，因此也会覆盖观察器。启动失败用不存在的安装器模拟，避免执行无效 EXE 触发系统模态弹窗。这些离线 fixture 不安装真实产品、不读写开发者真实 Agent 数据，也不能替代完整安装器验收。
+
+Windows 手工生命周期脚本使用 `ExpectEmbedded`（`ExpectBundled` 保留为别名），要求 `-InstallDirectory` 限定安装目录，遵循有效绝对 FUTURE_HOME 的数据根覆盖。它验证没有独立 Agent 子进程、实例锁仍持有、metadata 中 PID/可执行路径/创建时间/数据根对应 Desktop 或 headless 本身，并用打包 CLI 完成兼容性/readiness 与只读 `list_sessions` RPC。停止要求锁释放、metadata 删除；外部模式要求已核实外部 owner 存活。探测前后核对 owner，任何错误都不算通过。脚本采集宿主、sidecar（基线）及子进程的线程/内存快照，方便同机比较。
+
+在专用 Windows 测试用户或 VM、普通权限 PowerShell 中运行。下面的路径应替换为真实产物；所有相关进程必须继承同一数据根，并取消端点 override，使用默认本地 IPC：
+
+```powershell
+$env:FUTURE_HOME = 'C:\FutureOS-Acceptance\state'
+$env:FUTURE_AGENT_GRPC_ADDR = $null
+$env:FUTURE_AGENT_SOCKET = $null
+# 先启动 C:\FutureOS-Acceptance\app\futureos.exe，再观察。
+& ./scripts/tests/test-windows-sandbox-lifecycle.ps1 -Action ExpectEmbedded -InstallDirectory 'C:\FutureOS-Acceptance\app'
+# 用户从应用退出后观察锁和清理结果。
+& ./scripts/tests/test-windows-sandbox-lifecycle.ps1 -Action ExpectStopped -InstallDirectory 'C:\FutureOS-Acceptance\app'
+```
+
+| 剩余验收 | 入口与要求 | 当前状态 |
+| --- | --- | --- |
+| 三平台 CI | 新的原生 fixture、既有静态检查和 Linux 分组全量测试 | 待 PR CI 执行；未在本地重跑单测 |
+| Windows 离线更新 | `test-windows-installer-preflight.ps1`（含 observer）及 `test-install.ps1` | 待原生 CI/Windows 执行 |
+| 原生 Linux 沙箱 | `scripts/tests/test-linux-sandbox-real-machine.sh`；真实 Bubblewrap ≥ 0.9.0、helper 和子进程回收 | 待原生 Linux；WSL 不计通过 |
+| 签名与发布产物 | 既有 Windows/macOS 签名工作流、Linux deb/musl 工作流及 `scripts/ci/check-headless-linux.sh` | 待构建和产物验证；没有发布新版本 |
+| 真实安装升级 | 干净 VM 上的旧 sidecar 版→新版、内置版→新版、同版本修复；手动与应用自动升级 | 待执行；验证清理失败不安装、外部占用阻止替换、回滚保留用户数据 |
+| 产品交互 | GUI/CLI/TUI 真实工具对话、排队/审批退出提示、取消后重开、外部服务普通退出存活 | 后端已有 fixture，打包 UI/完整工具 smoke 待执行 |
+| 性能与体积 | 同机器、同配置、同任务，sidecar 与内置各至少 5 次；保留原始样本 | 待测量；没有宣称性能改善 |
+
+性能记录包含首次与重复启动到真实 RPC ready、idle 与并发对话的整个相关进程树线程/内存、各签名产物字节数、正常与强制清理耗时。Windows 快照分别记录 Working Set 与 Private Bytes，不把工作集相加当成无重复物理内存；其他平台使用一致口径。sidecar 基线使用上一发布产物；同一数据快照分别复制到隔离目录，完整退出后再切换，不能共享活跃数据库。缺少可比基线时记录绝对值并保持该项待验收。启动/清理必须满足已有 deadline；资源和包体回归阈值在取得基线后评审确定，不能以 mock 测试耗时替代。
+
+只有上述 CI、原生与发布验收证据齐全后，才进入阶段八。此节列的是已接入入口与待执行工作，不是发布批准。
 
 ## 11 发布条件与回退
 

@@ -150,6 +150,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'New fixture compilation failed' }
     $newFixtureHash = (Get-FileHash -LiteralPath $newFixture).Hash
     if ($newFixtureHash -eq $fixtureHash) { throw 'Old and new fixtures must differ' }
+    & (Join-Path $PSScriptRoot 'test-windows-update-launcher.ps1') -Fixture $fixture
+    Write-Host 'Windows update observer recovery regressions passed.'
     $installer = Join-Path $root 'preflight-setup.exe'
     & $MakeNsis /V2 /WX /INPUTCHARSET UTF8 "/DTEST_OUTFILE=$installer" "/DTEST_FIXTURE=$newFixture" (Join-Path $PSScriptRoot 'windows-installer-preflight.nsi')
     if ($LASTEXITCODE -ne 0) { throw 'NSIS compilation failed' }

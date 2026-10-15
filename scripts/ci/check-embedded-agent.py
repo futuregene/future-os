@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Native embedded-Agent regression gate; called by CI on all three OSes.
+
+Each service/host fixture owns its HOME, FUTURE_HOME and local IPC endpoint.
+Run only the lifecycle suites here, not the full unit suites. JSON and logs
+under target/embedded-agent-ci are uploaded even when a command fails.
+"""
+
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import subprocess
+import time
+
+
+def main():
+    root = Path(__file__).resolve().parents[2]
+    output = root / "target" / "embedded-agent-ci"
+    output.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env.setdefault("CARGO_BUILD_JOBS", "2")
+    env["CARGO_PROFILE_TEST_DEBUG"] = "1"
+    suites = [
+        ("connection", ["-p", "future-rpc", "--lib", "connection::tests"]),
+        ("service", ["-p", "future-agent", "--test", "service_startup"]),
+        (
+            "gui-host",
+            ["--manifest-path", "desktop/src-tauri/Cargo.toml", "--lib", "agent_host::tests"],
+        ),
+        (
+            "headless-host",
+            [
+                "--manifest-path", "desktop/src-tauri/Cargo.toml",
+                "--no-default-features", "--features", "headless",
+                "--lib", "agent_host::tests",
+            ],
+        ),
+    ]
+    summary = {
+        "platform": platform.platform(),
+        "commit": subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=root, text=True
+        ).strip(),
+        "suites": [],
+        "status": "running",
+    }
+    summary_path = output / "summary.json"
+    try:
+        for name, args in suites:
+            command = ["cargo", "test", "--locked", *args, "--", "--test-threads=1", "--nocapture"]
+            print(f"Running {name}: {' '.join(command)}", flush=True)
+            started = time.monotonic()
+            passed = 0
+            with (output / f"{name}.log").open("w", encoding="utf-8") as log:
+                with subprocess.Popen(
+                    command, cwd=root, env=env, stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
+                ) as child:
+                    for line in child.stdout:
+                        print(line, end="", flush=True)
+                        log.write(line)
+                        log.flush()
+                        match = re.search(r"test result: ok\. (\d+) passed;", line)
+                        if match:
+                            passed += int(match.group(1))
+                    code = child.wait()
+            summary["suites"].append({
+                "name": name, "command": command, "exit_code": code,
+                "passed": passed, "seconds": round(time.monotonic() - started, 3),
+            })
+            # A renamed filter silently running zero tests is not acceptance.
+            if code != 0 or passed == 0:
+                raise RuntimeError(f"{name} failed: exit={code}, passed={passed}")
+        summary["status"] = "passed"
+    except Exception as error:
+        summary["status"] = "failed"
+        summary["error"] = str(error)
+        raise
+    finally:
+        summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+
+
+if __name__ == "__main__":
+    main()

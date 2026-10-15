@@ -342,6 +342,15 @@ FutureOS.exe/future.exe in the same directory; NSIS is under
 `desktop\src-tauri\target\release\bundle\nsis\`. Each lifecycle call keeps an
 independently timestamped log; full command lines are not recorded.
 
+For embedded-Agent releases, pass `-InstallDirectory` to every `Expect*` call.
+`ExpectEmbedded` replaces child-process assertions; `ExpectBundled` remains an
+alias. The script verifies the instance lock, PID/path/creation time/data root
+and packaged CLI RPC, then lock release and metadata removal after exit. Use an
+isolated absolute FUTURE_HOME inherited by Desktop, external Agent and script.
+Unset FUTURE_AGENT_GRPC_ADDR/FUTURE_AGENT_SOCKET to validate ownership through
+default local IPC. Snapshot also records related process-tree thread/memory
+metrics; it is not a complete startup-time measurement.
+
 `-Action SeedCleanupFixture` only writes legal test metadata pointing at
 `%TEMP%\FutureOS-Sandbox-Lifecycle-Fixture` when record is 0 — no ACEs added,
 no real records overwritten. It proves the app/installer reaches reset, not by
@@ -351,11 +360,11 @@ the CLI reset can recover.
 
 | ID | Operation and lifecycle Action | Must observe |
 |---|---|---|
-| RM-01 | ExpectClean→start Desktop→start again→ExpectBundled | one Desktop/one Agent per user, Agent parented to Desktop |
-| RM-02 | ExpectBundled→SeedCleanupFixture→normal exit, wait up to 20 s→ExpectStopped | both processes exit, record 1→0 |
-| RM-03 | seed separately then clear-data restart, dev-environment-switch restart, post-update restart→ExpectRecovered | old Agent exits, new Agent unique and correctly configured, port released, record 0; NOT RUN when untriggerable |
-| RM-04 | manual `future.exe agent --grpc-addr 127.0.0.1:50051`, Desktop connects→ExpectExternalAttached→seed→exit Desktop→ExpectExternalSurvives | address matches FUTURE_AGENT_GRPC_ADDR; external Agent and record 1 kept; after its Ctrl+C ExpectClean back to 0 |
-| RM-05 | bundled+seed→Task Manager force kill→Snapshot→restart→ExpectRecovered | force kill promises no synchronous cleanup; singleton recoverable, startup GC back to 0; active leases not wrongly revoked |
+| RM-01 | ExpectClean→start Desktop→start again→ExpectEmbedded | one Desktop host owns the data-root lock, no standalone Agent child, real CLI RPC succeeds |
+| RM-02 | ExpectEmbedded→SeedCleanupFixture→normal exit, wait up to 20 s→ExpectStopped | host exits, instance lock released, metadata removed, record 1→0 |
+| RM-03 | seed separately then clear-data restart, dev-environment-switch restart, post-update restart→ExpectRecovered | old host exits, new host owns the lock and is ready, record 0; NOT RUN when untriggerable |
+| RM-04 | manual `future.exe agent`, Desktop connects→ExpectExternalAttached→seed→exit Desktop→ExpectExternalSurvives | default local IPC; verified external owner and record 1 survive, CLI still reads; after Ctrl+C ExpectClean returns to 0 |
+| RM-05 | embedded+seed→Task Manager force kill→Snapshot→restart→ExpectRecovered | force kill promises no synchronous cleanup; singleton recoverable, startup GC back to 0; active leases not wrongly revoked |
 | RM-06 | ExpectClean→seed→real release CLI `agent --reset-windows-sandbox`→ExpectClean; settings reset | same primitive, outputs removedCapabilities; active Jobs refused and not killed |
 | RM-07 | ordinary-user NSIS, exit/ExpectClean→seed→uninstall→ExpectClean | metadata cleaned, install dir removed, fixture/user data and unrelated DACLs kept; a failed reset does not delete the sidecar first |
 

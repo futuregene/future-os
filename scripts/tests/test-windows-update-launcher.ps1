@@ -14,9 +14,9 @@ try {
         Copy-Item -LiteralPath $Fixture -Destination $desktop
         Set-Content -LiteralPath (Join-Path $appDir 'record-launch') -Value 'record'
         $installer = Join-Path $staging 'installer.exe'
-        if ($case -eq 'launch-failure') {
-            Set-Content -LiteralPath $installer -Value 'invalid exe'
-        } else { Copy-Item -LiteralPath $Fixture -Destination $installer }
+        # Missing EXE gives a deterministic launch failure without Windows'
+        # modal "unsupported 16-bit application" dialog for malformed EXEs.
+        if ($case -ne 'launch-failure') { Copy-Item -LiteralPath $Fixture -Destination $installer }
         if ($case -eq 'installer-failure') {
             Set-Content -LiteralPath (Join-Path $staging 'fail-cleanup') -Value 'fail'
         }
@@ -54,7 +54,12 @@ try {
         }
         if ((Test-Path (Join-Path $appDir 'recovered.ready')) -ne $recoveryExpected) { throw "Unsafe/missing recovery for $case" }
         if (-not (Test-Path -LiteralPath $log)) { throw 'Missing installer diagnostics' }
+        Write-Host "PASS: update observer $case"
     }
+} catch {
+    Get-ChildItem -LiteralPath $root -Filter observer.log -Recurse -ErrorAction SilentlyContinue |
+        ForEach-Object { Write-Host $_.FullName; Get-Content -LiteralPath $_.FullName }
+    throw
 } finally {
     foreach ($child in $children) {
         if (-not $child.HasExited) { $child.Kill(); $null = $child.WaitForExit(5000) }

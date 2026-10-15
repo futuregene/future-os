@@ -3,9 +3,7 @@
 > [中文](embedded-agent-development.zh-CN.md)
 >
 > Design date: 2026-10-13. Source baseline: `88fe90a8`.
-> Status: phases one through four are implemented and pass local macOS acceptance and static checks.
-> User-requested tests ran on 2026-10-14: section 10.4 records historical phase-one-through-three results; section 10.5 records phase four.
-> Phases one through six are implemented. Phases five and six initially received static checks only; subsequent user-authorized macOS testing is recorded in section 10.7. Phases seven and eight, native Windows/Linux, real installation/upgrade and PR CI remain pending. Section 10.6 describes phase six.
+> Status: phases one through six are implemented. Section 10.7 records macOS acceptance; section 10.8 records the user's successful Windows unit-test run. Phase seven is in progress: CI, native lifecycle and update-fixture entry points are implemented, with execution/release acceptance pending (section 10.9). Phase eight, native Linux sandbox acceptance, real installation/upgrades and performance comparisons remain pending.
 > API sketches and acceptance matrices describe the complete target.
 
 Desktop will run the complete Agent inside its Rust process when the default
@@ -592,9 +590,9 @@ PowerShell/NSIS compilation and fault injection have not run.
 
 ### Phase seven CI and release acceptance
 
-- [ ] Trigger GUI/headless/service integration checks on Agent and root
+- [x] Trigger GUI/headless/service integration checks on Agent and root
       manifest/lock changes; trigger CLI/TUI checks for their Agent dependency.
-- [ ] Replace Windows child-count assertions and add real IPC/lifecycle fixtures.
+- [x] Replace Windows child-count assertions and add real IPC/lifecycle entry points (native CI/machine execution remains pending).
 - [ ] Build/sign NSIS/portable, macOS app/DMG, Linux deb and static headless.
 - [ ] Smoke-test previous release, first embedded release, same-version repair
       and both upgrade paths with complete installers.
@@ -604,6 +602,10 @@ PowerShell/NSIS compilation and fault injection have not run.
 Acceptance: required CI, artifact verification and native installer smoke pass.
 Unexecuted platforms are not labeled passed; mock coverage is not lifecycle
 acceptance.
+
+See section 10.9 for implementation and remaining acceptance. The first two
+checked items mean code/entry points exist, not that native CI, PowerShell/NSIS
+or release artifacts have passed.
 
 ### Phase eight Switch defaults and documentation
 
@@ -866,6 +868,102 @@ Run Windows GUI/headless sequentially too. Empty CLI files are compile-only;
 NSIS packaging requires real staged maintenance code. macOS results do not
 validate Windows named pipes, Job/ACL behavior, PowerShell, NSIS compilation,
 rollback or real upgrades.
+
+### 10.8 Windows unit-test handoff result (2026-10-15)
+
+The user reports that the Windows full test run passed and that running doctor
+tests alone also succeeded. During the full parallel run, slow-test warnings did
+not lead to failures; waiting for the shared environment lock is a plausible
+explanation, without per-section timing evidence identifying each wait. Two
+doctor fixtures previously executed `.exe` files containing placeholder text or
+shell scripts. Commits `7b7bb7b5` and `420299f4` replace them with valid system
+executables; the user confirms the 16-bit compatibility dialog disappeared.
+
+This is user-reported native evidence without attached counts or archived logs;
+no pass counts are invented. It does not replace PowerShell/NSIS fixtures,
+packaged lifecycle or installation/rollback acceptance. WSL attempts encountered
+missing linker tools and insufficient memory, with no successful Linux run
+reported. WSL does not replace native Linux sandbox acceptance.
+
+### 10.9 Phase-seven CI integration and release acceptance checklist (2026-10-15)
+
+Local checks are static only: actionlint, Python syntax, official PowerShell
+parser checks for four scripts, workspace fmt, `git diff --check` and structural
+checks of 260 documents passed. Lifecycle assertion regressions and native
+fixtures run in CI; no local unit-test rerun. PowerShell parsing on macOS does
+not validate Windows API/NSIS behavior.
+
+Agent dependency changes now trigger Desktop GUI/headless and CLI/TUI checks in
+`ci.yml`, including root manifest/lock and shared settings/workspaces/tasks
+dependencies. Linux full unit suites remain split by crate instead of repeating
+every suite on three platforms. `Rust build (Linux/Windows/macOS)` runs
+`scripts/ci/check-embedded-agent.py`: RPC connection gates, Agent
+`service_startup`, GUI `agent_host::tests`, then headless `agent_host::tests`.
+Separate fixture processes isolate HOME, FUTURE_HOME and local endpoints while
+exercising Windows pipes/Unix sockets, occupied locks, startup cancellation,
+global shutdown, durable CLI-origin cancellation, restart and external-owner
+survival. Zero matching tests fail the gate. Commands, results, durations and
+logs under `target/embedded-agent-ci/` are uploaded by CI. Build concurrency is
+limited to 2, test concurrency to 1, with `CARGO_PROFILE_TEST_DEBUG=1`.
+
+The new `Windows update fixtures` PR check uses temporary C# executables and
+NSIS to exercise preflight, cleanup-failure gating, leases, rollback, uninstall
+and observer success/launch-failure/install-failure/incomplete-rollback paths.
+The existing signed build uses the same preflight entry point and thus also
+includes the observer. A missing installer simulates launch failure without an
+invalid EXE raising a Windows modal dialog. Offline fixtures neither install the
+real product nor use the developer's live Agent data; complete-installer
+acceptance is still required.
+
+The manual Windows lifecycle script uses `ExpectEmbedded` (`ExpectBundled` is an
+alias), requires `-InstallDirectory` for scoped assertions, and respects a valid
+absolute FUTURE_HOME. It checks that there is no standalone Agent child, the
+instance lock is held, and metadata PID/executable/creation time/data root match
+the Desktop/headless host itself. The packaged CLI must complete compatibility,
+readiness and a read-only `list_sessions` RPC. Stopping requires lock release
+and metadata removal; external mode requires a verified surviving owner.
+Ownership is checked again after the probe. Snapshots include host, sidecar
+baseline and descendant thread/memory metrics for same-machine comparisons.
+
+Use an isolated Windows test account/VM and an unelevated PowerShell. Substitute
+actual artifact paths; all related processes must inherit the same data root.
+Unset endpoint overrides and use default local IPC:
+
+```powershell
+$env:FUTURE_HOME = 'C:\FutureOS-Acceptance\state'
+$env:FUTURE_AGENT_GRPC_ADDR = $null
+$env:FUTURE_AGENT_SOCKET = $null
+# Start C:\FutureOS-Acceptance\app\futureos.exe, then observe.
+& ./scripts/tests/test-windows-sandbox-lifecycle.ps1 -Action ExpectEmbedded -InstallDirectory 'C:\FutureOS-Acceptance\app'
+# Quit through the app, then check ownership and cleanup.
+& ./scripts/tests/test-windows-sandbox-lifecycle.ps1 -Action ExpectStopped -InstallDirectory 'C:\FutureOS-Acceptance\app'
+```
+
+| Remaining acceptance | Entry point and requirement | Current status |
+| --- | --- | --- |
+| Three-platform CI | New native fixtures, existing static gates and grouped Linux full tests | Awaiting PR CI; no local unit-test rerun |
+| Windows offline updates | `test-windows-installer-preflight.ps1` including observer, and `test-install.ps1` | Awaiting native CI/Windows execution |
+| Native Linux sandbox | `scripts/tests/test-linux-sandbox-real-machine.sh`; actual Bubblewrap ≥ 0.9.0, helper and child cleanup | Awaiting native Linux; WSL is not acceptance |
+| Signing and artifacts | Existing Windows/macOS signed workflows, Linux deb/musl workflows, `scripts/ci/check-headless-linux.sh` | Awaiting builds/artifact verification; no new release published |
+| Actual installation/upgrades | Clean VM: old sidecar → embedded, embedded → new, same-version repair; manual and in-app updates | Pending; verify failed cleanup forbids installation, external locks block replacement, rollback preserves user data |
+| Product interaction | GUI/CLI/TUI tools, queued work/approval exit prompt, reopen after cancellation, external-owner survival | Backend fixtures exist; packaged UI/full-tool smoke pending |
+| Performance and size | Same machine/configuration/task, at least 5 samples for sidecar and embedded | Pending; no performance improvement claimed |
+
+Record first/repeated startup to a real RPC-ready response, idle/concurrent-chat
+thread and memory metrics for the entire related process tree, signed artifact
+bytes, and normal/forced cleanup time. Windows snapshots record Working Set and
+Private Bytes separately; summed working sets are not unique physical memory.
+Keep measurement definitions consistent on other platforms. Use the preceding
+release as the sidecar baseline, copy the same data snapshot into separate
+isolated roots, and fully stop before switching. Never share an active database.
+Without a comparable baseline, record absolute values and leave comparison
+pending. Startup/cleanup must satisfy existing deadlines; resource/package
+regression thresholds require baseline review. Mock-test duration is not a
+product performance measurement.
+
+Proceed to phase eight only after CI, native and release evidence is complete.
+This section records implemented entry points and pending work, not release
+approval.
 
 ## 11 Release conditions and rollback
 

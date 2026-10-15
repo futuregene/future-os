@@ -23,9 +23,10 @@ Desktop packaging scripts that mirror the CI pipelines.
 
 ## dev/
 
-Local development sessions that build and start the agent plus one frontend.
+Local development sessions. Desktop starts its embedded Agent by default;
+`FUTURE_DESKTOP_AGENT_MODE=external` only attaches to a separately started service.
 
-- `start-desktop-linux.sh` — Linux Tauri desktop dev session against a locally built agent.
+- `start-desktop-linux.sh` — Linux Tauri desktop dev session with the embedded Agent.
 - `start-desktop-macos.sh` — macOS equivalent of the above.
 - `start-desktop-windows.bat` — Windows equivalent of the above.
 - `start-mobile-android.sh` — Expo/Android dev session (SDK checks, prebuild, Gradle or Metro).
@@ -109,7 +110,12 @@ Offline regression tests and native acceptance scripts (not run by CI by default
 - `test-windows-installer-preflight.ps1` — NSIS installer lifecycle acceptance using the fixtures below.
 - `test-windows-sandbox.ps1` — Windows native sandbox acceptance (invoked manually, not by CI).
 - `test-windows-sandbox-lifecycle.ps1` — sandbox lifecycle acceptance actions
-  (Snapshot / ExpectBundled / SeedCleanupFixture / ExpectStopped).
+  (Snapshot / ExpectEmbedded / SeedCleanupFixture / ExpectStopped). Assertions
+  require `-InstallDirectory`; verify embedded host ownership, lock and real CLI RPC.
+- `test-windows-lifecycle-assertions.ps1` — offline regressions for lifecycle
+  assertions; imports only pure functions, without inspecting or modifying live state.
+- `test-windows-update-launcher.ps1` — offline update observer/recovery fixtures,
+  invoked by the installer preflight suite with its compiled fixture executable.
 - `test_s2_compaction.py` — local S2-compaction smoke against a built `future` binary.
 - `validate-ios-share-profiles.py` — fails before archiving when the host/extension
   provisioning profiles lack shared entitlements.
@@ -121,6 +127,8 @@ Offline regression tests and native acceptance scripts (not run by CI by default
 
 CI helper scripts (invoked from the workflow files).
 
+- `check-embedded-agent.py` — narrow native RPC/service/GUI/headless lifecycle
+  gate on Linux, Windows and macOS; uploads logs and a JSON summary through CI.
 - `check-headless-linux.sh` — verifies the release binary is statically linked, then
   starts it in a clean, networkless Linux image with an old glibc (the portable-bundle baseline).
 - `install-apt-packages.sh` — installs CI-only Ubuntu packages with a fast failover from
