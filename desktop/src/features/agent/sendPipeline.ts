@@ -11,6 +11,7 @@ import { errorMessage } from "../../lib/errors";
 import {
   buildAgentFailureContent,
   buildAgentFailureTitle,
+  isQueuedRunKind,
   matchesSettledRun,
   responseTerminationError,
   updateRunStatusSafe,
@@ -48,8 +49,9 @@ export interface SendPipelineDeps {
 
 /**
  * The end-to-end send pipeline: optimistic bubbles → attachment import + inline
- * context → persistence → run creation → live streaming poll → the four settle
- * branches (user abort, interrupted stream, clean completion, thrown error).
+ * context → persistence → run creation → live streaming poll → the settle
+ * branches (user abort, queued handoff, interrupted stream, clean completion,
+ * thrown error).
  * Kept as a non-React function so it stays unit-testable and out of the hook's
  * effect graph; the in-flight lock (`sendingRef`) and send generation live in
  * the `useSendMessage` wrapper that calls this.
@@ -244,6 +246,27 @@ export async function runSendPipeline(
       // row anyway), but fall through to the shared finalization so the
       // bubble still renders the final content.
       settledElsewhere = true;
+    }
+    // The Agent ACCEPTED the prompt but this session was already executing a
+    // run, so the submission sits in its queue (`queue_position` ack) and the
+    // invoke answers as soon as the ack lands — nothing has streamed yet, and
+    // `complete: false` here does not mean a cut-off reply. The run is alive:
+    // the backend keeps its row non-terminal and hands the projection to the
+    // session observer once the run starts. So do NOT settle it as a failure
+    // (that cancelled the user's real answer and painted "response did not
+    // complete"), and do not tear the view down either — leave the streaming
+    // bubble in place and let the re-attach path paint the run's output when it
+    // starts and reload the persisted reply when it ends.
+    if (isQueuedRunKind(reply.terminationKind)) {
+      if (isCurrentSend()) {
+        // Nothing is generating yet — this run waits for its turn behind the one
+        // already executing — so drop the "thinking…" hint the optimistic bubble
+        // started with. The bubble itself stays streaming: re-attach paints this
+        // run's output once it starts and reloads the persisted reply when it ends.
+        patchMessage(setMessages, pendingId, { thinkingActive: false });
+        onThreadActivity();
+      }
+      return;
     }
     // The stream closed before the agent signalled a clean end: the text is a
     // truncated prefix, not a finished answer. Persist it (so the partial isn't

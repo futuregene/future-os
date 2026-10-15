@@ -19,7 +19,7 @@ interface UseRunReattachInput {
   // the array it commits itself, so re-attach only starts once loading settles.
   loadingThread: boolean;
   // In-flight lock owned by the parent: while a local send owns the view it
-  // renders the stream itself, so every re-attach path skips.
+  // renders the stream itself.
   sendingRef: MutableRefObject<boolean>;
   setMessages: Dispatch<SetStateAction<AgentMessage[]>>;
   refreshRecentRun: (threadId: string) => Promise<void>;
@@ -51,21 +51,30 @@ export function useRunReattach({
 
   // Re-attach a live preview to a run that this view didn't start (or is no
   // longer driving): a conversation started, backgrounded, and returned to while
-  // still running, or one picked up after an app reload. While a local send owns
-  // the view (`sendingRef`), that path renders the stream itself, so skip.
+  // still running, or one picked up after an app reload.
+  //
+  // Arming is deliberately NOT gated on the send lock. A local send can stop
+  // driving its run while it is still in flight — the Agent accepted the prompt
+  // but queued it behind a run already executing, and the invoke answers at the
+  // ack, before a single event exists. The send releases the lock when its
+  // pipeline returns, so this path has to be armed already and driven by the
+  // per-write lock instead: `isLive` refuses every projection while a send owns
+  // the view, and once it releases the lock the very next push (or the
+  // self-heal pass) paints the queued run without needing a re-render to
+  // re-arm.
   //
   // The `loadingThread` gate keeps the first tick (and the push listener) off
   // until this thread's load has committed the messages base: the load folds
   // the run's live bubble into the array it commits, so ticking earlier would
   // only race that fold.
   useEffect(() => {
-    if (!threadId || !activeRunId || sendingRef.current || loadingThread)
+    if (!threadId || !activeRunId || loadingThread)
       return;
 
     const runId = activeRunId;
     const startedAt = activeRunStartedAt;
     let cancelled = false;
-    const isLive = () => !cancelled;
+    const isLive = () => !cancelled && !sendingRef.current;
     // Coalesced and rate-limited (see liveStreamTick): a frame-rate push stream
     // would otherwise re-project — and therefore re-lay-out the whole message —
     // on every notification, which is what wedged the UI on long reasoning
