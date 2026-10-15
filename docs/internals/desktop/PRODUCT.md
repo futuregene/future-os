@@ -620,6 +620,11 @@ includes collapsed children in the current group.
 A pinned conversation belongs to the pinned section rather than to any group,
 so it is never part of a batch: it carries no checkbox and select-all (in a
 workspace group or in Chat) skips it on both desktop and mobile.
+While a batch is being assembled every selectable row — a conversation on another
+machine included — carries the checkbox **in place of** its run indicator and its
+`…` actions menu: the row then answers one question (in or out of the batch), and
+a `…` that appeared on hover would offer rename/delete/fork for the very row the
+pointer is about to tick.
 
 A child conversation's expand toggle must be a **+ / − tree-node toggle**
 (collapsed `+`, expanded `−`), which is a different icon from the workspace /

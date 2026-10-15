@@ -140,8 +140,9 @@ export function RemoteConversationRow({
       {selectionMode
         ? (
             // The same control, in the same slot, as the local row's: the
-            // checkbox replaces the run indicator rather than joining it, so the
-            // two kinds of row line up while a batch is being assembled.
+            // checkbox replaces the run indicator *and* the actions trigger
+            // rather than joining them, so the two kinds of row line up while a
+            // batch is being assembled.
             <input
               aria-label={t("selectConversation", { title: conversation.title })}
               checked={selected === true}
@@ -154,13 +155,22 @@ export function RemoteConversationRow({
             />
           )
         : (
-            <RailRowIndicator status={conversation.streaming ? "running" : unread ? "completed" : undefined} unread={unread} />
+            <>
+              <RailRowIndicator status={conversation.streaming ? "running" : unread ? "completed" : undefined} unread={unread} />
+              {/* The actions trigger is part of what the checkbox replaces, as
+                  it is on the local row: while a batch is being assembled the
+                  pointer is over the list ticking rows, and a `…` that appears
+                  under it offers rename/delete/fork for the one row the user is
+                  about to tick — the same menu, meaning a different thing, in
+                  the one state where the row is answering "in or out of the
+                  batch". */}
+              <RailRowMenuButton
+                label={t("conversationActions")}
+                menuOpen={menuOpen}
+                onToggle={() => setMenuOpen(open => !open)}
+              />
+            </>
           )}
-      <RailRowMenuButton
-        label={t("conversationActions")}
-        menuOpen={menuOpen}
-        onToggle={() => setMenuOpen(open => !open)}
-      />
       {menuOpen
         ? (
             <RemoteConversationMenu
