@@ -31,12 +31,34 @@ export interface AttachmentInput {
   thumbnail?: string;
 }
 
+/**
+ * Stable terminal categories the backend reports on a reply that ended before a
+ * clean `agent_end`, mirroring `agent_bridge::stream::termination_error`.
+ */
+export type ResponseTerminationKind
+  = | "upstream_disconnected"
+    | "response_timeout"
+    | "output_limit"
+    | "model_content_filter"
+    | "model_response_error"
+    | "model_paused"
+    | "provider_cancelled"
+    | "response_unconfirmed"
+    /**
+     * NOT a failure: the Agent accepted the prompt and queued it behind the run
+     * already executing. The run is alive and its reply still arrives.
+     */
+    | "run_queued";
+
 interface AgentPromptResponse {
   content: string;
   /** False when the agent stream ended before a clean `agent_end`. */
   complete?: boolean;
-  /** Stable failure category when `complete` is false. */
-  terminationKind?: "upstream_disconnected" | "model_response_error";
+  /**
+   * Stable terminal category when `complete` is false. Not necessarily a failure:
+   * `run_queued` means the run is alive behind another one.
+   */
+  terminationKind?: ResponseTerminationKind;
   /** The stable Agent session id bound to this conversation. */
   sessionId?: string;
 }
