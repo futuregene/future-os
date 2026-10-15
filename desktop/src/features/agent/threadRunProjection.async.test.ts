@@ -101,7 +101,12 @@ describe("upsertStreamingPreview", () => {
     const { setMessages, state } = collect([userMessage("u1")]);
     await upsertStreamingPreview("r-up3", 1000, setMessages);
     const bubble = state().find(m => m.id === "stream_r-up3");
-    expect(bubble).toMatchObject({ content: "partial", status: "streaming", runId: "r-up3" });
+    expect(bubble).toMatchObject({
+      content: "partial",
+      createdAt: new Date(1000).toISOString(),
+      status: "streaming",
+      runId: "r-up3",
+    });
 
     // Second push: incremental fetch (since watermark) updates in place.
     listRunEventsSince.mockResolvedValue(textEvents("r-up3", " more", 1));
@@ -110,6 +115,25 @@ describe("upsertStreamingPreview", () => {
     expect(bubbles).toHaveLength(1);
     expect(bubbles[0]).toMatchObject({ content: "partial more" });
     expect(listRunEventsSince).toHaveBeenLastCalledWith("r-up3", 0);
+  });
+
+  it("corrects a reattached bubble stamped later than the run start", async () => {
+    listRunEventsSince.mockResolvedValue(textEvents("r-reattach", "still working"));
+    const stale = message("stream_r-reattach", {
+      runId: "r-reattach",
+      runStartedAt: 1000,
+      status: "streaming",
+      createdAt: new Date(60_000).toISOString(),
+    });
+    const { setMessages, state } = collect([userMessage("u1"), stale]);
+
+    await upsertStreamingPreview("r-reattach", 1000, setMessages);
+
+    expect(state()[1]).toMatchObject({
+      content: "still working",
+      createdAt: new Date(1000).toISOString(),
+      runStartedAt: 1000,
+    });
   });
 
   it("renders reasoning-only deltas immediately and appends answer text on the next push", async () => {
@@ -221,7 +245,12 @@ describe("buildStreamingPreview", () => {
     await expect(buildStreamingPreview("r-b1")).resolves.toBeNull();
     listRunEventsSince.mockResolvedValue(textEvents("r-b2", "content"));
     const bubble = await buildStreamingPreview("r-b2", 500);
-    expect(bubble).toMatchObject({ id: "stream_r-b2", content: "content", status: "streaming" });
+    expect(bubble).toMatchObject({
+      id: "stream_r-b2",
+      content: "content",
+      createdAt: new Date(500).toISOString(),
+      status: "streaming",
+    });
   });
 
   it("emits file-tree-refresh when tool activity appears", async () => {
