@@ -258,8 +258,10 @@ future run --session <id> "<message>"     # 在那个会话里起一次 run
 只有调用方知道用户真正想要什么。
 它就是 `#` 选中的会话引用的「发送」那一半：用户消息里可以带
 `[标题](futureos://session/<id>)`，链接里的 id 正是 `--session` 的参数。
-这是另一个会话里的一次完整 run，因此会花积分；命令会在那次 run 结束时返回
-（受 shell 工具自身的超时约束），长时间的任务需要相应调大超时。
+这是另一个会话里的一次完整 run，因此会花积分。默认情况下命令会在那次 run
+结束时返回；加 `--no-wait` 可立即拿到 ack（run id 与 accepted state），
+之后再用 `future session wait <id>` 或 `future session transcript --session <id>`
+取回结果（长时间任务仍需要相应调大 shell 超时）。
 「读」的那一半是上面的 `future session transcript --session <id>` /
 `future session history search --session <id>`。
 

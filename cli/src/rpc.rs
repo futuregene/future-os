@@ -984,8 +984,11 @@ impl RunClient {
             out.write_err("Running...\n");
         }
         let is_supersede = config.busy_policy == BUSY_SUPERSEDE;
+        let is_no_wait = config.no_wait;
         let busy_policy: &str = if is_supersede {
             BUSY_SUPERSEDE
+        } else if is_no_wait {
+            "enqueue_coalescing"
         } else {
             BUSY_ENQUEUE
         };
@@ -997,7 +1000,61 @@ impl RunClient {
             None
         };
 
-        let (events, text) = if !is_supersede && is_fresh {
+        let (events, text) = if is_no_wait {
+            // Fire-and-forget: prompt and return immediately. The caller gets
+            // the ack (run id / accepted state / queue position) but does not
+            // subscribe to the event stream.
+            let ack = self
+                .prompt(&config.message, &session_id, busy_policy)
+                .await?;
+            if config.mode == "json" {
+                let mut result = Map::new();
+                result.insert("sessionId".to_string(), Value::String(session_id.clone()));
+                result.insert(
+                    "runId".to_string(),
+                    Value::String(
+                        ack.get("run_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                    ),
+                );
+                result.insert(
+                    "acceptedState".to_string(),
+                    Value::String(
+                        ack.get("accepted_state")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                    ),
+                );
+                if let Some(pos) = ack.get("queue_position") {
+                    result.insert("queuePosition".to_string(), pos.clone());
+                }
+                out.write_out(
+                    &serde_json::to_string_pretty(&Value::Object(result)).unwrap_or_default(),
+                );
+                out.write_out("\n");
+            } else {
+                let run_id = ack.get("run_id").and_then(Value::as_str).unwrap_or("");
+                let state = ack
+                    .get("accepted_state")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let mut line = format!("Run {run_id} accepted ({state}) in session {session_id}");
+                if let Some(pos) = ack.get("queue_position") {
+                    line.push_str(&format!(" | queue position: {pos}"));
+                }
+                out.write_out(&line);
+            }
+            return Ok(RunResult {
+                session_id,
+                text: String::new(),
+                events: Vec::new(),
+                model: None,
+                thinking_level: None,
+            });
+        } else if !is_supersede && is_fresh {
             // Fresh session + follow-up (idle): subscribe before prompting so
             // no early event is missed, then prompt and wait for the run.
             let stream_session = session_id.clone();
@@ -1076,10 +1133,10 @@ impl RunClient {
             }
             result.insert("text".to_string(), Value::String(text.clone()));
             result.insert("messages".to_string(), Value::Array(events.clone()));
-            out.write_out(&format!(
-                "{}\n",
-                serde_json::to_string_pretty(&Value::Object(result)).unwrap_or_default()
-            ));
+            out.write_out(
+                &serde_json::to_string_pretty(&Value::Object(result)).unwrap_or_default(),
+            );
+            out.write_out("\n");
         } else {
             // Add trailing newline if text doesn't already end with one
             if !text.is_empty() && !text.ends_with('\n') {
@@ -1336,6 +1393,10 @@ pub struct RunConfig {
     /// (follow-up, the default) or `supersede_session` (steering — interrupts
     /// the active run).
     pub busy_policy: String,
+    /// When true, the CLI prints the prompt ack and exits without streaming
+    /// the response. This is the fire-and-forget path used by scripts and
+    /// by callers that want to retrieve the result later.
+    pub no_wait: bool,
 }
 
 impl Default for RunConfig {
@@ -1359,6 +1420,7 @@ impl Default for RunConfig {
             message: String::new(),
             auto_title: true,
             busy_policy: String::new(),
+            no_wait: false,
         }
     }
 }
@@ -2535,6 +2597,84 @@ mod tests {
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0].busy_policy, "supersede_session");
         assert_eq!(prompts[0].message, "steer me");
+    }
+
+    /// `--no-wait` returns the ack and exits without subscribing.
+    #[tokio::test]
+    async fn run_no_wait_returns_ack_and_exits() {
+        let mut agent = MockAgent::default();
+        agent
+            .responses
+            .insert("new_session".into(), "{\"sessionId\":\"s-nw\"}".into());
+        agent.responses.insert(
+            "prompt".into(),
+            "{\"run_id\":\"r-nw\",\"run_epoch\":1,\"accepted_state\":\"running\",\"queue_position\":0}".into(),
+        );
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, cap) = Output::memory();
+        let mut config = run_config("hi");
+        config.no_wait = true;
+        let result = client.run(&config, &out).await.expect("run --no-wait");
+        assert_eq!(result.session_id, "s-nw");
+        assert!(result.text.is_empty());
+        assert!(result.events.is_empty());
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("Run r-nw accepted (running) in session s-nw"));
+        // It did not open an event stream.
+        assert!(agent.seen_of("stream_events").is_empty());
+        // It used the fire-and-forget busy policy.
+        assert_eq!(agent.seen_of("prompt")[0].busy_policy, "enqueue_coalescing");
+    }
+
+    /// `--no-wait` in json mode emits a structured ack.
+    #[tokio::test]
+    async fn run_no_wait_json_mode() {
+        let mut agent = MockAgent::default();
+        agent
+            .responses
+            .insert("new_session".into(), "{\"sessionId\":\"s-nw\"}".into());
+        agent.responses.insert(
+            "prompt".into(),
+            "{\"run_id\":\"r-nw\",\"run_epoch\":1,\"accepted_state\":\"queued\",\"queue_position\":3}".into(),
+        );
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, cap) = Output::memory();
+        let mut config = run_config("hi");
+        config.no_wait = true;
+        config.mode = "json".to_string();
+        client.run(&config, &out).await.expect("run --no-wait json");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(parsed["sessionId"], "s-nw");
+        assert_eq!(parsed["runId"], "r-nw");
+        assert_eq!(parsed["acceptedState"], "queued");
+        assert_eq!(parsed["queuePosition"], 3);
+    }
+
+    /// `--no-wait` with `--steer` still uses `supersede_session`.
+    #[tokio::test]
+    async fn run_no_wait_with_steer_keeps_supersede() {
+        let mut agent = MockAgent::default();
+        agent
+            .responses
+            .insert("new_session".into(), "{\"sessionId\":\"s-nw\"}".into());
+        agent.responses.insert(
+            "prompt".into(),
+            "{\"run_id\":\"r-nw\",\"run_epoch\":1,\"accepted_state\":\"running\"}".into(),
+        );
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let mut config = run_config("hi");
+        config.no_wait = true;
+        config.busy_policy = BUSY_SUPERSEDE.to_string();
+        client
+            .run(&config, &out)
+            .await
+            .expect("run --no-wait --steer");
+        assert_eq!(agent.seen_of("prompt")[0].busy_policy, "supersede_session");
     }
 
     #[tokio::test]

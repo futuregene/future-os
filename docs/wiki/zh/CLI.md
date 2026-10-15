@@ -130,6 +130,7 @@ future run "介绍一下这个项目"
 | `--permission <level>` | `all`（新会话默认，不受限）、`workspace`（审批门控访问）、`none`（拒绝所有工具调用）。这不是 OS 沙箱选择器，见 [[审批与沙箱|Sandbox]]。 |
 | `--tools`、`-t <names>` | 用逗号分隔要启用的工具名（如 `read,shell`）；`--no-tools` / `--no-builtin-tools` 可禁用工具。 |
 | `--steer` | 中断当前会话正在运行的任务；不传时，新 prompt 排在忙碌任务之后。 |
+| `--no-wait` | 提交 prompt 并打印 ack 后立即退出；稍后可用 `future session wait <id>` 取回结果。 |
 | `--system-prompt`、`--append-system-prompt` | 替换或追加系统提示词。 |
 | `--cwd <dir>` | 设置工作目录。 |
 | `--mode json` | 以 JSON 而非文本打印回答。 |
@@ -230,6 +231,7 @@ future session title <id> [--apply]      # 生成标题（一次模型调用）
 future session export <id> [--out <path>]
 future session abort <id>                # 停掉活动 run 并清空队列
 future session cancel <id> --run <run-id>
+future session wait <id> [--run <run-id>] [--timeout <duration>]  # 等待某个 run 结束并打印结果
 future session approvals <id>
 future session approve <id> <request-id> [--allow <glob>]
 future session reject <id> <request-id>

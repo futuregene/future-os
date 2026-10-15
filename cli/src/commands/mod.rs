@@ -21,6 +21,7 @@ mod session_control;
 mod session_history;
 mod session_status;
 mod session_transcript;
+mod session_wait;
 pub mod settings;
 pub mod skills;
 pub mod task;

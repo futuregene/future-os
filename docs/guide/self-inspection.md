@@ -303,10 +303,12 @@ already under way alone, interrupting pre-empts it, and only the caller knows
 what the user actually wanted. This is the send half of a `#`-picked conversation
 reference: a user message can carry `[title](futureos://session/<id>)`, and the id
 in that link is what `--session` takes. It is a full run in the other
-conversation, so it spends credits, and the command returns when that run ends
-(the shell tool's own timeout applies) — a long one needs a raised timeout. The
-read half is `future session transcript --session <id>` /
-`future session history search --session <id>` above.
+conversation, so it spends credits. The command returns when that run ends by
+default; use `--no-wait` to get an immediate ack (run id and accepted state),
+continue working, and retrieve the result later with `future session wait <id>`
+or `future session transcript --session <id>` (a long run may still need a
+raised shell timeout). The read half is `future session transcript --session <id>`
+/ `future session history search --session <id>` above.
 
 Two things only the sender can supply, because the target conversation receives
 a bare user turn: **provenance** — that the message came from another

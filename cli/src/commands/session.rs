@@ -29,11 +29,12 @@ Usage:
   future session title <id>                          Generate a title (a model call)
   future session export <id> [--out <path>]          Write the session to an HTML file
   future session abort <id>                          Stop the active run and clear the queue
-  future session cancel <id> --run <run-id>          Cancel one queued run
+  future session cancel <id> --run <run-id>            Cancel one queued run
+  future session wait <id> [--run <run-id>]            Wait for a run to finish and print its answer
   future session approvals <id> [--json]             Approval requests the session waits on
-  future session approve <id> <request-id> [opts]    Allow a pending approval
-  future session reject <id> <request-id> [opts]     Deny a pending approval
-  future session delete <id>                         Delete a session
+  future session approve <id> <request-id> [opts]      Allow a pending approval
+  future session reject <id> <request-id> [opts]       Deny a pending approval
+  future session delete <id>                           Delete a session
 
 Session data is stored in ~/.future/agent/agent.db";
 
@@ -1303,6 +1304,10 @@ pub async fn session(
 
     if subcommand == "status" {
         return super::session_status::run(args, out).await;
+    }
+
+    if subcommand == "wait" {
+        return super::session_wait::run(args, out).await;
     }
 
     // Stop/approve actions own their own argument shapes (`abort <id>` takes no
