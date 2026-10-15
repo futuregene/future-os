@@ -7,7 +7,7 @@
 //! Strictly read-only: only GET endpoints are served (any other method is a
 //! 405), and every projection reads exclusively from the goal state root
 //! (`.future/goal/` — the event ledger and its replayed state). Mutations
-//! (gate resolve, goal cancel, …) stay in the `future goal` CLI.
+//! (gate resolve, cancel, …) stay in the `future goal` CLI.
 //!
 //! Surface:
 //!   GET  /                              embedded dashboard (static)

@@ -18,8 +18,12 @@ fn goal_init_variants_and_errors() {
     // Missing --objective.
     let err = cli_err(&["goal", "init", "--goal-id", "goal_x"]);
     assert!(err.contains("--objective"), "{err}");
-    // `goal` with no args at all takes the init path and fails the same way.
+    // A bare group name is not a command: it says which group it is and how to
+    // use it instead of guessing a verb.
     let err = cli_err(&["goal"]);
+    assert!(err.contains("command group"), "{err}");
+    // The canonical spelling omits the group prefix and fails the same way.
+    let err = cli_err(&["init"]);
     assert!(err.contains("--objective"), "{err}");
     // --goal-doc writes GOAL.md into the goal cwd.
     let gid = init_goal(&cr, "doc goal");
