@@ -283,7 +283,10 @@ export class SyncEngine {
     return state;
   }
 
-  /** Immediately restart one lane, preserving its last committed UI snapshot. */
+  /**
+   * Immediately restart one lane, preserving its last committed UI snapshot and
+   * the mutations it was still holding (see `carryMutations`).
+   */
   restart(sessionId: string, reason: ReconcileReason, initialState?: Promise<RemoteSessionState>): void {
     if (!sessionId || !this.isVisible(sessionId)) return;
     const previous = this.lanes.get(sessionId);
@@ -296,7 +299,7 @@ export class SyncEngine {
       chain: Promise.resolve(),
       cursor: previous ? new Map(previous.cursor) : newCursor(),
       timeline: previous?.timeline ?? null,
-      ops: [],
+      ops: carryMutations(previous),
       bufferedBytes: 0,
       replayQueue: [],
       established: previous?.established ?? false,
@@ -309,7 +312,13 @@ export class SyncEngine {
     this.enqueueReplay(lane, { reason, initialState });
   }
 
-  /** Apply a synchronous timeline mutation inside the lane. Never throws. */
+  /**
+   * Apply a synchronous timeline mutation inside the lane. Never throws.
+   *
+   * A mutation is local intent the durable journal cannot rebuild, so it
+   * outlives the lane it was queued on: a restart hands it to its successor,
+   * which applies it after its own reconcile — see `carryMutations`.
+   */
   mutate(sessionId: string, apply: Mutator): void {
     const lane = this.laneFor(sessionId);
     lane.ops.push({ kind: "mutate", apply });
@@ -317,13 +326,19 @@ export class SyncEngine {
   }
 
   /**
-   * Whether a mutation committed to this lane could still be published.
+   * Whether a mutation queued into this lane could still be published by it.
    *
-   * False while the session is invisible (a reconcile already dropped its
-   * queue) or the lane has been replaced under it — in both cases the queued
-   * `mutate` op will never run, so a waiter parked on the matching commit
-   * (older-history page, approval decision) would sit until its own timeout
-   * even though the reason it cannot land is already known.
+   * False while the session is invisible — a lane commits nothing while it is
+   * off screen — or when the lane was dropped or replaced under the caller. A
+   * caller that parks work and waits for the lane to publish it (an
+   * older-history page, an approval decision) asks this to fail fast instead
+   * of sitting out its own timeout, because the reason the work cannot land
+   * *now* is already known.
+   *
+   * The answer is deliberately conservative: a replaced lane is reported as
+   * unable to publish even though its queued mutations are carried to the
+   * successor (see `carryMutations`), so a false answer means "not from this
+   * lane", not "the work is gone".
    */
   canCommit(sessionId: string): boolean {
     const lane = this.lanes.get(sessionId);
@@ -989,6 +1004,29 @@ export class SyncEngine {
  * segment stream, journaled and replayable with the run). */
 function isRunStampedCompaction(event: StreamEvent): boolean {
   return event.type.startsWith("compaction_") && event.runId != null;
+}
+
+/**
+ * The queued work a replaced lane hands to its successor.
+ *
+ * A restart swaps the lane, and with it everything the old one was holding —
+ * but a `mutate` is *local intent* the durable journal cannot rebuild (an
+ * approval decision, an optimistic bubble, a paged-in older history row). A
+ * caller that parks one behind an in-flight reconcile and waits for the lane
+ * to publish it would otherwise be starved for good: whatever replaces the
+ * lane drops the op with it, and on a foreground return that is a restart
+ * (visibility loss parks the op, the reconnect's `restartAll` then discards
+ * it). So mutations come across, and the successor's first step applies them
+ * after its own reconcile — over the fresh baseline they describe, which is
+ * exactly where the intent belongs.
+ *
+ * Live events deliberately do not come across. A restart rebuilds the lane's
+ * content from durable replay, so a carried live frame could only duplicate
+ * what that rebuild already applied (or, for a frame the journal has not
+ * caught up with, strand an idx the successor's cursor has moved past).
+ */
+function carryMutations(previous: SessionLane | undefined): Op[] {
+  return (previous?.ops ?? []).filter((op) => op.kind === "mutate");
 }
 
 function freshRunBase(base: TimelineState, runId: string): TimelineState {

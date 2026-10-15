@@ -507,7 +507,13 @@ export function useTimelineController({
       const nextTimelines = { ...timelinesRef.current, [sessionId]: windowed };
       timelinesRef.current = nextTimelines;
       setTimelines(nextTimelines);
-      syncEngineRef.current?.mutate(sessionId, () => windowed);
+      // Derived from the timeline the lane holds when this actually runs rather
+      // than replaying the snapshot captured above: a mutation outlives the lane
+      // it was queued on and is applied after its successor's reconcile (see
+      // `carryMutations` in syncEngine), where the captured window would drop
+      // the rows that reconcile just read.
+      syncEngineRef.current?.mutate(sessionId, (live) =>
+        latestTimelineWindow(live, HISTORY_PAGE_USER_EXCHANGES));
     },
     [pruneTimelines],
   );
