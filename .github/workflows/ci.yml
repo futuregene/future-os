@@ -13,18 +13,19 @@ permissions: read-all
 # to re-run on the merged result, so a post-merge run would be redundant.
 on:
   pull_request:
-  # Full PR-check suite by default; Windows-only scope avoids rebuilding Rust
-  # and rerunning unrelated suites while iterating on offline update fixtures.
+  # Full PR-check suite by default; narrow scopes avoid rerunning unrelated
+  # suites while iterating on offline updates or Desktop Rust fixtures.
   workflow_dispatch:
     inputs:
       scope:
-        description: Full CI, or only offline Windows installer/update fixtures.
+        description: Full CI, offline Windows update fixtures, or Desktop Rust checks/tests.
         required: false
         type: choice
         default: all
         options:
           - all
           - windows-update
+          - desktop-rust
 
 # Re-pushing a branch cancels its stale run; release tags are unaffected
 # (this workflow never triggers on tags anyway).
@@ -34,7 +35,7 @@ concurrency:
 
 jobs:
   # On PRs, run only affected suites. Manual default runs cover everything;
-  # the explicit windows-update scope only runs offline installer fixtures.
+  # explicit scopes only select offline updates or Desktop Rust validation.
   changes:
     name: Detect affected checks
     runs-on: ubuntu-latest
@@ -50,7 +51,7 @@ jobs:
       # Proto/codegen freshness only needs re-checking when a proto source,
       # its build script, the generated output, or a build-dep version changes.
       proto: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.proto == 'true' || steps.filter.outputs.ci == 'true' }}
-      desktop_tauri: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_tauri == 'true' || steps.filter.outputs.ci == 'true' }}
+      desktop_tauri: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_tauri == 'true' || steps.filter.outputs.ci == 'true' || (github.event_name == 'workflow_dispatch' && inputs.scope == 'desktop-rust') }}
       agent_lifecycle: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.agent_lifecycle == 'true' || steps.filter.outputs.ci == 'true' }}
       windows_update: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.windows_update == 'true' || steps.filter.outputs.ci == 'true' || (github.event_name == 'workflow_dispatch' && inputs.scope == 'windows-update') }}
       desktop_frontend: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_frontend == 'true' || steps.filter.outputs.ci == 'true' }}
@@ -61,7 +62,7 @@ jobs:
         env:
           REQUESTED_SCOPE: ${{ inputs.scope }}
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == "pull_request" || "$REQUESTED_SCOPE" == "windows-update" ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" || "$REQUESTED_SCOPE" == "windows-update" || "$REQUESTED_SCOPE" == "desktop-rust" ]]; then
             echo "all=false" >> "$GITHUB_OUTPUT"
           else
             echo "all=true" >> "$GITHUB_OUTPUT"
@@ -335,7 +336,7 @@ jobs:
         if: steps.affected.outputs.run == 'true' && needs.changes.outputs.desktop_tauri == 'true'
         run: |
           cargo clippy --all-targets --manifest-path desktop/src-tauri/Cargo.toml -- -D warnings
-          cargo clippy --no-default-features --all-targets --manifest-path desktop/src-tauri/Cargo.toml -- -D warnings
+          cargo clippy --no-default-features --features headless --all-targets --manifest-path desktop/src-tauri/Cargo.toml -- -D warnings
 
   # ─── Rust test gates (Linux) ──────────────────────────────────────────────
   # One matrix job split into four parallel groups, each paying only its own
@@ -471,7 +472,7 @@ jobs:
         run: |
           if [ "${{ matrix.desktop }}" = 'true' ]; then
             cargo test --manifest-path desktop/src-tauri/Cargo.toml
-            cargo test --no-default-features --manifest-path desktop/src-tauri/Cargo.toml
+            cargo test --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml
           else
             cargo test ${{ matrix.packages }}
           fi
@@ -482,17 +483,20 @@ jobs:
   # check would block the PR with a confusing "Expected" instead).
   rust-tests-gate:
     name: Rust tests (Linux)
-    needs: rust-tests
+    # Keep the existing required-check name. New installer failures must also
+    # block this gate without requiring a branch-protection configuration edit.
+    needs: [rust-tests, windows-update]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: All Rust test groups passed?
         run: |
-          if [ "${{ needs.rust-tests.result }}" != 'success' ]; then
+          if [ "${{ needs.rust-tests.result }}" != 'success' ] || [ "${{ needs.windows-update.result }}" != 'success' ]; then
             echo "Rust test groups result: ${{ needs.rust-tests.result }}"
+            echo "Windows update fixtures result: ${{ needs.windows-update.result }}"
             exit 1
           fi
-          echo "All Rust test groups passed."
+          echo "Rust test groups and Windows update fixtures passed."
 
   rust-build:
     name: Rust build (${{ matrix.name }})

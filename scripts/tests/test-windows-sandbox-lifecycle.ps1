@@ -121,6 +121,7 @@ function Test-AgentLockHeld {
         return $false
     } catch [IO.IOException] {
         $code = $_.Exception.HResult -band 0xffff
+        if ($code -eq 2) { return $false } # File disappeared while the owner exited.
         if ($code -in @(32, 33)) { return $true }
         throw
     } finally {
@@ -392,6 +393,20 @@ try {
         if ($Action -ne "Snapshot") {
             $errors = @(Get-ExpectationErrors $Action $state)
         }
+        if ($errors.Count -eq 0 -and $Action -in @('ExpectEmbedded', 'ExpectBundled', 'ExpectRecovered', 'ExpectExternalAttached', 'ExpectExternalSurvives')) {
+            try {
+                # Metadata is published before ready. Retry a still-starting
+                # service instead of turning that normal interval into failure.
+                Assert-AgentReady
+                $afterProbe = Get-LifecycleState
+                $errors = @(Get-ExpectationErrors $Action $afterProbe)
+                if ($errors.Count -eq 0 -and ($afterProbe.Owner.ProcessId -ne $state.Owner.ProcessId -or
+                    $afterProbe.Owner.CreationDate -ne $state.Owner.CreationDate)) {
+                    $errors = @('Agent ownership changed during the readiness probe.')
+                }
+                $state = $afterProbe
+            } catch { $errors = @($_.Exception.Message) }
+        }
         if ($errors.Count -eq 0) { break }
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $deadline)
@@ -400,15 +415,6 @@ try {
     if ($errors.Count -ne 0) {
         foreach ($message in $errors) { Write-LogLine "ASSERTION: $message" }
         throw "$Action did not reach the expected lifecycle state within $TimeoutSeconds second(s)"
-    }
-    if ($Action -in @('ExpectEmbedded', 'ExpectBundled', 'ExpectRecovered', 'ExpectExternalAttached', 'ExpectExternalSurvives')) {
-        Assert-AgentReady
-        $afterProbe = Get-LifecycleState
-        $errors = @(Get-ExpectationErrors $Action $afterProbe)
-        if ($errors.Count -ne 0 -or $afterProbe.Owner.ProcessId -ne $state.Owner.ProcessId -or
-            $afterProbe.Owner.CreationDate -ne $state.Owner.CreationDate) {
-            throw 'Agent ownership changed during the readiness probe.'
-        }
     }
     Write-LogLine "RESULT: PASS"
     Write-LogLine "Finished: $((Get-Date).ToString('o'))"

@@ -567,6 +567,10 @@ Windows GUI/headless 同样必须顺序执行。占位 CLI 仅供编译，NSIS �
 
 手动 CI 默认执行完整范围；仅调整 Windows 安装/观察器 fixture 时，可用 `gh workflow run ci.yml --ref <工作分支> -f scope=windows-update` 单独验收，避免重复三平台 Rust 构建和无关单测。PR 仍按路径依赖选取检查，不能用手动窄范围运行替代合并条件。
 
+`scope=desktop-rust` 仅选取 Desktop GUI/headless 的静态检查、Linux 全量测试及三平台编译，不重跑 Agent/CLI/前端套件或原生宿主专项，适合本轮调度器测试隔离修复的复验。
+
+保留既有 required-check 名称；Windows 更新 fixture 的失败也会使 `Rust tests (Linux)` 汇总门禁失败，避免新增 job 尚未写入分支保护时出现漏拦截。headless 的 check、Clippy 和全量测试显式启用 `--features headless`，确保独立二进制也参与构建/静态检查。
+
 `ci.yml` 的 Agent 依赖变化现在触发 Desktop GUI/headless 和 CLI/TUI 检查，根 manifest/lock 和共享 settings/workspaces/tasks 的影响也纳入过滤。Linux 全量单测继续按 crate 分组，不在三平台重复全部测试。`Rust build (Linux/Windows/macOS)` 增加 `scripts/ci/check-embedded-agent.py`，顺序运行 RPC 连接门禁、Agent `service_startup`、GUI 和 headless 的 `agent_host::tests`。fixture 在独立进程中隔离 HOME、FUTURE_HOME 和本地端点，实际覆盖 Windows pipe/Unix socket、持锁拒绝、启动取消、全局停机、CLI 来源任务终态、重启和外部所有者存活。零匹配测试视为失败；每组命令、结果、耗时和日志写入 `target/embedded-agent-ci/`，由 CI 归档。CI 将构建并发限制为 2、测试并发为 1，使用 `CARGO_PROFILE_TEST_DEBUG=1`，不扩大到三平台全量单测。
 
 新增 `Windows update fixtures` PR 检查，用临时 C# 可执行文件和 NSIS 执行安装预检、清理失败门禁、租约、回滚、卸载及独立观察器成功/启动失败/安装失败/回滚不完整场景。既有签名构建调用同一预检入口，因此也会覆盖观察器。启动失败用不存在的安装器模拟，避免执行无效 EXE 触发系统模态弹窗。这些离线 fixture 不安装真实产品、不读写开发者真实 Agent 数据，也不能替代完整安装器验收。
@@ -588,7 +592,7 @@ $env:FUTURE_AGENT_SOCKET = $null
 | 剩余验收 | 入口与要求 | 当前状态 |
 | --- | --- | --- |
 | 三平台 CI | 新的原生 fixture、既有静态检查和 Linux 分组全量测试 | 待 PR CI 执行；未在本地重跑单测 |
-| Windows 离线更新 | `test-windows-installer-preflight.ps1`（含 observer）及 `test-install.ps1` | 待原生 CI/Windows 执行 |
+| Windows 离线更新 | `test-windows-installer-preflight.ps1`（含 observer）、生命周期断言及 `test-install.ps1` | `9caaff29` 原生 Windows CI 已通过，见第 10.10 节；不代替真实产品安装 |
 | 原生 Linux 沙箱 | `scripts/tests/test-linux-sandbox-real-machine.sh`；真实 Bubblewrap ≥ 0.9.0、helper 和子进程回收 | 待原生 Linux；WSL 不计通过 |
 | 签名与发布产物 | 既有 Windows/macOS 签名工作流、Linux deb/musl 工作流及 `scripts/ci/check-headless-linux.sh` | 待构建和产物验证；没有发布新版本 |
 | 真实安装升级 | 干净 VM 上的旧 sidecar 版→新版、内置版→新版、同版本修复；手动与应用自动升级 | 待执行；验证清理失败不安装、外部占用阻止替换、回滚保留用户数据 |
@@ -598,6 +602,12 @@ $env:FUTURE_AGENT_SOCKET = $null
 性能记录包含首次与重复启动到真实 RPC ready、idle 与并发对话的整个相关进程树线程/内存、各签名产物字节数、正常与强制清理耗时。Windows 快照分别记录 Working Set 与 Private Bytes，不把工作集相加当成无重复物理内存；其他平台使用一致口径。sidecar 基线使用上一发布产物；同一数据快照分别复制到隔离目录，完整退出后再切换，不能共享活跃数据库。缺少可比基线时记录绝对值并保持该项待验收。启动/清理必须满足已有 deadline；资源和包体回归阈值在取得基线后评审确定，不能以 mock 测试耗时替代。
 
 只有上述 CI、原生与发布验收证据齐全后，才进入阶段八。此节列的是已接入入口与待执行工作，不是发布批准。
+
+### 10.10 阶段七原生 CI 执行记录（2026-10-15）
+
+完整 CI 首轮为 [38672532606](https://github.com/futuregene/future-os/actions/runs/38672532606)，源码 `07e3c932`。Windows 升级观察器四个场景通过，随后 NSIS `/WX` 因 `futureos_preinstall_cleanup_failed` 标签只有测试构建中的顺序落入、没有显式分支引用而失败；`9caaff29` 添加明确失败分支。健康检查失败 fixture 也改为有效程序返回失败，避免运行损坏 EXE 产生系统模态弹窗。
+
+Windows 专项 [38672888594](https://github.com/futuregene/future-os/actions/runs/38672888594) 在 `9caaff29` 全部通过：NSIS 严格编译、安装预检、强制清理门禁、租约、外部占用、替换/健康检查失败回滚、卸载、四个独立观察器场景、生命周期纯断言和安装脚本失败说明。原始日志保存于工作区忽略目录 `agent/target/phase7-ci-results/windows-update-9caaff29.log`。本次 `scope=windows-update` 的其他 Rust job 仅执行 no-op，不能算作完整 CI 或 Rust 测试通过；完整 CI 的其他平台结果须单独记录。
 
 ## 11 发布条件与回退
 

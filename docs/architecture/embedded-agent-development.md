@@ -899,6 +899,16 @@ to avoid repeating three-platform Rust builds and unrelated suites. PRs still
 select checks by dependency paths; a narrow manual run does not replace merge
 requirements.
 
+`scope=desktop-rust` selects Desktop GUI/headless static checks, Linux full tests
+and three-platform compilation, without repeating Agent/CLI/frontend suites or
+native host fixtures. It is used to revalidate the scheduler test-isolation fix.
+
+Existing required-check names are retained. Windows update fixture failures also
+fail the `Rust tests (Linux)` aggregate gate, so protection does not depend on
+adding the new job name to branch settings first. Headless check, Clippy and
+full-test commands explicitly enable `--features headless`, including the
+standalone binary in compilation/static validation.
+
 Agent dependency changes now trigger Desktop GUI/headless and CLI/TUI checks in
 `ci.yml`, including root manifest/lock and shared settings/workspaces/tasks
 dependencies. Linux full unit suites remain split by crate instead of repeating
@@ -948,7 +958,7 @@ $env:FUTURE_AGENT_SOCKET = $null
 | Remaining acceptance | Entry point and requirement | Current status |
 | --- | --- | --- |
 | Three-platform CI | New native fixtures, existing static gates and grouped Linux full tests | Awaiting PR CI; no local unit-test rerun |
-| Windows offline updates | `test-windows-installer-preflight.ps1` including observer, and `test-install.ps1` | Awaiting native CI/Windows execution |
+| Windows offline updates | `test-windows-installer-preflight.ps1` including observer, lifecycle assertions and `test-install.ps1` | Native Windows CI passed at `9caaff29`, section 10.10; actual product installation remains separate |
 | Native Linux sandbox | `scripts/tests/test-linux-sandbox-real-machine.sh`; actual Bubblewrap ≥ 0.9.0, helper and child cleanup | Awaiting native Linux; WSL is not acceptance |
 | Signing and artifacts | Existing Windows/macOS signed workflows, Linux deb/musl workflows, `scripts/ci/check-headless-linux.sh` | Awaiting builds/artifact verification; no new release published |
 | Actual installation/upgrades | Clean VM: old sidecar → embedded, embedded → new, same-version repair; manual and in-app updates | Pending; verify failed cleanup forbids installation, external locks block replacement, rollback preserves user data |
@@ -970,6 +980,24 @@ product performance measurement.
 Proceed to phase eight only after CI, native and release evidence is complete.
 This section records implemented entry points and pending work, not release
 approval.
+
+### 10.10 Phase-seven native CI execution record (2026-10-15)
+
+The first full CI run is [38672532606](https://github.com/futuregene/future-os/actions/runs/38672532606)
+at `07e3c932`. Four Windows update observer cases passed. NSIS `/WX` then failed
+because the fixture build only fell through to `futureos_preinstall_cleanup_failed`
+without an explicit branch reference. Commit `9caaff29` adds that branch. The
+health-failure fixture also uses a valid executable returning failure instead
+of malformed EXE bytes that could open a blocking Windows compatibility dialog.
+
+The Windows-only run [38672888594](https://github.com/futuregene/future-os/actions/runs/38672888594)
+passed at `9caaff29`: strict NSIS compilation, installation preflight, mandatory
+cleanup gating, leases, external locks, copy/health-failure rollback, uninstall,
+four observer cases, pure lifecycle assertions and install-script failure
+guidance. The original log is in the ignored workspace directory
+`agent/target/phase7-ci-results/windows-update-9caaff29.log`. Other Rust jobs in
+this `scope=windows-update` run were no-ops; they are not a full CI/Rust test
+pass. Other-platform results from the full run require separate records.
 
 ## 11 Release conditions and rollback
 
