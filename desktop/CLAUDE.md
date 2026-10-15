@@ -1,6 +1,6 @@
 # Desktop Development Guide (`desktop/`)
 
-FutureOS desktop app: Tauri + React + TypeScript, frontend `src/`, Tauri backend `src-tauri/` (Rust), connects to the repo-root agent via gRPC. For overall monorepo architecture/build, see **repo-root `CLAUDE.md`**; this file covers `desktop/` only.
+FutureOS desktop app: Tauri + React + TypeScript, frontend `src/`, Tauri backend `src-tauri/` (Rust), connects to the repo-root agent via gRPC. For overall monorepo architecture/build, see **repo-root `AGENTS.md`**; this file covers `desktop/` only.
 
 ## Document Map (read relevant sections on demand — don't pull whole files into context)
 
