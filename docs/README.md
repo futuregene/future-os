@@ -37,6 +37,7 @@ entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.
 |---|---|
 | [Goal Control Plane](architecture/goal-control-plane.md) ([中文](architecture/goal-control-plane.zh-CN.md)) | `future-goal` — goals/todos/gates/monitors, should-run kernel, quota, event sourcing, delivery closure, multi-agent, supervisor/worker messaging, web dashboard |
 | [Long-Run Evidence Ledger](architecture/long-run-evidence-ledger.md) ([中文](architecture/long-run-evidence-ledger.zh-CN.md)) | Accountability record for long-range goal-plane goals — wall clock, spend, validation results, explicit boundaries per closed goal |
+| [Scheduled tasks](architecture/tasks.md) ([中文](architecture/tasks.zh-CN.md)) | `future-tasks` — reusable prompt + trigger (schedule or on demand), full-permission runs, deterministic `next_due` kernel, run ledger and prompt versions |
 | [SQLite migration](architecture/sqlite-migration.md) ([中文](architecture/sqlite-migration.zh-CN.md)) | Agent/desktop SQLite storage layout and migration policy |
 | [Desktop embedded Agent development plan](architecture/embedded-agent-development.md) ([中文](architecture/embedded-agent-development.zh-CN.md)) | Complete in-process Agent, service/host lifecycle, locks, shutdown, updates/installers, development tooling and phased acceptance |
 | [Response outcomes](architecture/response-outcomes.md) ([中文](architecture/response-outcomes.zh-CN.md)) | End-of-response outcome semantics (stop / refusal / filter / pause) |
