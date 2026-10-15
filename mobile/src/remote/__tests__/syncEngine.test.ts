@@ -880,6 +880,77 @@ describe("SyncEngine", () => {
     ).toBe(true);
   });
 
+  test("a mutation parked behind a reconcile survives the restart a foreground return triggers", async () => {
+    const run = nextRunId();
+    const h = new Harness(run);
+    h.journal.add(agentStart(run, 0));
+    h.journal.add(textChunk(run, 1, "reply"));
+    try {
+      // The opening reconcile is still in flight (a slow desktop) when a caller
+      // parks its mutation behind it — the older-history page, an approval
+      // decision.
+      let releaseState: (() => void) | undefined;
+      h.stateBlocked = new Promise<void>((resolve) => { releaseState = resolve; });
+      void h.engine.open("s");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const seen: string[] = [];
+      h.engine.mutate("s", (timeline) => {
+        seen.push(timeline.items.flatMap((item) => (item.kind === "message" ? [item.text] : [])).join(""));
+        return {
+          ...timeline,
+          items: [...timeline.items, { id: "page", kind: "notice" as const, tone: "neutral" as const, text: "older page" }],
+        };
+      });
+      // Backgrounded: the lane may publish nothing, and the reconcile in flight
+      // bails out without ever draining the queue that holds the mutation.
+      h.visible = false;
+      releaseState?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(h.engine.timelineFor("s")).toBeNull();
+      expect(h.engine.canCommit("s")).toBe(false);
+      // Foreground again: the provider restarts every real lane.
+      h.visible = true;
+      h.engine.restart("s", "reconnect");
+      await h.settle();
+      // Applied once, over the successor's freshly replayed baseline — not the
+      // empty timeline the lane held when the mutation was queued.
+      expect(seen).toEqual(["reply"]);
+      expect(h.timelineOf("s").items.at(-1)).toMatchObject({ id: "page" });
+    } finally { h.engine.clear(); }
+  });
+
+  test("a mutation the live op budget deferred survives the restart that follows", async () => {
+    jest.useFakeTimers();
+    const run = nextRunId();
+    const h = new Harness(run);
+    try {
+      h.journal.add(agentStart(run, 0));
+      h.journal.add(textChunk(run, 1, "reply"));
+      h.engine.reconcile("s", "open");
+      await jest.runAllTimersAsync();
+      expect(h.textOf("s")).toBe("reply");
+      // The drain's first op spends the whole op budget (a slow reducer, as a
+      // native-bridge stall would), so it yields with the rest of the batch —
+      // the mutation below included — still queued.
+      h.engine.mutate("s", (timeline) => {
+        jest.setSystemTime(Date.now() + 100);
+        return timeline;
+      });
+      h.engine.mutate("s", (timeline) => ({
+        ...timeline,
+        items: [...timeline.items, { id: "decision", kind: "notice" as const, tone: "neutral" as const, text: "approved" }],
+      }));
+      // Let that first drain run, but not the chained step that would drain the
+      // deferred tail before the lane is replaced.
+      await Promise.resolve();
+      expect(h.timelineOf("s").items.some((item) => item.id === "decision")).toBe(false);
+      h.engine.restart("s", "reconnect");
+      await jest.runAllTimersAsync();
+      expect(h.timelineOf("s").items.at(-1)).toMatchObject({ id: "decision" });
+      expect(h.textOf("s")).toBe("reply");
+    } finally { h.engine.clear(); jest.useRealTimers(); }
+  });
+
   test("projection replay without run_id does not leave a streaming ghost (regression)", async () => {
     const run = nextRunId();
     const h = new Harness(run);
