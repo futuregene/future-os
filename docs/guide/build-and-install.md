@@ -118,9 +118,11 @@ make install-skills # built-in skills + the /future-loop skill
 make package-desktop    # desktop bundle → .deb in desktop/src-tauri/target/release/bundle/
 ```
 
-`scripts/dev/start-desktop-linux.sh` runs the GUI in dev mode against a locally
-built agent and stops the agent it started when the GUI exits. Bubblewrap
-diagnostics are informational so the sandbox-unavailable UI can also be tested.
+`scripts/dev/start-desktop-linux.sh` starts GUI development with an embedded
+Agent or attaches to a compatible external service. The launcher does not start
+or stop a separate Agent. The existing Agent probe and execution path still
+determine Bubblewrap availability and sandbox boundaries. See the
+[Agent lifecycle/development guide](desktop-agent.md).
 
 ### Optional OS sandbox
 

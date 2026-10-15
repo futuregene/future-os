@@ -164,11 +164,13 @@ is callable before the singleton.
 
 The long-lived Agent holds the user-level lock
 `~/.future/agent/agent-instance.lock`; changing the gRPC port does not bypass
-it. Normal desktop exit, task convergence after confirmed force-quit, clear
-data/environment switch/update restart all reset before terminating while the
-bundled Agent is alive; external Agents are not cleaned up or terminated by
-Desktop. The Agent's own Ctrl+C also resets idempotently. Timeout, crash, or
-transient failure best-effort keeps metadata; startup GC, settings reset, and
+it. Normal Desktop exit, confirmed force-quit cleanup, clear data, environment
+switch and update/restart drain the embedded service and revoke its tracked
+permissions before releasing ownership. Cleanup failure blocks installation and
+in-process restart and retains diagnostic metadata; OS force termination cannot
+guarantee cleanup. Attached external Agents retain ownership and are not reset
+or stopped by Desktop. An independent Agent's Ctrl+C also resets idempotently.
+Startup GC, settings reset, and
 uninstall continue reclaiming.
 
 NSIS installMode is currentUser; the uninstall pre-hook cleans up under the

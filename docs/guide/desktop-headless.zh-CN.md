@@ -14,8 +14,9 @@
 - Linux `.deb` 和 portable 发布包已包含 `futureos-headless` 及匹配版本的 `future` CLI；
   也可以按第 5 节从源码构建。独立入口不依赖 GTK/WebKit，默认无头启动。
   CLI-only 压缩包仍只提供 `future`，不提供 Desktop 后端入口。
-- 将 CLI 放在 `futureos-headless` 旁边或 PATH 中，程序会按需启动本机 Agent。
-  也可以提前独立运行 `future agent`，无头后端将连接它而不重复启动。
+- 默认端点和数据目录没有外部服务占用时，完整 Agent 运行在 headless Desktop 自身进程中。
+  匹配 CLI 放在程序旁边或 PATH 中，用于技能和维护。也可以提前独立启动外部 Agent，
+  Desktop 会在兼容性和 readiness 检查通过后连接它。
 - 手机安装匹配生产/测试环境的 FutureOS App。编译渠道与手机环境必须一致。
 - 主机能够访问 Future OS 平台和配置的 NATS 中继；手机也需要联网。
 - 使用普通系统用户运行。平台登录、主机配对和工具执行均属于该运行用户；不要为方便而使用 root。
@@ -113,7 +114,7 @@ GUI 的另外两个定时任务在服务器端没有对应物：应用更新检�
 Ctrl+C 在登录等待、配对、连接启动和正常运行阶段都可用。退出会先停止新的远程操作、
 取消连接恢复工作，再有界清理资源。
 
-- **由本次 Desktop 启动的 Agent**：取消活动对话并停止 Agent；进行中的任务会中断。
+- **内置 Agent**：取消所有客户端的活动和排队任务，包括 CLI/TUI 对话，然后停止服务。
 - **原本独立运行的 Agent**：不终止它。无头 Desktop 的远程入口仍会关闭。
 - **已保存的登录与完成的配对**：保留；下次 `futureos-headless` 启动时可复用。退出不等于解绑。
 
@@ -160,14 +161,17 @@ cargo test --no-default-features --features headless \
   --manifest-path desktop/src-tauri/Cargo.toml --test headless_cli
 ```
 
-在已启动 Docker 的原生 Linux 上，还可以手动检查 ELF 依赖，并在没有 GUI 库的
-干净 Ubuntu 24.04 容器中验证启动：
+在已启动 Docker 的原生 Linux 上，可以检查官方静态 musl 产物的 ELF 链接，并在无网络、
+无 GUI 库的 Rocky Linux 8／旧 glibc 容器中验证启动。从仓库根目录传入已解包程序：
 
-```bash
-bash scripts/ci/check-headless-linux.sh desktop/src-tauri/target/release/futureos-headless
-```
+~~~bash
+bash scripts/ci/check-headless-linux.sh /path/to/futureos-headless
+~~~
 
-该检查需要与 Ubuntu 24.04 兼容的构建产物；它是手动验证工具，未接入当前 CI 或发布工作流。
+该检查要求静态 musl 构建，默认 host/glibc 构建会被拒绝。Linux 发布 CI 在打包前、
+以及从实际 deb/portable 解包后执行同一检查。
+
+服务模式、日志和升级故障处理见 [Desktop Agent 生命周期与恢复](desktop-agent.zh-CN.md)。
 
 ## 6. 数据、权限与排障
 
@@ -179,7 +183,7 @@ bash scripts/ci/check-headless-linux.sh desktop/src-tauri/target/release/futureo
 |---|---|
 | 缺少 `libwebkit2gtk-4.1.so.0` | 当前运行的是 GUI 二进制；请构建并运行 `futureos-headless` |
 | 提示 `--headless` 已移除或未知参数 | 使用不带该参数的 `futureos-headless`；`--no-qr`、`--re-pair` 属于独立入口 |
-| 找不到 Agent | 放置匹配的 `future` CLI，或先独立启动 Agent；显式配置的 Agent 地址不可达时不会被自动接管 |
+| Agent 不可用、不兼容或实例锁占用 | 根据错误确认 owner、版本、用户和数据根，升级或正常退出外部服务；不删除锁或绕过互斥。显式端点与 external 模式只连接、不接管 |
 | 内置技能没有装上 | 查看 stderr 上的 `[skills]` 输出：`future init` 需要 `futureos-headless` 旁的 CLI 或在 PATH 上，且能访问技能目录。手机仍可自行安装技能 |
 | 提示需要交互终端 | 首次登录/配对请在真实终端执行，不要使用管道、重定向或非交互服务启动 |
 | 平台授权拒绝或过期 | 按提示重新启动并登录，不要把登录码当作 App 配对码 |

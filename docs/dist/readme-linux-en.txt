@@ -6,8 +6,11 @@ Extract the downloaded archive to any directory, then run ./futureos.
 Use its actual filename: official releases use
 FutureOS_<version>_linux_<arch>-portable.tar.gz (x86_64 or aarch64);
 local developer builds may use FutureOS-portable-linux.tar.gz.
-Keep futureos, futureos-headless, and future in the same folder. The graphical
-or headless entrypoint starts its agent via future agent when needed.
+Keep futureos, futureos-headless, and future together. GUI/headless attach to a
+compatible external Agent first; only an absent default endpoint and free lock
+authorize a complete in-process Agent. The CLI remains available for skills,
+maintenance and independent use. Incompatible or unavailable lock owners fail
+without starting another service; never delete the lock to bypass the check.
 
 [Runtime]
 Published GUI packages require glibc >= 2.39 (roughly Ubuntu 24.04+) and WebKitGTK:
@@ -38,7 +41,9 @@ limits. See the repository wiki Sandbox guide for full boundaries.
 · Configure a provider/key, or sign in online for hosted models.
 · Personal data is stored in ~/.future. Online model/tools and Remote send requests
   to their services; local-first does not mean no data leaves the machine.
-· The app stops only the agent it started; an externally managed agent stays running.
+· Exiting an embedded owner cancels all clients' active, queued and approval work,
+  including CLI/TUI conversations; GUI prompts for work. External Agents survive;
+  Desktop cancels only its own submitted runs when attached.
 · The standalone futureos-headless entrypoint and unified future CLI are included.
 
 [License]

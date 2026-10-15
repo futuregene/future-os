@@ -147,6 +147,7 @@ jobs:
               - 'Cargo.lock'
             desktop_tauri:
               - 'scripts/ci/check-embedded-agent.py'
+              - 'scripts/dev/start-desktop-*'
               - 'packages/remote-crypto/**'
               # The desktop backend path-depends on the shared settings schema.
               - 'packages/app-settings/**'
@@ -175,6 +176,7 @@ jobs:
               - '.cargo/**'
               - 'rust-toolchain.toml'
               - 'scripts/ci/check-embedded-agent.py'
+              - 'scripts/dev/start-desktop-*'
             windows_update:
               - '.github/workflows/build-windows-signed.yml'
               - 'scripts/build/build-desktop-windows-*'

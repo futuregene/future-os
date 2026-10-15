@@ -2,7 +2,7 @@
 //!
 //! The deterministic kernel and store live in the `future-tasks` crate; this
 //! module is the desktop's tick loop plus the `Executor` wiring that reaches
-//! the sidecar agent, creates threads, and notifies the webview. Headless
+//! the Agent service, creates threads, and notifies the webview. Headless
 //! desktop reuses the same executor with notifications downgraded to ledger
 //! writes (no webview).
 

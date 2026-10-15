@@ -8,10 +8,12 @@ MODE="${FUTURE_DESKTOP_AGENT_MODE:-auto}"
 case "$MODE" in auto|external) ;; *) echo "FUTURE_DESKTOP_AGENT_MODE must be auto or external" >&2; exit 1 ;; esac
 export FUTURE_DESKTOP_AGENT_MODE="$MODE"
 DESKTOP_DEV_PORT="${DESKTOP_DEV_PORT:-5173}"
-case "$DESKTOP_DEV_PORT" in ''|*[!0-9]*) echo "DESKTOP_DEV_PORT must be a port number" >&2; exit 1 ;; esac
-[[ "$DESKTOP_DEV_PORT" -ge 1 && "$DESKTOP_DEV_PORT" -le 65535 ]] || exit 1
+[[ "$DESKTOP_DEV_PORT" =~ ^[0-9]{1,5}$ ]] || { echo "DESKTOP_DEV_PORT must be a port number" >&2; exit 1; }
+DESKTOP_DEV_PORT=$((10#$DESKTOP_DEV_PORT))
+[[ "$DESKTOP_DEV_PORT" -ge 1 && "$DESKTOP_DEV_PORT" -le 65535 ]] || { echo "DESKTOP_DEV_PORT must be between 1 and 65535" >&2; exit 1; }
 CLI_TARGET="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
 [[ "$CLI_TARGET" = /* ]] || CLI_TARGET="$ROOT_DIR/$CLI_TARGET"
+if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then export CARGO_TARGET_DIR="$CLI_TARGET"; fi
 LOG_DIR="$ROOT_DIR/.logs"
 DESKTOP_PID=""
 CONFIG_FILE=""
@@ -47,10 +49,6 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 [[ -d "$DESKTOP_DIR/node_modules" ]] || (cd "$ROOT_DIR" && npm ci)
-if [[ "${RUN_CHECKS:-0}" == 1 ]]; then
-  (cd "$DESKTOP_DIR" && npm run lint && npm run stylelint)
-  (cd "$DESKTOP_DIR/src-tauri" && cargo check)
-fi
 if [[ "${BUILD_CLI:-1}" == 1 ]]; then
   if ! (cd "$ROOT_DIR" && cargo build -p future-cli) >"$LOG_DIR/future-cli-dev.build.log" 2>&1; then
     echo "CLI build failed; embedded Agent can still run. CLI-dependent skills need a matching future binary." >&2
@@ -68,9 +66,13 @@ elif [[ ! -s "$STAGED" ]]; then
   # Compile-only externalBin placeholder. Never considered a usable tool.
   : >"$STAGED"
 fi
+if [[ "${RUN_CHECKS:-0}" == 1 ]]; then
+  (cd "$DESKTOP_DIR" && npm run lint && npm run stylelint)
+  (cd "$DESKTOP_DIR/src-tauri" && cargo check)
+fi
 CONFIG_FILE="$(mktemp "${TMPDIR:-/tmp}/futureos-tauri-dev.XXXXXX")"
-printf '{"build":{"devUrl":"http://127.0.0.1:%s","beforeDevCommand":"npm run dev -- --port %s"}}\n' "$DESKTOP_DEV_PORT" "$DESKTOP_DEV_PORT" >"$CONFIG_FILE"
-echo "Starting Desktop; Ctrl-C stops this launch, including its embedded Agent."
+printf '{"build":{"devUrl":"http://127.0.0.1:%s","beforeDevCommand":"npm run dev -- --strictPort --port %s"}}\n' "$DESKTOP_DEV_PORT" "$DESKTOP_DEV_PORT" >"$CONFIG_FILE"
+echo "Starting Desktop; Ctrl-C terminates this dev process group. Quit in the app for coordinated cleanup."
 echo "Log: $LOG_DIR/futureos-desktop-dev.log.console"
 (cd "$DESKTOP_DIR"; exec_in_own_session npm run tauri:dev -- --config "$CONFIG_FILE") </dev/null > >(tee "$LOG_DIR/futureos-desktop-dev.log.console") 2>&1 &
 DESKTOP_PID="$!"

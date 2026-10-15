@@ -1,9 +1,5 @@
 //! Headless uses the same scoped in-process owner as GUI. The bundled CLI
 //! remains needed only for short maintenance commands such as skill bootstrap.
-#[cfg(test)]
-use std::path::Path;
-use std::path::PathBuf;
-
 #[derive(Default)]
 pub(super) struct Agent;
 impl Agent {
@@ -27,43 +23,12 @@ impl Agent {
     }
 }
 
-/// The bundled `future` CLI: beside the running executable, then the explicitly
-/// installed CLI on PATH. Also spawns `future init` for the built-in skills, so
-/// the message names the binary rather than only the Agent.
-pub(super) fn find_sidecar() -> Result<PathBuf, crate::AppError> {
-    crate::cli_tool::resolve()
-}
-
-#[cfg(test)]
-fn sidecar_candidates(parent: &Path, path: Option<&std::ffi::OsStr>, name: &str) -> Vec<PathBuf> {
-    let mut candidates = vec![parent.join(name)];
-    if let Some(path) = path {
-        candidates.extend(
-            std::env::split_paths(path)
-                .filter(|p| p.is_absolute())
-                .map(|p| p.join(name)),
-        );
-    }
-    candidates
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn sidecar_resolution_prefers_bundle_and_ignores_relative_path_entries() {
-        let directory = tempfile::tempdir().unwrap();
-        let bin = directory.path().join("installed");
-        let path = std::env::join_paths([Path::new("."), bin.as_path()]).unwrap();
-        assert_eq!(
-            sidecar_candidates(directory.path(), Some(&path), "future"),
-            vec![directory.path().join("future"), bin.join("future")]
-        );
-    }
-
     #[tokio::test]
-    async fn shutdown_without_an_owned_child_is_a_noop() {
+    async fn shutdown_without_an_owned_service_is_a_noop() {
         let _home = crate::auth_store::test_support::HomeGuard::new("headless-stop");
         let _mock = crate::agent_bridge::test_support::mock_agent();
         let mut agent = Agent;

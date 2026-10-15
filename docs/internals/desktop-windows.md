@@ -93,11 +93,11 @@ Capability metadata stays outside `$INSTDIR` for a later install/repair retry.
 
 ## Offline regression
 
-Phase-six implementation has not undergone native Windows/NSIS acceptance;
-historical tests do not validate it. The new observer fixture is
-`scripts/tests/test-windows-update-launcher.ps1 -Fixture <offline C# fixture path>`
-and covers launch/installation failure and incomplete rollback. See
-[development plan section 10.6](../architecture/embedded-agent-development.md).
+The phase-six offline hooks and update observer passed native Windows CI and
+daily unsigned packaging on 2026-10-15. See [execution evidence in sections
+10.10 and 10.13](../architecture/embedded-agent-development.md). Regressions use
+throwaway installers and validate actual product payloads without installing
+FutureOS; clean-VM real upgrades/rollback remain separate acceptance.
 
 On Windows with NSIS installed (the Tauri NSIS cache is also detected):
 

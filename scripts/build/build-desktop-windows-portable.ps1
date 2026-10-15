@@ -12,8 +12,8 @@
          into FutureOS-portable-windows.zip.
 
     The resulting app needs the Microsoft Edge WebView2 runtime (ships with
-    Windows 10/11). Keep FutureOS.exe and future.exe together — the desktop app starts
-    the bundled agent via `future agent` from its own directory.
+    Windows 10/11). Keep FutureOS.exe and future.exe together — Desktop hosts its Agent in process by default. The matching CLI remains
+    available for skills, maintenance and independent `future agent` hosting.
 
 .PARAMETER SkipDeps
     Skip `npm ci` in desktop/ (use when node_modules are already current).

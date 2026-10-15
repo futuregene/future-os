@@ -2798,7 +2798,7 @@ mod bridge_tests {
         assert_eq!(reply["success"], json!(true));
         assert_eq!(reply["data"]["entries"].as_array().unwrap().len(), 1);
 
-        // Production sidecar responses carry typed payload only (`data` is
+        // Production Agent responses carry typed payload only (`data` is
         // empty); mobile history must still flow through the remote bridge.
         agent.script_typed_for(
             "get_session_entries",

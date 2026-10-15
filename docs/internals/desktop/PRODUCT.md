@@ -40,17 +40,17 @@ IM bots are all interfaces that connect to it.
 - `packages/rpc/`: Rust `future-rpc`, the protobuf wire contract (single source
   of truth).
 
-The GUI does not compile the Agent into the desktop process as a Tauri crate
-dependency. At runtime the GUI connects to the Agent gRPC service over
-per-user local IPC by default: on Unix `FUTURE_AGENT_SOCKET` is preferred, a
-redirected `FUTURE_HOME` (`future agent --home`) owns
-`<FUTURE_HOME>/run/agent.sock`, Linux otherwise uses
-`$XDG_RUNTIME_DIR/future/agent.sock`, then falls back to
-`~/.future/run/agent.sock` (the macOS default); Windows uses a current-user
-named pipe. `FUTURE_AGENT_GRPC_ADDR` can explicitly specify TCP, which requires
-the Agent to be started with `--grpc-addr`. With no reachable Agent, the
-desktop launches the unified `future agent` sidecar and only owns the lifecycle
-of the process it started.
+GUI and headless Desktop compile the complete `future-agent` service as a Rust
+library and share one in-process host. They first attach to a compatible external
+Agent; only an absent default endpoint and an acquired instance lock authorize
+embedded startup. Incompatible or locked/unavailable services fail without
+opening another Agent database. Explicit remote endpoints are attach-only.
+Clients retain per-user local IPC: Unix sockets and current-user Windows named
+pipes, with existing FUTURE_HOME/endpoint overrides. The packaged `future` CLI
+remains available for skills, maintenance and independent `future agent` use.
+Quitting an embedded owner cancels all its clients' work; attached external
+owners survive Desktop exit. See the [lifecycle guide](../../guide/desktop-agent.md)
+and [implementation plan](../../architecture/embedded-agent-development.md).
 
 ## 3. Product principles
 

@@ -58,7 +58,7 @@ runtime probe 运行只读 root、user/PID/IPC namespace、cap-drop、最小 dev
 
 ```text
 RuleSet 快照 → LinuxSandboxPlan → PreparedShell + request FD
-  → 当前 future/future-agent 自重入 outer helper
+  → 当前 Agent 宿主（future/future-agent 或内置 Desktop）自重入 outer helper
   → 固定 bwrap executable FD + --args OPTIONS FD + 短 COMMAND argv
   → inner helper：mount/capability 复核、no_new_privs、FD 收敛
   → shell / 后代 → status pipe → outer 复扫 → 私有报告 → Agent 工具输出

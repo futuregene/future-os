@@ -2,7 +2,7 @@ use super::*;
 
 // ── Crash-recovery run reanimation ───────────────────────────────────────
 
-/// Called after the agent sidecar is reachable: for every run that was
+/// Called after the Agent service is reachable: for every run that was
 /// cancelled by startup convergence, check the agent's actual session state.
 /// If the agent is still streaming, reanimate the run (back to "running") and
 /// spawn a background event collector so the frontend's reattach poll picks up

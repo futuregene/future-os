@@ -95,7 +95,7 @@ already have had side effects.
 
 ```text
 RuleSet snapshot → LinuxSandboxPlan → PreparedShell + request FD
-  → current future/future-agent re-execs the outer helper
+  → current Agent host (future/future-agent or embedded Desktop) re-execs the outer helper
   → pinned bwrap executable FD + --args OPTIONS FD + short COMMAND argv
   → inner helper: mount/capability re-check, no_new_privs, FD convergence
   → shell / descendants → status pipe → outer re-scan → private report → Agent tool output

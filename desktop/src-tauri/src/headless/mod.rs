@@ -226,7 +226,7 @@ fn require_terminal() -> Result<(), AppError> {
 /// skills from its own Skills page, and the catalog fetch behind `future init`
 /// is a network call this foreground process must not stall on.
 async fn bootstrap_builtin_skills() {
-    let executable = match agent::find_sidecar() {
+    let executable = match crate::cli_tool::resolve() {
         Ok(executable) => executable,
         Err(error) => {
             eprintln!("Skipping built-in skill setup: {error}");

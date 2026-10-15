@@ -609,13 +609,13 @@ or release artifacts have passed.
 
 ### Phase eight Switch defaults and documentation
 
-- [ ] Enable embedded GUI/headless defaults after acceptance and remove obsolete
-      default child-supervisor branches.
-- [ ] Retain standalone Agent, TUI ownership, CLI bundle and legacy installation
-      compatibility.
-- [ ] Update bilingual product/developer/troubleshooting docs and behavior tests.
-- [ ] Explain all-client interruption, external conflicts and recovery in release
-      notes.
+- [x] Verify GUI/headless already default to the shared embedded host; the old
+      child supervisor is a GUI adapter with compatible external gates retained.
+- [x] Retain standalone Agent, TUI ownership, CLI bundle and legacy installation compatibility.
+- [x] Update bilingual product/development/troubleshooting and packaged docs;
+      replace the copied resolver test with production discovery and launcher dry-runs.
+- [x] Explain all-client interruption, external conflicts and recovery in the
+      lifecycle guide and packaged notes; no new release was published.
 
 Acceptance: normal users take the embedded path; development and artifacts
 agree; no implicit external prelaunch is required for successful verification.
@@ -985,9 +985,9 @@ pending. Startup/cleanup must satisfy existing deadlines; resource/package
 regression thresholds require baseline review. Mock-test duration is not a
 product performance measurement.
 
-Proceed to phase eight only after CI, native and release evidence is complete.
-This section records implemented entry points and pending work, not release
-approval.
+On 2026-10-15 the user authorized phase-eight code/documentation cleanup.
+Actual installation, signing, sandbox and performance checks above still gate
+release acceptance; cleanup does not mark them passed.
 
 ### 10.10 Phase-seven native CI execution record (2026-10-15)
 
@@ -1188,6 +1188,54 @@ No release/test/nightly manifest was advanced and none of these packages was
 installed. Absolute package sizes are not a sidecar comparison or runtime
 performance evidence. Actual install/upgrade/rollback, full GUI interaction,
 native Linux Bubblewrap and performance baselines remain open in section 10.9.
+
+### 10.14 Phase-eight code and documentation cleanup (2026-10-15)
+
+The user authorized committing/pushing current work before final cleanup.
+The initial tree was clean and `b502f378` already matched origin; no empty commit
+was created. GUI/headless already use the shared embedded AgentHost by default.
+The old supervisor is now a GUI status/exit adapter without a default child
+launch branch. Standalone Agent, TUI, bundled CLI and legacy install compatibility
+remain.
+
+The new bilingual [lifecycle/recovery guide](../guide/desktop-agent.md) connects
+README, CLI wiki, product boundaries, headless, build/install, Windows installer,
+sandbox docs, six packaged readmes and script indexes. They explain all-client
+embedded shutdown, external ownership, conflicts, logs and recovery. Removed
+obsolete missing-CLI startup guidance and the assumption that every disconnected
+backend is caused by downloaded-file markings. Previously built `c60d5754` daily
+archives were not rewritten with these new notes.
+
+Production CLI discovery now exposes the actual candidate-selection path while
+retaining order/filters. Headless uses the same resolver directly; the copied
+candidate-list test was removed. Behavior tests cover bundle priority, empty
+placeholders/directories, relative PATH rejection and Unix non-executable
+fallback. Fixtures inspect files only; they never execute fake programs. Native
+CI adds a `cli-tools` suite: 4 cases on Unix, 3 on Windows without Unix mode bits;
+execution results require a separate record.
+
+| Script scope | Review/fix | Verification boundary |
+| --- | --- | --- |
+| macOS/Linux wrappers and common launcher (3) | CLI staging before static checks; strict Vite port; repository-root relative Cargo paths; decimal port validation; owned dev process-group cleanup | Shell syntax and dry-run; no actual GUI/Agent launch |
+| Windows bat/PowerShell (2) | bat delegates; strict port, absolute target and explicit exit wording | Official parser, cross-platform PowerShell dry-run; native CI runs 6 cases through bat |
+| iOS/Android launchers (2) | SDK/emulator/Metro review; no Desktop Agent startup/shutdown | Shell syntax; no mobile SDK build or simulator run in this round |
+| 4 Desktop packagers and Makefile | Retain CLI staging, maintenance copy and legacy install compatibility; update obsolete portable notes/comments | Source review, Shell/PowerShell syntax; not four new local package builds |
+
+All 14 PowerShell files parsed. GUI/headless all-target Clippy (`-D warnings`),
+both fmt checks, Desktop ESLint/typecheck, actionlint and 262-document validation
+passed. ESLint retains one existing JSDoc warning in unchanged
+`desktop/shot/main.tsx` with exit 0. No local unit tests ran. Launcher edits now
+trigger Desktop/native lifecycle CI. Dry-runs cover auto/external, invalid mode,
+zero/overflow/invalid ports and a relative output path containing spaces, each
+bounded to 30 seconds. Native scope revalidation remains to be run/recorded,
+without repeating unrelated full suites.
+
+Development Ctrl+C interrupts the toolchain: Unix TERM may escalate to KILL after
+10 seconds for this process group, without guaranteeing complete Agent cleanup.
+Use app exit for coordinated shutdown. Actual headless signal cleanup remains
+unchanged. Outstanding phase-seven real installation, release signing, native
+sandbox and performance acceptance remain required; code cleanup is not release
+approval.
 
 ## 11 Release conditions and rollback
 

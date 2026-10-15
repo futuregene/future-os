@@ -380,10 +380,10 @@ Linux helper 继续由当前宿主可执行文件进入，保留统一 CLI 的 `
 
 ### 阶段八 默认切换与文档收敛
 
-- [ ] 在验收完成后让 GUI/headless 默认启用内置模式，删除默认 sidecar supervisor 的失效分支。
-- [ ] 保留独立 Agent、TUI 外部宿主、CLI 打包与旧安装兼容。
-- [ ] 更新双语产品、开发和排障文档；已失效测试替换为行为测试。
-- [ ] 发布说明写清退出会中断内置 Agent 全部客户端任务、外部冲突处理及恢复方法。
+- [x] 核对 GUI/headless 已默认使用共享内置宿主，旧 sidecar supervisor 已替换为 GUI 适配器；保留兼容外部连接门禁。
+- [x] 保留独立 Agent、TUI 外部宿主、CLI 打包与旧安装兼容。
+- [x] 更新双语产品、开发、排障与随包说明；移除复制逻辑的旧查找测试，覆盖生产 CLI 查找器与原生启动脚本 dry-run。
+- [x] 在用户生命周期指南及随包说明中写清退出中断全部客户端任务、外部冲突与升级恢复；没有发布新版本。
 
 验收：普通用户走内置路径，开发脚本与发布产物一致；没有依靠默认外部启动才能通过的隐性依赖。
 
@@ -605,7 +605,7 @@ $env:FUTURE_AGENT_SOCKET = $null
 
 性能记录包含首次与重复启动到真实 RPC ready、idle 与并发对话的整个相关进程树线程/内存、各签名产物字节数、正常与强制清理耗时。Windows 快照分别记录 Working Set 与 Private Bytes，不把工作集相加当成无重复物理内存；其他平台使用一致口径。sidecar 基线使用上一发布产物；同一数据快照分别复制到隔离目录，完整退出后再切换，不能共享活跃数据库。缺少可比基线时记录绝对值并保持该项待验收。启动/清理必须满足已有 deadline；资源和包体回归阈值在取得基线后评审确定，不能以 mock 测试耗时替代。
 
-只有上述 CI、原生与发布验收证据齐全后，才进入阶段八。此节列的是已接入入口与待执行工作，不是发布批准。
+2026-10-15 用户授权继续阶段八代码与文档收尾；上述真实安装、签名、沙箱与性能验收仍为发布前要求，不能因收尾完成而标为通过。此节不是发布批准。
 
 ### 10.10 阶段七原生 CI 执行记录（2026-10-15）
 
@@ -683,6 +683,25 @@ Linux 六份包均上传 OSS 后，通过公开下载地址下载回本地，再
 Windows 两份包也通过公开 OSS 地址下载回本地、校验大小和 SHA-256，保存在 `agent/target/phase7-daily-packages/windows/`；对应 `.exe.sig` 非空并可下载。此处“未签名”指没有 Authenticode 平台签名，Windows 仍保留 Tauri updater 签名文件；当前检查不声称独立完成 updater 签名密码学验证。
 
 没有更新正式版、test 或 nightly 的更新清单，也没有安装这些包。以上数据是绝对包体，不能当作 sidecar 对比或运行性能证据。真实安装/升级/回滚、GUI 完整交互、原生 Linux Bubblewrap 沙箱和性能基线仍按第 10.9 节保留待验收。
+
+### 10.14 阶段八代码与文档收尾（2026-10-15）
+
+用户授权先提交/push 当前成果，再完成最后阶段收尾。开始时工作区干净，`b502f378` 已同步远端；没有创建空提交。GUI/headless 已默认通过共享 `AgentHost` 内置完整服务，`agent_supervisor.rs` 仅是 GUI 状态/退出适配器，不再保留默认启动 sidecar 的支路。独立 Agent、TUI、CLI 打包和旧安装兼容继续保留。
+
+新增双语[生命周期与恢复指南](../guide/desktop-agent.zh-CN.md)，同步根 README、wiki CLI、产品边界、headless、构建与安装、Windows 安装及沙箱文档、六份随包说明和脚本索引。说明内置退出影响所有客户端、外部 owner 保留、冲突不接管、日志位置和失败恢复。移除“没有 CLI 就无法启动 Agent”与“后台未连接一定是下载标记”的旧排障结论；没有把新的说明回写进先前 `c60d5754` 已构建的 daily 文件。
+
+生产 CLI 查找器提取实际候选选择入口，保持顺序和过滤不变。headless 直接使用同一解析器，移除其复制候选逻辑的测试；新行为测试覆盖 bundle 优先、空占位和目录跳过、拒绝相对 PATH，以及 Unix 不可执行文件回退。fixture 只做文件检查，从不执行临时伪程序。原生 CI 新增 `cli-tools` 分组，Unix 4 例、Windows 3 例（无 Unix 权限位用例），执行结果另行记录。
+
+| 脚本范围 | 审查与修正 | 验证边界 |
+| --- | --- | --- |
+| macOS/Linux 包装与公共启动脚本（3 份） | CLI 暂存先于静态检查；Vite strictPort；相对 Cargo 输出目录从根解析；端口十进制与范围检查；仅清理本次开发进程组 | Shell 语法和 dry-run；不启动真实 GUI/Agent |
+| Windows bat/PowerShell（2 份） | bat 仍只委托 PowerShell；strictPort、绝对输出目录及明确退出提示 | 官方解析器；跨平台 PowerShell dry-run；原生 CI 经 bat 执行 6 个 dry-run 场景 |
+| iOS/Android 启动脚本（2 份） | 审查 SDK/模拟器/Metro 入口，没有 Desktop Agent 启停逻辑 | Shell 语法；本轮没有构建移动 SDK 或运行模拟器 |
+| 4 份桌面打包脚本及 Makefile | 保留 CLI 暂存、维护副本、旧安装兼容；更新便携版说明与失效注释 | 源码审查；Shell/PowerShell 解析，不等于本轮重新执行四种本地打包 |
+
+所有 14 份 PowerShell 脚本解析通过；Desktop GUI/headless all-target Clippy（`-D warnings`）、两套 fmt、Desktop ESLint/typecheck、actionlint 和 262 份文档校验通过。ESLint 有一条未修改文件 `desktop/shot/main.tsx` 的既有 JSDoc warning，退出码 0。没有在本地运行单元测试。启动入口变更现触发 Desktop 和原生生命周期 CI；dry-run 覆盖 auto/external、非法模式、0/超界/非法端口、含空格的相对输出目录，每条有 30 秒上限。原生专项复验待执行/记录，不复跑无关全量套件。
+
+开发 Ctrl+C 是工具链中断：Unix 发送 TERM，超过 10 秒可能 KILL 本次进程组，不承诺 Agent 完整清理；正常清理由应用内退出触发。真实 headless 信号语义保持原有有界清理。阶段七未完成的真实安装、正式签名、原生沙箱与性能验收继续保留，阶段八代码完成不等于发布批准。
 
 ## 11 发布条件与回退
 

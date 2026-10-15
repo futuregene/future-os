@@ -154,13 +154,20 @@ Linux otherwise uses `$XDG_RUNTIME_DIR/future/agent.sock` when set, falling
 back to `~/.future/run/agent.sock` (also the macOS default). An Agent started
 with its own FutureOS home (`future agent --home DIR`) is addressed by that
 home instead — see
-[isolated instances](docs/guide/directory-layout.md#running-several-isolated-instances-future_home). The TUI and desktop
-app start the agent automatically as a sidecar when none is running; you can
-also start it yourself:
+[isolated instances](docs/guide/directory-layout.md#running-several-isolated-instances-future_home).
+Desktop GUI/headless first attach to a compatible external Agent; when the default
+endpoint is absent and its instance lock is free, they run the complete Agent in
+their own process. Incompatible or locked/unavailable services produce an error
+without starting a second Agent. The TUI retains its independent Agent startup.
+You can also start an external Agent yourself:
 
 ```bash
 future agent     # start the agent in the terminal (logs to stdout; Ctrl-C to stop)
 ```
+
+Quitting an embedded Desktop stops work from every connected client, including
+CLI/TUI conversations. An attached external Agent stays running; Desktop cancels
+its own submitted runs. See [Desktop Agent lifecycle and recovery](docs/guide/desktop-agent.md).
 
 Then launch the terminal UI from the same `future` command:
 
@@ -190,7 +197,7 @@ non-interactive commands never perform it.
 > build targets — `cargo build -p future-tui` etc. — but are no longer
 > installed by default).
 >
-> If connection fails, check agent discovery or sidecar startup — see [Troubleshooting](#troubleshooting).
+> If connection fails, check Agent discovery, compatibility and instance ownership — see [Troubleshooting](#troubleshooting).
 
 ### Essential Slash Commands (TUI)
 
@@ -245,7 +252,7 @@ Run `/help` in the TUI for the full list (40+ commands).
 
 | Symptom | Fix |
 |---|---|
-| Client exits with a connection / gRPC error | Run `future doctor`; check sidecar startup errors and that client/agent use the same user and IPC environment. Start `future agent` manually if needed. Only in explicit TCP mode, check the configured address/port. |
+| Client exits with a connection / gRPC error | Run `future doctor`; check Agent startup/version/lock errors and that client/Agent use the same user and IPC environment. See the [Desktop Agent guide](docs/guide/desktop-agent.md) before changing service ownership. Only in explicit TCP mode, check the configured address/port. |
 | Agent replies with an auth / "no model" error | No model configured yet. Run `future config` — see [Configure a model](#configure-a-model). |
 | Build / install problems | See [Build & Install](docs/guide/build-and-install.md) (platform toolchains, linker, GUI packaging). |
 

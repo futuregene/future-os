@@ -60,7 +60,7 @@ Capability 元数据留在 `$INSTDIR` 之外，供后续安装/修复重试。
 
 ## 离线回归
 
-阶段六新增实现尚未执行原生 Windows/NSIS 验收；历史测试不覆盖这些新行为。新增观察进程 fixture 为 `scripts/tests/test-windows-update-launcher.ps1 -Fixture <离线 C# fixture 路径>`，覆盖启动失败、安装失败和不完整回滚。参见[开发计划第 10.6 节](../architecture/embedded-agent-development.zh-CN.md)。
+阶段六离线 hooks 和升级观察器已在 2026-10-15 的原生 Windows CI、daily 未签名打包中通过，执行证据见[开发计划第 10.10 与 10.13 节](../architecture/embedded-agent-development.zh-CN.md)。回归使用临时模拟安装器，并验证真实产品包内容，不安装真实 FutureOS；干净 VM 的真实升级和回滚仍需单独验收。
 
 在装有 NSIS 的 Windows 上（也会检测 Tauri NSIS 缓存）：
 

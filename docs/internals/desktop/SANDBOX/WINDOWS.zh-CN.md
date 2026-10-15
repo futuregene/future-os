@@ -79,7 +79,7 @@ future agent --reset-windows-sandbox
 
 也可用公共`--probe-sandbox`。probe成功执行时输出JSON，available:false是支持的不可用结果。reset返回`removedCapabilities`；活动Job失败并保留metadata，不提权、不杀任务。维护CLI/RPC无会话、在singleton前可调用。
 
-长驻Agent持`~/.future/agent/agent-instance.lock`用户级锁，换gRPC端口不能绕过。正常桌面退出、确认强制退出后的任务收敛、清数据/环境切换/更新重启，都在bundled Agent存活时先reset再终止；外部Agent不由Desktop清理/终止。Agent自身Ctrl+C也幂等reset。超时、崩溃或临时失败best-effort保留metadata，启动GC、设置reset、卸载继续回收。
+长驻 Agent 持 `~/.future/agent/agent-instance.lock` 用户级锁，换 gRPC 端口不能绕过。正常 Desktop 退出、确认强退后的清理、清数据、环境切换和更新重启，先排空内置服务并撤销权限，再释放所有权。清理失败禁止安装和进程内重启，并保留诊断 metadata；系统强杀不能保证完整清理。连接的外部 Agent 保留所有权，不由 Desktop reset 或停止。独立 Agent 的 Ctrl+C 也幂等 reset；启动 GC、设置 reset 和卸载继续回收。
 
 NSIS installMode为currentUser，卸载pre-hook以同一用户profile清理；reset失败应保留可重试sidecar，不先删除清理工具。不手工`icacls /reset`覆盖无关ACL。
 

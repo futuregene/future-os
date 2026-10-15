@@ -25,9 +25,12 @@
 
 - `start-desktop-linux.sh` — 使用内置 Agent 的 Linux Tauri 桌面开发会话。
 - `start-desktop-macos.sh` — 上者的 macOS 版本。
-- `start-desktop-windows.bat` — 上者的 Windows 版本。
+- `start-desktop-common.sh` — macOS/Linux 公共实现；独立开发进程组、有界退出及 CLI 暂存。
+- `start-desktop-windows.bat` / `start-desktop-windows.ps1` — Windows 包装入口与实际实现。
 - `start-mobile-android.sh` — Expo/Android 开发会话（SDK 检查、prebuild、Gradle 或 Metro）。
 - `start-mobile-ios.sh` — Expo/iOS 开发会话（CocoaPods、prebuild、Xcode 构建或 Metro）。
+
+详细开关、退出语义和恢复见 [Desktop Agent 指南](../docs/guide/desktop-agent.zh-CN.md)。`DRY_RUN=1` 不启动进程；`RUN_CHECKS=1` 仅静态检查。端口占用失败而不换端口；相对 Cargo 输出目录从仓库根解析。
 
 ## release/
 
@@ -116,7 +119,7 @@ runner `.cmd` 脚本、把原始输出整理成旁证文件的几个分析脚本
 
 CI 辅助脚本（由工作流文件调用）。
 
-- `check-embedded-agent.py` — Linux、Windows、macOS 的 RPC/服务/GUI/headless
+- `check-embedded-agent.py` — Linux、Windows、macOS 的启动入口 dry-run、CLI 查找行为及 RPC/服务/GUI/headless
   原生生命周期专项门禁，由 CI 归档日志和 JSON 汇总。
 - `check-packaged-entrypoints.py` — 解包真实 deb/NSIS、portable 和 CLI 压缩包，
   使用隔离目录验证早期入口与精确 CLI 版本，并对包内 Linux 静态程序执行旧 glibc

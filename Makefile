@@ -47,7 +47,8 @@ CARGO_PINNED := rustup run $(RUST_TOOLCHAIN) cargo
 
 # ─── Install ────────────────────────────────────────────────────────────────
 # The unified `future` CLI embeds agent/tui/channel/loop; the desktop bundles
-# it as a sidecar (`future agent`). Standalone future-agent/-tui/-channel/-loop
+# it for CLI tools and maintenance; Desktop hosts Agent in process by default.
+# Standalone future-agent/-tui/-channel/-loop
 # binaries are dev-only (cargo run -p <crate>) — install puts exactly two files
 # in PREFIX: `future` and `future-desktop`.
 

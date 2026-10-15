@@ -161,8 +161,8 @@ mod tests {
         let _home = crate::auth_store::test_support::HomeGuard::new("bootstrap-no-cli");
         let previous = std::env::var_os("PATH");
         std::env::set_var("PATH", "");
-        // No bundled `future` sidecar binary in a mock app → the spawn fails and
-        // is logged, without draining anything.
+        // No adjacent or PATH CLI: production tool discovery fails before any
+        // child is spawned, without draining an event channel.
         let app = tauri::test::mock_builder()
             .plugin(tauri_plugin_shell::init())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))

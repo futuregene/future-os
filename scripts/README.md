@@ -19,7 +19,7 @@ Desktop packaging scripts that mirror the CI pipelines.
   Application identity is available, with Apple notarization options.
 - `build-desktop-windows-installer.ps1` — builds the NSIS installer through `tauri build`,
   optionally Authenticode-signing via `../release/sign-file.ps1`.
-- `build-desktop-windows-portable.ps1` — builds the portable Windows zip with the sidecar binaries.
+- `build-desktop-windows-portable.ps1` — builds the portable Windows zip with Desktop and its matching CLI tools.
 
 ## dev/
 
@@ -28,9 +28,12 @@ Local development sessions. Desktop starts its embedded Agent by default;
 
 - `start-desktop-linux.sh` — Linux Tauri desktop dev session with the embedded Agent.
 - `start-desktop-macos.sh` — macOS equivalent of the above.
-- `start-desktop-windows.bat` — Windows equivalent of the above.
+- `start-desktop-common.sh` — shared macOS/Linux implementation, owned dev process group and CLI staging.
+- `start-desktop-windows.bat` / `start-desktop-windows.ps1` — Windows wrapper and implementation.
 - `start-mobile-android.sh` — Expo/Android dev session (SDK checks, prebuild, Gradle or Metro).
 - `start-mobile-ios.sh` — Expo/iOS dev session (CocoaPods, prebuild, Xcode build or Metro).
+
+See the [Desktop Agent guide](../docs/guide/desktop-agent.md) for options, exit semantics and recovery. DRY_RUN=1 launches no processes; RUN_CHECKS=1 performs static checks only. Occupied dev ports fail without switching; relative Cargo output paths resolve against the repository root.
 
 ## release/
 
@@ -127,7 +130,7 @@ Offline regression tests and native acceptance scripts (not run by CI by default
 
 CI helper scripts (invoked from the workflow files).
 
-- `check-embedded-agent.py` — narrow native RPC/service/GUI/headless lifecycle
+- `check-embedded-agent.py` — native launcher dry-runs, CLI discovery and RPC/service/GUI/headless lifecycle
   gate on Linux, Windows and macOS; uploads logs and a JSON summary through CI.
 - `check-packaged-entrypoints.py` — extracts actual deb/NSIS, portable and CLI
   archives, probes isolated early entry points and exact CLI versions, and verifies

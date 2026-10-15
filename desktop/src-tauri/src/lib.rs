@@ -1130,7 +1130,7 @@ mod gui {
         // suspended are skipped; each task runs at most once after resume.
         scheduler::start(app.clone());
         // User-defined tasks: the tick loop claims due tasks and runs
-        // them through the sidecar agent (full permission). Headless
+        // them through the Agent service (full permission). Headless
         // desktop starts the same loop from `headless/mod.rs`.
         tasks::start(app.clone());
         // Do not preemptively cancel non-terminal GUI rows at startup. The
