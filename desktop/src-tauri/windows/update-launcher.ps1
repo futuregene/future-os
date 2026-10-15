@@ -24,12 +24,21 @@ function Write-Result {
     $result.diagnostic = $Diagnostic
     $result.restartSafe = $RestartSafe
     $temporary = $Record + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
+    $backup = $temporary + '.previous'
+    $replaced = $false
     try {
         $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($result | ConvertTo-Json -Depth 8))
         $stream = [IO.FileStream]::new($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
         try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
-        [IO.File]::Replace($temporary, $Record, $null)
-    } finally { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
+        # Windows PowerShell 5.1 binds a null string argument as an empty
+        # pathname. Use an actual same-directory backup, preserving atomic
+        # replacement; keep that backup for diagnostics if replacement fails.
+        [IO.File]::Replace($temporary, $Record, $backup)
+        $replaced = $true
+    } finally {
+        Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+        if ($replaced) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }
+    }
 }
 function Get-ProgramSnapshot {
     $snapshot = @{}
