@@ -784,6 +784,8 @@ Channels 与 CLI/TUI/Desktop 一样使用 `VerifiedAgentClient`，每次业务�
 
 本阶段补齐 CLI 能力发现、持久化更新结果及失败恢复。不运行本地单测；以下回归是新增代码与 CI 验收要求，不能作为真实安装包已经通过验收的声明。
 
+CI 收尾同时修正了 Windows PowerShell 5.1 将 `File.Replace` 的空备份参数转换为空路径的问题，保持同目录原子替换并在替换失败时保留备份；补齐停止事件和 goal readiness 的测试替身契约；更新旧对账测试，要求状态查询失败时保留运行及所有权。CI 还暴露了既有 HTTP 重定向 fixture 的连接复用竞态：改为完整读取请求、显式关闭连接、单次明确拒绝重定向并回收线程，保留生产分类逻辑和强断言，不通过删除测试或重试到通过来处理。
+
 **CLI 描述符与只读探测。** `future version --json` 保留既有构建信息，并增加版本化的 `desktopCapabilities`，包含 Agent release core、RPC 协议、存储 schema 和具体命令能力。该精确参数组合在 CLI runtime、日志、服务和存储初始化之前返回。Desktop 按既有顺序选择相邻打包 CLI、开发产物、绝对 PATH 候选，拒绝空占位、目录和不可执行文件。结构化探测不经过 shell，默认 3 秒超时，检测 stdout/stderr 超过 64 KiB 后终止；输出使用文件捕获，避免管道堵塞和无界内存读取。Windows 探测前检查 PE 文件头，回归不执行伪造 EXE。
 
 描述符包含路径、来源、显示版本和能力。缓存以物理路径、文件长度、时间和 Unix inode/ctime 为身份，探测后再次确认；时间只用于缓存失效，不能推断版本。失败缓存 5 秒后可重试。显示版本与 Agent 连接契约分别处理：开发提交后缀不同不导致误报，但 release core、协议、schema 或所需能力不符时拒绝执行，显示路径、探测版本和修复方向，不自动改用另一份旧 CLI。技能初始化明确要求 `skills.init`。缺少 CLI 继续允许内置 Agent 运行，不自动安装或覆盖用户 PATH 中的工具。
