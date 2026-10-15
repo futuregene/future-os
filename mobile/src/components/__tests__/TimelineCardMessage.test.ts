@@ -1,5 +1,5 @@
 import { createElement } from "react";
-import { AppState, Linking, StyleSheet, type AppStateStatus } from "react-native";
+import { AppState, StyleSheet, type AppStateStatus } from "react-native";
 import { layout } from "../../theme/tokens";
 import * as Clipboard from "expo-clipboard";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
@@ -20,8 +20,6 @@ jest.mock("lucide-react-native", () => Object.fromEntries(
 ));
 jest.mock("../appAlerts", () => ({ AppAlert: { alert: jest.fn() } }));
 jest.mock("expo-clipboard", () => ({ setStringAsync: jest.fn(async () => true) }));
-
-const alerts = jest.requireMock("../appAlerts") as { AppAlert: { alert: jest.Mock } };
 
 let tree: ReactTestRenderer;
 afterEach(() => {
@@ -71,42 +69,39 @@ const message = (fields: Partial<Extract<TimelineItem, { kind: "message" }>>): T
 const attachment = (fields: Partial<HistoryAttachment> & { name: string }): HistoryAttachment =>
   ({ path: `/files/${fields.name}`, ...fields });
 
-describe("a user message is the user's own text, plus their attachments", () => {
-  const textWithLinks =
-    "see [poem.txt](./poem.txt) and [the docs](https://future.dev/docs) — keep *this* literal";
+describe("a user message is the user's own markdown, plus their attachments", () => {
+  /** The markdown rows the row rendered (a host stub in this suite). */
+  function markdownNodes() {
+    return tree.root.findAll(node => String(node.type) === "MarkdownText");
+  }
 
-  test("mentions open the file and links open the browser, while markdown stays literal", () => {
+  test("the prompt is handed to the markdown renderer on the bubble's own tone", () => {
+    // A prompt renders through the same component as a reply — its own markdown
+    // included — and the tone is what tells that component it is painting the
+    // user's accent-filled bubble rather than the app surface. Links, file
+    // mentions and `#` references are that renderer's business.
     const onOpenFile = jest.fn();
-    const openURL = jest.spyOn(Linking, "openURL").mockResolvedValue(undefined);
-    render(message({ role: "user", text: textWithLinks }), { onOpenFile });
-    expect(hasText("poem.txt")).toBe(true);
-    expect(hasText("the docs")).toBe(true);
-    // Everything else is verbatim — no markdown interpretation for a prompt.
-    expect(hasText("see ")).toBe(true);
-    expect(hasText(" and ")).toBe(true);
-    expect(hasText(" — keep *this* literal")).toBe(true);
-    press("poem.txt");
-    expect(onOpenFile).toHaveBeenCalledWith("poem.txt");
-    press("the docs");
-    expect(openURL).toHaveBeenCalledWith("https://future.dev/docs");
-    expect(alerts.AppAlert.alert).not.toHaveBeenCalled();
+    const onOpenSession = jest.fn();
+    render(message({ role: "user", text: "see [poem.txt](./poem.txt) and **loud**" }), { onOpenFile, onOpenSession });
+
+    const rendered = markdownNodes();
+    expect(rendered).toHaveLength(1);
+    expect(rendered[0]!.props).toMatchObject({
+      onOpenFile,
+      onOpenSession,
+      text: "see [poem.txt](./poem.txt) and **loud**",
+      tone: "onAccent",
+    });
   });
 
-  test("a mention with no file opener is inert rather than a dead tap", () => {
-    const openURL = jest.spyOn(Linking, "openURL").mockClear().mockResolvedValue(undefined);
-    render(message({ role: "user", text: "[poem.txt](./poem.txt)" }));
-    const mention = tree.root.findAll(node =>
-      node.props.children === "poem.txt" && typeof node.type === "string").at(-1)!;
-    expect(mention.props.onPress).toBeUndefined();
-    expect(openURL).not.toHaveBeenCalled();
-  });
-
-  test("a link the phone cannot open explains itself instead of failing silently", async () => {
-    jest.spyOn(Linking, "openURL").mockRejectedValue(new Error("no handler"));
-    render(message({ role: "user", text: "[docs](https://future.dev/docs)" }));
-    press("docs");
-    await act(async () => { await Promise.resolve(); });
-    expect(alerts.AppAlert.alert).toHaveBeenCalledWith("Attachment", "This link couldn't be opened.");
+  test("a reply renders the same component without a tone of its own", () => {
+    // boundary: the other side of the tone — the app's own surface — plus the
+    // streaming flag only a reply can carry.
+    render(message({ id: "a1", streaming: true, text: "half an answer" }));
+    const rendered = markdownNodes();
+    expect(rendered).toHaveLength(1);
+    expect(rendered[0]!.props).toMatchObject({ streaming: true });
+    expect(rendered[0]!.props.tone).toBeUndefined();
   });
 
   test("each attachment is a chip that opens its own file, and an unknown kind still renders", () => {
