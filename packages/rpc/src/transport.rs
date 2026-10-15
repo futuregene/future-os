@@ -414,16 +414,17 @@ fn bind_dir_error(error: io::Error, parent: &std::path::Path) -> io::Error {
 }
 
 #[cfg(unix)]
-struct SocketCleanup(std::path::PathBuf);
-
+mod unix_endpoint;
 #[cfg(unix)]
-impl Drop for SocketCleanup {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
+pub use unix_endpoint::LocalEndpointReservation;
+
+/// Reserve the native endpoint while holding the data-root lock, before storage
+/// initialization. The reservation remains owned through listener teardown.
+#[cfg(unix)]
+pub async fn reserve_local_endpoint() -> io::Result<LocalEndpointReservation> {
+    LocalEndpointReservation::acquire(local_socket_path()).await
 }
 
-/// Bind the current user's native local endpoint.
 #[cfg(unix)]
 pub async fn bind_local() -> io::Result<LocalIncoming> {
     bind_local_at(local_socket_path()).await
@@ -431,62 +432,7 @@ pub async fn bind_local() -> io::Result<LocalIncoming> {
 
 #[cfg(unix)]
 async fn bind_local_at(path: std::path::PathBuf) -> io::Result<LocalIncoming> {
-    use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
-
-    let parent = path.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "local socket has no parent directory",
-        )
-    })?;
-    std::fs::create_dir_all(parent).map_err(|error| bind_dir_error(error, parent))?;
-    let metadata = std::fs::metadata(parent).map_err(|error| bind_dir_error(error, parent))?;
-    if metadata.uid() != unsafe { libc::geteuid() } {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!(
-                "local socket directory is not owned by the current user: {}",
-                parent.display()
-            ),
-        ));
-    }
-    // Validate ownership before mutating an existing directory's permissions.
-    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-    if let Ok(metadata) = std::fs::symlink_metadata(&path) {
-        if !metadata.file_type().is_socket() || metadata.uid() != unsafe { libc::geteuid() } {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!(
-                    "refusing to replace untrusted local endpoint: {}",
-                    path.display()
-                ),
-            ));
-        }
-        std::fs::remove_file(&path)?;
-    }
-
-    let listener = tokio::net::UnixListener::bind(&path)?;
-    // Capture the cleanup owner before constructing the lazy incoming stream.
-    // Startup can be cancelled after binding but before its first poll.
-    let cleanup = SocketCleanup(path.clone());
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    let expected_uid = unsafe { libc::geteuid() };
-    let incoming = async_stream::stream! {
-        let _cleanup = cleanup;
-        loop {
-            match listener.accept().await {
-                Ok((stream, _)) => match stream.peer_cred() {
-                    Ok(cred) if cred.uid() == expected_uid => yield Ok(LocalIo { inner: stream }),
-                    Ok(cred) => {
-                        eprintln!("Future Agent rejected local IPC peer uid {} (expected {})", cred.uid(), expected_uid);
-                    }
-                    Err(error) => yield Err(error),
-                },
-                Err(error) => yield Err(error),
-            }
-        }
-    };
-    Ok(Box::pin(incoming))
+    LocalEndpointReservation::acquire(path).await?.bind().await
 }
 
 #[cfg(windows)]

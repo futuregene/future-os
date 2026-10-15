@@ -71,12 +71,16 @@ fn ordinary_path(path: &Path) -> PathBuf {
 /// only thing it never legitimately needs as raw bytes is the credentials.
 pub(crate) fn ensure_path_allowed(path: &Path) -> Result<(), crate::AppError> {
     let resolved = best_effort_canonical(path);
+    // Protect both the selected instance and the legacy/default credential
+    // tree; choosing an isolated root must not expose another instance's keys.
+    let mut roots = vec![crate::future_home_root()];
     if let Some(home) = crate::home_dir() {
-        if let Ok(future_dir) = PathBuf::from(home).join(".future").canonicalize() {
-            if is_protected_credential(&future_dir, &resolved) {
-                return Err("Refusing to access a protected FutureOS credential file."
-                    .to_string()
-                    .into());
+        roots.push(PathBuf::from(home).join(".future"));
+    }
+    for root in roots {
+        if let Ok(root) = root.canonicalize() {
+            if is_protected_credential(&root, &resolved) {
+                return Err("Refusing to access a protected FutureOS credential file.".into());
             }
         }
     }
@@ -803,6 +807,22 @@ mod tests {
         .id
     }
     use std::fs;
+
+    #[test]
+    fn future_home_override_protects_both_isolated_and_legacy_credentials() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("files-root-credentials");
+        let legacy = crate::future_home_root();
+        let isolated = tempfile::tempdir().unwrap();
+        for root in [&legacy, isolated.path()] {
+            std::fs::create_dir_all(root.join("agent")).unwrap();
+            std::fs::write(root.join("agent/auth.json"), "secret").unwrap();
+        }
+        std::env::set_var("FUTURE_HOME", isolated.path());
+        assert!(ensure_path_allowed(&isolated.path().join("agent/auth.json")).is_err());
+        assert!(ensure_path_allowed(&legacy.join("agent/auth.json")).is_err());
+        std::fs::write(isolated.path().join("notes.txt"), "public").unwrap();
+        ensure_path_allowed(&isolated.path().join("notes.txt")).unwrap();
+    }
 
     #[cfg(target_os = "macos")]
     #[test]

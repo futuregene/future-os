@@ -110,6 +110,14 @@ impl proto::future_agent_server::FutureAgent for MockAgent {
                     }))
                 }
                 3 => std::future::pending::<()>().await,
+                4 => {
+                    return Ok(tonic::Response::new(proto::RpcResponse {
+                        success: false,
+                        error_code: "agent_stopping".into(),
+                        error: "service stopping".into(),
+                        ..Default::default()
+                    }))
+                }
                 _ => {}
             }
         }
@@ -320,4 +328,46 @@ async fn cached_physical_channel_cannot_reconnect_to_a_legacy_replacement() {
         .await
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test]
+async fn stopping_agent_is_blocked_without_being_incompatible_or_authorizing_start() {
+    let mut mock = mock_agent();
+    mock.handshake_failure = 4;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let (stop, task) = serve_mock(listener, mock.clone()).await;
+    let result = select_agent(
+        &address,
+        "1.2.3",
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(
+        matches!(result, Err(ConnectionError::StartupBlocked(reason)) if reason.contains("stopping"))
+    );
+    assert_eq!(mock.mutations.load(std::sync::atomic::Ordering::Acquire), 0);
+    let _ = stop.send(());
+    task.await.unwrap();
+}
+
+#[test]
+fn different_development_builds_share_only_the_explicit_release_protocol_schema_contract() {
+    let home = tempfile::tempdir().unwrap();
+    let expected = CompatibilityRequirements {
+        version: "1.2.3-abc+dev".into(),
+        expected_home: Some(home.path().into()),
+    };
+    let mut info = ready(home.path());
+    info.version = "1.2.3-def+dev".into();
+    validate_readiness(&info, &expected).unwrap();
+    info.protocol_version += 1;
+    assert!(matches!(
+        validate_readiness(&info, &expected),
+        Err(ConnectionError::Incompatible { .. })
+    ));
+    info.protocol_version = AGENT_PROTOCOL_VERSION;
+    info.storage_schema_version += 1;
+    assert!(validate_readiness(&info, &expected).is_err());
 }

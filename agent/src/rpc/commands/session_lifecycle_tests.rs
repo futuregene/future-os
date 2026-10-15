@@ -230,12 +230,12 @@ fn delete_idle_session_removes_the_live_runtime() {
 #[test]
 fn delete_session_publishes_global_session_deleted() {
     let state = make_app_state();
-    let mut rx = crate::rpc::global_events_broadcaster().subscribe();
+    let mut rx = state.control_plane.global_events_broadcaster().subscribe();
 
     let response = parse_response(&handle_command_internal(&state, make_cmd("delete_session")));
     assert_eq!(response["success"], true);
 
-    // Other tests broadcast on the same global stream concurrently — drain
+    // The instance owns this stream; inspect its session announcement. drain
     // until THIS session's announcement arrives.
     for _ in 0..64 {
         match rx.try_recv() {
@@ -279,7 +279,7 @@ fn refused_delete_session_does_not_announce_removal() {
         .runtime
         .begin(Some("run-active"), Some("request-active"))
         .unwrap();
-    let mut rx = crate::rpc::global_events_broadcaster().subscribe();
+    let mut rx = state.control_plane.global_events_broadcaster().subscribe();
 
     let response = parse_response(&handle_command_internal(
         &state,
@@ -1985,7 +1985,7 @@ fn activating_a_cold_persisted_session_announces_the_first_activation() {
     );
     assert!(!state.sessions.read().contains_key("cold-committed-child"));
 
-    let mut rx = crate::rpc::global_events_broadcaster().subscribe();
+    let mut rx = state.control_plane.global_events_broadcaster().subscribe();
     let activated = state
         .activate_persisted_session("cold-committed-child")
         .expect("a committed session activates");

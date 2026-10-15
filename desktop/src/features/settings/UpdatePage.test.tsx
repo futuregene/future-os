@@ -31,7 +31,7 @@ it.each([false, true])("handles install under StrictMode including subscription 
     await act(async () => button.click());
     if (failed) {
       expect(container.textContent).toContain("subscription unavailable");
-      expect(invokeCommand).not.toHaveBeenCalled();
+      expect(invokeCommand).not.toHaveBeenCalledWith("install_app_update");
       expect([...container.querySelectorAll("button")].find(item => item.textContent === "Download and install")?.disabled).toBe(false);
     }
     else {

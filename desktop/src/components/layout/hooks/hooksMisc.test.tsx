@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../../../integrations/agent/agentStatus", () => ({
   getAgentStatus: (...args: unknown[]) => mocks.getStatus(...args),
+  subscribeShutdownProgress: async () => () => {},
 }));
 vi.mock("../../../integrations/agent/providers", () => ({
   getFutureAuthState: (...args: unknown[]) => mocks.getAuth(...args),

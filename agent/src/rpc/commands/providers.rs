@@ -7,10 +7,10 @@ use future_rpc::payloads_ext::{SkillCandidatePayload, SuggestSkillPayload};
 /// refresh. The lower config lock protects file RMWs; this command-level lock
 /// additionally prevents readers from observing committed files before the
 /// matching in-memory registry revision has landed.
-static PROVIDER_COMMAND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 pub(crate) fn handle_reload_auth(state: &AppState, id: &str) -> String {
-    let _provider_guard = PROVIDER_COMMAND_LOCK
+    let _provider_guard = state
+        .control_plane
+        .provider_command_lock
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     // Rebuild the shared model registry FIRST so runtime-added/
@@ -18,7 +18,9 @@ pub(crate) fn handle_reload_auth(state: &AppState, id: &str) -> String {
     // session — set_model now resolves against this cache instead of
     // constructing a fresh Registry per call.
     refresh_authoritative_provider_state(state);
-    let revision = crate::rpc::publish_provider_config_changed("*", "reload", true, true);
+    let revision = state
+        .control_plane
+        .publish_provider_config_changed("*", "reload", true, true);
     RpcResponse::ok(
         id,
         "reload_auth",
@@ -27,7 +29,9 @@ pub(crate) fn handle_reload_auth(state: &AppState, id: &str) -> String {
 }
 
 pub(crate) fn handle_sync_future_models(state: &AppState, id: &str) -> String {
-    let _provider_guard = PROVIDER_COMMAND_LOCK
+    let _provider_guard = state
+        .control_plane
+        .provider_command_lock
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     // Synchronously fetch the Future provider's models (warming the cache),
@@ -42,7 +46,9 @@ pub(crate) fn handle_sync_future_models(state: &AppState, id: &str) -> String {
     // the settings success message claim thousands of Future models.
     let model_count = crate::models::cached_model_count();
     let revision =
-        crate::rpc::publish_provider_config_changed("future", "models_synced", false, true);
+        state
+            .control_plane
+            .publish_provider_config_changed("future", "models_synced", false, true);
     RpcResponse::ok(
         id,
         "sync_future_models",
@@ -220,7 +226,9 @@ pub(crate) fn list_models_response(
 }
 
 pub(crate) fn list_providers_response(state: &AppState, id: &str) -> String {
-    let _provider_guard = PROVIDER_COMMAND_LOCK
+    let _provider_guard = state
+        .control_plane
+        .provider_command_lock
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     match provider_view(state) {
@@ -356,7 +364,7 @@ fn provider_view(state: &AppState) -> Result<serde_json::Value, String> {
 /// visible to every request, then reconcile only invalid session model
 /// references. Provider settings themselves are request-time authority and are
 /// never copied into sessions. Shared by `reload_auth` and config-write commands.
-/// Callers hold `PROVIDER_COMMAND_LOCK` and invoke this only after the durable
+/// Callers hold the instance provider command lock and invoke this only after the durable
 /// mutation succeeds; they publish `provider_config_changed` only after this
 /// complete Registry revision is installed.
 fn refresh_authoritative_provider_state(state: &AppState) {
@@ -366,7 +374,9 @@ fn refresh_authoritative_provider_state(state: &AppState) {
 
 /// Apply one auth.json mutation and refresh live state (see dispatch comment).
 pub(crate) fn cmd_set_auth(state: &AppState, id: &str, cmd: &RpcCommand) -> String {
-    let _provider_guard = PROVIDER_COMMAND_LOCK
+    let _provider_guard = state
+        .control_plane
+        .provider_command_lock
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     let Some(mutation) = cmd.auth_update.as_ref() else {
@@ -388,7 +398,7 @@ pub(crate) fn cmd_set_auth(state: &AppState, id: &str, cmd: &RpcCommand) -> Stri
         return RpcResponse::build_fail(id, "set_auth", &error);
     }
     refresh_authoritative_provider_state(state);
-    let revision = crate::rpc::publish_provider_config_changed(
+    let revision = state.control_plane.publish_provider_config_changed(
         &mutation.provider,
         "auth_updated",
         true,
@@ -404,7 +414,9 @@ pub(crate) fn cmd_set_auth(state: &AppState, id: &str, cmd: &RpcCommand) -> Stri
 /// Create/update a models.json provider (plus optional auth.json key) and
 /// refresh live state (see dispatch comment).
 pub(crate) fn cmd_upsert_provider(state: &AppState, id: &str, cmd: &RpcCommand) -> String {
-    let _provider_guard = PROVIDER_COMMAND_LOCK
+    let _provider_guard = state
+        .control_plane
+        .provider_command_lock
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     let Some(spec) = cmd.provider_config.as_ref() else {
@@ -454,7 +466,7 @@ pub(crate) fn cmd_upsert_provider(state: &AppState, id: &str, cmd: &RpcCommand) 
         return RpcResponse::build_fail(id, "upsert_provider", &error);
     }
     refresh_authoritative_provider_state(state);
-    let revision = crate::rpc::publish_provider_config_changed(
+    let revision = state.control_plane.publish_provider_config_changed(
         &spec.id,
         if spec.create_only {
             "created"
@@ -474,7 +486,9 @@ pub(crate) fn cmd_upsert_provider(state: &AppState, id: &str, cmd: &RpcCommand) 
 /// Remove a provider's models.json entry AND auth.json entry, then refresh
 /// live state (see dispatch comment).
 pub(crate) fn cmd_delete_provider(state: &AppState, id: &str, cmd: &RpcCommand) -> String {
-    let _provider_guard = PROVIDER_COMMAND_LOCK
+    let _provider_guard = state
+        .control_plane
+        .provider_command_lock
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     let Some(spec) = cmd.provider_config.as_ref() else {
@@ -509,7 +523,10 @@ pub(crate) fn cmd_delete_provider(state: &AppState, id: &str, cmd: &RpcCommand) 
         return RpcResponse::build_fail(id, "delete_provider", &error);
     }
     refresh_authoritative_provider_state(state);
-    let revision = crate::rpc::publish_provider_config_changed(provider_id, "deleted", true, true);
+    let revision =
+        state
+            .control_plane
+            .publish_provider_config_changed(provider_id, "deleted", true, true);
     RpcResponse::ok(
         id,
         "delete_provider",

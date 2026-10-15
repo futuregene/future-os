@@ -169,11 +169,10 @@ pub(super) async fn reconcile_run_gone(
         .await
         .map_err(|e| format!("reconcile get_state: {e}"))?
         .into_inner();
-    let state_value = if state.success {
-        future_rpc::decode::response_data(&state)
-    } else {
-        serde_json::Value::Null
-    };
+    if !state.success {
+        return Err(format!("reconcile get_state rejected: {}", state.error));
+    }
+    let state_value = future_rpc::decode::response_data(&state);
 
     // A RunGone on attach is not proof the run is gone: the Agent may have
     // accepted the prompt but QUEUED it behind an older run (a queued run
@@ -210,6 +209,7 @@ pub(super) async fn reconcile_run_gone(
         let error = terminal.get("error").and_then(|value| value.as_str());
         settle_from_agent_terminal(local_run_id, agent_state, error)
             .map_err(|error| format!("reconcile terminal status: {error}"))?;
+        crate::desktop_shutdown::release_run(session_id, canonical_run_id);
         return Ok(());
     }
 
@@ -225,6 +225,7 @@ pub(super) async fn reconcile_run_gone(
             error_type: Some("interrupted".to_string()),
         })
         .map_err(|error| format!("reconcile interrupted status: {error}"))?;
+        crate::desktop_shutdown::release_run(session_id, canonical_run_id);
         return Ok(());
     }
 
@@ -236,6 +237,8 @@ pub(super) async fn reconcile_run_gone(
         "stream_interrupted",
     )
     .map_err(|error| format!("reconcile missing run: {error}"))?;
+    // The local projection can fail closed without proving a remote terminal.
+    // Retain submitted-run ownership when authoritative state has no marker.
     Ok(())
 }
 
@@ -488,6 +491,7 @@ pub fn spawn_active_run_watchdog() {
 /// the pending approvals. Extracted from the spawn loop so tests can drive it
 /// with a synthetic clock (run rows cannot be backdated through the store API).
 pub(super) async fn active_run_watchdog_pass(now_ms: i64, settled_verified: &mut HashSet<String>) {
+    crate::desktop_shutdown::reconcile_owned_runs().await;
     let Ok(active_runs) = crate::store::list_active_runs() else {
         return;
     };

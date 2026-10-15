@@ -1010,6 +1010,7 @@ name = "future-app-workspaces"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "future-app-settings",
  "rusqlite",
  "serde",
  "tempfile",

@@ -3,6 +3,8 @@
 mod approval;
 mod broadcaster;
 mod commands;
+mod control_plane;
+pub use control_plane::ControlPlane;
 mod prompt_helpers;
 mod protocol;
 pub(crate) mod run_snapshot;
@@ -16,8 +18,8 @@ pub(crate) use future_rpc::payloads;
 use crate::models::Registry as ModelRegistry;
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 pub use approval::{ApprovalDecision, ApprovalDecisionStatus, ApprovalGate};
 pub use broadcaster::{
@@ -28,90 +30,6 @@ pub use commands::handle_command_internal;
 pub(crate) use commands::test_support::make_app_state as service_test_state;
 pub use protocol::{RpcCommand, RpcResponse, SseEvent};
 pub use session::ServerSession;
-
-/// Process-wide control-plane events (not chat state): provider/auth config
-/// completions and session lifecycle signals. This broadcaster gives every
-/// client one authoritative stream.
-static GLOBAL_EVENTS_BROADCASTER: LazyLock<Arc<SseBroadcaster>> =
-    LazyLock::new(|| Arc::new(SseBroadcaster::new()));
-static CONFIG_REVISION: AtomicI64 = AtomicI64::new(0);
-
-pub fn global_events_broadcaster() -> Arc<SseBroadcaster> {
-    GLOBAL_EVENTS_BROADCASTER.clone()
-}
-
-/// Backward-compatible name retained for Rust callers compiled against the
-/// config-only version of the global stream.
-#[deprecated(note = "use global_events_broadcaster")]
-pub fn global_config_broadcaster() -> Arc<SseBroadcaster> {
-    global_events_broadcaster()
-}
-
-pub fn current_config_revision() -> i64 {
-    CONFIG_REVISION.load(Ordering::Acquire)
-}
-
-/// Publish only after the mutation is durable and live Agent state refreshed.
-pub fn publish_provider_config_changed(
-    provider_id: &str,
-    operation: &str,
-    auth_changed: bool,
-    models_changed: bool,
-) -> i64 {
-    let revision = CONFIG_REVISION.fetch_add(1, Ordering::AcqRel) + 1;
-    GLOBAL_EVENTS_BROADCASTER.broadcast(SseEvent::new(
-        "provider_config_changed",
-        serde_json::json!({
-            "revision": revision,
-            "providerId": provider_id,
-            "operation": operation,
-            "authChanged": auth_changed,
-            "modelsChanged": models_changed,
-        }),
-    ));
-    revision
-}
-
-/// Announce a newly minted session on the global control-plane stream. Fired
-/// after a new session is durably created and activated (never during ordinary
-/// disk hydration) so other clients can surface it without waiting for their
-/// discovery polls. An idempotent hint: consumers reconcile against their own
-/// state, so no revision counter.
-pub fn publish_session_created(session_id: &str, created_by: &str, cwd: &str) {
-    publish_session_created_with_creator(session_id, created_by, "", cwd);
-}
-
-/// Creator-aware session announcement. The three-argument wrapper remains for
-/// source compatibility and emits an empty creator id (legacy semantics).
-pub fn publish_session_created_with_creator(
-    session_id: &str,
-    created_by: &str,
-    creator_id: &str,
-    cwd: &str,
-) {
-    GLOBAL_EVENTS_BROADCASTER.broadcast(SseEvent::new(
-        "session_created",
-        serde_json::json!({
-            "sessionId": session_id,
-            "createdBy": created_by,
-            "creatorId": creator_id,
-            "cwd": cwd,
-        }),
-    ));
-}
-
-/// Announce that a session no longer exists, so clients holding a mirror of
-/// it (the desktop's conversation list, a paired phone) can drop their copy
-/// immediately instead of showing a conversation the Agent cannot load. Fired
-/// by `delete_session` only after the session is gone from memory and disk —
-/// there is nothing to reconcile against afterwards, so the payload carries
-/// just the identity.
-pub fn publish_session_deleted(session_id: &str) {
-    GLOBAL_EVENTS_BROADCASTER.broadcast(SseEvent::new(
-        "session_deleted",
-        serde_json::json!({"sessionId": session_id}),
-    ));
-}
 
 /// Map one broadcaster/journal event into its replay payload carrier. The
 /// wire type lives in the future-rpc crate; the mapping needs the
@@ -139,6 +57,7 @@ pub struct AppState {
     /// reconnect to the same in-memory scheduler from a restart that dropped
     /// queued runs and process-local idempotency state.
     pub agent_instance_id: String,
+    pub control_plane: Arc<ControlPlane>,
     pub data_root_id: String,
     /// All live sessions keyed by session_id.  Sessions are equal peers —
     /// there is no privileged "default"/"current" session; clients address
@@ -335,7 +254,12 @@ impl AppState {
         ServerSession::ensure_scheduler_worker(&session);
         // Announce after the map insert so subscribers can resolve the
         // session (e.g. get_state) the moment they see the event.
-        publish_session_created_with_creator(&id, &created_by, &creator_id, &cwd);
+        self.control_plane.publish_session_created_with_creator(
+            &id,
+            &created_by,
+            &creator_id,
+            &cwd,
+        );
         id
     }
 
@@ -367,7 +291,7 @@ impl AppState {
             .ok_or_else(|| anyhow::anyhow!("persisted session disappeared before activation"))?;
         if !was_resident {
             let session = session.read();
-            publish_session_created_with_creator(
+            self.control_plane.publish_session_created_with_creator(
                 session_id,
                 &session.created_by,
                 &session.creator_id,
@@ -1004,6 +928,7 @@ mod tests {
     fn app_state_get_session_empty_id_returns_none() {
         let state = AppState {
             agent_instance_id: "agent-test-instance".to_string(),
+            control_plane: std::sync::Arc::new(crate::rpc::ControlPlane::default()),
             data_root_id: "0".repeat(64),
             sessions: std::sync::Arc::new(parking_lot::RwLock::new(
                 std::collections::HashMap::new(),
@@ -1043,6 +968,7 @@ mod tests {
         let session_dir = dir.path().join("sessions");
         let state = AppState {
             agent_instance_id: "agent-test-instance".to_string(),
+            control_plane: std::sync::Arc::new(crate::rpc::ControlPlane::default()),
             data_root_id: "0".repeat(64),
             sessions: std::sync::Arc::new(parking_lot::RwLock::new(
                 std::collections::HashMap::new(),
@@ -1292,7 +1218,7 @@ mod tests {
                 .finish(),
         );
         let (_dir, state) = bare_app_state();
-        let mut rx = global_events_broadcaster().subscribe();
+        let mut rx = state.control_plane.global_events_broadcaster().subscribe();
         let mut session = crate::rpc::ServerSession::new_with_queue_budget(
             "announce-me".to_string(),
             std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
@@ -1310,7 +1236,7 @@ mod tests {
         session.creator_id = "tui-creator".to_string();
         state.create_session(session);
 
-        // Other tests broadcast on the same global stream concurrently —
+        // The instance owns this stream; inspect its session announcement.
         // drain until THIS session's announcement arrives.
         for _ in 0..64 {
             match rx.try_recv() {
@@ -1342,8 +1268,9 @@ mod tests {
     fn publish_session_created_wrapper_announces_with_an_empty_creator() {
         // The three-argument wrapper is the legacy surface; it must keep
         // emitting the same event with an empty creator id.
-        let mut rx = global_events_broadcaster().subscribe();
-        publish_session_created("wrapper-session", "cli", "/tmp/wrapper");
+        let state = ControlPlane::default();
+        let mut rx = state.global_events_broadcaster().subscribe();
+        state.publish_session_created("wrapper-session", "cli", "/tmp/wrapper");
         for _ in 0..64 {
             match rx.try_recv() {
                 Ok(event)
@@ -1376,9 +1303,10 @@ mod tests {
         // The deprecated alias must resolve to the *same* broadcaster: a
         // second instance would silently split config-event consumers from
         // the ones on the session stream.
+        let state = ControlPlane::default();
         assert!(std::sync::Arc::ptr_eq(
-            &global_config_broadcaster(),
-            &global_events_broadcaster()
+            &state.global_config_broadcaster(),
+            &state.global_events_broadcaster()
         ));
     }
 

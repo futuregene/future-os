@@ -117,6 +117,12 @@ fn stale_run_scoped_commands_are_rejected_without_touching_current_run() {
         .begin(Some("run-current"), None)
         .unwrap();
 
+    let approval = state
+        .approval_gate
+        .insert_pending_for_test("current-approval", "default");
+    let other = state
+        .approval_gate
+        .insert_pending_for_test("other-session-approval", "other");
     let mut abort = make_cmd("abort");
     abort.run_id = "run-old".to_string();
     let response = parse_response(&handle_command_internal(&state, abort));
@@ -128,6 +134,7 @@ fn stale_run_scoped_commands_are_rejected_without_touching_current_run() {
         session.read().runtime.snapshot().unwrap().phase,
         crate::runtime::RunPhase::Starting
     );
+    assert_eq!(state.approval_gate.pending_for_session("default").len(), 1);
     let mut abort = make_cmd("abort");
     abort.run_id = "run-current".to_string();
     let response = parse_response(&handle_command_internal(&state, abort));
@@ -136,6 +143,17 @@ fn stale_run_scoped_commands_are_rejected_without_touching_current_run() {
         session.read().runtime.snapshot().unwrap().phase,
         crate::runtime::RunPhase::Cancelling
     );
+    assert_eq!(
+        approval
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap()
+            .status,
+        ApprovalDecisionStatus::Cancelled
+    );
+    assert!(matches!(
+        other.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
     assert!(session.read().runtime.begin_finalizing(&lease));
     assert!(session.read().runtime.finish(&lease));
 }

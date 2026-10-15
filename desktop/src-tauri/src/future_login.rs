@@ -194,7 +194,7 @@ const CREDIT_UNIT: f64 = 10_000_000_000.0;
 /// failed request.
 pub async fn fetch_balance() -> Result<FutureBalance, AppError> {
     let key = future_api_key()?;
-    let platform = crate::future_platform::current_platform_url();
+    let platform = crate::future_platform::checked_platform_url()?;
     let response = client()
         .get(format!("{platform}/client/v1/account/balance"))
         .bearer_auth(&key)
@@ -251,7 +251,7 @@ pub async fn start() -> Result<FutureLoginStart, AppError> {
 
 /// The same device authorization flow without launching a browser on an SSH host.
 pub(crate) async fn start_with_browser(open: bool) -> Result<FutureLoginStart, AppError> {
-    let platform = crate::future_platform::current_platform_url();
+    let platform = crate::future_platform::checked_platform_url()?;
     let response = client()
         .post(format!("{platform}/client/v1/oauth/device/code"))
         .json(&json!({ "client_name": CLIENT_NAME }))
@@ -320,7 +320,7 @@ pub(crate) async fn start_with_browser(open: bool) -> Result<FutureLoginStart, A
 /// Exchange the device code for an API key once. On success the key is written
 /// to `auth.json`; the returned status drives the frontend poll loop.
 pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
-    let platform = crate::future_platform::current_platform_url();
+    let platform = crate::future_platform::checked_platform_url()?;
     let response = match client()
         .post(format!("{platform}/client/v1/oauth/device/token"))
         .json(&json!({ "device_code": device_code }))
@@ -513,7 +513,7 @@ pub(crate) fn future_api_key() -> Result<String, AppError> {
 /// (`cli/src/commands/account.ts`). Errors when signed out or on a failed request.
 pub async fn fetch_profile() -> Result<FutureProfile, AppError> {
     let key = future_api_key()?;
-    let platform = crate::future_platform::current_platform_url();
+    let platform = crate::future_platform::checked_platform_url()?;
     let response = client()
         .get(format!("{platform}/client/v1/account/profile"))
         .bearer_auth(&key)

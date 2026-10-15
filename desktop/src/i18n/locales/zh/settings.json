@@ -59,6 +59,12 @@
     "description": "智能体任务完成时播放提示音并吸引窗口注意力"
   },
   "update": {
+    "maintenanceUnavailable": "无法读取更新恢复信息",
+    "confirmRepair": "确认已完成手工修复",
+    "cliTool": "CLI {{version}} · {{source}} · {{path}}",
+    "operation": "更新 {{id}} · {{stage}} · {{outcome}}",
+    "unconfirmed": "结果尚未确认",
+    "awaitingResult": "安装器接管不代表安装成功。如果重启后仍处于此状态，请检查 app/updates 和 app/logs/update-recovery.log，修复安装后再重试。",
     "sectionTitle": "软件更新",
     "title": "检查更新",
     "description": "从官方源安全下载并安装经过签名验证的更新",
