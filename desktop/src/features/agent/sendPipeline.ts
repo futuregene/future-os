@@ -196,6 +196,7 @@ export async function runSendPipeline(
       if (currentRun.status === "cancelled") {
         if (isCurrentSend())
           setRecentRun(currentRun);
+        const runStartedAt = storedTimeToIso(currentRun.startedAt ?? currentRun.createdAt);
         const partial = reply.content.trim();
         if (partial) {
           // Persist the partial reply regardless of whether this view still owns
@@ -216,7 +217,7 @@ export async function runSendPipeline(
               content: abortedRender.content,
               segments: abortedRender.segments,
               status: storedAssistantMessage.status,
-              createdAt: storedTimeToIso(storedAssistantMessage.createdAt),
+              createdAt: runStartedAt,
               outputTokens: abortedRender.outputTokens,
               stopped: true,
               terminationNotice: userStoppedNotice(),
@@ -233,6 +234,7 @@ export async function runSendPipeline(
           // accumulated), drop the thinking flag, and mark it stopped.
           patchMessage(setMessages, pendingId, {
             status: "complete",
+            createdAt: runStartedAt,
             thinkingActive: false,
             stopped: true,
             terminationNotice: userStoppedNotice(),

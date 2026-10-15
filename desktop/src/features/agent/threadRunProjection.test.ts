@@ -194,6 +194,19 @@ describe("applyRunMetadata", () => {
     expect(result[1]?.terminationNotice).toContain("stopped this response manually");
   });
 
+  it("uses the run start for a stopped reply with a later persisted partial", () => {
+    const startedAt = Date.parse("2026-07-01T10:00:00.000Z");
+    const result = applyRunMetadata(
+      [user("u1"), assistant("a1", {
+        runId: "r1",
+        content: "partial",
+        createdAt: "2026-07-01T12:14:00.000Z",
+      })],
+      [run("r1", { status: "cancelled", startedAt, endedAt: startedAt + 135 * 60_000 })],
+    );
+    expect(result[1]?.createdAt).toBe(new Date(startedAt).toISOString());
+  });
+
   it("restores the classified failure notice beside a persisted partial reply", () => {
     const result = applyRunMetadata(
       [user("u1"), assistant("a1", { content: "partial" })],
@@ -257,8 +270,9 @@ describe("applyRunMetadata", () => {
     expect(result[2]?.status).toBe("complete");
   });
 
-  it("stamps an aborted (empty) exchange with the run's end time — the stop time", () => {
-    const stopMs = Date.parse("2026-07-01T10:00:06.000Z");
+  it("keeps an aborted (empty) exchange at the run start after a long run", () => {
+    const startMs = Date.parse("2026-07-01T10:00:01.000Z");
+    const stopMs = Date.parse("2026-07-01T12:15:00.000Z");
     const result = applyRunMetadata(
       [
         user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
@@ -269,12 +283,12 @@ describe("applyRunMetadata", () => {
       [
         run("r1", {
           status: "cancelled",
-          startedAt: stopMs - 6000,
+          startedAt: startMs,
           endedAt: stopMs,
         }),
       ],
     );
-    expect(result[1]?.createdAt).toBe(new Date(stopMs).toISOString());
+    expect(result[1]?.createdAt).toBe(new Date(startMs).toISOString());
     expect(result[1]?.stopped).toBe(true);
   });
 
