@@ -12,13 +12,18 @@
 #   OSS_ACCESS_KEY_SECRET   AccessKey Secret                    (required)
 #   OSS_REGION              derived here and exported to GITHUB_ENV
 #
-# Assumes a Linux x86_64 GitHub-hosted runner. Bump OSSUTIL_VERSION to upgrade;
+# Supports Linux x86_64 and aarch64 GitHub-hosted runners. Bump OSSUTIL_VERSION to upgrade;
 # verify the CDN URL returns 200 first (some patch versions don't exist).
 
 set -euo pipefail
 
 OSSUTIL_VERSION="${OSSUTIL_VERSION:-2.2.0}"
-pkg="ossutil-${OSSUTIL_VERSION}-linux-amd64"
+case "$(uname -m)" in
+  x86_64) ossutil_arch=amd64 ;;
+  aarch64|arm64) ossutil_arch=arm64 ;;
+  *) echo "Unsupported ossutil runner architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+pkg="ossutil-${OSSUTIL_VERSION}-linux-${ossutil_arch}"
 url="https://gosspublic.alicdn.com/ossutil/v2/${OSSUTIL_VERSION}/${pkg}.zip"
 
 # Self-hosted runners keep /usr/local/bin between jobs, so ossutil is usually

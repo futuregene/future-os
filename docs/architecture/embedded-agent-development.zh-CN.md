@@ -631,22 +631,31 @@ macOS 本地真实打包还发现：在已有 mode 0644 编译占位文件上执
 
 ### 10.11 macOS 实际产物验收（2026-10-15）
 
-源码 `b7498222`，运行 `scripts/build/build-desktop-macos.sh --skip-deps --unsigned` 完成 CLI release、生产前端、Desktop release、app 和 DMG 的完整构建。先前编译占位文件留下的 CLI mode 0644 已通过统一 `install -m 755` 修正；新 DMG 内 CLI mode 为 0755。初次受限环境的 hdiutil 返回 `Device not configured` 不算封装通过；使用系统磁盘映像服务完成了实际封装、校验、只读挂载和卸载。
+源码 `b2f83f2e`，运行 `scripts/build/build-desktop-macos.sh --skip-deps --unsigned` 完成 CLI release、生产前端、Desktop release、app 和 DMG 的完整构建。先前编译占位文件留下的 CLI mode 0644 已通过统一 `install -m 755` 修正；新 DMG 内 CLI mode 为 0755。初次受限环境的 hdiutil 返回 `Device not configured` 不算封装通过；使用系统磁盘映像服务完成了实际封装、校验、只读挂载和卸载。
 
 | 项目 | 结果 |
 | --- | --- |
 | `hdiutil verify` | 通过 |
 | DMG 内 app `codesign --verify --deep --strict` | 通过；ad-hoc，不是 Developer ID/公证验收 |
-| DMG 内 `future --version` | `future v0.0.2-b7498222+local`，退出 0 |
+| DMG 内 `future --version` | `future v0.0.2-b2f83f2e+local`，退出 0 |
 | DMG 内 `futureos --help` | 正确 GUI 入口帮助，退出 0 |
 | 探测隔离 | 独立 HOME/USERPROFILE/FUTURE_HOME；未创建 Agent 数据目录 |
-| DMG 字节数 | 40,029,619 |
-| app 逻辑文件字节数 | 85,799,081；非内存、非 sidecar 对比数据 |
-| DMG SHA-256 | `9e6b71116c296f64e342c5db85939ffd4ee33e321f90387f44d432b8fb951bf0` |
+| DMG 字节数 | 40,029,973 |
+| app 逻辑文件字节数 | 85,815,433；非内存、非 sidecar 对比数据 |
+| DMG SHA-256 | `9bab6755e6b8b0ac668f85af028937c7b1cc62d411b797285d0e11d93d3a3ed9` |
 
-产物与日志在忽略目录 `agent/target/phase7-macos-artifacts/`：`FutureOS_0.0.2_aarch64.dmg`、`build-fixed.log`、`artifact-smoke.json`、DMG 校验和包内命令日志。没有安装、启动真实 GUI 会话或发布该产物。无 sidecar 可比基线，因此只记录绝对包体，性能项仍待验收。
+产物与日志在忽略目录 `agent/target/phase7-macos-artifacts/`：`FutureOS_0.0.2_aarch64.dmg`、`build-final.log`、`artifact-smoke.json`、DMG 校验和包内命令日志。没有安装、启动真实 GUI 会话或发布该产物。无 sidecar 可比基线，因此只记录绝对包体，性能项仍待验收。
 
 macOS 发布工作流增加实际 app 内 CLI 可执行权限、精确版本、Desktop 帮助入口和无 Agent 状态初始化检查；同一检查代码已对本地产物执行通过。Linux 发布工作流增加从实际 deb 解包后运行对应程序的检查，Python 语法和 actionlint 通过，实际 deb 执行仍待 Linux 发布构建。二者都使用隔离 HOME 和 15 秒单命令超时，不能仅以签名正确或暂存源文件可执行判断产物通过。
+
+
+### 10.12 daily 未签名包验证脚本 review（2026-10-15）
+
+Windows 既有流程只运行暂存 CLI 和 C#/NSIS 模拟安装器，不能证明真实产品安装包包含正确入口。Linux 既有 deb 探测未验证 portable 和独立 CLI 压缩包。新增共享 `scripts/ci/check-packaged-entrypoints.py`，在平台原生 runner 上解包实际 NSIS/deb、portable 和 CLI 产物；运行包内 CLI 精确版本、Agent 帮助、Desktop 帮助，并验证 Windows 安装器内维护 CLI 的版本/重置能力。所有探测使用临时 HOME/USERPROFILE/FUTURE_HOME、清除端点 override、禁用 stdin 并设置超时；不得创建 Agent 数据目录。它不执行安装器、不启动真实 GUI/Agent，不代替安装、升级与沙箱完整验收。
+
+Linux 对各 CLI 包检查静态链接，对 deb 和 portable 内 headless 执行 `check-headless-linux.sh`：真实 ELF、无网络 Rocky 8/旧 glibc、无 TTY 首次运行拒绝、未写凭据/配对/数据库。容器和内部程序均有超时，退出时清理专用命名容器。验证错误阻止产物上传，日志和 JSON 汇总单独以 Actions artifact 保存。
+
+手动 Linux 构建与 Windows 使用同一 `+dev` 显示版本/无后缀公共文件版本规则。两平台独立 daily 构建可上传到 `dev/<artifact-version>/`，不修改正式或 nightly 更新清单。共享 ossutil 安装脚本改为按 x86_64/aarch64 runner 选择 amd64/arm64 下载；ARM64 官方下载地址已确认可用。工作流、Shell、Python 语法和双语文档检查已通过，实际两平台打包应在宿主 CI 结束后运行，再记录结果。
 
 ## 11 发布条件与回退
 

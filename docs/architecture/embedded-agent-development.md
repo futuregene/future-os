@@ -1061,7 +1061,7 @@ integration revalidation.
 
 ### 10.11 Actual macOS artifact acceptance (2026-10-15)
 
-At `b7498222`, `scripts/build/build-desktop-macos.sh --skip-deps --unsigned`
+At `b2f83f2e`, `scripts/build/build-desktop-macos.sh --skip-deps --unsigned`
 completed release CLI, production frontend, release Desktop, app and DMG builds.
 Replacing `cp` with `install -m 755` fixes the mode-0644 CLI left by compile-only
 placeholders; the final DMG's CLI has mode 0755. The initial restricted hdiutil
@@ -1072,15 +1072,15 @@ image service completed creation, verification, read-only mounting and detach.
 | --- | --- |
 | `hdiutil verify` | Passed |
 | DMG app `codesign --verify --deep --strict` | Passed; ad-hoc, not Developer ID/notarization acceptance |
-| DMG `future --version` | `future v0.0.2-b7498222+local`, exit 0 |
+| DMG `future --version` | `future v0.0.2-b2f83f2e+local`, exit 0 |
 | DMG `futureos --help` | Correct GUI entry-point help, exit 0 |
 | Probe isolation | Separate HOME/USERPROFILE/FUTURE_HOME; no Agent state created |
-| DMG bytes | 40,029,619 |
-| App logical file bytes | 85,799,081; not memory or a sidecar comparison |
-| DMG SHA-256 | `9e6b71116c296f64e342c5db85939ffd4ee33e321f90387f44d432b8fb951bf0` |
+| DMG bytes | 40,029,973 |
+| App logical file bytes | 85,815,433; not memory or a sidecar comparison |
+| DMG SHA-256 | `9bab6755e6b8b0ac668f85af028937c7b1cc62d411b797285d0e11d93d3a3ed9` |
 
 Artifacts/logs are in ignored `agent/target/phase7-macos-artifacts/`:
-`FutureOS_0.0.2_aarch64.dmg`, `build-fixed.log`, `artifact-smoke.json`, disk-image
+`FutureOS_0.0.2_aarch64.dmg`, `build-final.log`, `artifact-smoke.json`, disk-image
 verification and packaged-command logs. The artifact was not installed,
 started as a real GUI session or published. With no comparable sidecar baseline,
 only absolute artifact sizes are recorded; performance acceptance remains open.
@@ -1092,6 +1092,36 @@ deb and runs the corresponding programs. Embedded Python syntax and actionlint
 passed; actual deb execution awaits a Linux release build. Both use isolated
 homes and 15-second per-command timeouts. Signatures or executable source
 staging files alone do not prove an artifact works.
+
+
+### 10.12 Daily unsigned package verification review (2026-10-15)
+
+The existing Windows workflow probes staged CLI binaries and C#/NSIS fixtures,
+which cannot prove that the real installer contains the correct entry points.
+The Linux deb probe did not cover portable or standalone CLI archives. The new
+shared `scripts/ci/check-packaged-entrypoints.py` extracts actual NSIS/deb,
+portable and CLI payloads on native runners. It checks exact CLI versions,
+Agent/Desktop help, and the Windows installer's maintenance CLI version/reset
+capability. Probes use temporary HOME/USERPROFILE/FUTURE_HOME, remove endpoint
+overrides, disable stdin and impose timeouts; no Agent state may be created.
+It does not execute installers or start real GUI/Agent sessions, so actual
+installation, upgrade and full sandbox acceptance remain separate.
+
+Linux checks static CLI linkage in each distribution and invokes
+`check-headless-linux.sh` on headless binaries extracted from deb and portable:
+actual ELF inspection, networkless Rocky 8/old glibc execution, rejection of
+noninteractive first setup, and no credentials/pairing/database. Container and
+inner commands have deadlines; an exit trap cleans up the dedicated named
+container. Verification failure blocks artifact upload, while separate Actions
+artifacts preserve command logs and JSON summaries.
+
+Standalone Linux dispatch now uses the same `+dev` display version and suffix-free
+public artifact version as Windows. Both daily builds may upload to
+`dev/<artifact-version>/` without updating release/nightly manifests. The shared
+ossutil installer selects amd64/arm64 according to its x86_64/aarch64 runner;
+the official ARM64 download URL is available. Workflow, Shell, Python syntax
+and bilingual-document checks passed. Actual platform packaging runs follow
+completion of the host CI; their results must be recorded separately.
 
 ## 11 Release conditions and rollback
 

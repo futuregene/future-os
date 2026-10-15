@@ -417,6 +417,23 @@ jobs:
 
           Get-ChildItem $stage | Select-Object -ExpandProperty Name
 
+      # Run actual payloads, not the staged binaries or the C# hook fixtures.
+      # Extraction avoids installing into the long-lived signing runner's profile.
+      - name: Verify actual Windows installer and portable payloads
+        shell: pwsh
+        env:
+          FUTURE_VERSION: ${{ steps.v.outputs.version }}
+        run: python scripts/ci/check-packaged-entrypoints.py windows --version "$env:FUTURE_VERSION"
+
+      - name: Upload package verification logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: futureos-windows-package-smoke
+          path: target/package-smoke/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Upload artifacts to GitHub
         uses: actions/upload-artifact@v7
         with:

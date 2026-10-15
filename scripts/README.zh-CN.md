@@ -118,6 +118,9 @@ CI 辅助脚本（由工作流文件调用）。
 
 - `check-embedded-agent.py` — Linux、Windows、macOS 的 RPC/服务/GUI/headless
   原生生命周期专项门禁，由 CI 归档日志和 JSON 汇总。
+- `check-packaged-entrypoints.py` — 解包真实 deb/NSIS、portable 和 CLI 压缩包，
+  使用隔离目录验证早期入口与精确 CLI 版本，并对包内 Linux 静态程序执行旧 glibc
+  headless 检查；保留 JSON 和日志证据。
 - `check-headless-linux.sh` — 校验发布二进制为静态链接，然后在无网络、旧 glibc 的
   干净 Linux 镜像中启动它（便携包基线）。
 - `install-apt-packages.sh` — 安装仅 CI 使用的 Ubuntu 软件包；Azure runner 镜像

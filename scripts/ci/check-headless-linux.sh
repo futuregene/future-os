@@ -26,15 +26,18 @@ file -b "$binary" 2>/dev/null || true
 # Rocky 8 ships glibc 2.28 — older than every GLIBC_x the build host could
 # stamp onto a gnu binary — so a linkage regression fails here, not on a
 # user's HPC login node.
-docker run --rm --network none \
+container_name="futureos-headless-probe-$$-$RANDOM"
+trap 'docker rm -f "$container_name" >/dev/null 2>&1 || true' EXIT
+timeout --signal=TERM --kill-after=10s 180s docker run --rm --name "$container_name" --network none \
   --mount "type=bind,src=$binary,dst=/usr/local/bin/futureos-headless,readonly" \
   --env HOME=/tmp/headless-home --env USERPROFILE=/tmp/headless-home \
+  --env FUTURE_HOME=/tmp/headless-home/.future \
   rockylinux:8 sh -eu -c '
     mkdir -p "$HOME"
-    futureos-headless --help
+    timeout 20s futureos-headless --help
     test ! -e "$HOME/.future"
     set +e
-    output=$(futureos-headless </dev/null 2>&1)
+    output=$(timeout 20s futureos-headless </dev/null 2>&1)
     status=$?
     set -e
     printf "%s\n" "$output"

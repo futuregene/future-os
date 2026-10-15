@@ -129,6 +129,9 @@ CI helper scripts (invoked from the workflow files).
 
 - `check-embedded-agent.py` — narrow native RPC/service/GUI/headless lifecycle
   gate on Linux, Windows and macOS; uploads logs and a JSON summary through CI.
+- `check-packaged-entrypoints.py` — extracts actual deb/NSIS, portable and CLI
+  archives, probes isolated early entry points and exact CLI versions, and verifies
+  packaged Linux static binaries in the old-glibc headless check; keeps JSON/log evidence.
 - `check-headless-linux.sh` — verifies the release binary is statically linked, then
   starts it in a clean, networkless Linux image with an old glibc (the portable-bundle baseline).
 - `install-apt-packages.sh` — installs CI-only Ubuntu packages with a fast failover from
