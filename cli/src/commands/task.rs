@@ -1,4 +1,4 @@
-//! `future task` — manage FutureOS tasks (reusable prompt + trigger + full-permission runs).
+//! `future task` — manage scheduled tasks (reusable prompt + trigger + full-permission runs).
 //!
 //! State lives in `<home>/.future/tasks/tasks.db`, shared with the desktop
 //! tick loop and the remote bridge. The CLI is a plain client of that store:
@@ -1774,7 +1774,7 @@ mod tests {
         }
         let (out, captured) = Output::memory();
         task(None, &[], &out).await.unwrap();
-        assert!(text(captured.out).contains("future task — manage FutureOS tasks"));
+        assert!(text(captured.out).contains("future task — manage scheduled tasks"));
     }
 
     // ─── edit ─────────────────────────────────────────────────────────────

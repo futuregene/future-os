@@ -1129,9 +1129,10 @@ Key trade-offs:
   rules are in PLAN.md's "Custom provider field validation" — frontend
   immediate + backend authoritative.
 
-### 6.10 Tasks keep their own store, not the GUI SQLite
+### 6.10 Scheduled tasks keep their own store, not the GUI SQLite
 
-Tasks (a reusable prompt + trigger that runs at full permission) are owned by the
+Scheduled tasks (a reusable prompt + trigger that runs at full permission, and
+that can also be run on demand) are owned by the
 `future-tasks` crate and persist to `<home>/.future/tasks/tasks.db` — a third
 store beside `agent.db` and `app.db`, read and written identically by the GUI,
 the CLI (`future task`) and the remote bridge. Two reasons it is not an `app.db`
@@ -1140,13 +1141,13 @@ table:
 - **The CLI must not open the GUI database.** `app.db` has a released schema
   with its own versioned migrations and a single owner; `future desktop
   settings` can write it only because `future-app-settings` holds the shared
-  schema. Tasks are a first-class CLI surface, so they need an owner both sides
+  schema. Scheduled tasks are a first-class CLI surface, so they need an owner both sides
   share rather than a second writer into the GUI's store.
 - **TUI and headless desktop must be able to run the same tasks.** The store is
   resolved from the FutureOS home (`FUTURE_HOME` replaces the root), so the same
   task list is visible to every client and the executor can be hosted anywhere.
 
-The GUI therefore has **no task tables and no task migration**. A task's
+The GUI therefore has **no task tables and no task migration**. A scheduled task's
 conversations are ordinary Threads: they appear in the sidebar under the task's
 title, and the task → conversation link is `task_runs.thread_id` inside the
 tasks store (queried through the task panel/runs view). A `threads.task_id`

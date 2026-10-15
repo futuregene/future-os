@@ -315,7 +315,7 @@ describe("tasksView", () => {
 
   it("says so when there are no tasks", async () => {
     const { container } = await renderView([]);
-    expect(container.textContent).toContain("No tasks yet");
+    expect(container.textContent).toContain("No scheduled tasks yet");
   });
 
   // Pressing "run now" while a run is in flight leaves the request queued for
@@ -408,7 +408,7 @@ describe("tasksView", () => {
   // edges are written once the task exists (an edge needs both ids).
   it("creates a task that depends on another task", async () => {
     const { container } = await renderView([task(), upstreamTask()]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     await setValue(field(container, "Name") as HTMLInputElement, "downstream");
     await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
     await chooseModelAndThinking(container);
@@ -502,7 +502,7 @@ describe("tasksView", () => {
   // update.
   it("keeps a created task when its dependency is refused", async () => {
     const { container } = await renderView([task(), upstreamTask()]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     await setValue(field(container, "Name") as HTMLInputElement, "downstream");
     await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
     await chooseModelAndThinking(container);
@@ -648,14 +648,14 @@ describe("tasksView", () => {
     expect(mocks.invokeCommand).toHaveBeenCalledWith("set_task_enabled", { id: "tsk_1", enabled: false });
 
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-    await click(container.querySelector<HTMLButtonElement>("button[aria-label='Delete task']")!);
+    await click(container.querySelector<HTMLButtonElement>("button[aria-label='Delete scheduled task']")!);
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining("daily report"));
     expect(mocks.invokeCommand).toHaveBeenCalledWith("delete_task", { id: "tsk_1" });
 
     // A declined confirmation must not delete anything.
     mocks.invokeCommand.mockClear();
     confirm.mockReturnValue(false);
-    await click(container.querySelector<HTMLButtonElement>("button[aria-label='Delete task']")!);
+    await click(container.querySelector<HTMLButtonElement>("button[aria-label='Delete scheduled task']")!);
     expect(mocks.invokeCommand).not.toHaveBeenCalledWith("delete_task", { id: "tsk_1" });
   });
 
@@ -677,7 +677,7 @@ describe("tasksView", () => {
 
   it("creates a chat task that needs no directory", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     mocks.invokeCommand.mockClear();
 
     // Saving an incomplete form reports what is missing instead of calling out.
@@ -708,7 +708,7 @@ describe("tasksView", () => {
 
   it("refuses a save without a model or a thinking level", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     await setValue(field(container, "Name") as HTMLInputElement, "unconfigured");
     await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
     mocks.invokeCommand.mockClear();
@@ -731,7 +731,7 @@ describe("tasksView", () => {
 
   it("asks for a directory only for a workspace conversation", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     await setValue(field(container, "Name") as HTMLInputElement, "filed");
     await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
     await chooseModelAndThinking(container);
@@ -752,7 +752,7 @@ describe("tasksView", () => {
 
   it("says so when no model is enabled", async () => {
     const { container } = await renderView([], vi.fn(), []);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     expect(container.textContent).toContain("No models are enabled");
     expect(container.querySelectorAll("select")).not.toHaveLength(0);
   });
@@ -794,7 +794,7 @@ describe("tasksView", () => {
       extra: (container: HTMLElement) => Promise<void> = async () => {},
     ) {
       const { container } = await renderView([]);
-      await click(buttonByText(container, "New task"));
+      await click(buttonByText(container, "New scheduled task"));
       await setValue(field(container, "Name") as HTMLInputElement, "scheduled");
       await setValue(field(container, "Prompt") as HTMLTextAreaElement, "prompt");
       await chooseModelAndThinking(container);
@@ -850,7 +850,7 @@ describe("tasksView", () => {
 
   it("shows the short-month rule and the full-permission warning while editing", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     await setValue(triggerModeSelect(container), "monthly");
     expect(container.textContent).toContain("last day of the month");
     expect(container.textContent).toContain("full permission");
@@ -858,7 +858,7 @@ describe("tasksView", () => {
 
   it("adds and removes weekdays on a weekly trigger", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     await setValue(triggerModeSelect(container), "weekly");
 
     const boxes = [...container.querySelectorAll<HTMLInputElement>("input[type=checkbox]")];
@@ -929,7 +929,7 @@ describe("tasksView", () => {
 
   it("switches the session policy and says what reusing a conversation means", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     await setValue(field(container, "Conversation") as HTMLSelectElement, "existing");
     // Each run continues the same conversation, and nothing is compacted for
     // the user — the point of reusing it is the accumulated context.
@@ -939,11 +939,11 @@ describe("tasksView", () => {
 
   it("cancels the editor without saving", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     mocks.invokeCommand.mockClear();
     await click(buttonByText(container, "Cancel"));
     expect(mocks.invokeCommand).not.toHaveBeenCalledWith("create_task", expect.anything());
-    expect(container.textContent).toContain("Select a task");
+    expect(container.textContent).toContain("Select a scheduled task");
   });
 
   it("edits a manual task back to the manual trigger", async () => {
@@ -968,7 +968,7 @@ describe("tasksView", () => {
 
   it("does not offer a default model or thinking level", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     const model = field(container, "Model") as HTMLSelectElement;
     const thinking = field(container, "Thinking level") as HTMLSelectElement;
     // Neither picker offers "default": the run's model and thinking level are
@@ -987,7 +987,7 @@ describe("tasksView", () => {
     // picker is disabled rather than left offering a choice the run ignores —
     // the same rule the composer applies.
     const { container } = await renderView([], vi.fn(), MODELS_WITHOUT_THINKING);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     expect((field(container, "Thinking level") as HTMLSelectElement).disabled).toBe(false);
 
     await setValue(field(container, "Model") as HTMLSelectElement, "future/jev");
@@ -996,7 +996,7 @@ describe("tasksView", () => {
 
   it("normalises the thinking level when the model changes", async () => {
     const { container } = await renderView([], vi.fn(), MODELS_WITHOUT_THINKING);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     await setValue(field(container, "Model") as HTMLSelectElement, "future/gpt-5");
 
     // A model that cannot think pins "off": the stored level must not keep
@@ -1015,7 +1015,7 @@ describe("tasksView", () => {
 
   it("gives a model change the app default when no level was chosen yet", async () => {
     const { container } = await renderView([], vi.fn(), MODELS_WITHOUT_THINKING);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     // Untouched, the picker still says "not chosen yet"; picking a model fills in
     // the app default rather than leaving the required field empty.
     expect((field(container, "Thinking level") as HTMLSelectElement).value).toBe("");
@@ -1025,7 +1025,7 @@ describe("tasksView", () => {
 
   it("carries every editor field into the saved task", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     await setValue(field(container, "Name") as HTMLInputElement, "configured");
     await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
     await chooseModelAndThinking(container);
@@ -1061,7 +1061,7 @@ describe("tasksView", () => {
   // sends `keep` rather than storing a combination nothing honours.
   it("offers the delete-after-run choice only for a per-run conversation", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     await chooseModelAndThinking(container);
 
     const retention = () => fieldOrNull(container, "Conversation after the run");
@@ -1164,7 +1164,7 @@ describe("tasksView", () => {
 
   it("opens a new task on a chat conversation, and switches to workspace on request", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     // Chat is the default: it needs no directory, so none is asked for.
     expect((field(container, "Conversation type") as HTMLSelectElement).value).toBe("chat");
     expect(container.querySelector("input[aria-label='Working directory']")).toBeNull();
