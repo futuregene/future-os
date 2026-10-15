@@ -369,7 +369,7 @@ Linux helper 继续由当前宿主可执行文件进入，保留统一 CLI 的 `
 ### 阶段七 构建 CI 与发布验收
 
 - [x] 修正路径过滤，让 Agent 及根 manifest/lock 变化触发 Desktop GUI/headless 编译与服务集成检查；Agent 改动也触发实际依赖它的 CLI/TUI 检查。
-- [x] 更新 Windows 生命周期断言，增加真实 IPC、停机与隔离 fixture 原生检查入口（原生执行结果仍待 CI/实机记录）。
+- [x] 更新 Windows 生命周期断言，增加真实 IPC、停机与隔离 fixture 原生检查入口（三平台原生专项已通过，完整打包生命周期仍待实机）。
 - [ ] 构建签名 Windows NSIS/便携、macOS app/DMG、Linux deb 与静态 headless 产物。
 - [ ] 对上一发布版本、内置首次版本、相同版本修复安装和两种升级方式做完整安装 smoke。
 - [ ] 测量冷启动、线程、内存、包体和清理时间，记录与原 sidecar 基线的差异。
@@ -569,6 +569,8 @@ Windows GUI/headless 同样必须顺序执行。占位 CLI 仅供编译，NSIS �
 
 `scope=desktop-rust` 仅选取 Desktop GUI/headless 的静态检查、Linux 全量测试及三平台编译，不重跑 Agent/CLI/前端套件或原生宿主专项，适合本轮调度器测试隔离修复的复验。
 
+`scope=headless-cli` 保留 Desktop 静态检查/编译，只执行 `--no-default-features --features headless --test headless_cli` 集成目标，用于单独修复入口和信号 fixture，避免再次执行已通过的 GUI/headless 全量 library 测试。
+
 保留既有 required-check 名称；Windows 更新 fixture 的失败也会使 `Rust tests (Linux)` 汇总门禁失败，避免新增 job 尚未写入分支保护时出现漏拦截。headless 的 check、Clippy 和全量测试显式启用 `--features headless`，确保独立二进制也参与构建/静态检查。
 
 `ci.yml` 的 Agent 依赖变化现在触发 Desktop GUI/headless 和 CLI/TUI 检查，根 manifest/lock 和共享 settings/workspaces/tasks 的影响也纳入过滤。Linux 全量单测继续按 crate 分组，不在三平台重复全部测试。`Rust build (Linux/Windows/macOS)` 增加 `scripts/ci/check-embedded-agent.py`，顺序运行 RPC 连接门禁、Agent `service_startup`、GUI 和 headless 的 `agent_host::tests`。fixture 在独立进程中隔离 HOME、FUTURE_HOME 和本地端点，实际覆盖 Windows pipe/Unix socket、持锁拒绝、启动取消、全局停机、CLI 来源任务终态、重启和外部所有者存活。零匹配测试视为失败；每组命令、结果、耗时和日志写入 `target/embedded-agent-ci/`，由 CI 归档。CI 将构建并发限制为 2、测试并发为 1，使用 `CARGO_PROFILE_TEST_DEBUG=1`，不扩大到三平台全量单测。
@@ -591,10 +593,10 @@ $env:FUTURE_AGENT_SOCKET = $null
 
 | 剩余验收 | 入口与要求 | 当前状态 |
 | --- | --- | --- |
-| 三平台 CI | 新的原生 fixture、既有静态检查和 Linux 分组全量测试 | 待 PR CI 执行；未在本地重跑单测 |
+| 三平台 CI | 新的原生 fixture、既有静态检查和 Linux 分组全量测试 | 三平台编译/原生专项已通过；Desktop 全量修复复验及最终 PR CI 另行记录；未在本地重跑单测 |
 | Windows 离线更新 | `test-windows-installer-preflight.ps1`（含 observer）、生命周期断言及 `test-install.ps1` | `9caaff29` 原生 Windows CI 已通过，见第 10.10 节；不代替真实产品安装 |
 | 原生 Linux 沙箱 | `scripts/tests/test-linux-sandbox-real-machine.sh`；真实 Bubblewrap ≥ 0.9.0、helper 和子进程回收 | 待原生 Linux；WSL 不计通过 |
-| 签名与发布产物 | 既有 Windows/macOS 签名工作流、Linux deb/musl 工作流及 `scripts/ci/check-headless-linux.sh` | 待构建和产物验证；没有发布新版本 |
+| 签名与发布产物 | 既有 Windows/macOS 签名工作流、Linux deb/musl 工作流及 `scripts/ci/check-headless-linux.sh` | macOS 本地 ad-hoc app/DMG 验证通过；发布签名、公证和 Windows/Linux 产物待验收；没有发布新版本 |
 | 真实安装升级 | 干净 VM 上的旧 sidecar 版→新版、内置版→新版、同版本修复；手动与应用自动升级 | 待执行；验证清理失败不安装、外部占用阻止替换、回滚保留用户数据 |
 | 产品交互 | GUI/CLI/TUI 真实工具对话、排队/审批退出提示、取消后重开、外部服务普通退出存活 | 后端已有 fixture，打包 UI/完整工具 smoke 待执行 |
 | 性能与体积 | 同机器、同配置、同任务，sidecar 与内置各至少 5 次；保留原始样本 | 待测量；没有宣称性能改善 |
@@ -620,6 +622,27 @@ Windows 专项 [38672888594](https://github.com/futuregene/future-os/actions/run
 三份 `summary.json` 和分组日志已归档于 `agent/target/phase7-ci-results/native-{linux,windows,macos}/`。首轮的 Agent、CLI/TUI、channels/RPC/loop/tasks、前端以及 fmt/Clippy 检查通过；Linux GUI 全量中 `scheduler::tests::a_spawned_job_fires_at_its_deadline_and_reanchors` 失败（1,804 通过、1 失败、12 ignored）。该用例未持有与全局后台清理相同的 fixture guard，其他并行用例可取消它的循环。`887c5b77` 给两个启动后台循环的调度器用例加上已有 HomeGuard，保持产品调度不变；[Desktop Rust 范围复验](https://github.com/futuregene/future-os/actions/runs/38673788870) 单独验证此修复和 headless feature 检查。
 
 macOS 本地真实打包还发现：在已有 mode 0644 编译占位文件上执行 `cp` 会保留不可执行权限，使 app 正常但包内 CLI 无法运行。Unix 开发、打包、Makefile 和发布 CI 的 CLI 暂存统一改用 `install -m 755`；此问题必须以重新封装后的包内 CLI smoke 验收，不能只验证源码目录中的 CLI。
+
+`887c5b77` 的 Desktop 范围复验中，GUI library 1,805 通过/12 ignored，headless library 1,470 通过/12 ignored，调度器修复有效。随后显式启用 headless feature 后新执行的 `headless_cli` 集成目标为 7 通过/1 失败：信号用例把 stderr 第一行硬编码为 foreground 提示，而 Linux 先打印登录 shell 环境补全日志。用例改为持续排空 stderr、在 15 秒内等待 foreground 标记，再发送信号；不吞掉退出码、超时或数据变化断言。子进程还显式隔离 FUTURE_HOME 并清除 socket override。该集成目标另行复验，不能把上述 run 整体记为通过。
+
+### 10.11 macOS 实际产物验收（2026-10-15）
+
+源码 `b7498222`，运行 `scripts/build/build-desktop-macos.sh --skip-deps --unsigned` 完成 CLI release、生产前端、Desktop release、app 和 DMG 的完整构建。先前编译占位文件留下的 CLI mode 0644 已通过统一 `install -m 755` 修正；新 DMG 内 CLI mode 为 0755。初次受限环境的 hdiutil 返回 `Device not configured` 不算封装通过；使用系统磁盘映像服务完成了实际封装、校验、只读挂载和卸载。
+
+| 项目 | 结果 |
+| --- | --- |
+| `hdiutil verify` | 通过 |
+| DMG 内 app `codesign --verify --deep --strict` | 通过；ad-hoc，不是 Developer ID/公证验收 |
+| DMG 内 `future --version` | `future v0.0.2-b7498222+local`，退出 0 |
+| DMG 内 `futureos --help` | 正确 GUI 入口帮助，退出 0 |
+| 探测隔离 | 独立 HOME/USERPROFILE/FUTURE_HOME；未创建 Agent 数据目录 |
+| DMG 字节数 | 40,029,619 |
+| app 逻辑文件字节数 | 85,799,081；非内存、非 sidecar 对比数据 |
+| DMG SHA-256 | `9e6b71116c296f64e342c5db85939ffd4ee33e321f90387f44d432b8fb951bf0` |
+
+产物与日志在忽略目录 `agent/target/phase7-macos-artifacts/`：`FutureOS_0.0.2_aarch64.dmg`、`build-fixed.log`、`artifact-smoke.json`、DMG 校验和包内命令日志。没有安装、启动真实 GUI 会话或发布该产物。无 sidecar 可比基线，因此只记录绝对包体，性能项仍待验收。
+
+macOS 发布工作流增加实际 app 内 CLI 可执行权限、精确版本、Desktop 帮助入口和无 Agent 状态初始化检查；同一检查代码已对本地产物执行通过。Linux 发布工作流增加从实际 deb 解包后运行对应程序的检查，Python 语法和 actionlint 通过，实际 deb 执行仍待 Linux 发布构建。二者都使用隔离 HOME 和 15 秒单命令超时，不能仅以签名正确或暂存源文件可执行判断产物通过。
 
 ## 11 发布条件与回退
 

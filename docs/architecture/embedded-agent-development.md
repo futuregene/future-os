@@ -592,7 +592,7 @@ PowerShell/NSIS compilation and fault injection have not run.
 
 - [x] Trigger GUI/headless/service integration checks on Agent and root
       manifest/lock changes; trigger CLI/TUI checks for their Agent dependency.
-- [x] Replace Windows child-count assertions and add real IPC/lifecycle entry points (native CI/machine execution remains pending).
+- [x] Replace Windows child-count assertions and add real IPC/lifecycle entry points (native suites passed on all three OSes; packaged lifecycle remains pending).
 - [ ] Build/sign NSIS/portable, macOS app/DMG, Linux deb and static headless.
 - [ ] Smoke-test previous release, first embedded release, same-version repair
       and both upgrade paths with complete installers.
@@ -903,6 +903,10 @@ requirements.
 and three-platform compilation, without repeating Agent/CLI/frontend suites or
 native host fixtures. It is used to revalidate the scheduler test-isolation fix.
 
+`scope=headless-cli` retains Desktop static/compile checks but runs only the
+`--no-default-features --features headless --test headless_cli` integration
+target, avoiding another run of already-passing GUI/headless library suites.
+
 Existing required-check names are retained. Windows update fixture failures also
 fail the `Rust tests (Linux)` aggregate gate, so protection does not depend on
 adding the new job name to branch settings first. Headless check, Clippy and
@@ -957,10 +961,10 @@ $env:FUTURE_AGENT_SOCKET = $null
 
 | Remaining acceptance | Entry point and requirement | Current status |
 | --- | --- | --- |
-| Three-platform CI | New native fixtures, existing static gates and grouped Linux full tests | Awaiting PR CI; no local unit-test rerun |
+| Three-platform CI | New native fixtures, existing static gates and grouped Linux full tests | Native compilation/lifecycle passed on three OSes; Desktop full-suite repair and final PR CI recorded separately; no local unit-test rerun |
 | Windows offline updates | `test-windows-installer-preflight.ps1` including observer, lifecycle assertions and `test-install.ps1` | Native Windows CI passed at `9caaff29`, section 10.10; actual product installation remains separate |
 | Native Linux sandbox | `scripts/tests/test-linux-sandbox-real-machine.sh`; actual Bubblewrap ≥ 0.9.0, helper and child cleanup | Awaiting native Linux; WSL is not acceptance |
-| Signing and artifacts | Existing Windows/macOS signed workflows, Linux deb/musl workflows, `scripts/ci/check-headless-linux.sh` | Awaiting builds/artifact verification; no new release published |
+| Signing and artifacts | Existing Windows/macOS signed workflows, Linux deb/musl workflows, `scripts/ci/check-headless-linux.sh` | Local macOS ad-hoc app/DMG verified; release signing/notarization and Windows/Linux artifacts pending; no release published |
 | Actual installation/upgrades | Clean VM: old sidecar → embedded, embedded → new, same-version repair; manual and in-app updates | Pending; verify failed cleanup forbids installation, external locks block replacement, rollback preserves user data |
 | Product interaction | GUI/CLI/TUI tools, queued work/approval exit prompt, reopen after cancellation, external-owner survival | Backend fixtures exist; packaged UI/full-tool smoke pending |
 | Performance and size | Same machine/configuration/task, at least 5 samples for sidecar and embedded | Pending; no performance improvement claimed |
@@ -1025,6 +1029,51 @@ existing mode-0644 compile placeholder preserves its non-executable mode. The
 app launches but the packaged CLI cannot run. Unix development/build scripts,
 Makefile and release CI now stage the CLI with `install -m 755`. Acceptance must
 execute the CLI from the repackaged artifact, not just the source build tree.
+
+The `887c5b77` scoped run passed GUI library tests (1,805 passed/12 ignored) and
+headless library tests (1,470 passed/12 ignored), validating the scheduler fix.
+Enabling the headless feature then exposed an integration assertion in
+`headless_cli` (7 passed/1 failed): the signal test assumed foreground mode was
+stderr's first line, but Linux logs login-shell hydration first. The fixture now
+drains stderr continuously and waits up to 15 seconds for the foreground marker
+before signaling. Exit-code, timeout and data-preservation assertions remain.
+Children also receive explicit FUTURE_HOME isolation and no socket override.
+That integration target is revalidated separately; this run is not recorded as
+an overall pass.
+
+### 10.11 Actual macOS artifact acceptance (2026-10-15)
+
+At `b7498222`, `scripts/build/build-desktop-macos.sh --skip-deps --unsigned`
+completed release CLI, production frontend, release Desktop, app and DMG builds.
+Replacing `cp` with `install -m 755` fixes the mode-0644 CLI left by compile-only
+placeholders; the final DMG's CLI has mode 0755. The initial restricted hdiutil
+`Device not configured` result is not a packaging pass. Using the system disk
+image service completed creation, verification, read-only mounting and detach.
+
+| Check | Result |
+| --- | --- |
+| `hdiutil verify` | Passed |
+| DMG app `codesign --verify --deep --strict` | Passed; ad-hoc, not Developer ID/notarization acceptance |
+| DMG `future --version` | `future v0.0.2-b7498222+local`, exit 0 |
+| DMG `futureos --help` | Correct GUI entry-point help, exit 0 |
+| Probe isolation | Separate HOME/USERPROFILE/FUTURE_HOME; no Agent state created |
+| DMG bytes | 40,029,619 |
+| App logical file bytes | 85,799,081; not memory or a sidecar comparison |
+| DMG SHA-256 | `9e6b71116c296f64e342c5db85939ffd4ee33e321f90387f44d432b8fb951bf0` |
+
+Artifacts/logs are in ignored `agent/target/phase7-macos-artifacts/`:
+`FutureOS_0.0.2_aarch64.dmg`, `build-fixed.log`, `artifact-smoke.json`, disk-image
+verification and packaged-command logs. The artifact was not installed,
+started as a real GUI session or published. With no comparable sidecar baseline,
+only absolute artifact sizes are recorded; performance acceptance remains open.
+
+The macOS release workflow now checks the actual app's executable CLI, exact
+version, Desktop help and absence of Agent-state initialization; that exact
+check code passed against the local app. Linux release CI extracts the actual
+deb and runs the corresponding programs. Embedded Python syntax and actionlint
+passed; actual deb execution awaits a Linux release build. Both use isolated
+homes and 15-second per-command timeouts. Signatures or executable source
+staging files alone do not prove an artifact works.
 
 ## 11 Release conditions and rollback
 
