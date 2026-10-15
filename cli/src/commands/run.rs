@@ -86,7 +86,10 @@ Other:
   --grpc-addr <addr>       Explicit TCP address (default: auto, per-user local IPC).
                            Also configurable via FUTURE_AGENT_GRPC_ADDR.
                            Explicit TCP is tried first, then local IPC.
-  --cwd <dir>              Working directory for the agent (default: current directory)
+  --cwd <dir>              Working directory for the agent. Defaults to the
+                           current directory for a session this run creates;
+                           an existing session (--session/--continue) keeps its
+                           recorded cwd unless --cwd is given.
   --help, -h               Show this help
 
 Arguments:
@@ -356,11 +359,10 @@ pub async fn run_command(args: &[String], out: &Output) -> Result<(), String> {
         permission: parsed.permission,
         no_session: parsed.no_session,
         mode: parsed.mode,
-        cwd: parsed.cwd.unwrap_or_else(|| {
-            std::env::current_dir()
-                .map(|d| d.display().to_string())
-                .unwrap_or_default()
-        }),
+        // Passed through untouched: `None` (no --cwd) must stay distinguishable
+        // from an explicit cwd, so attaching to an existing session leaves its
+        // recorded working directory alone.
+        cwd: parsed.cwd,
         verbose: parsed.verbose,
         busy_policy: parsed.busy_policy,
         message: prompt,
@@ -702,6 +704,43 @@ mod tests {
         // Repeated append-system-prompt joined with newline.
         let appends = agent.seen_of("append_system_prompt");
         assert_eq!(appends[0].system_prompt, "line1\nline2");
+    }
+
+    /// Regression: `future run --session <id> "..."` without `--cwd` must not
+    /// send set_cwd — the session keeps the cwd it already has. Covers the CLI
+    /// layer specifically: this is where the missing `--cwd` used to be turned
+    /// into the caller's directory, which then rewrote the session.
+    #[tokio::test]
+    async fn run_command_existing_session_without_cwd_sends_no_set_cwd() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent = crate::test_server::MockAgent {
+            events: vec![
+                crate::test_server::stream_event("text_chunk", "{\"text\":\"hi there\"}"),
+                crate::test_server::stream_event("agent_end", "{}"),
+            ],
+            ..Default::default()
+        };
+        let addr = crate::test_server::spawn_mock(agent.clone()).await;
+        let (out, _cap) = Output::memory();
+        run_command(
+            &[
+                "--grpc-addr".to_string(),
+                addr,
+                "--session".to_string(),
+                "s-existing".to_string(),
+                "hi".to_string(),
+            ],
+            &out,
+        )
+        .await
+        .expect("run");
+        assert!(agent.seen_of("new_session").is_empty());
+        assert_eq!(agent.seen_of("prompt")[0].session_id, "s-existing");
+        assert!(
+            agent.seen_of("set_cwd").is_empty(),
+            "set_cwd must not fire without --cwd: {:?}",
+            agent.seen_of("set_cwd")
+        );
     }
 
     #[tokio::test]

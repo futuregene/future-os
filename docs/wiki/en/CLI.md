@@ -275,8 +275,9 @@ A title or cwd set on a session that already has a record is written immediately
 for a session that has never run, it is stored with the session's first run. The
 model and thinking level take effect on the running session at once and reach the
 session record with the next run (they are part of the run snapshot). `future run`
-applies its own `--cwd` (the current directory by default) when a run starts, so a
-cwd set here stays in effect only until the next run overrides it.
+only applies a cwd of its own when `--cwd` is passed, or when it creates the
+session (a new session starts in the caller's directory); attaching to an existing
+session with `--session`/`--continue` leaves the cwd set here as it is.
 
 Session data is stored in the agent's SQLite database, `~/.future/agent/agent.db`.
 The `~/.future/agent/sessions/` directory is retained only as a legacy JSONL import
