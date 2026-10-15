@@ -43,9 +43,11 @@ macOS/Linux 使用 `scripts/dev/start-desktop-macos.sh` 或 `scripts/dev/start-d
 
 `DRY_RUN=1` 只打印配置；`BUILD_CLI=0` 跳过 CLI 构建；`RUN_CHECKS=1` 运行静态检查，不跑单元测试；`DESKTOP_DEV_PORT` 指定 Vite 端口。端口占用直接失败，不自动换端口或结束占用者。相对 `CARGO_TARGET_DIR` 从仓库根解析并转换为绝对路径。
 
-macOS/Linux 启动前会检查通过 `RUSTC_WRAPPER`、`RUSTC_WORKSPACE_WRAPPER` 或对应 `CARGO_BUILD_*` 环境变量选择的 `sccache`。缓存程序失败、缺失或检查超过 10 秒时，只有直接调用 rustc 成功才会在本次启动中绕过缓存；CLI 构建、可选 Cargo 检查和 Tauri 都继承该设置。正常缓存和其他 wrapper 保持原样，原始诊断写入 `.logs/rust-cache-preflight.log`，不修改缓存文件、共享服务或全局配置。真实编译错误仍按原有方式报错，不自动重启整个 Desktop 会话。
+三个桌面端启动入口都会在构建前恢复 Cargo 编译器信息中残留的 sccache 失败记录。Cargo 可能把失败的 `sccache rustc -vV` 写入 `<target>/.rustc_info.json`，之后即使 sccache 已恢复，也会直接重放旧错误。CLI 与 Desktop 默认使用不同的 target，因此可能出现 CLI 持续失败、Desktop 正常构建的现象。
 
-该检查不解析 Cargo TOML 配置，也不处理检查通过之后才发生的缓存故障。如果 wrapper 只在 Cargo TOML 中配置，可使用 `RUSTC_WRAPPER='' RUSTC_WORKSPACE_WRAPPER='' ./scripts/dev/start-desktop-macos.sh` 临时绕过（Linux 使用相应入口）。Windows 启动脚本目前不执行此缓存检查。
+脚本检查两个默认 target，或显式设置的 `CARGO_TARGET_DIR`；只有发现失败探测中包含明确的 `sccache: error:` 诊断，才把这一个元数据文件改名为同目录的 `.sccache-failure-<id>.bak`，保存原始错误，让 Cargo 重新生成元数据。恢复路径和诊断记录在 `.logs/rust-cache-preflight.log`。
+
+该处理不会关闭 sccache、清空编译缓存、停止共享服务或修改全局配置；正常元数据、无关编译错误和自定义 wrapper 保持原样。如果当前仍有权限或服务故障，需要修复实际运行环境，脚本不会通过无缓存编译掩盖问题。从 agent 的受限沙箱调用 Cargo 时，应为构建提供访问所配置缓存目录及本地缓存服务所需的权限。历史上的首次权限失败可能已无法复现，但 Cargo 仍可能持续重放保存的失败结果。
 
 应用内退出用于协调清理。开发脚本的 Ctrl+C 中断开发工具链；Unix 清理仅作用于本次启动的进程组，超时可能强杀。它不保证等同应用内正常退出，不扫描、终止外部 Agent，也不改写数据库或锁。真实 headless 程序直接处理 Ctrl+C，参见[无头模式指南](desktop-headless.zh-CN.md)。
 

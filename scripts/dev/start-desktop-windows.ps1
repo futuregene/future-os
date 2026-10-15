@@ -26,6 +26,14 @@ if ($env:DRY_RUN -eq '1') { Write-Host 'DRY_RUN=1; no writes, builds, probes or 
 $configFile = $null
 Push-Location $repoRoot
 try {
+    $logDir = Join-Path $repoRoot '.logs'
+    [void](New-Item -ItemType Directory -Force $logDir)
+    $cacheLog = Join-Path $logDir 'rust-cache-preflight.log'
+    [IO.File]::WriteAllText($cacheLog, '')
+    $desktopTarget = Join-Path $desktopDir 'src-tauri\target'
+    if ($env:CARGO_TARGET_DIR) { $desktopTarget = $cliTarget }
+    & node (Join-Path $PSScriptRoot 'start-desktop-rust-cache.mjs') $cacheLog $cliTarget $desktopTarget
+    if ($LASTEXITCODE -ne 0) { throw 'Cargo compiler metadata recovery failed; see rust-cache-preflight.log' }
     if (-not (Test-Path (Join-Path $desktopDir 'node_modules'))) {
         & npm.cmd ci
         if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }

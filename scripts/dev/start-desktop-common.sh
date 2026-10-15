@@ -49,17 +49,11 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 command -v node >/dev/null || { echo "Node.js is required for Desktop development" >&2; exit 1; }
-# Probe before any Cargo/Tauri child. Empty values override Cargo wrapper config
-# for this launch and its children, without changing the invoking shell.
+# Cargo may replay a cached failed `sccache rustc -vV` without invoking sccache.
+# Repair only that compiler metadata; never disable the compilation cache.
 : >"$LOG_DIR/rust-cache-preflight.log"
-CACHE_BYPASS="$(node "$ROOT_DIR/scripts/dev/start-desktop-rust-cache.mjs" "$LOG_DIR/rust-cache-preflight.log")"
-while IFS= read -r wrapper; do
-  case "$wrapper" in
-    RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER) export "$wrapper=" ;;
-    '') ;;
-    *) echo "Invalid Rust cache preflight response" >&2; exit 1 ;;
-  esac
-done <<< "$CACHE_BYPASS"
+node "$ROOT_DIR/scripts/dev/start-desktop-rust-cache.mjs" "$LOG_DIR/rust-cache-preflight.log" \
+  "$CLI_TARGET" "${CARGO_TARGET_DIR:-$DESKTOP_DIR/src-tauri/target}"
 [[ -d "$DESKTOP_DIR/node_modules" ]] || (cd "$ROOT_DIR" && npm ci)
 if [[ "${BUILD_CLI:-1}" == 1 ]]; then
   if ! (cd "$ROOT_DIR" && cargo build -p future-cli) >"$LOG_DIR/future-cli-dev.build.log" 2>&1; then

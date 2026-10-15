@@ -85,19 +85,25 @@ Vite port: an occupied port fails without choosing another or killing its owner.
 Relative CARGO_TARGET_DIR values resolve against the repository root and are
 exported as absolute paths.
 
-On macOS/Linux, the launcher checks `sccache` selected through `RUSTC_WRAPPER`,
-`RUSTC_WORKSPACE_WRAPPER` or their `CARGO_BUILD_*` environment aliases before
-building. A failed/missing cache or a probe exceeding 10 seconds is bypassed for
-this launch only if direct rustc succeeds. CLI, optional Cargo checks and Tauri
-inherit the bypass. Healthy caches and other wrappers remain enabled. Original
-diagnostics are saved to `.logs/rust-cache-preflight.log`; no cache files, shared
-servers or global configuration are changed. Real compiler/build failures retain
-the existing error behavior; the launcher never retries an entire Desktop session.
-This preflight does not parse Cargo TOML configuration or recover cache failures
-that begin after the probe. For a wrapper configured only in Cargo TOML, run
-`RUSTC_WRAPPER='' RUSTC_WORKSPACE_WRAPPER='' ./scripts/dev/start-desktop-macos.sh`
-(use the Linux entry point there) to bypass wrappers explicitly for one launch.
-The Windows launcher does not currently perform this cache preflight.
+All three desktop launchers recover stale sccache failures in Cargo compiler
+metadata before building. Cargo can store a failed `sccache rustc -vV` in
+`<target>/.rustc_info.json` and replay that failure after sccache is healthy again.
+CLI and Desktop normally have separate target directories, so one can keep
+failing while the other builds successfully. The launcher checks both default
+directories, or the explicit CARGO_TARGET_DIR, for failed probes with an explicit
+`sccache: error:` diagnostic. It renames only that metadata file to a sibling
+`.sccache-failure-<id>.bak`, preserving the original error, and lets Cargo regenerate
+the metadata. Recovery paths and diagnostics are logged to
+`.logs/rust-cache-preflight.log`.
+
+This does not disable sccache, clear compilation caches, stop shared servers or
+change global configuration. Healthy metadata, unrelated compiler errors and
+custom wrappers remain intact. An ongoing permission/service failure still
+requires fixing the actual execution environment; the launcher does not conceal
+it by compiling without sccache. When invoking Cargo from an agent's restricted
+sandbox, grant the build the permissions needed to access the configured cache
+and local cache service. The initial historical permission failure may no longer
+be reproducible even while Cargo continues replaying its saved result.
 
 Quit from the app for coordinated cleanup. Development-script Ctrl+C interrupts
 the toolchain. Unix cleanup targets only this launch's process group and can

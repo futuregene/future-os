@@ -17,18 +17,22 @@ permissions:
   contents: read
 
 jobs:
-  unix-launchers:
+  native-launchers:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
+      - uses: dtolnay/rust-toolchain@1.97.0
       - name: Check syntax
         run: |
           bash -n scripts/dev/start-desktop-common.sh
@@ -36,6 +40,18 @@ jobs:
       - name: Cache fault recovery regression
         run: node --test scripts/tests/test-rust-cache.mjs
       - name: Dry-run has no cache probes or build side effects
+        if: runner.os != 'Windows'
         run: |
           DRY_RUN=1 RUSTC_WRAPPER=/nonexistent/sccache bash scripts/dev/start-desktop-macos.sh
           DRY_RUN=1 RUSTC_WRAPPER=/nonexistent/sccache bash scripts/dev/start-desktop-linux.sh
+      - name: Windows launcher syntax and dry-run
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'scripts/dev/start-desktop-windows.ps1'), [ref]$null, [ref]$errors)
+          if ($errors) { $errors; exit 1 }
+          $env:DRY_RUN = '1'
+          $env:RUSTC_WRAPPER = 'C:\nonexistent\sccache.exe'
+          & scripts/dev/start-desktop-windows.bat
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
