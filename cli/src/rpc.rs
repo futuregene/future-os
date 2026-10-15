@@ -836,12 +836,27 @@ impl RunClient {
             out.write_err(&format!("Connecting to {}...\n", self.addr));
         }
 
+        // The directory a session created by this run starts in: an explicit
+        // `--cwd`, else the caller's directory. Resolved once so the
+        // `new_session` call and the post-creation `set_cwd` agree.
+        let run_cwd = config.cwd.clone().unwrap_or_else(|| {
+            std::env::current_dir()
+                .map(|d| d.display().to_string())
+                .unwrap_or_default()
+        });
+
         let mut session_id: String;
         // A freshly-created session (fork / no --session / no --continue) is
         // guaranteed idle, so the stream can subscribe before the prompt
         // without missing an early event. An existing session may be busy, so
         // follow-up/steering there must prompt first and filter by run_id.
         let mut is_fresh = false;
+        // Whether THIS invocation minted the session it is about to prompt.
+        // Distinct from `is_fresh`: a `--fork` also produces an idle session
+        // (so it is "fresh" for streaming) but it carries the parent's
+        // conversation, and renaming it would be renaming somebody else's chat.
+        // Only the `new_session` path below is a session this run owns.
+        let mut created_session = false;
         if let Some(fork_entry) = &config.fork {
             is_fresh = true;
             // Fork needs an explicit parent session. Without --session, fork
@@ -895,7 +910,8 @@ impl RunClient {
             // Fresh session for every standalone run — isolates model/thinking/
             // tool changes so they never bleed into subsequent invocations.
             is_fresh = true;
-            let new_session = self.new_session(&config.cwd).await?;
+            created_session = true;
+            let new_session = self.new_session(&run_cwd).await?;
             session_id = new_session
                 .get("sessionId")
                 .and_then(Value::as_str)
@@ -947,8 +963,16 @@ impl RunClient {
             }
             self.set_permission_level(permission, &session_id).await?;
         }
-        if !config.cwd.is_empty() {
-            self.set_cwd(&config.cwd, &session_id).await?;
+        // Rewrite the session's cwd only when the caller asked for it, or when
+        // this run created the session (a new session starts in the caller's
+        // directory, and the fresh path has always announced it with set_cwd).
+        // Attaching to an existing session via --session/--continue without
+        // --cwd leaves its recorded cwd untouched — the alternative, silently
+        // re-homing that session to the CLI's directory, moves its tools and
+        // its workspace grouping out from under the user.
+        let explicit_cwd = config.cwd.as_deref().is_some_and(|cwd| !cwd.is_empty());
+        if explicit_cwd || (is_fresh && !run_cwd.is_empty()) {
+            self.set_cwd(&run_cwd, &session_id).await?;
         }
 
         // 4. Stream + prompt. The default follow-up policy (enqueue_if_busy)
@@ -1025,6 +1049,21 @@ impl RunClient {
         }
         // (get_state failure is ignored — non-critical, exactly like TS)
 
+        // 7b. First-turn title. Only a session this invocation CREATED is
+        // eligible — attaching to one that already existed (`--session`,
+        // `--continue`, `--fork`) must never rename somebody else's
+        // conversation, and an ephemeral `--no-session` run has no persisted
+        // session for a name to live in. Best-effort by construction: the
+        // answer is already streamed and this is a model call that may time
+        // out, cost credits or have no provider at all, so a failure is
+        // reported and then ignored (never a failed run, never a changed exit
+        // code).
+        if created_session && !config.no_session && config.auto_title {
+            if let Err(error) = self.title_first_turn(&session_id, verbose, out).await {
+                out.write_err(&format!("First-turn title skipped: {error}\n"));
+            }
+        }
+
         // 8. Output (for text mode, already streamed to stdout)
         if config.mode == "json" {
             let mut result = Map::new();
@@ -1056,6 +1095,106 @@ impl RunClient {
             thinking_level,
         })
     }
+
+    /// Generate and apply a title for a session this invocation just created.
+    ///
+    /// Two rules keep this away from conversations it does not own. The
+    /// caller only passes a session it created (never `--session` /
+    /// `--continue` / `--fork`), and the session itself must still be on its
+    /// first turn — see [`first_turn_title_eligible`].
+    async fn title_first_turn(
+        &self,
+        session_id: &str,
+        verbose: bool,
+        out: &Output,
+    ) -> Result<(), String> {
+        let state = self.wait_for_idle_state(session_id).await?;
+        if !first_turn_title_eligible(&state) {
+            return Ok(());
+        }
+        // Same default as `future session title`: the desktop app's
+        // `titleLanguage` preference, English when the store was never written.
+        let language = crate::commands::desktop::load()
+            .map(|settings| settings.title_language)
+            .unwrap_or_else(|_| "en".to_string());
+        // What the conversation looked like before the (slow) model call.
+        let before = first_turn_title_baseline(&state);
+        let suggestion = self.generate_session_title(session_id, &language).await?;
+        let title = suggestion["title"].as_str().unwrap_or("").trim();
+        if title.is_empty() {
+            return Err("model returned an empty title".to_string());
+        }
+        if !self
+            .suggestion_still_applies(session_id, before.as_deref())
+            .await?
+        {
+            return Ok(());
+        }
+        self.rename_session(session_id, title).await?;
+        if verbose {
+            out.write_err(&format!("Titled session {session_id}: {title}\n"));
+        }
+        Ok(())
+    }
+
+    /// `get_state`, waiting out the flag-clear window after `agent_end`. The
+    /// terminal event can arrive just before the agent releases its streaming
+    /// flag; without this the eligibility check would race that window and
+    /// silently skip a title. A state that never turns idle is returned as-is
+    /// (the caller then treats it as ineligible) — give up, never block a run
+    /// that is already finished.
+    async fn wait_for_idle_state(&self, session_id: &str) -> Result<Value, String> {
+        // ~5s budget, matching the desktop's own post-run wait.
+        let mut state = self.get_state(Some(session_id)).await?;
+        for _ in 0..24 {
+            if state["isStreaming"].as_bool() != Some(true) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            state = self.get_state(Some(session_id)).await?;
+        }
+        Ok(state)
+    }
+
+    /// Re-read the session after the (slow) title model call and decide whether
+    /// the suggestion is still safe to write.
+    ///
+    /// The user can rename the conversation, send another turn, or leave while
+    /// the model is thinking; applying a now-stale name would overwrite a
+    /// deliberate choice. `queryCount` catches the extra turn (it counts user
+    /// messages), `sessionName` catches the rename, and eligibility catches a
+    /// run that has since started. This is the same post-generation re-check
+    /// the desktop app performs before it saves a first-turn title.
+    async fn suggestion_still_applies(
+        &self,
+        session_id: &str,
+        before: Option<&str>,
+    ) -> Result<bool, String> {
+        let current = self.get_state(Some(session_id)).await?;
+        Ok(first_turn_title_eligible(&current)
+            && !first_turn_title_baseline(&current)
+                .is_some_and(|after| Some(after.as_str()) != before))
+    }
+}
+
+/// Whether a get_state payload describes a session that is still on its first
+/// turn: exactly one user prompt, and nothing running. `queryCount` counts the
+/// session's user messages (follow-ups included) and excludes tool/assistant
+/// traffic, which is what makes "one prompt so far" distinguishable from a
+/// conversation with a history of its own.
+fn first_turn_title_eligible(state: &Value) -> bool {
+    state["queryCount"].as_u64() == Some(1) && state["isStreaming"].as_bool() != Some(true)
+}
+
+/// The conditions an applied title must still agree with, captured before and
+/// after the (slow) model call. `None` when the payload cannot answer — a
+/// missing baseline must never read as "unchanged", or an unanswerable state
+/// would wave the write through.
+fn first_turn_title_baseline(state: &Value) -> Option<String> {
+    let name = state["sessionName"].as_str().unwrap_or("").to_string();
+    state["queryCount"]
+        .as_u64()
+        .map(|count| format!("{count}\u{1f}{name}"))
 }
 
 /// Await the spawned stream_events task's oneshot result; a dropped task
@@ -1160,7 +1299,13 @@ pub const BUSY_ENQUEUE: &str = "enqueue_if_busy";
 pub const BUSY_SUPERSEDE: &str = "supersede_session";
 
 /// `RunConfig` from grpc-client.ts.
-#[derive(Debug, Clone, Default)]
+///
+/// `auto_title` is the one field whose default here is the OPPOSITE of
+/// `false`: the behaviour is opt-out, so `..Default::default()` in tests
+/// would silently disable it. [`RunConfig::default`] is written out by hand
+/// instead of derived so a caller that forgets the field still gets the
+/// production default.
+#[derive(Debug, Clone)]
 pub struct RunConfig {
     pub fork: Option<String>,
     pub session: Option<String>,
@@ -1175,13 +1320,47 @@ pub struct RunConfig {
     pub permission: Option<String>,
     pub no_session: bool,
     pub mode: String,
-    pub cwd: String,
+    /// Explicit `--cwd <dir>`. `None` means the caller did not ask for a
+    /// working directory: a session created by this run then starts in the
+    /// current directory, while an existing session keeps the cwd it already
+    /// has (the CLI's own directory must not leak into it).
+    pub cwd: Option<String>,
     pub verbose: bool,
     pub message: String,
+    /// Title the session this run creates after its first answer. On by
+    /// default (the desktop app's `autoTitleFirstTurn` behaviour, which the
+    /// CLI did not have); `--no-title` opts out. Never applies to a session
+    /// that already existed.
+    pub auto_title: bool,
     /// How a prompt interacts with an in-progress run: empty / `enqueue_if_busy`
     /// (follow-up, the default) or `supersede_session` (steering — interrupts
     /// the active run).
     pub busy_policy: String,
+}
+
+impl Default for RunConfig {
+    fn default() -> Self {
+        Self {
+            fork: None,
+            session: None,
+            continue_last: false,
+            model: None,
+            thinking: None,
+            tools: None,
+            no_tools: false,
+            no_builtin_tools: false,
+            system_prompt: None,
+            append_system_prompt: None,
+            permission: None,
+            no_session: false,
+            mode: String::new(),
+            cwd: None,
+            verbose: false,
+            message: String::new(),
+            auto_title: true,
+            busy_policy: String::new(),
+        }
+    }
 }
 
 /// `RunResult` from grpc-client.ts.
@@ -1989,9 +2168,16 @@ mod tests {
     fn run_config(message: &str) -> RunConfig {
         RunConfig {
             message: message.to_string(),
-            cwd: "/tmp".to_string(),
+            cwd: Some("/tmp".to_string()),
             ..Default::default()
         }
+    }
+
+    /// The `--no-title` default really lives in `RunConfig::default`: the
+    /// behaviour is opt-out, so a forgotten field must still title.
+    #[test]
+    fn run_config_default_titles_first_turn() {
+        assert!(RunConfig::default().auto_title);
     }
 
     /// Mock pre-loaded for a fresh-session run: new_session + agent_end event.
@@ -2005,6 +2191,288 @@ mod tests {
             stream_event("agent_end", "{}"),
         ];
         agent
+    }
+
+    /// The `get_state` payload of a session still on its first turn.
+    fn first_turn_state() -> String {
+        "{\"queryCount\":1,\"isStreaming\":false,\"sessionName\":\"\"}".to_string()
+    }
+
+    /// A fresh-session mock that is also ready for the first-turn title:
+    /// one user prompt, idle, and a nameable conversation.
+    fn titled_run_agent() -> MockAgent {
+        let mut agent = fresh_run_agent();
+        agent
+            .responses
+            .insert("get_state".into(), first_turn_state());
+        agent.responses.insert(
+            "generate_session_title".into(),
+            "{\"title\":\"First turn\"}".into(),
+        );
+        agent
+    }
+
+    // ── first-turn title ────────────────────────────────────────────
+
+    /// A session this run created is named from its first answer, and the
+    /// answer still reaches stdout byte-for-byte.
+    #[tokio::test]
+    async fn run_titles_a_new_session_after_the_first_answer() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let agent = titled_run_agent();
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, cap) = Output::memory();
+        let config = RunConfig {
+            mode: "text".to_string(),
+            ..run_config("hello")
+        };
+        let result = client.run(&config, &out).await.expect("run");
+        // The answer is untouched by the extra work.
+        assert_eq!(result.text, "answer");
+        assert_eq!(
+            String::from_utf8(cap.out.lock().unwrap().clone()).unwrap(),
+            "answer\n"
+        );
+        assert_eq!(agent.seen_of("generate_session_title").len(), 1);
+        // The generator is told which language to answer in, like
+        // `future session title` does (the desktop preference, en by default).
+        assert_eq!(agent.seen_of("generate_session_title")[0].mode, "en");
+        let renamed = agent.seen_of("set_session_name");
+        assert_eq!(renamed.len(), 1);
+        assert_eq!(renamed[0].name, "First turn");
+        assert_eq!(renamed[0].session_id, "s-new");
+    }
+
+    /// `--no-title` is the off switch for the extra model call.
+    #[tokio::test]
+    async fn run_no_title_skips_generation_entirely() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let agent = titled_run_agent();
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let config = RunConfig {
+            auto_title: false,
+            ..run_config("hello")
+        };
+        client.run(&config, &out).await.expect("run");
+        assert!(agent.seen_of("generate_session_title").is_empty());
+        assert!(agent.seen_of("set_session_name").is_empty());
+        // No extra reads for the decision either: the only get_state is the
+        // one the run already made for its model/thinking report.
+        assert_eq!(agent.seen_of("get_state").len(), 1);
+    }
+
+    /// A pre-existing session is never renamed — not even one that looks
+    /// exactly like a first turn. `--session`, `--continue` and `--fork` all
+    /// attach to a conversation this run did not create, so the freshness gate
+    /// (not the first-turn shape) is what has to protect them.
+    #[tokio::test]
+    async fn run_never_titles_an_existing_session() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        for config in [
+            RunConfig {
+                session: Some("s-keep".to_string()),
+                ..run_config("hello")
+            },
+            RunConfig {
+                continue_last: true,
+                ..run_config("hello")
+            },
+            RunConfig {
+                fork: Some("entry-1".to_string()),
+                session: Some("s-parent".to_string()),
+                ..run_config("hello")
+            },
+        ] {
+            let mut agent = titled_run_agent();
+            // One prompt, idle, unnamed: eligible on SHAPE, so the only thing
+            // keeping this run away from the conversation is that this run did
+            // not create it.
+            agent
+                .responses
+                .insert("get_state".into(), first_turn_state());
+            agent.responses.insert(
+                "list_sessions".into(),
+                "{\"sessions\":[{\"id\":\"s-prev\",\"updatedAtMs\":1786233600000}]}".into(),
+            );
+            agent
+                .responses
+                .insert("fork".into(), "{\"cancelled\":false}".into());
+            let addr = spawn_mock(agent.clone()).await;
+            let client = RunClient::new(&addr);
+            let (out, _) = Output::memory();
+            client.run(&config, &out).await.expect("run");
+            assert!(
+                agent.seen_of("generate_session_title").is_empty(),
+                "title RPC must not be sent for an existing session: {config:?}"
+            );
+            assert!(
+                agent.seen_of("set_session_name").is_empty(),
+                "an existing session must not be renamed: {config:?}"
+            );
+            // Not even a probe: the only get_state is the run's own read for
+            // its model/thinking report.
+            assert_eq!(
+                agent.seen_of("get_state").len(),
+                1,
+                "no title-related read for an existing session: {config:?}"
+            );
+        }
+    }
+
+    /// A session this run creates is the only one it may rename; an ephemeral
+    /// run (`--no-session`) keeps nothing, so it has nothing to name.
+    #[tokio::test]
+    async fn run_does_not_title_an_ephemeral_session() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let agent = titled_run_agent();
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let config = RunConfig {
+            no_session: true,
+            ..run_config("hello")
+        };
+        let result = client.run(&config, &out).await.expect("run");
+        assert_eq!(result.text, "answer");
+        assert!(agent.seen_of("generate_session_title").is_empty());
+        assert!(agent.seen_of("set_session_name").is_empty());
+        // The run itself still marked the session ephemeral.
+        assert_eq!(agent.seen_of("set_ephemeral").len(), 1);
+    }
+
+    /// A title failure (no provider, timeout, no credits) must not fail the
+    /// run nor eat the answer: the text stays on stdout and the result is Ok.
+    #[tokio::test]
+    async fn run_survives_a_title_failure() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let mut agent = titled_run_agent();
+        // json mode: stdout is the finished JSON result, so this asserts the
+        // answer survives in the one output a pipeline consumes.
+        agent.responses.insert(
+            "generate_session_title".into(),
+            "no provider configured".into(),
+        );
+        agent.fail_with.insert(
+            "generate_session_title".into(),
+            "no provider configured".into(),
+        );
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, cap) = Output::memory();
+        let config = RunConfig {
+            mode: "json".to_string(),
+            ..run_config("hello")
+        };
+        let result = client.run(&config, &out).await.expect("run");
+        assert_eq!(result.text, "answer");
+        assert_eq!(result.session_id, "s-new");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json result");
+        assert_eq!(parsed["text"], "answer");
+        assert_eq!(parsed["sessionId"], "s-new");
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(
+            stderr.contains("First-turn title skipped: no provider configured"),
+            "stderr: {stderr}"
+        );
+        // Nothing was renamed from a failed suggestion.
+        assert!(agent.seen_of("set_session_name").is_empty());
+    }
+
+    /// A rename the user performed while the title was being generated wins:
+    /// the suggestion is dropped instead of overwriting their name.
+    #[tokio::test]
+    async fn run_does_not_overwrite_a_rename_made_during_generation() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let mut agent = titled_run_agent();
+        // First read: the run's own post-stream state read (still unnamed).
+        // Second: the title eligibility read. Third: the re-check after the
+        // model call, by which point the user has named the conversation.
+        agent.sequences.insert(
+            "get_state".into(),
+            vec![
+                first_turn_state(),
+                first_turn_state(),
+                "{\"queryCount\":1,\"isStreaming\":false,\"sessionName\":\"Mine\"}".to_string(),
+            ],
+        );
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        client.run(&run_config("hello"), &out).await.expect("run");
+        assert_eq!(agent.seen_of("generate_session_title").len(), 1);
+        assert!(
+            agent.seen_of("set_session_name").is_empty(),
+            "a rename made during generation must survive: {:?}",
+            agent.seen_of("set_session_name")
+        );
+    }
+
+    /// A follow-up prompt that arrives while the title is being generated also
+    /// invalidates the suggestion — the conversation is no longer "first turn".
+    #[tokio::test]
+    async fn run_does_not_overwrite_upon_a_follow_up_during_generation() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let mut agent = titled_run_agent();
+        // Post-run state read, eligibility read, then the re-check after the
+        // model call — by which point a second prompt has landed.
+        agent.sequences.insert(
+            "get_state".into(),
+            vec![
+                first_turn_state(),
+                first_turn_state(),
+                "{\"queryCount\":2,\"isStreaming\":false,\"sessionName\":\"\"}".to_string(),
+            ],
+        );
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        client.run(&run_config("hello"), &out).await.expect("run");
+        assert!(agent.seen_of("set_session_name").is_empty());
+    }
+
+    /// A session that already has history is skipped before any model spend.
+    #[tokio::test]
+    async fn run_skips_title_when_the_session_is_not_on_its_first_turn() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let mut agent = titled_run_agent();
+        agent.responses.insert(
+            "get_state".into(),
+            "{\"queryCount\":3,\"isStreaming\":false}".into(),
+        );
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        client.run(&run_config("hello"), &out).await.expect("run");
+        assert!(agent.seen_of("generate_session_title").is_empty());
+    }
+
+    /// `fresh_run_agent` (no get_state canned) still exercises the ordinary
+    /// path: the title attempt is skipped, not failed.
+    #[tokio::test]
+    async fn run_skip_is_not_an_error_when_state_is_unavailable() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let agent = fresh_run_agent();
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, cap) = Output::memory();
+        let result = client.run(&run_config("hello"), &out).await.expect("run");
+        assert_eq!(result.text, "answer");
+        assert!(agent.seen_of("generate_session_title").is_empty());
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(!stderr.contains("First-turn title"), "stderr: {stderr}");
     }
 
     #[tokio::test]
@@ -2028,7 +2496,7 @@ mod tests {
         assert!(stderr.contains("Connecting to"), "stderr: {stderr}");
         assert!(stderr.contains("Created session s-new"), "stderr: {stderr}");
         assert!(stderr.contains("Running..."), "stderr: {stderr}");
-        // set_cwd fires because cwd is non-empty.
+        // set_cwd fires for the run's explicit cwd (`run_config` sets /tmp).
         assert_eq!(agent.seen_of("set_cwd").len(), 1);
         assert_eq!(agent.seen_of("prompt")[0].message, "hello");
         assert_eq!(agent.seen_of("prompt")[0].session_id, "s-new");
@@ -2239,6 +2707,101 @@ mod tests {
         assert!(agent.seen_of("new_session").is_empty());
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
         assert!(stderr.contains("Switched to session s-explicit"));
+    }
+
+    /// Regression: `future run --session <id>` without `--cwd` must leave that
+    /// session's recorded cwd alone. The CLI used to fill the cwd with its own
+    /// directory and unconditionally call set_cwd, which re-homed the session
+    /// (and its workspace grouping) to wherever the command was typed.
+    #[tokio::test]
+    async fn run_existing_session_without_cwd_does_not_rewrite_cwd() {
+        let agent = fresh_run_agent();
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let config = RunConfig {
+            message: "hi".to_string(),
+            session: Some("s-keep".to_string()),
+            ..Default::default()
+        };
+        assert!(config.cwd.is_none(), "no --cwd means no cwd");
+        let result = client.run(&config, &out).await.expect("run");
+        assert_eq!(result.session_id, "s-keep");
+        assert_eq!(agent.seen_of("switch_session")[0].session_id, "s-keep");
+        assert_eq!(agent.seen_of("prompt")[0].session_id, "s-keep");
+        assert!(
+            agent.seen_of("set_cwd").is_empty(),
+            "set_cwd must not fire for an existing session: {:?}",
+            agent.seen_of("set_cwd")
+        );
+    }
+
+    /// The same rule on the `--continue` path.
+    #[tokio::test]
+    async fn run_continue_last_without_cwd_does_not_rewrite_cwd() {
+        let mut agent = fresh_run_agent();
+        agent.responses.insert(
+            "list_sessions".into(),
+            "{\"sessions\":[{\"id\":\"s-prev\",\"updatedAtMs\":1786233600000}]}".into(),
+        );
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let config = RunConfig {
+            message: "hi".to_string(),
+            continue_last: true,
+            ..Default::default()
+        };
+        let result = client.run(&config, &out).await.expect("run");
+        assert_eq!(result.session_id, "s-prev");
+        assert!(agent.seen_of("new_session").is_empty());
+        assert!(
+            agent.seen_of("set_cwd").is_empty(),
+            "set_cwd must not fire for a continued session: {:?}",
+            agent.seen_of("set_cwd")
+        );
+    }
+
+    /// `--cwd ""` is treated as "no cwd" (`is_empty` guard from the original
+    /// code): it must not send a set_cwd that would blank the session's cwd.
+    #[tokio::test]
+    async fn run_existing_session_with_empty_cwd_sends_no_set_cwd() {
+        let agent = fresh_run_agent();
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let config = RunConfig {
+            message: "hi".to_string(),
+            session: Some("s-keep".to_string()),
+            cwd: Some(String::new()),
+            ..Default::default()
+        };
+        client.run(&config, &out).await.expect("run");
+        assert!(
+            agent.seen_of("set_cwd").is_empty(),
+            "an empty --cwd must not rewrite the session: {:?}",
+            agent.seen_of("set_cwd")
+        );
+    }
+
+    /// An explicit `--cwd` still applies to an existing session.
+    #[tokio::test]
+    async fn run_existing_session_with_explicit_cwd_sets_it() {
+        let agent = fresh_run_agent();
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let config = RunConfig {
+            message: "hi".to_string(),
+            session: Some("s-move".to_string()),
+            cwd: Some("/work".to_string()),
+            ..Default::default()
+        };
+        client.run(&config, &out).await.expect("run");
+        let set = agent.seen_of("set_cwd");
+        assert_eq!(set.len(), 1, "explicit --cwd must be applied");
+        assert_eq!(set[0].cwd, "/work");
+        assert_eq!(set[0].session_id, "s-move");
     }
 
     #[tokio::test]

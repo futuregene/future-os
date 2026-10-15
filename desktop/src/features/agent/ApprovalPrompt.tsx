@@ -15,6 +15,7 @@ import {
   saveApprovalRule,
   saveApprovalRules,
 } from "../../integrations/storage/runs";
+import { isEditableTarget } from "../../lib/editableTarget";
 
 // Localized titles per approval kind (the agent sends English). An unmapped
 // kind falls back to the agent-provided title.
@@ -493,17 +494,4 @@ function displayTargetPath(path: string) {
   return ordinary.startsWith("UNC\\")
     ? `\\\\${ordinary.slice("UNC\\".length)}`
     : ordinary;
-}
-
-function isEditableTarget(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement))
-    return false;
-
-  const tagName = target.tagName.toLowerCase();
-  return (
-    target.isContentEditable
-    || tagName === "input"
-    || tagName === "textarea"
-    || tagName === "select"
-  );
 }

@@ -787,6 +787,26 @@ assistant **streaming**, an amber **generating indicator** replaces the copy
 button alongside the live duration. A **"Thinking…"** hint appears while the
 model is thinking but has not yet produced an inline reasoning segment.
 
+The conversation's bottom-right corner carries a **↑/↓ pair** for reading a long
+reply: ↑ goes to the reader's own previous **prompt** (skipping the answer
+between two of them), ↓ to the very next stop below of either kind, so pressing
+it walks the transcript as it was written — prompt, reply, prompt… A reply is
+reached at its **last output slice** (prose, or the tool call it ended on), not
+at the reasoning rows it opened with. A landed row comes to rest 16px below the
+viewport's top edge. A direction with nothing to go to stays in place, inert,
+and one that could not move the viewport is skipped rather than offered — an
+enabled button always does something.
+
+**The same walk is on the bare ↑/↓ keys.** A press answers only when the
+transcript's own reading is what is on top: not while the caret is in the
+composer holding text (there the arrows move the caret), not while a modal or a
+floating menu is up, not with Shift/Alt/Cmd/Ctrl held (selection, word motion,
+the platform's line motion), and not while an input method is composing. An
+**empty** composer does not count as somewhere text is being typed in — it
+autofocuses, so otherwise the keyboard could not page a reply at all until the
+user clicked away. A press with nowhere to go is left to the page, so a short
+transcript still line-scrolls. Each button's tooltip names its key.
+
 The input box supports local file attachments via three methods: attachment
 button, copy-paste, and drag-drop; at most 4 images per message, non-images
 unlimited. Images go multimodal; other files reach the Agent as a

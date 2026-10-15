@@ -107,6 +107,9 @@ future loop todo add --goal G --role user --class user_gate --text "Release gate
 # Fresh worker conversations inherit the registered supervisor as their parent.
 # Nested delegation can override lineage with --parent-session CURRENT_SESSION_ID.
 # This does not copy context or change the parent of an explicitly resumed session.
+# A fresh worker session is named from its first answer (one extra model call,
+# using the desktop app's titleLanguage); a resumed session is never renamed.
+# Opt out with --no-title.
 future loop run --goal G --agent-id mac-worker --model M --thinking-level L --max-turns 1
 
 # 4. Human decisions

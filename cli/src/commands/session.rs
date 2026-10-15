@@ -81,10 +81,11 @@ failure does not roll back the others. A parent records lineage only — unlike
 `fork`, no history is copied, and the parent must be an existing session.
 
 The model and thinking level take effect at once and are stored with the
-session's next run (they are part of the run snapshot). `future run` applies its
-own --cwd (the current directory by default) when a run starts, so a cwd set
-here stays in effect only until the next run overrides it. Read the current
-values back with `future session status <id>`."#;
+session's next run (they are part of the run snapshot). `future run` only
+applies its own `--cwd` when that flag is given, or when it creates the session
+(a new session starts in the caller's directory); attaching to an existing
+session with `--session`/`--continue` leaves the cwd set here alone. Read the
+current values back with `future session status <id>`."#;
 
 fn help(out: &Output) {
     out.log(SESSION_HELP);

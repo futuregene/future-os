@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Check } from "lucide-react";
 import { cn } from "../../lib/cn";
+import { useKeyboardOwner } from "../../lib/keyboardOwners";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { MenuPanel } from "./MenuPanel";
 
@@ -36,6 +37,9 @@ interface SelectMenuProps {
  */
 export function SelectMenu({ open, onDismiss, trigger, children, className, panelClassName, align = "right" }: SelectMenuProps) {
   const layerRef = useDismissableLayer<HTMLDivElement>({ enabled: open, onDismiss });
+  // The panel is up: its rows are what the keyboard is aimed at (see
+  // `lib/keyboardOwners`), so the transcript does not answer the arrows.
+  useKeyboardOwner(open);
   return (
     <div className={cn("relative", className)} ref={layerRef}>
       {trigger}

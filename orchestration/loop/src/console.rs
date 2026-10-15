@@ -576,7 +576,7 @@ fn build_cli_registry() -> CommandRegistry {
         ops,
         "run",
         "drive one bounded gRPC turn (--agent-id for lease coordination, or --anonymous; auto-registers)",
-        "run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--max-incomplete-retries N] [--lease-secs N] [--force-workspace] [--resume-session ID] [--anonymous]",
+        "run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--max-incomplete-retries N] [--lease-secs N] [--force-workspace] [--resume-session ID] [--no-title] [--anonymous]",
     );
 
     let work_items = r.group(
@@ -1376,6 +1376,7 @@ fn build_cli_registry() -> CommandRegistry {
             ("--max-incomplete-retries N", "incomplete retry cap", "default 3"),
             ("--lease-secs N", "task lease length", "default 4h (14400s)"),
             ("--force-workspace", "force workspace override", "boolean"),
+            ("--no-title", "do not name a session this run creates", "by default the first answer of a NEW session generates and saves a title (one extra model call); a resumed session is never renamed"),
             ("--resume-session ID", "resume this exact agent session", "fresh is the default; a dead id falls back to fresh automatically"),
             ("--parent-session ID", "parent conversation for a fresh worker", "defaults to the goal's supervisor session; does not copy context or reparent resumed sessions"),
             ("--detach", "internal: marks the detached child", "the run re-executes itself detached by default; set FUTURE_LOOP_NO_DETACH=1 to run foreground"),
@@ -4186,6 +4187,10 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     let mut anonymous = false;
     let mut lease_secs = DEFAULT_RUN_LEASE_SECS;
     let mut force_workspace = false;
+    // First-turn title for the session this run creates. On by default (the
+    // desktop app's behaviour, which the loop lacked); `--no-title` opts out
+    // of the extra model call. A resumed session is never renamed.
+    let mut no_title = false;
     // Session retention: the CALLER decides resume-vs-fresh, never the kernel.
     // The default is ALWAYS a fresh session; the ONLY way to resume is an
     // explicit pin `--resume-session <id>` (goal-level `session_retention` is
@@ -4207,6 +4212,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             "--max-incomplete-retries",
             "--max-turns",
             "--model",
+            "--no-title",
             "--parent-session",
             "--resume-session",
             "--thinking-level",
@@ -4233,6 +4239,8 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             anonymous = true;
         } else if k == "--force-workspace" {
             force_workspace = true;
+        } else if k == "--no-title" {
+            no_title = true;
         } else if k == "--resume-session" {
             resume_session = Some(v);
         } else if k == "--parent-session" {
@@ -4416,6 +4424,8 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         force_workspace,
         &mut last_failure_kind,
         &mut executed_turn,
+        !no_title,
+        created_session,
     )
     .await;
     steer_handle.abort();
@@ -4678,6 +4688,25 @@ async fn supervise_after_run(store: &mut Store, goal_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// The desktop app's preference file (`~/.future/app/app.db`) owns
+/// `titleLanguage` — the same source `future session title` and `future run`
+/// read, so a loop-minted session is named in the language the user chose
+/// rather than a hard-coded one. English when the store has never been written
+/// or cannot be read.
+fn app_title_language() -> Option<String> {
+    let conn = future_app_settings::connect_existing().ok().flatten()?;
+    if !future_app_settings::table_exists(&conn).ok()? {
+        return None;
+    }
+    future_app_settings::read(&conn).ok().map(|settings| {
+        // The agent accepts only `en`/`zh`; anything else falls back.
+        match settings.title_language.as_str() {
+            "zh" => "zh".to_string(),
+            _ => "en".to_string(),
+        }
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_turns(
     client: &mut crate::agent_client::AgentClient,
@@ -4691,6 +4720,8 @@ async fn run_turns(
     force_workspace: bool,
     last_failure_kind: &mut Option<crate::state::FailureKind>,
     executed_turn: &mut bool,
+    auto_title: bool,
+    created_session: bool,
 ) -> Result<()> {
     let mut turn = 0u32;
     // P2: goal-monotonic turn counter. `turn` below restarts at 1 on every
@@ -5112,6 +5143,25 @@ async fn run_turns(
             println!("   poll result: {result} (no_change_count={no_change_count})");
         }
         if succeeded && mode != crate::contract::TurnMode::MonitorPoll {
+            // First-turn title for a session this invocation MINTED. A resumed
+            // session (`--resume-session`, or a pinned id that was still
+            // alive) is somebody else's conversation by definition and is
+            // never renamed — same rule as `future run --session`.
+            //
+            // Best-effort: a title is an extra model call that can be refused,
+            // time out or return nothing. It runs only after the writeback and
+            // must never change the turn's outcome, so a failure is reported
+            // and dropped. `Ok(None)` is the ordinary "not on its first turn"
+            // outcome and is silent — a resumed-looking session with history
+            // must not spam a warning on every turn.
+            if auto_title && created_session {
+                let language = app_title_language().unwrap_or_else(|| "en".to_string());
+                match client.title_first_turn(session_id, &language).await {
+                    Ok(Some(title)) => println!("   ✎ session titled: {title}"),
+                    Ok(None) => {}
+                    Err(e) => println!("   ⚠ first-turn title skipped: {e}"),
+                }
+            }
             store.append(Event::TodoCompleted {
                 goal_id: goal_id.to_string(),
                 todo_id: todo_id.clone(),
@@ -6271,6 +6321,7 @@ fn parse_pairs(args: &[String], mut f: impl FnMut(&str, String)) {
                     | "--detach"
                     | "--interrupt"
                     | "--once"
+                    | "--no-title"
                     | "--force-workspace"
                     | "--help"
                     | "-h"
@@ -9895,6 +9946,31 @@ mod cli_quirks_tests {
         assert!(run_pos > daily_pos, "run must come after daily: {text}");
     }
 
+    /// `--no-title` is documented where the user reads the flags, including
+    /// its cost (one extra model call) and its boundary (existing sessions).
+    #[test]
+    fn run_help_documents_the_title_opt_out() {
+        let registry = build_cli_registry();
+        let (_, command) = registry.find("run", true).expect("run is registered");
+        let text = command
+            .flags
+            .iter()
+            .map(|f| format!("{} {} {}", f.flag, f.what, f.notes))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("--no-title"), "{text}");
+        assert!(
+            text.contains("one extra model call"),
+            "the help must state the cost: {text}"
+        );
+        assert!(
+            text.contains("resumed session is never renamed"),
+            "the help must state the boundary: {text}"
+        );
+        // The usage line advertises it too.
+        assert!(command.usage.contains("--no-title"), "{}", command.usage);
+    }
+
     #[test]
     fn cmd_commands_rejects_unknown_flags() {
         let registry = build_cli_registry();
@@ -11365,6 +11441,8 @@ mod residual_branch_tests {
             false,
             &mut last_failure_kind,
             &mut executed,
+            false,
+            true,
         )
         .await
         .unwrap_err();

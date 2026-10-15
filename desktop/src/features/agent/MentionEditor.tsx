@@ -5,6 +5,7 @@ import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState 
 import { useTranslation } from "react-i18next";
 import { searchWorkspaceFiles } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
+import { EMPTY_EDITOR_ATTR } from "../../lib/editableTarget";
 import { useCommittedRef } from "../../lib/useCommittedRef";
 import { localPathsFromUriList } from "./clipboardAttachments";
 import { hashContext, isEditorEmpty, mentionContext, PILL_ATTR, serialize, slashContext } from "./composer/mentionDom";
@@ -738,6 +739,11 @@ export function MentionEditor({
         autoCorrect="off"
         contentEditable={!disabled}
         spellCheck={false}
+        // The editor renders empty, so it starts marked empty: an unmodified
+        // arrow key belongs to the surrounding view until something is typed
+        // (see `lib/editableTarget`). The mirror of `empty` keeps this honest,
+        // and React patches the attribute on the same render that updates it.
+        {...(empty ? { [EMPTY_EDITOR_ATTR]: "" } : {})}
         // Disable Apple Intelligence inline predictive text (macOS 14.4+/WKWebView).
         // The predictive overlay inserts and removes tentative text as you type,
         // which re-triggers input events with unstable caret geometry; revealCaret

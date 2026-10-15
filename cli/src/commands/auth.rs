@@ -4,12 +4,11 @@
 //! auth.json helpers (loadAuthFile / writeAuthFile / getFutureAuthEntry)
 //! used by account.ts and doctor.ts.
 
-use crate::constants::{auth_file, DEFAULT_PLATFORM_URL, FUTURE_AUTH_PROVIDER};
+use crate::constants::{auth_file, FUTURE_AUTH_PROVIDER};
 use crate::output::Output;
 #[cfg(not(test))]
 use crate::rpc::{grpc_addr, RunClient};
 use crate::utils::platform::get_platform_url;
-use crate::utils::string::trim_trailing_slash;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
@@ -61,12 +60,20 @@ pub struct FutureAuthEntry {
     pub base_url: Option<String>,
 }
 
-/// `platformUrlOverride ? trimTrailingSlashes(override) : DEFAULT_PLATFORM_URL`.
-fn resolve_login_platform_url(platform_url_override: Option<String>) -> String {
-    match platform_url_override {
-        Some(url) => trim_trailing_slash(&url),
-        None => DEFAULT_PLATFORM_URL.to_string(),
-    }
+/// Where the device-code login talks to.
+///
+/// Deliberately the SAME chain every other command uses (explicit `--url` →
+/// auth.json `future.base_url` → [`DEFAULT_PLATFORM_URL`]): login used to
+/// hardcode the official domain whenever `--url` was absent, which ignored the
+/// platform a self-hosted install had already been pointed at — and made a
+/// test fixture that labels auth.json `http://127.0.0.1:...` reach the real
+/// production platform, request a real device code and open a real browser.
+///
+/// See [`get_platform_url`](crate::utils::platform::get_platform_url) for the
+/// exact rules (an empty override counts as absent, a trailing `/api` on the
+/// stored base URL is stripped).
+async fn resolve_login_platform_url(platform_url_override: Option<String>) -> String {
+    get_platform_url(platform_url_override.as_deref()).await
 }
 
 /// `login(platformUrlOverride?)` — device-code OAuth flow.
@@ -80,8 +87,9 @@ pub async fn login(platform_url_override: Option<String>, out: &Output) -> Resul
     let auth_data = load_auth_file().await?;
     #[cfg(not(test))]
     let auth_data = Value::Null;
-    // `platformUrlOverride ? platformUrlOverride.replace(/\/+$/, "") : DEFAULT_PLATFORM_URL`
-    let platform_url = resolve_login_platform_url(platform_url_override);
+    // `get_platform_url`: `--url` override, else auth.json's `future.base_url`,
+    // else the official default.
+    let platform_url = resolve_login_platform_url(platform_url_override).await;
 
     let client = http_client();
     let device: DeviceCodeResponse = post(
@@ -576,6 +584,7 @@ fn opener_command(url: &str) -> (&'static str, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::DEFAULT_PLATFORM_URL;
     use crate::output::Output;
     use crate::test_env::EnvGuard;
 
@@ -1535,12 +1544,84 @@ mod tests {
 
     // ── Remainder coverage ────────────────────────────────────────────
 
-    #[test]
-    fn resolve_login_platform_url_arms() {
-        assert_eq!(resolve_login_platform_url(None), DEFAULT_PLATFORM_URL);
+    #[tokio::test]
+    async fn resolve_login_platform_url_arms() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let path = auth_file_path();
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+
+        // An explicit `--url` wins and loses its trailing slash.
         assert_eq!(
-            resolve_login_platform_url(Some("http://x/".to_string())),
+            resolve_login_platform_url(Some("http://x/".to_string())).await,
             "http://x"
+        );
+
+        // Otherwise the stored platform is honored (this is the arm that keeps
+        // a self-hosted install — and an offline test fixture — off the
+        // official domain), with `/api` stripped like every other command.
+        tokio::fs::write(&path, r#"{"future":{"base_url":"http://127.0.0.1:1/api"}}"#)
+            .await
+            .unwrap();
+        assert_eq!(resolve_login_platform_url(None).await, "http://127.0.0.1:1");
+
+        // No stored base URL → the official default.
+        tokio::fs::write(&path, r#"{"future":{"key":"k"}}"#)
+            .await
+            .unwrap();
+        assert_eq!(resolve_login_platform_url(None).await, DEFAULT_PLATFORM_URL);
+    }
+
+    /// Regression guard for the production-traffic bug: with auth.json
+    /// pointing at an unreachable LOCAL platform the flow must fail before it
+    /// ever opens a browser. A recording `open` stub on PATH makes "did not
+    /// open a browser" an observation instead of an assumption — the fixture
+    /// used to sail past the failed POST straight into the real one.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn login_against_a_local_platform_never_opens_a_browser() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let path = auth_file_path();
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&path, r#"{"future":{"base_url":"http://127.0.0.1:1/api"}}"#)
+            .await
+            .unwrap();
+
+        // A stub `open` records every invocation instead of launching a
+        // browser; PATH is replaced so the real one cannot be found.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("opened.txt");
+        for name in ["open", "xdg-open"] {
+            let bin = dir.path().join(name);
+            std::fs::write(
+                &bin,
+                format!("#!/bin/sh\nprintf '%s\\n' \"$1\" >> {}\n", marker.display()),
+            )
+            .expect("write");
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        let _env = EnvGuard::set(&[("PATH", dir.path().as_os_str().to_os_string())]);
+
+        let (out, _cap) = Output::memory();
+        let err = login(None, &out).await.expect_err("port 1 refuses");
+        assert!(err.contains("Network error"), "{err}");
+        assert!(
+            !marker.exists(),
+            "an unreachable platform must not open a browser"
+        );
+        // And no credentials were invented from the failed flow.
+        let stored: Value = serde_json::from_str(&tokio::fs::read_to_string(&path).await.unwrap())
+            .expect("valid json");
+        assert!(
+            stored["future"].get("key").is_none(),
+            "a failed login must not write a key: {stored}"
         );
     }
 

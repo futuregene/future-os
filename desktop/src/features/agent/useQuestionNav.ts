@@ -1,8 +1,11 @@
 import type { RefObject } from "react";
 import type { MessageIndex, NavRung, TranscriptMessage } from "./questionNav";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { isEditableTarget } from "../../lib/editableTarget";
+import { hasKeyboardOwner } from "../../lib/keyboardOwners";
 import { useCommittedRef } from "../../lib/useCommittedRef";
 import { buildNavRungs, nextRung, previousQuestion, sameRung } from "./questionNav";
+import { navDirectionForKey } from "./questionNavKeys";
 
 /**
  * How far below the viewport's top edge a landed row comes to rest.
@@ -74,6 +77,12 @@ export interface QuestionNavApi {
  * The offer is kept up to date by listening to the container's own scroll rather
  * than by hoping the parent re-renders: an enabled state that lags a scroll is a
  * button that looks dead or lies.
+ *
+ * **The pair is also on the keyboard** (see `questionNavKeys`): inside the
+ * conversation an unmodified ↑/↓ is the same walk as the matching button, so a
+ * reader who never looks for the control can still page through the transcript.
+ * A press that has nowhere to go is left alone rather than swallowed, so a short
+ * transcript still gets its ordinary line scroll.
  *
  * The hook does not own the scroll container; the caller passes its ref and a
  * callback that disables sticky auto-follow, so a jump is not dragged back to
@@ -250,6 +259,29 @@ export function useQuestionNav<T extends TranscriptMessage>({
 
   const goToPrevious = useCallback(() => navigate("previous"), [navigate]);
   const goToNext = useCallback(() => navigate("next"), [navigate]);
+
+  /**
+   * The arrow keys, for as long as a transcript is on screen.
+   *
+   * The direction is resolved against the live DOM — the same `step` a press
+   * takes, right now — rather than against the published offer: the DOM moves
+   * between a keydown and the render that would follow it, and a key that
+   * resolves to nothing must be left to whatever else wanted it.
+   */
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      const direction = navDirectionForKey(event, {
+        editable: isEditableTarget(event.target),
+        owned: hasKeyboardOwner(),
+      });
+      if (direction === null || step(direction) === null)
+        return;
+      event.preventDefault();
+      navigate(direction);
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [navigate, step]);
 
   return {
     hasNext: offer.next !== null,

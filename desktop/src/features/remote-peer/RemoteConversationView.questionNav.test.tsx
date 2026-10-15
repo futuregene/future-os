@@ -173,4 +173,23 @@ describe("remote conversation question navigation", () => {
     expect(scroller.scrollTop).not.toBeLessThan(before);
     await view.unmount();
   });
+
+  it("reads the host's transcript with the bare arrow keys", async () => {
+    // A remote conversation is read the way this app's own is, and the arrows
+    // are part of that reading — the client that did not answer them would be
+    // the one where paging needs the mouse.
+    const view = await mount(twoTurns());
+    const scroller = view.container.querySelector<HTMLElement>("[data-chat-scroll='true']")!;
+    layoutTranscript(view.container);
+
+    const down = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowDown" });
+    await act(async () => window.dispatchEvent(down));
+    expect(down.defaultPrevented).toBe(true);
+
+    const up = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowUp" });
+    await act(async () => window.dispatchEvent(up));
+    expect(up.defaultPrevented).toBe(true);
+    expect(scroller.scrollTop).toBe(0);
+    await view.unmount();
+  });
 });

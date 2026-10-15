@@ -1605,12 +1605,12 @@ mod tests {
     /// With no stored token the FutureOS path says so and hands off to the
     /// login flow.
     ///
-    /// `auth::login` always targets `DEFAULT_PLATFORM_URL` (the override it
-    /// would need is the caller's, and `configure_futureos` passes `None`), so
-    /// the login itself is a real network round trip and is *not* followed:
-    /// the call is bounded by a timeout and only the hand-off it logged before
-    /// starting is asserted. That is the whole claim — the message is printed,
-    /// the question is not asked, and control reaches the login call.
+    /// The fixture's auth.json names an unreachable LOCAL platform, and
+    /// `auth::login` resolves its endpoint through the same chain as every
+    /// other command (see `resolve_login_platform_url`), so the hand-off fails
+    /// against `127.0.0.1:1` without touching the network or a browser. That is
+    /// the whole claim — the message is printed, the question is not asked, and
+    /// control reaches the login call.
     #[tokio::test]
     async fn futureos_without_a_token_hands_off_to_login() {
         let _guard = crate::test_env::lock_env().await;
@@ -1630,11 +1630,21 @@ mod tests {
 
         let mut prompt = FakePrompter::new(&[]);
         let (out, captured) = Output::memory();
-        let _ = tokio::time::timeout(
+        // The hand-off must complete locally: the fixture's platform is
+        // unreachable, so the flow fails on its own rather than being cut off
+        // by this deadline. A timeout here would mean the login reached the
+        // network again — exactly the bug this guards, and one a bare
+        // `let _ = timeout(...)` would swallow silently.
+        let handoff = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             configure_futureos(&mut prompt, &out),
         )
-        .await;
+        .await
+        .expect("the login hand-off must fail against the local fixture, not hang on the network");
+        assert!(
+            handoff.is_err(),
+            "an unreachable platform must fail the hand-off: {handoff:?}"
+        );
 
         let stdout = output_text(&captured.out);
         assert!(
@@ -1648,8 +1658,9 @@ mod tests {
     }
 
     /// An existing token is never silently replaced: declining leaves the file
-    /// untouched, and accepting proceeds to the login flow (which is bounded
-    /// for the same reason as above, so only the hand-off is asserted).
+    /// untouched, and accepting proceeds to the login flow (which fails against
+    /// the fixture's unreachable local platform, so only the hand-off is
+    /// asserted).
     #[tokio::test]
     async fn futureos_existing_token_asks_before_replacing_it() {
         let _guard = crate::test_env::lock_env().await;
@@ -1680,14 +1691,17 @@ mod tests {
             seeded
         );
 
-        // Accepting reaches the login hand-off (bounded; see the test above).
+        // Accepting reaches the login hand-off (which fails against the
+        // fixture's local platform — completing locally, see the test above).
         let mut prompt = FakePrompter::new(&["y"]);
         let (out, captured) = Output::memory();
-        let _ = tokio::time::timeout(
+        let handoff = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             configure_futureos(&mut prompt, &out),
         )
-        .await;
+        .await
+        .expect("the login hand-off must fail against the local fixture, not hang on the network");
+        assert!(handoff.is_err(), "port 1 refuses: {handoff:?}");
         let stdout = output_text(&captured.out);
         assert!(stdout.contains("Log in again?"), "{stdout}");
         assert!(

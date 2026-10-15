@@ -385,6 +385,95 @@ impl AgentClient {
         self.session_totals(session_id).await.is_ok()
     }
 
+    /// Name a session this run created from its first exchange: ask the
+    /// agent's tool-free title generator and save the suggestion.
+    ///
+    /// `Ok(None)` is the normal "not this turn's business" outcome: the session
+    /// is not on its first turn (already has history, a name, or a run), or the
+    /// suggestion went stale while the model was thinking. `Err` means the
+    /// attempt itself failed and is worth logging — either way the CALLER must
+    /// treat both as non-fatal: title generation is an extra model call on the
+    /// session's own model and can be refused (no provider, no credits), time
+    /// out, or return nothing, none of which may affect the turn that just
+    /// succeeded.
+    ///
+    /// The guard rails match the desktop app's first-turn titling:
+    /// - **Nothing runs for a conversation that is not on its first turn.**
+    ///   The check refuses before spending a model call, and `queryCount`
+    ///   counts the session's user messages, so this also holds for a session
+    ///   another client pushed a second prompt into.
+    /// - **Nothing is written without re-checking.** The same condition is
+    ///   re-read after the model call: a name written by the user (or another
+    ///   client) while the model was thinking, and a follow-up prompt that
+    ///   landed in the same window, both invalidate the suggestion.
+    ///
+    /// `language` is the desktop app's `titleLanguage` (`en`/`zh`); the agent
+    /// rejects anything else.
+    pub async fn title_first_turn(
+        &mut self,
+        session_id: &str,
+        language: &str,
+    ) -> Result<Option<String>> {
+        let Some(before) = self.first_turn_baseline(session_id).await? else {
+            return Ok(None);
+        };
+        let suggestion = self
+            .call(
+                "generate_session_title",
+                session_id,
+                RpcCommand {
+                    mode: language.to_string(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let title = suggestion["title"]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if title.is_empty() {
+            return Err(anyhow!("the model returned no title"));
+        }
+        // The user may have renamed the conversation, or sent another prompt,
+        // while the model was working. Never apply stale work.
+        if self.first_turn_baseline(session_id).await? != Some(before) {
+            return Ok(None);
+        }
+        self.call(
+            "set_session_name",
+            session_id,
+            RpcCommand {
+                name: title.clone(),
+                ..Default::default()
+            },
+        )
+        .await?;
+        Ok(Some(title))
+    }
+
+    /// The state a first-turn title must agree with before AND after the model
+    /// call, or `None` when the session is not on its first turn at all — the
+    /// `None` case is what lets a caller say "this is not my business" without
+    /// confusing it with a failure.
+    ///
+    /// The value compared is the session's name. `queryCount == 1` already
+    /// established that no second prompt existed; a different name afterwards
+    /// is therefore a rename by the user (or another client) while the model
+    /// was thinking, and a `queryCount` that is no longer 1 means a follow-up
+    /// landed in the same window. Either way the suggestion is stale.
+    async fn first_turn_baseline(&mut self, session_id: &str) -> Result<Option<String>> {
+        let state = self
+            .call("get_state", session_id, Default::default())
+            .await?;
+        if state["queryCount"].as_u64() != Some(1) || state["isStreaming"].as_bool() == Some(true) {
+            return Ok(None);
+        }
+        Ok(Some(
+            state["sessionName"].as_str().unwrap_or("").to_string(),
+        ))
+    }
+
     /// Session ids with an in-flight run (the agent's in-memory streaming
     /// set). This is the authoritative "is a worker's turn actively running
     /// right now" signal for `worker stop` / `worker list` — it never touches

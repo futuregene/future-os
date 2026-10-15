@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { useDropUpMenu } from "../../components/layout/hooks/useDropUpMenu";
 import { MenuPanel } from "../../components/ui/MenuPanel";
 import { cn } from "../../lib/cn";
+import { useKeyboardOwner } from "../../lib/keyboardOwners";
 import {
   deleteRemoteConversation,
   pinRemoteConversation,
@@ -53,6 +54,9 @@ export function RemoteConversationMenu({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const desktopId = conversation.desktopId;
+  // The menu is only ever mounted open (the row decides), so it owns the arrows
+  // for as long as it is on screen.
+  useKeyboardOwner(true);
 
   // Local rows are rendered by the local row component, which owns their menu.
   // Returning nothing keeps that invariant here rather than at every call site.

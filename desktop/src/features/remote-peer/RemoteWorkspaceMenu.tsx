@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useDropUpMenu } from "../../components/layout/hooks/useDropUpMenu";
 import { MenuPanel } from "../../components/ui/MenuPanel";
 import { cn } from "../../lib/cn";
+import { useKeyboardOwner } from "../../lib/keyboardOwners";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { deleteRemoteWorkspace, setRemoteWorkspacePinned } from "./remotePeerClient";
 
@@ -57,6 +58,8 @@ export function RemoteWorkspaceMenu({
     enabled: open,
     onDismiss: () => setOpen(false),
   });
+  // The open menu owns the arrows, not the transcript behind it.
+  useKeyboardOwner(open);
 
   async function run(action: () => Promise<unknown>) {
     setBusy(true);

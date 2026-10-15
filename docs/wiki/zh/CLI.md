@@ -134,6 +134,7 @@ future run "介绍一下这个项目"
 | `--cwd <dir>` | 设置工作目录。 |
 | `--mode json` | 以 JSON 而非文本打印回答。 |
 | `--verbose` | 把进度与工具调用写到 stderr。 |
+| `--no-title` | 不为本次新建的会话生成标题。默认会在首答之后用一次模型调用生成并保存标题；已有会话（`--session`/`--continue`/`--fork`）从不改名。 |
 | `--grpc-addr <addr>` | 显式指定 Agent 的 TCP 地址（默认每用户本地 IPC；也可用 `FUTURE_AGENT_GRPC_ADDR`）。 |
 | `--no-session` | 本次不保存为会话。 |
 
@@ -146,6 +147,13 @@ future run --tools read,shell "读一下 README 并列出文件"
 ```
 
 完整选项见 `future run --help`。
+
+`future run` 在**它自己新建的会话**首答结束后会生成并保存标题（一次额外的模型调用，可能耗时数十
+秒并消耗额度），使用的生成器与桌面端、`future session title` 相同；语言取桌面设置里的
+`titleLanguage`。通过 `--session`、`--continue` 或 `--fork` 接入的**已有会话一律不改名**。
+生成期间如果你改了名字、又发了一轮，或会话已经开始跑下一次，过期的建议会被丢弃（不会覆盖你的
+命名）；生成失败只会在 stderr 记一行，run 本身仍然成功，答案照常输出。不需要这个行为时用
+`--no-title` 关掉。
 
 ### `skills` —— 管理能力包
 
@@ -253,8 +261,9 @@ future session delete <id>
 `--parent` 只记录会话谱系，不复制父会话历史（那是 `fork` 的行为），且父会话必须是已存在的会话。
 
 已有记录的会话，其标题与 cwd 会立即写入；从未运行过的新会话则在首次运行时一并落盘。模型与思考
-等级属于运行快照，随下一次运行写入记录。`future run` 启动时会用自己的 `--cwd`（默认当前目录）覆盖会话 cwd，
-所以这里设的 cwd 只保持到下一次运行为止。
+等级属于运行快照，随下一次运行写入记录。`future run` 只在显式传了 `--cwd`、或该会话由这次运行新建时
+才使用自己的 cwd（新会话默认落在调用方目录）；用 `--session`/`--continue` 挂到已有会话时不会改动
+这里设的 cwd。
 
 会话数据存放在 Agent 的 SQLite 数据库 `~/.future/agent/agent.db`；`~/.future/agent/sessions/` 仅作为旧版
 JSONL 数据的导入来源保留。

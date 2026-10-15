@@ -1332,16 +1332,29 @@ mod tests {
             std::hint::spin_loop();
         }
         let mut torn = 0u64;
+        let mut foreign = 0u64;
         for _ in 0..500 {
-            // After the first completed save, the file must always exist and
-            // parse to complete content — None/short content = torn read.
-            torn += u64::from(
-                load_future_models_cache().is_none_or(|c| c.models.len() != expected_len),
-            );
+            // After the first completed save, the file must always be readable
+            // as a COMPLETE document. Only two shapes count as torn:
+            // unreadable/unparseable, or missing entirely — what a
+            // truncate→write save leaves behind. A complete document with a
+            // different model count is a *neighbour's* write, not corruption:
+            // `set_auth_writes_auth_json_and_reports_success` stores a real
+            // `future` credential, so its `Registry::new()` starts a live
+            // refresh whose thread resolves the cache path when it finishes —
+            // by which time `HOME` belongs to whichever test is running now.
+            match load_future_models_cache() {
+                Some(cache) if cache.models.len() == expected_len => {}
+                Some(_) => foreign += 1,
+                None => torn += 1,
+            }
         }
         stop.store(true, Ordering::Relaxed);
         writer.join().unwrap();
-        assert_eq!(torn, 0, "torn/partial cache reads observed");
+        assert_eq!(
+            torn, 0,
+            "torn/partial cache reads observed (foreign complete writes seen: {foreign})"
+        );
     }
 
     #[test]
