@@ -47,7 +47,7 @@ limits. See the repository wiki Sandbox guide for full boundaries.
 · The standalone futureos-headless entrypoint and unified future CLI are included.
 
 [License]
-FutureOS is distributed under the MIT License; the bundled future loop
+FutureOS is distributed under the MIT License; the bundled future goal
 component is derived from LoopX and distributed under Apache-2.0.
 Full license texts and attribution notices: see the licenses/ directory.
 

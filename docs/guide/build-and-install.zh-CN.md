@@ -1,6 +1,6 @@
 # 构建与安装
 
-在 macOS、Linux 和 Windows 上构建与安装 FutureOS——包括 agent 后端、TUI/CLI 前端、桌面 GUI、渠道桥接，以及 loop 控制面（`future-loop`）。
+在 macOS、Linux 和 Windows 上构建与安装 FutureOS——包括 agent 后端、TUI/CLI 前端、桌面 GUI、渠道桥接，以及 goal 控制面（`future-goal`）。
 
 > 关于*使用* FutureOS（模型、技能、启动 agent），请见 [README](../README.zh-CN.md)。
 
@@ -43,10 +43,10 @@ brew install protobuf                                             # 可选 —�
 构建：
 
 ```bash
-make install        # GUI + 统一 `future` CLI + 技能（agent/tui/channel/loop 已内嵌）→ /opt/homebrew/bin
+make install        # GUI + 统一 `future` CLI + 技能（agent/tui/channel/goal 已内嵌）→ /opt/homebrew/bin
 make install-cli    # 仅统一 `future` CLI
 make install-desktop    # 仅桌面应用（自带 agent/CLI sidecar）
-make install-skills # 内置技能 + /future-loop 技能
+make install-skills # 内置技能 + /future-goal 技能
 make package-desktop    # 桌面打包 → .app + .dmg 位于 desktop/src-tauri/target/release/bundle/
 scripts/build/build-desktop-macos.sh  # 本地 DMG；有 Developer ID 证书时自动签名
 ```
@@ -99,10 +99,10 @@ sudo apt install -y protobuf-compiler                             # 可选 —�
 ```bash
 scripts/build/build-desktop-linux.sh --out-dir ./dist   # → ./dist/FutureOS_<version>_amd64.deb + FutureOS-portable-linux.tar.gz
 scripts/dev/start-desktop-linux.sh                    # 本地 Linux Desktop + agent 开发会话
-make install        # 或直接从源码安装：GUI + 统一 `future` CLI + 技能（agent/tui/channel/loop 已内嵌）→ /usr/local/bin（sudo）
+make install        # 或直接从源码安装：GUI + 统一 `future` CLI + 技能（agent/tui/channel/goal 已内嵌）→ /usr/local/bin（sudo）
 make install-cli    # 仅统一 `future` CLI
 make install-desktop    # 仅桌面应用（自带 agent/CLI sidecar）
-make install-skills # 内置技能 + /future-loop 技能
+make install-skills # 内置技能 + /future-goal 技能
 make package-desktop    # 桌面打包 → .deb 位于 desktop/src-tauri/target/release/bundle/
 ```
 
@@ -127,7 +127,7 @@ make package-desktop    # 桌面打包 → .deb 位于 desktop/src-tauri/target/
 
 无需 `make` —— 下面的 PowerShell 命令与 make 目标一一对应。在仓库根目录执行。
 
-**终端栈** —— 等价于 `make install-cli install-skills`：只需统一 `future` CLI（agent/tui/channel/loop
+**终端栈** —— 等价于 `make install-cli install-skills`：只需统一 `future` CLI（agent/tui/channel/goal
 已内嵌其中），技能由 CLI 自行安装：
 
 ```powershell
@@ -167,48 +167,48 @@ Push-Location desktop; npm run tauri:build; Pop-Location   # → NSIS 安装 .ex
 说明：
 
 - `scripts\dev\start-desktop-windows.bat` 委托 PowerShell 开发脚本启动 GUI，默认使用内置 Agent 或连接兼容外部服务。
-- `scripts/build/` 下的脚本（`build-desktop-macos.sh`、`build-desktop-windows-portable.ps1`、`build-desktop-windows-installer.ps1`）把上述步骤封装成单条命令，复刻 CI 打包流水线（DMG / 便携 zip / NSIS 安装器）。它们会预先检查工具链，且需要 `protoc`（`brew install protobuf` / `choco install protoc`）。产物包含 GUI 与统一 `future` CLI（agent/tui/channel/loop 已内嵌）——不含单独的 TUI。
+- `scripts/build/` 下的脚本（`build-desktop-macos.sh`、`build-desktop-windows-portable.ps1`、`build-desktop-windows-installer.ps1`）把上述步骤封装成单条命令，复刻 CI 打包流水线（DMG / 便携 zip / NSIS 安装器）。它们会预先检查工具链，且需要 `protoc`（`brew install protobuf` / `choco install protoc`）。产物包含 GUI 与统一 `future` CLI（agent/tui/channel/goal 已内嵌）——不含单独的 TUI。
 
-## Loop 控制面（`future-loop`）
+## Goal 控制面（`future-goal`）
 
-loop 控制面位于 `orchestration/loop`，是普通 workspace 成员：
+goal 控制面位于 `orchestration/goal`，是普通 workspace 成员：
 
 ```bash
-cargo build -p future-loop                 # 调试构建 → target/debug/future-loop
-cargo build -p future-loop --release       # 发布构建 → target/release/future-loop
+cargo build -p future-goal                 # 调试构建 → target/debug/future-goal
+cargo build -p future-goal --release       # 发布构建 → target/release/future-goal
 ```
 
-若要让 agent 使用 `/future-loop` 技能（无需构建——控制面已内嵌在统一 `future` CLI）：
+若要让 agent 使用 `/future-goal` 技能（无需构建——控制面已内嵌在统一 `future` CLI）：
 
 ```bash
-make install-skills                    # 内置技能 + /future-loop 技能 → ~/.future/agent/skills/
+make install-skills                    # 内置技能 + /future-goal 技能 → ~/.future/agent/skills/
 ```
 
-可选：另行安装独立 `future-loop` 二进制（开发用途）：
+可选：另行安装独立 `future-goal` 二进制（开发用途）：
 
 ```bash
-bash scripts/release/install-future-loop.sh        # CLI → ~/.local/bin/future-loop，技能 → ~/.future/agent/skills/
-bash scripts/release/install-future-loop.sh --release
+bash scripts/release/install-future-goal.sh        # CLI → ~/.local/bin/future-goal，技能 → ~/.future/agent/skills/
+bash scripts/release/install-future-goal.sh --release
 ```
 
 验证：
 
 ```bash
-future loop status        # 主要入口（与 `future-loop status` 同一套代码）
+future goal status        # 主要入口（与 `future-goal status` 同一套代码）
 ```
 
 > 所有 Rust 组件都可通过统一的 `future` CLI 调用：`future agent`、`future tui`、
-> `future channel`、`future loop`——每个都运行与独立二进制（`future-agent`、
-> `future-tui`、`future-channel`、`future-loop`）完全相同的代码。独立二进制仍可通过
-> `cargo build -p <crate>` 构建、`make run-*` 运行（开发用途）；独立 `future-loop`
-> 二进制可用 scripts/release/install-future-loop.sh 安装。
+> `future channel`、`future goal`——每个都运行与独立二进制（`future-agent`、
+> `future-tui`、`future-channel`、`future-goal`）完全相同的代码。独立二进制仍可通过
+> `cargo build -p <crate>` 构建、`make run-*` 运行（开发用途）；独立 `future-goal`
+> 二进制可用 scripts/release/install-future-goal.sh 安装。
 
-功能与用法见 [loop 控制面指南](../architecture/loop-control-plane.zh-CN.md)。
+功能与用法见 [goal 控制面指南](../architecture/goal-control-plane.zh-CN.md)。
 
 ## 安装技能（可选）
 
 FutureOS 内置一组精选技能——面向常见任务（深度研究、浏览器自动化、文档处理、
-长程目标编排 `/future-loop` 等）的专用指令。它们维护在
+长程目标编排 `/future-goal` 等）的专用指令。它们维护在
 [future-skills](https://github.com/futuregene/future-skills) 仓库：
 
 ```bash
@@ -232,7 +232,7 @@ make lint        # 全量 lint：agent、channels、TUI、CLI、GUI（含 stylel
 源码构建使用仓库根目录的 Makefile：
 
 ```bash
-make build          # 构建 GUI + 统一 CLI（不安装到系统；agent/tui/channel/loop 内嵌于 future，GUI 自带 sidecar）
+make build          # 构建 GUI + 统一 CLI（不安装到系统；agent/tui/channel/goal 内嵌于 future，GUI 自带 sidecar）
 make lint           # 全量 lint：agent、channels、TUI、CLI、GUI（含 stylelint）、mobile
 make fmt            # cargo fmt --all（workspace）+ desktop/src-tauri + mobile 格式化
 make test           # 全部 7 个套件：agent、channels、CLI、TUI、GUI、GUI Rust、mobile

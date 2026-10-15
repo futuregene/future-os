@@ -33,7 +33,7 @@ themselves.
 | `future session transcript --session <id>` | One session's records, filtered and windowed — every user message, thinking, one tool's inputs or outputs, the paths it touched, and per-run outcomes (`--runs`) |
 | `future session forks <id>` | The user turns that session can be branched at |
 | `future session approvals <id>` | Approval requests the session is parked on right now |
-| `future loop status` | Long-running goals for the current project directory |
+| `future goal status` | Long-running goals for the current project directory |
 
 Two of those are worth separating carefully, because they answer different
 questions about the same session. `session info` reads the **persisted journal**

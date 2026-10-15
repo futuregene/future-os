@@ -28,7 +28,7 @@
 | `future session transcript --session <id>` | 单个会话记录的筛选/分窗视图——全部用户消息、thinking、某个工具的输入或输出、它碰过的文件路径，以及逐 run 结果（`--runs`） |
 | `future session forks <id>` | 该会话可以分叉的用户轮次 |
 | `future session approvals <id>` | 该会话当前正等待的审批请求 |
-| `future loop status` | 当前项目目录下的长程目标 |
+| `future goal status` | 当前项目目录下的长程目标 |
 
 其中两条需要分清楚，因为它们回答的是同一个会话的不同问题。`session info` 读的是**落盘的
 journal**——这段对话包含什么、累计花了多少；`session status` 读的是**运行中的 agent**——

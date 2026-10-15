@@ -38,7 +38,7 @@
 
 - `install.sh` / `install.ps1` — 由下载站托管的一行安装器；自动识别操作系统、
   校验 SHA-256 并安装发布产物。
-- `install-future-loop.sh` — 把 `future-loop` CLI 安装到 `~/.local/bin`，
+- `install-future-goal.sh` — 把 `future-goal` CLI 安装到 `~/.local/bin`，
   并把 loop 技能装进 agent 技能目录。
 - `sign-file.ps1` — 作为 Tauri `signCommand` 使用的 Authenticode 签名回调。
 - `setup-ossutil.sh` — 安装阿里云 ossutil v2，并为 CI 上传推导 `OSS_REGION`。

@@ -646,13 +646,13 @@ add_case static exact run --permission everywhere hi
 add_case static exact run --bogus-flag hi
 add_case static exact run @/nonexistent/file-xyz hi
 
-# embedded components — `future agent|tui|channel|loop` run the same code as
+# embedded components — `future agent|tui|channel|goal` run the same code as
 # the standalone binaries. Only deterministic, non-network paths are diffed:
 # help/version output. (Starting the agent or the TUI blocks; the channel
 # bridge reads ~/.future/channels/config.json.)
 add_case static exact agent --help
 add_case static exact tui --help
-add_case static exact loop
+add_case static exact goal
 add_case static exact channel --version
 
 # home:no auth.json — pure local behavior, no network

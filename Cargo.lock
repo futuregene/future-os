@@ -1064,7 +1064,7 @@ dependencies = [
  "future-app-settings",
  "future-app-workspaces",
  "future-channel",
- "future-loop",
+ "future-goal",
  "future-rpc",
  "future-tasks",
  "future-tui",
@@ -1084,7 +1084,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "future-loop"
+name = "future-goal"
 version = "0.1.0"
 dependencies = [
  "anyhow",

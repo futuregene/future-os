@@ -18,7 +18,7 @@ FutureOS 是「一个 AI agent 到处跑」的多端系统：核心是 Rust gRPC
 - `tui/`：Rust `future-tui` 终端界面。
 - `cli/`：Rust `future-cli`，构建统一 `future` 二进制，聚合各组件管理能力。
 - `channels/`：Rust `future-channel`，Feishu / DingTalk IM 桥。
-- `orchestration/loop/`：Rust `future-loop`，loop 控制面。
+- `orchestration/goal/`：Rust `future-goal`，goal 控制面。
 - `packages/rpc/`：Rust `future-rpc`，protobuf 线协议（单一真源）。
 
 GUI 和 headless Desktop 将完整 Agent 服务作为 Rust library 编入自身进程，共用一个宿主。优先连接兼容外部 Agent；只有默认端点不存在且成功取得实例锁才启动内置服务。不兼容或持锁不可用时直接报错，不打开第二份 Agent 数据库。显式远端只连接、不接管。客户端仍使用每用户本地 IPC（Unix socket、当前用户 Windows 命名管道），沿用 FUTURE_HOME 和端点覆盖规则。打包 CLI 继续提供技能、维护及独立 Agent 能力。退出内置宿主会取消所有客户端任务；连接外部服务时外部 owner 保持运行。参见[生命周期指南](../../guide/desktop-agent.zh-CN.md)和[实现计划](../../architecture/embedded-agent-development.zh-CN.md)。

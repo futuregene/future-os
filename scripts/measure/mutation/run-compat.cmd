@@ -1,16 +1,16 @@
 @echo off
-REM Detached driver: FIRST mutation sample of orchestration/loop/src/compat.rs (72
-REM mutants) -- the loop crate's waivers are the largest block of this goal and
+REM Detached driver: FIRST mutation sample of orchestration/goal/src/compat.rs (72
+REM mutants) -- the goal crate's waivers are the largest block of this goal and
 REM mutation sampling is the only instrument that can ask whether they hide a
-REM real test gap. Also proves cargo-mutants works on future-loop at all.
+REM real test gap. Also proves cargo-mutants works on future-goal at all.
 REM
 REM WITNESS SET: `--lib` PLUS `--test compat_projection_contract`.
 REM Deviation from the steering's bare `-- --lib`, and why: 18 of the 72 mutants
-REM are in the markdown projection (url_encode / rfc3339 / future_loop_status /
-REM future_loop_task_class / render_active_state / todo_line). Nothing in the lib
+REM are in the markdown projection (url_encode / rfc3339 / future_goal_status /
+REM future_goal_task_class / render_active_state / todo_line). Nothing in the lib
 REM test target calls those functions -- their whole test surface is the 4 tests
-REM of tests/compat_projection_contract.rs (rfc3339_matches_future_loop_shape,
-REM todo_anchors_match_future_loop_format, enum_values_match_loopx,
+REM of tests/compat_projection_contract.rs (rfc3339_matches_future_goal_shape,
+REM todo_anchors_match_future_goal_format, enum_values_match_loopx,
 REM file_layout_is_project_local). A `--lib`-only witness set would therefore
 REM report them MISSED for a reason that is an artifact of the witness set, and a
 REM witness-set gap is exactly the class of unusable verdict this re-run exists to
@@ -30,6 +30,6 @@ REM came from had a full C: drive -- see section 7.1 of the mutation report).
 set "CARGO_BUILD_JOBS=2"
 set "RUST_TEST_THREADS=4"
 echo STARTED %DATE% %TIME% > "%~dp0out-compat-run.log"
-cargo mutants -p future-loop --file orchestration/loop/src/compat.rs --gitignore true --timeout 300 -j 3 -o "%~dp0out-compat" --json --cargo-test-arg --lib --cargo-test-arg --test --cargo-test-arg compat_projection_contract >> "%~dp0out-compat-run.log" 2>&1
+cargo mutants -p future-goal --file orchestration/goal/src/compat.rs --gitignore true --timeout 300 -j 3 -o "%~dp0out-compat" --json --cargo-test-arg --lib --cargo-test-arg --test --cargo-test-arg compat_projection_contract >> "%~dp0out-compat-run.log" 2>&1
 echo EXITCODE=%ERRORLEVEL% >> "%~dp0out-compat-run.log"
 echo FINISHED %DATE% %TIME% >> "%~dp0out-compat-run.log"

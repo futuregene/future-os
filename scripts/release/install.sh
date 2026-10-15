@@ -227,7 +227,7 @@ install_macos() {
   run_future_setup "/Applications/FutureOS.app/Contents/MacOS/future"
   say "Done — FutureOS $VERSION installed"
   say "Launch the app with: open -a FutureOS"
-  say "Terminal users: add ~/.future/bin to PATH, then use 'future agent|tui|channel|loop'."
+  say "Terminal users: add ~/.future/bin to PATH, then use 'future agent|tui|channel|goal'."
 }
 
 install_linux() {

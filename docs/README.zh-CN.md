@@ -12,14 +12,14 @@
 
 | 文档 | 内容 |
 |---|---|
-| [构建与安装](guide/build-and-install.zh-CN.md)（[en](guide/build-and-install.md)） | 前置条件、各平台工具链（macOS / Linux / Windows）、`make` 目标、GUI 打包、`future-loop` 安装、技能安装 |
+| [构建与安装](guide/build-and-install.zh-CN.md)（[en](guide/build-and-install.md)） | 前置条件、各平台工具链（macOS / Linux / Windows）、`make` 目标、GUI 打包、`future-goal` 安装、技能安装 |
 | [TUI](guide/tui.zh-CN.md)（[en](guide/tui.md)） | 终端界面（`future-tui`）：斜杠命令、快捷键、设置 |
 | [渠道配置](guide/channels-config.zh-CN.md)（[en](guide/channels-config.md)） | `~/.future/channels/config.json` 统一参考（agent / providers / Feishu / DingTalk 块、默认值） |
 | [通道 provider 参考](guide/channels-providers.zh-CN.md)（[en](guide/channels-providers.md)） | 共享桥上的通道：能力矩阵、逐通道配置、成熟度、诊断、主动外发 |
 | [通道 provider 契约](guide/channels-provider-contract.zh-CN.md)（[en](guide/channels-provider-contract.md)） | 新增通道：provider 契约、入站/出站边界、配置、错误、测试与覆盖率要求 |
 | [Desktop Agent](guide/desktop-agent.zh-CN.md)（[en](guide/desktop-agent.md)） | 默认内置/外部服务、退出中断范围、CLI 接入、开发启动、日志与升级恢复 |
 | [无头桌面](guide/desktop-headless.zh-CN.md)（[en](guide/desktop-headless.md)） | 前台 `futureos-headless` 启动、终端登录/配对二维码与链接、Ctrl+C、无 GUI 服务器构建与排障 |
-| [目录布局](guide/directory-layout.zh-CN.md)（[en](guide/directory-layout.md)） | `~/.future/` 下各目录职责（agent、channels、TUI、GUI、loop） |
+| [目录布局](guide/directory-layout.zh-CN.md)（[en](guide/directory-layout.md)） | `~/.future/` 下各目录职责（agent、channels、TUI、GUI、goal） |
 | [会话历史召回](guide/session-history.zh-CN.md)（[en](guide/session-history.md)） | 只读的历史检索／条目读取、字节分页，以及压缩后的模型指引 |
 | [移动端延迟诊断](guide/mobile-latency-diagnosis.zh-CN.md)（[en](guide/mobile-latency-diagnosis.md)） | 移动端端到端延迟测量与诊断 |
 | [截图工具](guide/screenshots.zh-CN.md)（[en](guide/screenshots.md)） | 用演示数据渲染真实桌面端 / 手机端界面，在无显示器环境产出截图、功能示意图与图文文档 |
@@ -31,12 +31,12 @@
 
 | 文档 | 内容 |
 |---|---|
-| [Loop 控制面](architecture/loop-control-plane.zh-CN.md)（[en](architecture/loop-control-plane.md)） | `future-loop` — 目标/todos/门禁/监控、should-run 内核、配额、事件溯源、交付闭环、多 agent、supervisor/worker 消息、web dashboard |
-| [长程证据账本](architecture/long-run-evidence-ledger.zh-CN.md)（[en](architecture/long-run-evidence-ledger.md)） | 长程 loop 目标问责记录 — 墙钟、花费、验证结果、每个已关闭目标的显式边界 |
+| [Goal 控制面](architecture/goal-control-plane.zh-CN.md)（[en](architecture/goal-control-plane.md)） | `future-goal` — 目标/todos/门禁/监控、should-run 内核、配额、事件溯源、交付闭环、多 agent、supervisor/worker 消息、web dashboard |
+| [长程证据账本](architecture/long-run-evidence-ledger.zh-CN.md)（[en](architecture/long-run-evidence-ledger.md)） | 长程 goal 目标问责记录 — 墙钟、花费、验证结果、每个已关闭目标的显式边界 |
 | [SQLite 迁移](architecture/sqlite-migration.zh-CN.md)（[en](architecture/sqlite-migration.md)） | Agent/Desktop SQLite 存储布局与迁移策略 |
 | [Desktop 内置 Agent 开发计划](architecture/embedded-agent-development.zh-CN.md)（[en](architecture/embedded-agent-development.md)） | 进程内完整 Agent、服务与宿主生命周期、实例锁、退出清理、升级安装、开发工具及分阶段验收 |
 | [回复结果语义](architecture/response-outcomes.zh-CN.md)（[en](architecture/response-outcomes.md)） | 回复结束的结果语义（停止 / 拒答 / 过滤 / 暂停） |
-| [loop/](architecture/loop/README.md) | `future-loop` crate：[架构](architecture/loop/ARCHITECTURE.md)（en/zh）、[上游来源](../orchestration/loop/UPSTREAM.md)、[决策内核快照](architecture/loop/snapshots.md) |
+| [goal/](architecture/goal/README.md) | `future-goal` crate：[架构](architecture/goal/ARCHITECTURE.md)（en/zh）、[上游来源](../orchestration/goal/UPSTREAM.md)、[决策内核快照](architecture/goal/snapshots.md) |
 | [共享包](architecture/packages.zh-CN.md)（[en](architecture/packages.md)） | `packages/` 约定：npm/workspace 包与 crate 边界 |
 | [通道测试覆盖率](architecture/channels-test-coverage.zh-CN.md)（[en](architecture/channels-test-coverage.md)） | 通道框架的测试承诺什么，以及有意不覆盖的 22 行代码及每行的原因 |
 | [RPC crate](architecture/rpc.zh-CN.md)（[en](architecture/rpc.md)） | `packages/rpc` — protobuf 线上契约（唯一事实来源） |
@@ -142,7 +142,7 @@ DMG、Windows 便携 zip 与 Linux 便携 tarball。它们是**活文档**——
   `docs/testing/` 与 `docs/archives/testing/` 作为非用户文档（覆盖率战役的
   agent 任务记录）被豁免；`BILINGUAL_PENDING` 债务清单必须为空。`docs/` 之外的
   Markdown 只允许 `WHITELIST` 中列出的路径；`EXTRA_PAIR_SCOPED` 要求其中少数
-  文件也配对（`SECURITY*`、`THIRD_PARTY_NOTICES*`、`orchestration/loop/UPSTREAM*`）。
+  文件也配对（`SECURITY*`、`THIRD_PARTY_NOTICES*`、`orchestration/goal/UPSTREAM*`）。
 - `make test-docs-check` 运行该校验器自身的回归测试，含反向用例
   （一旦校验器不再能发现问题，测试就会失败）。
 - 当前没有任何流程自动运行它：**未接入 CI，也未接入 `make lint`**。

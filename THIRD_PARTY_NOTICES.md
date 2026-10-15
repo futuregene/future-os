@@ -10,17 +10,17 @@ retained in the locations indicated.
 
 - **Upstream:** <https://github.com/huangruiteng/loopx> — Ruiteng Huang and
   LoopX contributors
-- **Where:** [`orchestration/loop/`](orchestration/loop/) (crate
-  `future-loop`) — the Future Loop control plane contains code translated,
+- **Where:** [`orchestration/goal/`](orchestration/goal/) (crate
+  `future-goal`) — the Future Goal control plane contains code translated,
   ported, and structurally adapted from LoopX v0.4.x (through v0.4.8).
-- **License:** [Apache License, Version 2.0](orchestration/loop/LICENSE).
+- **License:** [Apache License, Version 2.0](orchestration/goal/LICENSE).
   LoopX releases through v0.4.7 were distributed under the MIT License;
   v0.4.8 is the first Apache-2.0 release.
-- **Notices:** [`orchestration/loop/NOTICE`](orchestration/loop/NOTICE);
+- **Notices:** [`orchestration/goal/NOTICE`](orchestration/goal/NOTICE);
   the upstream base version, derivation scope, and FutureGene's
   modifications are documented in
-  [`orchestration/loop/UPSTREAM.md`](orchestration/loop/UPSTREAM.md).
-- **Relationship:** Future Loop is an independent downstream implementation
+  [`orchestration/goal/UPSTREAM.md`](orchestration/goal/UPSTREAM.md).
+- **Relationship:** Future Goal is an independent downstream implementation
   maintained by FutureGene — it is **not** an official LoopX release and
   has **not** been certified or endorsed by the LoopX project.
 

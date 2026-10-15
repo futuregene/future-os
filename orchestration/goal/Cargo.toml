@@ -1,0 +1,51 @@
+[package]
+name = "future-goal"
+version = "0.1.0"
+edition = "2021"
+# Contains code derived from LoopX (https://github.com/huangruiteng/loopx),
+# Apache-2.0 — see LICENSE, NOTICE, and UPSTREAM.md in this directory.
+license = "Apache-2.0"
+description = "FutureOS goal control plane: durable goal/todo/gate/quota state, a deterministic should-run decision kernel, and a gRPC executor bridge (LoopX-style, implemented natively)."
+
+[lib]
+name = "future_goal"
+path = "src/lib.rs"
+
+[[bin]]
+name = "future-goal"
+path = "src/main.rs"
+
+[dependencies]
+# Single proto codegen owner (PR #112): the gRPC wire types come from the
+# future-rpc crate, so building this crate (and anything that depends on it,
+# e.g. the unified `future` CLI) does NOT need protoc.
+future-rpc = { path = "../../packages/rpc" }
+# The desktop app's settings schema (keys, defaults, app.db path): the loop
+# reads `titleLanguage` from the same store `future session title` / `future
+# run` do, so a generated session title speaks the language the user chose.
+future-app-settings = { path = "../../packages/app-settings" }
+tonic.workspace = true
+# test-util: paused time (tokio::time::advance) for the webui server/SSE tests.
+tokio = { workspace = true, features = ["test-util"] }
+tokio-stream.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+futures-util.workspace = true
+fs2 = "0.4"
+sha2 = "0.10"
+toml = "0.8"
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+# Holder-liveness probes for leases and the active-state lock (`pid_alive`).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }

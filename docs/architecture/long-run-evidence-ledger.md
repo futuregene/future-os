@@ -2,7 +2,7 @@
 
 > ([中文](long-run-evidence-ledger.zh-CN.md)) Accountability record for
 > long-range goals — multi-day, multi-turn efforts driven through the
-> [loop control plane](loop-control-plane.md). One entry per closed
+> [goal control plane](goal-control-plane.md). One entry per closed
 > long-range goal.
 
 A long-range goal spends real wall-clock time, tokens, and money across many
@@ -17,13 +17,13 @@ from primary sources, not from memory.
 Data sources (all local, all verifiable):
 
 - **Turns / wall clock / spend** — the goal's run-history ledger
-  `.future/loop/goals/<goal-id>/runs.jsonl` (per-run `terminal_state`,
+  `.future/goal/goals/<goal-id>/runs.jsonl` (per-run `terminal_state`,
   token deltas, `cost`, tool-call count; live per-run logs under
-  `.future/loop/runs/<run-id>.live.jsonl`) and the compact projection from
-  `future loop runs history --goal <id> --format json` /
-  `future loop quota usage --goal <id>`.
+  `.future/goal/runs/<run-id>.live.jsonl`) and the compact projection from
+  `future goal runs history --goal <id> --format json` /
+  `future goal quota usage --goal <id>`.
 - **Validation** — the goal's official measurement (name the tool, command,
-  commit, and date), plus `future loop evidence-log --goal <id>`.
+  commit, and date), plus `future goal evidence-log --goal <id>`.
 - **PRs** — `git log --grep` over the goal's working window.
 - **Boundaries** — the goal's waiver / sign-off records (user gates,
   acceptance todos) and anything a reader could otherwise mistake for an
@@ -89,7 +89,7 @@ lines 98.80%**, **3,864 tests, 0 failures**.
 | future-rpc | 91.77% | 99.79% (7 summary / 0 per-line) | #139 |
 | future-tui | 67.80% | 100.00% (0) | #140, #141 |
 | future-cli | 42.46% | 99.83% (40 summary / 15 per-line) | #146, #147 |
-| future-loop | 77.72% | 98.43% (279 summary / 191 per-line) | #148 |
+| future-goal | 77.72% | 98.43% (279 summary / 191 per-line) | #148 |
 | future-agent | 84.44% | 96.75% (987 summary / 700 per-line) | #149 |
 | future-channel | 31.50% | 99.84% (17 summary / 0 per-line; lcov DA 100%) | #150 |
 | **TOTAL** | **70.15%** (54,559/77,775) | **98.80%** | — |
@@ -105,7 +105,7 @@ non-executable attribution artifacts (365 closing braces, 74 line-1 anchors,
 7 comments) + ~460 defensive / dead-arm lines, cross-validated as lcov DA
 zero-hit = HTML uncovered-line.
 
-Defects found by the push: **6 real bugs** — 4 in future-loop (#148:
+Defects found by the push: **6 real bugs** — 4 in future-goal (#148:
 `doctor --agent-addr` and `benchmark run --agent-addr` nested-`block_on`
 panics, monitor no-change poll appending spurious `TodoCompleted`,
 `try_claim_todo` reconstruction missing the expiry arm), 1 in
@@ -134,8 +134,8 @@ future-channel (#150: gRPC client `entry_id` shadowing), 1 in future-cli
 - **Deliverables are local-only**: `coverage/` (lcov.info, html/,
   summary.txt, missed-lines.txt, acceptance-waivers.md) is gitignored by
   design per `scripts/measure/coverage.sh`.
-- **Attribution limits**: run-history spend covers only the 10 loop runs.
-  The future-loop push (PR #148) and the future-cli residual (PRs #146/#147)
+- **Attribution limits**: run-history spend covers only the 10 goal runs.
+  The future-goal push (PR #148) and the future-cli residual (PRs #146/#147)
   were executed partly by a concurrent interactive session sharing the
   worktrees (dual-executor collision), so their spend is not metered above.
   Token counts are cumulative-context tokens as recorded per run, not unique

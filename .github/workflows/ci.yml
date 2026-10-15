@@ -49,7 +49,7 @@ jobs:
       # affect every workspace crate.
       rust_agent: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_agent == 'true' || steps.filter.outputs.ci == 'true' }}
       rust_tui_cli: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_tui_cli == 'true' || steps.filter.outputs.ci == 'true' }}
-      rust_channels_rpc_loop: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_channels_rpc_loop == 'true' || steps.filter.outputs.ci == 'true' }}
+      rust_channels_rpc_goal: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_channels_rpc_goal == 'true' || steps.filter.outputs.ci == 'true' }}
       # Proto/codegen freshness only needs re-checking when a proto source,
       # its build script, the generated output, or a build-dep version changes.
       proto: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.proto == 'true' || steps.filter.outputs.ci == 'true' }}
@@ -99,7 +99,7 @@ jobs:
               - 'channels/**'
               - 'tui/**'
               - 'cli/**'
-              # The loop control plane is a workspace member — its changes must
+              # The goal control plane is a workspace member — its changes must
               # run the same fmt/clippy/test gates (previously missing here).
               - 'orchestration/**'
             # Per-crate triggers. Shared inputs (manifest/lock/toolchain/rpc)
@@ -127,7 +127,7 @@ jobs:
               - 'orchestration/**'
               - 'tui/**'
               - 'cli/**'
-            rust_channels_rpc_loop:
+            rust_channels_rpc_goal:
               - 'packages/remote-crypto/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -206,7 +206,7 @@ jobs:
               - 'package-lock.json'
 
   # ─── Rust lint gate (Linux): fmt + clippy ─────────────────────────────────
-  # Lint every workspace crate (agent / channels / tui / cli / loop / future-rpc,
+  # Lint every workspace crate (agent / channels / tui / cli / goal / future-rpc,
   # via `--all` and `--workspace --all-targets`) plus the desktop Tauri backend.
   # Tests run in the independent `rust-tests` job below so both gates can
   # execute in parallel.
@@ -275,7 +275,7 @@ jobs:
       # REGENERATE_PROTO).
       # Base toolchain packages always; the WebKit/GTK/SSL stack ONLY when the
       # desktop backend is affected (clippy links its -sys build scripts, which
-      # need pkg-config to find the libs). A loop-only PR skips ~40-60s of apt
+      # need pkg-config to find the libs). A goal-only PR skips ~40-60s of apt
       # (the historical flake point: apt fetching from a slow Azure mirror),
       # and protobuf-compiler is only needed for the proto-freshness step.
       - name: Install Linux deps (base)
@@ -355,7 +355,7 @@ jobs:
   # requires touching the branch-protection ruleset.
   #
   # Workspace groups gate on their own per-crate trigger (rust_agent /
-  # rust_tui_cli / rust_channels_rpc_loop) instead of the aggregate
+  # rust_tui_cli / rust_channels_rpc_goal) instead of the aggregate
   # rust_workspace, so a PR that touches only one crate runs only that crate's
   # test group. The aggregate still drives the workspace-level fmt/clippy and
   # cross-platform build. Workspace crates do not depend on desktop/src-tauri,
@@ -385,9 +385,9 @@ jobs:
             filter: rust_tui_cli
             packages: -p future-tui -p future-cli -p future-app-settings -p future-app-workspaces
             desktop: 'false'
-          - name: channels, rpc, loop
-            filter: rust_channels_rpc_loop
-            packages: -p future-channel -p future-rpc -p future-loop -p future-tasks -p future-remote-crypto
+          - name: channels, rpc, goal
+            filter: rust_channels_rpc_goal
+            packages: -p future-channel -p future-rpc -p future-goal -p future-tasks -p future-remote-crypto
             desktop: 'false'
           - name: desktop backend
             filter: desktop_tauri

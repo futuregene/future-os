@@ -85,9 +85,9 @@ coverage-tauri/
 # (scripts/screenshots/gen-demo-assets.py), never committed.
 /desktop/shot/assets/
 
-# loop control plane runtime state (never commit)
+# goal control plane runtime state (never commit)
 .codex/
-.future/loop/
+.future/goal/
 desktop/node_modules
 FUTURE.md
 coverage-agent-lcov.info

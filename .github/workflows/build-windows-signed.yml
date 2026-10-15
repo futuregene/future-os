@@ -340,9 +340,9 @@ jobs:
           Copy-Item "desktop/src-tauri/target/release/futureos.exe" "$dir/FutureOS.exe"
           Copy-Item "target/release/future.exe" "$dir/future.exe"
           Copy-Item "docs/dist/readme-windows.txt" "$dir/Readme.txt"
-          New-Item -ItemType Directory -Force -Path "$dir/licenses/loop" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$dir/licenses/goal" | Out-Null
           Copy-Item "LICENSE" "$dir/licenses/"
-          Copy-Item "orchestration/loop/LICENSE", "orchestration/loop/NOTICE", "orchestration/loop/UPSTREAM.md" "$dir/licenses/loop/"
+          Copy-Item "orchestration/goal/LICENSE", "orchestration/goal/NOTICE", "orchestration/goal/UPSTREAM.md" "$dir/licenses/goal/"
 
           if ("${{ inputs.signed }}" -eq "true") {
             . scripts/release/lib/windows-signing.ps1
