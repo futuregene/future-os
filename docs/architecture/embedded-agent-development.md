@@ -999,6 +999,33 @@ guidance. The original log is in the ignored workspace directory
 this `scope=windows-update` run were no-ops; they are not a full CI/Rust test
 pass. Other-platform results from the full run require separate records.
 
+The initial native compilation and lifecycle suites passed on all three
+platforms at `07e3c932`:
+
+| Native platform | RPC connection gates | Service startup integration | GUI host | Headless host |
+| --- | ---: | ---: | ---: | ---: |
+| Linux | 6 | 10 | 9 | 9 |
+| Windows | 6 | 10 | 9 | 9 |
+| macOS | 6 | 10 | 9 | 9 |
+
+Counts include fixture entry points and are not all disjoint product scenarios.
+Reported suite seconds include compilation, not startup performance. Summaries
+and logs are archived under `agent/target/phase7-ci-results/native-{linux,windows,macos}/`.
+Agent, CLI/TUI, channels/RPC/loop/tasks, frontend and fmt/Clippy checks passed.
+Linux GUI full tests had one failure in
+`scheduler::tests::a_spawned_job_fires_at_its_deadline_and_reanchors` (1,804 passed,
+1 failed, 12 ignored). That test lacked the fixture guard used for global task
+cleanup, allowing a parallel test to cancel its loop. Commit `887c5b77` adds the
+existing HomeGuard to two scheduler loop tests without changing production
+scheduling. The [Desktop Rust scoped run](https://github.com/futuregene/future-os/actions/runs/38673788870)
+revalidates that fix and explicit headless-feature checks.
+
+Actual macOS packaging also exposed an executable-permission bug: `cp` over an
+existing mode-0644 compile placeholder preserves its non-executable mode. The
+app launches but the packaged CLI cannot run. Unix development/build scripts,
+Makefile and release CI now stage the CLI with `install -m 755`. Acceptance must
+execute the CLI from the repackaged artifact, not just the source build tree.
+
 ## 11 Release conditions and rollback
 
 Require evidence for real service/persistence behavior, native platform

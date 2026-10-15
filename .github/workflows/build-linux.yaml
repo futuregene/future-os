@@ -116,7 +116,7 @@ jobs:
           cargo build --release --target "$target"
           triple=$(rustc -Vv | sed -n 's/^host: //p')
           mkdir -p ../desktop/src-tauri/binaries
-          cp "../target/$target/release/future" "../desktop/src-tauri/binaries/future-$triple"
+          install -m 755 "../target/$target/release/future" "../desktop/src-tauri/binaries/future-$triple"
           tar -czf "FutureOS_${FUTURE_ARTIFACT_VERSION}_linux_${{ matrix.arch }}-cli.tar.gz" \
             -C "../target/$target/release" future
 

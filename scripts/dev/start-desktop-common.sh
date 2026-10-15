@@ -61,7 +61,7 @@ TRIPLE="$(rustc -Vv | sed -n 's/^host: //p')"
 STAGED="$DESKTOP_DIR/src-tauri/binaries/future-$TRIPLE"
 mkdir -p "$(dirname -- "$STAGED")"
 if [[ -x "$CLI_TARGET/debug/future" && -s "$CLI_TARGET/debug/future" ]]; then
-  cp "$CLI_TARGET/debug/future" "$STAGED"
+  install -m 755 "$CLI_TARGET/debug/future" "$STAGED"
   export PATH="$CLI_TARGET/debug:$PATH"
 elif [[ ! -s "$STAGED" ]]; then
   echo "No development CLI artifact; only CLI-dependent features are unavailable." >&2

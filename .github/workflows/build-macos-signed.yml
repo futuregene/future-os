@@ -175,8 +175,8 @@ jobs:
         run: npm ci
 
       # The unified `future` CLI is the single sidecar (tauri.conf.json
-      # bundle.externalBin); the agent runs through `future agent`, so only the
-      # CLI needs building and staging.
+      # bundle.externalBin). Desktop embeds Agent; the CLI remains necessary
+      # for tool subprocesses and the standalone `future agent` entry point.
       - name: Build CLI
         working-directory: cli
         env:
@@ -186,7 +186,7 @@ jobs:
           cargo build --release
           triple="$(rustc -Vv | sed -n 's/^host: //p')"
           mkdir -p ../desktop/src-tauri/binaries
-          cp ../target/release/future "../desktop/src-tauri/binaries/future-$triple"
+          install -m 755 ../target/release/future "../desktop/src-tauri/binaries/future-$triple"
 
       - name: Set Tauri bundle version
         env:

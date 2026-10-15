@@ -155,7 +155,7 @@ ifeq ($(OS),windows)
 	$(COPY_CMD) target\release\future$(EXE_SUFFIX) "desktop\src-tauri\binaries\installer-maintenance.exe"
 else
 	@mkdir -p desktop/src-tauri/binaries
-	cp target/release/future desktop/src-tauri/binaries/future-$(TARGET)
+	install -m 755 target/release/future desktop/src-tauri/binaries/future-$(TARGET)
 endif
 
 # Compile-only CLI placeholder: tauri-build validates externalBin for checks.
@@ -183,7 +183,7 @@ build-desktop-headless: build-cli
 ifeq ($(OS),windows)
 	$(COPY_CMD) target\release\future.exe desktop\src-tauri\target\release\future.exe
 else
-	cp target/release/future desktop/src-tauri/target/release/future
+	install -m 755 target/release/future desktop/src-tauri/target/release/future
 endif
 
 # Mobile native projects are generated locally by Expo (gitignored).

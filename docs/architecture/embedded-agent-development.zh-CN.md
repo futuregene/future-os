@@ -609,6 +609,18 @@ $env:FUTURE_AGENT_SOCKET = $null
 
 Windows 专项 [38672888594](https://github.com/futuregene/future-os/actions/runs/38672888594) 在 `9caaff29` 全部通过：NSIS 严格编译、安装预检、强制清理门禁、租约、外部占用、替换/健康检查失败回滚、卸载、四个独立观察器场景、生命周期纯断言和安装脚本失败说明。原始日志保存于工作区忽略目录 `agent/target/phase7-ci-results/windows-update-9caaff29.log`。本次 `scope=windows-update` 的其他 Rust job 仅执行 no-op，不能算作完整 CI 或 Rust 测试通过；完整 CI 的其他平台结果须单独记录。
 
+首轮三平台编译和原生生命周期均通过，源码 `07e3c932`，每个平台的结果如下。数字包含 fixture 入口自身，不代表全部为互不重叠的独立产品场景；汇总秒数包含编译时间，不是启动性能。
+
+| 原生平台 | RPC 连接门禁 | 服务启动集成 | GUI 宿主 | headless 宿主 |
+| --- | ---: | ---: | ---: | ---: |
+| Linux | 6 | 10 | 9 | 9 |
+| Windows | 6 | 10 | 9 | 9 |
+| macOS | 6 | 10 | 9 | 9 |
+
+三份 `summary.json` 和分组日志已归档于 `agent/target/phase7-ci-results/native-{linux,windows,macos}/`。首轮的 Agent、CLI/TUI、channels/RPC/loop/tasks、前端以及 fmt/Clippy 检查通过；Linux GUI 全量中 `scheduler::tests::a_spawned_job_fires_at_its_deadline_and_reanchors` 失败（1,804 通过、1 失败、12 ignored）。该用例未持有与全局后台清理相同的 fixture guard，其他并行用例可取消它的循环。`887c5b77` 给两个启动后台循环的调度器用例加上已有 HomeGuard，保持产品调度不变；[Desktop Rust 范围复验](https://github.com/futuregene/future-os/actions/runs/38673788870) 单独验证此修复和 headless feature 检查。
+
+macOS 本地真实打包还发现：在已有 mode 0644 编译占位文件上执行 `cp` 会保留不可执行权限，使 app 正常但包内 CLI 无法运行。Unix 开发、打包、Makefile 和发布 CI 的 CLI 暂存统一改用 `install -m 755`；此问题必须以重新封装后的包内 CLI smoke 验收，不能只验证源码目录中的 CLI。
+
 ## 11 发布条件与回退
 
 默认切换前必须有四类证据：真实服务功能与持久化、原生跨平台生命周期、完整安装/升级/回滚、开发和发布入口一致。验证记录包含构建版本、平台、包类型、服务模式、场景、结果和日志位置；不要只记录“CI 绿了”。
