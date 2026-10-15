@@ -149,7 +149,7 @@ rather than answer from memory); the skills list lives in
 
 | Where | What it gives you |
 |---|---|
-| `CLAUDE.md` | Workspace layout: which crate owns what, and which slice of `~/.future/` |
+| `AGENTS.md` | Workspace layout: which crate owns what, and which slice of `~/.future/` |
 | `docs/README.md` | The docs index — guides, architecture, internals |
 | `docs/guide/`, `docs/architecture/` | Released behaviour, and the design behind a subsystem |
 | `FUTURE.md` + `.future/memory/` | Institutional gotchas recorded by earlier sessions |

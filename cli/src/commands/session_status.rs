@@ -30,7 +30,7 @@ Reads the agent's own view of the session (get_state), so it reports what the
 session would actually use, not what the global settings file says:
   Permission     the effective tool permission level (all|workspace|none)
   Context        tokens in context / the model's window / percent used
-  Context files  CLAUDE.md and friends that were loaded
+  Context files  AGENTS.md and friends that were loaded
   Skills         how many skills were discovered for this session
   Runs           the active run, queued runs and recent terminal outcomes
   Approvals      pending approval requests, if the session is waiting on one

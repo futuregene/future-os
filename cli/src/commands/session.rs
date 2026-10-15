@@ -69,7 +69,7 @@ Applied to the live session (until this agent stops):
   --sandbox <tier>        Approval mode: off|manual|sandbox|auto. `sandbox` is
                           refused when the platform cannot provide one.
   --context-files <on|off>
-                          Load CLAUDE.md and friends into the prompt.
+                          Load AGENTS.md and friends into the prompt.
   --auto-compact <on|off> Compact autonomously when context fills.
   --auto-retry <on|off>   Retry a failed request automatically.
 

@@ -92,7 +92,7 @@ def diagnostic(path, message):
 
 # Repository entry points, runtime assets and companion files outside docs/.
 WHITELIST = {
-    "CLAUDE.md",
+    "AGENTS.md",
     "README.md",
     "README.zh-CN.md",
     "SECURITY.md",
@@ -136,7 +136,7 @@ EXTRA_PAIR_SCOPED = {
     "orchestration/goal/UPSTREAM.md",
     # Root documents that stay at the repo root by convention (GitHub surfaces,
     # legal notices) but are still user-facing documents and must be bilingual.
-    # CLAUDE.md / desktop/CLAUDE.md are deliberately excluded: they are
+    # AGENTS.md / desktop/CLAUDE.md are deliberately excluded: they are
     # agent-harness instruction files, not documentation read by users.
     "SECURITY.md",
     "THIRD_PARTY_NOTICES.md",
