@@ -1,6 +1,6 @@
-import { useOlderHistory } from "./timeline/useOlderHistory";
+import { useOlderHistory, type OlderPageResult, type PendingOlderPage } from "./timeline/useOlderHistory";
 import { compactionTerminalOf, useCompactionOutcomes } from "./timeline/useCompactionOutcomes";
-import { HISTORY_PAGE_USER_EXCHANGES, HISTORY_TAIL_CURSOR, readHistoryPage, latestTimelineWindow, retainOlderHistoryPrefix, diagnosticError } from "./timeline/historyPaging";
+import { HISTORY_PAGE_USER_EXCHANGES, HISTORY_TAIL_CURSOR, HistoryPageHiddenError, commitHistoryPage, readHistoryPage, latestTimelineWindow, retainOlderHistoryPrefix, diagnosticError } from "./timeline/historyPaging";
 import type { HistoryPagingState } from "./timeline/historyPaging";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -65,6 +65,16 @@ export function useTimelineController({
   const [historyPaging, setHistoryPaging] = useState<
     Record<string, HistoryPagingState>
   >({});
+  const olderFailureRef = useRef<Record<string, boolean>>({});
+  const [olderFailure, setOlderFailure] = useState<Record<string, boolean>>({});
+  const olderHiddenRef = useRef<PendingOlderPage | null>(null);
+  // Mirrored so the foreground-recommit listener subscribes only while a page
+  // is actually parked; the ref alone would not re-render to arm it.
+  const [olderParked, setOlderParked] = useState(false);
+  const parkOlderPage = useCallback((pending: PendingOlderPage | null) => {
+    olderHiddenRef.current = pending;
+    setOlderParked(pending !== null);
+  }, []);
   const hydrateAttachmentsRef = useRef<(sessionId: string) => Promise<void>>(
     async () => undefined,
   );
@@ -323,8 +333,107 @@ export function useTimelineController({
     [clientRef, selectedRef],
   );
 
-  const loadOlderTimeline = useOlderHistory({ clientRef, selectedRef, syncEngineRef,
-    historyPagingRef, setHistoryPaging, olderRequestRef });
+  /** Mark a page failure (or clear it) for the failure surface. */
+  const markOlderFailure = useCallback((sessionId: string, failed: boolean) => {
+    if (failed === (olderFailureRef.current[sessionId] ?? false)) return;
+    olderFailureRef.current = { ...olderFailureRef.current, [sessionId]: failed };
+    setOlderFailure((previous) =>
+      (previous[sessionId] ?? false) === failed
+        ? previous
+        : { ...previous, [sessionId]: failed },
+    );
+  }, []);
+
+  const requestOlderPage = useOlderHistory({ clientRef, selectedRef, syncEngineRef,
+    historyPagingRef, setHistoryPaging, olderRequestRef, markOlderFailure });
+
+  /** Re-offer a page the lane dropped while it was dark. The page is the same
+   * download — re-committing it is not a second fetch, and the cursor only
+   * moves once the lane actually publishes it this time. */
+  const commitPendingOlder = useCallback(async (): Promise<false | string[]> => {
+    const pending = olderHiddenRef.current;
+    const engine = syncEngineRef.current;
+    if (!pending || !engine || selectedRef.current !== pending.sessionId) {
+      parkOlderPage(null);
+      return false;
+    }
+    parkOlderPage(null);
+    const controller = new AbortController();
+    const loading = { ...historyPagingRef.current[pending.sessionId], loading: true } as HistoryPagingState;
+    historyPagingRef.current[pending.sessionId] = loading;
+    setHistoryPaging((previous) => ({ ...previous, [pending.sessionId]: loading }));
+    const isCurrent = () =>
+      !controller.signal.aborted &&
+      historyPagingRef.current[pending.sessionId] === loading &&
+      selectedRef.current === pending.sessionId &&
+      syncEngineRef.current === engine;
+    try {
+      await commitHistoryPage(engine, pending.sessionId, pending.older, isCurrent, controller.signal);
+      if (!isCurrent()) return false;
+      const next: HistoryPagingState = {
+        nextBefore: pending.nextBefore,
+        endOffset: pending.endOffset,
+        hasMore: pending.hasMore,
+        loading: false,
+      };
+      historyPagingRef.current[pending.sessionId] = next;
+      setHistoryPaging((previous) => ({ ...previous, [pending.sessionId]: next }));
+      return pending.older.items.map((item) => item.id);
+    } catch (error) {
+      // Hidden again — the app is still in the background; park the page and
+      // let the next foreground pass try once more.
+      if (error instanceof HistoryPageHiddenError && isCurrent()) {
+        parkOlderPage(pending);
+      } else {
+        markOlderFailure(pending.sessionId, true);
+        console.error("[remote] older history page recommit failed", {
+          sessionId: pending.sessionId,
+          before: pending.before,
+          error: diagnosticError(error),
+        });
+      }
+      return false;
+    } finally {
+      controller.abort();
+      if (historyPagingRef.current[pending.sessionId] === loading) {
+        historyPagingRef.current[pending.sessionId] = { ...loading, loading: false };
+        setHistoryPaging((previous) => ({ ...previous, [pending.sessionId]: { ...loading, loading: false } }));
+      }
+    }
+  }, [markOlderFailure, parkOlderPage, selectedRef, setHistoryPaging, syncEngineRef]);
+
+  const loadOlderTimeline = useCallback(async (): Promise<false | string[]> => {
+    // A page parked while the lane was dark is the same pull the user already
+    // asked for: offer it before any new download.
+    if (olderHiddenRef.current) {
+      const recommitted = await commitPendingOlder();
+      if (recommitted !== false) return recommitted;
+    }
+    const result: OlderPageResult = await requestOlderPage();
+    if (result && typeof result === "object" && result.kind === "hidden") {
+      parkOlderPage(result.pending);
+      return false;
+    }
+    if (result && typeof result === "object" && result.kind === "committed") {
+      parkOlderPage(null);
+      return result.ids;
+    }
+    return result;
+  }, [commitPendingOlder, parkOlderPage, requestOlderPage]);
+
+  // Returning to the foreground is what makes a parked page committable
+  // again. The lane may still be reconciling; commitPendingOlder queues behind
+  // it, so the page lands as soon as the lane publishes — the user no longer
+  // has to scroll up a second time to undo a backgrounding they barely saw.
+  // The listener registers only while a page is parked, so an idle foreground
+  // session carries no subscription.
+  useEffect(() => {
+    if (!olderParked) return;
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active" && olderHiddenRef.current) void commitPendingOlder();
+    });
+    return () => subscription.remove();
+  }, [commitPendingOlder, olderParked]);
 
   const pruneTimelines = useCallback((selected: string) => {
     const removed = syncEngineRef.current?.pruneCache(selected) ?? [];
@@ -572,7 +681,10 @@ export function useTimelineController({
     historyPagingRef.current = {};
     committedHistoryRef.current = {};
     setHistoryPaging({});
-  }, [cancelCompactionWaiters]);
+    olderFailureRef.current = {};
+    setOlderFailure({});
+    parkOlderPage(null);
+  }, [cancelCompactionWaiters, parkOlderPage]);
 
   const ensureDraftTimeline = useCallback(() => {
     setTimelines((previous) =>
@@ -665,6 +777,9 @@ export function useTimelineController({
     timelineSyncStatus,
     canLoadOlderTimeline: selectedHistoryPaging?.hasMore ?? false,
     loadingOlderTimeline: selectedHistoryPaging?.loading ?? false,
+    olderHistoryFailed: selectedSessionId
+      ? (olderFailure[selectedSessionId] ?? false)
+      : false,
     loadOlderTimeline,
     reloadTimeline,
     prepareTimelineOpen,

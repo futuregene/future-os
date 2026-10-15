@@ -8,7 +8,12 @@
 > document calls "default off"); the length gate became **≥30 bytes** (ten Chinese characters); the
 > timeout became **3 s** (it was 1.5 s, below Jev's measured p95 of ≈1.4 s, so the tail of the
 > distribution was discarded and was indistinguishable from "no skill fits"; all three clients now
-> lock the input and spin the send button for the wait); and Jev has since moved into the Future provider, which retires the
+> lock the input and spin the send button for the wait); the agent's own HTTP timeout became
+> **2.5 s**, *inside* that 3 s budget rather than the 5 s it started as, so a call is never still
+> running — and being billed — after the client that asked for it has given up; a recommender that
+> fails stands down for **30 s** (immediately for a 401/402/403/429, after two consecutive transport
+> failures otherwise) instead of being asked again for every later message, which is what made a
+> spent account pay a round-trip per message for an answer that could not change; and Jev has since moved into the Future provider, which retires the
 > "how to configure the temporary key" question (see §Four decisions needed below). **Treat the code
 > and the PRD as authoritative**, not the older numbers here. The evaluation data still holds:
 > [evaluation.md](evaluation.md). Product rules are governed by `skill-recommend-prd-v1.9` (not kept
