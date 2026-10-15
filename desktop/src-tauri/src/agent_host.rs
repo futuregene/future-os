@@ -194,6 +194,7 @@ impl AgentHost {
         };
         let permit = match selection {
             future_rpc::connection::AgentSelection::External(_) => {
+                crate::future_platform::validate_external_environment()?;
                 let mut state = self.0.state.lock().unwrap();
                 if state.phase != Phase::Starting {
                     return Ok(());
@@ -249,31 +250,34 @@ impl AgentHost {
                             handle.request_shutdown(Duration::from_secs(5));
                         }
                     }
-                    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+                    #[cfg(test)]
+                    tests::before_first_serve_poll(self, &handle).await;
+                    let (ready_tx, mut ready_rx) = tokio::sync::oneshot::channel();
                     let server = running.serve(Some(ready_tx));
                     tokio::pin!(server);
-                    tokio::select! {
-                        result = server.as_mut() => { result?; }
-                        report = handle.wait_for_shutdown() => {
-                            anyhow::bail!("Agent cleanup failed: {}", report.errors.join("; "));
-                        }
-                        ready = ready_rx => {
-                            let identity = ready?;
-                            crate::host_environment::report(&format!("Agent identity version={} instance={}", identity.version, identity.agent_instance_id));
-                            {
-                                let mut state = self.0.state.lock().unwrap();
-                                if state.phase == Phase::Starting {
-                                    state.phase = Phase::Ready;
-                                    crate::host_environment::report("embedded Agent ready");
-                                }
-                                self.0.changed.notify_all();
+                    let mut awaiting_ready = true;
+                    loop {
+                        tokio::select! {
+                            result = server.as_mut() => { result?; break; }
+                            report = handle.wait_for_shutdown() => {
+                                anyhow::ensure!(report.status == ShutdownStatus::Stopped,
+                                    "Agent cleanup failed: {}", report.errors.join("; "));
+                                server.as_mut().await?;
+                                break;
                             }
-                            tokio::select! {
-                                result = server.as_mut() => { result?; }
-                                report = handle.wait_for_shutdown() => {
-                                    anyhow::ensure!(report.status == ShutdownStatus::Stopped,
-                                        "Agent cleanup failed: {}", report.errors.join("; "));
-                                    server.as_mut().await?;
+                            ready = &mut ready_rx, if awaiting_ready => {
+                                awaiting_ready = false;
+                                // Cancellation can drop the readiness sender before
+                                // serving begins. Keep polling both serving and drain;
+                                // channel closure alone is not a cleanup failure.
+                                if let Ok(identity) = ready {
+                                    crate::host_environment::report(&format!("Agent identity version={} instance={}", identity.version, identity.agent_instance_id));
+                                    let mut state = self.0.state.lock().unwrap();
+                                    if state.phase == Phase::Starting {
+                                        state.phase = Phase::Ready;
+                                        crate::host_environment::report("embedded Agent ready");
+                                    }
+                                    self.0.changed.notify_all();
                                 }
                             }
                         }
@@ -301,8 +305,12 @@ impl AgentHost {
 
     /// Never sends shutdown to external Agents. Failed stops are terminal and
     /// callers must refuse restart/reset/install until the process is exited.
+    #[cfg(test)]
     pub(crate) fn stop(&self) -> Result<(), crate::AppError> {
-        let deadline = Instant::now() + STOP_TIMEOUT;
+        self.stop_until(Instant::now() + STOP_TIMEOUT)
+    }
+    pub(crate) fn stop_until(&self, overall: Instant) -> Result<(), crate::AppError> {
+        let deadline = overall.min(Instant::now() + STOP_TIMEOUT);
         let mut state = self.0.state.lock().unwrap();
         if matches!(state.phase, Phase::Idle | Phase::Stopped) {
             return Ok(());

@@ -15,6 +15,8 @@ pub struct AgentStatus {
     pub desktop_version: String,
     pub agent_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub shutdown: Option<crate::desktop_shutdown::StopSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
@@ -49,10 +51,18 @@ pub async fn agent_status() -> AgentStatus {
         phase: "unavailable".into(),
         desktop_version: crate::build_info::VERSION.into(),
         agent_version: None,
+        shutdown: crate::desktop_shutdown::snapshot(),
         error: None,
     };
+    if let Some(shutdown) = &status.shutdown {
+        status.phase = "stopping".into();
+        if shutdown.state == "failed" {
+            status.error = Some(shutdown.errors.join("; "));
+        }
+        return status;
+    }
     if crate::desktop_shutdown::is_stopping() {
-        status.error = Some("Desktop is stopping".into());
+        status.phase = "stopping".into();
         return status;
     }
     match crate::agent_host::host().phase() {
@@ -91,10 +101,6 @@ pub async fn agent_status_with_recovery<R: tauri::Runtime>(
     _app: tauri::AppHandle<R>,
 ) -> AgentStatus {
     agent_status().await
-}
-
-pub fn shutdown_agent_gracefully() -> Result<(), crate::AppError> {
-    crate::desktop_shutdown::stop("app_exit")
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -170,13 +176,54 @@ pub fn confirm_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     dialog.show(move |confirmed| {
         QUIT_DIALOG_OPEN.store(false, Ordering::Release);
         if confirmed {
-            QUIT_CONFIRMED.store(true, Ordering::Release);
-            if let Err(error) = shutdown_agent_gracefully() {
-                eprintln!("FutureOS forced exit after cleanup failure: {error}");
-            }
-            app.exit(0);
+            request_quit(app, true);
         }
     });
+}
+
+static QUIT_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Intercept ordinary exits while the event loop can still render progress.
+/// This waiter is deliberately outside the task registry it must shut down.
+pub(crate) fn request_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>, force: bool) {
+    if QUIT_PENDING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let Some(operation) = crate::desktop_shutdown::begin_quit() else {
+        QUIT_PENDING.store(false, Ordering::Release);
+        return;
+    };
+    let fallback = app.clone();
+    if let Err(error) = std::thread::Builder::new().name("desktop-quit".into()).spawn(move || {
+        let result = operation.wait();
+        if let Err(error) = result {
+            eprintln!("FutureOS exit cleanup failed: {error}");
+            if !force {
+                app.dialog().message(format!("FutureOS could not complete cleanup: {error}. Exit the process anyway?"))
+                    .title("Cleanup failed")
+                    .kind(MessageDialogKind::Error)
+                    .buttons(MessageDialogButtons::OkCancelCustom("Exit anyway".into(), "Keep open".into()))
+                    .show(move |confirmed| {
+                        QUIT_PENDING.store(false, Ordering::Release);
+                        if confirmed { QUIT_CONFIRMED.store(true, Ordering::Release); app.exit(0); }
+                    });
+                return;
+            }
+        }
+        QUIT_CONFIRMED.store(true, Ordering::Release);
+        app.exit(0);
+    }) {
+        QUIT_PENDING.store(false, Ordering::Release);
+        fallback.dialog().message(format!("Cannot start exit waiter: {error}. Cleanup status remains available."))
+            .kind(MessageDialogKind::Error).show(|_| {});
+    }
+}
+
+pub(crate) fn authorize_exit() {
+    QUIT_CONFIRMED.store(true, Ordering::Release);
+}
+pub(crate) fn exit_authorized() -> bool {
+    QUIT_CONFIRMED.load(Ordering::Acquire)
 }
 
 #[cfg(test)]

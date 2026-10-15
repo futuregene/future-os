@@ -6,6 +6,7 @@ publish = false
 description = "The desktop app's workspace records (~/.future/app/app.db) — shared by the Tauri backend and the CLI"
 
 [dependencies]
+future-app-settings = { path = "../app-settings" }
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde.workspace = true
 chrono = { workspace = true, features = ["clock"] }

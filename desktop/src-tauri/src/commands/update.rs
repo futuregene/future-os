@@ -55,6 +55,8 @@ fn install_after_cleanup(
     )))
 }
 
+#[path = "update_journal.rs"]
+mod journal;
 #[cfg(not(target_os = "windows"))]
 #[path = "update_recovery.rs"]
 mod recovery;
@@ -63,7 +65,6 @@ mod recovery;
 mod windows;
 
 use crate::{
-    agent_supervisor,
     build_info::{self, BuildChannel},
     AppError,
 };
@@ -1036,11 +1037,8 @@ async fn install_app_update_impl<R: tauri::Runtime>(
     current_version: &str,
 ) -> Result<(), AppError> {
     if !can_install {
-        return Err(AppError::Message(
-            "Automatic installation is not available for this build or platform.".to_string(),
-        ));
+        return Err("Automatic installation is not available for this build or platform.".into());
     }
-
     INSTALL_ACTIVE
         .compare_exchange(
             false,
@@ -1053,6 +1051,77 @@ async fn install_app_update_impl<R: tauri::Runtime>(
     if crate::desktop_shutdown::is_stopping() {
         return Err(AppError::Message(
             "Desktop has stopped. Restart before installing an update.".into(),
+        ));
+    }
+
+    let operation = journal::Operation::begin(current_version)?;
+    let result = install_app_update_inner(
+        app,
+        channel,
+        can_install,
+        endpoint_url,
+        current_version,
+        install_guard,
+        operation.clone(),
+    )
+    .await;
+    if let Err(error) = &result {
+        operation.finish("failed", Some(error.to_string()), false)?;
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn app_maintenance_status() -> Result<serde_json::Value, AppError> {
+    tokio::task::spawn_blocking(|| {
+        let cli = match crate::cli_tool::discover(None) {
+            Ok(descriptor) => serde_json::json!({"tool": descriptor}),
+            Err(error) => serde_json::json!({"error": error.to_string()}),
+        };
+        let update = journal::latest()?;
+        Ok(serde_json::json!({"cli": cli, "update": update}))
+    })
+    .await
+    .map_err(|error| AppError::from(error.to_string()))?
+}
+
+#[tauri::command]
+pub async fn acknowledge_update_repair(
+    app: tauri::AppHandle,
+    operation_id: String,
+) -> Result<(), AppError> {
+    INSTALL_ACTIVE
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        )
+        .map_err(|_| AppError::from("An update installation is still in progress"))?;
+    let guard = InstallGuard;
+    tokio::task::spawn_blocking(move || {
+        let _guard = guard;
+        let confirmed = app.dialog().message("Only continue after manually reinstalling or repairing FutureOS and confirming the installation is complete. This records your repair confirmation; it does not verify or restart program files.")
+            .title("Confirm manual installation repair")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom("I repaired the installation".into(), "Cancel".into())).blocking_show();
+        if !confirmed { return Err("Repair acknowledgement cancelled".into()); }
+        journal::acknowledge_repair(&operation_id)
+    }).await.map_err(|error| AppError::from(error.to_string()))?
+}
+
+async fn install_app_update_inner<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    channel: BuildChannel,
+    can_install: bool,
+    endpoint_url: &str,
+    current_version: &str,
+    install_guard: InstallGuard,
+    operation: journal::Operation,
+) -> Result<(), AppError> {
+    if !can_install {
+        return Err(AppError::Message(
+            "Automatic installation is not available for this build or platform.".to_string(),
         ));
     }
 
@@ -1076,6 +1145,7 @@ async fn install_app_update_impl<R: tauri::Runtime>(
         .map_err(|error| updater_error("Failed to check for updates", error))?
         .ok_or_else(|| AppError::Message("No update is currently available.".to_string()))?;
 
+    operation.stage("downloading", Some(&update.version))?;
     let progress_app = app.clone();
     let mut downloaded = 0_u64;
 
@@ -1097,6 +1167,7 @@ async fn install_app_update_impl<R: tauri::Runtime>(
         .map_err(|error| updater_error("Failed to download and verify the update", error))?;
     #[cfg(target_os = "windows")]
     let installer = windows::PreparedInstaller::new(&bytes)?;
+    operation.stage("verified", None)?;
     // Confirm after signature verification, before closing admission. The
     // embedded host owns CLI work too; installation must disclose that scope.
     let confirmation_app = app.clone();
@@ -1118,10 +1189,16 @@ async fn install_app_update_impl<R: tauri::Runtime>(
     }
     // Download verifies the signature before freezing work. An exit hook
     // cannot veto NSIS, so return cleanup failures before calling install.
+    let worker_operation = operation.clone();
     let (installed, restart_safe) = tokio::task::spawn_blocking(move || {
+        let operation = worker_operation;
         // Keep the update mutex through the native worker even if the invoke
         // future is dropped while shutdown or installation is underway.
         let _guard = install_guard;
+        let _action = match crate::desktop_shutdown::claim_action("update") {
+            Ok(action) => action,
+            Err(error) => return (Err(error), false),
+        };
         #[cfg(not(target_os = "windows"))]
         let original = match recovery::ProgramFingerprint::capture() {
             Ok(original) => original,
@@ -1135,20 +1212,66 @@ async fn install_app_update_impl<R: tauri::Runtime>(
                 )
             }
         };
-        let installed = install_after_cleanup(agent_supervisor::shutdown_agent_gracefully, || {
-            #[cfg(target_os = "windows")]
-            {
-                installer.launch()
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                update.install(&bytes).map_err(|error| error.to_string())
-            }
-        });
         #[cfg(not(target_os = "windows"))]
-        let safe = installed.is_ok() || original.unchanged();
+        if let Err(error) = original.save(&operation.path()) {
+            return (Err(error), false);
+        }
+        let cleanup_succeeded = std::cell::Cell::new(false);
+        let installed = install_after_cleanup(
+            || {
+                operation.stage("cleanup", None)?;
+                crate::desktop_shutdown::stop("update")?;
+                cleanup_succeeded.set(true);
+                Ok(())
+            },
+            || {
+                #[cfg(target_os = "windows")]
+                {
+                    operation
+                        .stage("awaiting-exit", None)
+                        .map_err(|e| e.to_string())?;
+                    installer.launch(&operation)
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    operation
+                        .stage("installing", None)
+                        .map_err(|e| e.to_string())?;
+                    update.install(&bytes).map_err(|error| error.to_string())
+                }
+            },
+        );
+        #[cfg(not(target_os = "windows"))]
+        let safe = cleanup_succeeded.get() && (installed.is_ok() || original.unchanged());
         #[cfg(target_os = "windows")]
-        let safe = true; // launch errors occurred before installer handoff.
+        let safe = cleanup_succeeded.get(); // launch errors occurred before installer handoff.
+        let persisted = match &installed {
+            Ok(()) => {
+                #[cfg(not(target_os = "windows"))]
+                {
+                    operation.finish("installed", None, true)
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    Ok(())
+                }
+            }
+            Err(error) => operation.finish(
+                if !cleanup_succeeded.get() {
+                    "cleanup-failed"
+                } else if safe {
+                    "failed-restored"
+                } else {
+                    "repair-required"
+                },
+                Some(error.to_string()),
+                safe,
+            ),
+        };
+        if let Err(error) = persisted {
+            crate::host_environment::report(&format!("Cannot persist update result: {error}"));
+            return (Err(error), false);
+        }
         (installed, safe)
     })
     .await
@@ -1191,12 +1314,22 @@ async fn install_app_update_impl<R: tauri::Runtime>(
         .await
         .map_err(|error| updater_error("Update recovery dialog failed", error))?;
         if restart && restart_safe {
-            app.restart();
+            tokio::task::spawn_blocking(move || {
+                restart_after_app_update_with(app, |app| {
+                    crate::agent_supervisor::authorize_exit();
+                    app.restart()
+                })
+            })
+            .await
+            .map_err(|error| updater_error("Update recovery restart failed", error))??;
         }
         return Err(AppError::Message(message));
     }
     #[cfg(target_os = "windows")]
-    app.exit(0);
+    {
+        crate::agent_supervisor::authorize_exit();
+        app.exit(0);
+    }
     Ok(())
 }
 
@@ -1204,7 +1337,9 @@ async fn install_app_update_impl<R: tauri::Runtime>(
 /// to do so. Keeping this separate lets an active conversation finish first.
 #[tauri::command]
 #[rustfmt::skip]
-pub fn restart_after_app_update(app: tauri::AppHandle) -> Result<(), AppError> { restart_after_app_update_with(app, |app| app.restart()) }
+pub async fn restart_after_app_update(app: tauri::AppHandle) -> Result<(), AppError> {
+    tokio::task::spawn_blocking(move || restart_after_app_update_with(app, |app| { crate::agent_supervisor::authorize_exit(); app.restart() })).await.map_err(|error| AppError::from(error.to_string()))?
+}
 
 /// Body of [`restart_after_app_update`] with the relaunch injectable —
 /// `restart()` re-execs the process, so tests inject a no-op.
@@ -1212,6 +1347,29 @@ fn restart_after_app_update_with<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     relaunch: impl FnOnce(tauri::AppHandle<R>) -> Result<(), AppError>,
 ) -> Result<(), AppError> {
-    agent_supervisor::shutdown_agent_gracefully()?;
+    INSTALL_ACTIVE
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        )
+        .map_err(|_| {
+            AppError::from(
+                "Update maintenance is in progress; wait for its result before restarting",
+            )
+        })?;
+    let _guard = InstallGuard;
+    if let Some(record) = journal::latest()? {
+        if !record.restart_safe {
+            return Err("Update result does not permit restart. Inspect app/updates and repair the installation if its outcome is unknown.".into());
+        }
+        #[cfg(not(target_os = "windows"))]
+        if record.outcome.as_deref() == Some("failed-restored") {
+            recovery::ProgramFingerprint::verify_saved(&record.operation_id)?;
+        }
+    }
+    let _action = crate::desktop_shutdown::claim_action("restart")?;
+    crate::desktop_shutdown::stop("restart")?;
     relaunch(app)
 }

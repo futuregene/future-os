@@ -47,8 +47,15 @@ impl AgentClient {
                     if let Some(run) = data.get("run_id").and_then(serde_json::Value::as_str) {
                         if run != requested {
                             crate::desktop_shutdown::release_run(&session, &requested);
+                            crate::desktop_shutdown::own_run(
+                                session,
+                                run.into(),
+                                self.inner.clone(),
+                            );
                         }
-                        crate::desktop_shutdown::own_run(session, run.into(), self.inner.clone());
+                        // The original entry was registered before dispatch. A
+                        // terminal observer may already have released it while
+                        // the acknowledgment was in flight; do not resurrect it.
                     }
                 } else {
                     crate::desktop_shutdown::release_run(&session, &requested);

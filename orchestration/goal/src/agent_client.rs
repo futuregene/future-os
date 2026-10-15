@@ -7,7 +7,7 @@
 //! `state.rs` / `runtime/` — this module must stay policy-free.
 
 use anyhow::{anyhow, Result};
-use future_rpc::proto::future_agent_client::FutureAgentClient;
+use future_rpc::connection::VerifiedAgentClient;
 use future_rpc::proto::{RpcCommand, StreamEvent, StreamRequest};
 use serde_json::Value;
 
@@ -115,7 +115,8 @@ impl TurnProgressTracker {
 }
 
 pub struct AgentClient {
-    inner: FutureAgentClient<tonic::transport::Channel>,
+    // None exists only for the test fixture that must fail before any RPC.
+    inner: Option<VerifiedAgentClient>,
 }
 
 impl AgentClient {
@@ -124,27 +125,25 @@ impl AgentClient {
     /// exclusively; the `auto` sentinel selects only the local endpoint. Same
     /// target-selection boundary as the TUI/CLI clients.
     pub async fn connect(addr: &str) -> Result<Self> {
-        let connected = future_rpc::transport::connect_channel(
-            Some(addr),
+        let verified = future_rpc::connection::connect_verified(
+            addr,
+            future_rpc::connection::EXPECTED_AGENT_VERSION,
             std::time::Duration::from_secs(10),
-            None,
+            std::time::Duration::from_secs(3),
         )
         .await
         .map_err(|e| anyhow!("Failed to connect to agent: {e}"))?;
         Ok(Self {
-            inner: future_rpc::transport::agent_client(connected.channel),
+            inner: Some(verified),
         })
     }
 
-    /// A client whose transport is lazy and points at a port nothing listens
-    /// on. Tests that fail before the first RPC (e.g. a ledger write the fault
-    /// seam rejects) need the type but must never reach the network.
+    /// A test-only client with no verified transport. Tests that fail before
+    /// the first RPC (e.g. a ledger write the fault seam rejects) need the type;
+    /// reaching an RPC here fails without opening a network connection.
     #[cfg(test)]
     pub(crate) fn unreachable_for_test() -> Self {
-        let channel = tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
-        Self {
-            inner: future_rpc::transport::agent_client(channel),
-        }
+        Self { inner: None }
     }
 
     async fn call(&mut self, cmd_type: &str, session_id: &str, extra: RpcCommand) -> Result<Value> {
@@ -156,6 +155,8 @@ impl AgentClient {
         });
         let response = self
             .inner
+            .as_mut()
+            .ok_or_else(|| anyhow!("Agent client has no verified connection"))?
             .execute_command(request)
             .await
             .map_err(|e| anyhow!("gRPC '{cmd_type}' failed: {e}"))?
@@ -553,7 +554,13 @@ impl AgentClient {
                 atomic_attach: true,
                 global_events: false,
             });
-            let mut stream = match self.inner.stream_events(request).await {
+            let mut stream = match self
+                .inner
+                .as_mut()
+                .ok_or_else(|| anyhow!("Agent client has no verified connection"))?
+                .stream_events(request)
+                .await
+            {
                 Ok(resp) => resp.into_inner(),
                 Err(e) => {
                     let attach_err = format!("Failed to attach to run {run_id}: {e}");

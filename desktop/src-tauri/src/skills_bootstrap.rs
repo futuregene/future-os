@@ -14,7 +14,7 @@ const INIT_ARGS: [&str; 1] = ["init"];
 /// Force-run the skill bootstrap. Idempotent — the CLI itself skips
 /// already-installed skills. Used by the post-login onboarding flow.
 pub fn run_builtin_skills<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
-    let executable = match crate::cli_tool::resolve() {
+    let executable = match crate::cli_tool::resolve_for("skills.init") {
         Ok(path) => path,
         Err(error) => {
             crate::host_environment::report(&format!("{error}; skipping built-in skill bootstrap"));

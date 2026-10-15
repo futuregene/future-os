@@ -277,9 +277,18 @@ pub fn unknown_key(key: &str) -> String {
 }
 
 /// `~/.future/app/` — the directory the desktop app owns. Resolves the home
-/// directory the same way the desktop backend does: `HOME` first, then
-/// `USERPROFILE`, and only when the value is non-empty and absolute.
+/// directory the same way the desktop backend does: a valid absolute
+/// `FUTURE_HOME` overrides the root; otherwise `HOME` precedes `USERPROFILE`.
+/// Empty and relative values are ignored.
 pub fn app_dir() -> Result<PathBuf, Error> {
+    // Match the Agent/client override contract: only a nonempty absolute root.
+    // The default path and the existing database format remain unchanged.
+    if let Some(root) = std::env::var_os("FUTURE_HOME")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty() && path.is_absolute())
+    {
+        return Ok(root.join("app"));
+    }
     let home = [
         std::env::var("HOME").ok(),
         std::env::var("USERPROFILE").ok(),
@@ -876,6 +885,8 @@ mod tests {
     fn connect_creates_the_database_and_connect_existing_reads_it_back() {
         // Serialized: these tests mutate process environment.
         let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let previous_future_home = std::env::var_os("FUTURE_HOME");
+        std::env::remove_var("FUTURE_HOME");
         let previous_home = std::env::var("HOME").ok();
         let root = tempfile::tempdir().expect("tempdir");
         std::env::set_var("HOME", root.path());
@@ -913,12 +924,18 @@ mod tests {
             Some(value) => std::env::set_var("HOME", value),
             None => std::env::remove_var("HOME"),
         }
+        match previous_future_home {
+            Some(value) => std::env::set_var("FUTURE_HOME", value),
+            None => std::env::remove_var("FUTURE_HOME"),
+        }
     }
 
     #[test]
     fn app_dir_and_db_path_follow_home_then_userprofile() {
         // Serialized: these tests mutate process environment.
         let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let previous_future_home = std::env::var_os("FUTURE_HOME");
+        std::env::remove_var("FUTURE_HOME");
         let previous_home = std::env::var("HOME").ok();
         let previous_profile = std::env::var("USERPROFILE").ok();
         let root = tempfile::tempdir().expect("tempdir");
@@ -929,6 +946,20 @@ mod tests {
             app_db_path().unwrap(),
             root.path().join(".future/app/app.db")
         );
+
+        let isolated = root.path().join("isolated");
+        std::env::set_var("FUTURE_HOME", &isolated);
+        assert_eq!(app_dir().unwrap(), isolated.join("app"));
+        assert_eq!(app_db_path().unwrap(), isolated.join("app/app.db"));
+        assert!(
+            !isolated.exists(),
+            "path resolution must not create or migrate storage"
+        );
+        for invalid in ["", "relative-root"] {
+            std::env::set_var("FUTURE_HOME", invalid);
+            assert_eq!(app_dir().unwrap(), root.path().join(".future/app"));
+        }
+        std::env::remove_var("FUTURE_HOME");
 
         // A relative or empty HOME is ignored in favour of USERPROFILE.
         std::env::set_var("HOME", "relative");
@@ -946,6 +977,10 @@ mod tests {
         match previous_profile {
             Some(value) => std::env::set_var("USERPROFILE", value),
             None => std::env::remove_var("USERPROFILE"),
+        }
+        match previous_future_home {
+            Some(value) => std::env::set_var("FUTURE_HOME", value),
+            None => std::env::remove_var("FUTURE_HOME"),
         }
     }
 

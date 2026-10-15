@@ -1029,31 +1029,39 @@ mod tests {
         // transport kind it is not: an unhandled redirect takes the catch-all.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        std::thread::spawn(move || {
-            for _ in 0..8 {
-                let Ok((mut stream, _)) = listener.accept() else {
-                    return;
-                };
-                let mut buf = [0u8; 2048];
-                let _ = stream.read(&mut buf);
-                let location = format!("http://{addr}/again");
-                let _ = stream.write_all(
-                    format!(
-                        "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n"
-                    )
-                    .as_bytes(),
-                );
-                let _ = stream.flush();
+        let server = std::thread::spawn(move || {
+            use std::io::BufRead;
+            let (mut stream, _) = listener.accept().unwrap();
+            // Drain the headers before closing, and explicitly forbid reuse.
+            // Otherwise a reset can race reqwest's next redirect request and
+            // test a transport failure instead of the intended redirect error.
+            {
+                let mut reader = std::io::BufReader::new(&mut stream);
+                loop {
+                    let mut line = String::new();
+                    assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
             }
+            write!(stream, "HTTP/1.1 302 Found\r\nLocation: http://{addr}/again\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            stream.flush().unwrap();
         });
         let error = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::limited(1))
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(2))
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                attempt.error(std::io::Error::other("fixture redirect rejection"))
+            }))
             .build()
             .unwrap()
             .get(format!("http://{addr}/"))
             .send()
             .await
             .unwrap_err();
+        assert!(error.is_redirect(), "expected a redirect error: {error:?}");
+        server.join().unwrap();
         assert!(
             !error.is_timeout()
                 && !error.is_connect()

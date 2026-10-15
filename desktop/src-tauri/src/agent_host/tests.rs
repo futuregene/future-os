@@ -6,6 +6,19 @@ use std::{
 };
 const CASE: &str = "FUTURE_DESKTOP_AGENT_HOST_TEST";
 
+pub(super) async fn before_first_serve_poll(host: &AgentHost, handle: &AgentHandle) {
+    if std::env::var(CASE).as_deref() == Ok("cancel-before-serve") {
+        host.request_stop();
+        let report = handle.shutdown(Duration::from_secs(5)).await;
+        assert_eq!(report.status, ShutdownStatus::Stopped);
+    }
+}
+
+#[test]
+fn clean_shutdown_before_first_serve_poll_is_not_a_sticky_startup_failure() {
+    run_case("cancel-before-serve");
+}
+
 fn run_case(case: &str) {
     let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/host-fixtures");
     std::fs::create_dir_all(&parent).unwrap();
@@ -58,6 +71,18 @@ fn embedded_startup_and_restart_keep_the_agent_in_the_desktop_process() {
 fn an_attached_host_does_not_stop_the_external_owner() {
     run_case("external");
 }
+#[cfg(unix)]
+#[test]
+fn occupied_endpoint_lease_rejects_startup_before_database_initialization() {
+    run_case("endpoint-reserved");
+}
+
+#[cfg(unix)]
+#[test]
+fn cancellation_during_import_preserves_committed_sessions_and_allows_resume() {
+    run_case("cancel-import");
+}
+
 #[test]
 fn held_lock_rejects_startup_before_database_initialization() {
     run_case("locked");
@@ -133,6 +158,124 @@ fn host_fixture() {
         assert_eq!(host.phase(), Phase::Stopped);
         return;
     }
+    #[cfg(unix)]
+    if case == "endpoint-reserved" {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _reservation = runtime
+            .block_on(future_rpc::transport::reserve_local_endpoint())
+            .unwrap();
+        let error = host.start("auto".into()).unwrap_err();
+        assert!(error.to_string().contains("endpoint ownership"), "{error}");
+        assert!(!root.join("agent/agent.db").exists());
+        assert!(!root.join("agent/agent-instance.json").exists());
+        return;
+    }
+    #[cfg(unix)]
+    if case == "cancel-import" {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::OpenOptionsExt;
+        let sessions = root.join("agent/sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let entry = |id: &str| {
+            serde_json::json!({"id":id,"type":"user","role":"user","content":[{"type":"text","text":"fixture"}],"timestamp":"2026-01-01T00:00:00Z"}).to_string() + "\n"
+        };
+        std::fs::write(sessions.join("a.jsonl"), entry("e1")).unwrap();
+        let fifo = sessions.join("b.jsonl");
+        let path = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        let starter = host.clone();
+        let starting = std::thread::spawn(move || starter.start("auto".into()));
+        let deadline = Instant::now() + Duration::from_secs(20);
+        // Opening a nonblocking writer proves initialization reached the
+        // second source read after committing the first session.
+        let writer = loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&fifo)
+            {
+                Ok(writer) => break writer,
+                Err(error) if error.raw_os_error() == Some(libc::ENXIO) => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "initialization did not reach import read"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("open import fixture: {error}"),
+            }
+        };
+        host.request_stop();
+        drop(writer);
+        host.stop().unwrap();
+        assert!(starting.join().unwrap().is_err());
+        assert_eq!(host.phase(), Phase::Stopped);
+        assert!(!root.join("agent/agent-instance.json").exists());
+        {
+            let database = rusqlite::Connection::open_with_flags(
+                root.join("agent/agent.db"),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .unwrap();
+            assert_eq!(
+                database
+                    .query_row("SELECT count(*) FROM sessions", [], |row| row
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                database
+                    .query_row(
+                        "SELECT count(*) FROM legacy_imports WHERE status='skipped'",
+                        [],
+                        |row| row.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                database
+                    .query_row(
+                        "SELECT count(*) FROM storage_meta WHERE key='legacy_complete'",
+                        [],
+                        |row| row.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                0
+            );
+        }
+        std::fs::remove_file(&fifo).unwrap();
+        std::fs::write(&fifo, entry("e2")).unwrap();
+        host.start("auto".into()).unwrap();
+        host.stop().unwrap();
+        let database = rusqlite::Connection::open_with_flags(
+            root.join("agent/agent.db"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        assert_eq!(
+            database
+                .query_row("SELECT count(*) FROM sessions", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT count(*) FROM storage_meta WHERE key='legacy_complete'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+        return;
+    }
     if case == "locked" {
         std::fs::create_dir_all(root.join("agent")).unwrap();
         let file = std::fs::OpenOptions::new()
@@ -186,6 +329,14 @@ fn host_fixture() {
     } else {
         None
     };
+    if case == "cancel-before-serve" {
+        assert!(host.start("auto".into()).is_err());
+        host.stop()
+            .expect("already drained startup cancellation is clean");
+        assert_eq!(host.phase(), Phase::Stopped);
+        assert!(!root.join("agent/agent-instance.json").exists());
+        return;
+    }
     if case == "cancel-start" {
         let starter = host.clone();
         let thread = std::thread::spawn(move || starter.start("auto".into()));
@@ -193,7 +344,8 @@ fn host_fixture() {
             std::thread::yield_now();
         }
         host.request_stop();
-        let _ = host.stop();
+        host.stop().expect("cancelled startup must drain cleanly");
+        assert_eq!(host.phase(), Phase::Stopped);
         assert!(thread.join().unwrap().is_err());
         assert_ne!(host.phase(), Phase::Ready);
         assert!(!root.join("agent/agent-instance.json").exists());

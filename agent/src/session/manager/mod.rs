@@ -68,6 +68,15 @@ impl Manager {
 
     /// Called before serving RPC, while the Agent instance lock is held.
     pub fn initialize(&self) -> Result<()> {
+        self.initialize_cancellable(&crate::service::StartupCancellation::default())
+    }
+
+    pub(crate) fn initialize_cancellable(
+        &self,
+        cancellation: &crate::service::StartupCancellation,
+    ) -> Result<()> {
+        self.storage_cancellable(cancellation)?;
+        cancellation.check()?;
         self.start_journal_compactor()
     }
 
@@ -117,6 +126,14 @@ impl Manager {
     }
 
     pub(crate) fn storage(&self) -> Result<&SqliteStore> {
+        self.storage_cancellable(&crate::service::StartupCancellation::default())
+    }
+
+    fn storage_cancellable(
+        &self,
+        cancellation: &crate::service::StartupCancellation,
+    ) -> Result<&SqliteStore> {
+        cancellation.check()?;
         anyhow::ensure!(
             !self.stopping.load(std::sync::atomic::Ordering::Acquire),
             "session storage is closed"
@@ -126,8 +143,9 @@ impl Manager {
         }
         let _guard = self.initialization.lock();
         if self.store.get().is_none() {
-            let store = SqliteStore::open(&self.database_path())?;
-            store.import_legacy(&self.dir, None)?;
+            let store = SqliteStore::open_cancellable(&self.database_path(), cancellation.clone())?;
+            store.import_legacy_cancellable(&self.dir, None, cancellation)?;
+            cancellation.check()?;
             let _ = self.store.set(store);
         }
         Ok(self.store.get().expect("initialized SQLite store"))

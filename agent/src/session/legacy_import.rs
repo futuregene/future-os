@@ -27,18 +27,48 @@ fn source_unreadable(error: &std::io::Error) -> bool {
     )
 }
 
+#[cfg(test)]
 fn read_source(path: PathBuf) -> Result<Source> {
-    match std::fs::read(&path) {
+    read_source_cancellable(path, &crate::service::StartupCancellation::default())
+}
+
+fn read_bytes(path: &Path, cancellation: &crate::service::StartupCancellation) -> Result<Vec<u8>> {
+    use std::io::Read;
+    cancellation.check()?;
+    let mut file = std::fs::File::open(path)?;
+    let mut result = Vec::new();
+    let mut buffer = [0; 65536];
+    loop {
+        cancellation.check()?;
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            return Ok(result);
+        }
+        result.extend_from_slice(&buffer[..count]);
+    }
+}
+
+fn read_source_cancellable(
+    path: PathBuf,
+    cancellation: &crate::service::StartupCancellation,
+) -> Result<Source> {
+    match read_bytes(&path, cancellation) {
         Ok(bytes) => Ok(Source {
             path,
             bytes,
             problem: None,
         }),
-        Err(error) if source_unreadable(&error) => Ok(Source {
-            path,
-            bytes: Vec::new(),
-            problem: Some("source_unreadable"),
-        }),
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(source_unreadable) =>
+        {
+            Ok(Source {
+                path,
+                bytes: Vec::new(),
+                problem: Some("source_unreadable"),
+            })
+        }
         Err(error) => Err(error).context("read legacy source"),
     }
 }
@@ -50,11 +80,36 @@ struct InvalidSource {
     kind: &'static str,
 }
 
+#[cfg(test)]
 fn revalidate_sources(sources: &[Source]) -> std::result::Result<(), InvalidSource> {
+    match revalidate_sources_cancellable(sources, &crate::service::StartupCancellation::default()) {
+        Ok(()) => Ok(()),
+        Err(ParseFailure::Invalid(error)) => Err(error),
+        Err(ParseFailure::Cancelled) => unreachable!(),
+    }
+}
+
+enum ParseFailure {
+    Invalid(InvalidSource),
+    Cancelled,
+}
+impl From<InvalidSource> for ParseFailure {
+    fn from(error: InvalidSource) -> Self {
+        Self::Invalid(error)
+    }
+}
+
+fn revalidate_sources_cancellable(
+    sources: &[Source],
+    cancellation: &crate::service::StartupCancellation,
+) -> std::result::Result<(), ParseFailure> {
     for source in sources.iter().filter(|source| source.problem.is_none()) {
-        let kind = match std::fs::read(&source.path) {
+        let kind = match read_bytes(&source.path, cancellation) {
             Ok(bytes) if bytes == source.bytes => continue,
             Ok(_) => "source_changed",
+            Err(error) if error.is::<crate::service::StartupCancelled>() => {
+                return Err(ParseFailure::Cancelled)
+            }
             Err(_) => "source_unreadable",
         };
         return Err(InvalidSource {
@@ -66,7 +121,8 @@ fn revalidate_sources(sources: &[Source]) -> std::result::Result<(), InvalidSour
                 .into_owned(),
             line: 0,
             kind,
-        });
+        }
+        .into());
     }
     Ok(())
 }
@@ -128,6 +184,20 @@ impl SqliteStore {
     /// Import a legacy directory once, or explicitly retry one skipped session.
     /// The caller must exclude concurrent legacy writers for the entire call.
     pub fn import_legacy(&self, directory: &Path, retry: Option<&str>) -> Result<()> {
+        self.import_legacy_cancellable(
+            directory,
+            retry,
+            &crate::service::StartupCancellation::default(),
+        )
+    }
+
+    pub(crate) fn import_legacy_cancellable(
+        &self,
+        directory: &Path,
+        retry: Option<&str>,
+        cancellation: &crate::service::StartupCancellation,
+    ) -> Result<()> {
+        cancellation.check()?;
         let retry = retry.map(str::to_owned);
         if let Some(id) = retry.clone() {
             let status = self.db.call(move |db| {
@@ -160,6 +230,7 @@ impl SqliteStore {
         match std::fs::read_dir(directory) {
             Ok(files) => {
                 for file in files {
+                    cancellation.check()?;
                     let path = file?.path();
                     if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
                         paths.push(path);
@@ -179,6 +250,7 @@ impl SqliteStore {
             }
         }
         for path in paths {
+            cancellation.check()?;
             let id = path
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -203,7 +275,7 @@ impl SqliteStore {
             {
                 continue;
             }
-            let mut sources = vec![read_source(path)?];
+            let mut sources = vec![read_source_cancellable(path, cancellation)?];
             let events_root = if directory.file_name().and_then(|s| s.to_str()) == Some("sessions")
             {
                 directory.parent().unwrap_or(directory).join("run-events")
@@ -214,6 +286,7 @@ impl SqliteStore {
                 Ok(files) => {
                     let mut events = Vec::new();
                     for file in files {
+                        cancellation.check()?;
                         let path = file?.path();
                         if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
                             events.push(path);
@@ -221,7 +294,7 @@ impl SqliteStore {
                     }
                     events.sort();
                     for path in events {
-                        sources.push(read_source(path)?);
+                        sources.push(read_source_cancellable(path, cancellation)?);
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -234,6 +307,7 @@ impl SqliteStore {
             }
             let mut hash = Sha256::new();
             for source in &sources {
+                cancellation.check()?;
                 hash.update(
                     source
                         .path
@@ -243,19 +317,32 @@ impl SqliteStore {
                 );
                 hash.update(source.problem.unwrap_or_default().as_bytes());
                 hash.update((source.bytes.len() as u64).to_le_bytes());
-                hash.update(&source.bytes);
+                for chunk in source.bytes.chunks(65536) {
+                    cancellation.check()?;
+                    hash.update(chunk);
+                }
             }
             let fingerprint = format!("{:x}", hash.finalize());
             // Source races are per-session failures, like parse failures; they
             // must neither import an inconsistent snapshot nor prevent all
             // unrelated sessions from starting. Destination storage errors still
             // propagate from the transaction below.
-            let parsed = revalidate_sources(&sources).and_then(|()| parse_sources(&sources, &id));
+            let parsed = match revalidate_sources_cancellable(&sources, cancellation)
+                .and_then(|()| parse_sources(&sources, &id, cancellation))
+            {
+                Ok(import) => Ok(import),
+                Err(ParseFailure::Invalid(error)) => Err(error),
+                Err(ParseFailure::Cancelled) => return Err(crate::service::StartupCancelled.into()),
+            };
+            cancellation.check()?;
+            let cancellation = cancellation.clone();
             self.db.call(move |db| {
                 // Reads the destination before it writes: take the write lock at
                 // BEGIN, or a concurrent connection's commit invalidates this
                 // snapshot and the upgrade fails instantly (SQLITE_BUSY_SNAPSHOT).
+                cancellation.check()?;
                 let tx = crate::session::database::begin_write_transaction(db)?;
+                cancellation.check()?;
                 let parsed = if tx.query_row("SELECT id FROM sessions WHERE id=?1", [&id], |r| r.get::<_, String>(0)).optional()?.is_some() {
                     Err(InvalidSource { file: "transcript".into(), line: 0, kind: "existing_sqlite_session" })
                 } else { parsed };
@@ -263,7 +350,7 @@ impl SqliteStore {
                     Ok(import) => {
                         tx.execute("INSERT INTO sessions(id) VALUES (?1)", [&id])?;
                         insert_transcript_entries(&tx, &id, import.entries)?;
-                        for event in import.events { insert_event_record(&tx, &id, event)?; }
+                        for event in import.events { cancellation.check()?; insert_event_record(&tx, &id, event)?; }
                         tx.execute("UPDATE runs SET status='interrupted' WHERE session_id=?1 AND status='running'", [&id])?;
                         tx.execute("INSERT INTO legacy_imports(session_id,status,fingerprint,warnings) VALUES (?1,'imported',?2,?3)
                             ON CONFLICT(session_id) DO UPDATE SET status='imported',fingerprint=excluded.fingerprint,warnings=excluded.warnings,error_file=NULL,error_line=NULL,error_kind=NULL",
@@ -276,11 +363,15 @@ impl SqliteStore {
                         tracing::warn!(session_id=%id, line=error.line, kind=error.kind, "legacy session skipped");
                     }
                 }
+                cancellation.check()?;
                 tx.commit()?;
                 Ok(())
             })?;
         }
-        self.db.call(|db| {
+        cancellation.check()?;
+        let cancellation = cancellation.clone();
+        self.db.call(move |db| {
+            cancellation.check()?;
             db.execute(
                 "INSERT OR IGNORE INTO storage_meta VALUES ('legacy_complete','1')",
                 [],
@@ -295,7 +386,11 @@ impl SqliteStore {
     }
 }
 
-fn parse_sources(sources: &[Source], session: &str) -> std::result::Result<Import, InvalidSource> {
+fn parse_sources(
+    sources: &[Source],
+    session: &str,
+    cancellation: &crate::service::StartupCancellation,
+) -> std::result::Result<Import, ParseFailure> {
     let mut result = Import {
         entries: Vec::new(),
         events: Vec::new(),
@@ -305,6 +400,7 @@ fn parse_sources(sources: &[Source], session: &str) -> std::result::Result<Impor
     let mut event_ids = HashMap::<String, Value>::new();
     let mut wire_ids = HashMap::<String, String>::new();
     for (source_index, source) in sources.iter().enumerate() {
+        cancellation.check().map_err(|_| ParseFailure::Cancelled)?;
         let file = source
             .path
             .file_name()
@@ -316,10 +412,12 @@ fn parse_sources(sources: &[Source], session: &str) -> std::result::Result<Impor
                 file,
                 line: 0,
                 kind,
-            });
+            }
+            .into());
         }
         let lines: Vec<_> = source.bytes.split(|byte| *byte == b'\n').collect();
         for (index, bytes) in lines.iter().enumerate() {
+            cancellation.check().map_err(|_| ParseFailure::Cancelled)?;
             let invalid = |kind| InvalidSource {
                 file: file.clone(),
                 line: index + 1,
@@ -338,7 +436,7 @@ fn parse_sources(sources: &[Source], session: &str) -> std::result::Result<Impor
                     result.warnings += 1;
                     continue;
                 }
-                Err(_) => return Err(invalid("invalid_json")),
+                Err(_) => return Err(invalid("invalid_json").into()),
             };
             if source_index == 0 {
                 let id = value
@@ -390,24 +488,24 @@ fn parse_sources(sources: &[Source], session: &str) -> std::result::Result<Impor
                         .and_then(|meta| meta.get("run_id"))
                         .is_some_and(|run| !run.is_null() && !run.is_string())
                 {
-                    return Err(invalid("invalid_entry_metadata"));
+                    return Err(invalid("invalid_entry_metadata").into());
                 }
                 if matches!(value["type"].as_str(), Some("run_started" | "run_terminal")) {
                     if value["content"]["run_id"]
                         .as_str()
                         .is_none_or(str::is_empty)
                     {
-                        return Err(invalid("missing_run_identity"));
+                        return Err(invalid("missing_run_identity").into());
                     }
                     if value["type"] == "run_terminal"
                         && value["content"]["state"].as_str().is_none()
                     {
-                        return Err(invalid("missing_terminal_state"));
+                        return Err(invalid("missing_terminal_state").into());
                     }
                 }
                 if let Some(previous) = entry_ids.insert(id, value.clone()) {
                     if previous != value {
-                        return Err(invalid("conflicting_entry_id"));
+                        return Err(invalid("conflicting_entry_id").into());
                     }
                     result.warnings += 1;
                     continue;
@@ -429,7 +527,7 @@ fn parse_sources(sources: &[Source], session: &str) -> std::result::Result<Impor
                 if event.run_id != expected_run
                     || (!event.session_id.is_empty() && event.session_id != session)
                 {
-                    return Err(invalid("event_identity_mismatch"));
+                    return Err(invalid("event_identity_mismatch").into());
                 }
                 let session_scoped = event.run_id.is_empty() && event.session_idx >= 0;
                 let idx = if session_scoped {
@@ -438,7 +536,7 @@ fn parse_sources(sources: &[Source], session: &str) -> std::result::Result<Impor
                     event.idx
                 };
                 if idx < 0 {
-                    return Err(invalid("invalid_event_sequence"));
+                    return Err(invalid("invalid_event_sequence").into());
                 }
                 let identity = if session_scoped {
                     format!("{session}:session:{idx}")
@@ -457,11 +555,11 @@ fn parse_sources(sources: &[Source], session: &str) -> std::result::Result<Impor
                     .insert(wire_id, identity.clone())
                     .is_some_and(|previous| previous != identity)
                 {
-                    return Err(invalid("conflicting_event_id"));
+                    return Err(invalid("conflicting_event_id").into());
                 }
                 if let Some(previous) = event_ids.insert(identity, value.clone()) {
                     if previous != value {
-                        return Err(invalid("conflicting_event_identity"));
+                        return Err(invalid("conflicting_event_identity").into());
                     }
                     result.warnings += 1;
                     continue;
@@ -475,7 +573,8 @@ fn parse_sources(sources: &[Source], session: &str) -> std::result::Result<Impor
             file: "transcript".into(),
             line: 0,
             kind: "empty_session",
-        });
+        }
+        .into());
     }
     let positions: HashMap<_, _> = result
         .entries
@@ -484,6 +583,7 @@ fn parse_sources(sources: &[Source], session: &str) -> std::result::Result<Impor
         .filter_map(|(index, entry)| entry["id"].as_str().map(|id| (id, index)))
         .collect();
     for (index, entry) in result.entries.iter().enumerate() {
+        cancellation.check().map_err(|_| ParseFailure::Cancelled)?;
         // Only the current schema is validated. A row from a retired schema is imported as
         // an inert journal entry: nothing reads it, so a dangling range in it cannot affect
         // the child session's prompt.
@@ -518,7 +618,8 @@ fn parse_sources(sources: &[Source], session: &str) -> std::result::Result<Impor
                     file: "transcript".into(),
                     line: 0,
                     kind: "dangling_checkpoint",
-                });
+                }
+                .into());
             }
         }
     }
@@ -540,6 +641,28 @@ mod import_paths {
     fn write(dir: &Path, name: &str, body: &str) {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(dir.join(name), body).unwrap();
+    }
+
+    #[test]
+    fn cancelled_initialization_does_not_create_a_database_or_mark_sources_invalid() {
+        let root = tempfile::tempdir().unwrap();
+        let cancellation = crate::service::StartupCancellation::default();
+        cancellation.cancel();
+        let database = root.path().join("cancelled.db");
+        let error = SqliteStore::open_cancellable(&database, cancellation.clone())
+            .err()
+            .unwrap();
+        assert!(error.is::<crate::service::StartupCancelled>());
+        assert!(!database.exists());
+        let source = Source {
+            path: root.path().join("bad.jsonl"),
+            bytes: b"invalid".to_vec(),
+            problem: None,
+        };
+        assert!(matches!(
+            parse_sources(&[source], "session", &cancellation),
+            Err(ParseFailure::Cancelled)
+        ));
     }
 
     fn entry_line(id: &str) -> String {

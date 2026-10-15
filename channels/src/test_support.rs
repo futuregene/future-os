@@ -116,7 +116,9 @@ impl FutureAgent for MockAgent {
             tokio::time::sleep(d).await;
         }
         let mut st = lock(&self.state);
-        st.recorded.push(cmd.clone());
+        if cmd.r#type != "get_agent_readiness" {
+            st.recorded.push(cmd.clone());
+        }
         if st.status_error.contains(&cmd.r#type) {
             return Err(tonic::Status::unavailable("mock transport failure"));
         }
@@ -147,6 +149,20 @@ impl FutureAgent for MockAgent {
         }
         if let Some(data) = st.responses.get(&cmd.r#type) {
             return Ok(response(&cmd, true, data.clone(), String::new()));
+        }
+        if cmd.r#type == "get_agent_readiness" {
+            return Ok(response(
+                &cmd,
+                true,
+                serde_json::json!({
+                    "version": future_rpc::connection::EXPECTED_AGENT_VERSION,
+                    "agentInstanceId": "channel-fixture", "dataRootId": "0".repeat(64),
+                    "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION,
+                    "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION,
+                })
+                .to_string(),
+                String::new(),
+            ));
         }
         let data = match cmd.r#type.as_str() {
             "new_session" => {
