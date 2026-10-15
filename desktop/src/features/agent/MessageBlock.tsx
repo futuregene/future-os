@@ -8,12 +8,9 @@ import { CopyButton } from "../../components/ui/CopyButton";
 import { useCopyState } from "../../components/ui/useCopyState";
 import { cn } from "../../lib/cn";
 import { STREAMED_BLOCK_CONTAINMENT } from "../markdown/LiveMarkdownContext";
-import { StreamingMarkdownContent } from "../markdown/MarkdownContent";
-import { SafeLink } from "../markdown/renderers/SafeLink";
+import { MarkdownContent, StreamingMarkdownContent } from "../markdown/MarkdownContent";
 import { AgentActivityLine, AgentActivityList } from "./AgentActivityList";
 import { canContinueResponse, isCompletedWithoutReply } from "./agentMessageFormatters";
-import { splitExternalLinkSegments } from "./externalLinks";
-import { parseMentionSegments } from "./mentionMarkdown";
 import { MessageMeta } from "./MessageMeta";
 import { AttachmentChip } from "./messages/AttachmentChip";
 import { MessageFrame } from "./messages/MessageFrame";
@@ -200,7 +197,13 @@ function MessageBlockImpl({
           )
         : message.content
           ? isUser
-            ? <UserMessageText content={message.content} />
+            // A prompt is markdown like a reply: the same pipeline renders the
+            // user's `@` file mentions (their `[name](./path)` link form), `#`
+            // conversation references and `[label](http…)` links — and a
+            // heading, list or code block they typed arrives formatted instead
+            // of as its own source. A prompt never streams, so it takes the
+            // static parse rather than the streaming one.
+            ? <MarkdownContent content={message.content} workspaceId={workspaceId} />
             : (
                 <StreamingMarkdownContent
                   content={message.content}
@@ -410,46 +413,6 @@ function ReplyBlockBody({
       runId={message.runId}
       workspacePath={workspacePath}
     />
-  );
-}
-
-/**
- * User messages render as plain text (never markdown — the user's `*`/`#`/`1.`
- * stay literal), except `@` file mentions and `#` session references, which show
- * in the accent color like the composer pill, and `[label](http…)` links (e.g.
- * the coach prompt's manual link), which render clickable via SafeLink.
- * Everything else is verbatim.
- */
-function UserMessageText({ content }: { content: string }) {
-  const segments = parseMentionSegments(content);
-
-  return (
-    <p className="whitespace-pre-wrap">
-      {segments.map(segment =>
-        segment.mention
-          ? (
-              <span key={segment.key} className="font-medium text-accent">
-                {/* A session reference keeps the composer's `#` marker, so a
-                    reference to another conversation cannot be mistaken for a
-                    file mention in a glance over the transcript. */}
-                {segment.sessionId ? `#${segment.text}` : segment.text}
-              </span>
-            )
-          : (
-              <Fragment key={segment.key}>
-                {splitExternalLinkSegments(segment.text).map(linkSegment =>
-                  linkSegment.link
-                    ? (
-                        <SafeLink href={linkSegment.href ?? ""} key={linkSegment.key}>
-                          {linkSegment.text}
-                        </SafeLink>
-                      )
-                    : <span key={linkSegment.key}>{linkSegment.text}</span>,
-                )}
-              </Fragment>
-            ),
-      )}
-    </p>
   );
 }
 

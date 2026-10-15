@@ -70,14 +70,14 @@ describe("cached search prefilter", () => {
     expect(mayContainThreadSearch(fenced, "answer = 42")).toBe(true);
   });
 
-  it("returns early for a user message whose text does not match", () => {
-    // boundary: user messages are plain text (never markdown), so a miss on their
-    // raw text is definitive - there is nothing to flatten. The early return is what
-    // keeps a user row out of the candidate list instead of walking a parsed
-    // document that upstream rendering never produces for this role.
-    const prompt = { id: "u1", role: "user", content: "a plain question", status: "complete" } as AgentMessage;
+  it("flattens a user prompt's markdown like a reply's", () => {
+    // A prompt renders through the same markdown pipeline as a reply, so a
+    // formatted phrase matches across its formatting here too: a miss on the raw
+    // text is no longer definitive for this role.
+    const prompt = { id: "u1", role: "user", content: "a **formatted** question", status: "complete" } as AgentMessage;
 
+    expect(mayContainThreadSearch(prompt, "a formatted question")).toBe(true);
     expect(mayContainThreadSearch(prompt, "zzz-absent")).toBe(false);
-    expect(mayContainThreadSearch(prompt, "plain question")).toBe(true);
+    expect(mayContainThreadSearch(prompt, "plain question")).toBe(false);
   });
 });
