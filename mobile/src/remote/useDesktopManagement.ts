@@ -2,7 +2,6 @@ import { useCallback, useMemo, type RefObject } from "react";
 import type { RemoteClient } from "./client";
 import { requestReadPage } from "./readPages";
 import type {
-  RemoteTaskDep,
   RemoteTaskDetail,
   RemoteTaskRow,
   RemoteTaskRun,
@@ -83,11 +82,5 @@ export function useDesktopManagement(clientRef: RefObject<RemoteClient | null>) 
     runTask: (taskId: string) => request<RemoteTaskDetail>({ type: "run_task", taskId }, true),
     listTaskRuns: async (taskId: string, limit = 20) =>
       (await request<{ runs: RemoteTaskRun[] }>({ type: "list_task_runs", taskId, limit })).runs,
-    listTaskDeps: async (taskId: string) =>
-      (await request<{ deps: RemoteTaskDep[] }>({ type: "list_task_deps", taskId })).deps,
-    setTaskDep: (taskId: string, upstreamTaskId: string, on: string) =>
-      request<void>({ type: "set_task_dep", taskId, upstreamTaskId, on }, true),
-    removeTaskDep: (taskId: string, upstreamTaskId: string) =>
-      request<void>({ type: "remove_task_dep", taskId, upstreamTaskId }, true),
   }), [request]);
 }

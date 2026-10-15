@@ -8,8 +8,8 @@ import { requestRemotePeer } from "./remotePeerClient";
  * The commands and their payloads are the host's, not this app's, so the names
  * (`run_task`, `taskId`) and the envelopes (`{ tasks: [...] }`) are adapted here
  * rather than leaking into the editor. That adaptation is the whole job of this
- * file: everything above it — the list, the form, the dependency reconciliation
- * — is the same screen the local tasks panel uses.
+ * file: everything above it — the list, the form — is the same screen the local
+ * tasks panel uses.
  */
 
 /** The host's list row: identity and trigger state, and deliberately no prompt. */
@@ -19,7 +19,11 @@ interface RemoteTaskRow {
   enabled: boolean;
   triggerKind?: string;
   trigger?: Record<string, unknown>;
-  depJoin?: string;
+  /**
+   * Always 0 from a host that has been updated: task dependencies were removed
+   * there. An older host still reports a real count, which this app no longer
+   * acts on — the field is read (and defaulted) so the shape is the host's.
+   */
   depCount?: number;
   nextDueAt?: number | null;
   queued?: boolean;
@@ -77,7 +81,6 @@ function taskView(detail: RemoteTaskDetail): TaskView {
     conversationMode: detail.conversationMode ?? "workspace",
     triggerKind: detail.triggerKind ?? "manual",
     trigger: detail.trigger ?? {},
-    depJoin: detail.depJoin ?? "all",
     depCount: detail.depCount ?? 0,
     nextDueAt: detail.nextDueAt ?? null,
     queued: detail.queued === true,
@@ -102,7 +105,6 @@ function taskPayload(input: TaskInput): Record<string, unknown> {
     sessionRetention: input.sessionRetention,
     conversationMode: input.conversationMode,
     enabled: input.enabled,
-    depJoin: input.depJoin,
     ...(input.triggerKind === undefined ? {} : { triggerKind: input.triggerKind }),
     ...(input.trigger === undefined ? {} : { trigger: input.trigger }),
   };
@@ -172,29 +174,6 @@ export function remoteTaskBackend(desktopId: string): TaskBackend {
       return (Array.isArray(data?.runs) ? data.runs : [])
         .map(runView)
         .filter((run): run is TaskRunView => run !== null);
-    },
-
-    async listDeps(id) {
-      const data = await send<{ deps?: unknown[] }>(desktopId, { type: "list_task_deps", taskId: id });
-      return (Array.isArray(data?.deps) ? data.deps : []).flatMap((raw) => {
-        if (typeof raw !== "object" || raw === null)
-          return [];
-        const dep = raw as Record<string, unknown>;
-        return [{
-          upstreamTaskId: typeof dep.upstreamTaskId === "string" ? dep.upstreamTaskId : "",
-          upstreamName: typeof dep.upstreamName === "string" ? dep.upstreamName : "",
-          on: typeof dep.on === "string" ? dep.on : "",
-          satisfied: dep.satisfied === true,
-        }];
-      });
-    },
-
-    async setDep(id, upstreamTaskId, on) {
-      await send(desktopId, { type: "set_task_dep", taskId: id, upstreamTaskId, on });
-    },
-
-    async removeDep(id, upstreamTaskId) {
-      await send(desktopId, { type: "remove_task_dep", taskId: id, upstreamTaskId });
     },
   };
 }

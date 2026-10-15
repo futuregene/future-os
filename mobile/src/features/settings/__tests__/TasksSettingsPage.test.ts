@@ -6,12 +6,11 @@ import type { DesktopSettings } from "../../../remote/types";
 import { SettingsSection } from "../SettingsPrimitives";
 import type { SettingsPageBack } from "../pageBack";
 import { TasksSettingsPage } from "../TasksSettingsPage";
-import type { RemoteTaskDep, RemoteTaskDetail, RemoteTaskRow, RemoteTaskRun } from "../../../remote/taskTypes";
+import type { RemoteTaskDetail, RemoteTaskRow, RemoteTaskRun } from "../../../remote/taskTypes";
 
 let rows: RemoteTaskRow[];
 let detail: RemoteTaskDetail;
 let runs: RemoteTaskRun[];
-let deps: RemoteTaskDep[];
 let models: { id: string; label?: string; provider?: string }[];
 /** The desktop's own settings: the enabled-model list comes from them. */
 let settings: DesktopSettings;
@@ -29,17 +28,12 @@ const mockRemote = {
   listTasks: jest.fn(async () => [...rows]),
   getTask: jest.fn(async () => ({ ...detail })),
   listTaskRuns: jest.fn(async () => [...runs]),
-  listTaskDeps: jest.fn(async () => [...deps]),
   listSettingsModels: jest.fn(async () => [...models]),
   updateTask: jest.fn<Promise<unknown>, unknown[]>(async () => ({ ...detail })),
   createTask: jest.fn<Promise<unknown>, unknown[]>(async () => ({ ...detail })),
   deleteTask: jest.fn(async () => undefined),
   runTask: jest.fn(async () => ({ ...detail })),
   setTaskEnabled: jest.fn(async () => ({ ...detail })),
-  setTaskDep: jest.fn(async () => undefined),
-  removeTaskDep: jest.fn(async () => undefined),
-  // The dependency editor is gated on the desktop declaring it. Tests that want
-  // the editor replace this set; the rest exercise the older-desktop path.
   capabilities: new Set<string>(["tasks_v1"]),
 };
 jest.mock("../../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote }));
@@ -79,7 +73,6 @@ function taskDetail(overrides: Partial<RemoteTaskDetail> = {}): RemoteTaskDetail
     modelId: "future/deepseek-v4-pro",
     thinkingLevel: "high",
     sessionPolicy: "new",
-    depJoin: "all",
     ...overrides,
   };
 }
@@ -157,7 +150,6 @@ beforeEach(async () => {
   rows = [taskRow()];
   detail = taskDetail();
   runs = [{ id: "trn_1", kind: "main", origin: "schedule", status: "completed", threadId: "thr_1", startedAt: 1, finishedAt: 2, resultSummary: "all good", errorMessage: null }];
-  deps = [{ upstreamTaskId: "tsk_up", upstreamName: "upstream", on: "success", satisfied: false }];
   models = [
     { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", provider: "future" },
     { id: "gpt-5", provider: "openai" },
@@ -191,7 +183,7 @@ test("says so when the desktop has no tasks, and when the list cannot be read", 
   expect(texts()).not.toContain("desktopSettings.loadFailed");
 });
 
-test("opens a task on its runs and dependencies, with the form a level down", async () => {
+test("opens a task on its runs, with the form a level down", async () => {
   await act(async () => firstTask().props.onPress());
 
   expect(mockRemote.getTask).toHaveBeenCalledWith("tsk_1");
@@ -201,11 +193,9 @@ test("opens a task on its runs and dependencies, with the form a level down", as
   // The form is the only level down from here.
   expect(button("tasks.settings")).toBeDefined();
 
-  // The form is its own page, carrying the prompt and the upstreams.
+  // The form is its own page, carrying the prompt.
   await act(async () => settingsToggle().props.onPress());
   expect(input("tasks.form.prompt").props.value).toBe("summarize yesterday");
-  // Dependencies report which upstream has landed.
-  expect(texts().some(text => String(text).includes("tasks.depsWaiting"))).toBe(true);
   // …and the history it covers is gone, not merely scrolled past.
   expect(sections()).not.toContain("tasks.runs");
 });
@@ -349,12 +339,10 @@ test("summarises a manual task and a task with no runs", async () => {
   rows = [taskRow({ triggerKind: "manual", trigger: {}, latestRun: { id: "trn_9", kind: "manual", origin: "ui", status: "failed", resultSummary: null, errorMessage: "boom" } })];
   detail = taskDetail({ triggerKind: "manual", trigger: {}, latestRun: rows[0]!.latestRun });
   runs = [];
-  deps = [];
   await remount();
   expect(texts().some(text => String(text).includes("tasks.trigger.manual"))).toBe(true);
   await openTask();
   expect(sections()).not.toContain("tasks.runs");
-  expect(sections()).not.toContain("tasks.deps");
 });
 
 test("starts on a weekly trigger's selected weekdays", async () => {
@@ -982,17 +970,11 @@ test("opens a run's conversation", async () => {
   expect(opened).toEqual(["sess_2"]);
 });
 
-test("reports a satisfied dependency and a run with no summary", async () => {
-  deps = [{ upstreamTaskId: "tsk_up", upstreamName: "upstream", on: "success", satisfied: true }];
+test("reports a run with no summary", async () => {
   runs = [{ id: "trn_2", kind: "main", origin: "schedule", status: "failed", threadId: null, startedAt: 1, finishedAt: 2, resultSummary: null, errorMessage: null }];
   await remount();
-  // The run's own summary is on the page that opens, the dependency rows one
-  // level down: this reads both halves of the detail.
   await act(async () => firstTask().props.onPress());
   expect(texts().map(String)).toContain("tasks.runNoSummary");
-
-  await act(async () => settingsToggle().props.onPress());
-  expect(texts().map(String)).toContain("tasks.depsReady");
 });
 
 test("reports a delete the desktop refused, and stays on the task", async () => {
@@ -1004,95 +986,6 @@ test("reports a delete the desktop refused, and stays on the task", async () => 
   expect(sections()).toContain("daily report");
 });
 
-// ─── dependency triggers ────────────────────────────────────────────────────
 
-// The editor writes the whole dependency set: kept edges are left alone, a
-// changed condition is one call, a dropped edge removed, a new one added.
-test("edits a task's dependencies and its join policy", async () => {
-  mockRemote.capabilities = new Set(["tasks_v1", "task_deps_v1"]);
-  rows = [
-    // A task its upstreams start: no schedule of its own.
-    taskRow({ triggerKind: "manual", trigger: {}, nextDueAt: null, depCount: 2 }),
-    taskRow({ id: "tsk_keep", name: "keep", triggerKind: "manual", trigger: {} }),
-    taskRow({ id: "tsk_change", name: "change", triggerKind: "manual", trigger: {} }),
-    taskRow({ id: "tsk_three", name: "upstream three", triggerKind: "manual", trigger: {} }),
-  ];
-  deps = [
-    { upstreamTaskId: "tsk_keep", upstreamName: "keep", on: "success", satisfied: false },
-    { upstreamTaskId: "tsk_change", upstreamName: "change", on: "success", satisfied: false },
-  ];
-  detail = taskDetail({ depJoin: "all" });
-  await remount();
-  await openTask();
 
-  expect(sections()).toContain("tasks.form.deps");
-  // The stored edges are listed with their conditions…
-  expect(texts().map(String).filter(text => text === "tasks.on.success").length).toBe(2);
-  // …and the first one ("keep") is switched to "after failure". The chip list
-  // is per edge, so the first failure chip belongs to the first edge.
-  await act(async () => chip("tasks.on.failure").props.onPress());
 
-  // A third task is added as an upstream: a new edge waits for success.
-  await act(async () => chip("upstream three").props.onPress());
-
-  // With several upstreams the join policy is offered; switch it to "any".
-  expect(texts()).toContain("tasks.form.depJoin");
-  await act(async () => chip("tasks.join.any").props.onPress());
-  await act(async () => button("tasks.form.save").props.onPress());
-
-  expect(mockRemote.updateTask).toHaveBeenCalledWith(
-    "tsk_1",
-    expect.objectContaining({ depJoin: "any" }),
-  );
-  expect(mockRemote.setTaskDep).toHaveBeenCalledWith("tsk_1", "tsk_keep", "failure");
-  expect(mockRemote.setTaskDep).toHaveBeenCalledWith("tsk_1", "tsk_three", "success");
-  // The edge that was not touched is not rewritten.
-  expect(mockRemote.setTaskDep).not.toHaveBeenCalledWith("tsk_1", "tsk_change", "success");
-  expect(mockRemote.removeTaskDep).not.toHaveBeenCalled();
-});
-
-test("removes an edge the user dropped", async () => {
-  mockRemote.capabilities = new Set(["tasks_v1", "task_deps_v1"]);
-  deps = [{ upstreamTaskId: "tsk_up", upstreamName: "upstream", on: "success", satisfied: false }];
-  await remount();
-  await openTask();
-  await act(async () => button("tasks.form.depRemove:{\"name\":\"upstream\"}").props.onPress());
-  await act(async () => button("tasks.form.save").props.onPress());
-
-  expect(mockRemote.removeTaskDep).toHaveBeenCalledWith("tsk_1", "tsk_up");
-  expect(mockRemote.setTaskDep).not.toHaveBeenCalled();
-});
-
-test("does not offer the dependency editor on an older desktop", async () => {
-  deps = [{ upstreamTaskId: "tsk_up", upstreamName: "upstream", on: "success", satisfied: false }];
-  await remount();
-  await openTask();
-  // The read-only list stays, the controls do not appear.
-  expect(texts()).toContain("tasks.form.depsUnsupported");
-  expect(texts()).not.toContain("tasks.form.depRemove:{\"name\":\"upstream\"}");
-  expect(mockRemote.setTaskDep).not.toHaveBeenCalled();
-});
-
-test("creates a task with an upstream it waits for", async () => {
-  mockRemote.capabilities = new Set(["tasks_v1", "task_deps_v1"]);
-  rows = [taskRow(), taskRow({ id: "tsk_up2", name: "upstream two", triggerKind: "manual", trigger: {} })];
-  await remount();
-  await act(async () => button("tasks.new").props.onPress());
-  await act(async () => input("tasks.form.name").props.onChangeText("downstream"));
-  await act(async () => input("tasks.form.prompt").props.onChangeText("p"));
-  await act(async () => chip("DeepSeek V4 Pro").props.onPress());
-  await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
-  // The dependency editor appears with the trigger choice…
-  expect(chip("upstream two")).toBeUndefined();
-  await act(async () => chip("tasks.triggerMode.dependency").props.onPress());
-  // …and the candidate list offers the other task; adding it makes it an upstream.
-  await act(async () => chip("upstream two").props.onPress());
-  await act(async () => button("tasks.form.save").props.onPress());
-
-  expect(mockRemote.createTask).toHaveBeenCalledWith(expect.objectContaining({
-    name: "downstream",
-    depJoin: "all",
-  }));
-  // The edge is written against the created task's id.
-  expect(mockRemote.setTaskDep).toHaveBeenCalledWith("tsk_1", "tsk_up2", "success");
-});

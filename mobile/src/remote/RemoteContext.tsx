@@ -423,9 +423,6 @@ const NO_MANAGEMENT = {
   setTaskEnabled: noop as never,
   runTask: noop as never,
   listTaskRuns: noop as never,
-  listTaskDeps: noop as never,
-  setTaskDep: noop as never,
-  removeTaskDep: noop as never,
 };
 
 /**

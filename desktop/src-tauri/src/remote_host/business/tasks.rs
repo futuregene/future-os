@@ -60,18 +60,11 @@ fn task_list_view(store: &future_tasks::Store, task: future_tasks::Task) -> Valu
         "enabled": task.enabled,
         "triggerKind": format!("{:?}", task.trigger_kind).to_lowercase(),
         "trigger": task.trigger_json,
-        "depCount": dep_count(store, &task.id),
+        "depCount": 0,
         "nextDueAt": task.next_due_at,
         "queued": task.pending_request_at.is_some(),
         "latestRun": latest.map(run_summary_view),
     })
-}
-
-/// Upstream dependencies of a task: the phone's form needs the count to say
-/// whether the trigger is "dependency" or a schedule, and its list to label a
-/// task the same way the desktop does.
-fn dep_count(store: &future_tasks::Store, task_id: &str) -> usize {
-    store.list_deps(task_id).map(|deps| deps.len()).unwrap_or(0)
 }
 
 /// The detail record (the only place the prompt crosses the wire).
@@ -91,8 +84,8 @@ fn task_detail_view(store: &future_tasks::Store, task: future_tasks::Task) -> Va
         "conversationMode": format!("{:?}", task.conversation_mode).to_lowercase(),
         "triggerKind": format!("{:?}", task.trigger_kind).to_lowercase(),
         "trigger": task.trigger_json,
-        "depJoin": format!("{:?}", task.dep_join).to_lowercase(),
-        "depCount": dep_count(store, &task.id),
+        "depJoin": "all",
+        "depCount": 0,
         "nextDueAt": task.next_due_at,
         "queued": task.pending_request_at.is_some(),
         "latestRun": latest.map(run_summary_view),
@@ -131,24 +124,6 @@ fn parse_trigger_kind(raw: Option<&str>) -> future_tasks::TriggerKind {
     match raw {
         Some("schedule") => future_tasks::TriggerKind::Schedule,
         _ => future_tasks::TriggerKind::Manual,
-    }
-}
-
-fn parse_dep_join(raw: Option<&str>) -> future_tasks::DepJoin {
-    match raw {
-        Some("any") => future_tasks::DepJoin::Any,
-        _ => future_tasks::DepJoin::All,
-    }
-}
-
-/// The condition a dependency edge fires on. A bare `set_task_dep` (no `on`)
-/// means the successful finish, the same default the CLI's `--depends-on NAME`
-/// and the desktop's add-row take.
-fn parse_dep_on(raw: &str) -> future_tasks::DepOn {
-    match raw {
-        "failure" => future_tasks::DepOn::Failure,
-        "completed" => future_tasks::DepOn::Completed,
-        _ => future_tasks::DepOn::Success,
     }
 }
 
@@ -265,12 +240,6 @@ fn task_from_payload(
         thread_id: base.as_ref().and_then(|t| t.thread_id.clone()),
         trigger_kind,
         trigger_json: trigger,
-        dep_join: payload
-            .get("depJoin")
-            .and_then(Value::as_str)
-            .map(|raw| parse_dep_join(Some(raw)))
-            .or_else(|| base.as_ref().map(|t| t.dep_join))
-            .unwrap_or(future_tasks::DepJoin::All),
         next_due_at: None,
         pending_request_at: base.as_ref().and_then(|t| t.pending_request_at),
         pending_origin: base.as_ref().and_then(|t| t.pending_origin),
@@ -405,13 +374,10 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         store
                             .update_task(&task)
                             .map_err(|e| crate::AppError::Message(e.to_string()))?;
-                        // Edges pointing at this task go with it: a deleted
-                        // upstream can never report another run, so a downstream
-                        // left holding that edge waits on a name that no longer
-                        // resolves. The desktop panel does the same.
-                        store
-                            .remove_deps_pointing_at(&task.id)
-                            .map_err(|e| crate::AppError::Message(e.to_string()))
+                        // Nothing else to clean up: the `task_deps` rows that
+                        // used to point at this task are no longer read by
+                        // anything (see `future_tasks` store schema).
+                        Ok(())
                     });
                 reply_unit(sink, result).await
             }
@@ -441,46 +407,16 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             }
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
         },
-        "set_task_dep" | "remove_task_dep" => match open_store() {
-            Ok(store) => {
-                let result = if cmd.cmd_type == "remove_task_dep" {
-                    store
-                        .remove_dep(&cmd.task_id, &cmd.upstream_task_id)
-                        .map_err(|e| crate::AppError::Message(e.to_string()))
-                } else {
-                    let dep = future_tasks::TaskDep {
-                        task_id: cmd.task_id.clone(),
-                        upstream_task_id: cmd.upstream_task_id.clone(),
-                        on: parse_dep_on(&cmd.on),
-                    };
-                    // The same cycle refusal the desktop panel and the CLI go
-                    // through: a phone write is a write like any other, and an
-                    // edge that closes a loop would never fire again.
-                    let with_edge = (|| -> Result<Vec<future_tasks::TaskDep>, crate::AppError> {
-                        let mut all = store
-                            .list_all_deps()
-                            .map_err(|e| crate::AppError::Message(e.to_string()))?;
-                        all.retain(|d| {
-                            !(d.task_id == dep.task_id
-                                && d.upstream_task_id == dep.upstream_task_id)
-                        });
-                        all.push(dep.clone());
-                        Ok(all)
-                    })();
-                    match with_edge {
-                        Err(error) => Err(error),
-                        Ok(all) if future_tasks::would_cycle(&dep.task_id, &all) => Err(
-                            crate::AppError::Message("dependency cycle detected".to_string()),
-                        ),
-                        Ok(_) => store
-                            .add_dep(&dep)
-                            .map_err(|e| crate::AppError::Message(e.to_string())),
-                    }
-                };
-                reply_unit(sink, result).await
-            }
-            Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
-        },
+        // **Transitional answers to a removed feature.** Task dependencies are
+        // gone. The command names stay because the phone of an older build sends
+        // them: a read says "no edges", and a write is refused outright rather
+        // than accepted and dropped — a phone that got `ok` would show an edge
+        // that nothing will ever act on. (`depCount` in the views answers 0 for
+        // the same reason, so those clients label every task by its own trigger.)
+        "set_task_dep" | "remove_task_dep" => {
+            let message = "task dependencies have been removed; a task now runs on its own schedule or on demand";
+            reply(sink, false, Value::Null, Some(message)).await
+        }
         "run_task" => match open_store() {
             Ok(store) => {
                 let result = store
@@ -522,36 +458,10 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             }
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
         },
-        "list_task_deps" => match open_store() {
-            Ok(store) => match store.list_deps(&cmd.task_id) {
-                Ok(deps) => {
-                    let mut items = Vec::new();
-                    for dep in deps {
-                        let name = store
-                            .get_task(&dep.upstream_task_id)
-                            .ok()
-                            .flatten()
-                            .map(|t| t.name)
-                            .unwrap_or_else(|| dep.upstream_task_id.clone());
-                        let satisfied = store
-                            .get_dep_state(&cmd.task_id, &dep.upstream_task_id)
-                            .ok()
-                            .flatten()
-                            .and_then(|s| s.satisfied_run_id)
-                            .is_some();
-                        items.push(json!({
-                            "upstreamTaskId": dep.upstream_task_id,
-                            "upstreamName": name,
-                            "on": format!("{:?}", dep.on).to_lowercase(),
-                            "satisfied": satisfied,
-                        }));
-                    }
-                    reply(sink, true, json!({ "deps": items }), None).await
-                }
-                Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
-            },
-            Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
-        },
+        // Transitional answer to a removed feature: always an empty set, never
+        // an error, so the phone's dependency list renders as "none" instead of
+        // failing a screen it can still open (see the `set_task_dep` arm).
+        "list_task_deps" => reply(sink, true, json!({ "deps": [] }), None).await,
         "list_task_revisions" => match open_store() {
             Ok(store) => match store.list_revisions(&cmd.task_id) {
                 Ok(revisions) => {
@@ -633,7 +543,6 @@ mod tests {
             thread_id: None,
             trigger_kind: future_tasks::TriggerKind::Schedule,
             trigger_json: serde_json::json!({"mode": "daily", "time": "09:00"}),
-            dep_join: future_tasks::DepJoin::All,
             next_due_at: Some(now + 60_000),
             pending_request_at: None,
             pending_origin: None,
@@ -947,57 +856,13 @@ mod tests {
         assert_eq!(store.list_revisions(&saved.id).unwrap().len(), before);
     }
 
-    /// Deleting from the phone takes the dependency edges pointing at the task,
-    /// matching the desktop panel: a downstream left holding that edge would
-    /// wait forever on an upstream that can never report again.
+    /// The dependency commands answer a phone of an older build: the read is an
+    /// empty set (a screen that still lists edges renders "none"), and the write
+    /// is refused with a message saying why. Deleting a task no longer has to
+    /// sweep edges, because nothing reads them.
     #[tokio::test]
-    async fn deleting_from_the_phone_drops_the_edges_pointing_at_it() {
-        let _home = home("business-tasks-delete-edges");
-        let store = open_store().expect("store");
-        let upstream = task("upstream", future_tasks::SessionPolicy::New);
-        let mut downstream = task("downstream", future_tasks::SessionPolicy::New);
-        downstream.name = "downstream".into();
-        store.insert_task(&upstream).unwrap();
-        store.insert_task(&downstream).unwrap();
-        store
-            .add_dep(&future_tasks::TaskDep {
-                task_id: downstream.id.clone(),
-                upstream_task_id: upstream.id.clone(),
-                on: future_tasks::DepOn::Success,
-            })
-            .unwrap();
-        store
-            .mark_dep_satisfied(&downstream.id, &upstream.id, "trn_1", 1)
-            .unwrap();
-        assert_eq!(store.list_deps(&downstream.id).unwrap().len(), 1);
-
-        let sink = RecordingSink::default();
-        let mut cmd = command("delete_task");
-        cmd.task_id = upstream.id.clone();
-        super::execute(&cmd, &sink).await;
-        sink.ok_data();
-
-        assert!(
-            store.list_deps(&downstream.id).unwrap().is_empty(),
-            "the downstream waits on nothing"
-        );
-        assert!(store
-            .get_dep_state(&downstream.id, &upstream.id)
-            .unwrap()
-            .is_none());
-        assert!(store
-            .get_task(&upstream.id)
-            .unwrap()
-            .unwrap()
-            .deleted_at
-            .is_some());
-    }
-
-    /// The phone can wire a dependency the same way the panel and the CLI do:
-    /// set an edge with its condition, and take it away again.
-    #[tokio::test]
-    async fn the_phone_sets_and_removes_a_dependency_edge() {
-        let _home = home("business-tasks-set-dep");
+    async fn the_dependency_commands_answer_a_removed_feature() {
+        let _home = home("business-tasks-dep-transitional");
         let store = open_store().expect("store");
         let upstream = task("upstream", future_tasks::SessionPolicy::New);
         let downstream = task("downstream", future_tasks::SessionPolicy::New);
@@ -1005,66 +870,48 @@ mod tests {
         store.insert_task(&downstream).unwrap();
 
         let sink = RecordingSink::default();
-        let mut cmd = command("set_task_dep");
-        cmd.task_id = downstream.id.clone();
-        cmd.upstream_task_id = upstream.id.clone();
-        cmd.on = "failure".into();
-        super::execute(&cmd, &sink).await;
-        sink.ok_data();
+        let mut list = command("list_task_deps");
+        list.task_id = downstream.id.clone();
+        super::execute(&list, &sink).await;
+        assert!(
+            sink.ok_data()["deps"].as_array().unwrap().is_empty(),
+            "there are no edges to report"
+        );
 
-        let deps = store.list_deps(&downstream.id).unwrap();
-        assert_eq!(deps.len(), 1);
-        assert_eq!(deps[0].upstream_task_id, upstream.id);
-        assert_eq!(deps[0].on, future_tasks::DepOn::Failure);
+        for cmd_type in ["set_task_dep", "remove_task_dep"] {
+            let sink = RecordingSink::default();
+            let mut cmd = command(cmd_type);
+            cmd.task_id = downstream.id.clone();
+            cmd.upstream_task_id = upstream.id.clone();
+            cmd.on = "failure".into();
+            super::execute(&cmd, &sink).await;
+            assert!(
+                sink.error_text().contains("removed"),
+                "{cmd_type}: {}",
+                sink.error_text()
+            );
+        }
 
-        // A bare set (no condition) means the successful finish, the same
-        // default the CLI's `--depends-on NAME` takes.
+        // The list row still carries `depCount`, always zero, which is what an
+        // older phone labels a task's trigger from.
         let sink = RecordingSink::default();
-        let mut again = command("set_task_dep");
-        again.task_id = downstream.id.clone();
-        again.upstream_task_id = upstream.id.clone();
-        super::execute(&again, &sink).await;
-        sink.ok_data();
-        let deps = store.list_deps(&downstream.id).unwrap();
-        assert_eq!(deps.len(), 1, "the same edge, not a second one");
-        assert_eq!(deps[0].on, future_tasks::DepOn::Success);
+        super::execute(&command("list_tasks"), &sink).await;
+        assert_eq!(sink.ok_data()["tasks"][0]["depCount"], 0);
 
+        // Deleting the upstream is now an ordinary delete.
         let sink = RecordingSink::default();
-        let mut remove = command("remove_task_dep");
-        remove.task_id = downstream.id.clone();
-        remove.upstream_task_id = upstream.id.clone();
+        let mut remove = command("delete_task");
+        remove.task_id = upstream.id.clone();
         super::execute(&remove, &sink).await;
         sink.ok_data();
-        assert!(store.list_deps(&downstream.id).unwrap().is_empty());
-    }
-
-    /// A phone write is a write like any other: an edge that closes a loop is
-    /// refused here too, with the same wording the panel shows.
-    #[tokio::test]
-    async fn the_phone_refuses_a_dependency_cycle() {
-        let _home = home("business-tasks-dep-cycle");
-        let store = open_store().expect("store");
-        let a = task("a", future_tasks::SessionPolicy::New);
-        let b = task("b", future_tasks::SessionPolicy::New);
-        store.insert_task(&a).unwrap();
-        store.insert_task(&b).unwrap();
-        store
-            .add_dep(&future_tasks::TaskDep {
-                task_id: b.id.clone(),
-                upstream_task_id: a.id.clone(),
-                on: future_tasks::DepOn::Success,
-            })
-            .unwrap();
-
-        let sink = RecordingSink::default();
-        let mut cmd = command("set_task_dep");
-        cmd.task_id = a.id.clone();
-        cmd.upstream_task_id = b.id.clone();
-        super::execute(&cmd, &sink).await;
-        assert!(sink.error_text().contains("dependency cycle"));
         assert!(
-            store.list_deps(&a.id).unwrap().is_empty(),
-            "a refused edge is not stored"
+            store
+                .get_task(&upstream.id)
+                .unwrap()
+                .unwrap()
+                .deleted_at
+                .is_some(),
+            "the task is gone from the list"
         );
     }
 }
