@@ -4,10 +4,13 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $desktopDir = Join-Path $repoRoot 'desktop'
 $mode = $env:FUTURE_DESKTOP_AGENT_MODE
 if (-not $mode) { $mode = 'auto' }
-if ($mode -notin @('auto', 'external')) { throw 'FUTURE_DESKTOP_AGENT_MODE must be auto or external' }
+if ($mode -cnotin @('auto', 'external')) { throw 'FUTURE_DESKTOP_AGENT_MODE must be auto or external' }
 $env:FUTURE_DESKTOP_AGENT_MODE = $mode
 $devPort = 5173
-if ($env:DESKTOP_DEV_PORT) { $devPort = [int]$env:DESKTOP_DEV_PORT }
+if ($env:DESKTOP_DEV_PORT) {
+    if ($env:DESKTOP_DEV_PORT -notmatch '^[0-9]{1,5}$') { throw 'DESKTOP_DEV_PORT must be a port number' }
+    $devPort = [int]$env:DESKTOP_DEV_PORT
+}
 if ($devPort -lt 1 -or $devPort -gt 65535) { throw 'DESKTOP_DEV_PORT must be a port number' }
 $cliTarget = $env:CARGO_TARGET_DIR
 if (-not $cliTarget) { $cliTarget = Join-Path $repoRoot 'target' }

@@ -1217,7 +1217,7 @@ execution results require a separate record.
 | Script scope | Review/fix | Verification boundary |
 | --- | --- | --- |
 | macOS/Linux wrappers and common launcher (3) | CLI staging before static checks; strict Vite port; repository-root relative Cargo paths; decimal port validation; owned dev process-group cleanup | Shell syntax and dry-run; no actual GUI/Agent launch |
-| Windows bat/PowerShell (2) | bat delegates; strict port, absolute target and explicit exit wording | Official parser, cross-platform PowerShell dry-run; native CI runs 6 cases through bat |
+| Windows bat/PowerShell (2) | bat delegates; strict port, absolute target and explicit exit wording | Official parser, cross-platform PowerShell dry-run; native CI runs 8 cases through bat |
 | iOS/Android launchers (2) | SDK/emulator/Metro review; no Desktop Agent startup/shutdown | Shell syntax; no mobile SDK build or simulator run in this round |
 | 4 Desktop packagers and Makefile | Retain CLI staging, maintenance copy and legacy install compatibility; update obsolete portable notes/comments | Source review, Shell/PowerShell syntax; not four new local package builds |
 
@@ -1225,8 +1225,8 @@ All 14 PowerShell files parsed. GUI/headless all-target Clippy (`-D warnings`),
 both fmt checks, Desktop ESLint/typecheck, actionlint and 262-document validation
 passed. ESLint retains one existing JSDoc warning in unchanged
 `desktop/shot/main.tsx` with exit 0. No local unit tests ran. Launcher edits now
-trigger Desktop/native lifecycle CI. Dry-runs cover auto/external, invalid mode,
-zero/overflow/invalid ports and a relative output path containing spaces, each
+trigger Desktop/native lifecycle CI. Dry-runs cover auto/external, invalid/uppercase modes,
+zero/overflow/overlong/invalid ports and a relative output path containing spaces, each
 bounded to 30 seconds. Native scope revalidation remains to be run/recorded,
 without repeating unrelated full suites.
 

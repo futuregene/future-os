@@ -23,7 +23,8 @@ def check_launchers(root, output, base_env, summary):
         name = "macos" if platform.system() == "Darwin" else "linux"
         command = ["bash", str(root / f"scripts/dev/start-desktop-{name}.sh")]
     cases = [("auto", "auto", "5173", 0), ("external", "external", "05173", 0),
-             ("invalid-mode", "sidecar", "5173", 1), ("zero-port", "auto", "0", 1),
+             ("invalid-mode", "sidecar", "5173", 1), ("uppercase-mode", "AUTO", "5173", 1),
+             ("zero-port", "auto", "0", 1), ("long-port", "auto", "0005173", 1),
              ("overflow-port", "auto", "65536", 1), ("invalid-port", "auto", "bad", 1)]
     summary["launchers"] = []
     for name, mode, port, failure in cases:

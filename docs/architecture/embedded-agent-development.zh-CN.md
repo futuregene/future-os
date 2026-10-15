@@ -695,7 +695,7 @@ Windows 两份包也通过公开 OSS 地址下载回本地、校验大小和 SHA
 | 脚本范围 | 审查与修正 | 验证边界 |
 | --- | --- | --- |
 | macOS/Linux 包装与公共启动脚本（3 份） | CLI 暂存先于静态检查；Vite strictPort；相对 Cargo 输出目录从根解析；端口十进制与范围检查；仅清理本次开发进程组 | Shell 语法和 dry-run；不启动真实 GUI/Agent |
-| Windows bat/PowerShell（2 份） | bat 仍只委托 PowerShell；strictPort、绝对输出目录及明确退出提示 | 官方解析器；跨平台 PowerShell dry-run；原生 CI 经 bat 执行 6 个 dry-run 场景 |
+| Windows bat/PowerShell（2 份） | bat 仍只委托 PowerShell；strictPort、绝对输出目录及明确退出提示；模式大小写和端口格式与 Unix/宿主一致 | 官方解析器；跨平台 PowerShell dry-run；原生 CI 经 bat 执行 8 个 dry-run 场景 |
 | iOS/Android 启动脚本（2 份） | 审查 SDK/模拟器/Metro 入口，没有 Desktop Agent 启停逻辑 | Shell 语法；本轮没有构建移动 SDK 或运行模拟器 |
 | 4 份桌面打包脚本及 Makefile | 保留 CLI 暂存、维护副本、旧安装兼容；更新便携版说明与失效注释 | 源码审查；Shell/PowerShell 解析，不等于本轮重新执行四种本地打包 |
 
