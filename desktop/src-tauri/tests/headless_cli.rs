@@ -33,12 +33,11 @@ fn help_and_invalid_arguments_have_no_startup_side_effects() {
     let home = tempfile::tempdir().unwrap();
     let help = desktop(home.path()).arg("--help").output().unwrap();
     assert!(help.status.success());
-    assert!(String::from_utf8_lossy(&help.stdout).contains("Usage: futureos [--help]"));
+    assert!(String::from_utf8_lossy(&help.stdout).contains("Usage: futureos [--re-pair] [--help]"));
     assert!(!home.path().join(".future").exists());
     for args in [
         vec!["--headless"],
         vec!["--headless", "--no-qr"],
-        vec!["--re-pair"],
         vec!["--no-qr"],
         vec!["--help", "--headless"],
     ] {
@@ -48,6 +47,22 @@ fn help_and_invalid_arguments_have_no_startup_side_effects() {
         assert!(invalid.stdout.is_empty());
         assert!(!home.path().join(".future").exists());
     }
+}
+
+/// `--re-pair` is accepted, but it revokes a live pairing the moment it runs, so
+/// an unattended launch (no terminal) must refuse — and refuse *before* touching
+/// any state. Rejecting the flag outright would also pass a "fails" assertion, so
+/// the reason is pinned by name here.
+#[test]
+fn re_pair_without_a_terminal_is_refused_before_any_state() {
+    let home = tempfile::tempdir().unwrap();
+    let refused = desktop(home.path()).arg("--re-pair").output().unwrap();
+    assert_eq!(refused.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("--re-pair"), "{stderr}");
+    assert!(stderr.contains("interactive terminal"), "{stderr}");
+    assert!(refused.stdout.is_empty());
+    assert!(!home.path().join(".future").exists());
 }
 
 #[cfg(feature = "headless")]

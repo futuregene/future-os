@@ -1257,6 +1257,41 @@ mod runtime_tests {
         wait_for_web_port_free().await;
     }
 
+    /// `--re-pair` runs the Remote page's two buttons in the order that works: the
+    /// stored pairing is revoked *before* the invitation is minted. The order is
+    /// the whole content of the helper, and it is observable here — a start-first
+    /// sequence would take the scripted refresh, show no code at all, and leave the
+    /// old credential on disk.
+    #[tokio::test]
+    async fn re_pair_revokes_the_stored_pairing_before_issuing_an_invitation() {
+        let _home = HomeGuard::new("remote-re-pair");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        let old = pairing_creds("pair_old");
+        pairing::save_creds(&old).expect("store the existing pairing");
+        platform.respond_refresh(nats.url());
+        platform.respond_pair_code(nats.url());
+
+        let status = super::re_pair().await.expect("re-pair");
+
+        assert!(matches!(status.phase, RemotePhase::Ready), "{status:?}");
+        let code = status.pairing_code.clone().expect("a fresh invitation");
+        assert_ne!(status.pair_id, old.pair_id, "the pairing must be replaced");
+        assert!(
+            pairing::load_creds().is_none(),
+            "the revoked credential must not survive the new invitation"
+        );
+        // The invitation must be the one the running bridge can authenticate: the
+        // window's QR is the only pairing path the user has.
+        let mobile = nats_connect(&nats).await;
+        let _channel = super::test_support::secure_pair(&mobile, &code, &status.pair_id).await;
+
+        stop();
+        wait_for_web_port_free().await;
+    }
+
     #[tokio::test]
     async fn start_runs_the_full_bridge_and_stop_winds_it_down() {
         let _home = HomeGuard::new("remote-start");

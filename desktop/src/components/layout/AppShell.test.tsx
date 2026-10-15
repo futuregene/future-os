@@ -1331,6 +1331,17 @@ describe("app shell event bridges", () => {
     view.unmount();
   });
 
+  it("shows the Remote page when a command-line re-pair issued a new code", () => {
+    const view = mount(<AppShell />);
+    // The section starts on the conversations: only the event moves it, which is
+    // what makes "the invitation is somewhere in the window" observable here.
+    expect(children.remoteHub).toBeNull();
+    act(() => tauri("remote-re-pair")(undefined));
+    expect(children.remoteHub).not.toBeNull();
+    expect(mocks.hooks.refreshRemote).toHaveBeenCalled();
+    view.unmount();
+  });
+
   it("opens Settings on Providers when the user chose bring-your-own-key", () => {
     mocks.store.hasProviders = { ...(mocks.store.hasProviders as Record<string, unknown>), byokMode: true };
     const view = mount(<AppShell />);
