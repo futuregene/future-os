@@ -78,7 +78,7 @@ jobs:
           # matches at least one non-negated pattern AND no `!`-negated pattern.
           # The v3 default 'some' treats a `!` pattern as a match of "everything
           # outside it", which made desktop_frontend/mobile match unrelated files
-          # like CLAUDE.md and run those suites on nearly every PR.
+          # like AGENTS.md and run those suites on nearly every PR.
           predicate-quantifier: 'some-with-excludes'
           filters: |
             # Changing this workflow must revalidate every suite.

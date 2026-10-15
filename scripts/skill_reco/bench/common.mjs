@@ -29,7 +29,7 @@ export const ensureDir = (dir) => {
  * The LLM passes run with this as their working directory, on purpose.
  *
  * `future run --system-prompt` replaces only the identity section of the agent's system
- * prompt; the project context (CLAUDE.md) and the FUTURE.md workspace-memory index are still
+ * prompt; the project context (AGENTS.md) and the FUTURE.md workspace-memory index are still
  * appended, and both mention skill names in passing. Running from an empty directory keeps
  * the prompt to the router instruction plus an environment block, so the comparison measures
  * the routing decision rather than what the repo happens to say about its own skills.
