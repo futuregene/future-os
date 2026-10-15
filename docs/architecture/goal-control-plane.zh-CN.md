@@ -37,7 +37,7 @@ Agent 执行一个有界回合（gRPC）→ 写证据 → 内核据此决定下�
 
 | 概念 | 命令 | 说明 |
 |---|---|---|
-| 目标 goal | `goal init` | 项目本地状态 `<cwd>/.future/goal/`，事件溯源 + 可重放 |
+| 目标 goal | `init` | 项目本地状态 `<cwd>/.future/goal/`，事件溯源 + 可重放 |
 | 任务 todo | `todo add/update/claim/complete/archive/supersede` | 类别：advancement（推进）/ user-gate（人工门禁）/ user-action（不冻结的人待办）/ monitor（监视）/ blocker（阻塞）/ coordination（编排记账）；`--blocks` 依赖链；`--priority`；`todo add --parent T` 在同一目标内建立不可变的组织父链（最多三层，与依赖/完成无关） |
 | 证据 evidence | `todo complete --evidence` | **非空强制**：关单必须写明实际落地了什么（路径、attempt id、测量结果），`--force` 是操作者显式覆盖 |
 | 验收契约 acceptance | `todo add --acceptance "tok1,tok2"` | 关单证据必须包含全部 token（大小写不敏感）——"done ≠ delivered" 的硬形式 |
@@ -63,7 +63,7 @@ Agent 执行一个有界回合（gRPC）→ 写证据 → 内核据此决定下�
 Agent 加载 future-goal 技能（v4 驾驶手册）
    ├─ 1. 先 `future goal status` 查是否已有同类目标（有则续做，不重复建）
    ├─ 2. 与你确认计划（步骤/模型/thinking level）——除非你的指令已含完整目标与约束
-   ├─ 3. `goal init` + 拆 todos（依赖 --blocks、硬校验 --verify/--acceptance 一起挂）
+   ├─ 3. `init` + 拆 todos（依赖 --blocks、硬校验 --verify/--acceptance 一起挂）
    ├─ 4. detached 派发；watchdog 通知唤醒后，核对证据与预算再决定下一轮
    ├─ 5. 用 `todo update --text` 纠正跑偏的 worker（下一回合生效）
    ├─ 6. 常规 steer 等回合边界注入；只有紧急纠偏才加 `--interrupt`
@@ -82,7 +82,7 @@ CLI 是底层机制（状态内核 + 硬校验 + 决策）。技能是 v4 持续
 
 ```bash
 # 1. 从项目目录执行（或设置 FUTURE_GOAL_ROOT），创建并注册
-future goal goal init --objective "..."
+future goal init --objective "..."
 future goal supervisor register --goal G --session-id YOUR_CURRENT_SESSION_ID
 
 # 2. 拆任务（依赖 + 硬校验一起挂上）
@@ -113,7 +113,7 @@ future goal delivery record --goal G ...  # verified / failed / rework
 起一个本地、**严格只读**的仪表盘。它每次请求都重放与 CLI 相同的事件账本，并通过
 SSE 推送变更，因此页面始终是 `.future/goal/` 的忠实、实时投影——仅此而已：服务端
 只读取 goal 状态根，且只存在 GET 端点（其他任何方法都返回 405）。所有变更（gate
-resolve、goal cancel 等）仍留在 CLI——页面只显示对应的 `future goal` 命令。
+resolve、cancel 等）仍留在 CLI——页面只显示对应的 `future goal` 命令。
 
 - **总览（Overview）**：目标群（fleet）总数（活跃/终局/已取消目标、未决闸门、24h/7d
   运行/成本/quota 槽位）、关注队列（严重度、等待项、建议动作），以及按 triage 排序

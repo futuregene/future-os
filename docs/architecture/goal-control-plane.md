@@ -46,7 +46,7 @@ agent executes one bounded turn (gRPC) → writes evidence → kernel decides th
 
 | Concept | Command | What it does |
 |---|---|---|
-| Goal | `goal init` | Project-local state at `<cwd>/.future/goal/`, event-sourced and replayable |
+| Goal | `init` | Project-local state at `<cwd>/.future/goal/`, event-sourced and replayable |
 | Todo | `todo add/update/claim/complete/archive/supersede` | Classes: advancement / user-gate / user-action / monitor / blocker / coordination; `--blocks` dependency chains; `--priority`; `todo add --parent T` creates an immutable organizational parent link within the same goal (maximum three levels, independent of dependencies/completion) |
 | Evidence | `todo complete --evidence` | **Non-empty, enforced**: closing a todo must state what actually landed (paths, attempt ids, measurements); `--force` is the explicit operator override |
 | Acceptance contract | `todo add --acceptance "tok1,tok2"` | Completion evidence must contain every token (case-insensitive) — the hard form of "done ≠ delivered" |
@@ -73,7 +73,7 @@ You say "/future-goal keep an eye on X for a week"
 Agent loads the future-goal skill (v4 driving manual)
    ├─ 1. `future goal status` first — continue an existing goal, never duplicate it
    ├─ 2. Confirm the plan with you (steps/model/thinking level) — unless your message already carries the full objective + constraints
-   ├─ 3. `goal init` + decompose todos (dependencies via --blocks, hard checks via --verify/--acceptance)
+   ├─ 3. `init` + decompose todos (dependencies via --blocks, hard checks via --verify/--acceptance)
    ├─ 4. Dispatch detached turns; watchdog notifications trigger evidence/budget review before relaunch
    ├─ 5. Correct a drifting worker via `todo update --text` (picked up at the next turn)
    ├─ 6. Routine steer waits for a boundary; add `--interrupt` only for urgent correction
@@ -95,7 +95,7 @@ to ship a doc change.
 
 ```bash
 # 1. Run from the project directory (or set FUTURE_GOAL_ROOT), then create
-future goal goal init --objective "..."
+future goal init --objective "..."
 future goal supervisor register --goal G --session-id YOUR_CURRENT_SESSION_ID
 
 # 2. Decompose — dependencies and hard checks together
@@ -131,7 +131,7 @@ replays the same event ledger as the CLI on every request and pushes
 changes over SSE, so the page is always a faithful, live projection of
 `.future/goal/` — and nothing else: the server only reads the goal state
 root, and only GET endpoints exist (any other method is a 405). Mutations
-(gate resolve, goal cancel, …) stay in the CLI — the page shows the exact
+(gate resolve, cancel, …) stay in the CLI — the page shows the exact
 `future goal` command to run instead.
 
 - **Overview**: fleet totals (active/terminal/cancelled goals, open gates,
