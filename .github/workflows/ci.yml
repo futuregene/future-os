@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       scope:
-        description: Full CI, offline Windows updates, Desktop Rust, or only headless CLI integration.
+        description: Select full CI, Windows updates, Desktop Rust, headless CLI, or native lifecycle.
         required: false
         type: choice
         default: all
@@ -27,6 +27,7 @@ on:
           - windows-update
           - desktop-rust
           - headless-cli
+          - agent-lifecycle
 
 # Re-pushing a branch cancels its stale run; release tags are unaffected
 # (this workflow never triggers on tags anyway).
@@ -52,8 +53,8 @@ jobs:
       # Proto/codegen freshness only needs re-checking when a proto source,
       # its build script, the generated output, or a build-dep version changes.
       proto: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.proto == 'true' || steps.filter.outputs.ci == 'true' }}
-      desktop_tauri: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_tauri == 'true' || steps.filter.outputs.ci == 'true' || (github.event_name == 'workflow_dispatch' && (inputs.scope == 'desktop-rust' || inputs.scope == 'headless-cli')) }}
-      agent_lifecycle: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.agent_lifecycle == 'true' || steps.filter.outputs.ci == 'true' }}
+      desktop_tauri: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_tauri == 'true' || steps.filter.outputs.ci == 'true' || (github.event_name == 'workflow_dispatch' && (inputs.scope == 'desktop-rust' || inputs.scope == 'headless-cli' || inputs.scope == 'agent-lifecycle')) }}
+      agent_lifecycle: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.agent_lifecycle == 'true' || steps.filter.outputs.ci == 'true' || (github.event_name == 'workflow_dispatch' && inputs.scope == 'agent-lifecycle') }}
       windows_update: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.windows_update == 'true' || steps.filter.outputs.ci == 'true' || (github.event_name == 'workflow_dispatch' && inputs.scope == 'windows-update') }}
       desktop_frontend: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_frontend == 'true' || steps.filter.outputs.ci == 'true' }}
       mobile: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.mobile == 'true' || steps.filter.outputs.ci == 'true' }}
@@ -63,7 +64,7 @@ jobs:
         env:
           REQUESTED_SCOPE: ${{ inputs.scope }}
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == "pull_request" || "$REQUESTED_SCOPE" == "windows-update" || "$REQUESTED_SCOPE" == "desktop-rust" || "$REQUESTED_SCOPE" == "headless-cli" ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" || ( -n "$REQUESTED_SCOPE" && "$REQUESTED_SCOPE" != "all" ) ]]; then
             echo "all=false" >> "$GITHUB_OUTPUT"
           else
             echo "all=true" >> "$GITHUB_OUTPUT"
@@ -472,7 +473,7 @@ jobs:
           CARGO_PROFILE_TEST_DEBUG: 1
           REQUESTED_SCOPE: ${{ inputs.scope }}
         run: |
-          if [ "${{ matrix.desktop }}" = 'true' ] && [ "$REQUESTED_SCOPE" = 'headless-cli' ]; then
+          if [ "${{ matrix.desktop }}" = 'true' ] && { [ "$REQUESTED_SCOPE" = 'headless-cli' ] || [ "$REQUESTED_SCOPE" = 'agent-lifecycle' ]; }; then
             cargo test --manifest-path desktop/src-tauri/Cargo.toml --no-default-features --features headless --test headless_cli
           elif [ "${{ matrix.desktop }}" = 'true' ]; then
             cargo test --manifest-path desktop/src-tauri/Cargo.toml

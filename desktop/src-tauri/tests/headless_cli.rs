@@ -241,8 +241,12 @@ fn terminal_signals_cancel_startup_and_leave_the_external_endpoint_alone() {
             }
             std::thread::sleep(Duration::from_millis(20));
         };
-        assert!(exit.success(), "{signal}: {exit}");
         reader.join().unwrap();
+        for line in received.try_iter() {
+            startup_log.push_str(&line);
+            startup_log.push('\n');
+        }
+        assert!(exit.success(), "{signal}: {exit}\n{startup_log}");
         assert_eq!(endpoint.local_addr().unwrap(), address);
         assert_eq!(std::fs::read_to_string(&pairing).unwrap(), original);
     }

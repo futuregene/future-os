@@ -1,7 +1,7 @@
 //! Shared GUI/headless owner. The native worker holds the service scope and
 //! its singleton lock through runtime teardown; clients retain only handles.
 use future_agent::service::{
-    AgentConfig, AgentHandle, AgentService, ShutdownStatus, StartupCancellation,
+    AgentConfig, AgentHandle, AgentService, ShutdownStatus, StartupCancellation, StartupCancelled,
 };
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -24,6 +24,7 @@ struct State {
     owned: bool,
     finished: bool,
     cancel: StartupCancellation,
+    probe_cancel: Arc<tokio::sync::Notify>,
     handle: Option<AgentHandle>,
 }
 struct Shared {
@@ -40,6 +41,7 @@ impl Default for AgentHost {
                 owned: false,
                 finished: true,
                 cancel: StartupCancellation::default(),
+                probe_cancel: Arc::new(tokio::sync::Notify::new()),
                 handle: None,
             }),
             changed: Condvar::new(),
@@ -91,6 +93,7 @@ impl AgentHost {
                     state.owned = false;
                     state.handle = None;
                     state.cancel = StartupCancellation::default();
+                    state.probe_cancel = Arc::new(tokio::sync::Notify::new());
                     let host = self.clone();
                     if let Err(error) = std::thread::Builder::new()
                         .name("embedded-agent".into())
@@ -142,6 +145,7 @@ impl AgentHost {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 state.cancel.cancel();
+                state.probe_cancel.notify_one();
                 state.phase = Phase::Failed("Agent startup timed out; restart Desktop".into());
                 return Err("Agent startup timed out; restart Desktop".into());
             }
@@ -155,24 +159,44 @@ impl AgentHost {
         if !matches!(mode.as_str(), "auto" | "external") {
             return Err("FUTURE_DESKTOP_AGENT_MODE must be auto or external".into());
         }
+        let (cancel, probe_cancel) = {
+            let state = self.0.state.lock().unwrap();
+            if state.phase != Phase::Starting {
+                return Ok(());
+            }
+            (state.cancel.clone(), state.probe_cancel.clone())
+        };
         let probe = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let selection = probe
-            .block_on(future_rpc::connection::select_agent(
-                configured,
-                crate::build_info::VERSION,
-                Duration::from_secs(2),
-                Duration::from_secs(2),
-            ))
-            .map_err(crate::agent_bridge::map_connection_error)?;
+        let selection = probe.block_on(async {
+            tokio::select! {
+                biased;
+                _ = probe_cancel.notified() => Ok(None),
+                result = future_rpc::connection::select_agent(
+                    configured,
+                    crate::build_info::VERSION,
+                    Duration::from_secs(2),
+                    Duration::from_secs(2),
+                ) => result.map(Some),
+            }
+        });
         drop(probe);
-        let cancel = self.0.state.lock().unwrap().cancel.clone();
+        let selection = match selection {
+            Ok(selection) => selection,
+            Err(_) if self.phase() == Phase::Stopping => return Ok(()),
+            Err(error) => return Err(crate::agent_bridge::map_connection_error(error)),
+        };
+        // Before taking ownership, cancellation has no Agent store to drain.
+        // Dropping the probe still tears down its transport/runtime first.
+        let Some(selection) = selection else {
+            return Ok(());
+        };
         let permit = match selection {
             future_rpc::connection::AgentSelection::External(_) => {
                 let mut state = self.0.state.lock().unwrap();
                 if state.phase != Phase::Starting {
-                    return Err("Agent startup was cancelled".into());
+                    return Ok(());
                 }
                 state.phase = Phase::Ready;
                 self.0.changed.notify_all();
@@ -188,14 +212,14 @@ impl AgentHost {
         {
             let state = self.0.state.lock().unwrap();
             if state.phase != Phase::Starting {
-                return Err("Agent startup was cancelled".into());
+                return Ok(());
             }
         }
         AgentService::with_local_start(AgentConfig::default(), permit, |service| {
             {
                 let mut state = self.0.state.lock().unwrap();
                 if state.phase != Phase::Starting {
-                    anyhow::bail!("Agent startup was cancelled");
+                    return Ok(());
                 }
                 state.owned = true;
             }
@@ -203,7 +227,11 @@ impl AgentHost {
                 // Only the lock owner may set first-launch environment defaults.
                 crate::future_platform::apply_channel_environment_default()
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-                let prepared = service.prepare(cancel)?;
+                let prepared = match service.prepare(cancel) {
+                    Ok(prepared) => prepared,
+                    Err(error) if error.is::<StartupCancelled>() => return Ok(()),
+                    Err(error) => return Err(error),
+                };
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
                     .thread_name("agent-runtime")
@@ -211,7 +239,7 @@ impl AgentHost {
                     .max_blocking_threads(32)
                     .thread_stack_size(2 * 1024 * 1024)
                     .build()?;
-                let result = runtime.block_on(async {
+                let result: anyhow::Result<()> = runtime.block_on(async {
                     let running = prepared.initialize().await?;
                     let handle = running.handle();
                     {
@@ -259,7 +287,13 @@ impl AgentHost {
                     Ok(())
                 });
                 runtime.shutdown_timeout(Duration::from_secs(1));
-                result
+                // Normalize only the typed startup cancellation, inside the
+                // service cleanup scope. finish_scope must still verify drain
+                // and preserve any real cleanup failure/retained instance lock.
+                match result {
+                    Err(error) if error.is::<StartupCancelled>() => Ok(()),
+                    result => result,
+                }
             })
         })
         .map_err(|error| error.to_string().into())
@@ -278,6 +312,7 @@ impl AgentHost {
             return Ok(());
         }
         state.cancel.cancel();
+        state.probe_cancel.notify_one();
         if !matches!(state.phase, Phase::Failed(_)) {
             state.phase = Phase::Stopping;
         }
@@ -309,6 +344,7 @@ impl AgentHost {
             state.phase = Phase::Stopping;
         }
         state.cancel.cancel();
+        state.probe_cancel.notify_one();
         if let Some(handle) = &state.handle {
             handle.request_shutdown(Duration::from_secs(5));
         }

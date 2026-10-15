@@ -907,6 +907,10 @@ native host fixtures. It is used to revalidate the scheduler test-isolation fix.
 `--no-default-features --features headless --test headless_cli` integration
 target, avoiding another run of already-passing GUI/headless library suites.
 
+`scope=agent-lifecycle` adds three-platform RPC/service/GUI/headless native
+fixtures to that entry-point target, for production boundary changes such as
+host cancellation, without repeating full library suites.
+
 Existing required-check names are retained. Windows update fixture failures also
 fail the `Rust tests (Linux)` aggregate gate, so protection does not depend on
 adding the new job name to branch settings first. Headless check, Clippy and
@@ -1040,6 +1044,20 @@ before signaling. Exit-code, timeout and data-preservation assertions remain.
 Children also receive explicit FUTURE_HOME isolation and no socket override.
 That integration target is revalidated separately; this run is not recorded as
 an overall pass.
+
+At `cebd5140`, [entry-point run 38676125549](https://github.com/futuregene/future-os/actions/runs/38676125549)
+passed the log barrier and exposed a real boundary: SIGINT during an external
+handshake still reported the later connection failure as host failure, exiting
+1. Each startup now has its own Notify to cancel the probe. Normal cancellation
+before ownership reaches Stopped without opening Agent storage. Typed startup
+cancellation is normalized only inside the complete service cleanup scope;
+actual cleanup failures still preserve failure and instance locks. A new native
+`cancel-probe` fixture first proves connection to its own non-answering HTTP/2
+peer, then stops, verifies no database/metadata/ownership, and starts again to
+prove stale stop notifications cannot cancel a fresh startup. The test retains
+the external listener throughout. Signal assertions now include all stderr.
+This production boundary change requires three-platform native and signal
+integration revalidation.
 
 ### 10.11 Actual macOS artifact acceptance (2026-10-15)
 

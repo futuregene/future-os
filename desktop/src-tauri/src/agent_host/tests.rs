@@ -22,6 +22,7 @@ fn run_case(case: &str) {
         .env("HOME", home.path())
         .env("USERPROFILE", home.path())
         .env("FUTURE_HOME", home.path().join(".future"))
+        .env("FUTURE_DESKTOP_AGENT_MODE", "auto")
         .env("FUTURE_AGENT_SOCKET", socket.path().join("agent.sock"))
         .env_remove("FUTURE_AGENT_GRPC_ADDR")
         .stdout(Stdio::piped())
@@ -81,6 +82,11 @@ fn stopping_during_startup_never_publishes_a_ready_service() {
 }
 
 #[test]
+fn cancelling_an_external_probe_stops_cleanly_and_allows_a_fresh_start() {
+    run_case("cancel-probe");
+}
+
+#[test]
 fn cli_prompt_and_queued_follow_up_are_persisted_as_cancelled_on_exit() {
     run_case("prompt");
 }
@@ -92,6 +98,41 @@ fn host_fixture() {
     };
     let root = future_rpc::home::future_home();
     let host = AgentHost::default();
+    if case == "cancel-probe" {
+        let endpoint = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        endpoint.set_nonblocking(true).unwrap();
+        let address = endpoint.local_addr().unwrap();
+        let starter = host.clone();
+        let thread = std::thread::spawn(move || starter.start(format!("http://{address}")));
+        // Prove that the handshake is in flight, rather than merely cancelling
+        // before the worker starts. This peer accepts TCP but never answers H2.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let _peer = loop {
+            match endpoint.accept() {
+                Ok((peer, _)) => break peer,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "probe did not connect");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("accept probe: {error}"),
+            }
+        };
+        host.request_stop();
+        host.stop().unwrap();
+        assert!(thread.join().unwrap().is_err());
+        assert_eq!(host.phase(), Phase::Stopped);
+        assert!(!host.owns_agent());
+        assert!(!root.join("agent/agent.db").exists());
+        assert!(!root.join("agent/agent-instance.json").exists());
+        assert_eq!(endpoint.local_addr().unwrap(), address);
+        // An extra stop notification must not cancel the next startup.
+        host.request_stop();
+        host.start("auto".into()).unwrap();
+        assert!(host.owns_agent());
+        host.stop().unwrap();
+        assert_eq!(host.phase(), Phase::Stopped);
+        return;
+    }
     if case == "locked" {
         std::fs::create_dir_all(root.join("agent")).unwrap();
         let file = std::fs::OpenOptions::new()

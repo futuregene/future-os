@@ -571,6 +571,8 @@ Windows GUI/headless 同样必须顺序执行。占位 CLI 仅供编译，NSIS �
 
 `scope=headless-cli` 保留 Desktop 静态检查/编译，只执行 `--no-default-features --features headless --test headless_cli` 集成目标，用于单独修复入口和信号 fixture，避免再次执行已通过的 GUI/headless 全量 library 测试。
 
+`scope=agent-lifecycle` 在该入口目标之外，执行三平台 RPC/服务启动/GUI/headless 原生宿主专项，用于宿主取消逻辑等生产边界修改；不重复全量 library 测试。
+
 保留既有 required-check 名称；Windows 更新 fixture 的失败也会使 `Rust tests (Linux)` 汇总门禁失败，避免新增 job 尚未写入分支保护时出现漏拦截。headless 的 check、Clippy 和全量测试显式启用 `--features headless`，确保独立二进制也参与构建/静态检查。
 
 `ci.yml` 的 Agent 依赖变化现在触发 Desktop GUI/headless 和 CLI/TUI 检查，根 manifest/lock 和共享 settings/workspaces/tasks 的影响也纳入过滤。Linux 全量单测继续按 crate 分组，不在三平台重复全部测试。`Rust build (Linux/Windows/macOS)` 增加 `scripts/ci/check-embedded-agent.py`，顺序运行 RPC 连接门禁、Agent `service_startup`、GUI 和 headless 的 `agent_host::tests`。fixture 在独立进程中隔离 HOME、FUTURE_HOME 和本地端点，实际覆盖 Windows pipe/Unix socket、持锁拒绝、启动取消、全局停机、CLI 来源任务终态、重启和外部所有者存活。零匹配测试视为失败；每组命令、结果、耗时和日志写入 `target/embedded-agent-ci/`，由 CI 归档。CI 将构建并发限制为 2、测试并发为 1，使用 `CARGO_PROFILE_TEST_DEBUG=1`，不扩大到三平台全量单测。
@@ -624,6 +626,8 @@ Windows 专项 [38672888594](https://github.com/futuregene/future-os/actions/run
 macOS 本地真实打包还发现：在已有 mode 0644 编译占位文件上执行 `cp` 会保留不可执行权限，使 app 正常但包内 CLI 无法运行。Unix 开发、打包、Makefile 和发布 CI 的 CLI 暂存统一改用 `install -m 755`；此问题必须以重新封装后的包内 CLI smoke 验收，不能只验证源码目录中的 CLI。
 
 `887c5b77` 的 Desktop 范围复验中，GUI library 1,805 通过/12 ignored，headless library 1,470 通过/12 ignored，调度器修复有效。随后显式启用 headless feature 后新执行的 `headless_cli` 集成目标为 7 通过/1 失败：信号用例把 stderr 第一行硬编码为 foreground 提示，而 Linux 先打印登录 shell 环境补全日志。用例改为持续排空 stderr、在 15 秒内等待 foreground 标记，再发送信号；不吞掉退出码、超时或数据变化断言。子进程还显式隔离 FUTURE_HOME 并清除 socket override。该集成目标另行复验，不能把上述 run 整体记为通过。
+
+入口专项 [38676125549](https://github.com/futuregene/future-os/actions/runs/38676125549) 在 `cebd5140` 越过日志断言后暴露实际边界：外部握手中收到 SIGINT，连接失败仍被记为宿主失败，进程退出 1。宿主改为每次启动使用独立 Notify 取消握手；未取得服务所有权时的正常停止完成后进入 Stopped，不打开 Agent 数据库。类型化启动取消仅在服务完整清理范围内转为正常结果，真正的清理失败仍保留失败与锁。新增原生 `cancel-probe` fixture，先证明确已连接一个不答 HTTP/2 的自建端点，再停止、检查无数据库/metadata/所有权，并验证再次启动不会消耗旧停止通知；外部端点始终由测试持有。入口测试在退出断言前收集完整 stderr，后续失败可以直接定位原因。该生产边界修改需三平台原生专项及信号集成复验。
 
 ### 10.11 macOS 实际产物验收（2026-10-15）
 
