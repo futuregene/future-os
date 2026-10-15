@@ -2,6 +2,7 @@ import type { FutureMarkdownDocument } from "@future-os/markdown";
 import type { ReactNode } from "react";
 import type { StoredFile } from "../../integrations/storage/types";
 import type { FutureReference, InlineNode, MarkdownNode } from "./futureMarkdownTypes";
+import { parseSessionReferenceHref } from "@future-os/markdown";
 import { memo, useMemo } from "react";
 import { useFutureReference, useFutureReferences } from "./futureReferenceStore";
 import { LiveMarkdownProvider } from "./LiveMarkdownContext";
@@ -17,6 +18,7 @@ import { MathInline } from "./renderers/MathInline";
 import { PendingReference } from "./renderers/PendingReference";
 import { ReferenceChip } from "./renderers/ReferenceChip";
 import { SafeLink } from "./renderers/SafeLink";
+import { SessionReferenceChip } from "./renderers/SessionReferenceChip";
 import { usePreviewLinkPath } from "./usePreviewLinkPath";
 import { useStreamingMarkdownBlocks } from "./useStreamingMarkdownBlocks";
 
@@ -217,7 +219,12 @@ function renderInline(nodes: InlineNode[], workspaceId: string | null | undefine
       case "break":
         return <br key={key} />;
       case "link":
-        return <SafeLink href={node.href} key={key}>{renderInline(node.children, workspaceId, key, true)}</SafeLink>;
+        // A `#` conversation reference is a plain link whose destination is the
+        // session id; it gets the composer's `#` marker back (and only links
+        // that name a session do — see `SessionReferenceChip`).
+        return parseSessionReferenceHref(node.href)
+          ? <SessionReferenceChip href={node.href} key={key}>{renderInline(node.children, workspaceId, key, true)}</SessionReferenceChip>
+          : <SafeLink href={node.href} key={key}>{renderInline(node.children, workspaceId, key, true)}</SafeLink>;
       case "image":
         return <MarkdownImage alt={node.alt} width={node.width} key={key} linked={linked} src={node.src} title={node.title} workspaceId={workspaceId} />;
       case "futureReference":

@@ -7,21 +7,24 @@ import {
   createStreamingMarkdownParser,
   joinSoftBreaks,
   parseFutureMarkdown,
+  parseSessionReferenceHref,
   remoteMarkdownImageUrl,
 } from "@future-os/markdown";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
 import { CodeTokens } from "./CodeTokens";
 import { codePreviewRows, codeRowText } from "./codePreviewRows";
 import { codeTokenRows, highlightCode } from "./codeHighlight";
 import { markdownTableWidths } from "./markdownTableWidths";
+import { MarkdownToneContext, type MarkdownTone } from "./markdownTone";
 import type { StyleProp, TextStyle } from "react-native";
 import { Animated, FlatList, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { AppAlert as Alert } from "./appAlerts";
 import { useStreamingText } from "./useStreamingText";
 import { radius, spacing } from "../theme/tokens";
-import { createThemedStyles, useTheme } from "../theme/ThemeContext";
+import type { Theme } from "../theme/theme";
+import { useTheme } from "../theme/ThemeContext";
 import { MarkdownImage, MarkdownImageBasePathContext, resolveMarkdownPath } from "./MarkdownImage";
 import { MathFormula } from "./MathFormula";
 
@@ -35,9 +38,18 @@ interface MarkdownTextProps {
   streaming?: boolean;
   /** Route local-file markdown links/images to the caller's preview flow. */
   onOpenFile?(path: string): void;
+  /** Opens the conversation a `#` reference points at. Unset leaves the
+   * reference a plain chip (what a previewed document does today). */
+  onOpenSession?(sessionId: string): void;
+  /** The surface this body is drawn on (see `MarkdownTone`). */
+  tone?: MarkdownTone;
 }
 
 type OpenTarget = (target: string) => void;
+
+/** Where a `#` reference opens. Its own context: the chip is built deep inside
+ * the plain block renderers, which cannot take a prop for it. */
+const MarkdownSessionContext = createContext<((sessionId: string) => void) | undefined>(undefined);
 
 /** Rows a table paints before it asks the reader. Past this the table paints
  * this many rows and offers the rest behind an explicit control — a nested
@@ -45,6 +57,31 @@ type OpenTarget = (target: string) => void;
  * code block below) — so the cutoff must stay above the tables a reply usually
  * carries, or they silently lose their tail. */
 const TABLE_INLINE_ROW_LIMIT = 20;
+
+/**
+ * A `#` reference to another conversation.
+ *
+ * The composer writes a picked conversation as `[Title](futureos://session/<id>)`
+ * — a plain markdown link, so the id travels to the model as ordinary text — so
+ * every body that renders the prompt back sees a link node rather than a special
+ * one. The chip is what keeps the `#` marker the composer shows: without it the
+ * reference reads as a bare title, indistinguishable from a file mention at a
+ * glance. Tapping it moves to that conversation, when the screen can.
+ */
+const SessionChip = memo(function SessionChip({ href, children }: { href: string; children: ReactNode; }) {
+  const styles = useStyles();
+  const open = useContext(MarkdownSessionContext);
+  const sessionId = parseSessionReferenceHref(href);
+  return (
+    <Text
+      accessibilityRole="link"
+      onPress={open && sessionId ? () => open(sessionId) : undefined}
+      style={styles.sessionChip}
+    >
+      #{children}
+    </Text>
+  );
+});
 
 function renderInline(nodes: InlineNode[], openTarget: OpenTarget, parentKey: string, styles: MarkdownStyles): ReactNode[] {
   return nodes.map((node, index) => {
@@ -79,6 +116,13 @@ function renderInline(nodes: InlineNode[], openTarget: OpenTarget, parentKey: st
       case "break":
         return "\n";
       case "link": {
+        // A `#` conversation reference is a plain markdown link whose
+        // destination is the session id (see `@future-os/markdown`), which is
+        // why it has to be recognised before the general link handling: the
+        // scheme is not one a phone can open, so it would fall through to the
+        // blocked branch and lose both its marker and its tap.
+        if (parseSessionReferenceHref(node.href))
+          return <SessionChip href={node.href} key={key}>{renderInline(node.children, openTarget, key, styles)}</SessionChip>;
         const target = classifyMarkdownTarget(node.href);
         if (target.kind === "blocked" || target.kind === "document-anchor")
           return <Text key={key}>{renderInline(node.children, openTarget, key, styles)}</Text>;
@@ -171,10 +215,18 @@ function CodeSource({ code, language }: { code: string; language?: string }) {
   const styles = useStyles();
   const { codeColors } = useTheme();
   const { t } = useTranslation();
+  const tone = useContext(MarkdownToneContext);
   const [expanded, setExpanded] = useState(false);
   const large = code.length > 10000 || code.split("\n", 18).length > 16;
   const rows = useMemo(() => large ? codePreviewRows(code) : [], [code, large]);
-  const tokens = useMemo(() => highlightCode(code, language, codeColors), [code, language, codeColors]);
+  // A syntax palette is drawn for a light/dark *surface*, and the user's own
+  // bubble is neither: on the accent fill the same tokens would drop contrast
+  // haphazardly, so that tone paints the block in one readable colour instead
+  // (which `CodeTokens` does for a null token list).
+  const tokens = useMemo(
+    () => tone === "onAccent" ? null : highlightCode(code, language, codeColors),
+    [code, language, codeColors, tone],
+  );
   const rowTokens = useMemo(() => codeTokenRows(tokens, rows), [tokens, rows]);
   // Wrapping (never a horizontal scroll view) keeps a phone-width block
   // readable; an explicit toggle, not a nested vertical viewport, is what makes
@@ -430,7 +482,7 @@ const MarkdownBlock = memo(function MarkdownBlock({ node, openTarget, isLast, an
   return <Animated.View style={{ opacity }}>{renderBlock(node, openTarget, "block", isLast, styles)}</Animated.View>;
 });
 
-export function MarkdownText({ text, onOpenFile, imageBasePath, mode = "message", streaming = false }: MarkdownTextProps) {
+export function MarkdownText({ text, onOpenFile, onOpenSession, imageBasePath, mode = "message", streaming = false, tone = "default" }: MarkdownTextProps) {
   const styles = useStyles();
   const { t } = useTranslation();
   const [project] = useState(createStreamingMarkdownParser);
@@ -483,19 +535,71 @@ export function MarkdownText({ text, onOpenFile, imageBasePath, mode = "message"
       contentContainerStyle={styles.previewContent}
     />
   </MarkdownImageBasePathContext>;
-  return <MarkdownImageBasePathContext value={imageBasePath}><View style={styles.constrained}>{document.nodes.map((node, index) => (
-    <MarkdownBlock key={index} node={node} openTarget={openTarget} isLast={index === document.nodes.length - 1}
-      animate={mode === "message" && projectingStream && !reveal.reduceMotion && index >= initialBlockCount} />
-  ))}</View></MarkdownImageBasePathContext>;
+  return <MarkdownImageBasePathContext value={imageBasePath}>
+    <MarkdownToneContext value={tone}>
+      <MarkdownSessionContext value={onOpenSession}>
+        <View style={styles.constrained}>{document.nodes.map((node, index) => (
+          <MarkdownBlock key={index} node={node} openTarget={openTarget} isLast={index === document.nodes.length - 1}
+            animate={mode === "message" && projectingStream && !reveal.reduceMotion && index >= initialBlockCount} />
+        ))}</View>
+      </MarkdownSessionContext>
+    </MarkdownToneContext>
+  </MarkdownImageBasePathContext>;
 }
 
 const monospace = Platform.select({ ios: "Menlo", default: "monospace" });
 
 /** The markdown sheet, named because the module-level block renderers take it as
  * an argument: they are plain functions, so they cannot call `useStyles`. */
-type MarkdownStyles = ReturnType<typeof useStyles>;
+type MarkdownStyles = ReturnType<typeof buildStyles>;
 
-const useStyles = createThemedStyles(theme => StyleSheet.create({
+/** One sheet per theme **and tone**: the same body is drawn on the app's own
+ * surface and, when it is the user's own bubble, on the accent fill. */
+const sheets = new WeakMap<Theme, Partial<Record<MarkdownTone, MarkdownStyles>>>();
+
+function useStyles(): MarkdownStyles {
+  const theme = useTheme();
+  const tone = useContext(MarkdownToneContext);
+  let byTone = sheets.get(theme);
+  if (!byTone)
+    byTone = sheets.set(theme, {}).get(theme)!;
+  const cached = byTone[tone];
+  if (cached)
+    return cached;
+  const sheet = buildStyles(theme, tone);
+  byTone[tone] = sheet;
+  return sheet;
+}
+
+function buildStyles(theme: Theme, tone: MarkdownTone) {
+  /**
+   * On the accent fill the palette no longer applies.
+   *
+   * `ink` on the accent colour is unreadable and `surfaceSubtle` is not a recess
+   * on it, so the on-accent tone paints every foreground in the bubble's own
+   * contrast colour (`surface`, which is what the bubble's text already uses) and
+   * every recess as a translucent wash of it: a code block, a chip and a table
+   * head read as a raised pane of the bubble rather than as a hole in it.
+   */
+  const onAccent = tone === "onAccent";
+  const text = onAccent ? theme.colors.surface : theme.colors.ink;
+  const textStrong = onAccent ? theme.colors.surface : theme.colors.inkStrong;
+  const textSoft = onAccent ? theme.colors.surface : theme.colors.inkSoft;
+  const textMuted = onAccent ? theme.colors.surface : theme.colors.inkMuted;
+  const accent = onAccent ? theme.colors.surface : theme.colors.accent;
+  // The wash is a translation of the bubble's *own* contrast colour, so it works
+  // in both schemes without asking which one is painted: the light scheme's
+  // accent is dark with white text (a white wash, alpha 0x33 ≈ 20%), the dark
+  // scheme's is light with dark text (a darkening wash of the same colour).
+  // Appending an alpha byte is how `surface` — `#rrggbb` in both palettes —
+  // becomes one.
+  const recess = onAccent ? `${theme.colors.surface}33` : theme.colors.surfaceSubtle;
+  const line = onAccent ? recess : theme.colors.line;
+  const hairline = onAccent ? recess : theme.colors.lineSoft;
+  // A tick is drawn *on* the box's own fill, which is the accent colour in this
+  // tone and the plain accent otherwise.
+  const onBoxFill = onAccent ? theme.colors.accent : theme.colors.surface;
+  return StyleSheet.create({
   // The last block of a message drops its bottom margin — the surrounding
   // bubble/segment layout owns outer spacing.
   noBottom: { marginBottom: 0 },
@@ -505,10 +609,10 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   // parent instead leaves a blank strip under the header once text scrolls.
   previewContent: { padding: spacing.lg, minWidth: 0, maxWidth: "100%", alignSelf: "stretch" },
   blockSpacing: { marginBottom: spacing.sm },
-  bodyText: { color: theme.colors.ink, ...theme.chat },
-  paragraph: { color: theme.colors.ink, ...theme.chat, marginBottom: spacing.sm },
+  bodyText: { color: text, ...theme.chat },
+  paragraph: { color: text, ...theme.chat, marginBottom: spacing.sm },
   heading: {
-    color: theme.colors.inkStrong,
+    color: textStrong,
     fontWeight: "700",
   },
   // Heading levels 1-6, in the order `headingSizes` builds them.
@@ -522,8 +626,8 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   italic: { fontStyle: "italic" },
   strike: { textDecorationLine: "line-through" },
   inlineCode: {
-    color: theme.colors.ink,
-    backgroundColor: theme.colors.surfaceSubtle,
+    color: text,
+    backgroundColor: recess,
     fontFamily: monospace,
     fontSize: theme.font(13),
     paddingHorizontal: 4,
@@ -531,29 +635,31 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     borderRadius: radius.sm,
     overflow: "hidden",
   },
-  link: { color: theme.colors.accent, textDecorationLine: "underline" },
+  link: { color: accent, textDecorationLine: "underline" },
+  // A conversation reference keeps the composer's `#` marker (see `SessionChip`).
+  sessionChip: { color: accent, fontWeight: "600" },
   fileChip: {
-    color: theme.colors.accent,
-    backgroundColor: theme.colors.surfaceSubtle,
+    color: accent,
+    backgroundColor: recess,
     borderRadius: radius.sm,
     paddingHorizontal: 5,
     paddingVertical: 2,
     overflow: "hidden",
   },
-  rule: { height: 1, marginVertical: spacing.md, backgroundColor: theme.colors.line },
+  rule: { height: 1, marginVertical: spacing.md, backgroundColor: line },
   codeContainer: {
     maxWidth: "100%",
     borderRadius: radius.md,
     overflow: "hidden",
-    backgroundColor: theme.colors.surfaceSubtle,
+    backgroundColor: recess,
   },
   codeToolbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   codeCopy: { padding: spacing.md, minHeight: 44, justifyContent: "center" },
-  codeToggle: { padding: spacing.sm, minHeight: 44, alignItems: "center", justifyContent: "center", borderTopWidth: 1, borderTopColor: theme.colors.lineSoft },
-  codeLanguage: { color: theme.colors.inkMuted, fontSize: theme.font(12), paddingHorizontal: spacing.md, paddingTop: spacing.sm },
+  codeToggle: { padding: spacing.sm, minHeight: 44, alignItems: "center", justifyContent: "center", borderTopWidth: 1, borderTopColor: hairline },
+  codeLanguage: { color: textMuted, fontSize: theme.font(12), paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   code: {
     padding: spacing.md,
-    color: theme.colors.ink,
+    color: text,
     fontFamily: monospace,
     fontSize: theme.font(13),
     lineHeight: theme.leading(20),
@@ -562,7 +668,7 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     marginBottom: spacing.md,
     paddingLeft: spacing.md,
     borderLeftWidth: 3,
-    borderLeftColor: theme.colors.accent,
+    borderLeftColor: accent,
   },
   list: { marginBottom: spacing.md },
   listRow: { flexDirection: "row", alignItems: "flex-start", marginBottom: spacing.xs },
@@ -571,11 +677,11 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     flexShrink: 0,
     textAlign: "right",
     marginRight: spacing.xs,
-    color: theme.colors.ink,
+    color: text,
     ...theme.chat,
   },
   listItemBody: { flex: 1, minWidth: 0 },
-  listItemText: { color: theme.colors.ink, ...theme.chat },
+  listItemText: { color: text, ...theme.chat },
   nestedBlocks: { marginTop: spacing.xs },
   checkbox: {
     width: 18,
@@ -585,34 +691,35 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: theme.colors.inkMuted,
+    borderColor: textMuted,
     borderRadius: radius.sm,
   },
-  checkboxChecked: { backgroundColor: theme.colors.accent, borderColor: theme.colors.accent },
-  checkMark: { color: theme.colors.surface, fontSize: theme.font(12), fontWeight: "700", lineHeight: theme.leading(14) },
+  checkboxChecked: { backgroundColor: accent, borderColor: accent },
+  checkMark: { color: onBoxFill, fontSize: theme.font(12), fontWeight: "700", lineHeight: theme.leading(14) },
   table: {
     borderWidth: 1,
-    borderColor: theme.colors.lineSoft,
+    borderColor: hairline,
     borderRadius: radius.md,
     overflow: "hidden",
   },
   tableRow: { flexDirection: "row" },
-  tableHead: { backgroundColor: theme.colors.surfaceSubtle },
-  tableBodyRow: { borderTopWidth: 1, borderTopColor: theme.colors.lineSoft },
-  tableRowZebra: { backgroundColor: theme.colors.surfaceSubtle },
+  tableHead: { backgroundColor: recess },
+  tableBodyRow: { borderTopWidth: 1, borderTopColor: hairline },
+  tableRowZebra: { backgroundColor: recess },
   tableRowsToggle: { minHeight: 44, justifyContent: "center", paddingHorizontal: spacing.sm },
-  tableRowsHint: { color: theme.colors.accent, fontSize: theme.font(12) },
+  tableRowsHint: { color: accent, fontSize: theme.font(12) },
   tableCell: { paddingHorizontal: spacing.sm, paddingVertical: spacing.sm },
   th: {
-    color: theme.colors.inkStrong,
+    color: textStrong,
     fontWeight: "700",
     fontSize: theme.font(14),
     lineHeight: theme.leading(20),
   },
   td: {
-    color: theme.colors.inkSoft,
+    color: textSoft,
     fontSize: theme.font(14),
     lineHeight: theme.leading(20),
   },
-  cellBorderLeft: { borderLeftWidth: 1, borderLeftColor: theme.colors.lineSoft },
-}));
+  cellBorderLeft: { borderLeftWidth: 1, borderLeftColor: hairline },
+  });
+}
