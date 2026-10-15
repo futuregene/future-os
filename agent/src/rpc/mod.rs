@@ -693,6 +693,7 @@ fn get_state_internal(
         // with no instruction files present also reports an empty list.
         append_system_prompt: sess.append_system_prompt.clone(),
         context_files_enabled: !sess.no_context_files,
+        custom_system_prompt: sess.custom_system_prompt.clone(),
     })
     .unwrap_or_default();
     Some(payload)

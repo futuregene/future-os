@@ -509,6 +509,7 @@ mod tests {
             sandbox_tier: None,
             append_system_prompt: String::new(),
             context_files_enabled: true,
+            custom_system_prompt: String::new(),
         };
         // `decode::response_data` returns exactly this serialization.
         let wire = serde_json::to_value(&payload).expect("serialize decoder output");

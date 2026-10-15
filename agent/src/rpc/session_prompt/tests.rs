@@ -1886,6 +1886,85 @@ async fn current_system_prompt_matches_what_a_run_sends() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn system_prompt_override_replaces_the_built_in_prompt_on_every_run() {
+    // Byte-level assertions on a built prompt: HOME decides the skills section,
+    // so pin it (see the note on
+    // `renaming_does_not_change_conversation_system_prompt`).
+    let _home = crate::test_support::TestHome::new();
+    let provider = ScriptedProvider::new(vec![
+        text_turn("first"),
+        text_turn("second"),
+        text_turn("third"),
+    ]);
+    let fixture = run_fixture(provider.clone(), "custom-prompt");
+    let mut session = fixture.session;
+
+    session.set_system_prompt("You are a terse assistant. MARKER_CUSTOM");
+    session.prompt("one", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    // Second run, no further set: rebuilt from the session each time.
+    session.prompt("two", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+
+    // Collected into owned strings so no MutexGuard is held across an await
+    // (clippy::await_holding_lock), and the prompts read are then stable.
+    let prompts: Vec<String> = provider
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|request| request.system_prompt.clone())
+        .collect();
+    for (index, prompt) in prompts.iter().enumerate() {
+        assert!(
+            prompt.contains("MARKER_CUSTOM"),
+            "run {index} did not receive the session's replacement prompt — the \
+             old setter wrote the live loop's prompt, which the run boundary \
+             rebuilt from scratch"
+        );
+        assert!(
+            !prompt.contains("You are FutureAgent"),
+            "a replacement prompt must not be preceded by the built-in one"
+        );
+    }
+    assert_eq!(prompts[0], prompts[1]);
+
+    // Clearing it restores the built-in prompt on the next run.
+    session.set_system_prompt("");
+    session.prompt("three", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    let last = provider
+        .requests
+        .lock()
+        .unwrap()
+        .last()
+        .map(|request| request.system_prompt.clone())
+        .expect("a third request");
+    assert!(last.contains("You are FutureAgent"));
+    assert!(!last.contains("MARKER_CUSTOM"));
+}
+
+/// A replacement and an append are not alternatives: the append still lands,
+/// and after the replacement, so a session rule can still override it.
+#[tokio::test(flavor = "current_thread")]
+async fn append_still_applies_after_a_prompt_override() {
+    let _home = crate::test_support::TestHome::new();
+    let provider = ScriptedProvider::new(vec![text_turn("answer")]);
+    let fixture = run_fixture(provider.clone(), "custom-prompt-append");
+    let mut session = fixture.session;
+    session.set_system_prompt("BODY_MARKER");
+    session.set_append_system_prompt("TAIL_MARKER");
+    session.prompt("one", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+
+    let requests = provider.requests.lock().unwrap();
+    let prompt = &requests[0].system_prompt;
+    let body = prompt.find("BODY_MARKER").expect("replacement text");
+    let tail = prompt.find("TAIL_MARKER").expect("append text");
+    assert!(body < tail, "the append must come after the replacement");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn renaming_does_not_change_conversation_system_prompt() {
     // The assertion is byte-equality of two built prompts, so every input it
     // depends on must be held constant for the duration. The prompt embeds the

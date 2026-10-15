@@ -77,6 +77,11 @@ pub struct GetStatePayload {
     /// an enabled session with no files present also has an empty list.
     #[serde(default)]
     pub context_files_enabled: bool,
+    /// The session's whole-prompt replacement; empty when the built-in prompt is
+    /// used. Small (a manual override), unlike the built prompt itself, which is
+    /// tens of kilobytes and deliberately stays behind `get_system_prompt`.
+    #[serde(default)]
+    pub custom_system_prompt: String,
 }
 
 /// A run's live state (get_state `activeRun` / `interruptedRun`; proto
@@ -277,6 +282,7 @@ mod tests {
             sandbox_tier: None,
             append_system_prompt: String::new(),
             context_files_enabled: true,
+            custom_system_prompt: String::new(),
         };
         let value = serde_json::to_value(&payload).unwrap();
 
@@ -291,6 +297,7 @@ mod tests {
         // absences it has to infer.
         assert_eq!(value["appendSystemPrompt"], json!(""));
         assert_eq!(value["contextFilesEnabled"], json!(true));
+        assert_eq!(value["customSystemPrompt"], json!(""));
         // No policy set must not be spelled as "off" — that is a real choice.
         assert!(
             value.get("sandboxTier").is_none(),
@@ -519,6 +526,7 @@ mod tests {
             sandbox_tier: Some("manual".to_string()),
             append_system_prompt: "Always answer in haiku.".to_string(),
             context_files_enabled: true,
+            custom_system_prompt: String::new(),
         };
         let canonical = serde_json::to_value(&payload).unwrap();
         assert_eq!(canonical["sandboxTier"], json!("manual"));

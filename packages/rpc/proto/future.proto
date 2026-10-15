@@ -1004,6 +1004,11 @@ message SessionState {
   // `context_files` because an enabled session with no files present has an
   // equally empty list — the two states are not the same thing.
   bool context_files_enabled = 43;
+
+  // The session's whole-prompt replacement (empty when the built-in prompt is
+  // used). A manual override, so it is small; the full built prompt is tens of
+  // kilobytes and is served by `get_system_prompt` instead.
+  string custom_system_prompt = 44;
 }
 
 message SessionUsage {

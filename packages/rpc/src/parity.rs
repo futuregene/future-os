@@ -61,6 +61,7 @@ fn get_state_fixture() -> Value {
             "contextFiles": ["CLAUDE.md"],
             "contextFilesEnabled": true,
             "appendSystemPrompt": "Always answer in haiku.",
+            "customSystemPrompt": "You are terse.",
             "contextWindow": 200000,
             "contextTokens": 1234,
             "contextPercent": 0.62,
@@ -353,6 +354,8 @@ fn typed_getters_match_struct_semantics() {
     // is missing from the proto is silently lost rather than merely untyped.
     assert_eq!(state.append_system_prompt, "Always answer in haiku.");
     assert!(state.context_files_enabled);
+    // The whole-prompt override survives the proto trip too.
+    assert_eq!(state.custom_system_prompt, "You are terse.");
 }
 
 #[test]

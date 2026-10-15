@@ -373,6 +373,7 @@ pub(crate) fn session_state_from_proto(state: &proto::SessionState) -> GetStateP
         sandbox_tier: state.sandbox_tier.clone(),
         append_system_prompt: state.append_system_prompt.clone(),
         context_files_enabled: state.context_files_enabled,
+        custom_system_prompt: state.custom_system_prompt.clone(),
     }
 }
 

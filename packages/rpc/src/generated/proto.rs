@@ -1088,6 +1088,11 @@ pub struct SessionState {
     /// equally empty list — the two states are not the same thing.
     #[prost(bool, tag = "43")]
     pub context_files_enabled: bool,
+    /// The session's whole-prompt replacement (empty when the built-in prompt is
+    /// used). A manual override, so it is small; the full built prompt is tens of
+    /// kilobytes and is served by `get_system_prompt` instead.
+    #[prost(string, tag = "44")]
+    pub custom_system_prompt: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct SessionUsage {

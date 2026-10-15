@@ -131,7 +131,7 @@ future run "介绍一下这个项目"
 | `--tools`、`-t <names>` | 用逗号分隔要启用的工具名（如 `read,shell`）；`--no-tools` / `--no-builtin-tools` 可禁用工具。 |
 | `--steer` | 中断当前会话正在运行的任务；不传时，新 prompt 排在忙碌任务之后。 |
 | `--no-wait` | 提交 prompt 并打印 ack 后立即退出；稍后可用 `future session wait <id>` 取回结果。 |
-| `--system-prompt`、`--append-system-prompt` | 替换或追加系统提示词。`--append-system-prompt` 随会话落盘、每次 run 生效；`--system-prompt` 仅作用于活会话。 |
+| `--system-prompt`、`--append-system-prompt` | 替换或追加系统提示词。两者都随会话落盘、每次 run 生效。 |
 | `--cwd <dir>` | 设置工作目录。 |
 | `--mode json` | 以 JSON 而非文本打印回答。 |
 | `--verbose` | 把进度与工具调用写到 stderr。 |
@@ -242,19 +242,21 @@ future session delete <id>
 运行中的 agent（这个会话**现在**怎么配置：生效中的工具权限、沙箱档、上下文占用、已加载的
 上下文文件与技能、活动与排队 run、待审批项）。只有后者能回答「这个会话的设置与全局默认
 不同」这类问题。`session set` 写两组——随会话落盘的（`--model`、`--thinking`、`--cwd`、
-`--title`、`--parent`）与作用于运行中的（`--tools`、`--no-tools`、`--no-builtin-tools`、
-`--system-prompt`、`--permission`、`--sandbox`、
-`--context-files`、`--auto-compact`、`--auto-retry`）——后者可用 `session status` 读回。
+`--title`、`--parent`、`--system-prompt`、`--append-system-prompt`）与作用于运行中的
+（`--tools`、`--no-tools`、`--no-builtin-tools`、`--permission`、`--sandbox`、
+`--context-files`、`--auto-compact`、`--auto-retry`）——两组都可用 `session status` 读回。
 `abort`/`cancel`/`approve`/`reject` 是 TUI `/stop`、`/cancel`、`/approve` 的 CLI 对应物，
 因此在脚本里发起的 run 也能从脚本里停掉。
 
 `--append-system-prompt` 是上面这个划分里的例外：它随会话记录落盘，因此 agent 重启后仍在、
-之后任何客户端发起的 run 也都带上，并在每次 run 中追加在项目上下文与工作区记忆之后——
-适合放「应当长期生效」的规则，而不是每条消息里重复一遍。
+之后任何客户端发起的 run 也都带上，并在每次 run 中追加在项目上下文与工作区记忆之后。
 `future session new --append-system-prompt "……"` 在创建时即可设置，传空字符串即清除。
 `session status` 会报出该附加段以及项目上下文是否启用；`session status <id>
---system-prompt` 打印下一次 run 将发送的完整提示词（`--system-prompt` 整体替换仍是
-只作用于活会话——下一次 run 会重建提示词）。
+--system-prompt` 打印下一次 run 将发送的完整提示词（加 `--json` 则输出为对象）。
+
+`--system-prompt`（整体替换）同样随会话记录落盘：它替换提示词的开头部分（内置身份与
+工具规则），项目上下文、工作区记忆与附加段仍接在其后；传空字符串恢复内置提示词。
+`future session info` 可从 journal 读回这两个值。
 
 `future session history search --all --query "<关键词>"` 跨会话检索，因此「我们以前是否
 处理过这件事」不必先知道是哪个会话。它扫描最近更新的 `--sessions` 个会话（默认 50），
