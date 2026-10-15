@@ -424,6 +424,12 @@ mod tests {
             }),
             Some("server"),
         );
+        // A missing account credential is the account's problem, and the type
+        // says so — no message is consulted.
+        assert_eq!(
+            error_code(&crate::AppError::NotSignedIn),
+            Some("account_authorization"),
+        );
         // Local failures carry no remote category.
         assert_eq!(
             error_code(&crate::AppError::Message("disk full".to_string())),

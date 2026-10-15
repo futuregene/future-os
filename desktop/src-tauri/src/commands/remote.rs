@@ -185,34 +185,19 @@ mod tests {
         assert_eq!(status.reason, Some(remote::RemoteFailureReason::Network));
     }
 
+    /// A pre-v2 pairing credential cannot be upgraded in place: `establish()`
+    /// clears it and mints a replacement code (its PA003 branch). Minting is the
+    /// platform's job, and the platform needs the account — so on a desktop with
+    /// no stored key the start settles as an *account* failure the user can act
+    /// on, not as the generic local fault it used to be reported as (which sent
+    /// the user back to a button that could only fail again).
+    ///
+    /// The assertion that carries weight is about the step order: the unusable
+    /// credential must be gone, which is only true if `clear_creds()` really ran
+    /// before the mint was attempted — no fallback path produces that pair.
     #[tokio::test]
-    async fn remote_start_propagates_a_local_failure() {
-        let _home = HomeGuard::new("remote_start_err");
-        // A legacy pairing credential that cannot be cleared is an
-        // uncategorized *local* fault: `remote::start` propagates `Err`, which
-        // is the command's error arm. `pairing::clear_creds` ends in
-        // `std::fs::remove_file`, so the fault is produced by putting a
-        // *directory* where the credential file belongs — the one shape of
-        // "unclearable" that behaves the same on every platform.
-        //
-        // A read-only *file* deliberately is not used: Rust's Windows
-        // `remove_file` clears the read-only attribute before deleting, so the
-        // delete simply succeeds and the test would assert nothing (that was
-        // this test's previous Windows arm, which crashed on its own cleanup
-        // instead of producing a fault).
-        // A pre-v2 credential is what makes `establish()` take its PA003 branch:
-        // it cannot be upgraded in place, so it is cleared and a fresh pairing
-        // code is minted. With no sign-in the minting stops on the local
-        // "not signed in" fault, which is *uncategorized* — and only an
-        // uncategorized fault makes the command return `Err` (a network failure
-        // is reported as a degraded `Ok` status instead, see the sibling test
-        // above).
-        //
-        // The two assertions that carry weight are therefore about the *step
-        // order*: the error must be the local one, and the unusable credential
-        // must be gone — which is only true if `clear_creds()` really ran.
-        // Neither `resolve_shell`-style fallback nor a skip of the PA003 branch
-        // could produce that pair.
+    async fn remote_start_replaces_a_legacy_credential_and_reports_the_missing_account() {
+        let _home = HomeGuard::new("remote_start_legacy");
         crate::remote::pairing::save_creds(&crate::remote::pairing::PairingCreds {
             handshake_version: 0,
             secure: None,
@@ -233,19 +218,43 @@ mod tests {
             "the legacy credential must be on disk before the start"
         );
 
-        let result = remote_start(remote::RemoteStartInput {}).await;
-        assert!(
-            result.is_err(),
-            "a start that cannot finish pairing must surface a local fault, got {result:?}"
+        let status = remote_start(remote::RemoteStartInput {})
+            .await
+            .expect("a missing account is a status, not a fault");
+        assert_eq!(status.phase, remote::RemotePhase::Failed);
+        assert_eq!(
+            status.reason,
+            Some(remote::RemoteFailureReason::AccountAuthorization)
         );
-        let message = result.expect_err("fault").to_string();
         assert!(
-            message.contains("Not signed in"),
-            "the fault must be the local one that stopped the re-pairing, got: {message}"
+            status.recovery.is_none(),
+            "an account fault is not something a retry clock can repair"
         );
         assert!(
             !creds_path.exists(),
             "the unusable legacy credential must have been cleared, not left behind"
+        );
+    }
+
+    /// Whatever this desktop cannot categorize is still a fault of its own: the
+    /// command surfaces it as an error instead of dressing it up as a remote
+    /// status. A pairing-code response the desktop cannot read is exactly that
+    /// shape — the platform answered, so there is no network or account verdict
+    /// to report, and only the raw cause is honest.
+    #[tokio::test]
+    async fn remote_start_propagates_an_uncategorized_local_failure() {
+        let _home = HomeGuard::new("remote_start_err");
+        let platform = crate::remote::test_support::MockPlatform::start().await;
+        platform.push("/client/v1/remote/pair/code", 200, serde_json::json!({}));
+        crate::remote::test_support::sign_in(platform.url());
+
+        let message = remote_start(remote::RemoteStartInput {})
+            .await
+            .expect_err("an unreadable pairing response is a local fault")
+            .to_string();
+        assert!(
+            message.contains("Failed to parse create pairing code response"),
+            "the raw fault must be the one reported, got: {message}"
         );
     }
 }

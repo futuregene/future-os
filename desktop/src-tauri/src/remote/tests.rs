@@ -228,6 +228,17 @@ mod contract_tests {
             Some(RemoteFailureReason::AccountAuthorization)
         );
 
+        // A desktop that never stored an account credential asks for the same
+        // thing as a rejected one, and it is the error's *type* that says so:
+        // pairing codes come from the platform, so there is nothing to retry
+        // before the user signs in.
+        let signed_out = start_failure(crate::AppError::NotSignedIn).unwrap();
+        assert_eq!(signed_out.phase, RemotePhase::Failed);
+        assert_eq!(
+            signed_out.reason,
+            Some(RemoteFailureReason::AccountAuthorization)
+        );
+
         // A server error is retryable.
         let server = start_failure(crate::AppError::Remote {
             status: 500,

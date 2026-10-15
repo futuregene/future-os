@@ -110,7 +110,9 @@ export function useFutureAccount(initialAuth?: FutureAuthState): FutureAccount {
     setBalanceStatus("available");
   });
 
-  useTauriEvent("scheduler-future-auth-invalid", refreshAuth);
+  // The scheduler's account pass tells us to re-read when the stored credential
+  // is gone or rejected; `refreshAuth` is the authoritative answer either way.
+  useTauriEvent("scheduler-future-auth-changed", refreshAuth);
 
   useEffect(
     () => onFutureEvent("agent_end", () => {
