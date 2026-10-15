@@ -33,6 +33,7 @@
 |---|---|
 | [Goal 控制面](architecture/goal-control-plane.zh-CN.md)（[en](architecture/goal-control-plane.md)） | `future-goal` — 目标/todos/门禁/监控、should-run 内核、配额、事件溯源、交付闭环、多 agent、supervisor/worker 消息、web dashboard |
 | [长程证据账本](architecture/long-run-evidence-ledger.zh-CN.md)（[en](architecture/long-run-evidence-ledger.md)） | 长程 goal 目标问责记录 — 墙钟、花费、验证结果、每个已关闭目标的显式边界 |
+| [定时任务](architecture/tasks.zh-CN.md)（[en](architecture/tasks.md)） | `future-tasks` — 可复用提示词 + 触发器（按计划或随时手动）、全权限运行、确定性 `next_due` 内核、运行台账与提示词版本历史 |
 | [SQLite 迁移](architecture/sqlite-migration.zh-CN.md)（[en](architecture/sqlite-migration.md)） | Agent/Desktop SQLite 存储布局与迁移策略 |
 | [Desktop 内置 Agent 开发计划](architecture/embedded-agent-development.zh-CN.md)（[en](architecture/embedded-agent-development.md)） | 进程内完整 Agent、服务与宿主生命周期、实例锁、退出清理、升级安装、开发工具及分阶段验收 |
 | [回复结果语义](architecture/response-outcomes.zh-CN.md)（[en](architecture/response-outcomes.md)） | 回复结束的结果语义（停止 / 拒答 / 过滤 / 暂停） |

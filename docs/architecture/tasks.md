@@ -1,8 +1,8 @@
-# Tasks architecture
+# Scheduled tasks architecture
 
-> A task is a reusable unit of work: a prompt, working directory, model/thinking level and full permissions. A **trigger** decides when it runs. Each run creates or reuses an ordinary conversation and records its outcome and prompt version.
+> A scheduled task is a reusable unit of work: a prompt, working directory, model/thinking level and full permissions. A **trigger** decides when it runs, and any of them can also be run on demand. Each run creates or reuses an ordinary conversation and records its outcome and prompt version.
 
-`future goal` manages a long-term goal, evidence, gates and multiple agents. Tasks run a **fixed action when triggered**. They have separate tables and purposes.
+`future goal` manages a long-term goal, evidence, gates and multiple agents. Scheduled tasks run a **fixed action when triggered**. They have separate tables and purposes.
 
 ## 0. Scope
 
@@ -10,7 +10,7 @@
 - **Hosts:** GUI and headless desktop share the same tick loop. TUI hosting is not connected. Mobile uses the desktop remote bridge.
 - **Layers:** deterministic `next_due`, dependency joins, claim decisions and truncation are host-independent pure functions. One executor serves both desktop hosts; their difference is a `Notifier` closure (§8).
 
-Implemented: kernel, store, the `future task` CLI (§9), desktop tick loop and panel, headless hosting, mobile bridge/pages, and the `future-task` skill. Reserved work: TUI hosting, a `threads.task_id` badge (§2), and an instance-level `.lock`. Current overlap detection assumes one host per home.
+Implemented: kernel, store, the `future task` CLI (§9), desktop tick loop and panel, headless hosting, mobile bridge/pages, and the `future-scheduled-task` skill. Reserved work: TUI hosting, a `threads.task_id` badge (§2), and an instance-level `.lock`. Current overlap detection assumes one host per home.
 
 ## 1. Lessons from the goal control plane
 
@@ -22,7 +22,7 @@ Implemented: kernel, store, the `future task` CLI (§9), desktop tick loop and p
 | Distinct task classes prevent incorrect frontier claims | `task_runs.kind` distinguishes `main`, `manual` and `chain` |
 | Separate state root (`<cwd>/.future/goal/`) | `<home>/.future/tasks/`, with its own SQLite database |
 
-Tasks do not adopt fencing tokens, multi-agent competition, claim stealing or JSONL event sourcing. SQLite supplies durability. The goal plane's monitoring cadence stays separate; task eligibility is decided at tick/claim time instead of adding quota or should-run layers.
+Scheduled tasks do not adopt fencing tokens, multi-agent competition, claim stealing or JSONL event sourcing. SQLite supplies durability. The goal plane's monitoring cadence stays separate; task eligibility is decided at tick/claim time instead of adding quota or should-run layers.
 
 ## 2. Data model
 
@@ -107,7 +107,7 @@ CREATE TABLE task_prompt_revisions (
 );
 ```
 
-Tasks do **not** live in `app.db`. Task conversations are ordinary conversations, identified by a title such as `Task name · timestamp`; `task_runs.thread_id` provides the mapping and lets the Runs panel open them.
+Scheduled tasks do **not** live in `app.db`. A scheduled task's conversations are ordinary conversations, identified by a title such as `Task name · timestamp`; `task_runs.thread_id` provides the mapping and lets the Runs panel open them.
 
 A nullable `threads.task_id` badge is deferred until needed. It would require a versioned GUI migration under rule 7 in `desktop/CLAUDE.md`, plus the ER documentation update; titles already satisfy the conversation-list requirement.
 
@@ -280,9 +280,9 @@ future task prompt log|apply|revert <id|name> [revision-id]
 
 A test in `cli/src/commands/task.rs` parses `help::TASK_HELP` and requires the same subcommand set as the dispatcher, in both directions. This guards against documenting commands that produce `Unknown argument`.
 
-## 10. The `future-task` skill
+## 10. The `future-scheduled-task` skill
 
-`skills/builtin/future-task/SKILL.md` lives in the skills submodule and has its own PR. It focuses on writing prompts: eight unattended-run constraints, trigger selection and the short-month rule, the `run → assess → feedback → edit → rerun` loop, and using `future task run --wait --json` from other agents. External side effects require user consent.
+`skills/builtin/future-scheduled-task/SKILL.md` lives in the skills submodule and has its own PR. It focuses on writing prompts: eight unattended-run constraints, trigger selection and the short-month rule, the `run → assess → feedback → edit → rerun` loop, and using `future task run --wait --json` from other agents. External side effects require user consent.
 
 Real Agent/model verification is manual, outside CI. Desktop `tasks.rs` has ignored `a_queued_run_against_a_real_agent_*` tests and `serve_pending_runs_until_idle`, a one-shot host using the same tick as headless without login or the remote bridge:
 
@@ -300,15 +300,15 @@ There is no automated skill/CLI version guard: skills are a separate repository 
 
 ## 11. UI
 
-- **Desktop:** Tasks appears after Skills and before phone control in both ActivityRail states. Its panel has a list, editor and run ledger. This is a two-column task view; it omits the conversation's right context panel.
-- **Detail order:** show run results first. Settings, prompt and dependencies are lower-frequency definition work, reached through Edit. A new task opens its form immediately because it has no history.
+- **Desktop:** Scheduled tasks appear after Skills and before phone control in both ActivityRail states. Its panel has a list, editor and run ledger. This is a two-column task view; it omits the conversation's right context panel.
+- **Detail order:** show run results first. Settings, prompt and dependencies are lower-frequency definition work, reached through Edit. A new scheduled task opens its form immediately because it has no history.
 - **Desktop definition:** a Settings disclosure renders definition nodes only while open, rather than putting a long form below a scrolling history.
 - **Mobile definition:** Settings pushes a separate `TaskForm` layer (`settingsOpen`), hiding runs while editing. Back and successful Save return to detail; failed Save preserves the form/draft for retry. A separate layer avoids placing a multi-screen form after run history.
-- **Mobile entry:** “Task settings” in the Settings stack, gated by `tasks_v1`. Lists omit prompt bodies to meet wire budgets; detail fetches them separately and shows runs and dependency state.
+- **Mobile entry:** “Scheduled task settings” in the Settings stack, gated by `tasks_v1`. Lists omit prompt bodies to meet wire budgets; detail fetches them separately and shows runs and dependency state.
 - **Mobile dependency editing:** separately gated by `task_deps_v1`, `set_task_dep` and `remove_task_dep`. Older desktop hosts expose read-only dependencies and an upgrade hint. Newer hosts support the same dependency-trigger block as desktop, with edge conditions, add/remove and multi-upstream joins.
 - **Both dependency editors:** appear for Dependency mode and remain visible for existing upstream edges. Draft the whole edge set and reconcile on Save. Candidate tasks exclude deleted tasks and the current task; a new task has no current ID. Backend cycle rejection supplies the shared error; clients need not fetch the entire graph. New edges default to success.
 
-Both forms default new tasks to **chat conversations**, requiring a directory only for workspace mode. Model and thinking level must be selected explicitly; there is no Default option, and validation identifies the missing field. Model lists include enabled models plus the task's currently bound model even if disabled, avoiding an accidental model change while editing other fields.
+Both forms default new scheduled tasks to **chat conversations**, requiring a directory only for workspace mode. Model and thinking level must be selected explicitly; there is no Default option, and validation identifies the missing field. Model lists include enabled models plus the task's currently bound model even if disabled, avoiding an accidental model change while editing other fields.
 
 **Immediate runs:** desktop/mobile Run now writes `pending_request_at`, then calls `tasks::wake()`. The tick loop remains the sole claimer but wakes immediately rather than waiting for the 30-second interval. Start/end `threads-updated` events refresh the list and open detail so they do not stay at Queued.
 

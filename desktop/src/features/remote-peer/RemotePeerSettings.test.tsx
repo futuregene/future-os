@@ -160,7 +160,7 @@ it("reads the host's own settings, and only those", async () => {
  */
 it("opens that host's tasks from the host-content section", async () => {
   const view = await mount({ peer: peer({ connected: true }) });
-  await act(async () => view.link("Tasks")!.click());
+  await act(async () => view.link("Scheduled tasks")!.click());
 
   expect(view.onOpenTasks).toHaveBeenCalled();
   await view.unmount();
@@ -169,7 +169,7 @@ it("opens that host's tasks from the host-content section", async () => {
 /** An unreachable host cannot be asked for its tasks, so the entry is closed. */
 it("refuses to open tasks while the host is offline", async () => {
   const view = await mount({ peer: peer({ connected: false }) });
-  expect(view.link("Tasks")!.disabled).toBe(true);
+  expect(view.link("Scheduled tasks")!.disabled).toBe(true);
   await view.unmount();
 });
 
@@ -467,7 +467,7 @@ describe("the long sections are their own pages", () => {
     });
 
     // The rows name what is behind them.
-    for (const title of ["Models", "Skills", "Providers and keys", "Workspaces", "Tasks"])
+    for (const title of ["Models", "Skills", "Providers and keys", "Workspaces", "Scheduled tasks"])
       expect(view.link(title), title).toBeTruthy();
 
     // And the page itself stays short: the skills panel is not here until asked

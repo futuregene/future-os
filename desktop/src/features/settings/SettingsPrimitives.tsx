@@ -23,7 +23,7 @@ export function SettingsLinkRow({
   /**
    * The control's accessible name, when the visible title alone does not say
    * enough. A page of these inside one machine's settings repeats words the rail
-   * also uses ("Models", "Tasks", "Skills"), and a screen reader hears only the
+   * also uses ("Models", "Scheduled tasks", "Skills"), and a screen reader hears only the
    * word: naming the machine says whose models these are.
    */
   ariaLabel?: string;
