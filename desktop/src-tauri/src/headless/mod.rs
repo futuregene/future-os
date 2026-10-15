@@ -427,7 +427,13 @@ fn prepare_terminal() {
     }
 }
 
-fn pairing_link(status: &remote::RemoteStatus) -> Option<String> {
+/// The invitation a client can pair against, or `None` when there is not one to
+/// show.
+///
+/// Shared with the graphical entry point's `--re-pair` report: a link this
+/// terminal refuses to print is not one that entry point should hand a user
+/// either, so both ask the same question of the same status.
+pub fn pairing_link(status: &remote::RemoteStatus) -> Option<String> {
     if status.phase != remote::RemotePhase::Ready || !status.agent_available {
         return None;
     }
