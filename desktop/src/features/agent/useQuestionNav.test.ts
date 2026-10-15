@@ -3,6 +3,7 @@ import type { MessageSegment } from "@future-os/thread-projection";
 import type { TranscriptMessage } from "./questionNav";
 import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { useKeyboardOwner } from "../../lib/keyboardOwners";
 import { renderHook } from "../../test/renderHook";
 import { useQuestionNav } from "./useQuestionNav";
 
@@ -123,6 +124,15 @@ function mount(
     useQuestionNav({ messages, onTakeOver, scrollRef: world.scrollRef }),
   );
   return { ...world, hook, onTakeOver };
+}
+
+/** A real keydown on the window (or on `target`), as a keyboard user sends it. */
+function press(key: string, target?: EventTarget, init: KeyboardEventInit = {}) {
+  const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key, ...init });
+  act(() => {
+    (target ?? window).dispatchEvent(event);
+  });
+  return event;
 }
 
 describe("useQuestionNav", () => {
@@ -381,5 +391,92 @@ describe("useQuestionNav", () => {
     expect(hook.current.hasNext).toBe(false);
     act(() => hook.current.goToNext());
     hook.unmount();
+  });
+});
+
+describe("useQuestionNav arrow keys", () => {
+  it("walks the transcript with the bare arrow keys", () => {
+    // The buttons and the keys are one walk, so a press has to land exactly
+    // where its button would: ↓ takes the next stop below, ↑ the previous
+    // prompt. The reader starts at the top of the loaded window, where only ↓
+    // has anywhere to go.
+    const { container, hook } = mount();
+
+    press("ArrowDown");
+    expect(container.scrollTop).toBe(100 + 120 - 16);
+    expect(hook.current.hasPrevious).toBe(true);
+
+    press("ArrowUp");
+    expect(container.scrollTop).toBe(0);
+    hook.unmount();
+    container.remove();
+  });
+
+  it("leaves a key the direction cannot answer to the page", () => {
+    // Nothing above the first row: the ↑ button is inert there, and so is the
+    // key. Swallowing it would take away the browser's ordinary line scroll —
+    // the transcript is a plain scroll container, and a short one still scrolls.
+    const { container, hook } = mount();
+
+    const event = press("ArrowUp");
+    expect(event.defaultPrevented).toBe(false);
+    expect(container.scrollTop).toBe(0);
+    hook.unmount();
+    container.remove();
+  });
+
+  it("leaves the arrows alone while the caret is in a text field", () => {
+    // The composer is where the reader types, so an arrow there belongs to the
+    // caret. jsdom's `isContentEditable` is undefined, which is why the
+    // predicate walks the attribute instead.
+    const { container, hook } = mount();
+    const editor = document.createElement("div");
+    editor.setAttribute("contenteditable", "true");
+    container.append(editor);
+
+    const event = press("ArrowDown", editor);
+    expect(event.defaultPrevented).toBe(false);
+    expect(container.scrollTop).toBe(0);
+    hook.unmount();
+    container.remove();
+  });
+
+  it("leaves the arrows alone while a menu is open", () => {
+    // The activity rail's menus move focus with the arrows; a transcript jump
+    // underneath one is the app fighting the user for the same keystroke.
+    const { container, hook } = mount();
+    const menu = renderHook(() => useKeyboardOwner(true));
+
+    const event = press("ArrowDown");
+    expect(event.defaultPrevented).toBe(false);
+    expect(container.scrollTop).toBe(0);
+
+    // …and closing it hands the key back.
+    menu.unmount();
+    press("ArrowDown");
+    expect(container.scrollTop).toBe(100 + 120 - 16);
+    hook.unmount();
+    container.remove();
+  });
+
+  it("ignores a modified or composing arrow", () => {
+    // Shift/Alt/Cmd+Arrow are selection, word-motion and the platform's line
+    // motion; a composing arrow picks an IME candidate.
+    const { container, hook } = mount();
+
+    press("ArrowDown", undefined, { shiftKey: true });
+    press("ArrowDown", undefined, { isComposing: true });
+    expect(container.scrollTop).toBe(0);
+    hook.unmount();
+    container.remove();
+  });
+
+  it("stops listening when the transcript is gone", () => {
+    const { container, hook } = mount();
+    hook.unmount();
+
+    press("ArrowDown");
+    expect(container.scrollTop).toBe(0);
+    container.remove();
   });
 });

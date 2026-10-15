@@ -5,6 +5,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { peerBadgeText } from "../../features/remote-peer/peerIcons";
 import { cn } from "../../lib/cn";
+import { useKeyboardOwner } from "../../lib/keyboardOwners";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { MenuPanel } from "../ui/MenuPanel";
 import { useDropUpMenu } from "./hooks/useDropUpMenu";
@@ -48,6 +49,10 @@ export function RailNewChatButton({
   });
   const { menuRef, dropUp } = useDropUpMenu(open);
   const label = t("activityRail.newChatShort");
+  // The open menu owns the arrows, not the transcript behind it. Hook order is
+  // kept across the early returns below, which is why this is a plain call
+  // rather than something inside the returned markup.
+  useKeyboardOwner(open);
 
   // One machine on screen: the control acts, rather than asking a question with a
   // single answer.

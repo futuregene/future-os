@@ -6,6 +6,7 @@ import type { SessionMentionOption } from "./sessionMention";
 import { act, createRef } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EMPTY_EDITOR_ATTR } from "../../lib/editableTarget";
 import { MentionEditor } from "./MentionEditor";
 
 /**
@@ -872,6 +873,30 @@ describe("mentionEditor insertion and clearing", () => {
     expect(menu()).toBeNull();
     expect(editorWithHandle().getContent()).toBe("");
     expect(onEmptyChange).toHaveBeenLastCalledWith(true);
+  });
+
+  it("marks itself as an empty editor, so the arrows stay free until it holds something", () => {
+    // The composer autofocuses on mount and after every send, so this marker is
+    // what keeps the transcript's ↑/↓ usable while the caret sits in an empty
+    // box (see `lib/editableTarget`). It must be present from the first render —
+    // no `input` event has happened yet — and it must come off the moment the
+    // editor holds anything, including a mention pill with no text.
+    render();
+    editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
+    expect(editor.hasAttribute(EMPTY_EDITOR_ATTR)).toBe(true);
+
+    type("a message");
+    expect(editor.hasAttribute(EMPTY_EDITOR_ATTR)).toBe(false);
+
+    // Empty again — and back on the marker, which `isEditorEmpty` decides from
+    // text and pills together.
+    act(() => editorWithHandle().clear());
+    expect(editor.hasAttribute(EMPTY_EDITOR_ATTR)).toBe(true);
+
+    // A lone pill is content: the box is not empty, even with no text at all.
+    act(() => editorWithHandle().insertMention({ name: "f.ts", path: "src/f.ts" }));
+    expect(editor.textContent).not.toBe("");
+    expect(editor.hasAttribute(EMPTY_EDITOR_ATTR)).toBe(false);
   });
 
   it("focus() moves the caret into the editor", () => {

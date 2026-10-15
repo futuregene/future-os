@@ -1,5 +1,6 @@
 import type { MouseEvent } from "react";
 import { useState } from "react";
+import { useKeyboardOwner } from "../../../lib/keyboardOwners";
 import { useDismissableLayer } from "../../../lib/useDismissableLayer";
 
 /**
@@ -13,6 +14,8 @@ export function useLinkContextMenu() {
     enabled: position !== null,
     onDismiss: () => setPosition(null),
   });
+  // The open menu owns the arrows, not the transcript behind it.
+  useKeyboardOwner(position !== null);
 
   return {
     close: () => setPosition(null),

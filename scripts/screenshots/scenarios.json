@@ -216,6 +216,80 @@
           }
         ]
       },
+      "thread-question-nav-keys": {
+        "_comment": "桌面端会话的 ↑/↓ 既能点右下角的按钮，也能直接按方向键 —— 同一次走位（同一个 `useQuestionNav`）。本场景全部用**真实按键**驱动（cdp 的 key 步骤），走的是与 `thread-question-nav` 同一条路线，断言也相同：↑ 落到用户提问、落点那一行的顶边贴视口顶边下方 16px；↓ 落到下面最近的一级，落到回答上时抬到它最后一段输出 [data-reply-tail]。关键是方向键的**归属**：合成器是一个会自动聚焦的 contenteditable，所以刚打开会话时键盘焦点就在里面；空的编辑器不算「正在打字的地方」（`data-empty-editor`，见 lib/editableTarget），方向键仍归会话 —— 这正是常态下能按方向键翻页的原因。本场景先把焦点**显式**放回空的合成器（只读会话时它本来就在那儿），然后 ↑ ↑ 走到更早的提问、↓ 落到中间那条回答的最后一段输出；最后输入一段草稿，此时方向键归还给光标 —— 再按 ↑ 会话必须一动不动。",
+        "steps": [
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => { const c = document.querySelector('[data-chat-scroll]'); const b = c.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - b.top); const rows = [...c.querySelectorAll('[data-message-id]')]; const row = rows.find(el => el.getBoundingClientRect().bottom > b.top + 1); const tail = row ? row.querySelector('[data-reply-tail]') : null; const ed = document.querySelector('[contenteditable=\"true\"][role=\"textbox\"]'); const on = label => { const el = document.querySelector('[aria-label=\"' + label + '\"]'); return el ? !el.disabled : false; }; return { id: row ? row.dataset.messageId : null, rowTop: row ? rel(row) : null, anchorTop: tail ? rel(tail) : null, scrollTop: Math.round(c.scrollTop), focus: document.activeElement ? (document.activeElement.getAttribute('role') || document.activeElement.tagName) : null, editorMarkedEmpty: ed ? ed.hasAttribute('data-empty-editor') : null, up: on('上一个问题'), down: on('下一段') }; })()"
+          },
+          {
+            "eval": "(() => { const ed = document.querySelector('[contenteditable=\"true\"][role=\"textbox\"]'); if (!ed) throw new Error('the composer editor is missing'); const before = (ed.textContent || '').trim(); if (before !== '') {   ed.focus();   document.execCommand('selectAll');   document.execCommand('delete', false);   ed.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' })); } return { cleared: before !== '', was: before }; })()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "(() => { const ed = document.querySelector('[contenteditable=\"true\"][role=\"textbox\"]'); ed.focus(); if (document.activeElement !== ed) throw new Error('the composer did not take the caret'); if ((ed.textContent || '').trim() !== '') throw new Error('the composer is not empty: ' + JSON.stringify(ed.textContent)); if (!ed.hasAttribute('data-empty-editor')) throw new Error('the empty composer is not marked empty, so the arrows would be the caret\\'s: ' + ed.outerHTML.slice(0, 160)); return 'caret is in the empty, marked composer'; })()"
+          },
+          {
+            "key": "ArrowUp"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => { const c = document.querySelector('[data-chat-scroll]'); const b = c.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - b.top); const rows = [...c.querySelectorAll('[data-message-id]')]; const row = rows.find(el => el.getBoundingClientRect().bottom > b.top + 1); const top = rel(row); if (row.dataset.messageId !== 'm_e4') throw new Error('landed on ' + row.dataset.messageId + ', expected m_e4'); if (Math.abs(top - 16) > 2) throw new Error('landed ' + top + 'px below the viewport top edge, expected 16'); return { id: row.dataset.messageId, top }; })()"
+          },
+          {
+            "key": "ArrowUp"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => { const c = document.querySelector('[data-chat-scroll]'); const b = c.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - b.top); const rows = [...c.querySelectorAll('[data-message-id]')]; const row = rows.find(el => el.getBoundingClientRect().bottom > b.top + 1); const top = rel(row); if (row.dataset.messageId !== 'm_e1') throw new Error('landed on ' + row.dataset.messageId + ', expected m_e1'); if (Math.abs(top - 16) > 2) throw new Error('landed ' + top + 'px below the viewport top edge, expected 16'); return { id: row.dataset.messageId, top }; })()"
+          },
+          {
+            "eval": "(() => { const c = document.querySelector('[data-chat-scroll]'); const b = c.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - b.top); const rows = [...c.querySelectorAll('[data-message-id]')]; const row = rows.find(el => el.getBoundingClientRect().bottom > b.top + 1); const tail = row ? row.querySelector('[data-reply-tail]') : null; const ed = document.querySelector('[contenteditable=\"true\"][role=\"textbox\"]'); const on = label => { const el = document.querySelector('[aria-label=\"' + label + '\"]'); return el ? !el.disabled : false; }; return { id: row ? row.dataset.messageId : null, rowTop: row ? rel(row) : null, anchorTop: tail ? rel(tail) : null, scrollTop: Math.round(c.scrollTop), focus: document.activeElement ? (document.activeElement.getAttribute('role') || document.activeElement.tagName) : null, editorMarkedEmpty: ed ? ed.hasAttribute('data-empty-editor') : null, up: on('上一个问题'), down: on('下一段') }; })()"
+          },
+          {
+            "key": "ArrowDown"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => { const c = document.querySelector('[data-chat-scroll]'); const b = c.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - b.top); const rows = [...c.querySelectorAll('[data-message-id]')]; const row = rows.find(el => el.getBoundingClientRect().bottom > b.top + 1); const tail = row.querySelector('[data-reply-tail]'); if (!tail) throw new Error('the landed reply marked no [data-reply-tail] block'); const top = rel(tail); if (Math.abs(top - 16) > 2) throw new Error('the reply tail sits ' + top + 'px below the viewport top edge, expected 16'); return { id: row.dataset.messageId, rowTop: rel(row), anchorTop: top }; })()"
+          },
+          {
+            "eval": "(() => { const c = document.querySelector('[data-chat-scroll]'); const b = c.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - b.top); const rows = [...c.querySelectorAll('[data-message-id]')]; const row = rows.find(el => el.getBoundingClientRect().bottom > b.top + 1); const tail = row ? row.querySelector('[data-reply-tail]') : null; const ed = document.querySelector('[contenteditable=\"true\"][role=\"textbox\"]'); const on = label => { const el = document.querySelector('[aria-label=\"' + label + '\"]'); return el ? !el.disabled : false; }; return { id: row ? row.dataset.messageId : null, rowTop: row ? rel(row) : null, anchorTop: tail ? rel(tail) : null, scrollTop: Math.round(c.scrollTop), focus: document.activeElement ? (document.activeElement.getAttribute('role') || document.activeElement.tagName) : null, editorMarkedEmpty: ed ? ed.hasAttribute('data-empty-editor') : null, up: on('上一个问题'), down: on('下一段') }; })()"
+          },
+          {
+            "type": "写点东西"
+          },
+          {
+            "eval": "(() => { const c = document.querySelector('[data-chat-scroll]'); window.__navScrollBefore = Math.round(c.scrollTop); return window.__navScrollBefore; })()"
+          },
+          {
+            "key": "ArrowUp"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "(() => { const c = document.querySelector('[data-chat-scroll]'); const ed = document.querySelector('[contenteditable=\"true\"][role=\"textbox\"]'); const typed = ed.textContent || ''; if (!typed.includes('写点东西')) throw new Error('the draft did not land in the editor: ' + JSON.stringify(typed)); if (ed.hasAttribute('data-empty-editor')) throw new Error('a filled editor is still marked empty'); const was = Math.round(window.__navScrollBefore); if (Math.round(c.scrollTop) !== was) throw new Error('the transcript moved to ' + c.scrollTop + ' while the caret owned the key (was ' + was + ')'); return { scrollTop: Math.round(c.scrollTop), typed: typed.trim() }; })()"
+          },
+          {
+            "eval": "(() => { const c = document.querySelector('[data-chat-scroll]'); const b = c.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - b.top); const rows = [...c.querySelectorAll('[data-message-id]')]; const row = rows.find(el => el.getBoundingClientRect().bottom > b.top + 1); const tail = row ? row.querySelector('[data-reply-tail]') : null; const ed = document.querySelector('[contenteditable=\"true\"][role=\"textbox\"]'); const on = label => { const el = document.querySelector('[aria-label=\"' + label + '\"]'); return el ? !el.disabled : false; }; return { id: row ? row.dataset.messageId : null, rowTop: row ? rel(row) : null, anchorTop: tail ? rel(tail) : null, scrollTop: Math.round(c.scrollTop), focus: document.activeElement ? (document.activeElement.getAttribute('role') || document.activeElement.tagName) : null, editorMarkedEmpty: ed ? ed.hasAttribute('data-empty-editor') : null, up: on('上一个问题'), down: on('下一段') }; })()"
+          },
+          {
+            "shot": "d-question-nav-keys.png"
+          }
+        ]
+      },
       "inline-image": {
         "steps": [
           {

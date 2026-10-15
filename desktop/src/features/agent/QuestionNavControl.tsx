@@ -15,6 +15,10 @@ import { useTranslation } from "react-i18next";
  * above the composer is where the eye already is when a long answer pushes the
  * reader up the page. A direction with nothing to go to stays in place, inert,
  * so the pair never moves under the pointer.
+ *
+ * The same walk is on the arrow keys (`useQuestionNav`), so the button's tooltip
+ * names the key: the pair is the only place a reader can learn that the arrows
+ * page the transcript, and a shortcut nobody can discover is not a shortcut.
  */
 export function QuestionNavControl({
   hasPrevious,
@@ -34,12 +38,14 @@ export function QuestionNavControl({
         disabled={!hasPrevious}
         icon={<ArrowUp className="size-4" />}
         label={t("thread.questionPrevious")}
+        shortcut="↑"
         onClick={onPrevious}
       />
       <NavButton
         disabled={!hasNext}
         icon={<ArrowDown className="size-4" />}
         label={t("thread.nextPassage")}
+        shortcut="↓"
         onClick={onNext}
       />
     </div>
@@ -50,11 +56,14 @@ function NavButton({
   disabled,
   icon,
   label,
+  shortcut,
   onClick,
 }: {
   disabled: boolean;
   icon: React.ReactNode;
   label: string;
+  /** The arrow key that does the same thing, shown in the tooltip. */
+  shortcut: string;
   onClick: () => void;
 }) {
   return (
@@ -63,7 +72,7 @@ function NavButton({
       className="flex size-8 items-center justify-center rounded-full border border-line-soft bg-surface text-ink shadow-panel transition-colors hover:text-accent disabled:cursor-default disabled:bg-surface-subtle disabled:text-ink-muted disabled:shadow-none disabled:hover:text-ink-muted"
       disabled={disabled}
       onClick={onClick}
-      title={label}
+      title={`${label}  ${shortcut}`}
       type="button"
     >
       {icon}

@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { iconGlyph, peerBadgeText } from "../../features/remote-peer/peerIcons";
 import { peerStatus, peerStatusKey } from "../../features/remote-peer/peerStatus";
 import { cn } from "../../lib/cn";
+import { useKeyboardOwner } from "../../lib/keyboardOwners";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { MenuPanel } from "../ui/MenuPanel";
 
@@ -33,6 +34,8 @@ export function DeviceSelector({
     enabled: open,
     onDismiss: () => setOpen(false),
   });
+  // The open picker owns the arrows, not the transcript behind it.
+  useKeyboardOwner(open);
 
   const active = filter.kind === "device"
     ? peers.find(peer => peer.desktopId === filter.desktopId) ?? null

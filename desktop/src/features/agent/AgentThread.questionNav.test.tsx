@@ -7,6 +7,8 @@ import type { StoredThread } from "../../integrations/storage/threadStore";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useKeyboardOwner } from "../../lib/keyboardOwners";
+import { renderHook } from "../../test/renderHook";
 import { AgentThread } from "./AgentThread";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -178,6 +180,11 @@ describe("agentThread question navigation", () => {
     expect(previous).not.toBeNull();
     expect(next).not.toBeNull();
 
+    // The pair is the only place that says the arrow keys do the same thing,
+    // so the keys belong in the tooltip: a shortcut nobody can find is not one.
+    expect(previous?.title).toContain("↑");
+    expect(next?.title).toContain("↓");
+
     // At the top of two turns: the first row is the reader's own, so ↑ has
     // nowhere to go, while ↓ has the first turn's reply below it.
     act(() => layoutTranscript());
@@ -196,5 +203,70 @@ describe("agentThread question navigation", () => {
     const previous = container.querySelector<HTMLButtonElement>("[aria-label='Previous question']");
     expect(next?.disabled).toBe(true);
     expect(previous?.disabled).toBe(true);
+  });
+});
+
+/**
+ * A real key press on the conversation, as a keyboard user sends it.
+ *
+ * jsdom has no `autofocus` reachability model and dispatch alone is enough: the
+ * hook listens on the window, which is what a real press reaches after bubbling
+ * out of whatever has focus.
+ */
+function press(key: string, target?: EventTarget, init: KeyboardEventInit = {}) {
+  const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key, ...init });
+  act(() => {
+    (target ?? window).dispatchEvent(event);
+  });
+  return event;
+}
+
+describe("agentThread arrow-key navigation", () => {
+  it("reads the transcript with the bare arrow keys", () => {
+    // The pair in the corner is on the keyboard too, so a reader who never
+    // looks for the buttons pages through the conversation all the same. The
+    // press lands where its button would — same walk, same geometry.
+    act(() => root.render(createElement(AgentThread, props)));
+    const scroller = container.querySelector<HTMLElement>("[data-chat-scroll]")!;
+    act(() => layoutTranscript(120, 400));
+
+    press("ArrowDown");
+    // ↓ from the top of the loaded window reaches the first turn's reply, at
+    // the row start (its prose is what the mocked transcript has).
+    expect(scroller.scrollTop).toBe(120 - 16);
+
+    press("ArrowUp");
+    expect(scroller.scrollTop).toBe(0);
+  });
+
+  it("leaves the arrows to the composer's caret", () => {
+    // The reader types in the composer, and an arrow there moves the caret.
+    // Taking it would be the app stealing every keystroke in a text field.
+    act(() => root.render(createElement(AgentThread, props)));
+    const scroller = container.querySelector<HTMLElement>("[data-chat-scroll]")!;
+    act(() => layoutTranscript(120, 400));
+    const editor = document.createElement("div");
+    editor.setAttribute("contenteditable", "true");
+    container.append(editor);
+
+    const event = press("ArrowDown", editor);
+    expect(event.defaultPrevented).toBe(false);
+    expect(scroller.scrollTop).toBe(0);
+  });
+
+  it("leaves the arrows to the rail's own menus", () => {
+    // The rail's menus walk their rows with the arrows. A transcript jump
+    // underneath one is the app answering a key the user aimed elsewhere.
+    act(() => root.render(createElement(AgentThread, props)));
+    const scroller = container.querySelector<HTMLElement>("[data-chat-scroll]")!;
+    act(() => layoutTranscript(120, 400));
+
+    const menu = renderHook(() => useKeyboardOwner(true));
+    expect(press("ArrowDown").defaultPrevented).toBe(false);
+    expect(scroller.scrollTop).toBe(0);
+
+    menu.unmount();
+    press("ArrowDown");
+    expect(scroller.scrollTop).toBe(120 - 16);
   });
 });
