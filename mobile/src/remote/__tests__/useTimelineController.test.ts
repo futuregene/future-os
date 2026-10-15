@@ -1511,6 +1511,140 @@ describe("useTimelineController", () => {
       },
     );
 
+    test("a failed page surfaces as a retryable failure and the retry clears it", async () => {
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      options.selectedSessionId = "s1";
+      options.selectedRef.current = "s1";
+      request
+        .mockResolvedValueOnce({ success: true, data: {} })
+        .mockResolvedValueOnce({
+          success: true,
+          data: {
+            entries: [userEntry("e2", "latest")],
+            hasMore: true,
+            nextOffset: 20,
+          },
+        })
+        .mockRejectedValueOnce(new Error("timeout"))
+        .mockResolvedValueOnce({
+          success: true,
+          data: {
+            entries: [userEntry("e1", "older")],
+            hasMore: false,
+            nextOffset: 0,
+          },
+        });
+      try {
+        render();
+        await establish();
+        expect(result.current.olderHistoryFailed).toBe(false);
+        await act(async () => {
+          expect(await result.current.loadOlderTimeline()).toBe(false);
+        });
+        // The failure is settled and visible — the retry affordance's signal.
+        expect(result.current.olderHistoryFailed).toBe(true);
+        expect(result.current.loadingOlderTimeline).toBe(false);
+        await act(async () => {
+          expect(await result.current.loadOlderTimeline()).toContain("m_e1");
+        });
+        expect(result.current.olderHistoryFailed).toBe(false);
+        expect(result.current.timeline.items.map((item) => item.id)).toContain(
+          "m_e1",
+        );
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    test("a page dropped by a backgrounded lane is re-offered on foreground, not failed", async () => {
+      const originalActivity = Object.getOwnPropertyDescriptor(AppState, "currentState")!;
+      const setActivity = (value: string) =>
+        Object.defineProperty(AppState, "currentState", { configurable: true, value });
+      // The Jest AppState.addEventListener is a mock; capture the listeners the
+      // controller registers so the test can drive app-state transitions.
+      const appStateMock = AppState.addEventListener as unknown as jest.Mock;
+      const changeListeners = (): ((state: string) => void)[] =>
+        appStateMock.mock.calls
+          .filter(([type]) => type === "change")
+          .map(([, fn]) => fn as (state: string) => void);
+      appStateMock.mockClear();
+      setActivity("active");
+      options.selectedSessionId = "s1";
+      options.selectedRef.current = "s1";
+      let releaseReplay!: (value: unknown) => void;
+      request
+        .mockResolvedValueOnce({ data: { activeRun: { runId: "run" } } })
+        .mockResolvedValueOnce({
+          data: {
+            entries: [userEntry("latest", "latest")],
+            hasMore: true,
+            nextOffset: 20,
+          },
+        })
+        // The open reconcile's replay, parked so the page's commit queues
+        // behind it — exactly the starvation the fix addresses.
+        .mockImplementationOnce(
+          () => new Promise((resolve) => { releaseReplay = resolve; }),
+        )
+        // The page download succeeds.
+        .mockResolvedValueOnce({
+          data: {
+            entries: [userEntry("older", "older")],
+            hasMore: false,
+            nextOffset: 0,
+          },
+        });
+      try {
+        render();
+        await establish();
+        let page!: ReturnType<Result["loadOlderTimeline"]>;
+        act(() => {
+          page = result.current.loadOlderTimeline();
+        });
+        await flush();
+        // The page is downloaded and queued behind the reconcile replay.
+        expect(result.current.loadingOlderTimeline).toBe(true);
+        // Background before the lane publishes the queued mutation. The lane
+        // drops its queue, so the mutation can never land — the page must be
+        // parked for a foreground recommit, not failed or left to time out.
+        setActivity("background");
+        await act(async () => {
+          for (const fn of changeListeners()) fn("background");
+        });
+        await act(async () => {
+          expect(await page).toBe(false);
+        });
+        expect(result.current.loadingOlderTimeline).toBe(false);
+        // Crucially, this is NOT a user-facing failure.
+        expect(result.current.olderHistoryFailed).toBe(false);
+        expect(result.current.canLoadOlderTimeline).toBe(true);
+        expect(result.current.timeline.items.map((item) => item.id)).not.toContain("m_older");
+        // Foreground: the parked page is re-offered, and once the lane's
+        // replay finishes it lands without a second download.
+        const before = request.mock.calls.length;
+        setActivity("active");
+        await act(async () => {
+          for (const fn of changeListeners()) fn("active");
+        });
+        await act(async () => {
+          releaseReplay({ data: { events: [], hasMore: false } });
+        });
+        await flush();
+        expect(result.current.timeline.items.map((item) => item.id)).toContain("m_older");
+        // No second get_session_entries for the same page: the recommit used
+        // the download already in hand.
+        const entriesCalls = request.mock.calls
+          .slice(before)
+          .filter(([command]) => (command as { type: string }).type === "get_session_entries");
+        expect(entriesCalls).toHaveLength(0);
+        expect(result.current.canLoadOlderTimeline).toBe(false);
+      } finally {
+        Object.defineProperty(AppState, "currentState", originalActivity);
+      }
+    });
+
     test("switching sessions cancels an in-flight page immediately", async () => {
       const errorSpy = jest
         .spyOn(console, "error")

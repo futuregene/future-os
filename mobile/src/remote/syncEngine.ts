@@ -316,6 +316,25 @@ export class SyncEngine {
     this.loop(lane);
   }
 
+  /**
+   * Whether a mutation committed to this lane could still be published.
+   *
+   * False while the session is invisible (a reconcile already dropped its
+   * queue) or the lane has been replaced under it — in both cases the queued
+   * `mutate` op will never run, so a waiter parked on the matching commit
+   * (older-history page, approval decision) would sit until its own timeout
+   * even though the reason it cannot land is already known.
+   */
+  canCommit(sessionId: string): boolean {
+    const lane = this.lanes.get(sessionId);
+    if (!lane) return this.isVisible(sessionId);
+    return (
+      lane.generation === this.generation &&
+      this.lanes.get(sessionId) === lane &&
+      this.isVisible(sessionId)
+    );
+  }
+
   /** Current committed timeline, or null before the lane establishes. */
   timelineFor(sessionId: string): TimelineState | null {
     return this.lanes.get(sessionId)?.timeline ?? null;
