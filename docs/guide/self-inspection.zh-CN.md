@@ -126,7 +126,7 @@ future version --json
 
 | 位置 | 提供什么 |
 |---|---|
-| `CLAUDE.md` | 工作区结构：哪个 crate 负责什么，以及它对应 `~/.future/` 的哪一部分 |
+| `AGENTS.md` | 工作区结构：哪个 crate 负责什么，以及它对应 `~/.future/` 的哪一部分 |
 | `docs/README.md` | 文档索引——指南、架构、内部文档 |
 | `docs/guide/`、`docs/architecture/` | 已发布行为，以及子系统背后的设计 |
 | `FUTURE.md` + `.future/memory/` | 此前会话记录下来的经验与坑 |

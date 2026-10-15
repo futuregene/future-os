@@ -1,7 +1,7 @@
 //! `/worktree` — run (or continue) a conversation inside a git worktree.
 //!
 //! This repository's own workflow is "one worktree per unit of work"
-//! (`CLAUDE.md`), and the TUI had no way to get there: the user had to leave
+//! (`AGENTS.md`), and the TUI had no way to get there: the user had to leave
 //! the TUI, run `git worktree add` in a shell and come back to `/cwd <path>`.
 //! `/worktree` closes that loop **in the TUI layer only** — it *adds* a
 //! worktree and moves the session's working directory through the existing
