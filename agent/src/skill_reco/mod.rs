@@ -30,10 +30,29 @@ const NONE_GATE_THRESHOLD: f64 = 0.15;
 /// Hard cap on candidates per call: a Choice accepts at most 255 options and
 /// `none_of_these` occupies one of them (measured in bench/option-limit.mjs).
 const MAX_CANDIDATES: usize = 254;
-/// Per-call timeout. The client also races this RPC against its own deadline,
-/// but the server-side timeout guarantees the HTTP call itself never hangs a
-/// dispatcher worker indefinitely.
-const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Per-call timeout, deliberately **inside** every client's own deadline
+/// (`RECOMMEND_TIMEOUT_MS` = 3 s in the TUI, the desktop and the phone).
+///
+/// It was 5 s, which is longer than any client waits: the caller gave up at 3 s,
+/// threw the answer away, and this call kept running — and being billed — for
+/// two more seconds for a reply nobody could use. Ending it here instead means
+/// every caller gets a real outcome inside its budget (a failure is *decided* at
+/// 2.5 s rather than abandoned at 3 s) and no call outlives the client that
+/// asked for it. The measured p95 is ≈1.4 s
+/// (`docs/internals/skill_reco/evaluation.md`), so the tail still fits.
+const TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2500);
+/// How long a failing recommender is left alone before it is asked again.
+///
+/// Recommendation is best-effort and its failures are invisible to the user by
+/// design, so without this every later message after a persistent failure — a
+/// spent account, a gateway that is down — paid the whole round-trip again for
+/// an answer that could not have changed. 30 s collapses a burst of messages
+/// into one call while still recovering on its own after a top-up or a gateway
+/// restart.
+const UNAVAILABLE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+/// How many [`FailureKind::Transient`] failures in a row mean "the recommender is
+/// down" rather than "that one call was unlucky".
+const FAILURE_STREAK_TO_OPEN: u32 = 2;
 /// The Jev option text is `name + " " + description`, truncated to this many
 /// chars (the measured knee: shorter loses answers, longer buys nothing).
 const DESC_CHARS: usize = 220;
@@ -74,7 +93,39 @@ enum Outcome {
     },
     /// Transport, HTTP, or decoding failure — the caller sees "no
     /// recommendation" either way, so the reason only exists for this log.
-    Failed { reason: String },
+    Failed { reason: String, kind: FailureKind },
+    /// Not even attempted: the same account failed recently (see [`Memo`]), so a
+    /// retry cannot produce a different answer. The caller sees the same "no
+    /// recommendation" as a failure — this line is what tells the two apart in
+    /// the log, and what accounts for the call that was not made.
+    Skipped { label: String, retry_in_ms: u64 },
+}
+
+/// What a failure says about the *next* message, which is what decides whether
+/// the recommender is worth asking again (see [`Memo`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailureKind {
+    /// The account or the credential: a 401/402/403/429 from the gateway. The
+    /// answer will not change per message, so one is enough to stand down —
+    /// asking again only spends the round-trip the user is waiting on.
+    Account,
+    /// Could be a blip: a timeout, a refused connection, a 5xx, or an answer in
+    /// a shape this build cannot read. Indistinguishable from "the recommender
+    /// is down" until it repeats [`FAILURE_STREAK_TO_OPEN`] times.
+    Transient,
+}
+
+impl FailureKind {
+    /// The phrase the log repeats while this failure stands the recommender
+    /// down. Short on purpose: it is emitted once per skipped message, and the
+    /// full per-call reason (up to 300 columns of gateway body) is already in
+    /// the line that recorded the failure.
+    fn label(self) -> &'static str {
+        match self {
+            FailureKind::Account => "the account cannot produce a recommendation",
+            FailureKind::Transient => "the recommender did not answer",
+        }
+    }
 }
 
 /// What a call actually consumed and produced. Both fields come from the
@@ -111,8 +162,105 @@ static HTTP_CLIENT: std::sync::LazyLock<reqwest::blocking::Client> =
             .unwrap_or_else(|_| reqwest::blocking::Client::new())
     });
 
+/// The recommender's recent health, for the life of this process.
+///
+/// One memo for the process rather than one per session: the failure it encodes
+/// (a spent account, a gateway that is down) belongs to the account, and every
+/// session on this agent would otherwise learn it again, one wasted call each.
+#[derive(Default)]
+struct Memo {
+    /// The account that is standing down, and until when.
+    entry: Option<Unavailable>,
+    /// [`FailureKind::Transient`] failures since the last real answer.
+    streak: u32,
+}
+
+/// One account's stand-down: who it is, why, and for how much longer.
+struct Unavailable {
+    /// The credential it belongs to. Another account has its own gateway, and a
+    /// sign-in or a key change must not inherit this account's failure.
+    key: String,
+    label: String,
+    until: std::time::Instant,
+}
+
+impl Memo {
+    const fn new() -> Self {
+        Self {
+            entry: None,
+            streak: 0,
+        }
+    }
+
+    /// The reason to skip a call for `key`, with the time left on the stand-down.
+    ///
+    /// A pure read: an entry that has expired, or that belongs to another
+    /// account, simply does not apply. Nothing is cleared here, because a
+    /// message for another account must not discard this one's stand-down.
+    fn suppressed(&self, key: &str, now: std::time::Instant) -> Option<(String, u64)> {
+        let entry = self.entry.as_ref()?;
+        if entry.until <= now || entry.key != key {
+            return None;
+        }
+        Some((entry.label.clone(), (entry.until - now).as_millis() as u64))
+    }
+
+    /// Fold one attempt's outcome into the memo.
+    fn note(&mut self, key: &str, outcome: &Outcome, now: std::time::Instant) {
+        // Another account's failure (or answer) is a different series: the count
+        // and the stand-down describe whichever credential is in play, and this
+        // memo holds one of them.
+        if self.entry.as_ref().is_some_and(|entry| entry.key != key) {
+            self.entry = None;
+            self.streak = 0;
+        }
+        let kind = match outcome {
+            // The recommender answered — with a pick or with a refusal. It is
+            // working, and either is a normal outcome.
+            Outcome::Recommended { .. } | Outcome::Refused { .. } => {
+                self.entry = None;
+                self.streak = 0;
+                return;
+            }
+            Outcome::Failed { kind, .. } => *kind,
+            // Nothing was asked (or nothing was attempted), so nothing was
+            // learned: the memo stays as it was.
+            Outcome::NoKey | Outcome::NoInput { .. } | Outcome::Skipped { .. } => return,
+        };
+        match kind {
+            FailureKind::Account => self.stand_down(key, kind.label(), now),
+            FailureKind::Transient => {
+                self.streak += 1;
+                if self.streak >= FAILURE_STREAK_TO_OPEN {
+                    self.stand_down(key, kind.label(), now);
+                }
+            }
+        }
+    }
+
+    fn stand_down(&mut self, key: &str, label: &str, now: std::time::Instant) {
+        self.entry = Some(Unavailable {
+            key: key.to_string(),
+            label: label.to_string(),
+            until: now + UNAVAILABLE_TTL,
+        });
+    }
+}
+
+/// The process-wide memo, shared by every session on this agent.
+fn memo() -> std::sync::MutexGuard<'static, Memo> {
+    static MEMO: std::sync::Mutex<Memo> = std::sync::Mutex::new(Memo::new());
+    // Poison-tolerant on purpose: a panic in an unrelated request must not turn
+    // a best-effort recommendation into a permanently failing one.
+    MEMO.lock().unwrap_or_else(|error| error.into_inner())
+}
+
 /// Returns the single recommended skill, or `None` when the feature is
 /// unavailable, the request fails/times out, or the gate refuses.
+///
+/// The gate is the caller's (it owns the trigger rules); what lives here beyond
+/// the call itself is only "this account just failed, do not spend the user's
+/// next message on it" (see [`Memo`]).
 ///
 /// Never panics and never returns an error to the caller: recommendation is
 /// best-effort, so every failure mode collapses to "no recommendation" and the
@@ -137,9 +285,42 @@ pub fn suggest_skill(query: &str, candidates: &[SkillCandidate]) -> Option<Skill
 /// call actually reached Jev.
 fn attempt(query: &str, candidates: &[SkillCandidate]) -> (Outcome, Attempt) {
     let Some(endpoint) = endpoint() else {
+        // Deliberately not memoized: no credential means no call either way, so
+        // there is nothing to save, and a sign-in must be picked up by the very
+        // next message rather than up to a TTL later.
         return (Outcome::NoKey, Attempt::default());
     };
-    attempt_call(&HTTP_CLIENT, &endpoint, query, candidates)
+    attempt_with(
+        &HTTP_CLIENT,
+        &endpoint,
+        query,
+        candidates,
+        &mut memo(),
+        std::time::Instant::now(),
+    )
+}
+
+/// One attempt, gated and recorded by an explicit [`Memo`] and clock.
+///
+/// Split out of [`attempt`] for the same reason as [`attempt_call`]: what the
+/// memo must do — stand down on an account failure, stand down after a streak,
+/// lift on a real answer, expire on its own — is only testable by driving the
+/// clock and the memo from the test rather than by waiting 30 s of wall time,
+/// and the "no second call" half needs a gateway the test can count requests on.
+fn attempt_with(
+    client: &reqwest::blocking::Client,
+    endpoint: &Endpoint,
+    query: &str,
+    candidates: &[SkillCandidate],
+    memo: &mut Memo,
+    now: std::time::Instant,
+) -> (Outcome, Attempt) {
+    if let Some((label, retry_in_ms)) = memo.suppressed(&endpoint.key, now) {
+        return (Outcome::Skipped { label, retry_in_ms }, Attempt::default());
+    }
+    let (outcome, attempt) = attempt_call(client, endpoint, query, candidates);
+    memo.note(&endpoint.key, &outcome, now);
+    (outcome, attempt)
 }
 
 /// One attempt against an already-resolved endpoint, over a given client.
@@ -181,9 +362,11 @@ fn attempt_call(
                     } else {
                         error.to_string()
                     },
+                    // A transport failure may be a blip; the memo counts them.
+                    kind: FailureKind::Transient,
                 },
                 Attempt::default(),
-            )
+            );
         }
     };
     let status = response.status();
@@ -198,6 +381,7 @@ fn attempt_call(
                     "HTTP {status}: {}",
                     crate::session::truncate_visible(body.trim(), 300)
                 ),
+                kind: status_kind(status.as_u16()),
             },
             Attempt::default(),
         );
@@ -208,6 +392,7 @@ fn attempt_call(
             return (
                 Outcome::Failed {
                     reason: format!("unreadable response: {error}"),
+                    kind: FailureKind::Transient,
                 },
                 Attempt::default(),
             )
@@ -220,6 +405,19 @@ fn attempt_call(
     (decide(&body, candidates), attempt)
 }
 
+/// The status classes that will not change per message: the account itself is
+/// the problem (`401`/`403` a bad or revoked credential, `402` an unpaid or spent
+/// one, `429` a rate-limited account), so one of them is enough to stand down.
+/// Everything else is treated as possibly-transient, including a 5xx and a 400:
+/// a request we get wrong would repeat just as persistently, but only a streak
+/// says so, and a streak is what [`FAILURE_STREAK_TO_OPEN`] is for.
+fn status_kind(status: u16) -> FailureKind {
+    match status {
+        401 | 402 | 403 | 429 => FailureKind::Account,
+        _ => FailureKind::Transient,
+    }
+}
+
 /// Apply the refusal gate and pick the top-1 skill, as an [`Outcome`].
 fn decide(body: &JevResponse, candidates: &[SkillCandidate]) -> Outcome {
     let Some(probabilities) = body
@@ -229,6 +427,7 @@ fn decide(body: &JevResponse, candidates: &[SkillCandidate]) -> Outcome {
     else {
         return Outcome::Failed {
             reason: "response had no chunk_0 probabilities".to_string(),
+            kind: FailureKind::Transient,
         };
     };
 
@@ -244,6 +443,7 @@ fn decide(body: &JevResponse, candidates: &[SkillCandidate]) -> Outcome {
     else {
         return Outcome::Failed {
             reason: "response carried no candidate probabilities".to_string(),
+            kind: FailureKind::Transient,
         };
     };
     // The model can only name options this request offered; a name outside that
@@ -251,6 +451,7 @@ fn decide(body: &JevResponse, candidates: &[SkillCandidate]) -> Outcome {
     if !candidates.iter().any(|candidate| &candidate.name == name) {
         return Outcome::Failed {
             reason: format!("response named an unknown option: {name}"),
+            kind: FailureKind::Transient,
         };
     }
     Outcome::Recommended {
@@ -330,13 +531,21 @@ fn log_outcome(outcome: &Outcome, attempt: Attempt, query: &str, elapsed: std::t
             query = %crate::session::truncate_visible(query.trim(), 40),
             "skill reco: recommended a skill"
         ),
-        Outcome::Failed { reason } => tracing::warn!(
+        Outcome::Failed { reason, kind } => tracing::warn!(
             reason = %reason,
+            // Which failures will stand the recommender down, and which only
+            // count towards a streak: the reason alone does not say.
+            kind = ?kind,
             latency_ms,
             input_tokens,
             output_tokens,
             served_by = %served_by,
             "skill reco: call failed; the message is sent without a card"
+        ),
+        Outcome::Skipped { label, retry_in_ms } => tracing::warn!(
+            reason = %label,
+            retry_in_ms,
+            "skill reco: skipped while the recommender stands down; the message is sent without a card"
         ),
     }
 }
@@ -504,7 +713,7 @@ mod tests {
             &cands,
         );
         assert!(
-            matches!(&unknown, Outcome::Failed { reason } if reason.contains("future-ghost")),
+            matches!(&unknown, Outcome::Failed { reason, kind } if reason.contains("future-ghost") && *kind == FailureKind::Transient),
             "expected an unknown-option failure, got {unknown:?}"
         );
     }
@@ -552,6 +761,21 @@ mod tests {
             served_by: Some("typesafe/jev-1.13-20260917".to_string()),
         };
         let elapsed = std::time::Duration::from_millis(487);
+        // `tracing` recomputes a callsite's interest from a *single* registered
+        // dispatch when only one exists, so a concurrent test's scoped
+        // subscriber (which has no debug level) can win that race and silence
+        // this callsite for the rest of the process — which is why the `NoKey`
+        // line below went missing in 2 runs in 5 whenever the whole module ran
+        // in parallel. A process-wide debug-capable sink gives that
+        // recomputation something to see, and the rebuild re-evaluates the
+        // callsites that were already cached before it.
+        let _ = tracing::subscriber::set_global_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .with_max_level(tracing::Level::DEBUG)
+                .finish(),
+        );
+        tracing::callsite::rebuild_interest_cache();
         tracing::subscriber::with_default(subscriber, || {
             log_outcome(
                 &Outcome::Recommended {
@@ -574,6 +798,16 @@ mod tests {
             log_outcome(
                 &Outcome::Failed {
                     reason: "HTTP 402 Payment Required".to_string(),
+                    kind: FailureKind::Account,
+                },
+                Attempt::default(),
+                "whatever",
+                elapsed,
+            );
+            log_outcome(
+                &Outcome::Skipped {
+                    label: FailureKind::Account.label().to_string(),
+                    retry_in_ms: 21_400,
                 },
                 Attempt::default(),
                 "whatever",
@@ -603,6 +837,12 @@ mod tests {
             "threshold=0.15",
             "HTTP 402 Payment Required",
             "skill reco: call failed",
+            // A skipped call is a third outcome, and the only one that explains
+            // "why did nothing happen" *and* "why was nothing even asked": a
+            // shorter line with no usage, but with the time left on the stand-down.
+            "skill reco: skipped while the recommender stands down",
+            "reason=the account cannot produce a recommendation",
+            "retry_in_ms=21400",
             // Which backend answered, and the fallback when none reported.
             "served_by=typesafe/jev-1.13-20260917",
             "no Future account credential",
@@ -628,7 +868,7 @@ mod tests {
             &response_with(&[("future-ghost", 0.9), (NONE_OPTION, 0.05)]),
             &[cand("future-web")],
         ) {
-            Outcome::Failed { reason } => reason,
+            Outcome::Failed { reason, .. } => reason,
             other => panic!("expected a failure, got {other:?}"),
         };
         assert!(
@@ -1027,6 +1267,10 @@ mod tests {
             outcome,
             Outcome::Failed {
                 reason: format!("HTTP 402 Payment Required: {}", "x".repeat(300)),
+                // A spent/unpaid account is not going to answer differently for
+                // the user's next message, so one 402 stands the recommender
+                // down (see `status_kind`).
+                kind: FailureKind::Account,
             },
             "a day of log lines must not be one gateway error"
         );
@@ -1040,7 +1284,7 @@ mod tests {
         let (url, _request) = one_shot_server("200 OK", "<html>gateway</html>".to_string());
         let (outcome, _) = attempt_call(&HTTP_CLIENT, &gateway(&url), "hello", &[cand("a")]);
         assert!(
-            matches!(&outcome, Outcome::Failed { reason }
+            matches!(&outcome, Outcome::Failed { reason, .. }
                 if reason.starts_with("unreadable response: ")),
             "{outcome:?}"
         );
@@ -1058,7 +1302,7 @@ mod tests {
         };
         let (outcome, _) = attempt_call(&HTTP_CLIENT, &gateway(&url), "hello", &[cand("a")]);
         assert!(
-            matches!(&outcome, Outcome::Failed { reason }
+            matches!(&outcome, Outcome::Failed { reason, .. }
                 if reason.starts_with("connection failed: ")),
             "{outcome:?}"
         );
@@ -1078,6 +1322,8 @@ mod tests {
             outcome,
             Outcome::Failed {
                 reason: format!("timeout after {}ms", TIMEOUT.as_millis()),
+                // One timeout could be a blip: it takes a streak to stand down.
+                kind: FailureKind::Transient,
             }
         );
     }
@@ -1163,7 +1409,8 @@ mod tests {
         assert_eq!(
             outcome,
             Outcome::Failed {
-                reason: "response carried no candidate probabilities".to_string()
+                reason: "response carried no candidate probabilities".to_string(),
+                kind: FailureKind::Transient,
             }
         );
     }
@@ -1221,7 +1468,7 @@ mod tests {
         let (outcome, attempt) =
             attempt_call(&HTTP_CLIENT, &gateway("http://["), "hello", &[cand("a")]);
         match outcome {
-            Outcome::Failed { reason } => {
+            Outcome::Failed { reason, .. } => {
                 assert!(!reason.is_empty(), "a failure must carry a reason");
                 assert!(
                     !reason.starts_with("timeout after")
@@ -1232,5 +1479,166 @@ mod tests {
             other => panic!("expected a failure, got {other:?}"),
         }
         assert_eq!(attempt, Attempt::default());
+    }
+
+    // ── the stand-down (Memo) ─────────────────────────────────────────────
+
+    fn failed(kind: FailureKind) -> Outcome {
+        Outcome::Failed {
+            reason: "whatever the gateway said".to_string(),
+            kind,
+        }
+    }
+
+    /// Which failures stand the recommender down, and how fast, is decided here —
+    /// the clients cannot tell a 402 from a timeout, so nothing upstream of this
+    /// can make the distinction.
+    #[test]
+    fn only_an_account_failure_stands_the_recommender_down_on_the_first_try() {
+        let now = std::time::Instant::now();
+
+        let mut account = Memo::new();
+        account.note("acct", &failed(FailureKind::Account), now);
+        assert_eq!(
+            account.suppressed("acct", now),
+            Some((FailureKind::Account.label().to_string(), 30_000)),
+            "one 402 is enough: asking again cannot change the answer"
+        );
+
+        let mut transient = Memo::new();
+        transient.note("acct", &failed(FailureKind::Transient), now);
+        assert_eq!(
+            transient.suppressed("acct", now),
+            None,
+            "one timeout could be a blip, and a blip is not worth skipping a message over"
+        );
+        assert_eq!(transient.streak, 1);
+        transient.note("acct", &failed(FailureKind::Transient), now);
+        assert_eq!(
+            transient.suppressed("acct", now),
+            Some((FailureKind::Transient.label().to_string(), 30_000)),
+            "the second one in a row is a pattern"
+        );
+    }
+
+    /// An answer — a card or a refusal — means the recommender works, so an older
+    /// failure must not skip the next message, and a streak it interrupted starts
+    /// over rather than resuming.
+    #[test]
+    fn an_answer_lifts_the_stand_down_and_resets_the_streak() {
+        let now = std::time::Instant::now();
+        let mut memo = Memo::new();
+        memo.note("acct", &failed(FailureKind::Account), now);
+        assert!(memo.suppressed("acct", now).is_some());
+
+        memo.note(
+            "acct",
+            &Outcome::Refused {
+                none_probability: 0.6,
+            },
+            now,
+        );
+        assert_eq!(memo.suppressed("acct", now), None, "a refusal is an answer");
+
+        memo.note("acct", &failed(FailureKind::Transient), now);
+        memo.note(
+            "acct",
+            &Outcome::Recommended {
+                skill: "future-web".to_string(),
+                probability: 0.9,
+                none_probability: 0.01,
+            },
+            now,
+        );
+        memo.note("acct", &failed(FailureKind::Transient), now);
+        assert_eq!(
+            memo.suppressed("acct", now),
+            None,
+            "the streak must have been cleared by the card in between"
+        );
+    }
+
+    /// The stand-down is bounded and per account: a top-up or a gateway restart
+    /// must not need an agent restart, and another account's credential must not
+    /// inherit this account's failure.
+    #[test]
+    fn the_stand_down_expires_and_belongs_to_one_account() {
+        let now = std::time::Instant::now();
+        let mut memo = Memo::new();
+        memo.note("acct-a", &failed(FailureKind::Account), now);
+        assert!(memo
+            .suppressed("acct-a", now + UNAVAILABLE_TTL / 2)
+            .is_some());
+        assert_eq!(
+            memo.suppressed("acct-b", now),
+            None,
+            "another account has its own state, and reading does not consume it"
+        );
+
+        // When the other account does fail, its failure is what the memo
+        // carries — the previous account's entry is replaced, not kept beside it.
+        memo.note("acct-b", &failed(FailureKind::Account), now);
+        assert!(memo.suppressed("acct-b", now).is_some());
+        assert_eq!(memo.suppressed("acct-a", now), None);
+
+        // Expiry lifts it on its own, and the streak still needs two failures in
+        // a row (an expiry is not an answer, so it does not clear the count).
+        let later = now + UNAVAILABLE_TTL;
+        assert_eq!(memo.suppressed("acct-b", later), None);
+        let mut fresh = Memo::new();
+        fresh.note("acct-b", &failed(FailureKind::Transient), later);
+        assert_eq!(fresh.suppressed("acct-b", later), None);
+    }
+
+    /// What the memo buys: after a 402, the next message costs no round-trip at
+    /// all. This gateway serves exactly one request, so a second call could only
+    /// fail — `Skipped` is what proves none was made.
+    #[test]
+    fn a_spent_account_is_not_asked_again_for_the_next_message() {
+        let (url, _request) = one_shot_server("402 Payment Required", "no credits".to_string());
+        let endpoint = gateway(&url);
+        let mut memo = Memo::new();
+        let now = std::time::Instant::now();
+
+        let (outcome, _) = attempt_with(
+            &HTTP_CLIENT,
+            &endpoint,
+            "hello",
+            &[cand("future-web")],
+            &mut memo,
+            now,
+        );
+        assert!(
+            matches!(
+                outcome,
+                Outcome::Failed {
+                    kind: FailureKind::Account,
+                    ..
+                }
+            ),
+            "a 402 is an account failure: {outcome:?}"
+        );
+
+        let (second, attempt) = attempt_with(
+            &HTTP_CLIENT,
+            &endpoint,
+            "hello again",
+            &[cand("future-web")],
+            &mut memo,
+            now,
+        );
+        assert_eq!(
+            second,
+            Outcome::Skipped {
+                label: FailureKind::Account.label().to_string(),
+                retry_in_ms: 30_000,
+            },
+            "the next message must not spend a round-trip on the same failure"
+        );
+        assert_eq!(
+            attempt,
+            Attempt::default(),
+            "and certainly not a billed one"
+        );
     }
 }
