@@ -465,6 +465,58 @@ describe("useTimelineController", () => {
       expect(request).not.toHaveBeenCalled();
     });
 
+    // The reported symptom: the reply stopped where the trimmed lane's first
+    // by-design hole fell (a reasoning/argument delta the desktop never sends),
+    // while the run kept going — so the reader saw a partial reply that never
+    // grew. The lane must apply across such a hole, and must not ask for a
+    // replay it can never get: the omitted slices are not in the journal either.
+    test("a by-design index hole in the trimmed lane still lands the reply", async () => {
+      options.selectedSessionId = "s1";
+      (
+        options.clientRef.current as unknown as {
+          feedsOmittedIndices: () => boolean;
+        }
+      ).feedsOmittedIndices = () => true;
+      request.mockImplementation(async (command: { type: string; }) => ({
+        data: command.type === "get_state"
+          ? { activeRun: { runId: "r" } }
+          : command.type === "get_events_since"
+            ? { events: [], hasMore: false }
+            : { entries: [] },
+      }));
+      render();
+      await establish();
+      const reply = () => {
+        const timeline = result.current.timeline;
+        return timeline.items
+          .filter((item) => item.kind === "message" && item.role === "assistant")
+          .map((item) => (item.kind === "message" ? item.text : ""))
+          .join("");
+      };
+      act(() => result.current.handleEvent(evt("agent_start", "{}", "r", 0), "s1"));
+      act(() => result.current.handleEvent(evt("text_chunk", '{"text":"first"}', "r", 1), "s1"));
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      });
+      expect(reply()).toBe("first");
+      const replaysBefore = request.mock.calls.filter(
+        (call) => (call[0] as { type: string; }).type === "get_events_since",
+      ).length;
+
+      // Idx 2..8 were dropped by the trim, so the survivor arrives above the
+      // cursor instead of one step past it.
+      act(() => result.current.handleEvent(evt("text_chunk", '{"text":" second"}', "r", 9), "s1"));
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      });
+
+      expect(reply()).toBe("first second");
+      const replaysAfter = request.mock.calls.filter(
+        (call) => (call[0] as { type: string; }).type === "get_events_since",
+      ).length;
+      expect(replaysAfter).toBe(replaysBefore);
+    });
+
     test.each(["provider_config_changed", "model_visibility_changed"])("%s refreshes models without reconciling a global timeline", type => {
       render();
       const reconcile = jest.spyOn(result.current.syncEngineRef.current!, "reconcile");
