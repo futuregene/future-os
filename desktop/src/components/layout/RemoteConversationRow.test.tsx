@@ -61,12 +61,16 @@ async function mount(props: {
   expanded?: boolean;
   hasChildren?: boolean;
   onToggleExpanded?: (conversation: MergedConversation) => void;
+  onToggleSelection?: (conversation: MergedConversation) => void;
+  selected?: boolean;
+  selectionMode?: boolean;
   unread?: boolean;
 } = {}) {
   const onChanged = vi.fn();
   const onDeletedRemote = vi.fn();
   const onOpen = vi.fn();
   const onOpenRename = vi.fn();
+  const onToggleSelection = vi.fn();
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -83,7 +87,10 @@ async function mount(props: {
         onOpen={onOpen}
         onOpenRename={onOpenRename}
         onToggleExpanded={props.onToggleExpanded}
+        onToggleSelection={props.onToggleSelection ?? onToggleSelection}
         peer={peer}
+        selected={props.selected}
+        selectionMode={props.selectionMode}
         unread={props.unread}
       />,
     );
@@ -94,7 +101,9 @@ async function mount(props: {
     onDeletedRemote,
     onOpen,
     onOpenRename,
+    onToggleSelection,
     action: () => container.querySelector<HTMLButtonElement>("button[aria-label='More actions']")!,
+    checkbox: () => container.querySelector<HTMLInputElement>("input[type='checkbox']")!,
     row: () => container.querySelector<HTMLButtonElement>("button[title]")!,
     text: () => container.textContent ?? "",
     unmount: async () => {
@@ -246,6 +255,29 @@ it("folds its forks with the local row's own toggle, without opening the row", a
   const leaf = await mount({ depth: 1 });
   expect(leaf.container.querySelector("button[aria-expanded]:not([aria-haspopup])")).toBeNull();
   await leaf.unmount();
+});
+
+/**
+ * While a batch is being assembled the checkbox takes the actions trigger's
+ * place, exactly as it does on a local row.
+ *
+ * Leaving the `…` on the row put it under the pointer that is ticking rows —
+ * the moment the row is answering "in or out of the batch" it offered rename /
+ * delete / fork for the single conversation about to be ticked, so the two kinds
+ * of row showed two different sets of controls for the same state.
+ */
+it("shows the batch's checkbox instead of the actions trigger", async () => {
+  const view = await mount({ selected: true, selectionMode: true });
+
+  const checkbox = view.checkbox();
+  expect(checkbox.checked).toBe(true);
+  expect(checkbox.getAttribute("aria-label")).toBe("Select Fix the login bug");
+  expect(view.container.querySelector("button[aria-haspopup='menu']")).toBeNull();
+  await act(async () => checkbox.click());
+  expect(view.onToggleSelection).toHaveBeenCalledTimes(1);
+  // Ticking is not opening: the row's click target stays behind the checkbox.
+  expect(view.onOpen).not.toHaveBeenCalled();
+  await view.unmount();
 });
 
 /**
