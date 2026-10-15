@@ -773,6 +773,34 @@ fn new_session_honors_explicit_id_cwd_model_level_and_provenance() {
 }
 
 #[test]
+fn new_session_accepts_an_initial_system_prompt_append() {
+    let state = make_app_state();
+    let mut cmd = make_cmd_for("new_session", "ns-append");
+    cmd.system_prompt = "Always answer in haiku.".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true);
+    let session = state.get_session("ns-append").unwrap();
+    assert_eq!(
+        session.read().append_system_prompt,
+        "Always answer in haiku."
+    );
+
+    // The created session's rules are live before its first run: the prompt a
+    // run would build already carries them.
+    assert!(session
+        .read()
+        .current_system_prompt()
+        .contains("Always answer in haiku."));
+
+    // No value → no append (not an empty-string rule that would add a blank
+    // section to every prompt).
+    let cmd2 = make_cmd_for("new_session", "ns-no-append");
+    parse_response(&handle_command_internal(&state, cmd2));
+    let sess2 = state.get_session("ns-no-append").unwrap();
+    assert_eq!(sess2.read().append_system_prompt, "");
+}
+
+#[test]
 fn new_session_accepts_initial_human_readable_title() {
     let state = make_app_state();
     let mut cmd = make_cmd_for("new_session", "ns-titled");

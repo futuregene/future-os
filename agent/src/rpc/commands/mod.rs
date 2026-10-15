@@ -358,6 +358,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "abort" => run_control::handle_abort(state, &session, &cmd, id),
         "approval_decision" => run_control::handle_approval_decision(state, &cmd, id),
         "get_state" => observability::handle_get_state(state, &cmd, id),
+        "get_system_prompt" => observability::handle_get_system_prompt(&session, id),
         "get_messages" => observability::handle_get_messages(&session, id),
         "get_events_since" => observability::handle_get_events_since(&session, &cmd, id),
         "get_run_snapshot" => observability::handle_get_run_snapshot(&session, &cmd, id),

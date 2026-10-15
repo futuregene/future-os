@@ -763,6 +763,12 @@ fn get_state_internal(
             .sandbox_policy
             .as_ref()
             .map(|policy| policy.tier.as_str().to_string()),
+        // The persistent per-session append segment (read-back half of
+        // `append_system_prompt`) and whether project context is folded in.
+        // `context_files` alone cannot answer the latter: an enabled session
+        // with no instruction files present also reports an empty list.
+        append_system_prompt: sess.append_system_prompt.clone(),
+        context_files_enabled: !sess.no_context_files,
     })
     .unwrap_or_default();
     Some(payload)

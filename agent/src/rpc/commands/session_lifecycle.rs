@@ -534,6 +534,15 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
         new_sess.thinking_level = cmd.level.clone();
     }
 
+    // Initial persistent system-prompt append segment (same storage as
+    // `append_system_prompt`). Carried on the generic `system_prompt` field:
+    // `new_session` has no other use for it, and reusing it keeps a session
+    // created with rules and one that sets them right after creation on the
+    // same path.
+    if !cmd.system_prompt.is_empty() {
+        new_sess.set_append_system_prompt(&cmd.system_prompt);
+    }
+
     // Automation-minted sessions (goal control plane, channels) may pass an
     // initial human-readable title in `name` (same proto field as
     // set_session_name). Empty name keeps the default — the name stays empty

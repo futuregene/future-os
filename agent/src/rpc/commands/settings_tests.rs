@@ -129,8 +129,46 @@ fn append_system_prompt_works() {
     let state = make_app_state();
     let mut cmd = make_cmd("append_system_prompt");
     cmd.system_prompt = "Extra instructions".to_string();
-    let resp = parse_response(&handle_command_internal(&state, cmd));
+    let resp = parse_response(&handle_command_internal(&state, cmd.clone()));
     assert_eq!(resp["success"], true);
+    // The stored value and the echo agree — this is what the session's next
+    // run re-appends, so a caller can confirm the write without re-reading.
+    assert_eq!(resp["data"]["appendSystemPrompt"], "Extra instructions");
+    let session = state.get_session(&cmd.session_id).expect("session");
+    assert_eq!(session.read().append_system_prompt, "Extra instructions");
+
+    // An empty value is the documented way to clear it, and reports as such
+    // rather than as a no-op.
+    let mut clear = make_cmd("append_system_prompt");
+    clear.session_id = cmd.session_id.clone();
+    let resp = parse_response(&handle_command_internal(&state, clear));
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"]["appendSystemPrompt"], "");
+    assert_eq!(session.read().append_system_prompt, "");
+}
+
+/// `get_system_prompt` must return the prompt a run would send *and* be a pure
+/// read: asking twice cannot change the answer.
+#[test]
+fn get_system_prompt_returns_the_built_prompt_including_the_append() {
+    let state = make_app_state();
+    let mut cmd = make_cmd("append_system_prompt");
+    cmd.system_prompt = "MARKER_RULE".to_string();
+    let session_id = cmd.session_id.clone();
+    handle_command_internal(&state, cmd);
+
+    let mut read = make_cmd("get_system_prompt");
+    read.session_id = session_id.clone();
+    let first = parse_response(&handle_command_internal(&state, read.clone()));
+    assert_eq!(first["success"], true);
+    let prompt = first["data"]["systemPrompt"].as_str().unwrap();
+    assert!(prompt.contains("MARKER_RULE"));
+    assert!(prompt.contains("You are FutureAgent"));
+    assert_eq!(first["data"]["appendSystemPrompt"], "MARKER_RULE");
+    assert_eq!(first["data"]["contextFilesEnabled"], true);
+
+    let second = parse_response(&handle_command_internal(&state, read));
+    assert_eq!(first["data"], second["data"]);
 }
 
 #[test]
