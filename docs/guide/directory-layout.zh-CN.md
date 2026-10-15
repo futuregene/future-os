@@ -1,8 +1,7 @@
 # 目录布局：`~/.future/` 下各目录的职责
 
 FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
-`%USERPROFILE%\.future\`）；loop 默认存放在项目内，Linux runtime IPC 可位于
-`XDG_RUNTIME_DIR`，详见下文。本页给出各目录、所属组件与内容。
+`%USERPROFILE%\.future\`）；loop 默认存放在项目内。本页给出各目录、所属组件与内容。
 以下路径使用 macOS/Linux 写法；Windows 布局相同，根为 `%USERPROFILE%\.future\`。
 
 ```text
@@ -43,7 +42,7 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 ├── remote_pairing.json        # 桌面远程桥身份（nkey_seed + user_jwt）
 ├── approval_rule.json         # 用户级路径审批规则
 ├── windows-capabilities.json  # Windows 沙箱 ACL 清理元数据
-├── run/agent.sock             # Unix IPC 回退路径（Windows 不使用）
+├── run/agent.sock             # Unix IPC 端点（Windows 不使用）
 └── bin/                       # CLI / agent 链接：`future`、`future-agent`（见下）
 ```
 
@@ -78,10 +77,12 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 
 ## IPC、审批规则与 Windows 清理
 
-Unix socket 依次选择显式 `FUTURE_AGENT_SOCKET`；设置 `FUTURE_HOME` 时使用该 home 自己的
-`<home>/run/agent.sock`（XDG 运行时目录是按用户而非按实例的，被重定向的实例不能绑定在
-那里）；Linux 上已设置时使用 `$XDG_RUNTIME_DIR/future/agent.sock`；最后回退到
-`~/.future/run/agent.sock`（也是 macOS 默认）。Windows 使用每用户命名管道而不是 socket
+Unix socket 依次选择：显式 `FUTURE_AGENT_SOCKET`；否则始终由实例的 FutureOS home
+持有端点——`<home>/run/agent.sock`（通过 `FUTURE_HOME` 重定向，默认
+`~/.future/run/agent.sock`）。刻意不使用 `$XDG_RUNTIME_DIR` 这类共享运行时目录：
+它是按用户而非按实例的，且在没有 systemd 登录会话的主机上可能根本无法创建或写入。
+若 FutureOS home 位于无法承载 Unix socket 的文件系统（如 NFS），请将 `FUTURE_HOME`
+指向本地文件系统上的目录。Windows 使用每用户命名管道而不是 socket
 文件——home 被重定向时管道名会带上该 home 的标记。`future agent --grpc-addr <host:port>`
 显式开启 TCP；客户端可用 `FUTURE_AGENT_GRPC_ADDR` 覆盖（渠道使用 `agent.grpc_addr`），
 显式客户端 TCP 地址具有权威性——连接失败会直接报错，不会回退本地 IPC。

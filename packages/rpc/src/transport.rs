@@ -240,7 +240,6 @@ pub fn local_socket_path() -> std::path::PathBuf {
     local_socket_path_from(
         std::env::var_os("FUTURE_AGENT_SOCKET"),
         crate::home::future_home_override(),
-        std::env::var_os("XDG_RUNTIME_DIR"),
         std::env::var_os("HOME"),
     )
 }
@@ -248,15 +247,17 @@ pub fn local_socket_path() -> std::path::PathBuf {
 /// Local endpoint of the instance that owns `future_home` (see
 /// [`crate::home`]), with every environment input injected for testability.
 ///
-/// A redirected FutureOS home owns its own endpoint under `<home>/run`, in
-/// front of the shared `$XDG_RUNTIME_DIR`: the runtime directory is per-user,
-/// not per-instance, so a second isolated Agent binding there would steal the
-/// default instance's socket instead of running beside it.
+/// The endpoint always lives under the instance's FutureOS home, so one
+/// directory owns the whole instance boundary (lock, database, sessions and
+/// IPC endpoint together). A shared runtime directory such as
+/// `$XDG_RUNTIME_DIR` is deliberately not consulted: it is per-user rather
+/// than per-instance, and on hosts without a systemd login session (HPC
+/// compute nodes) it commonly points at a directory the user cannot create
+/// or write, which used to abort the Agent with `EACCES`.
 #[cfg(unix)]
 fn local_socket_path_from(
     explicit: Option<std::ffi::OsString>,
     future_home: Option<std::path::PathBuf>,
-    xdg_runtime_dir: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
 ) -> std::path::PathBuf {
     if let Some(path) = explicit.filter(|v| !v.is_empty()) {
@@ -265,14 +266,6 @@ fn local_socket_path_from(
     if let Some(future_home) = future_home {
         return future_home.join("run").join("agent.sock");
     }
-    #[cfg(target_os = "linux")]
-    if let Some(runtime) = xdg_runtime_dir.filter(|v| !v.is_empty()) {
-        return std::path::PathBuf::from(runtime)
-            .join("future")
-            .join("agent.sock");
-    }
-    #[cfg(not(target_os = "linux"))]
-    let _ = xdg_runtime_dir;
     let home = home
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
@@ -404,6 +397,22 @@ impl AsyncWrite for LocalIo {
 
 pub type LocalIncoming = Pin<Box<dyn Stream<Item = Result<LocalIo, io::Error>> + Send + 'static>>;
 
+/// Attach actionable guidance when the socket directory cannot be created or
+/// inspected: a FutureOS home on NFS (or any filesystem that does not support
+/// Unix-domain sockets) or without write permission is the common cause.
+#[cfg(unix)]
+fn bind_dir_error(error: io::Error, parent: &std::path::Path) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!(
+            "cannot prepare local socket directory {}: {error}; if the FutureOS home is on NFS \
+             or otherwise unsuitable, point FUTURE_HOME (or FUTURE_AGENT_SOCKET) at a directory \
+             on a local filesystem",
+            parent.display()
+        ),
+    )
+}
+
 #[cfg(unix)]
 struct SocketCleanup(std::path::PathBuf);
 
@@ -430,8 +439,8 @@ async fn bind_local_at(path: std::path::PathBuf) -> io::Result<LocalIncoming> {
             "local socket has no parent directory",
         )
     })?;
-    std::fs::create_dir_all(parent)?;
-    let metadata = std::fs::metadata(parent)?;
+    std::fs::create_dir_all(parent).map_err(|error| bind_dir_error(error, parent))?;
+    let metadata = std::fs::metadata(parent).map_err(|error| bind_dir_error(error, parent))?;
     if metadata.uid() != unsafe { libc::geteuid() } {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -660,49 +669,38 @@ mod tests {
         let path = local_socket_path_from(
             Some("/tmp/explicit.sock".into()),
             Some(std::path::PathBuf::from("/tmp/futureos-home")),
-            Some("/run/user/1000".into()),
             Some("/home/user".into()),
         );
         assert_eq!(path, std::path::PathBuf::from("/tmp/explicit.sock"));
     }
 
-    /// The XDG runtime dir is per-user, so an instance with its own FutureOS
-    /// home must not bind there — it would take over the default instance's
-    /// socket. Regression guard for multi-instance isolation.
+    /// A redirected FutureOS home owns its endpoint under `<home>/run` — the
+    /// instance boundary and the FutureOS home boundary are the same thing.
+    /// Regression guard for multi-instance isolation.
     #[cfg(unix)]
     #[test]
-    fn redirected_future_home_owns_its_endpoint_and_ignores_xdg() {
+    fn redirected_future_home_owns_its_endpoint() {
         let home = std::path::PathBuf::from("/tmp/futureos-home");
-        let path = local_socket_path_from(
-            None,
-            Some(home.clone()),
-            Some("/run/user/1000".into()),
-            Some("/home/user".into()),
-        );
+        let path = local_socket_path_from(None, Some(home.clone()), Some("/home/user".into()));
         assert_eq!(path, home.join("run").join("agent.sock"));
     }
 
+    /// Without a redirect the endpoint stays under the default FutureOS home;
+    /// `$XDG_RUNTIME_DIR` is deliberately ignored (per-user, not per-instance,
+    /// and unwritable on hosts without a systemd login session).
     #[cfg(unix)]
     #[test]
-    fn without_a_redirect_the_endpoint_keeps_its_documented_chain() {
-        #[cfg(target_os = "linux")]
+    fn without_a_redirect_the_endpoint_stays_under_the_default_home() {
         assert_eq!(
-            local_socket_path_from(
-                None,
-                None,
-                Some("/run/user/1000".into()),
-                Some("/home/user".into()),
-            ),
-            std::path::PathBuf::from("/run/user/1000/future/agent.sock")
+            local_socket_path_from(None, None, Some("/home/user".into())),
+            std::path::PathBuf::from("/home/user/.future/run/agent.sock")
         );
         assert_eq!(
-            local_socket_path_from(
-                None,
-                None,
-                Some(String::new().into()),
-                Some("/home/user".into()),
-            ),
-            std::path::PathBuf::from("/home/user/.future/run/agent.sock")
+            local_socket_path_from(None, None, None),
+            std::env::temp_dir()
+                .join(".future")
+                .join("run")
+                .join("agent.sock")
         );
     }
 

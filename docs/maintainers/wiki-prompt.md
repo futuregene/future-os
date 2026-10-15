@@ -59,7 +59,8 @@ repository guides when necessary for troubleshooting.
    read/ACL/delete limits. Disclose the `auth.json` exception. Do not turn an
    available probe or old smoke PASS into universal release/security certification.
 3. **Local IPC is default.** Unix socket selection honors `FUTURE_AGENT_SOCKET`,
-   then Linux `XDG_RUNTIME_DIR`, then the HOME fallback; Windows uses a per-user
+   otherwise the instance's FutureOS home always owns the endpoint
+   (`<home>/run/agent.sock`); Windows uses a per-user
    pipe. TCP is explicit. TUI/Desktop may start a sidecar; they only own the agent
    they started, not an externally managed process.
 4. **Release vs test builds.** Formal macOS/Windows release workflows sign;

@@ -181,8 +181,9 @@ fn agent_default_mode_binds_per_user_local_socket() {
     use std::os::unix::fs::PermissionsExt;
 
     let home = isolated_home();
-    // Force the fallback socket path (~/.future/run/agent.sock): on Linux CI
-    // XDG_RUNTIME_DIR points at /run/user/<uid>, outside the isolated HOME.
+    // The endpoint lives under the FutureOS home (~/.future/run/agent.sock);
+    // XDG_RUNTIME_DIR is not consulted, but scrub it so a stale value that
+    // once took precedence cannot mask regressions on Linux CI.
     let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
         .args(["--profile-seconds", "0"])
         .env("HOME", home.path())

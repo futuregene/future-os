@@ -2,10 +2,12 @@
 
 TUI 是终端客户端：`future-tui`，默认通过**每用户本地 IPC**连接 Agent。
 macOS/Linux 使用 Unix socket，Windows 使用仅当前用户可访问的命名管道。
-Unix 优先使用 `FUTURE_AGENT_SOCKET`；Linux 否则使用 `$XDG_RUNTIME_DIR/future/agent.sock`，
-未设置时回退到 `~/.future/run/agent.sock`（也是 macOS 默认路径）。设置 `FUTURE_HOME`
-时会接入 `<FUTURE_HOME>/run/agent.sock` 的实例——见[多实例运行](directory-layout.zh-CN.md#多实例运行future_home)。
-若无可连接 Agent，TUI 会启动 sidecar 并在退出时关闭自己启动的进程，无需手动预先启动。
+Unix 优先使用
+`FUTURE_AGENT_SOCKET`；否则端点始终位于实例的 FutureOS home 之下：默认
+`~/.future/run/agent.sock`，设置 `FUTURE_HOME` 时为
+`<FUTURE_HOME>/run/agent.sock`——见[多实例运行](directory-layout.zh-CN.md#多实例运行future_home)。
+若 FutureOS home 位于无法承载 Unix socket 的文件系统（如 NFS），请将 `FUTURE_HOME`
+指向本地文件系统上的目录。若无可连接 Agent，TUI 会启动 sidecar 并在退出时关闭它，无需手动预先启动。
 也可以自行运行：
 
 ```bash
