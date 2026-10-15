@@ -543,6 +543,10 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         name: String::new(),
         cwd: String::new(),
         system_prompt: String::new(),
+        // append_system_prompt: session-level by default (recorded with the
+        // session and re-applied at every run). This builder is only used for
+        // commands that carry no append, so the value is always false here.
+        transient: false,
         tools: vec![],
         ephemeral: false,
         enabled_models: vec![],

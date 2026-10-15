@@ -236,6 +236,12 @@ impl AgentClient {
             session_id,
             RpcCommand {
                 system_prompt: text.to_string(),
+                // Session-level, not one-shot: the boundary must hold for every
+                // run this worker performs, and `boundary_injected` records it as
+                // done after the first. (Translating the agent-side append into a
+                // prompt the model actually sees is what the `transient = false`
+                // path was added for.)
+                transient: false,
                 ..Default::default()
             },
         )

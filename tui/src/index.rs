@@ -438,6 +438,10 @@ async fn apply_cli_options(addr: &str, session_id: &str, args: &CliArgs) -> Resu
                 "append_system_prompt",
                 RpcCommand {
                     system_prompt: prompt,
+                    // The TUI's flag is the same kind of one-off as
+                    // `future run --append-system-prompt`: it must not retune the
+                    // session for later runs.
+                    transient: true,
                     ..Default::default()
                 },
             );
