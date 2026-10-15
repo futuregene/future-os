@@ -3,7 +3,7 @@
 > [English](embedded-agent-development.md)
 >
 > 设计日期：2026-10-13。源码基线：`88fe90a8`。
-> 状态：阶段一至六已实现。macOS 验收见第 10.7 节；用户报告 Windows 全量单测通过，见第 10.8 节。阶段七进行中：CI、原生生命周期及升级 fixture 的验收入口已补齐，执行和发布验收仍待完成，见第 10.9 节。阶段八、原生 Linux 沙箱、真实安装升级和性能对比尚未完成。
+> 状态：阶段一至六已实现。macOS 验收见第 10.7 节；用户报告 Windows 全量单测通过，见第 10.8 节。阶段七进行中：原生生命周期 CI、升级 fixture、macOS ad-hoc 打包和 Linux/Windows daily 未签名包验证已通过，见第 10.9–10.13 节。阶段八、正式签名/公证、原生 Linux 沙箱、真实安装升级和性能对比尚未完成。
 
 Desktop 在默认本地端点没有外部 Agent 且成功取得实例锁时，以 Rust library 的方式在自己的进程内运行完整 Agent。兼容外部服务继续连接，不兼容或持锁不可用的服务明确报错。外部 Agent、CLI、TUI、channels 和 loop 继续使用统一 RPC。改动的主要目的，是减少 Windows 启动和升级过程中 Desktop 与 sidecar 生命周期不同步的问题，同时保留实例锁、完整工具能力、持久化和外部客户端接入。
 
@@ -563,7 +563,7 @@ Windows GUI/headless 同样必须顺序执行。占位 CLI 仅供编译，NSIS �
 
 ### 10.9 阶段七 CI 接入与发布验收清单（2026-10-15）
 
-本轮本地仅做静态检查：actionlint、Python 语法、四份 PowerShell 脚本的官方解析器校验、workspace fmt、`git diff --check` 以及 260 份文档结构检查通过；生命周期断言回归和原生 fixture 交给 CI，不在本地重跑单测。PowerShell 语法检查运行于 macOS，不代表 Windows API/NSIS 行为已验证。
+本轮不在本地重跑单测，生命周期断言回归和原生 fixture 交给 CI。actionlint、Python 语法、四份 PowerShell 脚本的官方解析器校验、workspace fmt、`git diff --check` 以及 260 份文档结构检查通过；另外执行了第 10.11 节的 macOS 真实打包 smoke。PowerShell 语法检查运行于 macOS，不代表 Windows API/NSIS 行为已验证。
 
 手动 CI 默认执行完整范围；仅调整 Windows 安装/观察器 fixture 时，可用 `gh workflow run ci.yml --ref <工作分支> -f scope=windows-update` 单独验收，避免重复三平台 Rust 构建和无关单测。PR 仍按路径依赖选取检查，不能用手动窄范围运行替代合并条件。
 
@@ -595,10 +595,10 @@ $env:FUTURE_AGENT_SOCKET = $null
 
 | 剩余验收 | 入口与要求 | 当前状态 |
 | --- | --- | --- |
-| 三平台 CI | 新的原生 fixture、既有静态检查和 Linux 分组全量测试 | 三平台编译/原生专项已通过；Desktop 全量修复复验及最终 PR CI 另行记录；未在本地重跑单测 |
+| 三平台 CI | 新的原生 fixture、既有静态检查和 Linux 分组全量测试 | 三平台编译/最终原生专项通过，GUI/headless 全量 library 和入口专项通过（分次运行，见 10.10）；最终 PR CI 待创建 PR 后执行；未在本地重跑单测 |
 | Windows 离线更新 | `test-windows-installer-preflight.ps1`（含 observer）、生命周期断言及 `test-install.ps1` | `9caaff29` 原生 Windows CI 已通过，见第 10.10 节；不代替真实产品安装 |
 | 原生 Linux 沙箱 | `scripts/tests/test-linux-sandbox-real-machine.sh`；真实 Bubblewrap ≥ 0.9.0、helper 和子进程回收 | 待原生 Linux；WSL 不计通过 |
-| 签名与发布产物 | 既有 Windows/macOS 签名工作流、Linux deb/musl 工作流及 `scripts/ci/check-headless-linux.sh` | macOS 本地 ad-hoc app/DMG 验证通过；发布签名、公证和 Windows/Linux 产物待验收；没有发布新版本 |
+| 签名与发布产物 | 既有 Windows/macOS 签名工作流、Linux deb/musl 工作流及 `scripts/ci/check-headless-linux.sh` | macOS 本地 ad-hoc app/DMG 通过；Linux 双架构及 Windows daily 未签名包构建/包内验证/OSS 下载校验通过（10.13）；正式签名、公证待验收，未更新发布清单 |
 | 真实安装升级 | 干净 VM 上的旧 sidecar 版→新版、内置版→新版、同版本修复；手动与应用自动升级 | 待执行；验证清理失败不安装、外部占用阻止替换、回滚保留用户数据 |
 | 产品交互 | GUI/CLI/TUI 真实工具对话、排队/审批退出提示、取消后重开、外部服务普通退出存活 | 后端已有 fixture，打包 UI/完整工具 smoke 待执行 |
 | 性能与体积 | 同机器、同配置、同任务，sidecar 与内置各至少 5 次；保留原始样本 | 待测量；没有宣称性能改善 |
@@ -627,7 +627,9 @@ macOS 本地真实打包还发现：在已有 mode 0644 编译占位文件上执
 
 `887c5b77` 的 Desktop 范围复验中，GUI library 1,805 通过/12 ignored，headless library 1,470 通过/12 ignored，调度器修复有效。随后显式启用 headless feature 后新执行的 `headless_cli` 集成目标为 7 通过/1 失败：信号用例把 stderr 第一行硬编码为 foreground 提示，而 Linux 先打印登录 shell 环境补全日志。用例改为持续排空 stderr、在 15 秒内等待 foreground 标记，再发送信号；不吞掉退出码、超时或数据变化断言。子进程还显式隔离 FUTURE_HOME 并清除 socket override。该集成目标另行复验，不能把上述 run 整体记为通过。
 
-入口专项 [38676125549](https://github.com/futuregene/future-os/actions/runs/38676125549) 在 `cebd5140` 越过日志断言后暴露实际边界：外部握手中收到 SIGINT，连接失败仍被记为宿主失败，进程退出 1。宿主改为每次启动使用独立 Notify 取消握手；未取得服务所有权时的正常停止完成后进入 Stopped，不打开 Agent 数据库。类型化启动取消仅在服务完整清理范围内转为正常结果，真正的清理失败仍保留失败与锁。新增原生 `cancel-probe` fixture，先证明确已连接一个不答 HTTP/2 的自建端点，再停止、检查无数据库/metadata/所有权，并验证再次启动不会消耗旧停止通知；外部端点始终由测试持有。入口测试在退出断言前收集完整 stderr，后续失败可以直接定位原因。该生产边界修改需三平台原生专项及信号集成复验。
+入口专项 [38676125549](https://github.com/futuregene/future-os/actions/runs/38676125549) 在 `cebd5140` 越过日志断言后暴露实际边界：外部握手中收到 SIGINT，连接失败仍被记为宿主失败，进程退出 1。宿主改为每次启动使用独立 Notify 取消握手；未取得服务所有权时的正常停止完成后进入 Stopped，不打开 Agent 数据库。类型化启动取消仅在服务完整清理范围内转为正常结果，真正的清理失败仍保留失败与锁。新增原生 `cancel-probe` fixture，先证明确已连接一个不答 HTTP/2 的自建端点，再停止、检查无数据库/metadata/所有权，并验证再次启动不会消耗旧停止通知；外部端点始终由测试持有。入口测试在退出断言前收集完整 stderr，后续失败可以直接定位原因。
+
+修复 `b2f83f2e` 的 [原生生命周期专项 38677580964](https://github.com/futuregene/future-os/actions/runs/38677580964) 中，Linux/Windows/macOS 均通过 RPC 连接门禁 6、服务启动集成 10、GUI 宿主 10、headless 宿主 10；`headless_cli` 8 例全部通过，覆盖 SIGINT/SIGTERM/SIGHUP 和原外部端点/配对数据保留。三平台摘要及日志保存于 `agent/target/phase7-ci-results/native-final-{linux,windows,macos}/`，入口日志为 `headless-cli-b2f83f2e.log`。该专项没有重新执行无关全量 library 测试；全量 library 证据来自上面的 `887c5b77`，Windows 离线安装证据来自 `9caaff29`，不能描述为最新提交一次全量 CI 全通过。
 
 ### 10.11 macOS 实际产物验收（2026-10-15）
 
@@ -646,7 +648,7 @@ macOS 本地真实打包还发现：在已有 mode 0644 编译占位文件上执
 
 产物与日志在忽略目录 `agent/target/phase7-macos-artifacts/`：`FutureOS_0.0.2_aarch64.dmg`、`build-final.log`、`artifact-smoke.json`、DMG 校验和包内命令日志。没有安装、启动真实 GUI 会话或发布该产物。无 sidecar 可比基线，因此只记录绝对包体，性能项仍待验收。
 
-macOS 发布工作流增加实际 app 内 CLI 可执行权限、精确版本、Desktop 帮助入口和无 Agent 状态初始化检查；同一检查代码已对本地产物执行通过。Linux 发布工作流增加从实际 deb 解包后运行对应程序的检查，Python 语法和 actionlint 通过，实际 deb 执行仍待 Linux 发布构建。二者都使用隔离 HOME 和 15 秒单命令超时，不能仅以签名正确或暂存源文件可执行判断产物通过。
+macOS 发布工作流增加实际 app 内 CLI 可执行权限、精确版本、Desktop 帮助入口和无 Agent 状态初始化检查；同一检查代码已对本地产物执行通过。Linux 发布工作流先增加 deb 入口探测，再扩展为第 10.12 节的共享包验证脚本。二者都使用隔离 HOME 和 15 秒单命令超时，不能仅以签名正确或暂存源文件可执行判断产物通过。
 
 
 ### 10.12 daily 未签名包验证脚本 review（2026-10-15）
@@ -655,7 +657,32 @@ Windows 既有流程只运行暂存 CLI 和 C#/NSIS 模拟安装器，不能证�
 
 Linux 对各 CLI 包检查静态链接，对 deb 和 portable 内 headless 执行 `check-headless-linux.sh`：真实 ELF、无网络 Rocky 8/旧 glibc、无 TTY 首次运行拒绝、未写凭据/配对/数据库。容器和内部程序均有超时，退出时清理专用命名容器。验证错误阻止产物上传，日志和 JSON 汇总单独以 Actions artifact 保存。
 
-手动 Linux 构建与 Windows 使用同一 `+dev` 显示版本/无后缀公共文件版本规则。两平台独立 daily 构建可上传到 `dev/<artifact-version>/`，不修改正式或 nightly 更新清单。共享 ossutil 安装脚本改为按 x86_64/aarch64 runner 选择 amd64/arm64 下载；ARM64 官方下载地址已确认可用。工作流、Shell、Python 语法和双语文档检查已通过，实际两平台打包应在宿主 CI 结束后运行，再记录结果。
+手动 Linux 构建与 Windows 使用同一 `+dev` 显示版本/无后缀公共文件版本规则。两平台独立 daily 构建可上传到 `dev/<artifact-version>/`，不修改正式或 nightly 更新清单。共享 ossutil 安装脚本改为按 x86_64/aarch64 runner 选择 amd64/arm64 下载。工作流、Shell、Python 语法和双语文档检查已通过；宿主 CI 结束后实际执行的两平台打包结果见第 10.13 节。
+
+### 10.13 GitHub Actions daily 未签名构建验收（2026-10-15）
+
+在宿主专项 CI `38677580964` 整体成功后，从源码 `c60d5754b46043300f08962fc1805ad766fa475b` 启动两平台现有打包工作流。CI 浅克隆使用 7 位短哈希，显示版本为 `0.0.2-c60d575+dev`，公共产物版本为 `0.0.2-c60d575`，对应同一份源码。后续 `b6606e53` 仅收紧 Linux 独立发布条件：由协调器传入版本时不再额外上传 dev 目录；没有修改包内产品代码或本次独立构建路径。
+
+[Linux 构建 38679367594](https://github.com/futuregene/future-os/actions/runs/38679367594) 的 x86_64、aarch64 原生 job 全部成功，生成 deb、portable 和静态 CLI 压缩包。每种架构对实际包内程序执行 10 个早期入口探测，另外检查三份 CLI 静态链接、deb/portable 内 headless 的旧 glibc/非交互拒绝/无敏感状态写入。CLI/GUI/headless 均使用正确入口、精确 CLI 版本和 0755 权限。包验证摘要及逐命令日志在 `agent/target/phase7-ci-results/package-linux-{x86_64,aarch64}/`；完整 job 日志为 `linux-{x86_64,aarch64}-package-c60d5754.log`。
+
+Linux 六份包均上传 OSS 后，通过公开下载地址下载回本地，再逐一验证字节数与 SHA-256 和 CI 摘要一致。地址均位于 `https://dl.future-os.cn/dev/0.0.2-c60d575/`；本地文件及 `download-verification.json` 在忽略目录 `agent/target/phase7-daily-packages/linux-{x86_64,aarch64}/`。
+
+| 文件 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| `FutureOS_0.0.2-c60d575_amd64.deb` | 54,395,610 | `dfeec37f6e07fe0e08c17b56f97aaebed49f9886c6a16ab41e5d3f285a9fed14` |
+| `FutureOS_0.0.2-c60d575_linux_x86_64-portable.tar.gz` | 53,048,069 | `876993616963716bd05e18a472aa2d93d7432f131d00eb16d6a97b91937e83ee` |
+| `FutureOS_0.0.2-c60d575_linux_x86_64-cli.tar.gz` | 17,313,503 | `d4544b9b933dd193fd2fb652db62fe517aec7105e7041fb830e229a60e0d9696` |
+| `FutureOS_0.0.2-c60d575_arm64.deb` | 51,731,124 | `3e5d3260c03be28a8aeb2ab078a294061be54ee345978d93a2fe0094ac4217e7` |
+| `FutureOS_0.0.2-c60d575_linux_aarch64-portable.tar.gz` | 49,854,349 | `84a03942c5620704b69a430e1bfb06b58ceff9dd69b684c8a3e15c91f8e1504f` |
+| `FutureOS_0.0.2-c60d575_linux_aarch64-cli.tar.gz` | 15,998,400 | `bd41807494a172587d01907c590421d661fff978cabdef4a2778543d14231c9f` |
+| `FutureOS_0.0.2-c60d575_x64-setup-unsigned.exe` | 27,640,493 | `925b6fd3581bc8acb1fee825a1d2625bd69e9a14fb8897542a92a8e10caf1f7c` |
+| `FutureOS_0.0.2-c60d575_windows_x64-portable-unsigned.zip` | 38,203,476 | `3b48eff347104a146960056b11f78f8cfb7d293bca3e38516da892149c6fd8c3` |
+
+[Windows 未签名构建 38679370525](https://github.com/futuregene/future-os/actions/runs/38679370525) 整体成功：CLI 兼容性、Desktop/NSIS 构建、四个升级观察器场景、NSIS 安装预检/清理门禁/租约/占用/失败回滚/卸载、安装脚本回归、updater 签名文件存在性、真实 NSIS/portable 解包后的 8 个入口探测，以及 GitHub/OSS 上传均通过。安装器内 `futureos-maintenance.exe` 的精确版本与 `--reset-windows-sandbox` 帮助也通过。摘要及命令日志在 `agent/target/phase7-ci-results/package-windows/`，完整 job 日志为 `windows-package-c60d5754.log`。Windows 权限由原生执行验证，不将 Python 的 mode 0777 视为 Unix 权限或 ACL 验收。
+
+Windows 两份包也通过公开 OSS 地址下载回本地、校验大小和 SHA-256，保存在 `agent/target/phase7-daily-packages/windows/`；对应 `.exe.sig` 非空并可下载。此处“未签名”指没有 Authenticode 平台签名，Windows 仍保留 Tauri updater 签名文件；当前检查不声称独立完成 updater 签名密码学验证。
+
+没有更新正式版、test 或 nightly 的更新清单，也没有安装这些包。以上数据是绝对包体，不能当作 sidecar 对比或运行性能证据。真实安装/升级/回滚、GUI 完整交互、原生 Linux Bubblewrap 沙箱和性能基线仍按第 10.9 节保留待验收。
 
 ## 11 发布条件与回退
 

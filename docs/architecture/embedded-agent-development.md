@@ -3,7 +3,7 @@
 > [中文](embedded-agent-development.zh-CN.md)
 >
 > Design date: 2026-10-13. Source baseline: `88fe90a8`.
-> Status: phases one through six are implemented. Section 10.7 records macOS acceptance; section 10.8 records the user's successful Windows unit-test run. Phase seven is in progress: CI, native lifecycle and update-fixture entry points are implemented, with execution/release acceptance pending (section 10.9). Phase eight, native Linux sandbox acceptance, real installation/upgrades and performance comparisons remain pending.
+> Status: phases one through six are implemented. Section 10.7 records macOS acceptance; section 10.8 records the user's successful Windows unit-test run. Phase seven is in progress: native lifecycle CI, update fixtures, macOS ad-hoc packaging and Linux/Windows daily unsigned package checks passed (sections 10.9-10.13). Phase eight, release signing/notarization, native Linux sandbox acceptance, real installation/upgrades and performance comparisons remain pending.
 > API sketches and acceptance matrices describe the complete target.
 
 Desktop will run the complete Agent inside its Rust process when the default
@@ -887,11 +887,11 @@ reported. WSL does not replace native Linux sandbox acceptance.
 
 ### 10.9 Phase-seven CI integration and release acceptance checklist (2026-10-15)
 
-Local checks are static only: actionlint, Python syntax, official PowerShell
-parser checks for four scripts, workspace fmt, `git diff --check` and structural
-checks of 260 documents passed. Lifecycle assertion regressions and native
-fixtures run in CI; no local unit-test rerun. PowerShell parsing on macOS does
-not validate Windows API/NSIS behavior.
+Lifecycle assertion regressions and native fixtures run in CI; no local unit-test
+rerun. Local actionlint, Python syntax, official PowerShell parser checks for
+four scripts, workspace fmt, `git diff --check` and structural checks of 260
+documents passed. Actual macOS packaging smoke also ran as recorded in section
+10.11. PowerShell parsing on macOS does not validate Windows API/NSIS behavior.
 
 Manual CI defaults to the full scope. For Windows installer/observer fixture
 changes alone, use `gh workflow run ci.yml --ref <work-branch> -f scope=windows-update`
@@ -965,10 +965,10 @@ $env:FUTURE_AGENT_SOCKET = $null
 
 | Remaining acceptance | Entry point and requirement | Current status |
 | --- | --- | --- |
-| Three-platform CI | New native fixtures, existing static gates and grouped Linux full tests | Native compilation/lifecycle passed on three OSes; Desktop full-suite repair and final PR CI recorded separately; no local unit-test rerun |
+| Three-platform CI | New native fixtures, existing static gates and grouped Linux full tests | Final native compilation/lifecycle passed on three OSes; GUI/headless full library and entry suites passed across the recorded scoped runs (10.10); final PR CI awaits PR creation; no local unit-test rerun |
 | Windows offline updates | `test-windows-installer-preflight.ps1` including observer, lifecycle assertions and `test-install.ps1` | Native Windows CI passed at `9caaff29`, section 10.10; actual product installation remains separate |
 | Native Linux sandbox | `scripts/tests/test-linux-sandbox-real-machine.sh`; actual Bubblewrap ≥ 0.9.0, helper and child cleanup | Awaiting native Linux; WSL is not acceptance |
-| Signing and artifacts | Existing Windows/macOS signed workflows, Linux deb/musl workflows, `scripts/ci/check-headless-linux.sh` | Local macOS ad-hoc app/DMG verified; release signing/notarization and Windows/Linux artifacts pending; no release published |
+| Signing and artifacts | Existing Windows/macOS signed workflows, Linux deb/musl workflows, `scripts/ci/check-headless-linux.sh` | Local macOS ad-hoc app/DMG verified; Linux dual-architecture and Windows daily unsigned builds/payload probes/OSS download hashes passed (10.13); release signing/notarization pending; no release manifest advanced |
 | Actual installation/upgrades | Clean VM: old sidecar → embedded, embedded → new, same-version repair; manual and in-app updates | Pending; verify failed cleanup forbids installation, external locks block replacement, rollback preserves user data |
 | Product interaction | GUI/CLI/TUI tools, queued work/approval exit prompt, reopen after cancellation, external-owner survival | Backend fixtures exist; packaged UI/full-tool smoke pending |
 | Performance and size | Same machine/configuration/task, at least 5 samples for sidecar and embedded | Pending; no performance improvement claimed |
@@ -1056,8 +1056,16 @@ actual cleanup failures still preserve failure and instance locks. A new native
 peer, then stops, verifies no database/metadata/ownership, and starts again to
 prove stale stop notifications cannot cancel a fresh startup. The test retains
 the external listener throughout. Signal assertions now include all stderr.
-This production boundary change requires three-platform native and signal
-integration revalidation.
+At `b2f83f2e`, [native lifecycle run 38677580964](https://github.com/futuregene/future-os/actions/runs/38677580964)
+passed on Linux, Windows and macOS: 6 connection gates, 10 service startup,
+10 GUI host and 10 headless host tests per platform. All 8 `headless_cli` cases
+passed, covering SIGINT/SIGTERM/SIGHUP and preservation of the external
+endpoint/pairing data. Summaries/logs are in
+`agent/target/phase7-ci-results/native-final-{linux,windows,macos}/`; the entry
+log is `headless-cli-b2f83f2e.log`. This scope did not rerun unrelated full
+library tests. Full library evidence is from `887c5b77` above and offline
+Windows installation evidence from `9caaff29`; this is not a single full-CI
+pass at the latest commit.
 
 ### 10.11 Actual macOS artifact acceptance (2026-10-15)
 
@@ -1087,9 +1095,9 @@ only absolute artifact sizes are recorded; performance acceptance remains open.
 
 The macOS release workflow now checks the actual app's executable CLI, exact
 version, Desktop help and absence of Agent-state initialization; that exact
-check code passed against the local app. Linux release CI extracts the actual
-deb and runs the corresponding programs. Embedded Python syntax and actionlint
-passed; actual deb execution awaits a Linux release build. Both use isolated
+check code passed against the local app. Linux release CI first added a deb
+entry probe, then expanded it into the shared package validator in section
+10.12. Both use isolated
 homes and 15-second per-command timeouts. Signatures or executable source
 staging files alone do not prove an artifact works.
 
@@ -1118,10 +1126,68 @@ artifacts preserve command logs and JSON summaries.
 Standalone Linux dispatch now uses the same `+dev` display version and suffix-free
 public artifact version as Windows. Both daily builds may upload to
 `dev/<artifact-version>/` without updating release/nightly manifests. The shared
-ossutil installer selects amd64/arm64 according to its x86_64/aarch64 runner;
-the official ARM64 download URL is available. Workflow, Shell, Python syntax
-and bilingual-document checks passed. Actual platform packaging runs follow
-completion of the host CI; their results must be recorded separately.
+ossutil installer selects amd64/arm64 according to its x86_64/aarch64 runner.
+Workflow, Shell, Python syntax and bilingual-document checks passed; actual
+platform packaging results following host CI are recorded in section 10.13.
+
+### 10.13 GitHub Actions daily unsigned package acceptance (2026-10-15)
+
+After host CI `38677580964` completed successfully, both existing platform
+packaging workflows started at source
+`c60d5754b46043300f08962fc1805ad766fa475b`. CI's shallow checkout uses the
+7-character abbreviation: display version `0.0.2-c60d575+dev`, public artifact
+version `0.0.2-c60d575`, identifying the same source. Subsequent `b6606e53` only
+restricts standalone Linux publication when a coordinator supplies a version;
+it changes neither product payload code nor this standalone build path.
+
+Both native x86_64/aarch64 jobs in [Linux run 38679367594](https://github.com/futuregene/future-os/actions/runs/38679367594)
+passed, producing deb, portable and static CLI archives. Each architecture ran
+10 early-entry probes against actual package contents, plus static-linkage
+checks of all three CLI copies and old-glibc/noninteractive/no-sensitive-state
+checks of headless binaries from deb and portable. CLI/GUI/headless entry points,
+exact CLI versions and 0755 modes passed. Summaries and per-command logs are in
+`agent/target/phase7-ci-results/package-linux-{x86_64,aarch64}/`; full job logs
+are `linux-{x86_64,aarch64}-package-c60d5754.log`.
+
+All six Linux files were downloaded back through their public OSS URLs and
+matched CI byte counts and SHA-256 digests. URLs are beneath
+`https://dl.future-os.cn/dev/0.0.2-c60d575/`; local files and
+`download-verification.json` are under ignored
+`agent/target/phase7-daily-packages/linux-{x86_64,aarch64}/`.
+
+| File | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `FutureOS_0.0.2-c60d575_amd64.deb` | 54,395,610 | `dfeec37f6e07fe0e08c17b56f97aaebed49f9886c6a16ab41e5d3f285a9fed14` |
+| `FutureOS_0.0.2-c60d575_linux_x86_64-portable.tar.gz` | 53,048,069 | `876993616963716bd05e18a472aa2d93d7432f131d00eb16d6a97b91937e83ee` |
+| `FutureOS_0.0.2-c60d575_linux_x86_64-cli.tar.gz` | 17,313,503 | `d4544b9b933dd193fd2fb652db62fe517aec7105e7041fb830e229a60e0d9696` |
+| `FutureOS_0.0.2-c60d575_arm64.deb` | 51,731,124 | `3e5d3260c03be28a8aeb2ab078a294061be54ee345978d93a2fe0094ac4217e7` |
+| `FutureOS_0.0.2-c60d575_linux_aarch64-portable.tar.gz` | 49,854,349 | `84a03942c5620704b69a430e1bfb06b58ceff9dd69b684c8a3e15c91f8e1504f` |
+| `FutureOS_0.0.2-c60d575_linux_aarch64-cli.tar.gz` | 15,998,400 | `bd41807494a172587d01907c590421d661fff978cabdef4a2778543d14231c9f` |
+| `FutureOS_0.0.2-c60d575_x64-setup-unsigned.exe` | 27,640,493 | `925b6fd3581bc8acb1fee825a1d2625bd69e9a14fb8897542a92a8e10caf1f7c` |
+| `FutureOS_0.0.2-c60d575_windows_x64-portable-unsigned.zip` | 38,203,476 | `3b48eff347104a146960056b11f78f8cfb7d293bca3e38516da892149c6fd8c3` |
+
+In [unsigned Windows run 38679370525](https://github.com/futuregene/future-os/actions/runs/38679370525),
+the entire workflow passed: CLI compatibility, Desktop/NSIS builds, four update
+observer cases, NSIS preflight/mandatory cleanup/leases/locks/failure rollback/
+uninstall, install-script regressions, updater-signature file presence, 8 entry
+probes extracted from actual NSIS/portable payloads, and GitHub/OSS upload.
+The installer's `futureos-maintenance.exe` passed exact-version and
+`--reset-windows-sandbox` help checks. Summaries/command logs are under
+`agent/target/phase7-ci-results/package-windows/`; the full job log is
+`windows-package-c60d5754.log`. Native execution validates Windows executable
+usability; Python's mode 0777 is not Unix-mode or ACL acceptance.
+
+Both Windows packages were also downloaded from public OSS URLs and matched
+CI sizes/SHA-256 digests. Files are in
+`agent/target/phase7-daily-packages/windows/`; the matching `.exe.sig` is
+downloadable and nonempty. Unsigned means no Authenticode platform signature;
+Windows still carries its Tauri updater signature file. This check does not
+claim independent cryptographic verification of that signature.
+
+No release/test/nightly manifest was advanced and none of these packages was
+installed. Absolute package sizes are not a sidecar comparison or runtime
+performance evidence. Actual install/upgrade/rollback, full GUI interaction,
+native Linux Bubblewrap and performance baselines remain open in section 10.9.
 
 ## 11 Release conditions and rollback
 
