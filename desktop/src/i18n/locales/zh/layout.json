@@ -54,7 +54,7 @@
     "chatSectionActions": "对话区操作",
     "threadsSelected": "已选择 {{count}} 个",
     "deleteSelected": "删除",
-    "tasks": "任务",
+    "tasks": "定时任务",
     "openSearch": "搜索会话",
     "searchConversations": "搜索会话",
     "clearSearch": "清除搜索",

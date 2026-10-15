@@ -100,7 +100,7 @@ function buttonByText(container: HTMLElement, text: string) {
  *  order. Discovered from a deliberate mismatch while writing the guard test
  *  below; the trailing two come from that test's workspace/account fixtures.
  */
-const EXPECTED_NAV_ENTRIES = ["New Chat", "Models", "Skills", "Tasks", "Remote", "Alpha", "Aalice"];
+const EXPECTED_NAV_ENTRIES = ["New Chat", "Models", "Skills", "Scheduled tasks", "Remote", "Alpha", "Aalice"];
 
 beforeEach(() => {
   localStorage.clear();
@@ -123,7 +123,7 @@ describe("activity rail navigation", () => {
     expect(p.onChange).toHaveBeenCalledWith("skill");
     act(() => buttonByText(view.container, "Remote")!.click());
     expect(p.onChange).toHaveBeenLastCalledWith("remote");
-    act(() => buttonByText(view.container, "Tasks")!.click());
+    act(() => buttonByText(view.container, "Scheduled tasks")!.click());
     expect(p.onChange).toHaveBeenLastCalledWith("tasks");
 
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"New workspace\"]")!.click());
@@ -147,7 +147,7 @@ describe("activity rail navigation", () => {
     // render order: the four section entries (each wired to a different handler,
     // which is why they cannot be isolated by "who calls onChange"), then the
     // workspace group header and the account button. The order is part of the
-    // expectation: Tasks sits with the standing entries, and Remote follows it.
+    // expectation: Scheduled tasks sit with the standing entries, and Remote follows them.
     // The two directions of remote used to be two entries — labels a word apart
     // that neither distinguished nor even described accurately; they are one
     // entry now, and the page inside separates them.
@@ -183,7 +183,7 @@ describe("activity rail navigation", () => {
     expect(p.onOpenModels).toHaveBeenCalledTimes(1);
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Remote\"]")!.click());
     expect(p.onChange).toHaveBeenCalledWith("remote");
-    act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Tasks\"]")!.click());
+    act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Scheduled tasks\"]")!.click());
     expect(p.onChange).toHaveBeenLastCalledWith("tasks");
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Workspace\"]")!.click());
     expect(p.onChange).toHaveBeenCalledWith("workspace");

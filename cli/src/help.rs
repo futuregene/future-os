@@ -17,7 +17,7 @@ Groups:
   account   Platform account info
   run       Send a prompt to the agent (one-shot, non-interactive)
   skills    Install & manage agent skills
-  task      Manage FutureOS tasks (reusable prompt + trigger + runs)
+  task      Manage scheduled tasks (reusable prompt + trigger + runs)
   tools     List, describe, and call platform & browser tools
   models    List available AI models from the agent
   session   List, inspect, update, rename, and delete agent sessions
@@ -50,7 +50,7 @@ Run 'future <group> --help' for per-group details.
   future auth --help         Auth subcommands
   future account --help      Account subcommands
   future skills --help       Skills subcommands
-  future task --help         Task management (list/show/add/run/runs)
+  future task --help         Scheduled-task management (list/show/add/run/runs)
   future tools --help        Tool subcommands
   future models --help       Model listing options
   future session --help      Session management options
@@ -276,15 +276,16 @@ The running desktop app is unaffected until it next reads the settings; a change
 made in the app's own Settings screen applies immediately."#;
 
 /// `future task --help` output.
-pub const TASK_HELP: &str = r#"future task — manage FutureOS tasks (reusable prompt + trigger + full-permission runs)
+pub const TASK_HELP: &str = r#"future task — manage scheduled tasks (reusable prompt + trigger + full-permission runs)
 
-A task is a reusable work unit: prompt + working directory + model/thinking
-level, run at full permission when its trigger fires. Each run produces an
-ordinary conversation and a durable run-ledger entry.
+A scheduled task is a reusable work unit: prompt + working directory +
+model/thinking level, run at full permission when its trigger fires — and on
+demand whenever you ask. Each run produces an ordinary conversation and a
+durable run-ledger entry.
 
 Usage:
-  future task list [--all] [--json]                 List tasks
-  future task show <id|name> [--json] [--prompt]    Show one task
+  future task list [--all] [--json]                 List scheduled tasks
+  future task show <id|name> [--json] [--prompt]    Show one scheduled task
   future task add --name N --prompt P|--prompt-file F --cwd D
         [--model M] [--thinking L] [--session new|existing]
         [--session-retention keep|delete]
@@ -353,10 +354,10 @@ Session:
 
 Prompt versions:
   Editing a prompt (here or in the desktop) records a new version and keeps the
-  one it replaced, so `prompt revert` can walk all the way back to the task's
-  first prompt. Version source reads as: user (manual edit), rollback (a version
-  re-applied), reflection (a version accepted from an older build's prompt
-  suggestions), superseded (an outgoing version kept for the history).
+  one it replaced, so `prompt revert` can walk all the way back to the scheduled
+  task's first prompt. Version source reads as: user (manual edit), rollback (a
+  version re-applied), reflection (a version accepted from an older build's
+  prompt suggestions), superseded (an outgoing version kept for the history).
 
 Reading a run:
   `future task runs` lists the ledger (statuses, versions, summaries).
@@ -371,7 +372,7 @@ Execution:
   status, thread/session ids, and result summary.
 
 Not to be confused with `future goal todo` (long-running goals with evidence
-and gates). Tasks are fixed actions with triggers."#;
+and gates). Scheduled tasks are fixed actions with triggers."#;
 
 /// `future version --help` output.
 pub const VERSION_HELP: &str = r#"future version — print the build identity of this CLI

@@ -204,7 +204,7 @@ function summarizeTrigger(
   }
 }
 
-/** Left-nav "Tasks" panel: list, edit, runs. */
+/** Left-nav "Scheduled tasks" panel: list, edit, runs. */
 export function TasksView({
   backend,
   leftPanelExpanded,
