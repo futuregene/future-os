@@ -141,12 +141,67 @@ fn backfill_ids_are_deterministic() {
 #[test]
 fn active_state_markdown_read_paths() {
     let dir = tempfile::tempdir().unwrap();
-    let cwd = dir.path().to_string_lossy().into_owned();
+    let root = dir.path().to_string_lossy().into_owned();
     // Missing file → error mentioning the path.
-    assert!(active_state_markdown(&cwd, "goal_x").is_err());
-    // Present file → contents.
-    let p = dir.path().join(".future/goal/goals/goal_x");
+    assert!(active_state_markdown(&root, "goal_x").is_err());
+    // Present file → contents. The workbench sits directly under the STATE
+    // ROOT (`<root>/goals/<id>/`), not under `<root>/.future/goal/`.
+    let p = dir.path().join("goals/goal_x");
     std::fs::create_dir_all(&p).unwrap();
     std::fs::write(p.join("ACTIVE_GOAL_STATE.md"), "# state").unwrap();
-    assert_eq!(active_state_markdown(&cwd, "goal_x").unwrap(), "# state");
+    assert_eq!(active_state_markdown(&root, "goal_x").unwrap(), "# state");
+}
+
+/// State paths must follow `FUTURE_GOAL_ROOT`: with the override set the
+/// workbench is read from there, and the project-relative layout would point at
+/// a directory that holds nothing.
+#[test]
+fn active_state_markdown_follows_the_state_root_override() {
+    // `FUTURE_GOAL_ROOT` is process-global; each integration test file is its
+    // own process, so a file-local lock is enough to keep this single env
+    // mutation off the other tests here.
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    /// Removes the override even if an assertion below panics.
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            std::env::remove_var("FUTURE_GOAL_ROOT");
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("project");
+    let root = dir.path().join("override-root");
+    std::fs::create_dir_all(root.join("goals/goal_x")).unwrap();
+    std::fs::write(
+        root.join("goals/goal_x/ACTIVE_GOAL_STATE.md"),
+        "# from root",
+    )
+    .unwrap();
+    // A decoy in the project-relative location that must NOT be picked up
+    // while the override is set.
+    std::fs::create_dir_all(project.join(".future/goal/goals/goal_x")).unwrap();
+    std::fs::write(
+        project.join(".future/goal/goals/goal_x/ACTIVE_GOAL_STATE.md"),
+        "# decoy",
+    )
+    .unwrap();
+    let project = project.to_string_lossy().into_owned();
+
+    let without = active_state_markdown(
+        &future_goal::store::state_root_for(project.as_ref()),
+        "goal_x",
+    )
+    .unwrap();
+    std::env::set_var("FUTURE_GOAL_ROOT", &root);
+    let _restore = Restore;
+    let via_override = active_state_markdown(
+        &future_goal::store::state_root_for(project.as_ref()),
+        "goal_x",
+    )
+    .unwrap();
+
+    assert_eq!(via_override, "# from root", "the override must win");
+    assert_eq!(without, "# decoy", "without the override the project wins");
 }

@@ -12,8 +12,8 @@ use future_goal::work_items::delivery::{
     small_delivery_batch_scale_streak, DeliveryBatchScale, DeliveryOutcome,
 };
 use future_goal::work_items::operator_inbox::{
-    load_pending_inbox_events, operator_inbox_attention_kind, project_operator_inbox_urgency,
-    OperatorAttentionKind, OperatorInboxConfig, OperatorInboxEvent,
+    load_pending_inbox_events, load_pending_inbox_events_at, operator_inbox_attention_kind,
+    project_operator_inbox_urgency, OperatorAttentionKind, OperatorInboxConfig, OperatorInboxEvent,
 };
 
 fn run(evidence: &str) -> RunRecord {
@@ -168,8 +168,52 @@ fn operator_inbox_attention_kind_classification() {
 
 #[test]
 fn inbox_path_cannot_escape_project() {
-    assert!(load_pending_inbox_events("/tmp", "../../etc").is_err());
-    assert!(load_pending_inbox_events("/tmp", "/absolute/path").is_err());
+    assert!(load_pending_inbox_events_at("/tmp", "../../etc").is_err());
+    assert!(load_pending_inbox_events_at("/tmp", "/absolute/path").is_err());
+}
+
+/// The inbox reader must follow the same state root as the liveness writer,
+/// otherwise `FUTURE_GOAL_ROOT` sends the alert to a directory this projection
+/// never looks at.
+#[test]
+fn inbox_load_follows_the_state_root_override() {
+    // Process-global env: each integration test file is its own process, so a
+    // file-local lock keeps this mutation off the other tests here.
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    /// Removes the override even if an assertion below panics.
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            std::env::remove_var("FUTURE_GOAL_ROOT");
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("project");
+    let root = dir.path().join("override-root");
+    // Distinct ids so the assertion names WHICH directory was read.
+    let decoy = r#"{"message_id":"decoy","content":"@operator from the project"}"#;
+    let real = r#"{"message_id":"real","content":"@operator from the state root"}"#;
+    std::fs::create_dir_all(project.join(".future/goal/inbox")).unwrap();
+    std::fs::write(project.join(".future/goal/inbox/event.json"), decoy).unwrap();
+    std::fs::create_dir_all(root.join("inbox")).unwrap();
+    std::fs::write(root.join("inbox/event.json"), real).unwrap();
+    let project = project.to_string_lossy().into_owned();
+
+    // Without the override the project-relative inbox is read.
+    let plain = load_pending_inbox_events(&project, "inbox").unwrap();
+    assert_eq!(plain.len(), 1);
+    assert_eq!(plain[0].message_id, "decoy", "no override → project root");
+
+    std::env::set_var("FUTURE_GOAL_ROOT", &root);
+    let _restore = Restore;
+    let overridden = load_pending_inbox_events(&project, "inbox").unwrap();
+    assert_eq!(overridden.len(), 1, "{overridden:?}");
+    assert_eq!(
+        overridden[0].message_id, "real",
+        "with the override set the state root is read, not the project"
+    );
 }
 
 /// ── Delivery signals ──────────────────────────────────────────────────────
