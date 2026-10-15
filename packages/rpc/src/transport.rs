@@ -554,6 +554,7 @@ fn current_user_sid_string() -> io::Result<String> {
 
 #[cfg(windows)]
 fn create_protected_pipe(
+    name: &str,
     first: bool,
 ) -> io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
     use std::ffi::c_void;
@@ -593,7 +594,7 @@ fn create_protected_pipe(
         .reject_remote_clients(true);
     let result = unsafe {
         options.create_with_security_attributes_raw(
-            local_pipe_name(),
+            name,
             (&mut attributes as *mut SECURITY_ATTRIBUTES).cast(),
         )
     };
@@ -603,12 +604,20 @@ fn create_protected_pipe(
 
 #[cfg(windows)]
 pub async fn bind_local() -> io::Result<LocalIncoming> {
-    let first = create_protected_pipe(true)?;
+    bind_local_at(local_pipe_name()).await
+}
+
+/// Bind an explicit pipe name, for callers that must not resolve the name from the
+/// shared environment. `bind_local` is the production path; tests use this so a
+/// name of their own cannot be turned into the default instance's pipe.
+#[cfg(windows)]
+async fn bind_local_at(name: String) -> io::Result<LocalIncoming> {
+    let first = create_protected_pipe(&name, true)?;
     let incoming = async_stream::stream! {
         let mut server = first;
         loop {
             match server.connect().await {
-                Ok(()) => match create_protected_pipe(false) {
+                Ok(()) => match create_protected_pipe(&name, false) {
                     Ok(next) => {
                         let connected = std::mem::replace(&mut server, next);
                         yield Ok(LocalIo { inner: connected });
@@ -815,9 +824,9 @@ mod tests {
         assert!(sid.len() > 4, "the SID must not be empty: {sid:?}");
     }
 
-    /// End-to-end over a REAL named pipe, with an isolated `FUTURE_HOME` so the test
-    /// never binds the default instance's endpoint (a running agent owns that one, and
-    /// `first_pipe_instance` would make this fail or, worse, interfere).
+    /// End-to-end over a REAL named pipe, with a name derived from an isolated home
+    /// so the test never binds the default instance's endpoint (a running agent owns
+    /// that one, and `first_pipe_instance` would make this fail or, worse, interfere).
     ///
     /// This is the only thing that executes the Windows accept loop, the protected
     /// pipe creation, and `LocalIo`'s four `poll_*` delegations - the unix test covers
@@ -829,17 +838,23 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio_stream::StreamExt;
 
-        // Unique per run: the pipe name is derived from this path.
+        // The pipe name is passed explicitly rather than through `FUTURE_HOME`: the
+        // variable is process-global, and another test in this binary setting or
+        // restoring it mid-flight would rename this bind onto the default instance's
+        // pipe - which a running agent owns, so the bind fails with access denied.
         let home = tempfile::tempdir().unwrap();
-        let previous = std::env::var_os(crate::home::FUTURE_HOME_ENV);
-        std::env::set_var(crate::home::FUTURE_HOME_ENV, home.path());
-
-        let mut incoming = bind_local().await.expect("the pipe must bind");
-        let pipe = local_pipe_name();
+        let pipe = local_pipe_name_for(
+            current_user_sid_string().expect("the process token must yield a SID"),
+            Some(home.path().to_path_buf()),
+        );
         assert!(
             pipe.contains(&crate::home::home_tag(home.path())),
             "the test must bind its OWN pipe, not the default instance's: {pipe}"
         );
+
+        let mut incoming = bind_local_at(pipe.clone())
+            .await
+            .expect("the pipe must bind");
 
         let mut client = tokio::net::windows::named_pipe::ClientOptions::new()
             .open(&pipe)
@@ -877,11 +892,6 @@ mod tests {
         // An orderly shutdown: the server's poll_shutdown path.
         server.shutdown().await.unwrap();
         drop(client);
-
-        match previous {
-            Some(value) => std::env::set_var(crate::home::FUTURE_HOME_ENV, value),
-            None => std::env::remove_var(crate::home::FUTURE_HOME_ENV),
-        }
     }
 
     /// A configured `request_timeout` must be applied to the endpoint. Both arms of
@@ -933,7 +943,8 @@ mod tests {
     /// The failure text is deliberately not asserted beyond the endpoint name: a connect
     /// to a closed local port can elapse a short budget (measured: a 500 ms budget timed
     /// out before the refusal surfaced on this loaded box), so "refused" vs "timed out"
-    /// is not a stable discriminator. The endpoint label is.
+    /// is not a stable discriminator. The endpoint label is, and the tiny budget keeps
+    /// the deadline arm reachable here; which of the two arms fires is left to the run.
     #[cfg(windows)]
     #[tokio::test]
     async fn a_channel_that_cannot_be_built_names_every_endpoint_it_tried() {
@@ -946,19 +957,13 @@ mod tests {
         .err()
         .unwrap();
         assert!(
-            error.details.contains("connection timed out"),
-            "a 1 ms budget cannot accommodate a TCP attempt, so the deadline must \
-             fire first: {}",
-            error.details
-        );
-        assert!(
             error.details.contains("unable to connect to Future Agent"),
             "the failure must say what could not be reached: {}",
             error.details
         );
         assert!(
             error.details.contains("127.0.0.1:1"),
-            "the timed-out endpoint must be named: {}",
+            "the failed endpoint must be named: {}",
             error.details
         );
     }

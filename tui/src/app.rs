@@ -22534,11 +22534,25 @@ mod tests {
         let first = git_args(&calls).len();
 
         press_on_overlay(&mut app, &mut rx, "ctrl+r");
-        pump_until_overlay_text(&mut app, &mut rx, "feat/demo").await;
-        assert!(git_args(&calls).len() > first, "the reload asked git again");
+        // Pump until the reload reaches git: the rows are on screen before AND
+        // after, so waiting for the text would return immediately and the
+        // assertion read straight after it would judge a reload that has not
+        // started yet (under load, a busy host).
+        let mut reloaded = false;
+        for _ in 0..PUMP_BUDGET_ITERS {
+            while let Ok(cmd) = rx.try_recv() {
+                app.handle_cmd(cmd);
+            }
+            if git_args(&calls).len() > first {
+                reloaded = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(PUMP_INTERVAL_MS)).await;
+        }
+        assert!(reloaded, "the reload asked git again");
         assert!(
             top_overlay_text(&mut app, 76).contains("feat/demo"),
-            "the panel keeps its rows while the reload runs"
+            "the reload kept its rows"
         );
         app.stop();
     }
