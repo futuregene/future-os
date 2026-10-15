@@ -532,8 +532,19 @@ async fn async_main(
 ) -> Result<()> {
     let running = prepared.initialize().await?;
     let handle = running.handle();
-    let server = running.serve(None);
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let server = running.serve(Some(ready_tx));
     tokio::pin!(server);
+    // A zero-duration timer can run on another worker before `serve` is first
+    // polled. Admit the listener before enabling host shutdown sources, using
+    // the same readiness boundary as the embedded host rather than a delay.
+    tokio::select! {
+        biased;
+        result = &mut server => return result,
+        ready = ready_rx => {
+            ready.context("Agent serving ended before readiness notification")?;
+        }
+    }
     // If --profile-seconds is set, spawn a task that signals shutdown after N
     // seconds via a oneshot so the flamegraph gets written by run().
     // When --profile-seconds is not set, use pending() so the select branch

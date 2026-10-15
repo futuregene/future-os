@@ -17,12 +17,11 @@ use future_rpc::proto;
 // every client decodes events the same way.
 pub use future_rpc::events::AgentEvent;
 
-use proto::future_agent_client::FutureAgentClient;
 use proto::{RpcCommand, StreamRequest};
 
 #[derive(Clone)]
 pub struct AgentClient {
-    inner: FutureAgentClient<tonic::transport::Channel>,
+    inner: future_rpc::connection::VerifiedAgentClient,
     active_runs: Arc<Mutex<HashMap<String, String>>>,
 }
 
@@ -88,14 +87,14 @@ fn expand_projection_snapshot(event: proto::StreamEvent) -> VecDeque<proto::Stre
 
 impl AgentClient {
     pub async fn connect(addr: &str) -> Result<Self> {
-        let connected = future_rpc::transport::connect_channel(
-            Some(addr),
-            std::time::Duration::from_secs(10),
-            None,
+        let inner = future_rpc::connection::connect_verified(
+            addr,
+            future_rpc::connection::EXPECTED_AGENT_VERSION,
+            Duration::from_secs(10),
+            Duration::from_secs(5),
         )
         .await
-        .map_err(|e| anyhow!("Failed to connect to agent: {e}"))?;
-        let inner = future_rpc::transport::agent_client(connected.channel);
+        .map_err(|e| anyhow!("Failed to verify agent at {addr}: {e}"))?;
         Ok(Self {
             inner,
             active_runs: Arc::new(Mutex::new(HashMap::new())),
@@ -742,6 +741,41 @@ mod tests {
         let (addr, shared) = ts::spawn_mock_grpc(state).await;
         let client = AgentClient::connect(&addr).await.expect("connect");
         (client, shared)
+    }
+
+    #[tokio::test]
+    async fn incompatible_contracts_and_changed_instances_cannot_dispatch_business_commands() {
+        let valid = serde_json::json!({
+            "version": future_rpc::connection::EXPECTED_AGENT_VERSION,
+            "agentInstanceId": "channel-fixture", "dataRootId": "0".repeat(64),
+            "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION,
+            "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION,
+        });
+        for field in ["version", "protocolVersion", "storageSchemaVersion"] {
+            let mut invalid = valid.clone();
+            invalid[field] = if field == "version" {
+                serde_json::json!("999.0.0")
+            } else {
+                serde_json::json!(0)
+            };
+            let mut state = MockState::default();
+            state
+                .responses
+                .insert("get_agent_readiness".into(), invalid.to_string());
+            let (addr, shared) = ts::spawn_mock_grpc(state).await;
+            assert!(AgentClient::connect(&addr).await.is_err());
+            assert!(shared.lock().unwrap().recorded.is_empty());
+        }
+        let (mut client, shared) = connect_to(MockState::default()).await;
+        let mut replacement = valid;
+        replacement["agentInstanceId"] = serde_json::json!("replacement");
+        shared
+            .lock()
+            .unwrap()
+            .responses
+            .insert("get_agent_readiness".into(), replacement.to_string());
+        assert!(client.new_session("/tmp", "fixture").await.is_err());
+        assert!(shared.lock().unwrap().recorded.is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]

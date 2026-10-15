@@ -10,12 +10,13 @@ import { UpdatePage } from "./UpdatePage";
 const mocks = vi.hoisted(() => ({
   buildVersion: "2.0.0" as string | null,
   invokeCommand: vi.fn(),
+  maintenance: vi.fn(),
   listen: vi.fn(),
   openExternalUrl: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({ listen: (...args: unknown[]) => mocks.listen(...args) }));
-vi.mock("../../integrations/tauri/invoke", () => ({ invokeCommand: (...args: unknown[]) => mocks.invokeCommand(...args) }));
+vi.mock("../../integrations/tauri/invoke", () => ({ invokeCommand: (...args: unknown[]) => args[0] === "app_maintenance_status" ? mocks.maintenance() : mocks.invokeCommand(...args) }));
 vi.mock("../../integrations/storage/files", () => ({ openExternalUrl: (...args: unknown[]) => mocks.openExternalUrl(...args) }));
 vi.mock("../../integrations/tauri/useBuildInfo", () => ({
   useBuildInfo: () => ({ data: mocks.buildVersion ? { version: mocks.buildVersion, isRelease: true } : null }),
@@ -51,6 +52,17 @@ beforeEach(() => {
   progressHandlers = [];
   unlisteners = [];
   mocks.buildVersion = "2.0.0";
+  mocks.maintenance.mockReset();
+  mocks.maintenance.mockResolvedValue({ cli: {}, update: {
+    operationId: "update-fixture",
+    fromVersion: "2.0.0",
+    targetVersion: "2.1.0",
+    stage: "finished",
+    outcome: "installed",
+    diagnostic: null,
+    restartSafe: true,
+    repairAcknowledged: false,
+  } });
   mocks.invokeCommand.mockReset();
   mocks.invokeCommand.mockResolvedValue(undefined);
   mocks.openExternalUrl.mockReset();
@@ -468,5 +480,42 @@ describe("updatePage subscription failure", () => {
 
     expect(unlisten).toHaveBeenCalledTimes(1);
     expect(mocks.invokeCommand).not.toHaveBeenCalledWith("install_app_update");
+  });
+});
+
+describe("durable update recovery", () => {
+  it("does not claim an observer handoff is an installed update", async () => {
+    mocks.maintenance.mockResolvedValueOnce({ cli: {}, update: null });
+    mocks.maintenance.mockResolvedValue({ cli: {}, update: {
+      operationId: "update-pending",
+      stage: "awaiting-exit",
+      outcome: null,
+      diagnostic: null,
+      restartSafe: false,
+      repairAcknowledged: false,
+    } });
+    const container = await renderPage(UPDATE);
+    await act(async () => button(container, "Download and install")!.click());
+    expect(container.textContent).toContain("result unconfirmed");
+    expect(container.textContent).not.toContain("Update installed. Restart to finish.");
+    expect(button(container, "Restart FutureOS")).toBeUndefined();
+    expect(button(container, "Download and install")!.disabled).toBe(true);
+  });
+
+  it("surfaces CLI mismatch and durable repair diagnostics without offering restart", async () => {
+    mocks.maintenance.mockResolvedValue({ cli: { error: "CLI /old/future version mismatch" }, update: {
+      operationId: "update-failed",
+      stage: "finished",
+      outcome: "repair-required",
+      diagnostic: "Original files are incomplete",
+      restartSafe: false,
+      repairAcknowledged: false,
+    } });
+    const container = await renderPage(UPDATE);
+    expect(container.textContent).toContain("CLI /old/future version mismatch");
+    expect(container.textContent).toContain("Original files are incomplete");
+    expect(button(container, "Download and install")!.disabled).toBe(true);
+    expect(button(container, "Restart FutureOS")).toBeUndefined();
+    expect(button(container, "Confirm completed manual repair")).toBeTruthy();
   });
 });

@@ -929,3 +929,34 @@ fn writeback_completion_and_repair_paths() {
     assert_eq!(goal.todo("todo_x").unwrap().failed_attempts, 1);
     assert_eq!(goal.outcome_streak, 1);
 }
+
+#[test]
+fn goal_client_rejects_incompatible_agent_before_business_commands() {
+    rt().block_on(async {
+        let (addr, state) = spawn_mock(MockState {
+            readiness_version: Some("999.0.0".into()),
+            ..Default::default()
+        })
+        .await;
+        let error = AgentClient::connect(&addr)
+            .await
+            .err()
+            .expect("incompatible Agent");
+        assert!(error.to_string().contains("version"));
+        assert!(state.lock().unwrap().recorded.is_empty());
+    });
+}
+
+#[test]
+fn goal_client_fences_commands_and_streams_after_instance_change() {
+    rt().block_on(async {
+        let (addr, state) = spawn_mock(MockState::default()).await;
+        let mut client = AgentClient::connect(&addr).await.unwrap();
+        state.lock().unwrap().readiness_instance = Some("replacement-agent".into());
+        assert!(client.list_models().await.is_err());
+        assert!(client.run_turn("session", "run", None, None).await.is_err());
+        let state = state.lock().unwrap();
+        assert!(state.recorded.is_empty());
+        assert!(state.attach_after_idx.is_empty());
+    });
+}

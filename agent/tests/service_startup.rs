@@ -383,6 +383,39 @@ async fn verify_rpc(
         AgentEndpoint::Local(_) => "auto".to_owned(),
         AgentEndpoint::Tcp(address) => address.to_string(),
     };
+    // A legacy/raw transport may discover readiness, but cannot mutate or
+    // hydrate data without the protocol-2 business contract.
+    let connected =
+        future_rpc::transport::connect_pinned_channel(Some(&address), Duration::from_secs(3), None)
+            .await?;
+    let mut raw = future_rpc::transport::agent_client(connected.channel);
+    let response = raw
+        .execute_command(RpcCommand {
+            r#type: "get_agent_readiness".into(),
+            ..Default::default()
+        })
+        .await?
+        .into_inner();
+    assert!(response.success);
+    let error = raw
+        .execute_command(RpcCommand {
+            r#type: "new_session".into(),
+            session_id: "unverified-must-not-exist".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    let error = raw
+        .stream_events(future_rpc::proto::StreamRequest {
+            session_id: "unverified-must-not-exist".into(),
+            ..Default::default()
+        })
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    drop(raw);
     let mut client = future_rpc::connection::connect_verified(
         &address,
         future_rpc::connection::EXPECTED_AGENT_VERSION,

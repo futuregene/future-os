@@ -321,7 +321,11 @@ pub fn move_thread_to_workspace(
 /// conversation's own temporary directory lives under it and is named after the
 /// session once the first prompt has run.
 pub fn chat_workspaces_root() -> Result<PathBuf, Error> {
-    Ok(home_dir()?.join(".future").join("workspaces").join("chat"))
+    let app = future_app_settings::app_dir().map_err(|error| Error::Invalid(error.to_string()))?;
+    let root = app
+        .parent()
+        .ok_or_else(|| Error::Invalid("Desktop app directory has no data root".into()))?;
+    Ok(root.join("workspaces").join("chat"))
 }
 
 /// Whether a cwd is a chat scratch directory (the agent-side spelling of the
@@ -331,18 +335,21 @@ pub fn is_chat_directory(cwd: &str) -> bool {
         return false;
     }
     let cwd = cwd.replace('\\', "/");
-    const SUFFIX: &str = "/.future/workspaces/chat/";
-    if cwd.starts_with(&format!("~{SUFFIX}")) {
+    let Ok(root) = chat_workspaces_root() else {
+        return false;
+    };
+    let prefix = format!(
+        "{}/",
+        root.to_string_lossy()
+            .replace('\\', "/")
+            .trim_end_matches('/')
+    );
+    if cwd.starts_with(&prefix) {
         return true;
     }
-    match home_dir() {
-        Ok(home) => {
-            let home = home.to_string_lossy().replace('\\', "/");
-            let prefix = format!("{}{SUFFIX}", home.trim_end_matches('/'));
-            cwd.starts_with(&prefix)
-        }
-        Err(_) => false,
-    }
+    // Preserve the legacy tilde spelling only when it names this root.
+    home_dir().is_ok_and(|home| root == home.join(".future/workspaces/chat"))
+        && cwd.starts_with("~/.future/workspaces/chat/")
 }
 
 /// What filing a session's conversation for a cwd change did.

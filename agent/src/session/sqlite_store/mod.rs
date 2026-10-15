@@ -26,6 +26,15 @@ impl SqliteStore {
         })
     }
 
+    pub(crate) fn open_cancellable(
+        path: &Path,
+        cancellation: crate::service::StartupCancellation,
+    ) -> Result<Self> {
+        Ok(Self {
+            db: Database::open_cancellable(path, cancellation)?,
+        })
+    }
+
     fn request_reclamation_after_success(&self, operation_succeeded: bool) {
         if operation_succeeded {
             self.db.request_space_reclamation();

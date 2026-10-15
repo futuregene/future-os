@@ -252,16 +252,21 @@ pub(crate) fn handle_abort(
             source = "rpc_abort",
             "session abort requested by RPC client"
         );
-        sess.abort_run((!cmd.run_id.is_empty()).then_some(cmd.run_id.as_str()))
-            .map(|()| sess.session_id.clone())
+        let result = sess.abort_run((!cmd.run_id.is_empty()).then_some(cmd.run_id.as_str()));
+        if result.is_ok() {
+            // Keep the session lock through approval cancellation: the
+            // scheduler requires its write lock to activate a follow-up run.
+            // Releasing here could cancel that next client's new approvals.
+            state.approval_gate.cancel_session(
+                &sess.session_id,
+                "Cancelled because the run was terminated.",
+            );
+        }
+        result
     };
-    let session_id = match abort_result {
-        Ok(session_id) => session_id,
-        Err(error) => return RpcResponse::build_fail(id, "abort", &error.to_string()),
-    };
-    state
-        .approval_gate
-        .cancel_session(&session_id, "Cancelled because the run was terminated.");
+    if let Err(error) = abort_result {
+        return RpcResponse::build_fail(id, "abort", &error.to_string());
+    }
     RpcResponse::ok(id, "abort", serde_json::json!({"run_id": cmd.run_id}))
 }
 

@@ -19,10 +19,7 @@ static DEVICE_IDS: LazyLock<Mutex<HashMap<PathBuf, String>>> =
 /// `remote_pairing.json`. Seed from that legacy location when present so an
 /// upgraded, already-paired installation keeps its platform identity.
 pub fn device_id() -> Result<String, crate::AppError> {
-    let identity_root = PathBuf::from(crate::home_dir().ok_or_else(|| {
-        crate::AppError::Message("HOME/USERPROFILE environment variable is not set.".to_string())
-    })?)
-    .join(".future");
+    let identity_root = crate::store::future_dir()?;
     if let Some(device_id) = DEVICE_IDS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -52,10 +49,7 @@ pub fn device_id_or_empty() -> String {
 }
 
 fn legacy_pairing_device_id() -> Option<String> {
-    let home = crate::home_dir()?;
-    let path = PathBuf::from(home)
-        .join(".future")
-        .join("remote_pairing.json");
+    let path = crate::store::future_dir().ok()?.join("remote_pairing.json");
     crate::config_io::read_json_object(&path)
         .ok()?
         .get("desktopId")

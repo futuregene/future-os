@@ -59,6 +59,12 @@
     "description": "Play a sound and attract the window's attention when an agent finishes"
   },
   "update": {
+    "maintenanceUnavailable": "Cannot read update recovery information",
+    "confirmRepair": "Confirm completed manual repair",
+    "cliTool": "CLI {{version}} · {{source}} · {{path}}",
+    "operation": "Update {{id}} · {{stage}} · {{outcome}}",
+    "unconfirmed": "result unconfirmed",
+    "awaitingResult": "Installer handoff is not installation success. If this state persists after restarting, inspect app/updates and app/logs/update-recovery.log and repair the installation before trying again.",
     "sectionTitle": "Software update",
     "title": "Check for updates",
     "description": "Securely download and install signed updates from the official source",

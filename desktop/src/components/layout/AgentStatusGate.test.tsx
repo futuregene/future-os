@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import type { AgentStatus } from "../../integrations/agent/agentStatus";
+import type { AgentStatus, ShutdownProgress } from "../../integrations/agent/agentStatus";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,12 +12,12 @@ afterEach(() => {
     mounted.pop()?.();
 });
 
-function renderStatus(phase: AgentStatus["phase"], showWait = false, error?: string) {
+function renderStatus(phase: AgentStatus["phase"], showWait = false, error?: string, shutdown?: ShutdownProgress) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   act(() => root.render(
-    <AgentStatusGate showWait={showWait} status={{ phase, desktopVersion: "1.1.8", agentVersion: null, ...(error ? { error } : {}) }} />,
+    <AgentStatusGate showWait={showWait} status={{ phase, desktopVersion: "1.1.8", agentVersion: null, ...(error ? { error } : {}), ...(shutdown ? { shutdown } : {}) }} />,
   ));
   mounted.push(() => {
     act(() => root.unmount());
@@ -27,6 +27,15 @@ function renderStatus(phase: AgentStatus["phase"], showWait = false, error?: str
 }
 
 describe("agent status gate", () => {
+  it("shows cleanup stages and keeps terminal failures visible", () => {
+    const progress: ShutdownProgress = { operationId: "stop-1", reason: "quit", state: "running", stage: "background", elapsedMs: 100, errors: [] };
+    expect(renderStatus("stopping", false, undefined, progress)).toContain("Finishing background work");
+    const failed = renderStatus("stopping", false, "deadline exceeded", { ...progress, state: "failed", errors: ["deadline exceeded"] });
+    expect(failed).toContain("deadline exceeded");
+    expect(failed).toContain("Updates, reset and restart are blocked");
+    expect(failed).not.toContain("Future Agent could not start");
+  });
+
   it("shows the connection gate reason for a blocked Agent", () => {
     expect(renderStatus("unavailable", false, "Agent instance lock is occupied")).toContain("Agent instance lock is occupied");
     expect(renderStatus("incompatible", false, "Agent serves a different data root")).toContain("Agent serves a different data root");

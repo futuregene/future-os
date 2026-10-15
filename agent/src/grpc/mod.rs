@@ -28,25 +28,12 @@ fn validate_expected_instance(
     metadata: &tonic::metadata::MetadataMap,
     state: &AppState,
 ) -> Result<(), tonic::Status> {
-    for (header, actual) in [
-        (
-            future_rpc::connection::EXPECTED_INSTANCE_HEADER,
-            &state.agent_instance_id,
-        ),
-        (
-            future_rpc::connection::EXPECTED_DATA_ROOT_HEADER,
-            &state.data_root_id,
-        ),
-    ] {
-        if let Some(expected) = metadata.get(header) {
-            if expected.to_str().ok() != Some(actual.as_str()) {
-                return Err(tonic::Status::failed_precondition(
-                    "Agent instance or data root changed; reconnect and verify readiness",
-                ));
-            }
-        }
-    }
-    Ok(())
+    future_rpc::connection::validate_request_metadata(
+        metadata,
+        &state.welcome_version,
+        &state.agent_instance_id,
+        &state.data_root_id,
+    )
 }
 
 fn configure_service(
@@ -265,7 +252,9 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         &self,
         request: tonic::Request<proto::RpcCommand>,
     ) -> Result<tonic::Response<proto::RpcResponse>, tonic::Status> {
-        validate_expected_instance(request.metadata(), &self.state)?;
+        if request.get_ref().r#type != "get_agent_readiness" {
+            validate_expected_instance(request.metadata(), &self.state)?;
+        }
         let cmd = request.into_inner();
         if cmd.sandbox_policy.as_ref().is_some_and(|policy| {
             !matches!(policy.tier.as_str(), "off" | "manual" | "sandbox")
@@ -563,14 +552,15 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                     "global_events cannot be combined with session/run attachment fields",
                 ));
             }
-            let broadcaster = crate::rpc::global_events_broadcaster();
+            let broadcaster = self.state.control_plane.global_events_broadcaster();
             let rx = broadcaster.subscribe();
-            let revision = crate::rpc::current_config_revision();
+            let revision = self.state.control_plane.current_config_revision();
             let mut initial = vec![proto::StreamEvent {
                 r#type: "ping".to_string(),
                 data: serde_json::json!({
                     "type": "ping",
                     "configRevision": revision,
+                    "agentInstanceId": self.state.agent_instance_id,
                 })
                 .to_string(),
                 session_idx: -1,
@@ -800,6 +790,21 @@ mod tests {
 
     // ─── service-level tests (direct handler calls) ─────────────────────────
 
+    fn business_request<T>(value: T) -> tonic::Request<T> {
+        future_rpc::connection::bind_request(
+            tonic::Request::new(value),
+            &future_rpc::payloads_ext::AgentReadinessPayload {
+                agent_instance_id: "grpc-test".into(),
+                data_root_id: "0".repeat(64),
+                version: "0.0.0".into(),
+                protocol_version: future_rpc::connection::AGENT_PROTOCOL_VERSION,
+                storage_schema_version: future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION,
+            },
+            "0.0.0",
+        )
+        .unwrap()
+    }
+
     fn grpc_app_state(verbose: bool) -> AppState {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -841,6 +846,7 @@ mod tests {
         .collect();
         AppState {
             agent_instance_id: "grpc-test".to_string(),
+            control_plane: std::sync::Arc::new(crate::rpc::ControlPlane::default()),
             data_root_id: "0".repeat(64),
             sessions: Arc::new(parking_lot::RwLock::new(sessions)),
             queue_budget,
@@ -938,7 +944,7 @@ mod tests {
             ..Default::default()
         };
         let response = service
-            .execute_command(tonic::Request::new(cmd))
+            .execute_command(business_request(cmd))
             .await
             .expect("command succeeds");
         let resp = response.into_inner();
@@ -952,6 +958,64 @@ mod tests {
             "typed command must not dual-write data"
         );
         assert!(resp.payload.is_some(), "typed payload present");
+    }
+
+    #[tokio::test]
+    async fn discovery_is_public_but_missing_business_contract_never_mutates_or_hydrates() {
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        let before = service.state.sessions.read().len();
+        let response = service
+            .execute_command(tonic::Request::new(proto::RpcCommand {
+                r#type: "get_agent_readiness".into(),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(response.success);
+        for header in [
+            None,
+            Some(future_rpc::connection::CLIENT_PROTOCOL_HEADER),
+            Some(future_rpc::connection::EXPECTED_INSTANCE_HEADER),
+            Some(future_rpc::connection::EXPECTED_DATA_ROOT_HEADER),
+            Some(future_rpc::connection::CLIENT_SCHEMA_HEADER),
+            Some(future_rpc::connection::CLIENT_VERSION_HEADER),
+        ] {
+            let command = proto::RpcCommand {
+                r#type: "new_session".into(),
+                session_id: "never-created".into(),
+                ..Default::default()
+            };
+            let stream = proto::StreamRequest {
+                session_id: "never-hydrated".into(),
+                ..Default::default()
+            };
+            let mut request = business_request(command);
+            let mut subscription = business_request(stream);
+            if let Some(header) = header {
+                request.metadata_mut().remove(header);
+                subscription.metadata_mut().remove(header);
+            } else {
+                request.metadata_mut().clear();
+                subscription.metadata_mut().clear();
+            }
+            assert_eq!(
+                service.execute_command(request).await.unwrap_err().code(),
+                tonic::Code::FailedPrecondition
+            );
+            assert_eq!(
+                service
+                    .stream_events(subscription)
+                    .await
+                    .err()
+                    .unwrap()
+                    .code(),
+                tonic::Code::FailedPrecondition
+            );
+            assert_eq!(service.state.sessions.read().len(), before);
+        }
     }
 
     #[tokio::test]
@@ -970,8 +1034,13 @@ mod tests {
                 future_rpc::connection::EXPECTED_DATA_ROOT_HEADER,
                 "wrong-root",
             ),
+            (future_rpc::connection::CLIENT_VERSION_HEADER, "999.0.0"),
+            (future_rpc::connection::CLIENT_PROTOCOL_HEADER, "1"),
+            (future_rpc::connection::CLIENT_SCHEMA_HEADER, "0"),
+            (future_rpc::connection::CLIENT_PROTOCOL_HEADER, "invalid"),
+            (future_rpc::connection::CLIENT_VERSION_HEADER, "invalid"),
         ] {
-            let mut request = tonic::Request::new(proto::RpcCommand {
+            let mut request = business_request(proto::RpcCommand {
                 id: "stale".into(),
                 r#type: "new_session".into(),
                 session_id: "must-not-create".into(),
@@ -984,7 +1053,7 @@ mod tests {
             assert_eq!(error.code(), tonic::Code::FailedPrecondition);
             assert_eq!(state.sessions.read().len(), count);
             assert!(!state.sessions.read().contains_key("must-not-create"));
-            let mut request = tonic::Request::new(proto::StreamRequest {
+            let mut request = business_request(proto::StreamRequest {
                 session_id: "must-not-hydrate".into(),
                 ..Default::default()
             });
@@ -1005,7 +1074,7 @@ mod tests {
         };
         for (configured, expected) in [(None, true), (Some(false), false), (Some(true), true)] {
             let response = service
-                .execute_command(tonic::Request::new(proto::RpcCommand {
+                .execute_command(business_request(proto::RpcCommand {
                     r#type: "upsert_provider".into(),
                     provider_config: Some(proto::ProviderUpsert {
                         id: "reasoning-test".into(),
@@ -1036,7 +1105,7 @@ mod tests {
                 expected
             );
             let response = service
-                .execute_command(tonic::Request::new(proto::RpcCommand {
+                .execute_command(business_request(proto::RpcCommand {
                     r#type: "list_models".into(),
                     ..Default::default()
                 }))
@@ -1072,7 +1141,7 @@ mod tests {
             ..Default::default()
         };
         let response = service
-            .execute_command(tonic::Request::new(cmd))
+            .execute_command(business_request(cmd))
             .await
             .expect("handler returns Ok envelope");
         let resp = response.into_inner();
@@ -1092,7 +1161,7 @@ mod tests {
             ..Default::default()
         };
         let response = service
-            .execute_command(tonic::Request::new(cmd))
+            .execute_command(business_request(cmd))
             .await
             .expect("command succeeds");
         let resp = response.into_inner();
@@ -1114,7 +1183,7 @@ mod tests {
 
         // Empty session id → failed_precondition.
         let err = service
-            .stream_events(tonic::Request::new(proto::StreamRequest::default()))
+            .stream_events(business_request(proto::StreamRequest::default()))
             .await
             .map(|_| ())
             .expect_err("expected an error");
@@ -1122,7 +1191,7 @@ mod tests {
 
         // Unknown session → not_found.
         let err = service
-            .stream_events(tonic::Request::new(proto::StreamRequest {
+            .stream_events(business_request(proto::StreamRequest {
                 session_id: "ghost".to_string(),
                 ..Default::default()
             }))
@@ -1138,7 +1207,7 @@ mod tests {
             state: grpc_app_state(false),
         };
         let response = service
-            .stream_events(tonic::Request::new(proto::StreamRequest {
+            .stream_events(business_request(proto::StreamRequest {
                 event_types: vec!["provider_config_changed".to_string()],
                 global_events: true,
                 ..Default::default()
@@ -1146,7 +1215,10 @@ mod tests {
             .await
             .expect("global subscription succeeds");
         let mut stream = response.into_inner();
-        let revision = crate::rpc::publish_provider_config_changed("custom", "updated", true, true);
+        let revision = service
+            .state
+            .control_plane
+            .publish_provider_config_changed("custom", "updated", true, true);
         let event = stream.next().await.unwrap().unwrap();
         assert_eq!(event.r#type, "provider_config_changed");
         let data: serde_json::Value = serde_json::from_str(&event.data).unwrap();
@@ -1161,7 +1233,7 @@ mod tests {
         };
         // Filtering to session_created also drops the initial ping.
         let response = service
-            .stream_events(tonic::Request::new(proto::StreamRequest {
+            .stream_events(business_request(proto::StreamRequest {
                 event_types: vec!["session_created".to_string()],
                 global_events: true,
                 ..Default::default()
@@ -1169,13 +1241,16 @@ mod tests {
             .await
             .expect("global subscription succeeds");
         let mut stream = response.into_inner();
-        crate::rpc::publish_session_created_with_creator(
-            "tui-session",
-            "tui",
-            "creator-tui",
-            "/tmp/project",
-        );
-        // Parallel tests publish session_created on the same global stream —
+        service
+            .state
+            .control_plane
+            .publish_session_created_with_creator(
+                "tui-session",
+                "tui",
+                "creator-tui",
+                "/tmp/project",
+            );
+        // This service instance publishes its own session_created stream.
         // drain until THIS announcement arrives.
         for _ in 0..32 {
             let event = stream.next().await.unwrap().unwrap();
@@ -1198,7 +1273,7 @@ mod tests {
         };
         let session = service.state.get_session("default").unwrap();
         let response = service
-            .stream_events(tonic::Request::new(proto::StreamRequest {
+            .stream_events(business_request(proto::StreamRequest {
                 session_id: "default".to_string(),
                 ..Default::default()
             }))
@@ -1225,7 +1300,7 @@ mod tests {
         };
         let session = service.state.get_session("default").unwrap();
         let response = service
-            .stream_events(tonic::Request::new(proto::StreamRequest {
+            .stream_events(business_request(proto::StreamRequest {
                 session_id: "default".to_string(),
                 event_types: vec!["model_changed".to_string()],
                 ..Default::default()
@@ -1261,7 +1336,7 @@ mod tests {
             ));
         }
         let response = service
-            .stream_events(tonic::Request::new(proto::StreamRequest {
+            .stream_events(business_request(proto::StreamRequest {
                 session_id: "default".to_string(),
                 atomic_attach: true,
                 run_id: "run-live".to_string(),
@@ -1277,7 +1352,7 @@ mod tests {
 
         // Attaching to a different (stale) run fails.
         let err = service
-            .stream_events(tonic::Request::new(proto::StreamRequest {
+            .stream_events(business_request(proto::StreamRequest {
                 session_id: "default".to_string(),
                 atomic_attach: true,
                 run_id: "run-stale".to_string(),
@@ -1347,8 +1422,8 @@ mod tests {
             .unwrap();
         tracing::subscriber::with_default(subscriber, || {
             runtime.block_on(async {
-                let _ = service.execute_command(tonic::Request::new(refresh)).await;
-                let _ = service.execute_command(tonic::Request::new(real)).await;
+                let _ = service.execute_command(business_request(refresh)).await;
+                let _ = service.execute_command(business_request(real)).await;
             });
         });
 
@@ -1403,7 +1478,7 @@ mod tests {
                 ..Default::default()
             };
             let error = service
-                .execute_command(tonic::Request::new(cmd))
+                .execute_command(business_request(cmd))
                 .await
                 .unwrap_err();
             assert_eq!(error.code(), tonic::Code::InvalidArgument);
@@ -1430,7 +1505,7 @@ mod tests {
                 ..Default::default()
             };
             let error = service
-                .execute_command(tonic::Request::new(command))
+                .execute_command(business_request(command))
                 .await
                 .unwrap_err();
             assert_eq!(error.code(), tonic::Code::InvalidArgument);
@@ -1452,7 +1527,7 @@ mod tests {
             ..Default::default()
         };
         let resp = service
-            .execute_command(tonic::Request::new(cmd))
+            .execute_command(business_request(cmd))
             .await
             .expect("command executes")
             .into_inner();
@@ -1472,7 +1547,7 @@ mod tests {
         };
         // The command task itself panicked → JoinError → internal status.
         let err = service
-            .execute_command(tonic::Request::new(proto::RpcCommand {
+            .execute_command(business_request(proto::RpcCommand {
                 id: "cmd-panic".to_string(),
                 r#type: "__test_panic__".to_string(),
                 session_id: "default".to_string(),
@@ -1485,7 +1560,7 @@ mod tests {
 
         // The dispatcher returned non-JSON → parse failure → internal status.
         let err = service
-            .execute_command(tonic::Request::new(proto::RpcCommand {
+            .execute_command(business_request(proto::RpcCommand {
                 id: "cmd-badjson".to_string(),
                 r#type: "__test_bad_json__".to_string(),
                 session_id: "default".to_string(),
@@ -1519,7 +1594,7 @@ mod tests {
             }
         }
         let response = service
-            .stream_events(tonic::Request::new(proto::StreamRequest {
+            .stream_events(business_request(proto::StreamRequest {
                 session_id: "default".to_string(),
                 atomic_attach: true,
                 run_id: "run-long".to_string(),
@@ -1548,7 +1623,7 @@ mod tests {
         // without draining: the next poll yields Lagged, which must bypass
         // the filter and surface as DataLoss.
         let response = service
-            .stream_events(tonic::Request::new(proto::StreamRequest {
+            .stream_events(business_request(proto::StreamRequest {
                 session_id: "default".to_string(),
                 event_types: vec!["text_chunk".to_string()],
                 ..Default::default()
