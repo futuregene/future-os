@@ -462,7 +462,7 @@ fn legacy_packet(
             _ => reason.to_string(),
         },
         rollout_event: Some(RolloutEvent {
-            schema_version: "future_loop_rollout_event_v0".to_string(),
+            schema_version: "future_goal_rollout_event_v0".to_string(),
             event_id: uuid::Uuid::new_v4().simple().to_string(),
             event_kind: "quota_should_run".to_string(),
             recorded_at: future_goal::compat::rfc3339(future_goal::state::now_epoch()),
@@ -507,7 +507,7 @@ fn legacy_packet(
         active_state_next_action: goal.next_action.clone(),
         latest_run_recommended_action: goal.next_action.clone(),
         interaction_contract: InteractionContract {
-            schema_version: "future_loop_interaction_contract_v0".to_string(),
+            schema_version: "future_goal_interaction_contract_v0".to_string(),
             mode,
             user_channel: user_channel.clone(),
             agent_channel: agent_channel.clone(),

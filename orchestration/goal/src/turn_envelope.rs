@@ -24,8 +24,8 @@ fn compose_todo_signals(goal: &Goal, todo: &Todo) -> Vec<String> {
 }
 
 /// Envelope schema version (reference `TURN_ENVELOPE_SCHEMA_VERSION`).
-/// `future_loop_` is a frozen wire prefix predating the loop → goal rename.
-pub const TURN_ENVELOPE_SCHEMA_VERSION: &str = "future_loop_turn_envelope_v0";
+/// `future_goal_` is a frozen wire prefix predating the loop → goal rename.
+pub const TURN_ENVELOPE_SCHEMA_VERSION: &str = "future_goal_turn_envelope_v0";
 
 /// How many recent semantic events surface in the goal-memory block.
 const GOAL_MEMORY_SEMANTIC_EVENTS: usize = 5;

@@ -15,7 +15,7 @@
 ## 基线元数据
 
 - **源 commit**：`85372a53a0b61f57ba492894788249fb66315b94`
-  （分支 `claude/loop-orchestrator`，"full lifecycle process + quota packet
+  （分支 `claude/goal-orchestrator`，"full lifecycle process + quota packet
   parity"，2026-08-05）——原始出处；该 commit 已不在本仓库当前历史中。
 - **快照版本**：文件最后一次变更是 `de19b99c`（2026-08-24，"agent decides,
   kernel provides the kanban"，#347），同一 PR 也改动了内核的 replan/会话保留

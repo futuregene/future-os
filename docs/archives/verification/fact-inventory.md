@@ -33,8 +33,8 @@
 | 2 | README.zh-CN.md | 138 | user document (root) | zh |
 | 3 | docs/build-and-install.md | 206 | user document (build/install) | en |
 | 4 | docs/build-and-install.zh-CN.md | 190 | user document (build/install) | zh |
-| 5 | docs/loop-control-plane.md | 179 | user document (feature guide) | en |
-| 6 | docs/loop-control-plane.zh-CN.md | 128 | user document (feature guide) | zh |
+| 5 | docs/goal-control-plane.md | 179 | user document (feature guide) | en |
+| 6 | docs/goal-control-plane.zh-CN.md | 128 | user document (feature guide) | zh |
 | 7 | docs/wiki-prompt.md | 229 | **generation prompt** (for AI, not user docs) | zh |
 | 8 | docs/wiki-prompt-en.md | 229 | **generation prompt** (for AI, not user docs) | en |
 | 9-21 | docs/wiki/en/*.md（13 files） | see §7 | user documents (wiki) | en |
@@ -65,7 +65,7 @@ Using-FutureOS、Settings、Skills、CLI、FAQ、Feishu、DingTalk、Models、_S
 | R6 | 12 TUI slash commands: `/help` `/model` `/new` `/sessions` `/compact` `/scoped-models` `/clone` `/fork` `/tree` `/name [n]` `/status` `/stop` | L105-118 (table header L105) |
 | R7 | TUI shortcuts: `ctrl+p` cycle models、`ctrl+t` cycle thinking levels、`ctrl+r` browse sessions、`ctrl+c` interrupt/quit、`tab` complete、`enter` submit、`escape` close overlay、`↑↓` scroll | L122-131 (table header L122) |
 | R8 | troubleshooting: connection errors → `lsof -i :50051` port check；auth/"no model" → `future auth login` or add a provider to models.json | L133-140 |
-| R9 | remaining feature-table claims: streaming + chain of thought (off ↔ xhigh)；tools read/write/edit/shell + approval + **sandbox tiers (off / manual / macOS Seatbelt)**；JSONL sessions + fork/clone/tree；YAML skills multi-directory discovery；auto compaction + exponential-backoff retry；loop control plane (loopx Rust rewrite)；Rust core | L22-33 |
+| R9 | remaining feature-table claims: streaming + chain of thought (off ↔ xhigh)；tools read/write/edit/shell + approval + **sandbox tiers (off / manual / macOS Seatbelt)**；JSONL sessions + fork/clone/tree；YAML skills multi-directory discovery；auto compaction + exponential-backoff retry；goal control plane (loopx Rust rewrite)；Rust core | L22-33 |
 | R10 | License: MIT | L143 |
 | R11 | external links: wiki (github.com/futuregene/future-os/wiki)、future-skills repo | L3, L5 |
 
@@ -78,7 +78,7 @@ Mirrors en; key differences:
 | # | Claim | Location |
 |---|---|---|
 | RZ1 | 「内置 1000+ 模型，覆盖 100+ Provider」 | L23 |
-| RZ2 | three model-configuration paths（same as R3，links point to docs/wiki/zh/ and docs/loop-control-plane.zh-CN.md、docs/build-and-install.zh-CN.md） | L43-77 |
+| RZ2 | three model-configuration paths（same as R3，links point to docs/wiki/zh/ and docs/goal-control-plane.zh-CN.md、docs/build-and-install.zh-CN.md） | L43-77 |
 | RZ3 | agent listens on `127.0.0.1:50051`；`future-agent`/`future-tui` | L80-89 |
 | RZ4 | slash-command table（same as R6，12 commands） | L100-113（table header L100） |
 | RZ5 | shortcut table（same as R7） | L117-126（table header L117） |
@@ -104,7 +104,7 @@ Mirrors en; key differences:
 | B10 | Windows desktop app: sidecar named by host triple（future-agent-$triple.exe / future-$triple.exe）→ `npx tauri build --no-bundle` → copy futureos.exe → **future-desktop.exe** | L110-122 |
 | B11 | Windows installer: `node scripts\version.mjs --set-bundle` + `npm run tauri:build` → **NSIS .exe**（bundle\nsis\） | L124-128 |
 | B12 | scripts: `scripts/start-desktop-windows.bat` dev mode；`build-desktop-macos.sh`/`build-desktop-windows-portable.ps1`/`build-desktop-windows-installer.ps1` mirror the CI pipelines（DMG/portable zip/NSIS），need protoc；artifacts include GUI+agent+CLI，**no TUI** | L130-133 |
-| B13 | loop control plane: `orchestration/loop`，`cargo build -p future-loop`（debug→target/debug，release→target/release）；`bash scripts/install-future-loop.sh` → **~/.local/bin/future-loop** + **~/.future/agent/skills/**；verify with `future-loop status` | L135-155 |
+| B13 | goal control plane: `orchestration/goal`，`cargo build -p future-goal`（debug→target/debug，release→target/release）；`bash scripts/install-future-goal.sh` → **~/.local/bin/future-goal** + **~/.future/agent/skills/**；verify with `future-goal status` | L135-155 |
 | B14 | skills installation: `make install-skills`（symlinks the builtin skills/ submodule）；`future skills install`（**about 13**）；`future init`（installs skills + links local commands on macOS/Linux）；symlinks into `~/.future/agent/skills/`；`future skills list`/`future skills update` | L162-178（`future skills install` L171，`future skills update` L177） |
 | B15 | verification: `make test`（cargo test agent + loop）、`make lint`（agent+channels+TUI+CLI+GUI） | L168-171 |
 | B16 | development: `make build/lint/fmt/test/clean` | L174-183 |
@@ -120,17 +120,17 @@ proto L180-190. **No content differences**（except links pointing to .zh-CN ver
 
 ---
 
-## 5. docs/loop-control-plane.md（en）
+## 5. docs/goal-control-plane.md（en）
 
 | # | Claim | Location |
 |---|---|---|
-| L1 | positioning: local control plane at `orchestration/loop`，`future-loop` CLI + `/future-loop` agent skill | L5-7 |
-| L2 | **`future-loop` is the Rust rewrite of loopx (github.com/huangruiteng/loopx)**，adapted for FutureOS（project-local state、gRPC execution bridge、quota kernel、extensions and multi-agent） | L8-11 |
-| L3 | goals: `goal init / cancel / delete`，state in `<cwd>/.future/loop/`，event ledger + replay | L40-41 |
+| L1 | positioning: local control plane at `orchestration/goal`，`future-goal` CLI + `/future-goal` agent skill | L5-7 |
+| L2 | **`future-goal` is the Rust rewrite of loopx (github.com/huangruiteng/loopx)**，adapted for FutureOS（project-local state、gRPC execution bridge、quota kernel、extensions and multi-agent） | L8-11 |
+| L3 | goals: `goal init / cancel / delete`，state in `<cwd>/.future/goal/`，event ledger + replay | L40-41 |
 | L4 | todos: `todo add / claim / complete / supersede / update / archive`；advancement/user-gate/monitor/blocker categories；`--blocks` dependency chains；claim+lease；completion contract（every completed todo declares a successor or explicit no-follow-up） | L42-45 |
 | L5 | human gates: `gate resolve` | L47 |
 | L6 | monitors: `--class monitor --cadence ...`，backoff on no change | L49 |
-| L7 | decision kernel: `future-loop run`，pure function with injectable clock，**nine dispositions**（terminal/monitor-wait/active work/consistency repair/human gate/quiet wait/…），fail-closed | L54-60 |
+| L7 | decision kernel: `future-goal run`，pure function with injectable clock，**nine dispositions**（terminal/monitor-wait/active work/consistency repair/human gate/quiet wait/…），fail-closed | L54-60 |
 | L8 | quota: run/agent/heartbeat three slot-accounting sources、24h/7d summaries、stall repair | L62-65 |
 | L9 | scheduling: cadence normalization（`once / hourly / daily / weekly` or `15m / 1h / 2d`）、atomic persistence、host-failure tracking | L67-68 |
 | L10 | event sourcing: content-addressed event ids、idempotent append、fail-closed conflict detection；`QuotaSpent`/`EvidenceAttached` events；markdown backfill | L72-76 |
@@ -139,12 +139,12 @@ proto L180-190. **No content differences**（except links pointing to .zh-CN ver
 | L13 | extensions and multi-agent: capability framework（declared→installed→enabled→ready）、capability gates（run/ask-owner/repair-bridge/skip）、extension manifest + install/enable/disable/rollback + readiness doctor（v1 declarative, executes no code）、identity-scoped multi-agent、supervisor proposals/receipts、task leases、handoff-document delivery contracts、todo dependency graphs、attention queue/operator inbox | L88-108 |
 | L14 | diagnostics: benchmark（protocol/run/ledger）、replay（record/run、corpus）、canary（`core-control-plane`/`extension-runtime`/`release-gate`）；`version`/`doctor`/`history`/`turn`/`todo-event`/`evidence-log`、`backup`/restore | L110-113 |
 | L15 | **CLI overview**（command surface, the item-by-item verification target）: goal / todo / agent / capability / extension / ops / work-items / handoff / benchmark / replay / canary / cli（subcommands in the original L115-127） | L115-127 |
-| L16 | skill-mode quick start: `/future-loop <goal>`；`future-loop run --max-turns 1` | L132-144 |
-| L17 | direct examples: `future-loop goal init --objective ... --cwd ...`；`todo add --goal <id> --text ... --priority P0 [--blocks ...] [--verify "test -f report.md"]`；`status --goal <id>`；`run --goal <id> --model future/deepseek-v4-flash --max-turns 1` | L148-155 |
-| L18 | state layout: `registry.json`（source of truth）、`goals/<id>/events.jsonl`、`goals/<id>/ACTIVE_GOAL_STATE.md`（reference-compat projection）、`runs/`；runtime state never written outside the project；`.future/loop/` added to .gitignore | L159-167 |
-| L19 | installation: `bash scripts/install-future-loop.sh` or `cargo build -p future-loop` | L171-173 |
+| L16 | skill-mode quick start: `/future-goal <goal>`；`future-goal run --max-turns 1` | L132-144 |
+| L17 | direct examples: `future-goal goal init --objective ... --cwd ...`；`todo add --goal <id> --text ... --priority P0 [--blocks ...] [--verify "test -f report.md"]`；`status --goal <id>`；`run --goal <id> --model future/deepseek-v4-flash --max-turns 1` | L148-155 |
+| L18 | state layout: `registry.json`（source of truth）、`goals/<id>/events.jsonl`、`goals/<id>/ACTIVE_GOAL_STATE.md`（reference-compat projection）、`runs/`；runtime state never written outside the project；`.future/goal/` added to .gitignore | L159-167 |
+| L19 | installation: `bash scripts/install-future-goal.sh` or `cargo build -p future-goal` | L171-173 |
 
-## 6. docs/loop-control-plane.zh-CN.md（zh）
+## 6. docs/goal-control-plane.zh-CN.md（zh）
 
 Mirrors en（L1-L19）; line numbers: L7 positioning、L11-14 loopx rewrite、L40-49 goals/todos/gates/monitors、
 L54-60 kernel、L62-80 quota/scheduling/event sourcing、L84-86 independent verification、L88-108 extensions multi-agent、
@@ -395,7 +395,7 @@ Two places worth recording:
 | X9 | **thinking-level set** | README「off ↔ xhigh」；wiki CLI.md `--thinking` lists off/minimal/low/medium/high/xhigh（EC5）；README doesn't list all levels | §1/§8 |
 | X10 | **architecture-audit timeliness** | the audit baseline dev @ 8aa82925（2026-08-05）and its relationship to the current worktree need checking；if source changed, file:line may be invalid | §10-A0 |
 | — | **X10 adjudicated（2026-08-06，todo_41f779819879）** | audits are **point-in-time snapshots**: documents and first fixes entered the repo in the same batch（commit `306cf05f`）— report 01 H2/H3/H4、report 04 H1/H2/H4 were fixed in that commit（code comments cite audit numbers）；still-standing high-risk items: report 01 H1/H5、report 04 H3. file:line has drifted，README top has a timeliness note with per-item ✅（details in errors-outdated-missing.md §E） | |
-| X11 | **loop CLI command surface** | loop-control-plane.md L15 CLI overview vs actual `future-loop --help`（this round saw goal/todo/ops/cli etc groups running，the full surface needs verification） | §5 |
+| X11 | **loop CLI command surface** | goal-control-plane.md L15 CLI overview vs actual `future-goal --help`（this round saw goal/todo/ops/cli etc groups running，the full surface needs verification） | §5 |
 | — | **X11 adjudicated（2026-08-06，todo_63c718c2a3d5）** | compared one by one against `build_cli_registry()`（main.rs L176-471）: goal group missing `models`/`diagnose`、extension missing `upgrade`、`cli registry` missing `--include-experimental`，fixed both en/zh CLI overviews（recorded in B9）。Everything else consistent | |
 | X12 | **`future init` behavior** | build-and-install B14: `future init` = install skills + link local commands on macOS/Linux；needs verification against cli source | §3 |
 
@@ -408,13 +408,13 @@ Two places worth recording:
 | TUI slash commands（12） | R6 / RZ4 | README.md L100-114 |
 | TUI shortcuts（8） | R7 / RZ5 | README.md L118-130 |
 | agent port 127.0.0.1:50051 | R4 / RZ3 / EFE6 / EDT5 | README L89；wiki Feishu L70-87、DingTalk L56-73 |
-| config paths ~/.future/agent/{auth,models}.json、~/.future/channels/config.json、~/.future/loop/ | R3 / EFE6 / EDT5 / L18 | README L46-79；wiki Feishu L51-87 |
+| config paths ~/.future/agent/{auth,models}.json、~/.future/channels/config.json、~/.future/goal/ | R3 / EFE6 / EDT5 / L18 | README L46-79；wiki Feishu L51-87 |
 | toolchain versions: Rust 1.97+、Node 24+、Bun | B1 / B3-B8 | build-and-install L12-18, L30-86 |
 | .cargo/config.toml mold claim | B6 | build-and-install L67；.cargo/config.toml |
 | Makefile target surface（install/install-desktop/package-desktop/build-*/run-*/generate-*/install-skills/install-loop…） | B4-B17 / X7 | build-and-install throughout；Makefile |
 | CLI command surface（auth/agent/run/tools/skills/channel + options） | EC5 / W12 / X1/X2/X4 | wiki CLI.md L37-93；wiki-prompt L175-185 |
 | channels config and slash commands | EFE6-EFE10 / EDT5-EDT7 | wiki Feishu/DingTalk |
-| future-loop CLI command surface | L15 / X11 | loop-control-plane.md L115-127 |
+| future-goal CLI command surface | L15 / X11 | goal-control-plane.md L115-127 |
 | proto（future.proto、generated code、generate-proto） | B17 | build-and-install L186-206 |
 | GUI feature claims（approval mechanism/settings pages/skills inventory/4 images 25MiB/Artifacts etc） | EU5-EU9 / ES3-ES8 / ESK3 / EQ3 | wiki Using-FutureOS/Settings/Skills/Quick-Start |
 | generated files（Models.md） | EM1-EM3 | scripts/generate_models.py L231-331 |
@@ -441,7 +441,7 @@ Two places worth recording:
 | I-1 | Models.md missing「how to regenerate」（generator script、command、auto-sync?） | scripts/generate_models.py；EM1-EM3 | ✅ resolved（todo_bcf715c7cc0e：script + file-header comments） |
 | I-2 | dist readmes have a Linux version but the wiki has no Linux page——platform positioning needs a decision（add a Linux page vs keep macOS+Windows） | docs/dist/readme-linux*.txt | ✅ adjudicated：**keep macOS+Windows**——release.yml publishes only macOS（arm64+x64 dmg/updater）+ Windows（x64 setup），the Linux portable package is tester-only，no wiki page needed |
 | I-3 | no complete reference for channels config（Feishu/DingTalk each have their own page，no unified config.json schema reference page） | EFE6/EDT5 | ✅ resolved：created docs/channels-config.md + zh（all schema fields/defaults，field-by-field verified against channels/src/config.rs） |
-| I-4 | loop-control-plane guide doesn't cover the `agent` command group（onboard/scope/lane/supervisor）or handoff usage examples | loop-control-plane.md L115-127 | ✅ resolved：en/zh added the「Multi-agent workflow / 多 agent 工作流」section（agent onboard/registration、scope、lane、supervisor propose|receipt|events、handoff [--write]、task-graph、attention/inbox examples）；and notes these are flat top-level commands（the agent/todo/work-items groups in help are display only） |
+| I-4 | goal-control-plane guide doesn't cover the `agent` command group（onboard/scope/lane/supervisor）or handoff usage examples | goal-control-plane.md L115-127 | ✅ resolved：en/zh added the「Multi-agent workflow / 多 agent 工作流」section（agent onboard/registration、scope、lane、supervisor propose|receipt|events、handoff [--write]、task-graph、attention/inbox examples）；and notes these are flat top-level commands（the agent/todo/work-items groups in help are display only） |
 | I-5 | no index README at the docs/ top level（other than architecture-audit）——docs directory lacks navigation | directory structure | ✅ resolved：created docs/README.md + zh（top-level guide table、wiki inventory、dist notes、internal working documents） |
 | I-6 | no TUI usage document（the wiki deliberately excludes TUI，but README has TUI slash commands/shortcuts） | README R6/R7 | ✅ resolved：created docs/tui.md + zh（17 slash commands、8 shortcuts、settings/keybindings/log paths、troubleshooting） |
 | I-7 | no complete `.future/` directory-layout document（responsibilities of the agent/channels/tui/app/workspaces subdirectories） | CLAUDE.md；config-path check area | ✅ resolved：created docs/directory-layout.md + zh（agent/models/auth/sessions/skills/logs、channels、tui、app(db/images/review)、workspaces/chat、loop、bin；plus notes on ~/.agents/skills and project-local .future/） |

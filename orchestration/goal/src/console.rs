@@ -91,65 +91,16 @@ fn next_action_text(goal: &Goal) -> String {
     "all todos complete; no further action".to_string()
 }
 
-/// Pre-rename project-local state directory name. Kept so an existing
-/// `<cwd>/.future/loop/` is migrated (or, if the move fails, still read)
-/// instead of silently disappearing after the loop → goal rename.
-const LEGACY_STATE_DIR_NAME: &str = "loop";
-
 /// Project-local state root: `<cwd>/.future/goal/` (run future-goal from the
 /// project dir, or override with FUTURE_GOAL_ROOT). All goal state stays
-/// inside the project. The pre-rename FUTURE_LOOP_ROOT is still honoured.
+/// inside the project.
 pub(crate) fn root_dir() -> String {
     if let Ok(root) = std::env::var("FUTURE_GOAL_ROOT") {
         return root;
     }
-    if let Ok(root) = std::env::var("FUTURE_LOOP_ROOT") {
-        return root;
-    }
     let project = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let future_dir = project.join(".future");
-    let root = future_dir.join("goal");
-    match migrate_legacy_state_dir(&future_dir, &root) {
-        Some(legacy) => legacy.to_string_lossy().into_owned(),
-        None => root.to_string_lossy().into_owned(),
-    }
-}
-
-/// One-time rename of `<cwd>/.future/loop/` → `<cwd>/.future/goal/`.
-///
-/// Returns `Some(legacy)` only when the move could not be performed, so the
-/// caller keeps reading the old directory rather than an empty new one.
-/// Never runs when the new root already exists, so it cannot overwrite live
-/// state, and it never deletes anything.
-fn migrate_legacy_state_dir(
-    future_dir: &std::path::Path,
-    new_root: &std::path::Path,
-) -> Option<std::path::PathBuf> {
-    if new_root.exists() {
-        return None;
-    }
-    let legacy = future_dir.join(LEGACY_STATE_DIR_NAME);
-    if !legacy.is_dir() {
-        return None;
-    }
-    match std::fs::rename(&legacy, new_root) {
-        Ok(()) => {
-            eprintln!(
-                "Note: moved goal state {} -> {} (loop → goal rename)",
-                legacy.display(),
-                new_root.display()
-            );
-            None
-        }
-        Err(err) => {
-            eprintln!(
-                "Warning: could not move {} to {} ({err}); reading the old location",
-                legacy.display(),
-                new_root.display()
-            );
-            Some(legacy)
-        }
-    }
+    let root = project.join(".future").join("goal");
+    root.to_string_lossy().into_owned()
 }
 
 fn gen_id(prefix: &str) -> String {
@@ -7916,7 +7867,7 @@ fn cmd_version(store: &Store, args: &[String]) -> Result<()> {
     println!("schemas:");
     println!("  canary_smoke_run_v0 (G-20)");
     println!("  canary_premerge_gate_v0 (P1-6)");
-    println!("  future_loop_turn_envelope_v0 (G-9)");
+    println!("  future_goal_turn_envelope_v0 (G-9)");
     println!("  scheduler_arbitration_v0 (G-2/G-11)");
     let _ = store;
     Ok(())

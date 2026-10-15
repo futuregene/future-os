@@ -497,11 +497,11 @@ impl Todo {
     }
 }
 
-// ── Task validation (the reference: future_loop_turn_task_validation_v0) ────────
-// The `future_loop_` prefix below is a frozen wire identifier predating the
+// ── Task validation (the reference: future_goal_turn_task_validation_v0) ────────
+// The `future_goal_` prefix below is a frozen wire identifier predating the
 // loop → goal rename; it must not be rewritten.
 
-pub const MAX_VALIDATION_SCHEMA_VERSION: &str = "future_loop_turn_task_validation_v0";
+pub const MAX_VALIDATION_SCHEMA_VERSION: &str = "future_goal_turn_task_validation_v0";
 
 /// Independent task-validation status — mirrors the reference's turn
 /// task-validation state machine: passed / progress / failed / inconclusive /

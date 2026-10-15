@@ -7,7 +7,7 @@
 | 范围 | 原始 ID 数 | 证据 |
 |---|---:|---|
 | Agent、LLM、沙箱、会话/持久化及分配的并发 | 79 | [Agent 账本](./fix-agent.md) |
-| Loop/TUI 与 supervisor/验证者新增项 | 55 | [Loop/TUI 账本](./fix-loop-tui.md) |
+| Loop/TUI 与 supervisor/验证者新增项 | 55 | [Loop/TUI 账本](./fix-goal-tui.md) |
 | CLI/浏览器/渠道/共享 RPC 与安全重叠 | 61 | [CLI 账本](./fix-cli.md) |
 | 桌面/移动/共享前端包/脚本 | 29 | [Apps 账本](./fix-apps.md) |
 

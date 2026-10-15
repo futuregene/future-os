@@ -48,13 +48,13 @@ These were checked line-by-line against code and **matched**:
   matches `feishu/bridge.rs:134` / `dingtalk/bridge.rs:64`; `max_image_mb`
   enforced without Content-Length matches `feishu_rest.rs:769`; first-run
   template-and-exit matches `config.rs` `load()`.
-- `docs/architecture/loop-control-plane.md` — 7 groups / 41 commands and
-  every group count match `orchestration/loop/src/console.rs`
+- `docs/architecture/goal-control-plane.md` — 7 groups / 41 commands and
+  every group count match `orchestration/goal/src/console.rs`
   `build_cli_registry` (5/6/6/18/3/2/1); todo classes
   (advancement/monitor/blocker/coordination/user_gate/user_action) match
   `state.rs:54-79`; `--parent` 3-level limit, `--gate-question`, `--role`,
   `--max-validation-attempts`, `--parent-session` match `console.rs:705-727,
-  1364`; validator 120s default + `FUTURE_LOOP_VALIDATOR_TIMEOUT_SECS` match
+  1364`; validator 120s default + `FUTURE_GOAL_VALIDATOR_TIMEOUT_SECS` match
   `validator.rs:7` / `executor.rs:209`; dashboard port 7717/127.0.0.1/GET-only
   match `console.rs:3175-3177` / `webui/server.rs:54`; 32-note batches match
   `agents/supervision.rs:13`; 5-minute verification-pending flag matches
@@ -87,7 +87,7 @@ These were checked line-by-line against code and **matched**:
   `session/database.rs:122-123`), `docs/guide/build-and-install.md` (make
   targets, Rust 1.97.0, Node 24, mold), `docs/guide/directory-layout.md`
   (every listed path exists; loop layout files all present in
-  `orchestration/loop/src/`), `docs/guide/desktop-headless.md`,
+  `orchestration/goal/src/`), `docs/guide/desktop-headless.md`,
   `docs/internals/desktop/ER.*` (table inventory matches
   `desktop/src-tauri/src/store/schema.rs`).
 
@@ -204,13 +204,13 @@ These were checked line-by-line against code and **matched**:
 - **Suggested fix:** add a bullet: "`remote-crypto`: Rust Noise-protocol
   end-to-end encryption shared by the desktop/mobile remote channel."
 
-### M4. `loop-control-plane.md` omits `lease expire` and two scheduler verbs
+### M4. `goal-control-plane.md` omits `lease expire` and two scheduler verbs
 
-- **Doc:** `docs/architecture/loop-control-plane.md:54` — "Lease |
+- **Doc:** `docs/architecture/goal-control-plane.md:54` — "Lease |
   `lease claim/renew/release/status`"; `:60` — "Scheduler |
-  `scheduler tick/show/liveness`" (also `loop-control-plane.zh-CN.md:39,44`).
+  `scheduler tick/show/liveness`" (also `goal-control-plane.zh-CN.md:39,44`).
 - **Code:** registry usage strings include `expire` and the extra scheduler
-  verbs: `orchestration/loop/src/console.rs:348` — "lease
+  verbs: `orchestration/goal/src/console.rs:348` — "lease
   claim|renew|release|**expire**|status" (handler at `:5931`);
   `console.rs:521` — "scheduler tick|show|**record-host-failure**|**ack**|
   liveness" (handlers at `:3535-3536`).
@@ -269,7 +269,7 @@ These were checked line-by-line against code and **matched**:
 ### U2. Cross-repo / historical baselines
 
 - `docs/internals/desktop/CONNECTION.*` cites FutureOS baseline `2774e4a9`
-  and future-server `bbd6c23`; `docs/architecture/loop/UPSTREAM.md` cites the
+  and future-server `bbd6c23`; `docs/architecture/goal/UPSTREAM.md` cites the
   LoopX upstream base. Neither repository state is verifiable from this
   checkout. These docs self-mark 现状/目标/待验证 where appropriate, so no
   finding is recorded; re-verify the baselines when the referenced repos are

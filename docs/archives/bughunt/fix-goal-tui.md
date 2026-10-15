@@ -1,7 +1,7 @@
-# fix-loop-tui — final slice handoff
+# fix-goal-tui — final slice handoff
 
 Session `20260911-123030-76ccff`; task `todo_79f44876e5c3`; goal `goal_bughunt_fix_20260911`.
-Exclusive worktree `/Users/geilige/future-os/.worktrees/bughunt-loop-tui`, branch `claude/bughunt-loop-tui`, baseline `fc81c016`.
+Exclusive worktree `/Users/geilige/future-os/.worktrees/bughunt-goal-tui`, branch `claude/bughunt-goal-tui`, baseline `fc81c016`.
 
 **Result: assigned slice implemented and locally validated, awaiting supervisor independent review/integration. This is not global goal/PR completion.** All 55 original findings plus SF/NF/V5/V6 additions and the owned WebUI w32-5 boundary have dispositions below. Latent mechanisms and refuted claims are not counted as repaired production defects.
 
@@ -22,15 +22,15 @@ Round 3 resumed the clean `3b60af69` tree. The final round-2 check had already p
 The required command **actually passed**, not a manual completion override:
 
 ```text
-python3 /Users/geilige/future-os/.future/bughunt-fix/check-rust.py future-loop future-tui
-PASS full scoped batch ['future-loop', 'future-tui'] at 16:31:13
+python3 /Users/geilige/future-os/.future/bughunt-fix/check-rust.py future-goal future-tui
+PASS full scoped batch ['future-goal', 'future-tui'] at 16:31:13
 ```
 
 Date: 2026-09-11. Both crates passed `cargo fmt -p … --check`, `cargo clippy -p … --all-targets -- -D warnings`, and **full `cargo test -p …` including integration and doc-test targets**. Loop: 402 library tests plus every integration binary; TUI: 850 library tests, 7 new integration regressions, 5 CLI smoke tests. Rust 1.97.0; isolated test HOME; fd limit 10240; serialized shared-target batch. These checks covered all source changes in `3b60af69`.
 
 Additional actual executions:
-- `node orchestration/loop/tests/graph_layout.mjs`: 4 actual-source geometry fixtures passed.
-- `node orchestration/loop/tests/webui_attribute_context.mjs`: 16 actual-template HTML-parser/JavaScript-parser round trips passed (jsdom, no browser or live service).
+- `node orchestration/goal/tests/graph_layout.mjs`: 4 actual-source geometry fixtures passed.
+- `node orchestration/goal/tests/webui_attribute_context.mjs`: 16 actual-template HTML-parser/JavaScript-parser round trips passed (jsdom, no browser or live service).
 - Actual `render_parity` executable against corpus and reviewed golden: **97/97 rows byte-identical**. Before editing the reference, exactly 95 rows matched; the two reviewed corrections are documented in `tui/tests/README.md`. No blanket snapshot acceptance.
 - `git diff --check`: passed; source tree clean after `3b60af69`.
 
@@ -42,7 +42,7 @@ Meaningful failed/rejected attempts are retained here rather than erased:
 
 ## coverage
 
-All paths below are relative to this worktree. `L-reg` means `orchestration/loop/tests/bughunt_regressions.rs`; `T-reg` means `tui/tests/bughunt_regressions.rs`. All named Rust tests ran in the successful full batch.
+All paths below are relative to this worktree. `L-reg` means `orchestration/goal/tests/bughunt_regressions.rs`; `T-reg` means `tui/tests/bughunt_regressions.rs`. All named Rust tests ran in the successful full batch.
 
 | Finding | Final disposition, evidence, changed paths and regressions |
 |---|---|

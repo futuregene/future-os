@@ -1,9 +1,9 @@
-# fix-loop-tui——最终切片交接
+# fix-goal-tui——最终切片交接
 
-> 本文是历史快照 [fix-loop-tui — final slice handoff](./fix-loop-tui.md)（2026-09-11，commit `914f27f6`）的忠实逐段中文翻译，保留原文结论、时间与 commit 边界；译文不是新的复核结论。
+> 本文是历史快照 [fix-goal-tui — final slice handoff](./fix-goal-tui.md)（2026-09-11，commit `914f27f6`）的忠实逐段中文翻译，保留原文结论、时间与 commit 边界；译文不是新的复核结论。
 
 会话 `20260911-123030-76ccff`；任务 `todo_79f44876e5c3`；goal `goal_bughunt_fix_20260911`。
-独占 worktree `/Users/geilige/future-os/.worktrees/bughunt-loop-tui`，分支 `claude/bughunt-loop-tui`，基线 `fc81c016`。
+独占 worktree `/Users/geilige/future-os/.worktrees/bughunt-goal-tui`，分支 `claude/bughunt-goal-tui`，基线 `fc81c016`。
 
 **结果：分配的切片已实现并本地验证，等待 supervisor 独立评审/集成。这不是全局目标/PR 完成。** 全部 55 个原始发现加上 SF/NF/V5/V6 新增与自有 WebUI w32-5 边界在下方均有处置。潜在机制与被反驳声明不计为已修复的生产缺陷。
 
@@ -24,15 +24,15 @@
 所需命令**实际通过**，不是手工完成覆盖：
 
 ```text
-python3 /Users/geilige/future-os/.future/bughunt-fix/check-rust.py future-loop future-tui
-PASS full scoped batch ['future-loop', 'future-tui'] at 16:31:13
+python3 /Users/geilige/future-os/.future/bughunt-fix/check-rust.py future-goal future-tui
+PASS full scoped batch ['future-goal', 'future-tui'] at 16:31:13
 ```
 
 日期：2026-09-11。两个 crate 通过 `cargo fmt -p … --check`、`cargo clippy -p … --all-targets -- -D warnings` 与**完整 `cargo test -p …` 包括集成与 doc-test 目标**。Loop：402 个库测试加每个集成二进制；TUI：850 个库测试、7 个新集成回归、5 个 CLI smoke 测试。Rust 1.97.0；隔离测试 HOME；fd 上限 10240；序列化共享 target 批次。这些检查覆盖 `3b60af69` 中所有源码变更。
 
 额外实际执行：
-- `node orchestration/loop/tests/graph_layout.mjs`：4 个实际源码几何 fixture 通过。
-- `node orchestration/loop/tests/webui_attribute_context.mjs`：16 个实际模板 HTML 解析器/JavaScript 解析器往返通过（jsdom，无浏览器或实时服务）。
+- `node orchestration/goal/tests/graph_layout.mjs`：4 个实际源码几何 fixture 通过。
+- `node orchestration/goal/tests/webui_attribute_context.mjs`：16 个实际模板 HTML 解析器/JavaScript 解析器往返通过（jsdom，无浏览器或实时服务）。
 - 实际 `render_parity` 可执行文件针对语料与已评审 golden：**97/97 行字节一致**。编辑参考前恰有 95 行匹配；两处已评审修正在 `tui/tests/README.md` 中文档化。无笼统快照接受。
 - `git diff --check`：通过；`3b60af69` 后源码树干净。
 
@@ -44,7 +44,7 @@ PASS full scoped batch ['future-loop', 'future-tui'] at 16:31:13
 
 ## coverage
 
-下方所有路径相对于本 worktree。`L-reg` 表示 `orchestration/loop/tests/bughunt_regressions.rs`；`T-reg` 表示 `tui/tests/bughunt_regressions.rs`。所有点名 Rust 测试均在成功完整批次中运行。
+下方所有路径相对于本 worktree。`L-reg` 表示 `orchestration/goal/tests/bughunt_regressions.rs`；`T-reg` 表示 `tui/tests/bughunt_regressions.rs`。所有点名 Rust 测试均在成功完整批次中运行。
 
 | Finding | 最终处置、证据、变更路径与回归 |
 |---|---|

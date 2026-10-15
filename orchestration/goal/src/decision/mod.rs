@@ -528,7 +528,7 @@ fn packet(
             _ => reason.to_string(),
         },
         rollout_event: Some(RolloutEvent {
-            schema_version: "future_loop_rollout_event_v0".to_string(),
+            schema_version: "future_goal_rollout_event_v0".to_string(),
             event_id: uuid::Uuid::new_v4().simple().to_string(),
             event_kind: "quota_should_run".to_string(),
             recorded_at: crate::compat::rfc3339(now.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs()),

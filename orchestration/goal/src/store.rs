@@ -34,15 +34,15 @@ const READ_DIAGNOSTICS_FILE: &str = "read_diagnostics.json";
 // ── Event ledger ───────────────────────────────────────────────────────────
 
 /// Current event-store schema version (G-6). Bumped whenever the event
-/// surface changes shape; legacy ledgers carry `future_loop_event_store_v0` and
+/// surface changes shape; legacy ledgers carry `future_goal_event_store_v0` and
 /// are migrated through [`crate::migration::migration_steps`] on read.
 ///
-/// The `future_loop_` prefix is a frozen wire identifier that predates the
+/// The `future_goal_` prefix is a frozen wire identifier that predates the
 /// loop → goal rename; rewriting it would stop existing ledgers from
 /// resolving, so it is deliberately left alone.
-pub const EVENT_STORE_SCHEMA_VERSION: &str = "future_loop_event_store_v1";
+pub const EVENT_STORE_SCHEMA_VERSION: &str = "future_goal_event_store_v1";
 /// The pre-G-3 ledger schema (plain `{"kind": ...}` lines, no event ids).
-pub const LEGACY_EVENT_STORE_SCHEMA_VERSION: &str = "future_loop_event_store_v0";
+pub const LEGACY_EVENT_STORE_SCHEMA_VERSION: &str = "future_goal_event_store_v0";
 /// Producer tag for ordinary kernel appends (reference default producer).
 pub const DEFAULT_EVENT_PRODUCER: &str = "loopx.event_sourced_state";
 

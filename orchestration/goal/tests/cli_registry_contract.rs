@@ -483,7 +483,7 @@ fn p4_diagnostics_commands() {
         .unwrap();
     let (out, err, code) = run(&root, &["turn", "--goal", "g1", "--todo-id", &todo]);
     assert_eq!(code, 0, "turn: {err}");
-    assert!(out.contains("future_loop_turn_envelope_v0"), "turn: {out}");
+    assert!(out.contains("future_goal_turn_envelope_v0"), "turn: {out}");
     assert!(out.contains("Complete the todo and report what you did and observed."));
 
     // todo-event + evidence-log after completion with evidence.

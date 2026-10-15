@@ -97,7 +97,7 @@ dates/commits, not current source. Kept for provenance — do not rewrite them
 to match today's code.
 
 - [bughunt/](archives/bughunt/README.md) — bug-hunt evidence and fix records
-  (agent / apps / cli / loop-tui), incl. model-output provenance JSONs
+  (agent / apps / cli / goal-tui), incl. model-output provenance JSONs
 - [verification/](archives/verification/errors-outdated-missing.md) — dated
   doc↔source verification snapshots: fact inventory, error/outdated/missing
   lists, [doc↔code mismatch audit](archives/verification/doc-code-mismatches.md),

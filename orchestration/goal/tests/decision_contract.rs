@@ -341,7 +341,7 @@ fn packet_has_three_channels_and_auxiliary_contracts() {
     let p = decide(&goal, now());
     assert_eq!(
         p.interaction_contract.schema_version,
-        "future_loop_interaction_contract_v0"
+        "future_goal_interaction_contract_v0"
     );
     assert!(p.interaction_contract.agent_channel.must_attempt);
     assert!(!p.interaction_contract.agent_channel.quiet_noop_allowed);

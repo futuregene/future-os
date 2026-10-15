@@ -16,7 +16,7 @@ top), and this snapshot anchors the field-for-field packet-parity regression.
 ## Baseline metadata
 
 - **Source commit**: `85372a53a0b61f57ba492894788249fb66315b94`
-  (branch `claude/loop-orchestrator`, "full lifecycle process + quota packet
+  (branch `claude/goal-orchestrator`, "full lifecycle process + quota packet
   parity", 2026-08-05) — the original provenance; that commit is not present in
   this repository's current history.
 - **Snapshot revision**: the file last changed in `de19b99c` (2026-08-24,

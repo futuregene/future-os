@@ -169,7 +169,7 @@ mod tests {
 
         // With a receipt, the diagnostics tail is bounded to 400 bytes.
         record.validation = Some(TaskValidation {
-            schema_version: "future_loop_task_validation_v0".into(),
+            schema_version: "future_goal_task_validation_v0".into(),
             status: ValidationStatus::Failed,
             validator_kind: "verify".into(),
             summary: "E".repeat(5_000),

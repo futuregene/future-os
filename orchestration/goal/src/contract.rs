@@ -1,6 +1,6 @@
 //! The typed decision protocol — what `quota should-run` emits.
 //!
-//! Mirrors LoopX's `future_loop_interaction_contract_v0`: a versioned packet with
+//! Mirrors LoopX's `future_goal_interaction_contract_v0`: a versioned packet with
 //! three channels (user / agent / CLI), plus the auxiliary contracts the
 //! host consumes (work lane, execution obligation, automation liveness,
 //! scheduler hint, quota). All structs serialize to JSON so the packet can
@@ -11,9 +11,9 @@ use serde::Serialize;
 use crate::decision::arbitration::SchedulerArbitration;
 
 /// reference interaction-contract schema version the arbitration layer validates
-/// against (LoopX: `INTERACTION_CONTRACT_SCHEMA_VERSION`). The `future_loop_`
+/// against (LoopX: `INTERACTION_CONTRACT_SCHEMA_VERSION`). The `future_goal_`
 /// prefix is a frozen wire identifier predating the loop → goal rename.
-pub const INTERACTION_CONTRACT_SCHEMA_VERSION: &str = "future_loop_interaction_contract_v0";
+pub const INTERACTION_CONTRACT_SCHEMA_VERSION: &str = "future_goal_interaction_contract_v0";
 
 /// Closed set of turn modes (LoopX: `interaction_contract.mode`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

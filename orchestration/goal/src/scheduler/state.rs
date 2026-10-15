@@ -26,8 +26,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// File schema version (reference `SCHEDULER_STATE_SCHEMA_VERSION`).
-/// `future_loop_` is a frozen wire prefix predating the loop → goal rename.
-pub const SCHEDULER_STATE_SCHEMA_VERSION: &str = "future_loop_scheduler_state_v0";
+/// `future_goal_` is a frozen wire prefix predating the loop → goal rename.
+pub const SCHEDULER_STATE_SCHEMA_VERSION: &str = "future_goal_scheduler_state_v0";
 /// Host-update-failure record schema version (LoopX).
 pub const SCHEDULER_HOST_UPDATE_FAILURE_SCHEMA_VERSION: &str = "scheduler_host_update_failure_v0";
 /// Bounded cache of retained failures (LoopX).
@@ -277,7 +277,7 @@ pub fn parse_epoch(iso: &str) -> Option<u64> {
 // ── Scheduler state ────────────────────────────────────────────────────────
 
 /// The persisted scheduler state machine record (LoopX
-/// `future_loop_scheduler_state_v0`): scope identity, progression cursor, the last
+/// `future_goal_scheduler_state_v0`): scope identity, progression cursor, the last
 /// applied rrule, and retained host update failures.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SchedulerState {

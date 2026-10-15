@@ -90,7 +90,7 @@ DMG、Windows 便携 zip 与 Linux 便携 tarball。它们是**活文档**——
 溯源用途——不要为对齐当前代码而改写。
 
 - [bughunt/](archives/bughunt/README.md) — bug 狩猎证据与修复记录
-  （agent / apps / cli / loop-tui），含模型输出溯源 JSON
+  （agent / apps / cli / goal-tui），含模型输出溯源 JSON
 - [verification/](archives/verification/errors-outdated-missing.zh-CN.md) —
   带日期的文档↔源码核验快照：事实清单、错误/过时/缺失清单、
   [文档↔代码不符审计](archives/verification/doc-code-mismatches.zh-CN.md)、

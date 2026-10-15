@@ -496,16 +496,15 @@ fn generated_legacy_module_is_derived_from_snapshot() {
         // (the G-rename moved the module to compat.rs; the frozen snapshot
         // keeps the old `crate::loopx_compat` path), `loopx_task_class` →
         // `future_goal_task_class` (the projection fn follows the crate
-        // rename), `loopx_` → `future_loop_` (the persisted schema version
-        // strings keep the historical `future_loop_*` prefix across the
-        // loop → goal rename), `//!` → `//` (plus the `legacy_` fn renames,
+        // rename), `loopx_` → `future_goal_` (the schema version strings
+        // follow the crate name), `//!` → `//` (plus the `legacy_` fn renames,
         // which the normalized_generated prefix-strip covers).
         let rewritten = compact(
             &line
                 .replace("crate::", "future_goal::")
                 .replace("loopx_compat", "compat")
                 .replace("loopx_task_class", "future_goal_task_class")
-                .replace("loopx_", "future_loop_")
+                .replace("loopx_", "future_goal_")
                 .replace("LoopX-style", "reference-style")
                 .replace("LoopX ", "reference ")
                 .replace("//!", "//"),

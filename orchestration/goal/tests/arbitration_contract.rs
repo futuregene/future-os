@@ -29,7 +29,7 @@ fn contract(
     quiet_noop_allowed: bool,
 ) -> InteractionContract {
     InteractionContract {
-        schema_version: "future_loop_interaction_contract_v0".to_string(),
+        schema_version: "future_goal_interaction_contract_v0".to_string(),
         mode,
         user_channel: UserChannel {
             action_required: user_required,
@@ -278,7 +278,7 @@ fn quiet_noop_conflict_fails_closed() {
 #[test]
 fn schema_version_mismatch_fails_closed() {
     let mut c = contract(TurnMode::BoundedDelivery, false, true, true, false);
-    c.schema_version = "future_loop_interaction_contract_v1".to_string();
+    c.schema_version = "future_goal_interaction_contract_v1".to_string();
     let arbitration = build_scheduler_arbitration(&c, &[]);
     assert!(!arbitration.ok());
     assert_eq!(
