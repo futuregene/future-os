@@ -3,8 +3,12 @@ FutureOS goal control plane — durable goals, deterministic should-run kernel
 USAGE: future goal <command> [args]
 
 ── goal ── goal lifecycle
-  goal init --objective "..." [--cwd DIR] [--goal-doc TEXT] [--goal-id ID]
+  init --objective "..." [--cwd DIR] [--goal-doc TEXT] [--goal-id ID]
     create a durable goal
+  cancel --goal G [--reason TEXT]
+    stop a goal's automation (state retained)
+  delete --goal G --force
+    delete a goal (irreversible; requires --force)
   status [--goal G]
     project the active state
   models [--format json]

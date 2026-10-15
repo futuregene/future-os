@@ -399,7 +399,7 @@ function renderOverview(){
     </div>
     ${attn}
     <div class="sect"><h2>Goals <span class="count">${t.goals}</span></h2>
-      ${o.goals.length? `<div class="goals">${goalRows}</div>` : `<div class="empty card">No goals yet — <code>future goal goal init --objective \"…\"</code></div>`}
+      ${o.goals.length? `<div class="goals">${goalRows}</div>` : `<div class="empty card">No goals yet — <code>future goal init --objective \"…\"</code></div>`}
     </div>`;
 }
 
