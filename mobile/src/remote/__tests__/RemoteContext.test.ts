@@ -316,7 +316,8 @@ describe("RemoteProvider over several desktops", () => {
     expect(remote.credentials?.expectedDesktopId).toBe("desktop_1");
   });
 
-  test("a conversation on another desktop is read from that desktop", async () => {    await mount();
+  test("a conversation on another desktop is read from that desktop", async () => {
+    await mount();
     await settle();
     const studio = clientFor("desktop_1");
     const office = clientFor("desktop_2");
@@ -333,6 +334,56 @@ describe("RemoteProvider over several desktops", () => {
     expect(office.requests.some((record) => record.command.sessionId === "b-1")).toBe(true);
     expect(studio.requests.some((record) => record.command.sessionId === "b-1")).toBe(false);
     expect(studio.close).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A conversation asked for by name can name a machine that cannot answer.
+   *
+   * The tap on a task-completion reminder is what asks: the reminder names the
+   * machine the run finished on, and by the time it is tapped that machine may
+   * be gone (unpaired) or asleep. Both have to fail — and neither may move the
+   * screens, which would leave the user reading a machine with nothing on it.
+   */
+  test("a conversation on a machine that is no longer paired fails instead of waiting for it", async () => {
+    jest.mocked(loadPairedDesktops).mockResolvedValue([
+      { desktopId: "desktop_1", pairId: "pair-desktop_1", name: "Studio" },
+    ]);
+    jest.useFakeTimers();
+    try {
+      await mount();
+      await settle();
+
+      await expect(remote.openSessionOnDesktop("desktop_2", "b-1")).rejects
+        .toThrow("desktop_unavailable");
+      // No runtime is coming, so nothing was waited for and nothing moved.
+      expect(remote.credentials?.expectedDesktopId).toBe("desktop_1");
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("a conversation on a machine that never answers leaves the phone where it was", async () => {
+    // Paired, but with no credentials on this device: its runtime never gets a
+    // client. The wait for one is bounded, so the ask fails.
+    jest.mocked(loadCredentials).mockImplementation(async (desktopId?: string) =>
+      desktopId === "desktop_2" ? null : credentialsFor(desktopId ?? "desktop_1"));
+    jest.useFakeTimers();
+    try {
+      await mount();
+      await settle();
+      const pending = remote.openSessionOnDesktop("desktop_2", "b-1");
+      const refusal = expect(pending).rejects.toThrow("desktop_unavailable");
+      for (let elapsed = 0; elapsed < 20_000; elapsed += 250)
+        await act(async () => { jest.advanceTimersByTime(250); });
+      await refusal;
+
+      // The machine that never answered did not become the machine being read:
+      // a failed tap leaves the user on their own machine, not on an empty one.
+      expect(remote.credentials?.expectedDesktopId).toBe("desktop_1");
+      expect(remote.selectedSessionId).toBe("");
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test("the open conversation survives going to another desktop and coming back", async () => {

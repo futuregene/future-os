@@ -274,7 +274,13 @@ test("a finished run is announced for the pairing that is still open, with its m
   expect(catalogTaskFinished).toBeDefined();
   const session = { sessionId: "s1", threadId: "t1", title: "R", streaming: false } as RemoteSession;
   act(() => catalogTaskFinished!(session));
-  expect(notifyTaskFinished).toHaveBeenCalledWith(session, expect.any(Function), "Lab");
+  // Both halves of the reminder's machine: the name it shows, and the id a tap
+  // on it opens the conversation with (the phone may be reading another one by
+  // then, and the conversation belongs to the machine that ran it).
+  expect(notifyTaskFinished).toHaveBeenCalledWith(session, expect.any(Function), {
+    machine: "Lab",
+    desktopId: "desk-a",
+  });
   const stillPaired = jest.mocked(notifyTaskFinished).mock.calls.at(-1)![1];
   expect(stillPaired()).toBe(true);
   // The guard is the pairing identity: with three desktops paired, a task that

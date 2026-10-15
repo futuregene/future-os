@@ -11,6 +11,7 @@ import { RemoteProvider, useRemoteControls as useRemote } from "./src/remote/Rem
 import { ThemeProvider, createThemedStyles, useAppearanceReady, useTheme } from "./src/theme/ThemeContext";
 import { shareLandedRevision, subscribeShareLanded } from "./src/share/shareInbox";
 import { ShareIntakeMenu } from "./src/share/ShareIntakeMenu";
+import { subscribeTaskNotificationTap } from "./src/notifications/taskNotifications";
 import { useUpdateReminder } from "./src/update/useUpdateReminder";
 import { useSystemLanguage } from "./src/i18n/useSystemLanguage";
 
@@ -56,6 +57,16 @@ function AppContent() {
   };
   useUpdateReminder();
   useEffect(() => subscribeShareLanded(() => setScreen("main")), []);
+  // A task-completion reminder names the conversation it finished in, so a tap on
+  // it opens that conversation on the machine that owns it — wherever the phone
+  // happens to be and whichever screen is showing. The opener reports what it
+  // could not reach (see the notifications module); leaving the desktops and
+  // pairing screens is this layer's half, because they are drawn above the chat.
+  const { openSessionOnDesktop } = remote;
+  useEffect(() => subscribeTaskNotificationTap((target) => {
+    setScreen("main");
+    return openSessionOnDesktop(target.desktopId, target.sessionId);
+  }), [openSessionOnDesktop]);
   // A share stages its payload in the composer draft; when the app is already
   // showing that same draft, the key below is what makes the composer re-read
   // it (see src/share/shareInbox.ts).
