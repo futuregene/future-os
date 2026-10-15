@@ -2,7 +2,7 @@ import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
 import { AccessibilityInfo, Animated, FlatList, Image, Linking, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
 import * as Clipboard from "expo-clipboard";
-import { lightCodeColors } from "../../theme/tokens";
+import { lightCodeColors, lightColors } from "../../theme/tokens";
 import { AppAlert as Alert } from "../appAlerts";
 import { act, create } from "react-test-renderer";
 import { MarkdownText } from "../MarkdownText";
@@ -647,5 +647,109 @@ describe("MarkdownText error surfaces and block kinds", () => {
     const chip = root.findAllByType(Text).find(node =>
       node.props.onPress && paintedText(node) === "report.md");
     expect(chip).toBeDefined();
+  });
+});
+
+/**
+ * The user's own bubble is filled with the accent colour, so a body drawn on it
+ * cannot use the sheet's ordinary palette (see `MarkdownTone`).
+ */
+describe("a markdown body on the accent-filled bubble", () => {
+  const mounted: ReactTestRenderer[] = [];
+  const render = (props: Parameters<typeof MarkdownText>[0]) => {
+    let tree!: ReactTestRenderer;
+    act(() => { tree = create(createElement(MarkdownText, props)); });
+    mounted.push(tree);
+    return tree.root;
+  };
+  afterEach(() => {
+    for (const tree of mounted.splice(0)) act(() => tree.unmount());
+  });
+
+  /** Every colour the tree paints text with. */
+  function textColors(root: ReactTestInstance) {
+    return root.findAllByType(Text).map(node => StyleSheet.flatten(node.props.style)?.color);
+  }
+
+  test("the on-accent tone paints the body in the bubble's own contrast colour", () => {
+    const root = render({ text: "plain **bold** and `code`", tone: "onAccent" });
+    // `surface` is the colour the bubble's text already uses — white on the
+    // light scheme's accent fill, the dark navy on the dark scheme's.
+    expect(textColors(root)).toContain(lightColors.surface);
+    expect(textColors(root)).not.toContain(lightColors.ink);
+  });
+
+  test("a recess on the accent fill is a wash of that same contrast colour", () => {
+    const root = render({ text: "`inline`", tone: "onAccent" });
+    const code = root.findAllByType(Text)
+      .filter(node => paintedText(node) === "inline").at(-1)!;
+    expect(StyleSheet.flatten(code.props.style)).toMatchObject({
+      // Not `surfaceSubtle`, which is a recess on `surface` and vanishes here.
+      backgroundColor: `${lightColors.surface}33`,
+      color: lightColors.surface,
+    });
+  });
+
+  test("a code block on the accent fill is painted in one colour, not a syntax palette", () => {
+    const root = render({ text: "```typescript\nconst value = \"text\";\n```", tone: "onAccent" });
+    const colors = textColors(root);
+    // The grammar's colours are drawn for a light/dark *surface* and would drop
+    // contrast haphazardly on the accent fill.
+    expect(colors).not.toContain(lightCodeColors.keyword);
+    expect(colors).not.toContain(lightCodeColors.string);
+    expect(paintedText(root)).toContain('const value = "text";');
+  });
+
+  test("the default tone is untouched: ink on the app's own surface", () => {
+    // boundary: the other arm of the tone — a reply's body, which is what every
+    // other case in this suite renders.
+    const root = render({ text: "plain text" });
+    expect(textColors(root)).toContain(lightColors.ink);
+    expect(textColors(root)).not.toContain(lightColors.surface);
+  });
+});
+
+/** The `#` form the composer writes for another conversation (see
+ * `@future-os/markdown`) reaches the renderer as an ordinary link. */
+describe("a `#` conversation reference", () => {
+  const mounted: ReactTestRenderer[] = [];
+  const render = (props: Parameters<typeof MarkdownText>[0]) => {
+    let tree!: ReactTestRenderer;
+    act(() => { tree = create(createElement(MarkdownText, props)); });
+    mounted.push(tree);
+    return tree.root;
+  };
+  afterEach(() => {
+    for (const tree of mounted.splice(0)) act(() => tree.unmount());
+  });
+
+  /** The innermost row painting the chip's own text. */
+  function chip(root: ReactTestInstance, label: string) {
+    return root.findAllByType(Text).filter(node => paintedText(node) === label).at(-1)!;
+  }
+
+  test("keeps the composer's `#` marker and opens the conversation it names", () => {
+    const onOpenSession = jest.fn();
+    const root = render({
+      onOpenSession,
+      text: "ask [Fix the flaky test](futureos://session/s-1) now",
+    });
+
+    const reference = chip(root, "#Fix the flaky test");
+    expect(reference.props.accessibilityRole).toBe("link");
+    act(() => reference.props.onPress());
+    expect(onOpenSession).toHaveBeenCalledWith("s-1");
+  });
+
+  test("is a chip rather than a dead tap when the screen cannot switch conversation", () => {
+    const root = render({ text: "[Fix CI](futureos://session/s-1)" });
+    const reference = chip(root, "#Fix CI");
+    expect(reference.props.onPress).toBeUndefined();
+  });
+
+  test("a link that only looks like one stays an ordinary blocked link", () => {
+    const root = render({ onOpenSession: jest.fn(), text: "[x](futureos://run/1)" });
+    expect(paintedText(root)).toContain("x");
+    expect(root.findAllByType(Text).filter(node => paintedText(node) === "#x")).toHaveLength(0);
   });
 });

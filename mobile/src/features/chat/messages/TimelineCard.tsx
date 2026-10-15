@@ -15,7 +15,6 @@ import { useCopyState } from "./useCopyState";
 import { AttachmentChip } from "./AttachmentChip";
 import { StatusDivider } from "./MessageStatus";
 import { buildReplyBlocks, replyTailBlock, SegmentBlock, StepRunBlock } from "./ReplyBlocks";
-import { UserMessageText } from "./UserMessageText";
 
 function TimelineCardView({
   item,
@@ -133,7 +132,12 @@ function TimelineCardView({
               })}
             </View>
           ) : item.text.trim().length > 0 ? (
-            <MarkdownText text={item.text} onOpenFile={onOpenFile} streaming={item.streaming} />
+            <MarkdownText
+              onOpenFile={onOpenFile}
+              onOpenSession={onOpenSession}
+              text={item.text}
+              streaming={item.streaming}
+            />
           ) : null}
           {terminationNotice ? (
             <View style={styles.terminationNotice}>
@@ -218,8 +222,16 @@ function TimelineCardView({
     return (
       <View style={styles.userBlock}>
         {item.text.trim().length > 0 && (
+          // The prompt renders through the same markdown pipeline as a reply (a
+          // heading, list or code block the user typed now arrives formatted),
+          // on the bubble's own tone because that fill is the accent colour.
           <View style={[styles.message, styles.userMessage]}>
-            <UserMessageText onOpenFile={onOpenFile} onOpenSession={onOpenSession} text={item.text} />
+            <MarkdownText
+              onOpenFile={onOpenFile}
+              onOpenSession={onOpenSession}
+              text={item.text}
+              tone="onAccent"
+            />
           </View>
         )}
         {item.attachments && item.attachments.length > 0 && (
