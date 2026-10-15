@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Prints only wrapper variable names to clear; diagnostics go to stderr/a log.
 import { spawnSync } from 'node:child_process';
-import { appendFileSync } from 'node:fs';
-import { basename, resolve } from 'node:path';
+import { appendFileSync, realpathSync } from 'node:fs';
+import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const wrapperKeys = ['RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER'];
@@ -31,7 +31,8 @@ export function checkRustCache(env, run) {
   return { disable, diagnostics };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// macOS /var is a symlink to /private/var; Node resolves the module URL.
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const result = checkRustCache(process.env, (command, args) => spawnSync(command, args, {
     env: process.env,
     encoding: 'utf8',
