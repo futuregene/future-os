@@ -42,7 +42,7 @@ Release installers, signing and upload helpers.
 
 - `install.sh` / `install.ps1` — one-line installers served from the download host;
   auto-detect the OS, verify the SHA-256 and install the release.
-- `install-future-loop.sh` — installs the `future-loop` CLI into `~/.local/bin` and the
+- `install-future-goal.sh` — installs the `future-goal` CLI into `~/.local/bin` and the
   loop skill into the agent skills directory.
 - `sign-file.ps1` — Authenticode signing callback used as the Tauri `signCommand`.
 - `setup-ossutil.sh` — installs Aliyun ossutil v2 and derives `OSS_REGION` for CI uploads.

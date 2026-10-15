@@ -28,7 +28,7 @@ waiver that survives is evidence, a waiver that falls is rework.
 | module-cli-tui | (see its own §waiver ledger) | - | `platform-unmeasured`, `unreachable-in-this-environment` | module-cli-tui.md |
 | module-cli | (see its own §waiver ledger) | - | `attribution-artifact`, `platform-unmeasured`, `unreachable-by-construction`, `unreachable-in-this-environment` | module-cli.md |
 | module-desktop | (see its own §waiver ledger) | - | `attribution-artifact`, `unreachable-by-construction`, `unreachable-in-this-environment` | module-desktop.md |
-| module-loop | (see its own §waiver ledger) | - | `attribution-artifact`, `platform-unmeasured`, `unreachable-by-construction`, `unreachable-in-this-environment` | module-loop.md |
+| module-goal | (see its own §waiver ledger) | - | `attribution-artifact`, `platform-unmeasured`, `unreachable-by-construction`, `unreachable-in-this-environment` | module-goal.md |
 | module-mobile | (see its own §waiver ledger) | - | `attribution-artifact`, `platform-unmeasured`, `unreachable-by-construction`, `unreachable-in-this-environment` | module-mobile.md |
 | module-tauri-bridge | (see its own §waiver ledger) | - | `attribution-artifact`, `platform-unmeasured`, `unreachable-by-construction`, `unreachable-in-this-environment` | module-tauri-bridge.md |
 | module-tauri-core | (see its own §waiver ledger) | - | `attribution-artifact`, `platform-unmeasured`, `unreachable-by-construction`, `unreachable-in-this-environment` | module-tauri-core.md |

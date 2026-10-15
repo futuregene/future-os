@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use super::*;
 
 // ── Crash-recovery run reanimation ───────────────────────────────────────
@@ -432,9 +434,11 @@ pub(super) async fn reconcile_active_run_once(
     }
 }
 
-/// Launch the runtime watchdog for active runs: a periodic pass reconciling
-/// every non-terminal run row against the Agent's authoritative state. The
-/// backstop for rows whose owning pipeline/collector never settled them:
+/// Launch the runtime watchdog for run rows the GUI cannot settle on its own: a
+/// periodic pass reconciling every non-terminal run row against the Agent's
+/// authoritative state, plus the rows the GUI already settled **without** the
+/// Agent's evidence. The backstop for rows whose owning pipeline/collector
+/// never settled them:
 ///
 /// - The webview was suspended (hidden/occluded window) and never applied the
 ///   `agent_prompt` invoke response, so the frontend's status write never ran
@@ -445,6 +449,10 @@ pub(super) async fn reconcile_active_run_once(
 ///   resuming live projection from the last persisted cursor.
 /// - The Agent lost the run (restart/rollover) without the GUI noticing: the
 ///   durable journal marker (or its absence) settles the row.
+/// - The Agent outlived the client's read of a run: an accepted-but-queued
+///   submission returns its invoke response at the ack, so a row can reach a
+///   terminal state the Agent then contradicts by going on to complete that
+///   run ([`reconcile_settled_runs`]).
 ///
 /// All writes go through the compare-and-set writers, so a healthy collector,
 /// a concurrent user abort, and the normal pipeline are never clobbered. The
@@ -452,6 +460,11 @@ pub(super) async fn reconcile_active_run_once(
 /// convergence on the next launch.
 pub fn spawn_active_run_watchdog() {
     crate::runtime::spawn(async move {
+        // Run ids already compared against the Agent ledger with nothing to
+        // correct, for the lifetime of this process (see
+        // [`reconcile_settled_runs`]). Owned by the loop rather than a global,
+        // so each watchdog instance — and each test — starts clean.
+        let mut settled_verified: HashSet<String> = HashSet::new();
         loop {
             tokio::time::sleep(watchdog_interval()).await;
             #[cfg(test)]
@@ -465,16 +478,16 @@ pub fn spawn_active_run_watchdog() {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
-            active_run_watchdog_pass(now_ms).await;
+            active_run_watchdog_pass(now_ms, &mut settled_verified).await;
         }
     });
 }
 
 /// One watchdog pass: reconcile every non-terminal run row against the
-/// Agent's authoritative state, then the pending approvals. Extracted from
-/// the spawn loop so tests can drive it with a synthetic clock (run rows
-/// cannot be backdated through the store API).
-pub(super) async fn active_run_watchdog_pass(now_ms: i64) {
+/// Agent's authoritative state, then the rows the GUI settled on its own, then
+/// the pending approvals. Extracted from the spawn loop so tests can drive it
+/// with a synthetic clock (run rows cannot be backdated through the store API).
+pub(super) async fn active_run_watchdog_pass(now_ms: i64, settled_verified: &mut HashSet<String>) {
     let Ok(active_runs) = crate::store::list_active_runs() else {
         return;
     };
@@ -493,10 +506,214 @@ pub(super) async fn active_run_watchdog_pass(now_ms: i64) {
             );
         }
     }
+    reconcile_settled_runs(now_ms, settled_verified).await;
     // Approvals outlive their collectors (the Agent stays parked while
     // the GUI restarts), so reconcile them against the Agent's pending
     // set on every tick — not just at startup.
     approval::reconcile_pending_approvals().await;
+}
+
+// ── Settled-run repair ────────────────────────────────────────────────────
+
+/// How long after its last write a locally-settled row stays a repair
+/// candidate. The window bounds what the first pass after a launch may re-read
+/// (a row confirmed consistent is remembered for the rest of the process, so a
+/// candidate costs at most one ledger read per launch), while staying long
+/// enough to cover the case this pass exists for: the GUI marked the row while
+/// the Agent was still working on the run, and the user does not look again
+/// until the next day.
+pub(super) const SETTLED_RUN_RECHECK_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// What the Agent's ledger says about a run the GUI settled on its own. Pure
+/// (no IO) — [`reconcile_settled_run_once`] applies it.
+#[derive(Debug, PartialEq)]
+pub(super) enum SettledRunLedger {
+    /// The Agent still owns the run: it is executing it (`activeRun`), or
+    /// holding it in `queuedRuns` behind another run. A terminal row is wrong.
+    Alive,
+    /// The Agent's journal carries a durable terminal marker for this run.
+    Terminal {
+        /// The Agent's own terminal state (`run_terminal`'s mapped status).
+        state: String,
+        error: Option<String>,
+        /// The Agent's own measured duration, when its marker carries one.
+        duration_ms: Option<i64>,
+    },
+    /// Nothing to correct: the Agent reports the same outcome, or has no record
+    /// of this run at all.
+    Consistent,
+}
+
+/// Read the Agent's ledger for one locally-settled run. Mirrors the marker
+/// precedence of [`plan_active_run_reconciliation`]: the live/queued marker
+/// first (it is the in-memory truth), then the durable terminal marker.
+pub(super) fn plan_settled_run_reconciliation(
+    state: &serde_json::Value,
+    canonical_run_id: &str,
+) -> SettledRunLedger {
+    let active_run_id = state
+        .get("activeRun")
+        .and_then(|run| run.get("runId"))
+        .and_then(|id| id.as_str());
+    if active_run_id == Some(canonical_run_id)
+        || queued_run_ids(state).any(|run_id| run_id == canonical_run_id)
+    {
+        return SettledRunLedger::Alive;
+    }
+    if let Some(terminal) = state.get("requestedRun").filter(|value| value.is_object()) {
+        return SettledRunLedger::Terminal {
+            state: terminal
+                .get("status")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string(),
+            error: terminal
+                .get("error")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            duration_ms: terminal.get("durationMs").and_then(|value| value.as_i64()),
+        };
+    }
+    SettledRunLedger::Consistent
+}
+
+/// Outcome of one settled-row ledger read.
+enum SettledRunOutcome {
+    /// The row now mirrors the Agent ledger; carries the status to notify with.
+    Repaired(&'static str),
+    /// Nothing to correct — no reason to ask about this run again in this
+    /// process (a terminal row cannot settle twice, and the Agent's own verdict
+    /// on the two terminal shapes above is what we just read).
+    Verified,
+    /// The Agent could not be asked (unreachable, or it does not know this
+    /// session): leave the row and ask again on a later tick.
+    Unknown,
+}
+
+/// Re-read the Agent ledger for the rows the GUI settled on its own and repair
+/// the ones it contradicts.
+///
+/// A row can be wrong without anyone noticing because **nothing drives a
+/// terminal run**: the send pipeline settles its own run and never reads the
+/// Agent again, so a run the Agent accepted while the session was busy (queued
+/// behind an older run) stays `failed` for the rest of the run's life, and the
+/// Agent's later `completed` marker never reaches the row — the durable
+/// correction has to come from the outside. That is what this pass is: for every
+/// still-recent unverified row, read the Agent ledger and
+/// - `Alive`: restore the row, so the active-run watchdog and the re-attach path
+///   resume and settle it from the Agent's own terminal marker;
+/// - `completed`: settle it, with the Agent's own duration anchored on the row's
+///   start time (the run really did produce a reply, and its assistant entry is
+///   already durable on the Agent);
+/// - anything else: the row and the ledger agree it did not succeed. A row is
+///   never asserted `completed` without the Agent's positive evidence, and this
+///   pass never converts one failure flavour into another — nor into a user
+///   stop the user never asked for.
+async fn reconcile_settled_runs(now_ms: i64, verified: &mut HashSet<String>) {
+    let since_ms = now_ms.saturating_sub((SETTLED_RUN_RECHECK_SECS as i64) * 1000);
+    let Ok(rows) = crate::store::list_unverified_settled_runs(since_ms) else {
+        return;
+    };
+    for row in rows {
+        if verified.contains(&row.run_id) {
+            continue;
+        }
+        let canonical = AGENT_REPLICAS
+            .canonical_for_local(&row.run_id)
+            .unwrap_or_else(|| row.run_id.clone());
+        match reconcile_settled_run_once(&row, &canonical).await {
+            Ok(SettledRunOutcome::Repaired(status)) => {
+                eprintln!(
+                    "FutureOS settled run {} repaired from the Agent ledger to {status}",
+                    row.run_id
+                );
+                // The sidebar reduces the status push; `remote-activity` is what
+                // makes an OPEN view re-read this thread's run — the same signal
+                // used when another client drives the session, because that is
+                // exactly the situation: the run moved outside this view.
+                crate::emit_thread_runtime_updated(
+                    row.thread_id.clone(),
+                    row.run_id.clone(),
+                    status.to_string(),
+                    false,
+                );
+                crate::emit_remote_activity(&row.thread_id);
+            }
+            Ok(SettledRunOutcome::Verified) => {
+                verified.insert(row.run_id.clone());
+            }
+            Ok(SettledRunOutcome::Unknown) => {}
+            Err(error) => eprintln!(
+                "FutureOS settled run watchdog could not reconcile {}: {error}",
+                row.run_id
+            ),
+        }
+    }
+}
+
+/// Reconcile one locally-settled run row against the Agent's ledger.
+async fn reconcile_settled_run_once(
+    row: &crate::store::UnverifiedRun,
+    canonical_run_id: &str,
+) -> Result<SettledRunOutcome, String> {
+    let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
+    let state = client
+        .execute_command(get_run_state_command(
+            row.session_id.clone(),
+            canonical_run_id.to_string(),
+        ))
+        .await
+        .map_err(|e| format!("get_run_state: {e}"))?
+        .into_inner();
+    if !state.success {
+        // The Agent cannot resolve this session. Its ledger says nothing about
+        // the row either way, so leave it — do not memoize a non-answer.
+        return Ok(SettledRunOutcome::Unknown);
+    }
+    let state_value = future_rpc::decode::response_data(&state);
+    match plan_settled_run_reconciliation(&state_value, canonical_run_id) {
+        SettledRunLedger::Alive => {
+            let revived = crate::store::revive_unverified_run(&row.run_id)
+                .map_err(|e| format!("revive: {e}"))?;
+            if !revived {
+                // Another writer moved the row (a concurrent abort, or the
+                // pipeline settling it again): its state is no longer ours.
+                return Ok(SettledRunOutcome::Verified);
+            }
+            // The run is live again and has no pipeline owner of its own — the
+            // session observer projects it from the local cursor and settles the
+            // row at `agent_end`, exactly as for a reanimated interrupted run.
+            observer::ensure_observer_for_thread(&row.session_id, &row.thread_id)?;
+            Ok(SettledRunOutcome::Repaired("running"))
+        }
+        SettledRunLedger::Terminal {
+            state, duration_ms, ..
+        } if state == "completed" => {
+            // Anchor the Agent's own duration on the row's start: the local
+            // `started_at` is stamped just before the prompt is delivered, so it
+            // is the closest start this row will ever have. A zero duration means
+            // the Agent measured nothing — then the row keeps the end time it
+            // already carried rather than claiming an instant run.
+            let ended_at = row
+                .started_at
+                .zip(duration_ms)
+                .filter(|(_, duration)| *duration > 0)
+                .map(|(start, duration)| start + duration);
+            let settled =
+                crate::store::settle_unverified_run_from_agent(&row.run_id, &state, None, ended_at)
+                    .map_err(|e| format!("settle: {e}"))?;
+            Ok(if settled {
+                SettledRunOutcome::Repaired("completed")
+            } else {
+                SettledRunOutcome::Verified
+            })
+        }
+        // The Agent agrees the run did not succeed (or reports a state this pass
+        // does not repair): keep the row as the desktop settled it.
+        SettledRunLedger::Terminal { .. } | SettledRunLedger::Consistent => {
+            Ok(SettledRunOutcome::Verified)
+        }
+    }
 }
 
 #[cfg(test)]

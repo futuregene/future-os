@@ -2,27 +2,27 @@
 
 > A task is a reusable unit of work: a prompt, working directory, model/thinking level and full permissions. A **trigger** decides when it runs. Each run creates or reuses an ordinary conversation and records its outcome and prompt version.
 
-`future loop` manages a long-term goal, evidence, gates and multiple agents. Tasks run a **fixed action when triggered**. They have separate tables and purposes.
+`future goal` manages a long-term goal, evidence, gates and multiple agents. Tasks run a **fixed action when triggered**. They have separate tables and purposes.
 
 ## 0. Scope
 
-- **Crate:** `orchestration/tasks` (`future-tasks`), alongside `orchestration/loop`.
+- **Crate:** `orchestration/tasks` (`future-tasks`), alongside `orchestration/goal`.
 - **Hosts:** GUI and headless desktop share the same tick loop. TUI hosting is not connected. Mobile uses the desktop remote bridge.
 - **Layers:** deterministic `next_due`, dependency joins, claim decisions and truncation are host-independent pure functions. One executor serves both desktop hosts; their difference is a `Notifier` closure (§8).
 
 Implemented: kernel, store, the `future task` CLI (§9), desktop tick loop and panel, headless hosting, mobile bridge/pages, and the `future-task` skill. Reserved work: TUI hosting, a `threads.task_id` badge (§2), and an instance-level `.lock`. Current overlap detection assumes one host per home.
 
-## 1. Lessons from loop
+## 1. Lessons from the goal control plane
 
-| Loop design | Tasks equivalent |
+| Goal-plane design | Tasks equivalent |
 |---|---|
 | Deterministic kernel; agents supply judgments | claim, `next_due`, joins, truncation and `prompt_change_revisions` are pure functions |
 | Commit first; refresh compatibility state afterward (`sync_compat`) | notification failure does not roll back a committed run |
 | Turn envelope with schema header, upstream budget, head/tail truncation and retained index | `future_tasks_run_envelope_v1`: identity/run/trigger/settings blocks, bounded upstream summaries and index, instruction, completion contract; full-output pointer: `future task output <run-id>` |
 | Distinct task classes prevent incorrect frontier claims | `task_runs.kind` distinguishes `main`, `manual` and `chain` |
-| Separate state root (`<cwd>/.future/loop/`) | `<home>/.future/tasks/`, with its own SQLite database |
+| Separate state root (`<cwd>/.future/goal/`) | `<home>/.future/tasks/`, with its own SQLite database |
 
-Tasks do not adopt fencing tokens, multi-agent competition, claim stealing or JSONL event sourcing. SQLite supplies durability. Loop's monitoring cadence stays separate; task eligibility is decided at tick/claim time instead of adding quota or should-run layers.
+Tasks do not adopt fencing tokens, multi-agent competition, claim stealing or JSONL event sourcing. SQLite supplies durability. The goal plane's monitoring cadence stays separate; task eligibility is decided at tick/claim time instead of adding quota or should-run layers.
 
 ## 2. Data model
 
@@ -173,7 +173,7 @@ New triggers while a task runs are recorded as `skipped`, rather than queued. Fa
 
 ### 5.1 Run envelope (`future_tasks_run_envelope_v1`)
 
-Each initial prompt contains the envelope, the task's instruction and its completion contract. Like loop's turn envelope, this uses plain-text blocks rather than XML:
+Each initial prompt contains the envelope, the task's instruction and its completion contract. Like the goal plane's turn envelope, this uses plain-text blocks rather than XML:
 
 ```text
 ── future_tasks_run_envelope_v1 ──
@@ -276,7 +276,7 @@ future task prompt log|apply|revert <id|name> [revision-id]
 - `prompt log` lists versions and identifies the active one. `prompt apply <revision-id>` creates a new rollback version unless that version is already active; `prompt revert` applies the previous version.
 - `runs` and `prompt log` remain readable for soft-deleted tasks by ID or name; they no longer appear in `list`.
 - `enable` recalculates the next scheduled time; `remove` soft-deletes the task and clears dependency edges pointing to it.
-- Help distinguishes tasks from `future loop todo`.
+- Help distinguishes tasks from `future goal todo`.
 
 A test in `cli/src/commands/task.rs` parses `help::TASK_HELP` and requires the same subcommand set as the dispatcher, in both directions. This guards against documenting commands that produce `Unknown argument`.
 
@@ -320,7 +320,7 @@ The run ledger follows the task's actions. Desktop's Settings disclosure precede
 
 ## 12. Out of scope
 
-Annual triggers, cron expressions, named timezones, orchestration beyond dependency joins, OS background services, shell/loop/skill action kinds, system notifications and per-task tool allowlists. Full permissions remain the only policy.
+Annual triggers, cron expressions, named timezones, orchestration beyond dependency joins, OS background services, shell/goal/skill action kinds, system notifications and per-task tool allowlists. Full permissions remain the only policy.
 
 ## 13. Core invariants
 

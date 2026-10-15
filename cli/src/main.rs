@@ -2,10 +2,10 @@
 //! for the other Rust components.
 //!
 //! `future <group> <command>` keeps the CLI's own groups (auth, run, skills,
-//! tools, models, session, doctor, ...). `future agent|tui|channel|loop
+//! tools, models, session, doctor, ...). `future agent|tui|channel|goal
 //! <args>` runs the corresponding component in-process — the same code as the
 //! standalone `future-agent` / `future-tui` / `future-channel` /
-//! `future-loop` binaries, which remain installed and usable directly.
+//! `future-goal` binaries, which remain installed and usable directly.
 //!
 //! The embedded components build their OWN tokio runtimes, so they must be
 //! dispatched from main() BEFORE the CLI's runtime is entered (nested
@@ -32,7 +32,7 @@ fn run_from_args(args: &[String]) -> ExitCode {
             "agent" => return run_agent(&args[1..]),
             "tui" => return run_tui(&args[1..]),
             "channel" | "channels" => return run_channel(&args[1..]),
-            "loop" => return run_loop(&args[1..]),
+            "goal" => return run_goal(&args[1..]),
             _ => {}
         }
     }
@@ -74,9 +74,9 @@ fn run_channel(args: &[String]) -> ExitCode {
     }
 }
 
-/// `future loop <args>` — loop control plane (same as `future-loop`).
-fn run_loop(args: &[String]) -> ExitCode {
-    match future_loop::console::run("future loop", args.to_vec()) {
+/// `future goal <args>` — goal control plane (same as `future-goal`).
+fn run_goal(args: &[String]) -> ExitCode {
+    match future_goal::console::run("future goal", args.to_vec()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("Error: {err}");
@@ -99,10 +99,10 @@ mod tests {
     }
 
     #[test]
-    fn embedded_loop_unknown_command_errors() {
-        // `future loop bogus` → the loop console rejects it without a runtime.
+    fn embedded_goal_unknown_command_errors() {
+        // `future goal bogus` → the goal console rejects it without a runtime.
         assert_eq!(
-            run_from_args(&["loop".to_string(), "bogus-cmd-xyz".to_string()]),
+            run_from_args(&["goal".to_string(), "bogus-cmd-xyz".to_string()]),
             ExitCode::from(1)
         );
     }

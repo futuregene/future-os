@@ -209,8 +209,8 @@ executed against the final revision**. The remaining 16 were never run and are
 listed by name in `summary.json` → `not_executed_in_sample`.
 
 **No file-level, crate-level or repo-level mutation score exists as a result of
-this item, and none may be quoted from it.** `future-loop` alone has 3301 mutants
-(`cargo mutants --list -p future-loop`), measured here at ~90 s/mutant ⇒ ~6 h
+this item, and none may be quoted from it.** `future-goal` alone has 3301 mutants
+(`cargo mutants --list -p future-goal`), measured here at ~90 s/mutant ⇒ ~6 h
 serial, and parallel jobs do not buy that back (build-lock contention, below).
 The 250-mutant budget was therefore unreachable on this host; partial-but-measured
 was chosen over complete-but-invented.
@@ -331,7 +331,7 @@ baseline for no reason.
 
 Measured: cold baseline build 239–260 s + 88–107 s test; ~**92 s/mutant** at `-j 4`
 (24 mutants / 37 min), ~2 min/mutant at `-j 2`, ~10 min for a single full-suite
-mutant from cold. `future-loop` = 3301 mutants ⇒ hours, not minutes.
+mutant from cold. `future-goal` = 3301 mutants ⇒ hours, not minutes.
 
 To produce a number that can be quoted, re-run on a frozen revision with:
 
@@ -348,7 +348,7 @@ cargo mutants -p future-channel --file channels/src/policy.rs --gitignore true \
 
 Then, and only then, does `scripts/measure/mutation/summary.json` acquire a `caught`/`missed`
 pair that supports a percentage. The siblings still to do are
-`channels/src/bridge/queue.rs` (37), `orchestration/loop/src/compat.rs` (72),
+`channels/src/bridge/queue.rs` (37), `orchestration/goal/src/compat.rs` (72),
 `backfill.rs` (74) and `quota/usage_summary.rs` (84) — 267 mutants, ≈7 h at the
 measured rate on this host.
 

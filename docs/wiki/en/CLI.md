@@ -137,6 +137,7 @@ Useful options and forms:
 | `--permission <level>` | `all` (fresh-session default, unrestricted), `workspace` (approval-gated access), or `none` (deny all tool calls). This does not select an OS sandbox; see [[Sandbox]]. |
 | `--tools, -t <names>` | Comma-separated tool names to enable (e.g. `read,shell`); `--no-tools` / `--no-builtin-tools` disable them. |
 | `--steer` | Interrupt the session's current run; without it, the prompt queues behind a busy run. |
+| `--no-wait` | Submit the prompt, print an ack, and exit; retrieve the result later with `future session wait <id>`. |
 | `--system-prompt`, `--append-system-prompt` | Replace or extend the system prompt. |
 | `--cwd <dir>` | Set the working directory. |
 | `--mode json` | Print the answer as JSON instead of text. |
@@ -219,7 +220,7 @@ build targets but no longer ship by default):
 ```bash
 future tui                # terminal UI
 future channel            # IM channel bridge: Feishu / DingTalk
-future loop status        # loop control plane: goals/todos/gates
+future goal status        # goal control plane: goals/todos/gates
 ```
 
 ### `session` — manage sessions
@@ -242,6 +243,7 @@ future session title <id> [--apply]      # generate a title (a model call)
 future session export <id> [--out <path>]
 future session abort <id>                # stop the active run, clear the queue
 future session cancel <id> --run <run-id>
+future session wait <id> [--run <run-id>] [--timeout <duration>]  # wait for a run and print its answer
 future session approvals <id>
 future session approve <id> <request-id> [--allow <glob>]
 future session reject <id> <request-id>

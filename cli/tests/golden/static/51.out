@@ -1,6 +1,6 @@
-FutureOS loop control plane — durable goals, deterministic should-run kernel
+FutureOS goal control plane — durable goals, deterministic should-run kernel
 
-USAGE: future loop <command> [args]
+USAGE: future goal <command> [args]
 
 ── goal ── goal lifecycle
   goal init --objective "..." [--cwd DIR] [--goal-doc TEXT] [--goal-id ID]
@@ -130,4 +130,4 @@ USAGE: future loop <command> [args]
   canary smoke [--profile core-control-plane|extension-runtime|release-gate] [--json]
     run a smoke profile (release gate default)
 
-State root: /tmp/cli-diff-work/homes/static/.future/loop (env FUTURE_LOOP_ROOT)
+State root: /tmp/cli-diff-work/homes/static/.future/goal (env FUTURE_GOAL_ROOT)

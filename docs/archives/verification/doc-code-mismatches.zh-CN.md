@@ -40,13 +40,13 @@
   `feishu/bridge.rs:134` / `dingtalk/bridge.rs:64` 一致；`max_image_mb`
   无 Content-Length 时仍生效与 `feishu_rest.rs:769` 一致；首启写模板并
   退出与 `config.rs` 的 `load()` 一致。
-- `docs/architecture/loop-control-plane.md` — 7 组 / 41 命令及各组计数与
-  `orchestration/loop/src/console.rs` 的 `build_cli_registry`
+- `docs/architecture/goal-control-plane.md` — 7 组 / 41 命令及各组计数与
+  `orchestration/goal/src/console.rs` 的 `build_cli_registry`
   （5/6/6/18/3/2/1）一致；todo 类别（advancement/monitor/blocker/
   coordination/user_gate/user_action）与 `state.rs:54-79` 一致；`--parent`
   三层上限、`--gate-question`、`--role`、`--max-validation-attempts`、
   `--parent-session` 与 `console.rs:705-727, 1364` 一致；验证器 120s 默认 +
-  `FUTURE_LOOP_VALIDATOR_TIMEOUT_SECS` 与 `validator.rs:7` /
+  `FUTURE_GOAL_VALIDATOR_TIMEOUT_SECS` 与 `validator.rs:7` /
   `executor.rs:209` 一致；面板端口 7717/127.0.0.1/仅 GET 与
   `console.rs:3175-3177`、`webui/server.rs:54` 一致；32 条批量上报与
   `agents/supervision.rs:13` 一致；5 分钟待验证标记与
@@ -78,7 +78,7 @@
   `agent/src/rpc/protocol.rs:227-229`、WAL/FULL =
   `session/database.rs:122-123`）、`docs/guide/build-and-install.md`（make
   目标、Rust 1.97.0、Node 24、mold）、`docs/guide/directory-layout.md`
-  （所列路径全部存在；loop 目录结构全部出现在 `orchestration/loop/src/`）、
+  （所列路径全部存在；loop 目录结构全部出现在 `orchestration/goal/src/`）、
   `docs/guide/desktop-headless.md`、`docs/internals/desktop/ER.*`（表清单与
   `desktop/src-tauri/src/store/schema.rs` 一致）。
 
@@ -183,14 +183,14 @@
 - **建议修法：** 增加一条："`remote-crypto`：桌面/移动远程通道共享的
   Rust Noise 协议端到端加密实现。"
 
-### M4. `loop-control-plane.md` 漏列 `lease expire` 与两个 scheduler 子命令
+### M4. `goal-control-plane.md` 漏列 `lease expire` 与两个 scheduler 子命令
 
-- **文档：** `docs/architecture/loop-control-plane.md:54` — "Lease |
+- **文档：** `docs/architecture/goal-control-plane.md:54` — "Lease |
   `lease claim/renew/release/status`"；`:60` — "Scheduler |
-  `scheduler tick/show/liveness`"（`loop-control-plane.zh-CN.md:39,44`
+  `scheduler tick/show/liveness`"（`goal-control-plane.zh-CN.md:39,44`
   同）。
 - **代码：** registry 用法串包含 `expire` 与额外的 scheduler 子命令：
-  `orchestration/loop/src/console.rs:348` — "lease
+  `orchestration/goal/src/console.rs:348` — "lease
   claim|renew|release|**expire**|status"（处理入口 `:5931`）；
   `console.rs:521` — "scheduler tick|show|**record-host-failure**|**ack**|
   liveness"（处理入口 `:3535-3536`）。
@@ -245,7 +245,7 @@
 ### U2. 跨仓库 / 历史基线
 
 - `docs/internals/desktop/CONNECTION.*` 引用 FutureOS 基线 `2774e4a9` 与
-  future-server `bbd6c23`；`docs/architecture/loop/UPSTREAM.md` 引用 LoopX
+  future-server `bbd6c23`；`docs/architecture/goal/UPSTREAM.md` 引用 LoopX
   上游基线。这些仓库状态无法在本检出中验证。文档已在合适处自行标注
   现状/目标/待验证，故不记入发现；待相关仓库可获取时复核基线。
 

@@ -30,8 +30,8 @@ load-bearing (for example `--no-fail-fast` and the private `CARGO_TARGET_DIR`).
 
 - Source comments cite specific sections, so a section number is a reference
   target — keep it stable or keep its meaning. Examples:
-  `orchestration/loop/src/webui/server.rs` and `orchestration/loop/tests/*.rs`
-  cite `module-loop.md`; `tui/src/app.rs` cites `module-tui.md`; desktop tests
+  `orchestration/goal/src/webui/server.rs` and `orchestration/goal/tests/*.rs`
+  cite `module-goal.md`; `tui/src/app.rs` cites `module-tui.md`; desktop tests
   cite `desktop-*.md`.
 - The campaign's gate checked structure only: every file with uncovered lines
   had to name a waiver category on the same line as its path. Whether a reason

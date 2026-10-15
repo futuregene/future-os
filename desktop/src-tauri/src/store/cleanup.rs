@@ -25,6 +25,129 @@ pub struct ActiveRun {
     pub created_at: i64,
 }
 
+/// The terminal shapes the desktop writes **without** the Agent's evidence, and
+/// which a later Agent-ledger read may therefore legitimately correct:
+///
+/// - `failed` — the send pipeline's failure settle. The prompt invoke can answer
+///   while the Agent is still working on the run (an accepted-but-queued
+///   submission returns at the ack), so the row can be wrong about a run the
+///   Agent goes on to complete.
+/// - `cancelled` + `error_type='interrupted'` — the startup convergence guess.
+///
+/// These are the *only* terminal shapes the settled-run repair may touch: a
+/// `completed` row has the Agent's own terminal marker behind it, and a user
+/// abort (`error_type='abort_requested'`) is the user's decision, never ours to
+/// overrule. Qualified with its table name so the same fragment fits both the
+/// repair writers and the query that finds their candidates (which joins
+/// `threads`, where a bare `status` would be ambiguous).
+const UNVERIFIED_TERMINAL_RUN_SQL: &str =
+    "(runs.status = 'failed' OR (runs.status = 'cancelled' AND runs.error_type = 'interrupted'))";
+
+/// A run the desktop settled in one of the shapes above, with the session the
+/// agent knows it by and the start time a repaired end time is anchored on.
+/// Consumed by the settled-run repair pass
+/// (`agent_bridge::reconcile_settled_runs`) which re-reads the Agent ledger.
+pub struct UnverifiedRun {
+    pub run_id: String,
+    pub thread_id: String,
+    pub session_id: String,
+    pub started_at: Option<i64>,
+}
+
+/// Runs settled in an unverified shape (see [`UNVERIFIED_TERMINAL_RUN_SQL`])
+/// whose last write is at or after `since_ms`, oldest first. The bound is what
+/// keeps the repair pass from re-reading the whole run history on every start;
+/// `session_id` resolution mirrors [`list_active_runs`].
+pub fn list_unverified_settled_runs(since_ms: i64) -> Result<Vec<UnverifiedRun>, crate::AppError> {
+    let conn = connect()?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT runs.id, runs.thread_id, runs.started_at,
+                COALESCE(NULLIF(TRIM(threads.agent_session_id), ''), threads.id) AS session_id
+         FROM runs
+         JOIN threads ON threads.id = runs.thread_id
+         WHERE {UNVERIFIED_TERMINAL_RUN_SQL}
+           AND runs.updated_at >= ?1
+         ORDER BY runs.updated_at"
+    ))?;
+    let rows = stmt.query_map(params![since_ms], |row| {
+        Ok(UnverifiedRun {
+            run_id: row.get(0)?,
+            thread_id: row.get(1)?,
+            started_at: row.get(2)?,
+            session_id: row.get(3)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(crate::AppError::from)
+}
+
+/// CAS an unverified row back to `running` because the Agent's ledger still owns
+/// the run — it is executing it, or holding it in its queue behind another run.
+/// The failure markers and the end time are cleared so the row is a live run
+/// again, which is what makes the active-run watchdog and the re-attach path
+/// take it over and settle it from the Agent's own terminal marker.
+///
+/// Returns whether a row changed; the guard is a compare-and-set over the
+/// unverified terminal shapes, so a row another writer already moved is left
+/// alone. The caller owns the UI notification (see `desktop/CLAUDE.md` #11).
+pub fn revive_unverified_run(run_id: &str) -> Result<bool, crate::AppError> {
+    let now = now_millis();
+    let conn = connect()?;
+    let affected = conn.execute(
+        &format!(
+            "UPDATE runs
+         SET status = 'running',
+             error_message = NULL,
+             error_type = NULL,
+             ended_at = NULL,
+             updated_at = ?1
+         WHERE id = ?2
+           AND {UNVERIFIED_TERMINAL_RUN_SQL}"
+        ),
+        params![now, run_id],
+    )?;
+    Ok(affected > 0)
+}
+
+/// CAS an unverified row to the Agent journal's own terminal state — the
+/// correction for a run the desktop had settled as failed or interrupted while
+/// the Agent went on to complete it. `ended_at` is the ledger's duration
+/// anchored on the row's start when both are known; otherwise the row keeps the
+/// time it already carried. The caller owns the UI notification.
+pub fn settle_unverified_run_from_agent(
+    run_id: &str,
+    agent_state: &str,
+    error: Option<&str>,
+    ended_at: Option<i64>,
+) -> Result<bool, crate::AppError> {
+    let Some((status, error_type, default_message)) = agent_terminal_settlement(agent_state) else {
+        return Ok(false);
+    };
+    let now = now_millis();
+    let conn = connect()?;
+    let affected = conn.execute(
+        &format!(
+            "UPDATE runs
+         SET status = ?1,
+             error_message = ?2,
+             error_type = ?3,
+             ended_at = COALESCE(?4, ended_at),
+             updated_at = ?5
+         WHERE id = ?6
+           AND {UNVERIFIED_TERMINAL_RUN_SQL}"
+        ),
+        params![
+            status,
+            error.or(default_message),
+            error_type,
+            ended_at,
+            now,
+            run_id
+        ],
+    )?;
+    Ok(affected > 0)
+}
+
 /// Returns runs that were interrupted by a previous process crash and
 /// need re-examination against the agent's actual state.
 pub fn list_interrupted_runs() -> Result<Vec<InterruptedRun>, crate::AppError> {
@@ -981,6 +1104,103 @@ mod tests {
         settle_interrupted_run_from_agent("r_done", "cancelled", None).expect("settle");
         let row = crate::store::get_run("r_done").expect("get").expect("some");
         assert_eq!(row.status, "completed");
+    }
+
+    /// The two unverified terminal shapes, plus one row per shape the repair
+    /// must never touch. `updated_at` distinguishes the window cases.
+    fn seed_unverified(conn: &Connection) {
+        conn.execute_batch(
+            "INSERT INTO runs (
+                 id, thread_id, status, error_type, error_message,
+                 started_at, created_at, updated_at
+             ) VALUES
+                 ('r_failed', 't_sess', 'failed', NULL, '[RESPONSE_UNCONFIRMED] response did not complete', 10, 10, 500),
+                 ('r_stale', 't_sess', 'failed', NULL, 'old failure', 10, 10, 10),
+                 ('r_aborted', 't_sess', 'cancelled', 'abort_requested', 'Terminated by user.', 10, 10, 500),
+                 ('r_complete', 't_sess', 'completed', NULL, NULL, 10, 10, 500);"
+        )
+        .expect("seed unverified runs");
+    }
+
+    #[test]
+    fn unverified_settled_listing_is_shape_scoped_and_windowed() {
+        let (_home, conn) = guarded_conn("cleanup_unverified_list");
+        seed_full(&conn);
+        seed_unverified(&conn);
+        drop(conn);
+
+        // Shapes: `failed` and the startup convergence's interrupted marker; a
+        // user abort and a completed row are not repair candidates at all.
+        let rows = list_unverified_settled_runs(500).expect("listing");
+        let ids: Vec<&str> = rows.iter().map(|run| run.run_id.as_str()).collect();
+        assert_eq!(ids, vec!["r_failed"]);
+        assert_eq!(rows[0].session_id, "sess_live");
+        assert_eq!(rows[0].started_at, Some(10));
+
+        // Window: one written before it is left out; ordering is oldest first.
+        let rows = list_unverified_settled_runs(1).expect("listing");
+        let ids: Vec<&str> = rows.iter().map(|run| run.run_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["r_int", "r_stale", "r_failed"],
+            "the interrupted row from the shared fixture is a candidate too"
+        );
+        assert_eq!(rows[0].session_id, "sess_live");
+    }
+
+    #[test]
+    fn unverified_run_repairs_are_guarded_cas_writes() {
+        let (_home, conn) = guarded_conn("cleanup_unverified_repair");
+        seed_full(&conn);
+        seed_unverified(&conn);
+        drop(conn);
+
+        // Revive: the row becomes a live run again, with no failure left on it.
+        assert!(revive_unverified_run("r_failed").expect("revive"));
+        let row = crate::store::get_run("r_failed")
+            .expect("get")
+            .expect("some");
+        assert_eq!(row.status, "running");
+        assert_eq!(row.error_message, None);
+        assert_eq!(row.error_type, None);
+        assert_eq!(row.ended_at, None);
+        // ... and reviving it twice cannot happen (it is no longer a candidate).
+        assert!(!revive_unverified_run("r_failed").expect("revive twice"));
+
+        // The user's abort and a completed row are never touched.
+        assert!(!revive_unverified_run("r_aborted").expect("abort"));
+        assert!(!revive_unverified_run("r_complete").expect("completed"));
+        assert!(
+            !settle_unverified_run_from_agent("r_aborted", "completed", None, None).expect("abort")
+        );
+
+        // Settle: an interrupted row the Agent completed is mirrored, with the
+        // ledger's own end time and the failure copy cleared.
+        assert!(
+            settle_unverified_run_from_agent("r_int", "completed", None, Some(7_777))
+                .expect("settle")
+        );
+        let row = crate::store::get_run("r_int").expect("get").expect("some");
+        assert_eq!(row.status, "completed");
+        assert_eq!(row.error_type, None);
+        assert_eq!(row.error_message, None);
+        assert_eq!(row.ended_at, Some(7_777));
+
+        // An unknown agent state is a no-op, and a row that already reached
+        // `completed` keeps the state (and time) it has.
+        assert!(
+            !settle_unverified_run_from_agent("r_stale", "still_running", None, None)
+                .expect("unknown")
+        );
+        assert!(
+            !settle_unverified_run_from_agent("r_complete", "completed", None, Some(1))
+                .expect("completed")
+        );
+        let row = crate::store::get_run("r_complete")
+            .expect("get")
+            .expect("some");
+        assert_eq!(row.status, "completed");
+        assert_eq!(row.ended_at, None);
     }
 
     #[test]

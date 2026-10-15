@@ -5,7 +5,7 @@ The 2026-09-11 audit's **224 original finding IDs are all accounted for** in the
 | Scope | Original IDs | Evidence |
 |---|---:|---|
 | Agent, LLM, sandbox, session/persistence and assigned concurrency | 79 | [Agent ledger](./fix-agent.md) |
-| Loop/TUI and supervisor/verifier additions | 55 | [Loop/TUI ledger](./fix-loop-tui.md) |
+| Loop/TUI and supervisor/verifier additions | 55 | [Loop/TUI ledger](./fix-goal-tui.md) |
 | CLI/browser/channels/shared RPC and security overlaps | 61 | [CLI ledger](./fix-cli.md) |
 | Desktop/mobile/shared frontend packages/scripts | 29 | [Apps ledger](./fix-apps.md) |
 

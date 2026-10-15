@@ -104,8 +104,8 @@ Counted on this host: **116 gated-away `#[test]` function(s) in 46 file(s)**, pl
 | agent/src/rpc/session.rs | `execute_shell_bounds_inherited_pipe_lifetime`, `execute_shell_snapshot_can_be_cancelled_without_session_lock`, `execute_shell_timeout_kills_the_process_group` |
 | agent/src/utils/mod.rs | `ensure_workspace_accessible_repairs_readonly_dir`, `repair_dir_permissions_noop_when_owner_bits_present`, `ensure_workspace_accessible_does_not_repair_without_flag` |
 | tui/src/components/autocomplete.rs | `attachment_completions_via_fd_stub`, `attachment_completions_fall_back_to_find`, `attachment_completions_empty_when_no_searcher_works` |
-| orchestration/loop/src/compat.rs | `a_dead_holder_lock_that_cannot_be_unlinked_names_the_removal`, `create_in_unwritable_dir_reports_contextual_error` |
-| orchestration/loop/tests/console_drive_cov100.rs | `backfill_append_fails_on_read_only_goal_dir`, `supervisor_propose_append_fails_on_read_only_goal_dir` |
+| orchestration/goal/src/compat.rs | `a_dead_holder_lock_that_cannot_be_unlinked_names_the_removal`, `create_in_unwritable_dir_reports_contextual_error` |
+| orchestration/goal/tests/console_drive_cov100.rs | `backfill_append_fails_on_read_only_goal_dir`, `supervisor_propose_append_fails_on_read_only_goal_dir` |
 | tui/src/paste.rs | `the_real_spawner_captures_a_tool_that_prints_text`, `the_real_spawner_reports_a_tool_that_is_not_installed` |
 | agent/src/rpc/commands/run_control_tests.rs | `shell_rpc_releases_session_lock_and_abort_stops_process` |
 | agent/src/rpc/commands/session_lifecycle_tests.rs | `fork_and_clone_report_save_errors` |
@@ -122,17 +122,17 @@ Counted on this host: **116 gated-away `#[test]` function(s) in 46 file(s)**, pl
 | desktop/src-tauri/src/store/workspaces.rs | `create_workspace_resolves_an_aliased_path_to_one_workspace` |
 | desktop/src-tauri/src/terminal/cwd.rs | `an_unreadable_directory_is_not_accessible` |
 | desktop/src-tauri/tests/headless_cli.rs | `terminal_signals_cancel_startup_and_leave_the_external_endpoint_alone` |
-| orchestration/loop/src/canary/mod.rs | `check_root_writable_reports_failure_on_readonly_root` |
-| orchestration/loop/src/console.rs | `followthrough_refresh_read_only_ledger_hits_error_edge` |
-| orchestration/loop/src/work_items/task_lease.rs | `dead_holder_todos_detects_stranded_open_leases` |
-| orchestration/loop/tests/agent_client_executor.rs | `execute_turn_validator_pass_and_fail` |
-| orchestration/loop/tests/agent_run_drive.rs | `run_validator_pass_completes_todo` |
-| orchestration/loop/tests/console_drive_cov100c.rs | `notify_dead_holders_returns_when_connect_fails` |
-| orchestration/loop/tests/console_final_console2.rs | `scheduler_tick_heartbeat_append_fails_on_read_only_ledger` |
-| orchestration/loop/tests/console_subprocess_drive.rs | `worker_bridge_read_only_ledger_hits_decision_record_error` |
-| orchestration/loop/tests/console_sweep.rs | `notify_dead_holders_pushes_to_registered_supervisor` |
-| orchestration/loop/tests/reliability_contract.rs | `detached_watchdog_reports_death_of_the_only_worker` |
-| orchestration/loop/tests/write_scope_dependencies.rs | `nonexistent_files_below_symlinked_parents_have_the_same_scope` |
+| orchestration/goal/src/canary/mod.rs | `check_root_writable_reports_failure_on_readonly_root` |
+| orchestration/goal/src/console.rs | `followthrough_refresh_read_only_ledger_hits_error_edge` |
+| orchestration/goal/src/work_items/task_lease.rs | `dead_holder_todos_detects_stranded_open_leases` |
+| orchestration/goal/tests/agent_client_executor.rs | `execute_turn_validator_pass_and_fail` |
+| orchestration/goal/tests/agent_run_drive.rs | `run_validator_pass_completes_todo` |
+| orchestration/goal/tests/console_drive_cov100c.rs | `notify_dead_holders_returns_when_connect_fails` |
+| orchestration/goal/tests/console_final_console2.rs | `scheduler_tick_heartbeat_append_fails_on_read_only_ledger` |
+| orchestration/goal/tests/console_subprocess_drive.rs | `worker_bridge_read_only_ledger_hits_decision_record_error` |
+| orchestration/goal/tests/console_sweep.rs | `notify_dead_holders_pushes_to_registered_supervisor` |
+| orchestration/goal/tests/reliability_contract.rs | `detached_watchdog_reports_death_of_the_only_worker` |
+| orchestration/goal/tests/write_scope_dependencies.rs | `nonexistent_files_below_symlinked_parents_have_the_same_scope` |
 | tui/src/app.rs | `normalize_path_resolves_dotdot_and_clamps_at_root` |
 | tui/src/crash.rs | `raw_write_stderr_writes_bytes` |
 | tui/src/external_editor.rs | `create_draft_file_reports_unwritable_directory` |
@@ -154,7 +154,7 @@ so any Windows path that would have used them cannot be exercising them):
 * tui/src/crash.rs: `raw_write_stderr`, `raw_write_fd`, `start`, `drop`
 * tui/src/terminal.rs: `install`, `drop`, `install`, `drop`
 * agent/src/sandbox/windows/capability.rs: `skip_if_root`, `make_readonly`, `save_atomic_cleanup_body`
-* orchestration/loop/src/validator.rs: `large_stderr_is_drained_and_retention_is_bounded`, `cancelling_validation_reaps_the_owned_process`, `hung_child_and_inherited_pipe_are_bounded`
+* orchestration/goal/src/validator.rs: `large_stderr_is_drained_and_retention_is_bounded`, `cancelling_validation_reaps_the_owned_process`, `hung_child_and_inherited_pipe_are_bounded`
 * tui/src/components/autocomplete.rs: `with_stubbed_path`, `argv_echoing_exe`, `attachment_context`
 * channels/src/providers/slack_tests.rs: `socket_mode_fails_when_the_ack_cannot_be_written`, `socket_mode_fails_when_the_pong_cannot_be_written`
 * channels/tests/channel_bin.rs: `sigint_shutdown_case`, `sigint_case_with_home`

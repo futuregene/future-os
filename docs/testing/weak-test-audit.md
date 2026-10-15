@@ -112,7 +112,7 @@ table names an assertion that is not in the tree.
 
 ### The three false-positive shapes, with evidence
 
-1. **`cli_ok(...)` — the loop CLI harness.** `orchestration/loop/tests/common/mod.rs:61`
+1. **`cli_ok(...)` — the loop CLI harness.** `orchestration/goal/tests/common/mod.rs:61`
    ```rust
    pub fn cli_ok(args: &[&str]) {
        cli(args).unwrap_or_else(|e| panic!("cli {args:?} should succeed: {e}"));
@@ -141,40 +141,40 @@ table names an assertion that is not in the tree.
 `class` ∈ {真弱, 假阳性, 合理豁免}. `rev` = "call for reviewer to re-check"
 (marked where the judgement, not the fact, is the debatable part).
 
-### orchestration/loop
+### orchestration/goal
 
 | file:line | test | class | judgement (evidence) |
 |---|---|---|---|
-| `orchestration/loop/tests/agent_run_drive.rs:1286` | `models_text_and_json` | 假阳性 | every effect asserted through `cli_ok` (`tests/common/mod.rs:61`); `models --format json` must exit 0. |
-| `orchestration/loop/tests/agent_run_drive.rs:1296` | `models_sparse_payload_defaults` | 假阳性 | same `cli_ok`; a sparse model payload must not fail the command. |
-| `orchestration/loop/tests/console_drive_cov100.rs:34` | `runs_compact_cutoff_without_runs_succeeds` | 假阳性 | `cli_ok(&["runs","compact",...])` — the no-op report must exit 0. |
-| `orchestration/loop/tests/console_drive_cov100.rs:177` | `lease_reclaim_same_agent_is_idempotent` | 假阳性 | two `cli_ok` claim calls; both must succeed. |
-| `orchestration/loop/tests/console_drive_cov100b.rs:115` | `worker_list_scans_live_sessions` | 假阳性 | `cli_ok` text + `--json` list. |
-| `orchestration/loop/tests/console_drive_cov100c.rs:39` | `todo_complete_is_idempotent` | 假阳性 | `cli_ok` twice; second completion must not error. |
-| `orchestration/loop/tests/console_drive_cov100c.rs:196` | `run_resumes_alive_session_via_flag` | 假阳性 | `cli_ok` on `run --resume-session`. |
-| `orchestration/loop/tests/console_drive_cov100c.rs:221` | `run_falls_back_to_fresh_for_dead_session` | 假阳性 | `cli_ok` on the fresh-session fallback. |
-| `orchestration/loop/tests/console_drive_cov100c.rs:293` | `frontier_show_terminal_yes` | 假阳性 | `cli_ok` after closing the last todo. |
-| `orchestration/loop/tests/console_drive_cov100c.rs:354` | `worker_list_shows_running_when_streaming` | 假阳性 | `cli_ok(&["worker","list",...])`. |
-| `orchestration/loop/tests/console_drive_cov100c.rs:372` | `worker_stop_abort_and_delete_failures` | 假阳性 | `cli_ok` on the *degraded* path (abort/delete fail) — the command must still succeed. |
-| `orchestration/loop/tests/console_final_console.rs:13` | `agent_list_json_and_workspace_conflict` | 假阳性 | 5× `cli_ok`. |
-| `orchestration/loop/tests/console_final_console.rs:59` | `authority_sets_write_scope_and_approval_gates` | 假阳性 | `cli_ok` with both flags. |
-| `orchestration/loop/tests/console_final_console.rs:76` | `scheduler_ack_with_every_flag` | 假阳性 | `cli_ok` with every flag. |
-| `orchestration/loop/tests/console_final_console.rs:98` | `scheduler_tick_show_and_liveness` | 假阳性 | 7× `cli_ok`. |
-| `orchestration/loop/tests/console_final_console.rs:172` | `scheduler_record_host_failure_bootstraps_state` | 假阳性 | `cli_ok`. |
-| `orchestration/loop/tests/console_final_console.rs:196` | `heartbeat_with_agent_id` | 假阳性 | `cli_ok(&["heartbeat-prompt",...])`. |
-| `orchestration/loop/tests/console_final_console.rs:203` | `attention_and_inbox_json` | 假阳性 | 6× `cli_ok`. |
-| `orchestration/loop/tests/console_final_console.rs:251` | `commands_json_and_canary_bare_smoke` | 假阳性 | 7× `cli_ok` (incl. `canary premerge`). |
-| `orchestration/loop/tests/console_final_console.rs:284` | `scope_and_supervisor_flag_branches` | 假阳性 | `cli_ok` ×2. |
-| `orchestration/loop/tests/console_final_console.rs:302` | `delivery_record_verified_and_empty_projection` | 假阳性 | 4× `cli_ok`. |
-| `orchestration/loop/tests/console_final_console.rs:408` | `store_verify_repair_and_bridge` | 假阳性 | 3× `cli_ok`. |
-| `orchestration/loop/tests/console_final_console2.rs:34` | `authority_without_optional_flags` | 假阳性 | `cli_ok` with neither optional flag. |
-| `orchestration/loop/tests/console_final_console2.rs:42` | `scheduler_liveness_threshold_parse_edges` | 假阳性 | `cli_ok` on the non-numeric/zero threshold arms. |
-| `orchestration/loop/tests/console_final_console2.rs:90` | `include_experimental_pass_through_covers_unmatched_key_edges` | 假阳性 | 4× `cli_ok`. |
-| `orchestration/loop/tests/console_sweep2.rs:42` | `agent_list_with_lease_events` | 假阳性 | 8× `cli_ok`. |
-| `orchestration/loop/tests/console_sweep2.rs:166` | `privacy_stale_cache_arm` | 假阳性 | `cli_ok` ×2. |
-| `orchestration/loop/tests/console_sweep2.rs:176` | `scope_with_open_gate` | 假阳性 | `cli_ok` ×3. |
-| `orchestration/loop/src/console.rs:9452` | `print_obligation_with_and_without_todo` | 合理豁免 | `print_obligation` (`:6123`) returns `()` and writes to stdout. Stable Rust cannot capture a `println!` from inside the process (libtest's capture is not exposed), so the only available claim is "both arms render without panicking". Covers the `todo_id=Some/None` if/else. |
-| `orchestration/loop/src/console.rs:9547` | `print_goal_status_full` | 合理豁免 | same shape for `print_goal_status` (`:3270`): covers the satisfied/open-gap, monitor-metadata, projection-gap and history print arms; no return value to assert. **rev**: a `format!`-based `goal_status_lines()` would make it assertable, but that is a production refactor, out of this audit's scope. |
+| `orchestration/goal/tests/agent_run_drive.rs:1286` | `models_text_and_json` | 假阳性 | every effect asserted through `cli_ok` (`tests/common/mod.rs:61`); `models --format json` must exit 0. |
+| `orchestration/goal/tests/agent_run_drive.rs:1296` | `models_sparse_payload_defaults` | 假阳性 | same `cli_ok`; a sparse model payload must not fail the command. |
+| `orchestration/goal/tests/console_drive_cov100.rs:34` | `runs_compact_cutoff_without_runs_succeeds` | 假阳性 | `cli_ok(&["runs","compact",...])` — the no-op report must exit 0. |
+| `orchestration/goal/tests/console_drive_cov100.rs:177` | `lease_reclaim_same_agent_is_idempotent` | 假阳性 | two `cli_ok` claim calls; both must succeed. |
+| `orchestration/goal/tests/console_drive_cov100b.rs:115` | `worker_list_scans_live_sessions` | 假阳性 | `cli_ok` text + `--json` list. |
+| `orchestration/goal/tests/console_drive_cov100c.rs:39` | `todo_complete_is_idempotent` | 假阳性 | `cli_ok` twice; second completion must not error. |
+| `orchestration/goal/tests/console_drive_cov100c.rs:196` | `run_resumes_alive_session_via_flag` | 假阳性 | `cli_ok` on `run --resume-session`. |
+| `orchestration/goal/tests/console_drive_cov100c.rs:221` | `run_falls_back_to_fresh_for_dead_session` | 假阳性 | `cli_ok` on the fresh-session fallback. |
+| `orchestration/goal/tests/console_drive_cov100c.rs:293` | `frontier_show_terminal_yes` | 假阳性 | `cli_ok` after closing the last todo. |
+| `orchestration/goal/tests/console_drive_cov100c.rs:354` | `worker_list_shows_running_when_streaming` | 假阳性 | `cli_ok(&["worker","list",...])`. |
+| `orchestration/goal/tests/console_drive_cov100c.rs:372` | `worker_stop_abort_and_delete_failures` | 假阳性 | `cli_ok` on the *degraded* path (abort/delete fail) — the command must still succeed. |
+| `orchestration/goal/tests/console_final_console.rs:13` | `agent_list_json_and_workspace_conflict` | 假阳性 | 5× `cli_ok`. |
+| `orchestration/goal/tests/console_final_console.rs:59` | `authority_sets_write_scope_and_approval_gates` | 假阳性 | `cli_ok` with both flags. |
+| `orchestration/goal/tests/console_final_console.rs:76` | `scheduler_ack_with_every_flag` | 假阳性 | `cli_ok` with every flag. |
+| `orchestration/goal/tests/console_final_console.rs:98` | `scheduler_tick_show_and_liveness` | 假阳性 | 7× `cli_ok`. |
+| `orchestration/goal/tests/console_final_console.rs:172` | `scheduler_record_host_failure_bootstraps_state` | 假阳性 | `cli_ok`. |
+| `orchestration/goal/tests/console_final_console.rs:196` | `heartbeat_with_agent_id` | 假阳性 | `cli_ok(&["heartbeat-prompt",...])`. |
+| `orchestration/goal/tests/console_final_console.rs:203` | `attention_and_inbox_json` | 假阳性 | 6× `cli_ok`. |
+| `orchestration/goal/tests/console_final_console.rs:251` | `commands_json_and_canary_bare_smoke` | 假阳性 | 7× `cli_ok` (incl. `canary premerge`). |
+| `orchestration/goal/tests/console_final_console.rs:284` | `scope_and_supervisor_flag_branches` | 假阳性 | `cli_ok` ×2. |
+| `orchestration/goal/tests/console_final_console.rs:302` | `delivery_record_verified_and_empty_projection` | 假阳性 | 4× `cli_ok`. |
+| `orchestration/goal/tests/console_final_console.rs:408` | `store_verify_repair_and_bridge` | 假阳性 | 3× `cli_ok`. |
+| `orchestration/goal/tests/console_final_console2.rs:34` | `authority_without_optional_flags` | 假阳性 | `cli_ok` with neither optional flag. |
+| `orchestration/goal/tests/console_final_console2.rs:42` | `scheduler_liveness_threshold_parse_edges` | 假阳性 | `cli_ok` on the non-numeric/zero threshold arms. |
+| `orchestration/goal/tests/console_final_console2.rs:90` | `include_experimental_pass_through_covers_unmatched_key_edges` | 假阳性 | 4× `cli_ok`. |
+| `orchestration/goal/tests/console_sweep2.rs:42` | `agent_list_with_lease_events` | 假阳性 | 8× `cli_ok`. |
+| `orchestration/goal/tests/console_sweep2.rs:166` | `privacy_stale_cache_arm` | 假阳性 | `cli_ok` ×2. |
+| `orchestration/goal/tests/console_sweep2.rs:176` | `scope_with_open_gate` | 假阳性 | `cli_ok` ×3. |
+| `orchestration/goal/src/console.rs:9452` | `print_obligation_with_and_without_todo` | 合理豁免 | `print_obligation` (`:6123`) returns `()` and writes to stdout. Stable Rust cannot capture a `println!` from inside the process (libtest's capture is not exposed), so the only available claim is "both arms render without panicking". Covers the `todo_id=Some/None` if/else. |
+| `orchestration/goal/src/console.rs:9547` | `print_goal_status_full` | 合理豁免 | same shape for `print_goal_status` (`:3270`): covers the satisfied/open-gap, monitor-metadata, projection-gap and history print arms; no return value to assert. **rev**: a `format!`-based `goal_status_lines()` would make it assertable, but that is a production refactor, out of this audit's scope. |
 
 ### agent
 
@@ -282,9 +282,9 @@ lines**, the 71 spread over 11 files.
 
 | file | deleted | what it was | verdict |
 |---|---|---|---|
-| `orchestration/loop/src/console.rs` | 39 | the detached-run re-exec body: the `child_args` build and the `try_wait` liveness guard (`Ok(Some)` → `bail!`; `Ok(None)`/`Err` → announce and continue) | **refactor, not removal.** The code reappears verbatim as `detached_child_args()` (`console.rs:8794`) and `enforce_detach_liveness()` (`:8811`), both called from the original site; the three outcomes are preserved (`Ok(None) | Err(_) => { println!(…); Ok(()) }` — the old code reached the same `println!` by falling out of two empty arms). New tests: `detached_child_args_prepend_the_group_only_for_the_unified_binary`, `detach_liveness_guard_decides_from_the_probe_outcome`. |
+| `orchestration/goal/src/console.rs` | 39 | the detached-run re-exec body: the `child_args` build and the `try_wait` liveness guard (`Ok(Some)` → `bail!`; `Ok(None)`/`Err` → announce and continue) | **refactor, not removal.** The code reappears verbatim as `detached_child_args()` (`console.rs:8794`) and `enforce_detach_liveness()` (`:8811`), both called from the original site; the three outcomes are preserved (`Ok(None) | Err(_) => { println!(…); Ok(()) }` — the old code reached the same `println!` by falling out of two empty arms). New tests: `detached_child_args_prepend_the_group_only_for_the_unified_binary`, `detach_liveness_guard_decides_from_the_probe_outcome`. |
 | `desktop/src-tauri/src/windows_power.rs` | 14 | the three `else if` conditions of the wndproc power handler (`WM_POWERBROADCAST`+`PBT_APMSUSPEND`; the three `PBT_APMRESUME*` codes; `WM_QUERYENDSESSION`) | **refactor, every constant preserved.** Extracted to the pure `power_action(message, wparam) -> PowerAction` (`windows_power.rs:28`); the diff adds the `Ignore` arm and a `WM_QUERYENDSESSION \| 0x8000` counter-case that did not exist before. `install_disconnect_notifier` gained `<R: tauri::Runtime>` (testability, same as `scheduler::start`). |
-| `orchestration/loop/src/compat.rs` | 3 | `Err(error) if error.kind() == AlreadyExists => {}` and two `remove_lock_file(..)?` | **widened, not removed.** The guard became `create_is_contention(&error)` = `AlreadyExists` ∪ (Windows) `ERROR_ACCESS_DENIED`; each `?` became an explicit `if let Err(..) { if delete_pending_retry(..) { continue } return Err(..) }` — the error is still returned. New tests pin both the failure and the retry, including a Windows sharing-violation counter-case. |
+| `orchestration/goal/src/compat.rs` | 3 | `Err(error) if error.kind() == AlreadyExists => {}` and two `remove_lock_file(..)?` | **widened, not removed.** The guard became `create_is_contention(&error)` = `AlreadyExists` ∪ (Windows) `ERROR_ACCESS_DENIED`; each `?` became an explicit `if let Err(..) { if delete_pending_retry(..) { continue } return Err(..) }` — the error is still returned. New tests pin both the failure and the retry, including a Windows sharing-violation counter-case. |
 | `channels/src/session_store.rs` | 1 | `pending.persist(&self.path)?` | **wrapped, not removed.** `persist_with_retry(pending, &self.path)?` returns the error once the budget is spent or the kind is not transient; `a_replace_that_cannot_publish_is_reported_not_swallowed` pins the failure path. |
 | `agent/src/skill_reco/mod.rs` | 2 | `let query_bytes = query.trim().len();` and `match HTTP_CLIENT.post(…)` | **moved into `attempt_call(client, endpoint, …)`** so a local socket can drive every transport outcome. `query_bytes` is still computed and used; the client is now a parameter. |
 | `cli/src/browser/windows_process.rs` | 2 | the `Start-Process` format line | **replaced by an equivalent format** that omits `-ArgumentList` for an empty argv — a real bug fix (PowerShell 5.1 rejects `-ArgumentList ''`). New test `empty_argv_omits_the_argument_list_switch`. |
@@ -332,14 +332,14 @@ them rather than discover them:
 
 | location | hook |
 |---|---|
-| `orchestration/loop/src/console.rs:8842` | `try_wait_detached`: returns a `detach_probe`-injected `io::Result` when armed, else `child.try_wait()`. The one seam that interposes on a *production* value; the test also asserts the real OS read, so the seam is not shadowing it. |
-| `orchestration/loop/src/store.rs:803-804` | `crate::store::write_fault::maybe_fail(&event)?` — the fault injector the ledger-write tests arm. |
+| `orchestration/goal/src/console.rs:8842` | `try_wait_detached`: returns a `detach_probe`-injected `io::Result` when armed, else `child.try_wait()`. The one seam that interposes on a *production* value; the test also asserts the real OS read, so the seam is not shadowing it. |
+| `orchestration/goal/src/store.rs:803-804` | `crate::store::write_fault::maybe_fail(&event)?` — the fault injector the ledger-write tests arm. |
 | `agent/src/rpc/mod.rs:340-352` | `ACTIVATE_PERSISTED_SESSION_FAIL_HOOK` — injects a hydrate failure after the caller committed the session. |
 | `agent/src/rpc/protocol.rs:584` | `EventWriteCommand::Hold(gate)` — a `#[cfg(test)]` enum variant plus its arm, used to order the journal writer against the command loop. |
 | `agent/src/rpc/protocol.rs:598` | `#[cfg(test)] commits: &AtomicU64` parameter on `flush_event_batch`. |
 | `agent/src/rpc/session_prompt.rs:775`, `:888` | capture handles on the run's callbacks (`RunCallbacksForTest`). |
 | `desktop/src-tauri/src/terminal/{manager,session}.rs` | `session_for_test`, `child_is_reaped`, `wait_for_child_exit` — `pub(crate)` accessors, no behaviour added. |
-| `orchestration/loop/src/agent_client.rs:142` | `unreachable_for_test()` — a lazy client to a dead port. |
+| `orchestration/goal/src/agent_client.rs:142` | `unreachable_for_test()` — a lazy client to a dead port. |
 
 Each row's anchor is the hook's `#[cfg(test)]` **attribute** line (or the range
 including its body), not a `fn` line: this table lists code fragments, so the
@@ -363,7 +363,7 @@ test code; **none is a dropped claim**:
 | `agent/src/rpc/session.rs` | `set_thinking_level_updates_field` / `_off` | replaced by one table-driven test over all six levels + an unknown one, asserting the **budget that reaches the provider**, not just the echoed string. |
 | `agent/src/rpc/session.rs` | `default_workspace_contains_future_agent`, `set_cwd_updates_field`, `get_permission_level_default` | re-added unchanged (the file was reorganised). |
 | `agent/src/rpc/session.rs` | `set_permission_level("invalid")` with "should not crash" | replaced by `assert_eq!(get_permission_level(), "invalid")` — an actual claim. |
-| `orchestration/loop/src/work_items/replan_obligation.rs` | `assert!(…iter().all(\|o\| o.kind != X))` ×3 | replaced by `assert!(…is_empty())`; the in-source comment names the old form as **vacuous** (the closure never ran on an empty list, so it could not fail). Strengthening. |
+| `orchestration/goal/src/work_items/replan_obligation.rs` | `assert!(…iter().all(\|o\| o.kind != X))` ×3 | replaced by `assert!(…is_empty())`; the in-source comment names the old form as **vacuous** (the closure never ran on an empty list, so it could not fail). Strengthening. |
 | `agent/src/sandbox/linux/plan.rs` | `assert!(matches!(expand_glob(&p), Err(..) if …))` | same match, bound to a name and given a failure message. |
 | `cli/src/utils/files.rs` | `assert!(found.is_some())` + `contains(expected)` in one `cfg!`-branched test | split into `#[cfg(windows)]` / `#[cfg(unix)]` twins with **identical** assertions — the runtime `cfg!` branch would have left the other platform's lines permanently uncovered. |
 | `tui/src/app.rs` | `assert!(last_system(&app).contains(…))` ×2 | `pump_until_msg(…)` then `.any(\|m\| m.contains(…))` — waits on the message instead of assuming it is last (a real race between two refused loopback connects). |

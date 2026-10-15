@@ -1,7 +1,7 @@
 # 目录布局：`~/.future/` 下各目录的职责
 
 FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
-`%USERPROFILE%\.future\`）；loop 默认存放在项目内。本页给出各目录、所属组件与内容。
+`%USERPROFILE%\.future\`）；goal 状态默认存放在项目内。本页给出各目录、所属组件与内容。
 以下路径使用 macOS/Linux 写法；Windows 布局相同，根为 `%USERPROFILE%\.future\`。
 
 ```text
@@ -173,15 +173,15 @@ GUI 的每线程聊天工作区，每个子目录以 agent 会话 id（已知时
 获得）或 GUI 线程 id 命名。用户自选的工作区位于别处，清理本目录时绝不会
 触碰它们。
 
-## loop 控制面 — 项目本地，不在 `~/.future/` 下
+## goal 控制面 — 项目本地，不在 `~/.future/` 下
 
-`future-loop` 的状态是**项目本地**的：在项目目录运行它，全部状态存放在
-`<cwd>/.future/loop/` 下（`FUTURE_LOOP_ROOT` 可为特殊场景覆盖状态根；
-`~/.future/loop/` 不是默认位置）。见
-[loop-control-plane.zh-CN.md](../architecture/loop-control-plane.zh-CN.md)。
+`future-goal` 的状态是**项目本地**的：在项目目录运行它，全部状态存放在
+`<cwd>/.future/goal/` 下（`FUTURE_GOAL_ROOT` 可为特殊场景覆盖状态根；
+`~/.future/goal/` 不是默认位置）。见
+[goal-control-plane.zh-CN.md](../architecture/goal-control-plane.zh-CN.md)。
 
 ```text
-<cwd>/.future/loop/
+<cwd>/.future/goal/
 ├── registry.json                  # 目标注册表（每个目标一条）
 ├── goals/<goal_id>/
 │   ├── events.jsonl               # 事件源账本（权威状态）
@@ -213,6 +213,6 @@ Windows 安装版同样安装到 `%USERPROFILE%\.future\bin`。
 
 - `~/.agents/skills/` — 第二个技能发现目录（`AGENTS_SKILLS_DIR`），
   例如存放机器级技能。
-- 项目本地 `.future/` — GUI 聊天工作区与 loop 控制面也会在项目内使用
-  `.future/` 目录（例如 `.future/loop/`、`.future/approval_rule.json`）。
+- 项目本地 `.future/` — GUI 聊天工作区与 goal 控制面也会在项目内使用
+  `.future/` 目录（例如 `.future/goal/`、`.future/approval_rule.json`）。
   该目录应加入 `.gitignore`。

@@ -117,7 +117,7 @@ needs no `no verdict (flaky)` entries at all.
   `queue.rs:31` (definition) and `queue.rs:119` (use). See §5.1.
 * Not measured: every other file in the repository. `channels/src/policy.rs` has
   since been *completed* — all 24 of its mutants, see the next section — but the
-  other four files the supervisor ordered (`orchestration/loop/src/compat.rs` 72,
+  other four files the supervisor ordered (`orchestration/goal/src/compat.rs` 72,
   `backfill.rs` 74, `quota/usage_summary.rs` 84,
   `desktop/src-tauri/src/windows_power.rs`) are untouched, and `windows_power.rs`
   is still skipped because its crate was not frozen.
@@ -719,19 +719,19 @@ scripts `scripts/measure/mutation/verify-attribution.py` / `scripts/measure/muta
 
 ---
 
-## `orchestration/loop/src/compat.rs` — first sample of the loop crate: 72 mutants, 46 caught
+## `orchestration/goal/src/compat.rs` — first sample of the goal crate: 72 mutants, 46 caught
 
 *Item for this turn (mutation follow-up) · agent `w-mut` · appended 2026-09-26 ·
 raw artifacts under `out-compat/` + `out-compat-recheck/` (next to the runners)*
 
 ### 1. Command, revision, cost
 
-`orchestration/loop/src/compat.rs` `sha256 22D63EBF…6027C1`, mtime `2026-09-26
+`orchestration/goal/src/compat.rs` `sha256 22D63EBF…6027C1`, mtime `2026-09-26
 01:42:42`, re-read after the run and identical (the file was not touched).
 
 ```powershell
 MUT=scripts/measure/mutation   # the runners and their kept evidence live here
-cargo mutants -p future-loop --file orchestration/loop/src/compat.rs --gitignore true `
+cargo mutants -p future-goal --file orchestration/goal/src/compat.rs --gitignore true `
     --timeout 300 -j 3 -o "$MUT/out-compat" --json `
     --cargo-test-arg --lib --cargo-test-arg --test --cargo-test-arg compat_projection_contract
 ```
@@ -750,13 +750,13 @@ cargo mutants -p future-loop --file orchestration/loop/src/compat.rs --gitignore
 
 The steering's command was a bare `-- --lib`. That witness set cannot see the 20
 mutants in the file's projection functions (`url_encode`, `rfc3339`,
-`future_loop_task_class`, `future_loop_status`, `render_active_state`,
+`future_goal_task_class`, `future_goal_status`, `render_active_state`,
 `todo_line`): the lib test target never asserts rendered markdown, and their only
 measured witnesses are in `tests/compat_projection_contract.rs` (4 tests:
 `enum_values_match_loopx`, `file_layout_is_project_local`,
-`todo_anchors_match_future_loop_format`, `rfc3339_matches_future_loop_shape`).
+`todo_anchors_match_future_goal_format`, `rfc3339_matches_future_goal_shape`).
 Every catch in that group in this run is attributed to one of those two contract
-tests (`todo_anchors_match_future_loop_format` alone kills `36:5` ×2, `436:5` ×2,
+tests (`todo_anchors_match_future_goal_format` alone kills `36:5` ×2, `436:5` ×2,
 `487:28`, `533:5` ×2). A `--lib`-only run would therefore have reported all 20
 MISSED for a reason that is an artifact of the witness set — exactly the class of
 unusable verdict this re-derivation exists to remove. `--lib` is kept in the set
@@ -851,7 +851,7 @@ already caught (a free consistency check) — and ran 24 min:
 
 ```powershell
 MUT=scripts/measure/mutation   # the runners and their kept evidence live here
-cargo mutants -p future-loop --file orchestration/loop/src/compat.rs --gitignore true `
+cargo mutants -p future-goal --file orchestration/goal/src/compat.rs --gitignore true `
     --timeout 300 -j 3 -o "$MUT/out-compat-recheck" -F "compat\.rs:(…21 addresses…)" `
     --cargo-test-arg --lib --cargo-test-arg --test --cargo-test-arg compat_projection_contract `
     --cargo-test-arg --test --cargo-test-arg misc_drive --cargo-test-arg --test --cargo-test-arg bughunt_regressions `
@@ -877,7 +877,7 @@ as **caught (non-deterministically)** and flagged in `uncaught[]`; the honest
 reading of the file is 46 + 5 = **51 of 69 viable mutants decided caught, 18
 survivors**, with one of the 51 resting on a race witness.
 
-**What this sample says about the loop crate's waivers** (the reason the loop
+**What this sample says about the goal crate's waivers** (the reason the loop
 files were ordered): the lock/projection core is well tested — 46 of 72 mutants
 die against a 5-second primary witness set, and the survivors are not a diffuse
 coverage hole but a short, individually-named list: `#[cfg]`-gated arms that

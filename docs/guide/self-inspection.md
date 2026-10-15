@@ -33,7 +33,7 @@ themselves.
 | `future session transcript --session <id>` | One session's records, filtered and windowed — every user message, thinking, one tool's inputs or outputs, the paths it touched, and per-run outcomes (`--runs`) |
 | `future session forks <id>` | The user turns that session can be branched at |
 | `future session approvals <id>` | Approval requests the session is parked on right now |
-| `future loop status` | Long-running goals for the current project directory |
+| `future goal status` | Long-running goals for the current project directory |
 
 Two of those are worth separating carefully, because they answer different
 questions about the same session. `session info` reads the **persisted journal**
@@ -303,10 +303,12 @@ already under way alone, interrupting pre-empts it, and only the caller knows
 what the user actually wanted. This is the send half of a `#`-picked conversation
 reference: a user message can carry `[title](futureos://session/<id>)`, and the id
 in that link is what `--session` takes. It is a full run in the other
-conversation, so it spends credits, and the command returns when that run ends
-(the shell tool's own timeout applies) — a long one needs a raised timeout. The
-read half is `future session transcript --session <id>` /
-`future session history search --session <id>` above.
+conversation, so it spends credits. The command returns when that run ends by
+default; use `--no-wait` to get an immediate ack (run id and accepted state),
+continue working, and retrieve the result later with `future session wait <id>`
+or `future session transcript --session <id>` (a long run may still need a
+raised shell timeout). The read half is `future session transcript --session <id>`
+/ `future session history search --session <id>` above.
 
 Two things only the sender can supply, because the target conversation receives
 a bare user turn: **provenance** — that the message came from another

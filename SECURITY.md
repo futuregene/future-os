@@ -8,7 +8,7 @@ current controls and limitations, and vulnerability reporting.
 ## Trust model and data flow
 
 - **Local persistence, not offline-only processing.** Sessions and configuration
-  are stored locally under `~/.future/`; loop state is project-local by default.
+  are stored locally under `~/.future/`; goal state is project-local by default.
   Prompts, selected attachments and tool results included in context are sent to
   the configured model provider. FutureOS-hosted models and online tools use
   FutureOS services; other providers/tools use their respective endpoints.

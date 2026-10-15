@@ -330,12 +330,12 @@
       {
         "id": "p008",
         "text": "Please keep this repo task moving across replies: track what's done, what's next, prove results with saved artifacts, and stop to ask before spending more or changing my chosen settings.",
-        "source_skill": "future-loop",
+        "source_skill": "future-goal",
         "gold": [
-          "future-loop"
+          "future-goal"
         ],
         "pred": [
-          "future-loop"
+          "future-goal"
         ],
         "agree": true,
         "top1": true,
@@ -2006,12 +2006,12 @@
       {
         "id": "p008",
         "text": "Please keep this repo task moving across replies: track what's done, what's next, prove results with saved artifacts, and stop to ask before spending more or changing my chosen settings.",
-        "source_skill": "future-loop",
+        "source_skill": "future-goal",
         "gold": [
-          "future-loop"
+          "future-goal"
         ],
         "pred": [
-          "future-loop"
+          "future-goal"
         ],
         "agree": true,
         "top1": true,
@@ -3676,12 +3676,12 @@
       {
         "id": "p008",
         "text": "Please keep this repo task moving across replies: track what's done, what's next, prove results with saved artifacts, and stop to ask before spending more or changing my chosen settings.",
-        "source_skill": "future-loop",
+        "source_skill": "future-goal",
         "gold": [
-          "future-loop"
+          "future-goal"
         ],
         "pred": [
-          "future-loop"
+          "future-goal"
         ],
         "agree": true,
         "top1": true,
@@ -4720,7 +4720,7 @@
         "source_skill": null,
         "gold": [],
         "pred": [
-          "future-loop"
+          "future-goal"
         ],
         "agree": false,
         "top1": null,
@@ -4974,7 +4974,7 @@
         "source_skill": null,
         "gold": [],
         "pred": [
-          "future-loop"
+          "future-goal"
         ],
         "agree": false,
         "top1": null,
@@ -5356,12 +5356,12 @@
       {
         "id": "p008",
         "text": "Please keep this repo task moving across replies: track what's done, what's next, prove results with saved artifacts, and stop to ask before spending more or changing my chosen settings.",
-        "source_skill": "future-loop",
+        "source_skill": "future-goal",
         "gold": [
-          "future-loop"
+          "future-goal"
         ],
         "pred": [
-          "future-loop"
+          "future-goal"
         ],
         "agree": true,
         "top1": true,
@@ -6414,7 +6414,7 @@
         "source_skill": null,
         "gold": [],
         "pred": [
-          "future-loop"
+          "future-goal"
         ],
         "agree": false,
         "top1": null,
@@ -6654,7 +6654,7 @@
         "source_skill": null,
         "gold": [],
         "pred": [
-          "future-loop"
+          "future-goal"
         ],
         "agree": false,
         "top1": null,
@@ -6702,7 +6702,7 @@
         "source_skill": null,
         "gold": [],
         "pred": [
-          "future-loop"
+          "future-goal"
         ],
         "agree": false,
         "top1": null,
@@ -7102,12 +7102,12 @@
       {
         "id": "p008",
         "text": "Please keep this repo task moving across replies: track what's done, what's next, prove results with saved artifacts, and stop to ask before spending more or changing my chosen settings.",
-        "source_skill": "future-loop",
+        "source_skill": "future-goal",
         "gold": [
-          "future-loop"
+          "future-goal"
         ],
         "pred": [
-          "future-loop"
+          "future-goal"
         ],
         "agree": true,
         "top1": true,

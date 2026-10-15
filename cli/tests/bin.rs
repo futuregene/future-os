@@ -175,18 +175,18 @@ fn embedded_channel_version() {
 }
 
 #[test]
-fn embedded_loop_unknown_command() {
-    let (code, _, stderr) = future(&["loop", "bogus-cmd-xyz"]);
+fn embedded_goal_unknown_command() {
+    let (code, _, stderr) = future(&["goal", "bogus-cmd-xyz"]);
     assert_eq!(code, Some(1));
     assert!(!stderr.is_empty());
 }
 
 #[test]
-fn embedded_loop_help_succeeds() {
-    // The Ok arm of main's run_loop dispatch.
-    let (code, stdout, _) = future(&["loop", "--help"]);
+fn embedded_goal_help_succeeds() {
+    // The Ok arm of main's run_goal dispatch.
+    let (code, stdout, _) = future(&["goal", "--help"]);
     assert_eq!(code, Some(0));
-    assert!(stdout.contains("future loop"), "stdout: {stdout}");
+    assert!(stdout.contains("future goal"), "stdout: {stdout}");
 }
 
 /// `--args` and `--stdin` are two spellings of the same JSON object, so asking
