@@ -69,7 +69,7 @@ jobs:
         env:
           FUTURE_VERSION: ${{ inputs.version }}
           FUTURE_ARTIFACT_VERSION: ${{ inputs.artifact_version }}
-          FUTURE_BUILD_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && 'dev' || '' }}
+          FUTURE_BUILD_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && !inputs.version && 'dev' || '' }}
         run: |
           set -euo pipefail
           resolved="$(node scripts/version.mjs --json)"
@@ -273,13 +273,13 @@ jobs:
           retention-days: 7
 
       - name: Setup ossutil for standalone dev build
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && !inputs.version
         env:
           OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
         run: bash scripts/release/setup-ossutil.sh
 
       - name: Upload standalone dev artifacts to OSS
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && !inputs.version
         env:
           OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
           OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
