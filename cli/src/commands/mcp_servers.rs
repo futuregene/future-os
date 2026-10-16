@@ -1,0 +1,970 @@
+//! `future mcp` — configure Model Context Protocol servers and call their tools.
+//!
+//! FutureOS has no MCP client inside the agent, so this group is the one place
+//! an MCP server can be reached: it owns the server list (`~/.future/mcp.json`)
+//! and the four steps of using one — list servers, page their tools, read one
+//! tool's schema, then call it.
+//!
+//! Every step is bounded, because the servers this exists for are large: REA
+//! advertises 207 tools (a 3.1 MB `tools/list`, 690 KB of JSON Schema) and can
+//! answer a call with hundreds of megabytes. So `tools` pages by default,
+//! `describe` takes one exact name, and `call` caps what it prints and points at
+//! `--out` for the rest. Nothing here writes an unbounded amount of text to a
+//! terminal an agent is reading.
+
+use crate::commands::mcp_client::{ServerProcess, ServerSpec, DEFAULT_TIMEOUT};
+use crate::output::Output;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::time::Duration;
+
+/// Tools one `future mcp tools` page shows unless `--limit` says otherwise.
+const DEFAULT_TOOL_LIMIT: usize = 50;
+
+/// Ceiling on `--limit`: the paging exists to protect the reader's context, so
+/// one flag must not be able to undo it.
+const MAX_TOOL_LIMIT: usize = 500;
+
+/// Longest tool description printed on one `tools` row.
+const TOOL_ROW_DESCRIPTION: usize = 96;
+
+/// What `future mcp call` prints unless `--max-bytes` says otherwise.
+const DEFAULT_MAX_BYTES: usize = 64 * 1024;
+
+/// Suggestions offered when a tool name does not match.
+const MAX_SUGGESTIONS: usize = 5;
+
+// ── Configuration ──────────────────────────────────────────────────────────
+
+/// `~/.future/mcp.json`.
+///
+/// It sits at the FutureOS home root (beside `agent/`), not inside it: these
+/// servers belong to the CLI, and moving `FUTURE_HOME` must move them with it
+/// so an isolated instance cannot reach the real one's servers.
+pub fn config_path() -> PathBuf {
+    future_agent::utils::future_home().join("mcp.json")
+}
+
+/// The configured MCP servers.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub servers: BTreeMap<String, ServerSpec>,
+}
+
+/// Read the configuration. A missing or empty file is an empty configuration,
+/// not an error — that is the state before the first `future mcp add`.
+pub fn load_config() -> Result<McpConfig, String> {
+    let path = config_path();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(McpConfig::default())
+        }
+        Err(error) => return Err(format!("could not read {}: {error}", path.display())),
+    };
+    if text.trim().is_empty() {
+        return Ok(McpConfig::default());
+    }
+    serde_json::from_str(&text).map_err(|error| format!("{} is not valid: {error}", path.display()))
+}
+
+/// Write the configuration, replacing the file atomically so a crash cannot
+/// leave a half-written server list behind.
+pub fn save_config(config: &McpConfig) -> Result<(), String> {
+    let path = config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
+    }
+    let mut body = serde_json::to_string_pretty(config)
+        .map_err(|error| format!("could not encode the MCP configuration: {error}"))?;
+    body.push('\n');
+    let temp = path.with_extension("json.tmp");
+    std::fs::write(&temp, body)
+        .map_err(|error| format!("could not write {}: {error}", temp.display()))?;
+    std::fs::rename(&temp, &path).map_err(|error| {
+        let _ = std::fs::remove_file(&temp);
+        format!("could not replace {}: {error}", path.display())
+    })
+}
+
+/// The named server, or an error that says what the alternatives are.
+fn resolve<'config>(config: &'config McpConfig, name: &str) -> Result<&'config ServerSpec, String> {
+    match config.servers.get(name) {
+        Some(spec) if spec.enabled => Ok(spec),
+        Some(_) => Err(format!(
+            "MCP server '{name}' is disabled in {} — set \"enabled\": true to use it",
+            config_path().display()
+        )),
+        None => {
+            let mut message = format!("unknown MCP server '{name}'");
+            if config.servers.is_empty() {
+                message.push_str(&format!(
+                    ": none are configured. Add one with `future mcp add`, which writes {}",
+                    config_path().display()
+                ));
+            } else {
+                let names: Vec<&str> = config.servers.keys().map(String::as_str).collect();
+                message.push_str(&format!(" — configured: {}", names.join(", ")));
+            }
+            Err(message)
+        }
+    }
+}
+
+// ── Argument parsing ───────────────────────────────────────────────────────
+
+/// Parsed `future mcp` arguments: positional values, `--flag value` pairs,
+/// repeatable flags and bare switches.
+#[derive(Debug)]
+struct Flags {
+    positional: Vec<String>,
+    values: BTreeMap<String, String>,
+    lists: BTreeMap<String, Vec<String>>,
+    switches: Vec<String>,
+}
+
+/// Parse `--key value` pairs, `--key=value`, repeatable flags into `lists`, and
+/// bare switches into `switches`.
+fn parse_flags(
+    args: &[String],
+    taking_value: &[&str],
+    repeatable: &[&str],
+    switches: &[&str],
+) -> Result<Flags, String> {
+    let mut parsed = Flags {
+        positional: Vec::new(),
+        values: BTreeMap::new(),
+        lists: BTreeMap::new(),
+        switches: Vec::new(),
+    };
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if !arg.starts_with("--") {
+            parsed.positional.push(arg.to_string());
+            index += 1;
+            continue;
+        }
+        let (flag, inline) = match arg.split_once('=') {
+            Some((flag, value)) => (flag, Some(value.to_string())),
+            None => (arg, None),
+        };
+        if switches.contains(&flag) {
+            if inline.is_some() {
+                return Err(format!("{flag} does not take a value"));
+            }
+            parsed.switches.push(flag.to_string());
+            index += 1;
+            continue;
+        }
+        if !taking_value.contains(&flag) && !repeatable.contains(&flag) {
+            return Err(format!("unknown option: {flag}"));
+        }
+        let value = match inline {
+            Some(value) => value,
+            None => {
+                // Repeatable flags take their value verbatim: `--arg --mcp` is
+                // how an MCP server is spawned, so a leading `--` is data here,
+                // not the next option. Single-value flags keep the guard, where
+                // a following `--flag` means the value was forgotten.
+                let next = args.get(index + 1);
+                let value = if repeatable.contains(&flag) {
+                    next.ok_or_else(|| format!("missing value for {flag}"))?
+                } else {
+                    next.filter(|value| !value.starts_with("--"))
+                        .ok_or_else(|| format!("missing value for {flag}"))?
+                };
+                index += 1;
+                value.clone()
+            }
+        };
+        if repeatable.contains(&flag) {
+            parsed
+                .lists
+                .entry(flag.to_string())
+                .or_default()
+                .push(value);
+        } else {
+            parsed.values.insert(flag.to_string(), value);
+        }
+        index += 1;
+    }
+    Ok(parsed)
+}
+
+impl Flags {
+    fn has(&self, flag: &str) -> bool {
+        self.switches.iter().any(|switch| switch == flag)
+    }
+
+    fn value(&self, flag: &str) -> Option<&str> {
+        self.values.get(flag).map(String::as_str)
+    }
+
+    fn list(&self, flag: &str) -> &[String] {
+        self.lists.get(flag).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    fn usize_value(&self, flag: &str, default: usize, max: usize) -> Result<usize, String> {
+        let Some(raw) = self.value(flag) else {
+            return Ok(default);
+        };
+        let parsed: usize = raw
+            .parse()
+            .map_err(|_| format!("{flag} must be a non-negative integer"))?;
+        if parsed > max {
+            return Err(format!("{flag} must be at most {max}"));
+        }
+        Ok(parsed)
+    }
+
+    fn timeout(&self) -> Result<Duration, String> {
+        match self.value("--timeout") {
+            None => Ok(DEFAULT_TIMEOUT),
+            Some(raw) => {
+                let seconds: u64 = raw
+                    .parse()
+                    .map_err(|_| "--timeout must be a whole number of seconds".to_string())?;
+                if seconds == 0 {
+                    return Err("--timeout must be at least 1 second".to_string());
+                }
+                Ok(Duration::from_secs(seconds))
+            }
+        }
+    }
+
+    fn exactly_one_positional(&self, what: &str, usage: &str) -> Result<String, String> {
+        match self.positional.len() {
+            1 => Ok(self.positional[0].clone()),
+            0 => Err(format!("missing {what}\n\n{usage}")),
+            _ => Err(format!(
+                "unexpected argument: {}\n\n{usage}",
+                self.positional[1]
+            )),
+        }
+    }
+}
+
+// ── Group dispatch ─────────────────────────────────────────────────────────
+
+pub fn is_mcp_command(command: Option<&str>) -> bool {
+    matches!(
+        command,
+        Some("list" | "tools" | "describe" | "call" | "add" | "remove")
+    )
+}
+
+/// `mcp(command, args)` — the body behind each `future mcp` subcommand.
+pub async fn mcp(command: &str, args: &[String], out: &Output) -> Result<(), String> {
+    match command {
+        "list" => mcp_list(args, out),
+        "tools" => mcp_tools(args, out).await,
+        "describe" => mcp_describe(args, out).await,
+        "call" => mcp_call(args, out).await,
+        "add" => mcp_add(args, out),
+        "remove" => mcp_remove(args, out),
+        other => Err(format!("unknown mcp command: {other}")),
+    }
+}
+
+// ── list ───────────────────────────────────────────────────────────────────
+
+const LIST_USAGE: &str = "Usage: future mcp list [--json]";
+
+fn mcp_list(args: &[String], out: &Output) -> Result<(), String> {
+    let flags = parse_flags(args, &[], &[], &["--json"])?;
+    if let Some(extra) = flags.positional.first() {
+        return Err(format!("unexpected argument: {extra}\n\n{LIST_USAGE}"));
+    }
+    let config = load_config()?;
+
+    if flags.has("--json") {
+        let servers: Vec<Value> = config
+            .servers
+            .iter()
+            .map(|(name, spec)| {
+                json!({
+                    "name": name,
+                    "command": spec.command,
+                    "args": spec.args,
+                    "cwd": spec.cwd,
+                    "enabled": spec.enabled,
+                })
+            })
+            .collect();
+        out.log(
+            &serde_json::to_string_pretty(&json!({
+                "configPath": config_path().display().to_string(),
+                "servers": servers,
+            }))
+            .unwrap_or_default(),
+        );
+        return Ok(());
+    }
+
+    if config.servers.is_empty() {
+        out.log(&format!(
+            "No MCP servers are configured.\n\nConfiguration file: {}\nAdd one:            future mcp add rea --command rea --arg --mcp",
+            config_path().display()
+        ));
+        return Ok(());
+    }
+    for (name, spec) in &config.servers {
+        let state = if spec.enabled { "" } else { "  [disabled]" };
+        out.log(&format!("{name:<16} {}{state}", spec.command_line()));
+    }
+    out.log(&format!(
+        "\n{} server(s) configured in {}",
+        config.servers.len(),
+        config_path().display()
+    ));
+    Ok(())
+}
+
+// ── tools ──────────────────────────────────────────────────────────────────
+
+const TOOLS_USAGE: &str = "Usage: future mcp tools <server> [--query <text>] [--limit <n>] [--offset <n>] [--timeout <secs>] [--json]";
+
+async fn mcp_tools(args: &[String], out: &Output) -> Result<(), String> {
+    let flags = parse_flags(
+        args,
+        &["--query", "--limit", "--offset", "--timeout"],
+        &[],
+        &["--json"],
+    )?;
+    let name = flags.exactly_one_positional("a server name", TOOLS_USAGE)?;
+    let limit = flags.usize_value("--limit", DEFAULT_TOOL_LIMIT, MAX_TOOL_LIMIT)?;
+    let offset = flags.usize_value("--offset", 0, usize::MAX)?;
+    let timeout = flags.timeout()?;
+    let query = flags.value("--query").map(str::to_lowercase);
+
+    let config = load_config()?;
+    let spec = resolve(&config, &name)?;
+    let mut process = ServerProcess::start(&name, spec, timeout).await?;
+    let listed = process.session().list_tools().await;
+    let stderr = process.stderr_tail();
+    process.shutdown().await;
+    let tools = listed.map_err(|error| attach_stderr(error, &stderr))?;
+
+    let matching: Vec<&Value> = tools
+        .iter()
+        .filter(|tool| match query.as_deref() {
+            None => true,
+            Some(query) => tool_matches(tool, query),
+        })
+        .collect();
+    let total = matching.len();
+    let page: Vec<&&Value> = matching.iter().skip(offset).take(limit).collect();
+    let next_offset = offset + page.len();
+    let has_more = next_offset < total;
+
+    if flags.has("--json") {
+        let rows: Vec<Value> = page
+            .iter()
+            .map(|tool| {
+                json!({
+                    "name": tool_name(tool),
+                    "description": tool_description(tool),
+                })
+            })
+            .collect();
+        out.log(
+            &serde_json::to_string_pretty(&json!({
+                "server": name,
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+                "tools": rows,
+                "nextOffset": if has_more { json!(next_offset) } else { Value::Null },
+            }))
+            .unwrap_or_default(),
+        );
+        return Ok(());
+    }
+
+    match query {
+        Some(query) => out.log(&format!(
+            "Tools of '{name}' matching \"{query}\" ({total} of {}):\n",
+            tools.len()
+        )),
+        None => out.log(&format!("Tools of '{name}' ({total}):\n")),
+    }
+    for tool in &page {
+        out.log(&format!(
+            "{:<28} {}",
+            tool_name(tool),
+            shorten(&one_line(&tool_description(tool)), TOOL_ROW_DESCRIPTION)
+        ));
+    }
+    out.log(&format!("\nShowing {} of {total} tools.", page.len()));
+    if page.is_empty() && total > 0 {
+        out.log(&format!(
+            "--offset {offset} is past the end of this list; the last page starts at --offset {}.",
+            total - 1
+        ));
+    }
+    if has_more {
+        out.log(&format!(
+            "More tools exist: raise --limit or narrow with --query (next: --offset {next_offset})."
+        ));
+    }
+    out.log(&format!(
+        "Full schema for one: future mcp describe {name} <tool>"
+    ));
+    Ok(())
+}
+
+fn tool_name(tool: &Value) -> String {
+    tool.get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("<unnamed>")
+        .to_string()
+}
+
+fn tool_description(tool: &Value) -> String {
+    tool.get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Case-insensitive substring match over the name and the description.
+fn tool_matches(tool: &Value, lowercase_query: &str) -> bool {
+    tool_name(tool).to_lowercase().contains(lowercase_query)
+        || tool_description(tool)
+            .to_lowercase()
+            .contains(lowercase_query)
+}
+
+// ── describe ───────────────────────────────────────────────────────────────
+
+const DESCRIBE_USAGE: &str =
+    "Usage: future mcp describe <server> <tool> [--timeout <secs>] [--json]";
+
+async fn mcp_describe(args: &[String], out: &Output) -> Result<(), String> {
+    let flags = parse_flags(args, &["--timeout"], &[], &["--json"])?;
+    if flags.positional.len() != 2 {
+        return Err(format!(
+            "expected a server and a tool name ({})\n\n{DESCRIBE_USAGE}",
+            flags.positional.len()
+        ));
+    }
+    let name = flags.positional[0].clone();
+    let wanted = flags.positional[1].clone();
+    let timeout = flags.timeout()?;
+
+    let config = load_config()?;
+    let spec = resolve(&config, &name)?;
+    let mut process = ServerProcess::start(&name, spec, timeout).await?;
+    let listed = process.session().list_tools().await;
+    let stderr = process.stderr_tail();
+    process.shutdown().await;
+    let tools = listed.map_err(|error| attach_stderr(error, &stderr))?;
+
+    let Some(tool) = tools.iter().find(|tool| tool_name(tool) == wanted) else {
+        let mut message = format!("server '{name}' has no tool named '{wanted}'");
+        let suggestions = suggest_tools(&tools, &wanted);
+        if suggestions.is_empty() {
+            message.push_str(&format!(
+                "\nList what it has: future mcp tools {name} --query <text>"
+            ));
+        } else {
+            message.push_str(&format!("\nDid you mean: {}", suggestions.join(", ")));
+        }
+        return Err(message);
+    };
+
+    if flags.has("--json") {
+        out.log(&serde_json::to_string_pretty(tool).unwrap_or_default());
+        return Ok(());
+    }
+    out.log(&format!("{}\n", tool_name(tool)));
+    let description = tool_description(tool);
+    if !description.trim().is_empty() {
+        out.log(description.trim());
+        out.log("");
+    }
+    let schema = tool.get("inputSchema").cloned().unwrap_or(Value::Null);
+    out.log("Arguments (JSON Schema):");
+    out.log(&serde_json::to_string_pretty(&schema).unwrap_or_default());
+    Ok(())
+}
+
+/// Up to [`MAX_SUGGESTIONS`] tool names resembling `wanted`, for the error text.
+fn suggest_tools(tools: &[Value], wanted: &str) -> Vec<String> {
+    let wanted = wanted.to_lowercase();
+    let wanted_stem = wanted.split('_').next().unwrap_or(&wanted).to_string();
+    let mut scored: Vec<(usize, String)> = tools
+        .iter()
+        .filter_map(|tool| {
+            let name = tool_name(tool);
+            let lowercase = name.to_lowercase();
+            let score = if lowercase.contains(&wanted) {
+                0
+            } else if wanted.contains(&lowercase) {
+                1
+            } else if !wanted_stem.is_empty() && lowercase.contains(&wanted_stem) {
+                2
+            } else {
+                return None;
+            };
+            Some((score, name))
+        })
+        .collect();
+    scored.sort();
+    scored
+        .into_iter()
+        .take(MAX_SUGGESTIONS)
+        .map(|(_, name)| name)
+        .collect()
+}
+
+// ── call ───────────────────────────────────────────────────────────────────
+
+const CALL_USAGE: &str = "Usage: future mcp call <server> <tool> [--args '<json>'] [--out <file>] [--max-bytes <n>] [--timeout <secs>] [--json]";
+
+async fn mcp_call(args: &[String], out: &Output) -> Result<(), String> {
+    let flags = parse_flags(
+        args,
+        &["--args", "--out", "--max-bytes", "--timeout"],
+        &[],
+        &["--json"],
+    )?;
+    if flags.positional.len() != 2 {
+        return Err(format!(
+            "expected a server and a tool name ({})\n\n{CALL_USAGE}",
+            flags.positional.len()
+        ));
+    }
+    let name = flags.positional[0].clone();
+    let tool = flags.positional[1].clone();
+    let timeout = flags.timeout()?;
+    let max_bytes = flags.usize_value("--max-bytes", DEFAULT_MAX_BYTES, usize::MAX)?;
+    let arguments = match flags.value("--args") {
+        None => json!({}),
+        Some(raw) => {
+            let parsed: Value = serde_json::from_str(raw)
+                .map_err(|error| format!("--args is not valid JSON: {error}"))?;
+            if !parsed.is_object() {
+                return Err("--args must be a JSON object of tool arguments".to_string());
+            }
+            parsed
+        }
+    };
+
+    let config = load_config()?;
+    let spec = resolve(&config, &name)?;
+    let mut process = ServerProcess::start(&name, spec, timeout).await?;
+    let called = process.session().call_tool(&tool, arguments).await;
+    let stderr = process.stderr_tail();
+    process.shutdown().await;
+    let result = called.map_err(|error| attach_stderr(error, &stderr))?;
+
+    let rendered = if flags.has("--json") {
+        serde_json::to_string_pretty(&result).unwrap_or_default()
+    } else {
+        render_tool_result(&result)
+    };
+    let reported_error = result
+        .get("isError")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let mut header: Vec<String> = Vec::new();
+    if reported_error {
+        header.push("[the tool reported an error]".to_string());
+    }
+    let mut body = rendered;
+    if body.len() > max_bytes {
+        let full_len = body.len();
+        if let Some(path) = flags.value("--out") {
+            std::fs::write(path, body.as_bytes())
+                .map_err(|error| format!("could not write {path}: {error}"))?;
+            header.push(format!(
+                "[first {max_bytes} bytes of {full_len}; the whole result is in {path}]"
+            ));
+        } else {
+            header.push(format!(
+                "[first {max_bytes} bytes of {full_len} — rerun with --out <file> to write it all]"
+            ));
+        }
+        body = truncate_at_char_boundary(&body, max_bytes);
+    } else if let Some(path) = flags.value("--out") {
+        std::fs::write(path, body.as_bytes())
+            .map_err(|error| format!("could not write {path}: {error}"))?;
+        header.push(format!("[the whole result is also in {path}]"));
+    }
+
+    for line in header {
+        out.log(&line);
+    }
+    out.log(&body);
+    Ok(())
+}
+
+/// The text of an MCP `tools/call` result.
+///
+/// MCP carries content as typed blocks. Text is what a terminal can show, so
+/// text blocks are joined and everything else is named rather than dumped; a
+/// result with no `content` at all falls back to its own JSON.
+fn render_tool_result(result: &Value) -> String {
+    let Some(blocks) = result.get("content").and_then(Value::as_array) else {
+        if result.is_null() {
+            return "(the tool returned nothing)".to_string();
+        }
+        return serde_json::to_string_pretty(result).unwrap_or_default();
+    };
+    let mut parts: Vec<String> = Vec::new();
+    for block in blocks {
+        match block.get("type").and_then(Value::as_str) {
+            Some("text") => parts.push(
+                block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            ),
+            Some(kind) => {
+                let detail = block
+                    .get("mimeType")
+                    .and_then(Value::as_str)
+                    .or_else(|| block.get("uri").and_then(Value::as_str))
+                    .unwrap_or("");
+                parts.push(if detail.is_empty() {
+                    format!("[{kind} content]")
+                } else {
+                    format!("[{kind} content: {detail}]")
+                });
+            }
+            None => parts.push("[unrecognized content block omitted]".to_string()),
+        }
+    }
+    if parts.is_empty() {
+        return "(the tool returned no content)".to_string();
+    }
+    parts.join("\n")
+}
+
+fn truncate_at_char_boundary(text: &str, max_bytes: usize) -> String {
+    let mut end = max_bytes.min(text.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
+}
+
+// ── add / remove ───────────────────────────────────────────────────────────
+
+const ADD_USAGE: &str = "Usage: future mcp add <name> --command <program> [--arg <value>]... [--env KEY=VALUE]... [--cwd <dir>]";
+
+fn mcp_add(args: &[String], out: &Output) -> Result<(), String> {
+    let flags = parse_flags(args, &["--command", "--cwd"], &["--arg", "--env"], &[])?;
+    let name = flags.exactly_one_positional("a server name", ADD_USAGE)?;
+    if !valid_server_name(&name) {
+        return Err(format!(
+            "'{name}' is not a usable server name — use letters, digits, '.', '_' or '-'"
+        ));
+    }
+    let command = flags
+        .value("--command")
+        .ok_or_else(|| format!("missing --command\n\n{ADD_USAGE}"))?
+        .to_string();
+
+    let mut env = Map::new();
+    for pair in flags.list("--env") {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("--env expects KEY=VALUE, got '{pair}'"))?;
+        if key.is_empty() {
+            return Err(format!("--env expects KEY=VALUE, got '{pair}'"));
+        }
+        env.insert(key.to_string(), Value::String(value.to_string()));
+    }
+
+    let mut config = load_config()?;
+    if config.servers.contains_key(&name) {
+        return Err(format!(
+            "MCP server '{name}' already exists in {} — remove it first with `future mcp remove {name}`",
+            config_path().display()
+        ));
+    }
+    config.servers.insert(
+        name.clone(),
+        ServerSpec {
+            command,
+            args: flags.list("--arg").to_vec(),
+            env,
+            cwd: flags.value("--cwd").map(str::to_string),
+            enabled: true,
+        },
+    );
+    save_config(&config)?;
+
+    let spec = &config.servers[&name];
+    out.log(&format!(
+        "Added MCP server '{name}': {}\nWritten to {}",
+        spec.command_line(),
+        config_path().display()
+    ));
+    out.log(&format!("Check it: future mcp tools {name}"));
+    Ok(())
+}
+
+const REMOVE_USAGE: &str = "Usage: future mcp remove <name>";
+
+fn mcp_remove(args: &[String], out: &Output) -> Result<(), String> {
+    let flags = parse_flags(args, &[], &[], &[])?;
+    let name = flags.exactly_one_positional("a server name", REMOVE_USAGE)?;
+    let mut config = load_config()?;
+    if config.servers.remove(&name).is_none() {
+        return Err(format!(
+            "no MCP server named '{name}' in {}",
+            config_path().display()
+        ));
+    }
+    save_config(&config)?;
+    out.log(&format!(
+        "Removed MCP server '{name}' from {}",
+        config_path().display()
+    ));
+    Ok(())
+}
+
+fn valid_server_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+        })
+}
+
+// ── Shared helpers ─────────────────────────────────────────────────────────
+
+/// Append a server's stderr to a failure, when it wrote any. The last lines are
+/// usually the whole explanation (a missing engine, a bad key, a stack trace).
+fn attach_stderr(error: String, stderr: &str) -> String {
+    if stderr.trim().is_empty() {
+        error
+    } else {
+        format!(
+            "{error}\n--- server stderr (last lines) ---\n{}",
+            stderr.trim_end()
+        )
+    }
+}
+
+/// Collapse a description to one line, so a listing row stays one row.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Shorten to `max` characters, marking that it was shortened.
+fn shorten(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(max.saturating_sub(1)).collect();
+    format!("{head}…")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| item.to_string()).collect()
+    }
+
+    #[test]
+    fn is_mcp_command_covers_every_documented_subcommand() {
+        for command in ["list", "tools", "describe", "call", "add", "remove"] {
+            assert!(is_mcp_command(Some(command)), "{command}");
+        }
+        assert!(!is_mcp_command(None));
+        assert!(!is_mcp_command(Some("bogus")));
+    }
+
+    #[test]
+    fn flags_split_values_from_switches_and_repeats() {
+        let parsed = parse_flags(
+            &args(&[
+                "rea", "--query", "ipc", "--json", "--arg", "a", "--arg", "b",
+            ]),
+            &["--query"],
+            &["--arg"],
+            &["--json"],
+        )
+        .unwrap();
+        assert_eq!(parsed.positional, vec!["rea"]);
+        assert_eq!(parsed.value("--query"), Some("ipc"));
+        assert!(parsed.has("--json"));
+        assert_eq!(parsed.list("--arg"), vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn flags_accept_equals_form_and_reject_unknown_options() {
+        let parsed = parse_flags(&args(&["--query=ipc"]), &["--query"], &[], &[]).unwrap();
+        assert_eq!(parsed.value("--query"), Some("ipc"));
+
+        let error = parse_flags(&args(&["--bogus"]), &[], &[], &[]).unwrap_err();
+        assert!(error.contains("unknown option: --bogus"), "{error}");
+    }
+
+    #[test]
+    fn repeatable_flags_take_a_leading_dash_as_data() {
+        // `future mcp add rea --command rea --arg --mcp` is the documented way
+        // to configure a server, so `--arg` must accept `--mcp`.
+        let parsed = parse_flags(
+            &args(&["rea", "--command", "rea", "--arg", "--mcp"]),
+            &["--command"],
+            &["--arg"],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(parsed.value("--command"), Some("rea"));
+        assert_eq!(parsed.list("--arg"), vec!["--mcp".to_string()]);
+    }
+
+    #[test]
+    fn a_flag_without_its_value_is_an_error() {
+        let error = parse_flags(&args(&["--query"]), &["--query"], &[], &[]).unwrap_err();
+        assert!(error.contains("missing value for --query"), "{error}");
+        // A following flag is not a value.
+        let error = parse_flags(
+            &args(&["--query", "--json"]),
+            &["--query"],
+            &[],
+            &["--json"],
+        )
+        .unwrap_err();
+        assert!(error.contains("missing value for --query"), "{error}");
+    }
+
+    #[test]
+    fn limit_is_capped_so_paging_cannot_be_undone() {
+        let parsed = parse_flags(&args(&["--limit", "500"]), &["--limit"], &[], &[]).unwrap();
+        assert_eq!(
+            parsed
+                .usize_value("--limit", DEFAULT_TOOL_LIMIT, MAX_TOOL_LIMIT)
+                .unwrap(),
+            500
+        );
+        let parsed = parse_flags(&args(&["--limit", "5000"]), &["--limit"], &[], &[]).unwrap();
+        let error = parsed
+            .usize_value("--limit", DEFAULT_TOOL_LIMIT, MAX_TOOL_LIMIT)
+            .unwrap_err();
+        assert!(error.contains("at most 500"), "{error}");
+    }
+
+    #[test]
+    fn a_non_numeric_timeout_is_rejected() {
+        let parsed = parse_flags(&args(&["--timeout", "soon"]), &["--timeout"], &[], &[]).unwrap();
+        assert!(parsed.timeout().unwrap_err().contains("whole number"));
+    }
+
+    #[test]
+    fn describe_suggestions_prefer_the_closest_names() {
+        let tools = vec![
+            json!({ "name": "inspect_go_binary" }),
+            json!({ "name": "inspect_rust_binary" }),
+            json!({ "name": "analyze_javascript_application" }),
+        ];
+        let suggestions = suggest_tools(&tools, "inspect_go");
+        assert_eq!(suggestions[0], "inspect_go_binary");
+        assert!(!suggestions
+            .iter()
+            .any(|name| name == "analyze_javascript_application"));
+    }
+
+    #[test]
+    fn text_content_is_joined_and_other_blocks_are_named() {
+        let result = json!({
+            "content": [
+                { "type": "text", "text": "line one" },
+                { "type": "image", "mimeType": "image/png" },
+                { "type": "text", "text": "line two" },
+            ],
+        });
+        assert_eq!(
+            render_tool_result(&result),
+            "line one\n[image content: image/png]\nline two"
+        );
+    }
+
+    #[test]
+    fn a_result_without_content_falls_back_to_its_own_json() {
+        assert_eq!(
+            render_tool_result(&json!({ "structuredContent": { "ok": true } })),
+            "{\n  \"structuredContent\": {\n    \"ok\": true\n  }\n}"
+        );
+        assert_eq!(
+            render_tool_result(&Value::Null),
+            "(the tool returned nothing)"
+        );
+        assert_eq!(
+            render_tool_result(&json!({ "content": [] })),
+            "(the tool returned no content)"
+        );
+    }
+
+    #[test]
+    fn truncation_lands_on_a_character_boundary() {
+        let text = "日本語テキスト";
+        let cut = truncate_at_char_boundary(text, 4);
+        assert!(cut.len() <= 4);
+        assert!(text.starts_with(&cut));
+        assert_eq!(truncate_at_char_boundary("short", 40), "short");
+    }
+
+    #[test]
+    fn listing_rows_stay_on_one_line() {
+        assert_eq!(one_line("a\nb\tc  d"), "a b c d");
+        assert_eq!(shorten("abcdef", 4), "abc…");
+        assert_eq!(shorten("abc", 4), "abc");
+    }
+
+    #[test]
+    fn server_names_are_restricted_to_safe_characters() {
+        assert!(valid_server_name("rea"));
+        assert!(valid_server_name("my.server_2"));
+        assert!(!valid_server_name(""));
+        assert!(!valid_server_name("has space"));
+        assert!(!valid_server_name("has/slash"));
+    }
+
+    #[test]
+    fn config_round_trips_through_the_documented_shape() {
+        let config: McpConfig = serde_json::from_str(
+            r#"{
+              "servers": {
+                "rea": { "command": "rea", "args": ["--mcp"] },
+                "off": { "command": "x", "enabled": false }
+              }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(config.servers["rea"].command_line(), "rea --mcp");
+        assert!(config.servers["rea"].enabled, "enabled defaults to true");
+        assert!(!config.servers["off"].enabled);
+    }
+
+    #[test]
+    fn an_unknown_key_in_the_config_is_an_error_not_a_silent_ignore() {
+        let error = serde_json::from_str::<McpConfig>(
+            r#"{ "servers": { "rea": { "command": "rea", "url": "http://x" } } }"#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("url"), "{error}");
+    }
+
+    #[test]
+    fn an_empty_document_is_an_empty_configuration() {
+        let config: McpConfig = serde_json::from_str("{}").unwrap();
+        assert!(config.servers.is_empty());
+    }
+}

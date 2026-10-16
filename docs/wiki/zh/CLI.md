@@ -178,6 +178,28 @@ future tools call <name> --args '<json>' --output result.png
 
 当工具需要文件内容时,文件路径参数会被自动转换。
 
+### `mcp` —— 配置 MCP 服务器并调用其工具
+
+```bash
+future mcp list                          # 已配置的服务器,以及它们来自哪个文件
+future mcp add rea --command rea --arg --mcp
+future mcp tools rea --query binary      # 该服务器的工具,一行一个
+future mcp describe rea inspect_go_binary  # 一个工具的完整参数 schema
+future mcp call rea inspect_go_binary --args '{"path":"/usr/bin/foo"}'
+future mcp call rea inspect_go_binary --args '{...}' --out full.json  # 写出全部结果
+future mcp remove rea
+```
+
+服务器配置在 `~/.future/mcp.json`(与 `agent/` 同级,所以 `FUTURE_HOME` 会把它一起搬走),
+以本地进程、stdio 上的 MCP 协议运行。agent 自身没有 MCP 客户端,所以这一组就是 agent
+会话触达 MCP 服务器的途径:技能或用户通过普通的 `shell` 工具调用 `future mcp`。
+
+每一步都有边界,因为这一组要面对的服务器很大:`tools` 每个工具一行并分页
+(`--limit`,默认 50;`--offset` 继续)。`describe` 需要一个精确的工具名并打印完整
+JSON Schema。`call` 最多打印 `--max-bytes`(默认 64 KB),并提示用 `--out <file>`
+取回其余部分,因此返回数百 MB 的工具不会淹没向它提问的那个终端。服务器启动慢时加
+`--timeout <secs>`(默认 60)。
+
 ### `models` —— 列出可用模型
 
 ```bash
