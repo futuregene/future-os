@@ -155,6 +155,51 @@ mod gui {
     pub(crate) static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> =
         std::sync::OnceLock::new();
 
+    /// Both the initial launch and a second-instance notification must activate
+    /// the window, including when it was created hidden for icon setup.
+    fn activate_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+        use tauri::Manager;
+        let Some(window) = app.get_webview_window("main") else {
+            crate::host_environment::report("main window is missing during activation");
+            return;
+        };
+        if let Err(error) = window.unminimize() {
+            crate::host_environment::report(&format!("main window could not be restored: {error}"));
+        }
+        if let Err(error) = window.show() {
+            crate::host_environment::report(&format!("main window could not be shown: {error}"));
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use windows::Win32::Foundation::HWND;
+            use windows::Win32::UI::WindowsAndMessaging::{IsWindowVisible, ShowWindow, SW_SHOW};
+
+            // Tao caches visibility and can skip ShowWindow when its flags say
+            // "visible". Check the HWND too so a hidden native window cannot be
+            // stranded until the user launches a second instance.
+            match window.hwnd() {
+                Ok(handle) => unsafe {
+                    let hwnd = HWND(handle.0 as _);
+                    if !IsWindowVisible(hwnd).as_bool() {
+                        // ShowWindow returns the PREVIOUS visibility, not success.
+                        let _ = ShowWindow(hwnd, SW_SHOW);
+                        if !IsWindowVisible(hwnd).as_bool() {
+                            crate::host_environment::report(
+                                "main window remained hidden after native show",
+                            );
+                        }
+                    }
+                },
+                Err(error) => crate::host_environment::report(&format!(
+                    "main window handle is unavailable: {error}"
+                )),
+            }
+        }
+        if let Err(error) = window.set_focus() {
+            crate::host_environment::report(&format!("main window could not be focused: {error}"));
+        }
+    }
+
     /// Size the main window to most of the monitor's work area (which already
     /// excludes the taskbar/dock/menubar) and center it there — near-fullscreen but
     /// not maximized, correct on every OS. Best effort: any failure leaves the
@@ -842,12 +887,7 @@ mod gui {
         let app = tauri::Builder::default()
             .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
                 // A second instance was launched — activate the existing window.
-                use tauri::Manager;
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.unminimize();
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
+                activate_main_window(app);
                 // A shell cannot re-pair this machine itself: the pairing and the
                 // data directory belong to this instance. What it can do is ask,
                 // through the channel that reaches us — its `argv` — and name a
@@ -952,13 +992,7 @@ mod gui {
                 // The instance guard is already held before `app.run` is entered.
                 // Showing between Builder::build and app.run silently misses this
                 // window because it has not been created yet.
-                if let Some(window) = tauri::Manager::get_webview_window(app, "main") {
-                    if let Err(error) = window.show() {
-                        eprintln!("FutureOS main window could not be shown: {error}");
-                    }
-                } else {
-                    eprintln!("FutureOS main window was not created during setup");
-                }
+                activate_main_window(app.handle());
                 Ok(())
             })
             .invoke_handler(tauri::generate_handler![

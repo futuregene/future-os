@@ -44,6 +44,12 @@ def main():
             ],
         ),
     ]
+    if platform.system() == "Windows":
+        suites.append((
+            "windows-shell-console",
+            ["-p", "future-agent", "--lib",
+             "sandbox::backend::tests::plain_windows_shell_runs_without_a_console"],
+        ))
     summary = {
         "platform": platform.platform(),
         "commit": subprocess.check_output(

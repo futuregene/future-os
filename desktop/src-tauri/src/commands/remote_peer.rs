@@ -313,7 +313,6 @@ mod tests {
     /// Every command shares one setup: a clean runtime, a real host bridge, and
     /// a claimed pairing.
     async fn start(label: &str) -> (HomeGuard, Fixture) {
-        runtime::reset_for_test().await;
         fixture(label).await
     }
 
