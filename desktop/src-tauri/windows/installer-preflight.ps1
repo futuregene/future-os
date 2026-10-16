@@ -5,8 +5,7 @@ param(
     [Parameter(Mandatory = $true)][string]$InstallDir,
     [ValidateSet('Check', 'Close', 'CloseInstalled', 'CloseFiles', 'ResetSandbox', 'VerifyInstall', 'AcquireLease', 'HoldLease', 'ReleaseLease')][string]$Mode = 'Check',
     [string]$LeaseDir,
-    [int]$InstallerPid,
-    [string]$MaintenanceExecutable
+    [int]$InstallerPid
 )
 $ErrorActionPreference = 'Stop'
 
@@ -17,10 +16,7 @@ function Invoke-FutureOSSandboxReset {
     try {
         $executable = [IO.Path]::Combine([IO.Path]::GetFullPath($Directory), 'future.exe')
         $legacy = [IO.Path]::Combine([IO.Path]::GetFullPath($Directory), 'future-agent.exe')
-        if ($MaintenanceExecutable -and [IO.File]::Exists($MaintenanceExecutable)) {
-            $executable = [IO.Path]::GetFullPath($MaintenanceExecutable)
-            $arguments = 'agent --reset-windows-sandbox'
-        } elseif ([IO.File]::Exists($executable)) {
+        if ([IO.File]::Exists($executable)) {
             $arguments = 'agent --reset-windows-sandbox'
         } elseif ([IO.File]::Exists($legacy)) {
             $executable = $legacy

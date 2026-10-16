@@ -6,11 +6,6 @@
 Var FutureOSRestorePending
 Var FutureOSRestoreFailed
 !define FUTUREOS_PREFLIGHT_SCRIPT "${__FILEDIR__}\installer-preflight.ps1"
-!ifndef FUTUREOS_TEST_DIAGNOSTICS
-  ; Staged from the same signed CLI used by externalBin. Use the NEW
-  ; maintenance code even when the installed legacy CLI lacks this command.
-  !define FUTUREOS_MAINTENANCE_EXE "${__FILEDIR__}\..\binaries\installer-maintenance.exe"
-!endif
 ; Tauri includes hooks BEFORE MUI_LANGUAGE defines LANG_*; use Windows LCIDs.
 
 LangString FutureOSInstallRunning 1033 "FutureOS is still running in:$\r$\n$INSTDIR$\r$\n$\r$\nThe background service (future.exe, or legacy future-agent.exe) can keep running after the window closes. Setup must close this installation's desktop and any verified Agent using the same FutureOS data before continuing.$\r$\n$\r$\nSave your work and wait for tasks to finish. Closing an Agent, including one from another installation directory, will interrupt its tasks and sessions.$\r$\n$\r$\nYes: close the old programs and continue.$\r$\nNo: check again after you close them yourself.$\r$\nCancel: stop setup without replacing files."
@@ -67,7 +62,7 @@ Function ${PREFIX}FutureOSRunPreflight
     ; NSIS is 32-bit; native PowerShell can inspect 64-bit process paths.
     StrCpy $0 "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
   ${EndIf}
-  nsExec::ExecToStack /TIMEOUT=60000 '"$0" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\futureos-preflight.ps1" -InstallDir "$INSTDIR" -Mode $R0 -LeaseDir "$PLUGINSDIR" -InstallerPid $R2 -MaintenanceExecutable "$PLUGINSDIR\futureos-maintenance.exe"'
+  nsExec::ExecToStack /TIMEOUT=60000 '"$0" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\futureos-preflight.ps1" -InstallDir "$INSTDIR" -Mode $R0 -LeaseDir "$PLUGINSDIR" -InstallerPid $R2'
   Pop $R1
   Pop $1
   StrCmp $1 "" +2
@@ -195,23 +190,9 @@ futureos_preinstall_checked:
   SetErrorLevel $R1
   Abort
 futureos_preinstall_lease_acquired:
-!ifdef FUTUREOS_MAINTENANCE_EXE
-  ClearErrors
-  File /oname=$PLUGINSDIR\futureos-maintenance.exe "${FUTUREOS_MAINTENANCE_EXE}"
-  IfErrors futureos_preinstall_cleanup_failed
-!endif
-  ; Maintenance is sessionless and must complete under the held lease before
-  ; backup/deletion/extraction. Unsupported old maintenance also fails closed.
-  StrCpy $R0 ResetSandbox
-  Call FutureOSRunPreflight
-  StrCmp $R1 0 futureos_preinstall_cleanup_done futureos_preinstall_cleanup_failed
-futureos_preinstall_cleanup_failed:
-  DetailPrint "Sandbox cleanup failed; installation cancelled (exit $R1)."
-  StrCpy $R0 ReleaseLease
-  Call FutureOSRunPreflight
-  SetErrorLevel 5
-  Abort
-futureos_preinstall_cleanup_done:
+  ; The new Agent reclaims stale sandbox permissions after taking its instance
+  ; lock on first startup. Installation also works when the old CLI is missing
+  ; or broken; user-state repair does not require another bundled executable.
   Delete "$INSTDIR\futureos-recovery-failed"
   ; Preserve every executable that this installer replaces or retires. NSIS
   ; writes files in place; without these copies, a disk/AV/extraction failure

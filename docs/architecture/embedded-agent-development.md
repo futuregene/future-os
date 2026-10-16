@@ -793,13 +793,14 @@ Legacy `/UPDATE` may close verified processes in this installation only;
 another installation's lock owner blocks it. Interactive Yes explicitly
 authorizes stopping verified external hosts using the same data root.
 Ordinary silent/passive installation never implicitly stops tasks. The lease
-covers permission cleanup, backup, replacement, verification and rollback.
-The installer carries new maintenance CLI code so legacy installed versions
-need not support the reset command. The local Windows installer builder and
-release workflow copy the CLI after signing into
-`binaries/installer-maintenance.exe`; direct NSIS builds must stage it too.
-Cleanup failure/timeout releases the lease and aborts before replacing files.
-Uninstall retains its existing best-effort cleanup policy.
+covers backup, replacement, verification and rollback. The installer does not
+run sandbox reset or carry a second copy of the CLI. After acquiring the instance
+lock, the new Agent's existing startup cleanup reclaims stale permission records
+before accepting work, including records left when the previous executable was
+removed. Cleanup errors are reported and preserve metadata for a later retry.
+Managed Desktop shutdown still requires successful cleanup before handing an
+automatic update to the installer. Uninstall uses the installed CLI for
+best-effort cleanup; failure retains metadata without blocking removal.
 
 Non-Windows failures keep the current process frozen. Restart recovery is
 offered only when original program/CLI contents and permissions still match;
@@ -1110,9 +1111,11 @@ The existing Windows workflow probes staged CLI binaries and C#/NSIS fixtures,
 which cannot prove that the real installer contains the correct entry points.
 The Linux deb probe did not cover portable or standalone CLI archives. The new
 shared `scripts/ci/check-packaged-entrypoints.py` extracts actual NSIS/deb,
-portable and CLI payloads on native runners. It checks exact CLI versions,
-Agent/Desktop help, and the Windows installer's maintenance CLI version/reset
-capability. Probes use temporary HOME/USERPROFILE/FUTURE_HOME, remove endpoint
+portable and CLI payloads on native runners. It checks exact CLI versions
+and Agent/Desktop help. The initial Windows check also probed the installer's
+maintenance CLI; that redundant copy and its probes were removed on 2026-10-16
+because Agent startup already owns residual sandbox cleanup. Probes use temporary
+HOME/USERPROFILE/FUTURE_HOME, remove endpoint
 overrides, disable stdin and impose timeouts; no Agent state may be created.
 It does not execute installers or start real GUI/Agent sessions, so actual
 installation, upgrade and full sandbox acceptance remain separate.
@@ -1221,7 +1224,7 @@ execution results require a separate record.
 | macOS/Linux wrappers and common launcher (3) | CLI staging before static checks; strict Vite port; repository-root relative Cargo paths; decimal port validation; owned dev process-group cleanup | Shell syntax and dry-run; no actual GUI/Agent launch |
 | Windows bat/PowerShell (2) | bat delegates; strict port, absolute target and explicit exit wording | Official parser, cross-platform PowerShell dry-run; native CI runs 8 cases through bat |
 | iOS/Android launchers (2) | SDK/emulator/Metro review; no Desktop Agent startup/shutdown | Shell syntax; no mobile SDK build or simulator run in this round |
-| 4 Desktop packagers and Makefile | Retain CLI staging, maintenance copy and legacy install compatibility; update obsolete portable notes/comments | Source review, Shell/PowerShell syntax; not four new local package builds |
+| 4 Desktop packagers and Makefile | Retain CLI staging and legacy install compatibility; residual sandbox repair belongs to Agent startup | Source review, Shell/PowerShell syntax; not four new local package builds |
 
 All 14 PowerShell files parsed. GUI/headless all-target Clippy (`-D warnings`),
 both fmt checks, Desktop ESLint/typecheck, actionlint and 262-document validation
