@@ -157,7 +157,12 @@ fn desktop_id_of(invitation: &str) -> String {
 }
 
 fn write_marker(dir: &Path, name: &str, contents: &str) {
-    std::fs::write(dir.join(name), contents).expect("write signal marker");
+    // Publish the marker only after its payload is complete. File creation is
+    // visible before write() finishes, so polling exists() can observe empty
+    // or partial JSON when the writer is descheduled.
+    let pending = dir.join(format!("{name}.pending"));
+    std::fs::write(&pending, contents).expect("write signal marker");
+    std::fs::rename(pending, dir.join(name)).expect("publish signal marker");
 }
 
 fn env(name: &str) -> String {
