@@ -273,13 +273,19 @@ def main() -> int:
             (PREWARM_PATH, prewarm_steps, MAIN_ONLY),
         ):
             for step in steps:
-                partition = {
-                    "rust-tests-workspace": "${{ matrix.filter }}",
-                    "rust-tests-desktop": "${{ matrix.flavor }}",
-                }.get(step.shared_key)
-                if partition and step.inputs.get("key") != partition:
+                for family, dimension in (
+                    ("rust-tests-workspace", "filter"),
+                    ("rust-tests-desktop", "flavor"),
+                ):
+                    if step.shared_key and step.shared_key.startswith(family):
+                        partition = family + "-${{ matrix." + dimension + " }}"
+                        if step.shared_key != partition:
+                            findings.append(
+                                f"{path}:{step.line}: {family} requires matrix cache partition {partition!r}"
+                            )
+                if "key" in step.inputs:
                     findings.append(
-                        f"{path}:{step.line}: {step.shared_key} requires matrix cache partition {partition!r}"
+                        f"{path}:{step.line}: key is ignored when shared-key is set; put the partition in shared-key"
                     )
                 if step.inputs.get("save-if") != policy:
                     findings.append(

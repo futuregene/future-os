@@ -69,7 +69,7 @@ class PrewarmCacheGuard(unittest.TestCase):
             1,
         )
         path.write_text(content[:start] + tail, encoding="utf-8")
-        self.assertFails(self.run_guard(), "key 'rust-tests-workspace': cache inputs differ")
+        self.assertFails(self.run_guard(), "cache inputs differ")
 
     def test_a_read_only_pr_cache_step_fails(self) -> None:
         """PRs must be able to save snapshots for their own later runs."""
@@ -112,8 +112,16 @@ class PrewarmCacheGuard(unittest.TestCase):
         for relative in WORKFLOWS:
             path = self.tmp / relative
             content = path.read_text(encoding="utf-8")
-            path.write_text(content.replace("          key: ${{ matrix.filter }}\n", ""), encoding="utf-8")
+            path.write_text(content.replace("shared-key: rust-tests-workspace-${{ matrix.filter }}", "shared-key: rust-tests-workspace"), encoding="utf-8")
         self.assertFails(self.run_guard(), "requires matrix cache partition")
+
+    def test_key_cannot_be_combined_with_shared_key(self) -> None:
+        self.mutate(
+            ".github/workflows/ci.yml",
+            "          shared-key: rust-quality\n",
+            "          shared-key: rust-quality\n          key: ineffective-partition\n",
+        )
+        self.assertFails(self.run_guard(), "key is ignored when shared-key is set")
 
     def test_a_reader_without_a_writer_fails(self) -> None:
         """Renaming only the ci.yml key leaves the entry unwritten."""

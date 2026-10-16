@@ -436,8 +436,7 @@ jobs:
         if: steps.affected.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: rust-tests-workspace
-          key: ${{ matrix.filter }}
+          shared-key: rust-tests-workspace-${{ matrix.filter }}
           save-if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
           workspaces: .
           cache-on-failure: true
@@ -503,8 +502,7 @@ jobs:
         if: steps.affected.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: rust-tests-desktop
-          key: ${{ matrix.flavor }}
+          shared-key: rust-tests-desktop-${{ matrix.flavor }}
           save-if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
           workspaces: .
           cache-on-failure: true

@@ -214,8 +214,7 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: rust-tests-workspace
-          key: ${{ matrix.filter }}
+          shared-key: rust-tests-workspace-${{ matrix.filter }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
           # One entry per matrix group, matching the PR cache partition.
           workspaces: .
@@ -257,8 +256,7 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: rust-tests-desktop
-          key: ${{ matrix.flavor }}
+          shared-key: rust-tests-desktop-${{ matrix.flavor }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
           # Match the per-flavor PR entries in the shared root target directory.
           workspaces: .
