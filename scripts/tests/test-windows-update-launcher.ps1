@@ -43,7 +43,7 @@ try {
             if ($observer.HasExited -or [DateTime]::UtcNow -gt $deadline) { throw 'Observer did not become ready' }
             Start-Sleep -Milliseconds 50
         }
-        $pending = Get-Content -LiteralPath $record -Raw | ConvertFrom-Json
+        $pending = [IO.File]::ReadAllText($record) | ConvertFrom-Json
         if ($pending.stage -ne 'awaiting-exit' -or $null -ne $pending.outcome) { throw 'Observer readiness was mistaken for installation success' }
         $leaseDenied = $false
         try {
@@ -67,7 +67,7 @@ try {
         }
         if ((Test-Path (Join-Path $appDir 'recovered.ready')) -ne $recoveryExpected) { throw "Unsafe/missing recovery for $case" }
         if (-not (Test-Path -LiteralPath $log)) { throw 'Missing installer diagnostics' }
-        $result = Get-Content -LiteralPath $record -Raw | ConvertFrom-Json
+        $result = [IO.File]::ReadAllText($record) | ConvertFrom-Json
         $outcome = $(if ($case -eq 'success') { 'installed' } elseif ($case -eq 'rollback-incomplete') { 'repair-required' } elseif ($case -eq 'parent-timeout') { 'not-installed' } else { 'failed-restored' })
         if ($result.outcome -ne $outcome) { throw "Wrong durable outcome for ${case}: $($result.outcome)" }
         $restartExpected = $case -notin @('rollback-incomplete', 'parent-timeout')
