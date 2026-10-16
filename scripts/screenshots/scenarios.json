@@ -3747,6 +3747,51 @@
           }
         ]
       },
+      "new-conversation-machines": {
+        "_comment": "The machine step of the new-conversation dialog, reached with `?peers=1`: the phone's second paired desktop answers too, which is the only state the dialog asks which machine in — it exists while more than one machine can take the conversation. Every row there is a machine to go *into* (tapping it opens that machine's own next step: its workspaces, or the chat it creates), so each row carries the chevron a row that opens something has and none is painted as the chosen one. The tick this step used to put on the phone's own machine read as a selection waiting to be confirmed, when the tap is itself the choice.",
+        "url": "http://localhost:8099/?peers=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "新对话"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "(() => {\n  // Two machines, each a way into itself: the chevron says the row opens\n  // something, and nothing is painted as the picked machine. The check this\n  // step used to draw on the phone's own machine made the dialog read as a\n  // selection with no way to confirm it.\n  const names = ['实验室的 MacBook Pro', '办公室主机'];\n  const rows = [...document.querySelectorAll('[aria-label]')].filter(el => names.includes(el.getAttribute('aria-label')));\n  if (rows.length !== 2) throw new Error('the machine step carries ' + rows.length + ' machines, not the two paired');\n  for (const row of rows) {\n    const label = row.getAttribute('aria-label');\n    const style = getComputedStyle(row);\n    if (style.backgroundColor === 'rgb(232, 240, 255)') throw new Error(label + ' is painted as the chosen machine');\n    if (style.borderColor === 'rgb(37, 99, 235)') throw new Error(label + ' is outlined as the chosen machine');\n    const glyphs = row.querySelectorAll('svg').length;\n    if (glyphs !== 1) throw new Error(label + ' draws ' + glyphs + ' glyphs, not the one chevron it is entered by');\n  }\n  return 'two machines to enter, none marked';\n})()"
+          },
+          {
+            "shot": "m-newconv-machines.png"
+          },
+          {
+            "eval": "(() => {\n  const row = [...document.querySelectorAll('[aria-label]')]\n    .find(el => el.getAttribute('aria-label') === '办公室主机');\n  if (!row) throw new Error('the second machine is not on the machine step');\n  row.click();\n  return 'tapped 办公室主机';\n})()"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  // Tapping the row is what goes into that machine: the step that follows is\n  // the one that names it — its workspaces, and the action that creates there.\n  const text = document.body.innerText;\n  if (!text.includes('在 办公室主机 上新建')) throw new Error('the step that follows does not name the machine that was entered: ' + text.slice(0, 200));\n  return 'the machine that was entered names the step';\n})()"
+          },
+          {
+            "shot": "m-newconv-machines-entered.png"
+          }
+        ]
+      },
       "share-existing-conversation": {
         "url": "http://localhost:8099/?share=1",
         "steps": [

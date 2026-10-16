@@ -1,6 +1,6 @@
 import {
-  Check,
   ChevronLeft,
+  ChevronRight,
   Folder,
   MessageCircle,
   Plus,
@@ -970,26 +970,27 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
                       <X color={colors.inkMuted} size={20} />
                     </Pressable>
                   </View>
+                  {/* Machines to go *into*, not options to tick: a tap takes
+                      the dialog to that machine's own next step — its
+                      workspaces, or straight to the chat it creates in the
+                      conversations tab — so every row carries the chevron a row
+                      that opens something always has, and none of them is
+                      pre-marked. A tick on the machine the phone is already on
+                      read as "this one is chosen", which offered the reader a
+                      selection to confirm when the tap *is* the confirmation. */}
                   <View style={styles.workspaceOptionsContent}>
                     {machines.map((machine) => {
                       const creatable = canCommand(machine.desktopId);
-                      // The machine this dialog is about is the one marked — the
-                      // one the list named, else the one the phone is on, which
-                      // needs no switch and is where a conversation started from
-                      // the merged list lands. Every other row is a machine to
-                      // move to.
-                      const current = machine.desktopId === (newDeviceId ?? activeDesktopId);
                       return (
                         <Pressable
                           key={machine.desktopId}
                           accessibilityLabel={machine.label}
                           accessibilityRole="button"
-                          accessibilityState={{ disabled: !creatable, selected: current }}
+                          accessibilityState={{ disabled: !creatable }}
                           disabled={!creatable || busyDevice !== null}
                           onPress={() => void chooseDevice(machine.desktopId)}
                           style={[
                             styles.workspaceOption,
-                            current && styles.workspaceOptionActive,
                             !creatable && styles.deviceOptionUnavailable,
                           ]}
                         >
@@ -1006,7 +1007,9 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
                             <Text style={styles.deviceStatus}>
                               {t(machineStatusKey(machine.status))}
                             </Text>
-                          ) : current ? <Check color={colors.accent} size={16} /> : null}
+                          ) : (
+                            <ChevronRight color={colors.inkMuted} size={18} />
+                          )}
                         </Pressable>
                       );
                     })}
