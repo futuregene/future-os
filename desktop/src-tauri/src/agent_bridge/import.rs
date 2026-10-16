@@ -272,11 +272,40 @@ pub(crate) async fn session_has_messages(session_id: &str) -> Result<bool, crate
             .any(|entry| is_message_role(&entry.role)))
 }
 
-/// Create a completed run record for one assistant reply in an imported session.
-fn create_historical_run(
+/// Whether the Agent's journal already holds the terminal for this group's run.
+///
+/// A run that reached a terminal stamps its outcome (`run.status`, projected
+/// from the journal's `run_terminal` marker) onto every display entry of that
+/// run; the entries of a run the Agent has not terminated carry none. Import
+/// therefore reads the group's own outcome rather than assuming a conversation
+/// on disk is over — see [`create_imported_run`] for what an unterminated run
+/// must not become.
+fn group_has_run_terminal(entries: &[serde_json::Value], group: &[usize]) -> bool {
+    group
+        .iter()
+        .filter_map(|index| entries.get(*index))
+        .any(|entry| entry.get("run").and_then(|run| run.get("status")).is_some())
+}
+
+/// Create the run record for one reply in an imported session.
+///
+/// `terminated` says whether the Agent's journal already holds this run's
+/// terminal (see [`group_has_run_terminal`]). A run it does not hold is one the
+/// import met while it was still executing (a prompt from the TUI, the CLI or
+/// another machine) or one the Agent was killed before it could terminate:
+/// that run is created `running` and left alone. Recorded completed it left
+/// `active_run_sessions` the moment it was imported, so no client reading the
+/// catalogue (the phone's merged list, the quit guard) could see the live run —
+/// only the desktop's own `list_streaming_sessions` poll kept its sidebar
+/// spinner. The session observer binds this row (it carries the Agent's
+/// canonical run id) and settles it at the run's real `agent_end`; the
+/// active-run watchdog settles one whose Agent never terminated it. A
+/// terminated run keeps the behaviour this import has always had.
+fn create_imported_run(
     thread_id: &str,
     model: &str,
     run_id: String,
+    terminated: bool,
 ) -> Result<store::RunRecord, crate::AppError> {
     let (provider, model_id) = super::session::split_model(model);
     let run = store::create_run(store::CreateRunInput {
@@ -286,12 +315,14 @@ fn create_historical_run(
         model_provider: provider,
         model_id,
     })?;
-    store::update_run_status_if_active(store::UpdateRunStatusInput {
-        run_id: run.id.clone(),
-        status: "completed".to_string(),
-        error_message: None,
-        error_type: None,
-    })?;
+    if terminated {
+        store::update_run_status_if_active(store::UpdateRunStatusInput {
+            run_id: run.id.clone(),
+            status: "completed".to_string(),
+            error_message: None,
+            error_type: None,
+        })?;
+    }
     Ok(run)
 }
 
@@ -557,7 +588,12 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
             .filter_map(|index| entries.get(*index))
             .find_map(|entry| entry["runId"].as_str())
             .ok_or_else(|| "Imported history has no canonical run identity".to_string())?;
-        let run = create_historical_run(&thread.id, &summary.model, canonical_id.to_owned())?;
+        let run = create_imported_run(
+            &thread.id,
+            &summary.model,
+            canonical_id.to_owned(),
+            group_has_run_terminal(&entries, group),
+        )?;
         run_ids.push(run.id);
     }
 
@@ -1359,6 +1395,58 @@ mod tests {
             .expect("some");
         assert_eq!(thread.mode, "chat");
         assert_eq!(crate::store::list_runs(&thread.id).expect("runs").len(), 1);
+    }
+
+    /// A run the Agent has not terminated must not be imported as a finished
+    /// reply. Every display entry of a *settled* run carries that run's outcome
+    /// (`run`, projected from the journal's `run_terminal` marker); the entries
+    /// of a run still executing carry none. Recording the live one `completed`
+    /// drops it from `active_run_sessions` for the rest of its life — and that
+    /// list is the `streaming` field of the catalogue the phone's merged list is
+    /// built from, so the run showed no spinner there while the desktop's own
+    /// `list_streaming_sessions` poll still marked its sidebar row.
+    #[tokio::test]
+    async fn import_one_leaves_a_run_the_agent_never_terminated_running() {
+        let _home = super::super::test_support::TestHome::new("import-live-run");
+        let mock = super::super::test_support::mock_agent();
+        mock.push_typed_data(
+            "get_session_entries",
+            serde_json::json!({"entries": [
+                {"id":"u1","role":"user","kind":"user","blocks":[{"kind":"text","text":"first"}],"runId":"history-settled","createdAtMs":1000},
+                {"id":"a1","role":"assistant","kind":"assistant","blocks":[{"kind":"text","text":"done"}],"runId":"history-settled","createdAtMs":1001,
+                 "run":{"status":"completed","durationMs":900}},
+                {"id":"u2","role":"user","kind":"user","blocks":[{"kind":"text","text":"second"}],"runId":"history-live","createdAtMs":2000},
+                {"id":"a2","role":"assistant","kind":"assistant","blocks":[{"kind":"text","text":"still writing"}],"runId":"history-live","createdAtMs":2001}
+            ]}),
+        );
+        let runs = import_one(&summary("sess-live-run", ""))
+            .await
+            .expect("import");
+        assert_eq!(runs, 2, "one record per exchange, live or not");
+        settle_spawns().await;
+
+        let thread = crate::store::find_thread_by_agent_session("sess-live-run")
+            .expect("find")
+            .expect("some");
+        let statuses: Vec<(String, String)> = crate::store::list_runs(&thread.id)
+            .expect("runs")
+            .into_iter()
+            .map(|run| (run.id, run.status))
+            .collect();
+        for expected in [
+            ("history-settled", "completed"),
+            ("history-live", "running"),
+        ] {
+            assert!(
+                statuses.contains(&(expected.0.to_string(), expected.1.to_string())),
+                "{expected:?} missing from {statuses:?}"
+            );
+        }
+        assert_eq!(
+            crate::store::active_run_sessions().expect("active runs"),
+            vec!["sess-live-run".to_string()],
+            "the live run must stay visible to every catalogue reader"
+        );
     }
 
     #[tokio::test]
