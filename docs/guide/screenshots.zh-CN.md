@@ -163,13 +163,14 @@ python3 scripts/screenshots/capture.py video-mobile chat
 - **内容是编的。** 演示对话、文件名、项目名来自 `desktop/shot/mock/data.ts` / `mobile/shot/mock/data.ts`。任何情况下都不要把它当作真实用户数据的证据。
 - **没有验证任何后端行为。** 这里不证明某个 RPC 能通、run 能流式输出、沙箱边界成立——那些必须跑真实应用。
 - **有两处是"样式化呈现"而非截屏**：命令行输出是用 `terminal.html` 把命令的真实 stdout 渲染出来的；只存在于终端界面（`future-tui`）的内容不在覆盖范围内。
+- **有一处 web 独有的渲染偏差是被修正的，而不是被拍进去的。** web 上 react-native-web 会把 inverted 列表的 refresh control 包装也带上列表自己的翻转，于是转录上下颠倒——真机不会这样。镜像的手机截图比没有还糟，所以 `cdp.mjs` 会在手机端截图时中和这层多余翻转（DOM 里能看到修正：那个包装没有 `transform` 了），并由 `check-upright-mobile` 把结果量出来。
 
 ## 环境要求
 
 - Node.js（驱动用到的 `ws` 已是仓库依赖）和 Python 3。
 - Chrome、Edge 或 Chromium。不支持 Safari（驱动需要 CDP）。
 - 截图只驱动 **headless** 浏览器，而且只驱动自己起的那个（或 `--cdp-port` 上已在跑的 headless 实例）。该端口上若是**可见**的浏览器，工具会提示并跳过、绝不去驱动——驱动它就会导航并截取你正看着的那个窗口——改在下一个空闲端口起自己的浏览器。被打断的运行（turn 超时、agent 重启）会留下浏览器和 `future-shot-` profile：每条命令启动时都会回收它们，SIGTERM 处理器则在运行被杀时收掉浏览器。
-- `pip install pillow` 是可选的：它只用来压小 PDF 里的图片。
+- `pip install pillow` 是可选的：它只用来压小 PDF 里的图片。但 `compare-*` 与 `check-upright-mobile` 需要它，缺了会明确报错。
 - 手机端工具另外需要 `react-native-web`、`@expo/metro-runtime` 和 `react-dom`；`capture.py serve-mobile` 会把它们按需装进 mobile workspace，且不动依赖清单（见"不入库的约定"）。
 - **录视频**另外需要 ffmpeg：macOS 用 `brew install ffmpeg`，Linux 用发行版包管理器。缺了会在开始录像前直接报错，不会录到一半失败。
 
@@ -195,6 +196,34 @@ python3 scripts/screenshots/capture.py capture-mobile       # 终端 2
 ```
 
 手机端以手机视口渲染（默认 390×844、2 倍像素密度），并通过 HTTP 提供演示图片，所以在聊天里内嵌的图片和可缩放预览都能正常显示。`serve-mobile` 会导出 `SHOT_WEB=1`；这是唯一的开关——`mobile/metro.config.js` **仅在 web 平台、仅在该变量为 1 时**把 remote context 和两个原生模块指向 `mobile/shot/mock/`，因此原生构建（`make run-mobile-android`）完全不受影响。
+
+### 聊天转录是正的（inverted 列表那一层多余翻转）
+
+`mobile/src/features/chat/components/ChatTimeline.tsx` 用 `inverted` 的 FlatList 渲染转录。react-native-web 靠**两层**翻转实现它——滚动视图翻一次、每个 cell 再翻回来——两层相消，所以最新的一行在底部。列表一旦同时带 `refreshControl`，就会多出**第三层**：`ScrollView.render` 用滚动视图自己的样式克隆 refresh control（`dist/exports/ScrollView/index.js` 里的 `React.cloneElement(refreshControl, { style: props.style })`），而这套样式里带着那个翻转。于是整份转录上下颠倒——字是镜像的、行序也是反的——真机不是这样，所以这种截图会和设备对不上。（在 react-native-web 0.21.4 上复现，也就是 `serve-mobile` 现在装的那版。）
+
+`cdp.mjs` 在手机端截图的页面里中和掉这一层（`UNFLIP_INVERTED_LIST`）：找出"唯一子节点就是那个被翻转的滚动容器"的外层包装，去掉它的 `transform`，并在 React 重渲染后再补上。不改产品代码、不改依赖版本，而且这个修正就摆在 DOM 里。每次运行都会报告它做了什么：
+
+```
+cdp: neutralized 1 inverted-list wrapper(s) (react-native-web gives a refresh control the scroll view's inversion)
+```
+
+`chat` 场景断言了结果（`the transcript is not mirrored`），所以转录镜像的截图会直接失败、不会被发布出去，这段 workaround 也不会悄悄烂掉。要判定**一张截图**而不是一次运行：
+
+```bash
+python3 scripts/screenshots/capture.py check-upright-mobile chat
+```
+
+它带着 `upright-probe.js` 跑一次该场景：把转录里的文字原样复制一份到没有翻转祖先的 `document.body` 里，于是同一张截图同时有"原位"和"正立"两块同样文字、同样字号字宽的区域，再把两块做直接相关和上下镜像相关：
+
+```
+   in-place tile: 348x64 css px at 21,389
+   control tile: 348x64 css px at 7,773
+   upright  correlation 1.000   (the transcript against an unflipped copy of itself)
+   mirrored correlation 0.205   (the same comparison, control flipped top-to-bottom)
+   verdict: upright — the capture reads the right way up
+```
+
+镜像时两个数字对调、命令以非零退出；两个分数相差不到 0.05 时报"inconclusive"而不是放行。判定逻辑与该方向由 `scripts/tests/test-screenshot-upright-check.py` 离线钉住（`make test-screenshot-harness`）。
 
 ## 场景
 
@@ -281,6 +310,7 @@ mock 是唯一需要跟着产品走的部分，而漏掉的地方会主动报出
 | `scripts/screenshots/document.css` | 生成文档用的打印样式 |
 | `scripts/screenshots/terminal.html` | 命令行输出的终端外框 |
 | `scripts/screenshots/injects/` | 变体样式脚本（见「常见请求怎么做」第 5 条） |
+| `scripts/screenshots/upright-probe.js` | 把截图里的原文复制一份正立的副本（见手机端「聊天转录是正的」） |
 | `scripts/screenshots/examples/` | 完整示例：1.1.8 更新说明的内容文件 |
 | `scripts/screenshots/gen-demo-assets.py` | 重新生成演示图片（需要 matplotlib） |
 | `desktop/shot/` | 桌面端 mock、演示数据、入口、替身 PTY 服务 |
