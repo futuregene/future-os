@@ -150,8 +150,8 @@ pub(super) fn mark_run_completed_if_active(
             // A title request may take tens of seconds. Never hold up run
             // finalization, the observer's event stream or the next user send.
             Some(tokio::spawn(async move {
-                if let Err(error) = title_first_turn_if_enabled(&run_id).await {
-                    eprintln!("FutureOS first-turn title generation skipped or failed: {error}");
+                if let Err(error) = title_settled_thread_if_enabled(&run_id).await {
+                    eprintln!("FutureOS title generation skipped or failed: {error}");
                 }
             }))
         }
@@ -163,21 +163,44 @@ pub(super) fn mark_run_completed_if_active(
     }
 }
 
-async fn title_first_turn_if_enabled(run_id: &str) -> Result<(), crate::AppError> {
+/// Name a conversation once it has settled, if nobody has named it.
+///
+/// Eligibility is the thread's own state, not a run count: the thread must
+/// still wear the title it was *minted* with (`title_seed`), and no turn may be
+/// owed — neither a run row that has not settled (a queued follow-up, a goal
+/// plane steering the worker the moment its previous reply landed) nor a
+/// streaming Agent. Counting runs instead — the previous rule — made this task
+/// a no-op for exactly those conversations: a steered worker's first reply is
+/// followed by the next run immediately, so the "exactly one run" and "exactly
+/// one user entry" gates were already false by the time the job ran, and the
+/// conversation kept the placeholder title its creator gave it forever.
+///
+/// The gate therefore fires on the completion *after* the last queued turn, and
+/// the title it saves changes the thread's title away from its seed, so it can
+/// never fire twice for a conversation or overwrite a name someone chose.
+async fn title_settled_thread_if_enabled(run_id: &str) -> Result<(), crate::AppError> {
     if !store::get_app_settings()?.auto_title_first_turn {
         return Ok(());
     }
     let Some(run) = store::get_run(run_id)? else {
         return Ok(());
     };
-    // Include failed, cancelled and archived runs: this is the first turn,
-    // not the first successful turn or the first currently visible answer.
-    if store::list_runs(&run.thread_id)?.len() != 1 {
-        return Ok(());
-    }
     let Some(thread) = store::get_thread(&run.thread_id)? else {
         return Ok(());
     };
+    // Only a thread still wearing its minted title is unnamed: every other one
+    // carries a name this task must not replace — the rename dialog, a TUI
+    // `/name` the importer synced back, a phone rename, a previous generation,
+    // or an imported/forked conversation that arrived with a name of its own
+    // (`title_seed` is `None`).
+    if thread.title_seed.as_deref() != Some(thread.title.as_str()) {
+        return Ok(());
+    }
+    // A turn is already owed: the steering or follow-up prompt was queued
+    // before this completion job got to run. Its own completion will retry.
+    if store::has_active_run(&run.thread_id)? {
+        return Ok(());
+    }
     let Some(session_id) = thread.agent_session_id.as_deref() else {
         return Ok(());
     };
@@ -185,21 +208,14 @@ async fn title_first_turn_if_enabled(run_id: &str) -> Result<(), crate::AppError
     if !wait_for_agent_idle(session_id).await {
         return Ok(());
     }
-    let history = super::get_session_entries(session_id.to_string()).await?;
-    let Some(entries) = history.get("entries").and_then(serde_json::Value::as_array) else {
-        return Ok(());
-    };
-    // A locally new run can belong to an existing/imported Agent session.
-    if entries
-        .iter()
-        .filter(|entry| entry["role"] == "user")
-        .count()
-        != 1
-    {
+    // The idle poll is the only await in here: a prompt accepted during it is
+    // streaming now and has its run row, so re-check that nothing is owed
+    // before spending a model call on a conversation that is still working.
+    if store::has_active_run(&run.thread_id)? {
         return Ok(());
     }
     let settings = store::get_app_settings()?;
-    if store::list_runs(&run.thread_id)?.len() != 1 || !settings.auto_title_first_turn {
+    if !settings.auto_title_first_turn {
         return Ok(());
     }
     // Exactly the same tool-free title generator used by the rename dialog.
@@ -212,8 +228,9 @@ async fn title_first_turn_if_enabled(run_id: &str) -> Result<(), crate::AppError
         return Ok(());
     };
     if current.title != thread.title
+        || current.title_seed.as_deref() != Some(current.title.as_str())
         || current.agent_session_id != thread.agent_session_id
-        || store::list_runs(&thread.id)?.len() != 1
+        || store::has_active_run(&thread.id)?
         || !store::get_app_settings()?.auto_title_first_turn
     {
         return Ok(());
@@ -307,7 +324,8 @@ fn is_agent_unavailable_error(error: &crate::AppError) -> bool {
 mod tests {
     use super::super::replica::AGENT_REPLICAS;
     use super::super::test_support::{
-        get_state_payload, mock_agent, seed_run, seed_thread, seed_workspace, Reply, TestHome,
+        get_state_payload, mock_agent, seed_run, seed_thread, seed_titleable_thread,
+        seed_workspace, Reply, TestHome,
     };
     use super::*;
 
@@ -560,6 +578,92 @@ mod tests {
         .expect("enable titles");
     }
 
+    #[tokio::test]
+    async fn auto_title_names_a_conversation_once_the_last_queued_turn_settles() {
+        let home = TestHome::new("rc-steered-settle-title");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        enable_title_generation("zh");
+        // A worker conversation: the goal plane named it after the goal and
+        // steered it again before the first reply landed, so a second run row
+        // already exists — `isStreaming` never drops between the two turns.
+        let thread = seed_titleable_thread(&workspace.id, "sess-worker");
+        let steered = seed_run(&thread.id);
+        let queued = seed_run(&thread.id);
+
+        complete_and_wait(&steered.id).await;
+        assert!(
+            mock.requests_of("generate_session_title").is_empty(),
+            "a conversation that still owes a turn is not named"
+        );
+        assert!(
+            mock.requests_of("get_state").is_empty(),
+            "the queued run is visible locally, so the Agent is not even probed"
+        );
+
+        // The steering turn finishes and nothing is owed: name it now, not
+        // never (what the run-count gate did for every steered conversation).
+        mock.push_state_for_session(
+            "sess-worker",
+            Reply::TypedData(get_state_payload("sess-worker", false)),
+        );
+        mock.push_data(
+            "generate_session_title",
+            serde_json::json!({"title":"覆盖率 worker 收尾", "model":"test"}),
+        );
+        mock.push_data("set_session_name", serde_json::json!({}));
+        complete_and_wait(&queued.id).await;
+        assert_eq!(
+            store::get_thread(&thread.id).unwrap().unwrap().title,
+            "覆盖率 worker 收尾"
+        );
+
+        // Named once: a later turn cannot regenerate it.
+        let later = seed_run(&thread.id);
+        complete_and_wait(&later.id).await;
+        assert_eq!(mock.requests_of("generate_session_title").len(), 1);
+        assert_eq!(mock.requests_of("set_session_name").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn auto_title_never_replaces_a_name_someone_chose() {
+        let home = TestHome::new("rc-renamed-not-titled");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        enable_title_generation("zh");
+        let thread = seed_titleable_thread(&workspace.id, "sess-named");
+        store::rename_thread(store::RenameThreadInput {
+            thread_id: thread.id.clone(),
+            title: "人工命名".into(),
+        })
+        .expect("rename");
+        // A completed first turn leaves a one-exchange history and an idle
+        // Agent behind. The superseded rule needed both to call this
+        // conversation a new one — and with them scripted it renamed a name
+        // someone chose, which is the failure this test pins. The title alone
+        // decides now, so neither is asked for.
+        mock.push_typed_data("get_session_entries", first_pair());
+        mock.push_state_for_session(
+            "sess-named",
+            Reply::TypedData(get_state_payload("sess-named", false)),
+        );
+
+        let run = seed_run(&thread.id);
+        complete_and_wait(&run.id).await;
+        assert!(
+            mock.requests_of("generate_session_title").is_empty(),
+            "a rename is permanent: the name must not be generated away"
+        );
+        assert!(
+            mock.requests_of("get_state").is_empty(),
+            "an already-false gate must not even probe the Agent"
+        );
+        assert_eq!(
+            store::get_thread(&thread.id).unwrap().unwrap().title,
+            "人工命名"
+        );
+    }
+
     fn first_pair() -> serde_json::Value {
         serde_json::json!({"entries": [
             {"id":"u1", "kind":"user", "role":"user", "createdAtMs":1000, "blocks":[]},
@@ -573,7 +677,7 @@ mod tests {
         let mock = mock_agent();
         let workspace = seed_workspace(home.path(), "ws");
         for language in ["zh", "en"] {
-            let thread = seed_thread(&workspace.id, Some(language));
+            let thread = seed_titleable_thread(&workspace.id, language);
             let run = seed_run(&thread.id);
             let settings = store::update_app_settings(store::UpdateAppSettingsInput {
                 title_language: Some(language.into()),
@@ -588,7 +692,6 @@ mod tests {
                 language,
                 Reply::TypedData(get_state_payload(language, false)),
             );
-            mock.push_typed_data("get_session_entries", first_pair());
             mock.push_data(
                 "generate_session_title",
                 serde_json::json!({"title":"Generated title", "model":"test"}),
@@ -613,13 +716,12 @@ mod tests {
         }
         assert_eq!(mock.requests_of("generate_session_title").len(), 2);
         assert_eq!(mock.requests_of("set_session_name").len(), 2);
-        assert_eq!(mock.requests_of("get_session_entries").len(), 2);
         assert!(mock.requests_of("compact").is_empty());
         assert!(mock.requests_of("prompt").is_empty());
     }
 
     #[tokio::test]
-    async fn first_turn_setting_respects_opt_out_and_does_not_backfill_old_chats() {
+    async fn a_disabled_setting_leaves_a_conversation_unnamed_until_the_next_turn_settles() {
         let home = TestHome::new("rc-first-turn-opt-out");
         store::update_app_settings(store::UpdateAppSettingsInput {
             auto_title_first_turn: Some(false),
@@ -628,27 +730,43 @@ mod tests {
         .expect("explicitly disable titles");
         let mock = mock_agent();
         let workspace = seed_workspace(home.path(), "ws");
-        let thread = seed_thread(&workspace.id, Some("sess-1"));
+        let thread = seed_titleable_thread(&workspace.id, "sess-1");
         let first = seed_run(&thread.id);
         complete_and_wait(&first.id).await;
         assert!(mock.requests_of("get_state").is_empty());
         enable_title_generation("en");
+        // Replaying the settled run generates nothing, and turning the setting
+        // on never names a conversation by itself.
         complete_and_wait(&first.id).await;
+        assert!(mock.requests_of("generate_session_title").is_empty());
+        assert!(mock.requests_of("get_state").is_empty());
+        // The next turn that settles does name it.
+        mock.push_state_for_session(
+            "sess-1",
+            Reply::TypedData(get_state_payload("sess-1", false)),
+        );
+        mock.push_data(
+            "generate_session_title",
+            serde_json::json!({"title":"Named later", "model":"test"}),
+        );
+        mock.push_data("set_session_name", serde_json::json!({}));
         let second = seed_run(&thread.id);
         complete_and_wait(&second.id).await;
-        assert!(mock.requests_of("generate_session_title").is_empty());
+        assert_eq!(
+            store::get_thread(&thread.id).unwrap().unwrap().title,
+            "Named later"
+        );
         assert!(mock.requests_of("compact").is_empty());
-        assert!(mock.requests_of("get_state").is_empty());
     }
 
     #[tokio::test]
-    async fn unsuccessful_first_turns_do_not_generate_or_defer_to_next_success() {
+    async fn an_unsuccessful_turn_is_not_named_but_the_next_settled_turn_is() {
         let home = TestHome::new("rc-first-turn-unsuccessful");
         let mock = mock_agent();
         let workspace = seed_workspace(home.path(), "ws");
         enable_title_generation("en");
-        for status in ["failed", "cancelled"] {
-            let thread = seed_thread(&workspace.id, Some(status));
+        for (named, status) in ["failed", "cancelled"].into_iter().enumerate() {
+            let thread = seed_titleable_thread(&workspace.id, status);
             let first = seed_run(&thread.id);
             store::update_run_status_if_active(store::UpdateRunStatusInput {
                 run_id: first.id.clone(),
@@ -658,37 +776,47 @@ mod tests {
             })
             .expect("settle unsuccessfully");
             complete_and_wait(&first.id).await;
+            assert_eq!(
+                mock.requests_of("generate_session_title").len(),
+                named,
+                "a turn that failed cannot name the conversation"
+            );
+            mock.push_state_for_session(status, Reply::TypedData(get_state_payload(status, false)));
+            mock.push_data(
+                "generate_session_title",
+                serde_json::json!({"title":"Named on success", "model":"test"}),
+            );
+            mock.push_data("set_session_name", serde_json::json!({}));
             let second = seed_run(&thread.id);
             complete_and_wait(&second.id).await;
             assert_eq!(store::get_run(&first.id).unwrap().unwrap().status, status);
         }
-        assert!(mock.requests_of("generate_session_title").is_empty());
+        assert_eq!(mock.requests_of("generate_session_title").len(), 2);
         assert!(mock.requests_of("compact").is_empty());
-        assert!(mock.requests_of("get_state").is_empty());
     }
 
     #[tokio::test]
-    async fn existing_agent_history_is_not_a_new_conversation() {
-        let home = TestHome::new("rc-first-turn-old-history");
+    async fn a_conversation_that_arrived_with_a_name_is_not_titled() {
+        let home = TestHome::new("rc-imported-name");
         let mock = mock_agent();
         let workspace = seed_workspace(home.path(), "ws");
-        let thread = seed_thread(&workspace.id, Some("old-session"));
-        let run = seed_run(&thread.id);
         enable_title_generation("en");
-        mock.push_state_for_session(
-            "old-session",
-            Reply::TypedData(get_state_payload("old-session", false)),
+        // An imported conversation (or a fork): the Desktop did not mint its
+        // title, so a generated one could undo a name chosen where the
+        // conversation came from.
+        let thread = seed_thread(&workspace.id, Some("imported-session"));
+        assert!(
+            thread.title_seed.is_none(),
+            "a thread created around an existing session carries no seed"
         );
-        mock.push_typed_data(
-            "get_session_entries",
-            serde_json::json!({"entries": [
-                {"id":"u1", "kind":"user", "role":"user", "createdAtMs":1000, "blocks":[]},
-                {"id":"u2", "kind":"user", "role":"user", "createdAtMs":1002, "blocks":[]}
-            ]}),
-        );
+        let run = seed_run(&thread.id);
         complete_and_wait(&run.id).await;
         assert!(mock.requests_of("generate_session_title").is_empty());
-        assert!(mock.requests_of("compact").is_empty());
+        assert!(mock.requests_of("get_state").is_empty());
+        assert_eq!(
+            store::get_thread(&thread.id).unwrap().unwrap().title,
+            thread.title
+        );
     }
 
     #[tokio::test]
@@ -698,13 +826,12 @@ mod tests {
         let workspace = seed_workspace(home.path(), "ws");
         enable_title_generation("en");
         for failure in ["generate", "empty", "save"] {
-            let thread = seed_thread(&workspace.id, Some(failure));
+            let thread = seed_titleable_thread(&workspace.id, failure);
             let run = seed_run(&thread.id);
             mock.push_state_for_session(
                 failure,
                 Reply::TypedData(get_state_payload(failure, false)),
             );
-            mock.push_typed_data("get_session_entries", first_pair());
             match failure {
                 "generate" => mock.push(
                     "generate_session_title",
@@ -744,10 +871,9 @@ mod tests {
         let workspace = seed_workspace(home.path(), "ws");
         for change in ["rename", "disable", "next-turn"] {
             enable_title_generation("en");
-            let thread = seed_thread(&workspace.id, Some(change));
+            let thread = seed_titleable_thread(&workspace.id, change);
             let run = seed_run(&thread.id);
             mock.push_state_for_session(change, Reply::TypedData(get_state_payload(change, false)));
-            mock.push_typed_data("get_session_entries", first_pair());
             let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             mock.push(
