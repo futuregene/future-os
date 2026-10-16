@@ -4,8 +4,10 @@
 Each service/host fixture owns its HOME, FUTURE_HOME and local IPC endpoint.
 Run only the lifecycle suites here, not the full unit suites. JSON and logs
 under target/embedded-agent-ci are uploaded even when a command fails.
+--no-run prepares the same test artifacts without executing fixture processes.
 """
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -16,6 +18,9 @@ import time
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--no-run", action="store_true", help="compile fixtures without executing them")
+    options = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     output = root / "target" / "embedded-agent-ci"
     output.mkdir(parents=True, exist_ok=True)
@@ -55,8 +60,10 @@ def main():
     summary_path = output / "summary.json"
     try:
         for name, args in suites:
-            command = ["cargo", "test", "--locked", *args, "--", "--test-threads=1", "--nocapture"]
-            print(f"Running {name}: {' '.join(command)}", flush=True)
+            command = ["cargo", "test", "--locked", *args]
+            command += ["--no-run"] if options.no_run else ["--", "--test-threads=1", "--nocapture"]
+            action = "Compiling" if options.no_run else "Running"
+            print(f"{action} {name}: {' '.join(command)}", flush=True)
             started = time.monotonic()
             passed = 0
             with (output / f"{name}.log").open("w", encoding="utf-8") as log:
@@ -77,9 +84,9 @@ def main():
                 "passed": passed, "seconds": round(time.monotonic() - started, 3),
             })
             # A renamed filter silently running zero tests is not acceptance.
-            if code != 0 or passed == 0:
+            if code != 0 or (not options.no_run and passed == 0):
                 raise RuntimeError(f"{name} failed: exit={code}, passed={passed}")
-        summary["status"] = "passed"
+        summary["status"] = "compiled" if options.no_run else "passed"
     except Exception as error:
         summary["status"] = "failed"
         summary["error"] = str(error)

@@ -1,43 +1,14 @@
 #!/usr/bin/env python3
-"""Guard: every rust-cache entry ci.yml reads is written by prewarm.yml.
+"""Guard: PR caches and optional compile-only main seeds stay compatible.
 
-`ci.yml` runs on pull requests only, so its `Swatinem/rust-cache` steps are
-read-only (`save-if` is false on a `refs/pull/N/merge` ref) and the caches the
-PR jobs read are produced on main by `.github/workflows/prewarm.yml`. A cache
-created on the default branch is restorable from every PR; one created by a PR
-is scoped to that PR, which is why the writer has to live in the other file.
+PR runs save merge-ref caches for their own subsequent runs. A manually
+requested prewarm on main can provide shared seeds for new PRs. Cache identity
+inputs and compiled targets must match; save policies differ by workflow.
+Prewarm test commands use --no-run, including native lifecycle fixtures.
+The guard also prevents automatic prewarm triggers and test execution there.
 
-rust-cache derives its key as
-`v0-rust-<shared-key>-<os>-<arch>-<env hash>-<manifest+lock hash>`, so a reader
-and its writer agree only if they use the same `shared-key`, the same
-`workspaces` value (it feeds both the hash and the cached target dirs), the same
-cache-option inputs, and run the same cargo commands (a different profile or
-feature set writes artifacts the reader cannot reuse, which is why the test
-steps set `CARGO_PROFILE_TEST_DEBUG=1` in both files).
-
-Per shared-key this checks that
-
-* the cache-step inputs of the two files are identical,
-* `save-if` is the main-only expression everywhere (PRs must never write),
-* every key ci.yml reads has a writer in the prewarm, and every key the prewarm
-  writes is read somewhere (no orphan entries eating the repository quota),
-* the `cargo check|clippy|test` commands of the consuming jobs match, which is
-  what makes an entry reusable rather than merely present, and that every job
-  sharing a key runs the same commands (a key holds one entry per OS, so a
-  writer that skipped a command leaves that OS's entry incomplete).
-
-Examples of what the command comparison already covers: the
-`Embedded Agent native lifecycle` suite (`scripts/ci/check-embedded-agent.py`,
-whose test-profile build dominates the `rust-build` entry) and the
-`CARGO_PROFILE_TEST_DEBUG=1` profile choice — the profile is a step-level `env:`
-in both files, so a prewarm that dropped it would still match on the commands;
-the `--test <target>` narrowed runs are excluded instead, being subsets of the
-full-suite command in the same job.
-
-Parsing is line based on purpose: PyYAML is not a dependency of this repo's CI
-scripts, and a missing module must not be able to block every pull request.
-Every lookup asserts what it found, so a structural change that defeats the
-parser fails loudly instead of passing silently.
+Parsing is line based so the gate needs no third-party Python YAML package.
+Structural changes fail loudly rather than silently disabling the guard.
 """
 
 from __future__ import annotations
@@ -50,14 +21,13 @@ from pathlib import Path
 
 CACHE_ACTION = "Swatinem/rust-cache@"
 MAIN_ONLY = "${{ github.ref == 'refs/heads/main' }}"
+PR_OR_MAIN = "${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}"
 
 # Cargo subcommands whose output the cache carries. `fmt` is excluded: it emits
 # nothing a later job reuses.
 COMPARED_SUBCOMMANDS = {"check", "clippy", "test"}
 
-# The lifecycle suite builds most of the `rust-build` entry's test-profile
-# artifacts. It is compared as part of the command sets below; naming it here
-# keeps the failure messages searchable.
+# The same lifecycle targets are run in PR CI and compiled by manual prewarm.
 LIFECYCLE_SCRIPT = "scripts/ci/check-embedded-agent.py"
 
 # Steps this guard itself owns: they read workflow files, are not cache
@@ -98,8 +68,8 @@ def indent_of(line: str) -> int:
 
 
 def normalize(command: str) -> str:
-    """Order-insensitive form of a command line, for set comparison."""
-    return " ".join(sorted(command.split()))
+    """Compare compiled targets, treating test and test --no-run alike."""
+    return " ".join(sorted(part for part in command.split() if part != "--no-run"))
 
 
 def split_jobs(lines: list[str]) -> dict[str, Job]:
@@ -298,21 +268,51 @@ def main() -> int:
         ci_steps, ci_jobs = parsed[CI_PATH]
         prewarm_steps, prewarm_jobs = parsed[PREWARM_PATH]
 
-        for path, steps in ((CI_PATH, ci_steps), (PREWARM_PATH, prewarm_steps)):
+        for path, steps, policy in (
+            (CI_PATH, ci_steps, PR_OR_MAIN),
+            (PREWARM_PATH, prewarm_steps, MAIN_ONLY),
+        ):
             for step in steps:
-                if step.inputs.get("save-if") != MAIN_ONLY:
+                partition = {
+                    "rust-tests-workspace": "${{ matrix.filter }}",
+                    "rust-tests-desktop": "${{ matrix.flavor }}",
+                }.get(step.shared_key)
+                if partition and step.inputs.get("key") != partition:
                     findings.append(
-                        f"{path}:{step.line}: `save-if` is {step.inputs.get('save-if', '<unset>')!r}; it must be "
-                        f"{MAIN_ONLY!r} so that only main writes caches (a cache a PR writes is invisible to every "
-                        f"other run and evicts the entries that are shared)"
+                        f"{path}:{step.line}: {step.shared_key} requires matrix cache partition {partition!r}"
                     )
+                if step.inputs.get("save-if") != policy:
+                    findings.append(
+                        f"{path}:{step.line}: `save-if` is {step.inputs.get('save-if', '<unset>')!r}; "
+                        f"expected {policy!r} for this workflow's cache scope"
+                    )
+
+        prewarm_lines = (root / PREWARM_PATH).read_text(encoding="utf-8").splitlines()
+        on_index = next((i for i, line in enumerate(prewarm_lines) if line == "on:"), None)
+        triggers = []
+        if on_index is not None:
+            for line in prewarm_lines[on_index + 1:]:
+                if line.strip() and not line.startswith((" ", "#")):
+                    break
+                if indent_of(line) == 2 and line.strip().endswith(":"):
+                    triggers.append(line.strip())
+        if triggers != ["workflow_dispatch:"]:
+            findings.append(f"{PREWARM_PATH}: prewarm must be manual-only (workflow_dispatch)")
+        for job in prewarm_jobs.values():
+            for line in job.lines:
+                command = line.strip().removeprefix("run:").strip()
+                if command.startswith("cargo test ") and "--no-run" not in command.split():
+                    findings.append(f"{PREWARM_PATH}: test compilation requires --no-run: {command}")
+                if command.startswith(("python ", "python3 ")) and LIFECYCLE_SCRIPT in command:
+                    if "--no-run" not in command.split():
+                        findings.append(f"{PREWARM_PATH}: lifecycle compilation requires --no-run")
 
         ci_by_key = collect_by_key(ci_steps, CI_PATH, findings)
         prewarm_by_key = collect_by_key(prewarm_steps, PREWARM_PATH, findings)
 
         for shared_key in sorted(set(ci_by_key) & set(prewarm_by_key)):
             ci_step, prewarm_step = ci_by_key[shared_key], prewarm_by_key[shared_key]
-            names = set(ci_step.inputs) | set(prewarm_step.inputs)
+            names = (set(ci_step.inputs) | set(prewarm_step.inputs)) - {"save-if"}
             differing = {
                 name
                 for name in names
@@ -365,7 +365,7 @@ def main() -> int:
 
     print(
         f"prewarm cache guard: {len(keys)} cache keys in sync ({', '.join(keys)}); "
-        f"only main writes them, so every PR run restores them"
+        f"PRs save their own caches; manual main seeds compile tests without running them"
     )
     return 0
 

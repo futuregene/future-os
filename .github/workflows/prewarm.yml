@@ -1,70 +1,13 @@
-# Main-branch cache prewarm for the pull-request CI suite.
-#
-# Why this workflow exists: ci.yml has no push-to-main trigger on purpose (see
-# its header — a post-merge run would only duplicate the required
-# "branch is up to date with main" re-run). Without a run on main, every
-# Swatinem/rust-cache step in ci.yml is read-only: `save-if:
-# ${{ github.ref == 'refs/heads/main' }}` is false on a `refs/pull/N/merge`
-# ref, so the PR jobs could only ever read a cache their own PR had written
-# earlier. Filling the caches here instead is what makes a *first* run on a PR
-# warm: a cache created on the default branch is restorable by every
-# pull-request run, while a cache created by a PR is scoped to that PR.
-#
-# KEEP THE CACHE KEYS IN STEP WITH ci.yml. rust-cache's key is
-# `v0-rust-<shared-key>-<os>-<arch>-<env hash>-<manifest+lock hash>`, so a
-# matching key needs the same `shared-key`, the same `workspaces` value and the
-# same cache inputs, and the steps that populate an entry must use the same
-# cargo profile settings as the job that reads it (CARGO_PROFILE_TEST_DEBUG=1
-# on every test step, exactly as in ci.yml — a different profile writes
-# artifacts the reader cannot reuse).
-#
-# `scripts/ci/check-prewarm-cache.py` guards that agreement: per shared-key it
-# compares this file's cache-step inputs and cargo commands against ci.yml's, and
-# asserts that every key ci.yml reads has a writer here and vice versa. ci.yml
-# runs it inside the required `Rust fmt + clippy (Linux)` job, so drift fails the
-# PR rather than silently going cold.
-#
-# Job names are prefixed to keep them apart from ci.yml's identical job names in
-# the Actions UI: rust-cache keys do not depend on job names (`shared-key`
-# replaces the automatic job-id key), so the two files are free to name the same
-# work differently.
-#
-# This workflow is deliberately NOT a gate: nothing here has to pass for a PR
-# to merge. It only fills caches, and a half-filled entry is still useful, which
-# is why every job keeps `cache-on-failure: true`.
+# Optional, manually requested cache seed for new PRs. Run on main to save a
+# default-branch cache; other branches can compile but do not publish seeds.
+# PR CI saves its own merge-ref caches without requiring this workflow.
+# Keep cache keys/profiles aligned with ci.yml. Test and lifecycle artifacts
+# are compiled with --no-run; the actual suites execute only in PR CI.
 name: Cache prewarm
 
 permissions: read-all
 
 on:
-  push:
-    branches: [main]
-    # Mirrors the Rust/desktop inputs of ci.yml's filter job: only these can
-    # change what the prewarm caches. A docs-only or frontend-only merge skips
-    # the whole workflow.
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - '.cargo/**'
-      - 'packages/rpc/**'
-      - 'packages/app-settings/**'
-      - 'packages/app-workspaces/**'
-      - 'packages/remote-crypto/**'
-      - 'agent/**'
-      - 'channels/**'
-      - 'tui/**'
-      - 'cli/**'
-      - 'orchestration/**'
-      - 'desktop/src-tauri/**'
-      - 'scripts/ci/check-embedded-agent.py'
-      - 'scripts/build/build-desktop.mjs'
-      - 'scripts/ci/install-apt-packages.sh'
-      - '.github/workflows/ci.yml'
-      - '.github/workflows/prewarm.yml'
-  # Re-warm on demand: to fill the caches right after this workflow lands, or
-  # after the repository cache quota evicted an entry. Dispatched on a branch
-  # other than main it is a no-op for the cache (`save-if` below).
   workflow_dispatch:
 
 concurrency:
@@ -72,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ─── rust-build (Linux): dev-profile checks + the native lifecycle suites ──
+  # ─── rust-build (Linux): dev checks + lifecycle test compilation ─────────
   # Writer for the `rust-build` key on Linux; consumers are ci.yml's
   # `Rust build (Linux)` job (same steps).
   build-linux:
@@ -122,10 +65,9 @@ jobs:
       - name: cargo check (desktop Tauri backend, no default features)
         run: cargo check --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml
 
-      # Same script and same fixtures as ci.yml's rust-build job (which uploads
-      # the evidence; this run only needs the test binaries it builds).
-      - name: Embedded Agent native lifecycle
-        run: python scripts/ci/check-embedded-agent.py
+      # Compile the same native fixtures as PR CI without starting services.
+      - name: Compile embedded Agent native lifecycle
+        run: python scripts/ci/check-embedded-agent.py --no-run
 
   build-windows:
     name: Cache prewarm / Rust build (Windows)
@@ -156,8 +98,8 @@ jobs:
       - name: cargo check (desktop Tauri backend, no default features)
         run: cargo check --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml
 
-      - name: Embedded Agent native lifecycle
-        run: python scripts/ci/check-embedded-agent.py
+      - name: Compile embedded Agent native lifecycle
+        run: python scripts/ci/check-embedded-agent.py --no-run
 
   build-macos:
     name: Cache prewarm / Rust build (macOS)
@@ -188,8 +130,8 @@ jobs:
       - name: cargo check (desktop Tauri backend, no default features)
         run: cargo check --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml
 
-      - name: Embedded Agent native lifecycle
-        run: python scripts/ci/check-embedded-agent.py
+      - name: Compile embedded Agent native lifecycle
+        run: python scripts/ci/check-embedded-agent.py --no-run
 
   # ─── rust-quality (Linux): fmt + clippy ──────────────────────────────────
   # Writer for the `rust-quality` key; consumer is ci.yml's `Rust fmt + clippy
@@ -243,15 +185,25 @@ jobs:
           cargo clippy --no-default-features --features headless --all-targets --manifest-path desktop/src-tauri/Cargo.toml -- -D warnings
 
   # ─── rust-tests (Linux): the workspace test groups ───────────────────────
-  # Writer for the `rust-tests-workspace` key; consumers are ci.yml's
-  # `Rust tests (Linux) (agent | tui, cli | channels, rpc, goal)` entries. One
-  # writer for the shared key is what removes the old first-finisher-wins race:
-  # the entry holds every group's test binaries, so each group restores a
-  # complete snapshot instead of recompiling the others' crates.
+  # Match the PR matrix so every writable entry contains its own group's
+  # artifacts, without first-finisher races between different package sets.
   tests-workspace:
-    name: Cache prewarm / Rust tests (Linux) (workspace groups)
+    name: Cache prewarm / Compile tests (${{ matrix.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: agent
+            filter: rust_agent
+            packages: -p future-agent
+          - name: tui, cli
+            filter: rust_tui_cli
+            packages: -p future-tui -p future-cli -p future-app-settings -p future-app-workspaces
+          - name: channels, rpc, goal
+            filter: rust_channels_rpc_goal
+            packages: -p future-channel -p future-rpc -p future-goal -p future-tasks -p future-remote-crypto
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -263,8 +215,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: rust-tests-workspace
+          key: ${{ matrix.filter }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          # Root target directory; this key holds the CLI/server test groups.
+          # One entry per matrix group, matching the PR cache partition.
           workspaces: .
           cache-on-failure: true
           cache-all-crates: true
@@ -277,25 +230,23 @@ jobs:
             mold \
             pkg-config
 
-      # One step per ci.yml matrix entry, in the same order, with the same
-      # package sets (the guard script compares those sets).
-      - name: cargo test (workspace groups)
+      - name: Compile test group (${{ matrix.name }})
         env:
           CARGO_PROFILE_TEST_DEBUG: 1
-        run: |
-          cargo test -p future-agent
-          cargo test -p future-tui -p future-cli -p future-app-settings -p future-app-workspaces
-          cargo test -p future-channel -p future-rpc -p future-goal -p future-tasks -p future-remote-crypto
+        run: cargo test --no-run ${{ matrix.packages }}
 
   # ─── rust-tests (Linux): the desktop backend suite ───────────────────────
   # Writer for the `rust-tests-desktop` key; consumers are ci.yml's two
   # `Rust tests (Linux) (desktop gui | desktop headless)` entries. Both flavors
-  # read this one entry — they run concurrently, and the artifacts they need
-  # (same manifest, same target dir) overlap almost completely.
+  # use matching per-flavor cache entries.
   tests-desktop:
-    name: Cache prewarm / Rust tests (Linux) (desktop backend)
+    name: Cache prewarm / Compile desktop tests (${{ matrix.flavor }})
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [gui, headless]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -307,9 +258,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: rust-tests-desktop
+          key: ${{ matrix.flavor }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          # Same root target directory as the desktop test jobs. A distinct
-          # key keeps their GUI/headless configurations in one cache entry.
+          # Match the per-flavor PR entries in the shared root target directory.
           workspaces: .
           cache-on-failure: true
           cache-all-crates: true
@@ -326,15 +277,12 @@ jobs:
             librsvg2-dev \
             libwebkit2gtk-4.1-dev
 
-      # Both feature configurations, in one job: cargo builds each into its own
-      # fingerprint in the same target dir, so a single writer holds what both
-      # ci.yml flavors need.
-      - name: cargo test (desktop gui)
+      - name: Compile desktop test configuration (${{ matrix.flavor }})
         env:
           CARGO_PROFILE_TEST_DEBUG: 1
-        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml
-
-      - name: cargo test (desktop headless)
-        env:
-          CARGO_PROFILE_TEST_DEBUG: 1
-        run: cargo test --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml
+        run: |
+          if [ "${{ matrix.flavor }}" = 'headless' ]; then
+            cargo test --no-run --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml
+          else
+            cargo test --no-run --manifest-path desktop/src-tauri/Cargo.toml
+          fi

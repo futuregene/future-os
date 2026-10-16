@@ -12,13 +12,9 @@ permissions: read-all
 # to date before merging" on branch protection already forces the PR check
 # to re-run on the merged result, so a post-merge run would be redundant.
 #
-# Because there is no push-to-main run here, every Swatinem/rust-cache step
-# below is read-only: `save-if` is false on a pull_request ref. The caches the
-# PR jobs read are written on main by `.github/workflows/prewarm.yml` — a
-# cache created on the default branch is restorable from every PR, while one
-# created by a PR is scoped to that PR. Cache keys must stay in step with that
-# file, so `scripts/ci/check-prewarm-cache.py` (run from the required
-# `Rust fmt + clippy (Linux)` job) fails the PR when they drift apart.
+# Each PR saves caches in its own merge-ref scope for later runs of that PR.
+# A manual prewarm on main can seed caches readable by new PRs. Its keys and
+# compile commands stay aligned through scripts/ci/check-prewarm-cache.py.
 on:
   pull_request:
   # Full PR-check suite by default; narrow scopes avoid rerunning unrelated
@@ -239,7 +235,7 @@ jobs:
 
       # Structural guard, deliberately placed in this required, always-present
       # job so drift becomes a red required check instead of a silently cold
-      # cache: prewarm.yml owns every cache this workflow reads, so its keys,
+      # cache: the optional manual prewarm must produce compatible keys,
       # `workspaces` values and test package sets must match this file. The
       # second command is the guard's own regression test (negative controls),
       # so a checker that stopped detecting drift fails here too.
@@ -277,13 +273,13 @@ jobs:
 
       # Explicit `shared-key` (an explicit key replaces the automatic job-id
       # key) so prewarm.yml can reproduce this key without depending on job
-      # names, and `save-if` so the PR run only ever reads: main writes.
+      # names. PRs save in their own scope; main saves optional shared seeds.
       - name: Cache Rust
         if: steps.affected.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: rust-quality
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
           workspaces: .
           cache-on-failure: true
           cache-all-crates: true
@@ -434,20 +430,15 @@ jobs:
         if: steps.affected.outputs.run == 'true'
         uses: dtolnay/rust-toolchain@1.97.0
 
-      # One explicit key for all three workspace groups, written by exactly one
-      # writer: prewarm.yml's `tests-workspace` job, which runs every group into
-      # one target dir. That removes the old race (the first group to finish
-      # saved the entry, and the others restored a snapshot missing their own
-      # crates). PR runs only read, so nothing races on it any more.
-      #
-      # All members share target/. Keep distinct keys for these CLI/server
-      # test artifacts and the GUI/headless test configurations below.
+      # Each matrix group writes its own cache. Sharing one writable key would
+      # let the first finisher save an incomplete snapshot for the other groups.
       - name: Cache Rust
         if: steps.affected.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: rust-tests-workspace
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: ${{ matrix.filter }}
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
           workspaces: .
           cache-on-failure: true
           cache-all-crates: true
@@ -472,9 +463,8 @@ jobs:
 
   # The desktop backend suite: one job per feature configuration, so the gui
   # suite (~7 min of tests) and the headless suite (~6 min) overlap instead of
-  # queueing behind each other. Both restore the same cache entry, written by
-  # prewarm.yml's `tests-desktop` job: they need the same manifest and target
-  # dir, so two near-identical multi-GB entries would only duplicate storage.
+  # queueing behind each other. Each flavor saves its own PR cache so the
+  # first finisher cannot prevent the other configuration from being saved.
   rust-tests-desktop:
     name: Rust tests (Linux) (desktop ${{ matrix.flavor }})
     needs: changes
@@ -508,14 +498,14 @@ jobs:
         if: steps.affected.outputs.run == 'true'
         uses: dtolnay/rust-toolchain@1.97.0
 
-      # Desktop writes the shared root target/. Its separate key preserves
-      # the GUI/headless test configurations without racing other writers.
+      # GUI and headless write distinct entries under this shared-key family.
       - name: Cache Rust
         if: steps.affected.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: rust-tests-desktop
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: ${{ matrix.flavor }}
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
           workspaces: .
           cache-on-failure: true
           cache-all-crates: true
@@ -632,10 +622,10 @@ jobs:
         if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.desktop_tauri == 'true'
         uses: Swatinem/rust-cache@v2
         with:
-          # Written on main by prewarm.yml's build-{linux,windows,macos} jobs
-          # (same key name on all three OSes: rust-cache appends os/arch).
+          # Saved per PR; optional manual main prewarm uses the same key.
+          # rust-cache appends OS/architecture to separate the native targets.
           shared-key: rust-build
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
           workspaces: .
           cache-on-failure: true
           cache-all-crates: true

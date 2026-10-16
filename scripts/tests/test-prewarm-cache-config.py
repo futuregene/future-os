@@ -1,6 +1,6 @@
 """Offline regression tests for scripts/ci/check-prewarm-cache.py.
 
-The guard decides whether the caches `ci.yml` reads are written by
+The guard checks whether the PR caches in `ci.yml` match the optional seeds in
 `.github/workflows/prewarm.yml` with matching keys, so its own failure modes are
 expensive: a checker that stopped detecting drift would let every pull-request
 run go cold silently, and one that over-reports would block every PR.
@@ -71,14 +71,49 @@ class PrewarmCacheGuard(unittest.TestCase):
         path.write_text(content[:start] + tail, encoding="utf-8")
         self.assertFails(self.run_guard(), "key 'rust-tests-workspace': cache inputs differ")
 
-    def test_a_pr_writable_cache_step_fails(self) -> None:
-        """A PR-scoped save is invisible to every other run and evicts shared
-        entries, which is what `save-if` prevents."""
-        path = self.tmp / ".github/workflows/ci.yml"
-        content = path.read_text(encoding="utf-8")
-        content = content.replace("          save-if: ${{ github.ref == 'refs/heads/main' }}\n", "", 1)
-        path.write_text(content, encoding="utf-8")
-        self.assertFails(self.run_guard(), "`save-if` is '<unset>'")
+    def test_a_read_only_pr_cache_step_fails(self) -> None:
+        """PRs must be able to save snapshots for their own later runs."""
+        self.mutate(
+            ".github/workflows/ci.yml",
+            "save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}",
+            "save-if: ${{ github.ref == 'refs/heads/main' }}",
+        )
+        self.assertFails(self.run_guard(), "`save-if`")
+
+    def test_automatic_prewarm_fails(self) -> None:
+        self.mutate(".github/workflows/prewarm.yml", "on:\n  workflow_dispatch:", "on:\n  push:\n  workflow_dispatch:")
+        self.assertFails(self.run_guard(), "manual-only")
+
+    def test_executing_prewarm_tests_fails(self) -> None:
+        self.mutate(
+            ".github/workflows/prewarm.yml",
+            "cargo test --no-run ${{ matrix.packages }}",
+            "cargo test ${{ matrix.packages }}",
+        )
+        self.assertFails(self.run_guard(), "test compilation requires --no-run")
+
+    def test_executing_prewarm_lifecycle_fails(self) -> None:
+        self.mutate(
+            ".github/workflows/prewarm.yml",
+            "run: python scripts/ci/check-embedded-agent.py --no-run",
+            "run: python scripts/ci/check-embedded-agent.py",
+        )
+        self.assertFails(self.run_guard(), "lifecycle compilation requires --no-run")
+
+    def test_non_main_prewarm_cache_write_fails(self) -> None:
+        self.mutate(
+            ".github/workflows/prewarm.yml",
+            "save-if: ${{ github.ref == 'refs/heads/main' }}",
+            "save-if: true",
+        )
+        self.assertFails(self.run_guard(), "`save-if`")
+
+    def test_shared_test_cache_cannot_lose_its_matrix_partition(self) -> None:
+        for relative in WORKFLOWS:
+            path = self.tmp / relative
+            content = path.read_text(encoding="utf-8")
+            path.write_text(content.replace("          key: ${{ matrix.filter }}\n", ""), encoding="utf-8")
+        self.assertFails(self.run_guard(), "requires matrix cache partition")
 
     def test_a_reader_without_a_writer_fails(self) -> None:
         """Renaming only the ci.yml key leaves the entry unwritten."""
@@ -104,8 +139,8 @@ class PrewarmCacheGuard(unittest.TestCase):
         """Caching artifacts no reader runs is wasted quota and time."""
         self.mutate(
             ".github/workflows/prewarm.yml",
-            "          cargo test -p future-agent\n",
-            "          cargo test -p future-agent\n          cargo test -p future-nowhere\n",
+            "        run: cargo test --no-run ${{ matrix.packages }}\n",
+            "        run: |\n          cargo test --no-run ${{ matrix.packages }}\n          cargo test --no-run -p future-nowhere\n",
         )
         self.assertFails(self.run_guard(), "caches artifacts nothing reads")
 
@@ -114,7 +149,7 @@ class PrewarmCacheGuard(unittest.TestCase):
         Windows and macOS build jobs included — must run the same commands."""
         self.mutate(
             ".github/workflows/prewarm.yml",
-            "      - name: Embedded Agent native lifecycle\n        run: python scripts/ci/check-embedded-agent.py\n\n  build-windows:",
+            "      - name: Compile embedded Agent native lifecycle\n        run: python scripts/ci/check-embedded-agent.py --no-run\n\n  build-windows:",
             "  build-windows:",
         )
         self.assertFails(self.run_guard(), "run different commands")
@@ -123,8 +158,8 @@ class PrewarmCacheGuard(unittest.TestCase):
         """Sibling writers diverging is the same defect in reverse."""
         self.mutate(
             ".github/workflows/prewarm.yml",
-            "      - name: cargo check (workspace)\n        run: cargo check --workspace --exclude futureos --manifest-path Cargo.toml\n\n      - name: cargo check (desktop Tauri backend)\n        run: cargo check -p future-cli -p futureos\n\n      - name: cargo check (desktop Tauri backend, no default features)\n        run: cargo check --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml\n\n      - name: Embedded Agent native lifecycle\n        run: python scripts/ci/check-embedded-agent.py\n\n  build-macos:",
-            "      - name: Embedded Agent native lifecycle\n        run: python scripts/ci/check-embedded-agent.py\n\n  build-macos:",
+            "      - name: cargo check (workspace)\n        run: cargo check --workspace --exclude futureos --manifest-path Cargo.toml\n\n      - name: cargo check (desktop Tauri backend)\n        run: cargo check -p future-cli -p futureos\n\n      - name: cargo check (desktop Tauri backend, no default features)\n        run: cargo check --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml\n\n      - name: Compile embedded Agent native lifecycle\n        run: python scripts/ci/check-embedded-agent.py --no-run\n\n  build-macos:",
+            "      - name: Compile embedded Agent native lifecycle\n        run: python scripts/ci/check-embedded-agent.py --no-run\n\n  build-macos:",
         )
         self.assertFails(self.run_guard(), "run different commands")
 
