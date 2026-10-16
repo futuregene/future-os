@@ -629,6 +629,21 @@ impl FutureAgent for MockAgent {
             // ── State, models, sessions (P4 baseline) ────────────────────
             "get_state" => STATE_JSON.to_string(),
             "list_models" | "get_available_models" => MODELS_JSON.to_string(),
+            // The lightweight connectivity probe (`try_connect` /
+            // `wait_for_agent`): reports identity + version without touching
+            // session hydration or the model catalog, mirroring the agent's
+            // `providers::get_agent_readiness_response`. The version has to
+            // match the client's `EXPECTED_AGENT_VERSION` (both come from
+            // `FUTURE_VERSION` at build time) or the handshake rejects the
+            // mock as an incompatible agent.
+            "get_agent_readiness" => serde_json::json!({
+                "version": future_rpc::connection::EXPECTED_AGENT_VERSION,
+                "agentInstanceId": "mock-agent-instance",
+                "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION,
+                "dataRootId": "0".repeat(64),
+                "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION,
+            })
+            .to_string(),
             "new_session" => r#"{"sessionId":"mock-session-1"}"#.to_string(),
             "reload_config" => {
                 r#"{"skills":["code-review","future-slides","future-web"],"contextFiles":[]}"#
