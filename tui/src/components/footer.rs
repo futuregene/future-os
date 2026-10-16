@@ -79,10 +79,6 @@ impl Footer {
         1
     }
 
-    fn shorten_model(model: &str) -> String {
-        model.rsplit('/').next().unwrap_or(model).to_string()
-    }
-
     fn fmt_tokens(n: usize) -> String {
         if n >= 1_000_000 {
             format!("{:.1}M", n as f64 / 1_000_000.0)
@@ -144,16 +140,18 @@ impl Component for Footer {
             left_parts.push(format!("{base_fg}{pwd}"));
         }
 
-        // Model — brighter fg (252), optional thinking level in blue
+        // Model — brighter fg (252), optional thinking level in blue. The
+        // string arrives already display-ready (catalog label, or the id tail
+        // after the provider prefix) — labels may legitimately contain a `/`
+        // ("DeepSeek V3/Deepseek Chat"), so no shortening happens here.
         if let Some(model) = &self.data.model {
-            let model_short = Self::shorten_model(model);
             let thinking = match self.data.thinking.as_deref() {
                 Some(t) if !t.is_empty() && t != "off" => {
                     color_fg(chrome.thinking, chrome.base, &format!(" • {t}"))
                 }
                 _ => String::new(),
             };
-            left_parts.push(color_fg(chrome.text, chrome.base, &model_short) + &thinking);
+            left_parts.push(color_fg(chrome.text, chrome.base, model) + &thinking);
         }
 
         // Build right side: [token stats] [cost] [context usage]
@@ -393,17 +391,21 @@ mod tests {
     }
 
     #[test]
-    fn renders_model_name_shortened() {
+    fn renders_model_name_as_given() {
+        // The footer no longer shortens: the caller passes a display-ready
+        // string (catalog label or id tail). A qualified id that still arrives
+        // (no catalog yet) shows its tail, but that resolution now belongs to
+        // the App's `model_display`, not the footer — here it is rendered
+        // verbatim, including labels that contain a slash.
         let line = render_footer(
             FooterData {
-                model: Some("anthropic/claude-sonnet-4".into()),
+                model: Some("DeepSeek V3/Deepseek Chat".into()),
                 ..Default::default()
             },
             80,
         );
         let text = strip_ansi_codes(&line);
-        assert!(text.contains("claude-sonnet-4"));
-        assert!(!text.contains("anthropic/"));
+        assert!(text.contains("DeepSeek V3/Deepseek Chat"), "{text}");
     }
 
     #[test]
@@ -783,7 +785,7 @@ mod tests {
     /// A busy footer: every branch of `render` that paints something.
     fn busy_footer_data() -> FooterData {
         FooterData {
-            model: Some("openai/gpt-4o".into()),
+            model: Some("GPT-4o".into()),
             thinking: Some("high".into()),
             streaming: true,
             compacting: true,
@@ -818,7 +820,7 @@ mod tests {
             "\x1b[38;5;39m⠋\x1b[38;5;245m\x1b[38;5;245m  \
              \x1b[38;5;39mCompacting…\x1b[38;5;245m\x1b[38;5;245m  \
              \x1b[38;5;71m2s\x1b[38;5;245m\x1b[38;5;245m  \
-             \x1b[38;5;252mgpt-4o\x1b[38;5;245m\x1b[38;5;117m • high\x1b[38;5;245m\
+             \x1b[38;5;252mGPT-4o\x1b[38;5;245m\x1b[38;5;117m • high\x1b[38;5;245m\
              \x1b[38;5;245m{}\
              \x1b[38;5;241mΣ\x1b[38;5;245m\x1b[38;5;71m↑5k\x1b[38;5;245m\x1b[38;5;245m  \
              \x1b[38;5;71m¥1.500\x1b[38;5;245m\x1b[38;5;245m  \

@@ -298,6 +298,14 @@ is not a completed summary, and it rejects a busy session), and the lifecycle
 commands `future session new|fork|forks|clone|title|export`. Capabilities move
 with `future skills install|uninstall|update`.
 
+`future session reset <id>` is the destructive counterpart of compaction: it
+deletes the turns and entry kinds you name (`--all`, `--keep-first N`,
+`--keep-last N`, `--drop thinking,tool-calls,tool-results,attachments,compaction`)
+instead of projecting them, which is the only way to shrink the history that
+compaction is forbidden to touch. It is a dry run unless you pass `--yes`, only
+the Agent writes history, and an apply writes a lossless backup of the complete
+pre-reset entry list first and prints its path.
+
 One gap is worth knowing rather than discovering: **a never-run session stores a
 change only when it first runs.** A title or cwd on a session that already has a
 record is written immediately; one that has never produced an entry stores it

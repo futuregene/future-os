@@ -47,25 +47,81 @@ impl SqliteStore {
             // instantly (SQLITE_BUSY_SNAPSHOT) when another connection commits
             // in between, which is exactly the "database is locked" seen while
             // the skill registry wrote this same file.
-            {
-                let tx = crate::session::database::begin_write_transaction(db)?;
-                let skipped: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')", [&session], |r| r.get(0))?;
-                if skipped { bail!("session migration was skipped; retry import before modifying it"); }
-                tx.execute("INSERT INTO sessions(id) VALUES (?1) ON CONFLICT(id) DO UPDATE SET revision=MAX(revision+1,0)", [&session])?;
-                tx.execute("DELETE FROM entries WHERE session_id=?1", [&session])?;
-                tx.execute("DELETE FROM history_display WHERE session_id=?1", [&session])?;
-                tx.execute("DELETE FROM runs WHERE session_id=?1", [&session])?;
-                tx.execute("UPDATE sessions SET current_metadata_json=NULL WHERE id=?1", [&session])?;
-                insert_transcript_entries(&tx, &session, entries)?;
-                tx.execute("DELETE FROM run_events WHERE session_id=?1 AND run_id IN (SELECT run_id FROM run_snapshots WHERE session_id=?1 AND NOT EXISTS(SELECT 1 FROM runs r WHERE r.session_id=run_snapshots.session_id AND r.run_id=run_snapshots.run_id))", [&session])?;
-                tx.execute("DELETE FROM run_snapshots WHERE session_id=?1 AND NOT EXISTS(SELECT 1 FROM runs r WHERE r.session_id=run_snapshots.session_id AND r.run_id=run_snapshots.run_id)", [&session])?;
-                tx.commit()?;
-                Ok(())
-            }
+            let tx = crate::session::database::begin_write_transaction(db)?;
+            rewrite_transcript_rows(&tx, &session, entries)?;
+            tx.commit()?;
+            Ok(())
         });
         // A rewrite can drop a large amount of history (compaction), which would
         // otherwise stay in the file as free pages forever. Separate job: the
         // worker is one ordered thread, so this cannot nest inside the call above.
+        self.request_reclamation_after_success(result.is_ok());
+        result
+    }
+
+    /// Apply an in-place history reset: verify inside one write transaction that
+    /// the session still holds the history the caller planned against, compute
+    /// the plan from *that* snapshot, rewrite the transcript, and drop the stream
+    /// journal of every run the rewrite touched.
+    ///
+    /// Read-verify-rewrite is one transaction because the alternative — plan
+    /// outside, `replace` inside — can lose a concurrent metadata write (a rename
+    /// landing between the two would be overwritten by the stale `session_info`
+    /// the plan carries). `expected_digest` is the caller's pre-computed hash of
+    /// the entry list it showed the user and backed up; a mismatch means the
+    /// session moved since, and the caller must re-read rather than apply a plan
+    /// nobody saw.
+    pub(crate) fn reset_transcript(
+        &self,
+        session: &str,
+        expected_digest: &str,
+        selectors: &crate::session::reset::ResetSelectors,
+    ) -> Result<crate::session::reset::ResetPlan> {
+        let session = session.to_owned();
+        let expected_digest = expected_digest.to_owned();
+        let selectors = selectors.clone();
+        let result = self.db.call(move |db| {
+            let tx = crate::session::database::begin_write_transaction(db)?;
+            let rows = read_entry_rows(&tx, &session)?;
+            let raw: Vec<Value> = rows
+                .iter()
+                .map(|row| serde_json::from_str(row))
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let digest =
+                crate::session::compaction_ops::canonical_hash(&Value::Array(raw.clone()))?;
+            if digest != expected_digest {
+                bail!(
+                    "{}: session history changed while the reset was prepared",
+                    crate::session::reset::HISTORY_CHANGED
+                );
+            }
+            let entries: Vec<crate::session::SessionEntry> = rows
+                .iter()
+                .map(|row| serde_json::from_str(row))
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let planned = crate::session::reset::plan_reset(&entries, &selectors)?;
+            let retained = planned
+                .retained
+                .iter()
+                .map(serde_json::to_value)
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            rewrite_transcript_rows(&tx, &session, retained)?;
+            // The streamed journal is not the history: a run whose entries changed
+            // must not keep replaying the content the reset just dropped
+            // (`get_events_since`/`list_run_events` read it directly).
+            for run in &planned.affected_runs {
+                tx.execute(
+                    "DELETE FROM run_events WHERE session_id=?1 AND run_id=?2",
+                    params![session, run],
+                )?;
+                tx.execute(
+                    "DELETE FROM run_snapshots WHERE session_id=?1 AND run_id=?2",
+                    params![session, run],
+                )?;
+            }
+            tx.commit()?;
+            Ok(planned.plan)
+        });
         self.request_reclamation_after_success(result.is_ok());
         result
     }
@@ -95,6 +151,34 @@ pub(crate) fn read_run_markers(db: &Connection, session: &str) -> Result<Vec<Val
     rows.into_iter()
         .map(|row| Ok(serde_json::from_str(&row)?))
         .collect()
+}
+
+/// Replace a session's whole transcript inside an existing write transaction,
+/// rebuilding the derived indexes the transaction owns.
+///
+/// Shared by `SqliteStore::replace` (its own transaction) and the in-place
+/// history reset (which must verify and rewrite in one transaction).
+fn rewrite_transcript_rows(db: &Connection, session: &str, entries: Vec<Value>) -> Result<()> {
+    let skipped: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')",
+        [session],
+        |r| r.get(0),
+    )?;
+    if skipped {
+        bail!("session migration was skipped; retry import before modifying it");
+    }
+    db.execute("INSERT INTO sessions(id) VALUES (?1) ON CONFLICT(id) DO UPDATE SET revision=MAX(revision+1,0)", [session])?;
+    db.execute("DELETE FROM entries WHERE session_id=?1", [session])?;
+    db.execute("DELETE FROM history_display WHERE session_id=?1", [session])?;
+    db.execute("DELETE FROM runs WHERE session_id=?1", [session])?;
+    db.execute(
+        "UPDATE sessions SET current_metadata_json=NULL WHERE id=?1",
+        [session],
+    )?;
+    insert_transcript_entries(db, session, entries)?;
+    db.execute("DELETE FROM run_events WHERE session_id=?1 AND run_id IN (SELECT run_id FROM run_snapshots WHERE session_id=?1 AND NOT EXISTS(SELECT 1 FROM runs r WHERE r.session_id=run_snapshots.session_id AND r.run_id=run_snapshots.run_id))", [session])?;
+    db.execute("DELETE FROM run_snapshots WHERE session_id=?1 AND NOT EXISTS(SELECT 1 FROM runs r WHERE r.session_id=run_snapshots.session_id AND r.run_id=run_snapshots.run_id)", [session])?;
+    Ok(())
 }
 
 pub(crate) fn insert_transcript_entries(

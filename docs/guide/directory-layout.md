@@ -13,6 +13,7 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 │   ├── models.json            # provider/model catalog: apiKey, baseUrl, models[]
 │   ├── auth.json              # credentials, keyed by model id or provider
 │   ├── agent.db               # authoritative SQLite session/run/event and skill inventory store
+│   ├── session-backups/       # lossless pre-reset history snapshots (`future session reset`)
 │   ├── sessions/              # retained legacy JSONL migration sources
 │   ├── run-events/            # retained legacy event migration sources
 │   ├── agent-instance.lock    # per-user agent singleton lock
@@ -68,6 +69,12 @@ vars:
 - `agent.db` — authoritative SQLite sessions, entries, runs, replay events, and
   SkillManager tables (`skills` history/tombstones, `skill_installations`
   observed inventory, and `skill_operations` recovery journal).
+- `session-backups/` — one JSON file per applied `future session reset`: the
+  session's complete entry list as it was *before* the reset, written next to
+  the database and printed by the command. Lossless by construction (the array is
+  the storage representation, not a projection), so it is the input a future
+  `--restore` would read. Nothing else writes here, and nothing prunes it — a
+  reset is rare and explicit, and the file is the only copy of what it deleted.
 - `sessions/` — retained legacy JSONL migration sources.
 - `run-events/<session_id>/` — retained legacy event sources; custom legacy
   directories use `.run-events/`. New events are stored only in SQLite.

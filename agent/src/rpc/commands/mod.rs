@@ -12,6 +12,7 @@ mod observability;
 mod providers;
 mod run_control;
 mod session_lifecycle;
+mod session_reset;
 mod session_title;
 mod settings;
 mod skills;
@@ -29,6 +30,8 @@ mod providers_tests;
 mod run_control_tests;
 #[cfg(test)]
 mod session_lifecycle_tests;
+#[cfg(test)]
+mod session_reset_tests;
 #[cfg(test)]
 mod settings_tests;
 #[cfg(test)]
@@ -293,6 +296,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "fork",
         "prompt",
         "reload_config",
+        "reset_session_history",
         "retry_persistence",
         "set_auto_compaction",
         "set_auto_retry",
@@ -355,6 +359,9 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "prune_run_events" => run_control::handle_prune_run_events(&session, &cmd, id),
         "abort_session" => run_control::handle_abort_session(&session, id),
         "retry_persistence" => run_control::handle_retry_persistence(&session, id),
+        "reset_session_history" => {
+            session_reset::handle_reset_session_history(state, &session, &cmd, id)
+        }
         "abort" => run_control::handle_abort(state, &session, &cmd, id),
         "approval_decision" => run_control::handle_approval_decision(state, &cmd, id),
         "get_state" => observability::handle_get_state(state, &cmd, id),

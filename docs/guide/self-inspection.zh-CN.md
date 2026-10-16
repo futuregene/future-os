@@ -252,6 +252,13 @@ future session set <id> --context-files off --auto-compact off --auto-retry on
 命令 `future session new|fork|forks|clone|title|export`。能力面用
 `future skills install|uninstall|update` 调整。
 
+`future session reset <id>` 是压缩的破坏性对应物：它不是把历史投影掉，而是把你点名的
+轮次与条目类型真正删掉（`--all`、`--keep-first N`、`--keep-last N`、
+`--drop thinking,tool-calls,tool-results,attachments,compaction`）——这正是压缩被禁止触碰、
+因而无法缩小那段历史（用户原文超过压缩上限时会永久报
+`context compaction budget exceeded`）的唯一出口。不加 `--yes` 时它只做预演；历史只由
+Agent 写入；真正执行前会把完整的历史（含将被删的条目）无损备份，并打印文件路径。
+
 一个最好提前知道、而不是踩到的缺口：**从未运行过的会话，改动要等首次运行时才落盘。**
 已有记录的会话，其标题或 cwd 会立即写入；从未产生过 entry 的会话则在首次运行时一并存储，
 所以新建的会话在第一次运行前不会出现在 `session list` 里。
