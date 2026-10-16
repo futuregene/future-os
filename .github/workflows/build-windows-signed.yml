@@ -164,6 +164,36 @@ jobs:
           Write-Host "cert   : $($cert.Subject)"
           Write-Host "expires: $($cert.NotAfter.ToString('yyyy-MM-dd'))"
 
+      # Package smoke checks run on both runner types. Prepare their tools before
+      # the long build so a missing dependency fails promptly on the signing host.
+      - name: Setup Python for package verification
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Setup 7-Zip for package verification
+        shell: pwsh
+        run: |
+          $sevenZip = Get-Command 7z -ErrorAction SilentlyContinue
+          if (-not $sevenZip) {
+            $installed = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
+            if (Test-Path $installed) { $sevenZip = $installed }
+          }
+          if (-not $sevenZip) {
+            $installer = Join-Path $env:RUNNER_TEMP '7z2604-x64.exe'
+            $toolDir = Join-Path $env:RUNNER_TEMP 'futureos-7zip'
+            Invoke-WebRequest 'https://github.com/ip7z/7zip/releases/download/26.04/7z2604-x64.exe' -OutFile $installer
+            $expected = 'd54bf805f9f3704d1e8db2fa3498ae7ef2df0312b40b558e7c71c734430a665d'
+            $actual = (Get-FileHash $installer -Algorithm SHA256).Hash
+            if ($actual -ne $expected) { throw "7-Zip download SHA256 mismatch: $actual" }
+            $process = Start-Process $installer -ArgumentList '/S', "/D=`"$toolDir`"" -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "7-Zip setup failed (exit $($process.ExitCode))" }
+            $sevenZip = Join-Path $toolDir '7z.exe'
+            if (-not (Test-Path $sevenZip)) { throw "7-Zip setup did not create $sevenZip" }
+            $toolDir | Add-Content -Path $env:GITHUB_PATH
+          }
+          Write-Host "Package verifier 7-Zip: $sevenZip"
+
       # Install ossutil v2 (detect-and-skip) and derive OSS_REGION for its SigV4
       # signer. Landed in a runner-temp dir added to PATH — no global install on
       # this long-lived machine.
@@ -419,11 +449,6 @@ jobs:
 
       # Run actual payloads, not the staged binaries or the C# hook fixtures.
       # Extraction avoids installing into the long-lived signing runner's profile.
-      - name: Setup Python for package verification
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-
       - name: Verify actual Windows installer and portable payloads
         shell: pwsh
         env:
