@@ -3,7 +3,10 @@
 //! The TS client keeps a persistent `StreamEvents` subscription with reconnect
 //! (1 s `tryConnect` polling, 3 consecutive-failure channel reset), a 10 s
 //! heartbeat, and a 5 s first-data watchdog. This port reproduces all of it
-//! with tonic + tokio:
+//! with tonic + tokio, but adds exponential backoff to the reconnect poll and
+//! makes the heartbeat tear down only on a *definitive* transport failure:
+//! under CPU contention the client's own wall-clock timeouts otherwise fire
+//! spuriously, and the resulting reconnect churn is self-sustaining.
 //!
 //!   - the stream is driven by a long-lived manager task spawned by the
 //!     client (restarted on session change / reconnect)
@@ -25,6 +28,7 @@ use crate::rpc::types::{
     AgentEvent, ModelInfo, ProjectedRunEvent, RpcSessionState, RunAck, SessionEntriesPage,
     SessionSummary,
 };
+use future_rpc::connection::ConnectionError;
 use future_rpc::proto::{Attachment, RpcCommand, StreamEvent, StreamRequest};
 use parking_lot::Mutex;
 use serde_json::{json, Map, Value};
@@ -43,8 +47,22 @@ const TRY_CONNECT_TIMEOUT_SEC: u64 = 3;
 /// First-data watchdog: if the stream delivers nothing within 5 s the
 /// underlying channel is likely stuck — cancel and reconnect.
 const CONNECT_WATCHDOG_MS: u64 = 5_000;
-/// Reconnect poll interval.
-const RECONNECT_POLL_MS: u64 = 1_000;
+/// Reconnect backoff: the delay between reconnect attempts. Starts at the
+/// base and doubles on each failed attempt up to the cap. Without a cap a
+/// CPU-starved TUI (another process hogging the machine) flapped
+/// "lost/reconnected" every poll interval, and the reconnect churn itself
+/// then kept the runtime too busy to ever complete a healthy handshake — a
+/// self-sustaining storm that outlived the original CPU pressure.
+const RECONNECT_BACKOFF_BASE_MS: u64 = 1_000;
+const RECONNECT_BACKOFF_MAX_MS: u64 = 30_000;
+/// A connection is "stable" (backoff resets to base) once it has stayed up
+/// this long, so a drop after a long stable period reconnects promptly while
+/// a rapid connect/flap keeps backing off. Tests shorten it so the stable-reset
+/// path is exercisable without a multi-second wait.
+#[cfg(not(test))]
+const RECONNECT_STABLE_MS: u64 = 15_000;
+#[cfg(test)]
+const RECONNECT_STABLE_MS: u64 = 200;
 /// Heartbeat interval (silent-disconnection detection). Tests run it fast
 /// so the dead-agent path is exercisable without multi-second waits.
 #[cfg(not(test))]
@@ -124,6 +142,9 @@ struct Inner {
     /// Permanent stop (disconnect).
     stop: AtomicBool,
     stop_notify: Notify,
+    /// Reconnect backoff delay in milliseconds — grows on each failed
+    /// reconnect, resets on a stable connection or session change.
+    backoff_ms: AtomicU64,
 }
 
 /// gRPC client for FutureAgent (port of `GrpcClient`).
@@ -168,6 +189,7 @@ impl GrpcClient {
             before_empty_wait: Mutex::new(None),
             stop: AtomicBool::new(false),
             stop_notify: Notify::new(),
+            backoff_ms: AtomicU64::new(RECONNECT_BACKOFF_BASE_MS),
         });
 
         // Stream manager: subscribes to the current session's event stream,
@@ -1182,10 +1204,70 @@ fn parse_stream_event(event: &StreamEvent, raw_data: &Map<String, Value>) -> Age
     }
 }
 
+/// Whether a reconnect probe reached the agent, and — when it didn't — how
+/// definitively. A healthy-but-slow agent (CPU contention) times out and must
+/// NOT be treated as gone: tearing down a working stream on a transient
+/// timeout is what turned a brief CPU spike into a self-sustaining reconnect
+/// storm.
+enum AgentReachability {
+    /// `connect_verified` succeeded — the agent answered a readiness handshake.
+    Reachable,
+    /// The agent process is definitively gone (connect refused / socket gone).
+    Gone,
+    /// Neither reached nor definitively gone (timed out, busy, incompatible…).
+    Uncertain,
+}
+
+/// Probe the agent with a single readiness handshake. This is the cheapest
+/// check that proves the agent is both alive and compatible; unlike
+/// [`GrpcClient::try_connect`] it does not add the extra `verify()` +
+/// command round-trip that `execute_unary` performs.
+async fn probe_agent(addr: &str) -> AgentReachability {
+    match future_rpc::connection::connect_verified(
+        addr,
+        future_rpc::connection::EXPECTED_AGENT_VERSION,
+        Duration::from_secs(TRY_CONNECT_TIMEOUT_SEC),
+        Duration::from_secs(TRY_CONNECT_TIMEOUT_SEC),
+    )
+    .await
+    {
+        Ok(_) => AgentReachability::Reachable,
+        Err(ConnectionError::Transport(error)) => match error.kind {
+            Some(std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) => {
+                AgentReachability::Gone
+            }
+            _ => AgentReachability::Uncertain,
+        },
+        Err(_) => AgentReachability::Uncertain,
+    }
+}
+
+/// Reset the reconnect backoff to its base (stable connection / session change).
+fn reset_backoff(inner: &Inner) {
+    inner
+        .backoff_ms
+        .store(RECONNECT_BACKOFF_BASE_MS, Ordering::SeqCst);
+}
+
+/// Double the reconnect backoff, capped at [`RECONNECT_BACKOFF_MAX_MS`].
+fn grow_backoff(inner: &Inner) {
+    let current = inner.backoff_ms.load(Ordering::SeqCst);
+    inner.backoff_ms.store(
+        current.saturating_mul(2).min(RECONNECT_BACKOFF_MAX_MS),
+        Ordering::SeqCst,
+    );
+}
+
+/// The current reconnect delay.
+fn backoff_delay(inner: &Inner) -> Duration {
+    Duration::from_millis(inner.backoff_ms.load(Ordering::SeqCst))
+}
+
 /// Long-lived task: subscribe to the current session's event stream; on
-/// stream end/error/watchdog, mark disconnected and poll `tryConnect` every
-/// 1 s until the agent answers (then resubscribe). A poke (session change or
-/// explicit `connect_events`) aborts the current subscription and restarts.
+/// stream end/error/watchdog, mark disconnected and probe the agent with
+/// exponential backoff until it answers (then resubscribe). A poke (session
+/// change or explicit `connect_events`) aborts the current subscription and
+/// restarts.
 fn spawn_stream_manager(inner: Arc<Inner>) {
     tokio::spawn(async move {
         loop {
@@ -1231,6 +1313,7 @@ fn spawn_stream_manager(inner: Arc<Inner>) {
                     if inner.stop.load(Ordering::SeqCst) {
                         return;
                     }
+                    reset_backoff(&inner);
                     continue;
                 }
                 StreamExit::Lost => {}
@@ -1248,10 +1331,14 @@ fn spawn_stream_manager(inner: Arc<Inner>) {
             if was_connected {
                 let _ = inner.conn_tx.send(false);
             }
+            // A connection just failed — back off before the next attempt so
+            // a flapping stream cannot pin the CPU (see backoff docs).
+            grow_backoff(&inner);
 
-            // Reconnect poll: tryConnect every 1 s (the TS reconnect loop —
-            // polling via unary RPC instead of blindly re-subscribing, since a
-            // dead channel returns a stream that never emits data/error/end).
+            // Reconnect poll: probe the agent, doubling the backoff on each
+            // failure (the TS reconnect loop — polling via a readiness unary
+            // instead of blindly re-subscribing, since a dead channel returns
+            // a stream that never emits data/error/end).
             loop {
                 if inner.stop.load(Ordering::SeqCst) {
                     return;
@@ -1268,17 +1355,20 @@ fn spawn_stream_manager(inner: Arc<Inner>) {
                     _ = inner.stop_notify.notified() => {
                         if inner.stop.load(Ordering::SeqCst) { return; }
                     }
-                    _ = tokio::time::sleep(Duration::from_millis(RECONNECT_POLL_MS)) => {}
+                    _ = tokio::time::sleep(backoff_delay(&inner)) => {}
                 }
                 if inner.state.lock().current_session_id != session {
                     break;
                 }
-                if try_connect_unary(&inner.addr).await {
+                if matches!(probe_agent(&inner.addr).await, AgentReachability::Reachable) {
                     // Agent confirmed alive — resubscribe at the top. (The TS
                     // "recreate the client after 3 failures" step is a no-op
                     // here: every call already uses a fresh tonic channel.)
                     break;
                 }
+                // Not reachable (or not definitively) — grow the backoff so
+                // repeated failures space themselves out instead of hammering.
+                grow_backoff(&inner);
             }
         }
     });
@@ -1332,6 +1422,13 @@ async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
     // below disables the arm once the first event has arrived.
     let watchdog = tokio::time::sleep(Duration::from_millis(CONNECT_WATCHDOG_MS));
     tokio::pin!(watchdog);
+    // Once the stream has stayed up for RECONNECT_STABLE_MS it counts as
+    // stable and the reconnect backoff resets to base. Armed on the first
+    // data event so the stability window is measured from connect, not from
+    // subscribe (a slow handshake under contention must not eat into it).
+    let stable = tokio::time::sleep(Duration::from_millis(RECONNECT_STABLE_MS));
+    tokio::pin!(stable);
+    let mut stable_armed = false;
     loop {
         let poked = inner.poke_notify.notified();
         tokio::pin!(poked);
@@ -1386,6 +1483,11 @@ async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
                                 st.connected = true;
                             }
                             let _ = inner.conn_tx.send(true);
+                            stable.as_mut().reset(
+                                tokio::time::Instant::now()
+                                    + Duration::from_millis(RECONNECT_STABLE_MS),
+                            );
+                            stable_armed = true;
                         }
                         if inner.event_tx.send(agent_event).is_err() {
                             return StreamExit::Lost; // app gone
@@ -1402,6 +1504,14 @@ async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
                 // the watchdog on first data and never re-arms it).
                 return StreamExit::Lost;
             }
+            _ = &mut stable, if stable_armed => {
+                // The stream has been continuously up for RECONNECT_STABLE_MS
+                // — the connection is healthy, so a future drop should
+                // reconnect promptly (base backoff) rather than inherit a
+                // backoff grown during an earlier flap.
+                reset_backoff(inner);
+                stable_armed = false;
+            }
             _ = &mut poked => {
                 // Session change or explicit connect_events — silent
                 // resubscribe (TS ignores the cancelled stale stream).
@@ -1414,24 +1524,13 @@ async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
     }
 }
 
-/// `tryConnect()` unary (used by the reconnect poll and heartbeat).
-///
-/// Same probe as [`GrpcClient::try_connect`] — see there for why it is
-/// `get_agent_readiness` and not a catalog read.
-async fn try_connect_unary(addr: &str) -> bool {
-    let cmd = RpcCommand {
-        id: now_id(),
-        r#type: "get_agent_readiness".to_string(),
-        ..Default::default()
-    };
-    execute_unary(addr, cmd, TRY_CONNECT_TIMEOUT_SEC)
-        .await
-        .is_ok()
-}
-
-/// Periodic health-check: every 10 s, if connected, `tryConnect()`; on
-/// failure mark disconnected (notify) and poke the manager's reconnect loop
-/// (TS `startHeartbeat`).
+/// Periodic health-check: every 10 s, if connected, probe the agent and tear
+/// the stream down only when the agent is *definitively* gone (connect
+/// refused / socket removed — the SIGKILL case a silent stream can't see). A
+/// timeout or handshake failure means the agent is merely slow (e.g. another
+/// process hogging the CPU), and tearing down a working stream on that alone
+/// is exactly what turned a brief CPU spike into a self-sustaining reconnect
+/// storm.
 fn spawn_heartbeat(inner: Arc<Inner>) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(HEARTBEAT_MS));
@@ -1442,8 +1541,7 @@ fn spawn_heartbeat(inner: Arc<Inner>) {
                     if !inner.state.lock().connected {
                         continue;
                     }
-                    let alive = try_connect_unary(&inner.addr).await;
-                    if !alive {
+                    if matches!(probe_agent(&inner.addr).await, AgentReachability::Gone) {
                         let was_connected = {
                             let mut st = inner.state.lock();
                             let was = st.connected;
@@ -3712,6 +3810,85 @@ mod tests {
         server.abort();
         wait_conn(&mut conn, false, "heartbeat disconnect").await;
         assert!(!client.is_connected());
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn probe_agent_classifies_reachability() {
+        // Reachable: a live agent answers the readiness handshake.
+        let (_server, addr) = spawn_mock_agent().await;
+        assert!(matches!(
+            probe_agent(&addr).await,
+            AgentReachability::Reachable
+        ));
+
+        // Gone: nothing is listening → connect refused.
+        assert!(matches!(
+            probe_agent("127.0.0.1:1").await,
+            AgentReachability::Gone
+        ));
+
+        // Uncertain: a black hole accepts TCP but never completes the
+        // handshake, so the probe times out rather than being refused.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let blackhole_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            loop {
+                let (sock, _) = listener.accept().await.unwrap();
+                held.push(sock);
+            }
+        });
+        let blackhole = format!("127.0.0.1:{}", blackhole_addr.port());
+        assert!(matches!(
+            probe_agent(&blackhole).await,
+            AgentReachability::Uncertain
+        ));
+    }
+
+    #[tokio::test]
+    async fn backoff_helpers_grow_cap_and_reset() {
+        let (client, _e, _c) = GrpcClient::new("127.0.0.1:1");
+        assert_eq!(
+            backoff_delay(&client.inner),
+            Duration::from_millis(RECONNECT_BACKOFF_BASE_MS)
+        );
+        grow_backoff(&client.inner); // 2 s
+        grow_backoff(&client.inner); // 4 s
+        grow_backoff(&client.inner); // 8 s
+        grow_backoff(&client.inner); // 16 s
+        grow_backoff(&client.inner); // 30 s (capped)
+        grow_backoff(&client.inner); // still 30 s
+        assert_eq!(
+            backoff_delay(&client.inner),
+            Duration::from_millis(RECONNECT_BACKOFF_MAX_MS)
+        );
+        reset_backoff(&client.inner);
+        assert_eq!(
+            backoff_delay(&client.inner),
+            Duration::from_millis(RECONNECT_BACKOFF_BASE_MS)
+        );
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stable_connection_resets_backoff() {
+        let (_server, addr) = spawn_mock_agent().await;
+        let (client, _events, mut conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("s1");
+        client.connect_events();
+        wait_connected(&mut conn).await;
+        // Raise the backoff while the stream is still up; the stable timer
+        // (RECONNECT_STABLE_MS = 200 ms in tests) resets it to base.
+        client
+            .inner
+            .backoff_ms
+            .store(RECONNECT_BACKOFF_MAX_MS, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(RECONNECT_STABLE_MS * 3)).await;
+        assert_eq!(
+            client.inner.backoff_ms.load(Ordering::SeqCst),
+            RECONNECT_BACKOFF_BASE_MS
+        );
         client.disconnect();
     }
 
