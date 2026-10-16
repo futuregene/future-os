@@ -210,7 +210,10 @@ continues). `describe` takes one exact name and prints its full JSON Schema.
 `call` prints at most `--max-bytes` (default 64 KB) and tells you to rerun with
 `--out <file>` for the rest, so a tool that returns hundreds of megabytes cannot
 flood the terminal it was asked from. Add `--timeout <secs>` (default 60) when a
-server is slow to start.
+server is slow to start. A tool that reports its own error (`isError`) prints its
+payload on **stderr** and exits 1, the same way `future tools call` reports a
+failed tool — a script or an agent does not have to parse a marker out of stdout
+to learn the call did not work.
 
 ### `models` — list available models
 
