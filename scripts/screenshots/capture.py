@@ -10,6 +10,7 @@ Commands
   serve-desktop / serve-mobile     start the harness dev server (foreground)
   capture-desktop / capture-mobile run scenarios, write PNGs to --out
                                    (--baseline FILE annotates movement vs a measure run)
+  check-upright-mobile             correlate a capture against an upright copy of itself
   video-desktop / video-mobile     record scenarios as mp4 (needs ffmpeg)
   variants-desktop / variants-mobile  render one scenario with each variant styling
   measure-desktop / measure-mobile record element geometry (offset diagrams)
@@ -1038,6 +1039,169 @@ def _save_sidecar(image, source: Path, suffix: str) -> Path:
     return target
 
 
+# ─── Is the transcript the right way up? ────────────────────────────────────
+#
+# react-native-web renders an `inverted` FlatList by flipping the scroll view and
+# flipping every cell back — two flips that cancel out, which is what puts the
+# newest row at the bottom and the text the right way up. When the list also has
+# a `refreshControl`, `ScrollView.render` clones it with the scroll view's own
+# style (`{ style: props.style }`), which carries the inversion, so the refresh
+# control's wrapper adds a *third* flip: the whole transcript renders upside down
+# (glyphs mirrored, rows in reverse). Native does not do this, so a phone capture
+# would disagree with the device.
+#
+# `cdp.mjs` neutralises that extra flip in the page for mobile captures. This is
+# how the result is judged instead of eyeballed: `upright-probe.js` puts the
+# transcript's own text beside an unflipped clone of itself in one screenshot,
+# and the two tiles are correlated straight and vertically mirrored. The clone
+# hangs in `document.body`, so it is upright by construction — no device, no
+# second browser, no OCR and no human in the loop.
+
+UPRIGHT_IN_PLACE = (255, 0, 255)
+UPRIGHT_CONTROL = (0, 255, 255)
+
+
+def colour_bbox(image, colour, tolerance: int = 40):
+    """Bounding box of the pixels within `tolerance` of `colour`, else None.
+
+    Distance is measured in the worst channel rather than as luminance: the
+    probe's outlines are pure magenta and pure cyan, which are far apart in one
+    channel and close in another.
+    """
+    from PIL import Image, ImageChops
+
+    difference = ImageChops.difference(image, Image.new("RGB", image.size, colour))
+    red, green, blue = difference.split()
+    worst = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+    return worst.point(lambda value: 255 if value <= tolerance else 0).getbbox()
+
+
+def _tile_rows(tile, height: int = 80) -> list:
+    """A grayscale tile as rows of samples, at a fixed height.
+
+    Comparing at a fixed height makes the two tiles comparable whatever their
+    pixel size, and a little downsampling does not touch the signal: a mirrored
+    tile is still a mirrored tile.
+    """
+    from PIL import Image
+
+    width, tall = tile.size
+    resized = tile.convert("L").resize((max(2, round(width * height / tall)), height), Image.LANCZOS)
+    pixels = resized.load()
+    return [[float(pixels[x, y]) for x in range(resized.width)] for y in range(height)]
+
+
+def _normalized_correlation(rows_a, rows_b) -> float:
+    """Pearson correlation of two sample grids of the same shape."""
+    flat_a = [value for row in rows_a for value in row]
+    flat_b = [value for row in rows_b for value in row]
+    count = len(flat_a)
+    mean_a = sum(flat_a) / count
+    mean_b = sum(flat_b) / count
+    covariance = variance_a = variance_b = 0.0
+    for value_a, value_b in zip(flat_a, flat_b):
+        offset_a = value_a - mean_a
+        offset_b = value_b - mean_b
+        covariance += offset_a * offset_b
+        variance_a += offset_a * offset_a
+        variance_b += offset_b * offset_b
+    if variance_a <= 0 or variance_b <= 0:
+        return 0.0
+    return covariance / (variance_a ** 0.5 * variance_b ** 0.5)
+
+
+def _best_correlation(rows_a, rows_b, shifts: int = 4) -> float:
+    """The best correlation over a small alignment window.
+
+    The two tiles are cropped from their own outlines, so a padding or rounding
+    difference of a pixel or two must not read as "different text". The window is
+    inset by `shifts` on every side so every candidate compares the same area.
+    """
+    height = min(len(rows_a), len(rows_b)) - 2 * shifts
+    width = min(len(rows_a[0]), len(rows_b[0])) - 2 * shifts
+    if height <= 1 or width <= 1:
+        return 0.0
+    best = -1.0
+    for offset_y in range(-shifts, shifts + 1):
+        for offset_x in range(-shifts, shifts + 1):
+            window_a = [row[shifts + offset_x:shifts + offset_x + width]
+                        for row in rows_a[shifts + offset_y:shifts + offset_y + height]]
+            window_b = [row[shifts:shifts + width] for row in rows_b[shifts:shifts + height]]
+            best = max(best, _normalized_correlation(window_a, window_b))
+    return best
+
+
+def report_upright(image_path: Path, viewport: dict, in_place_colour=UPRIGHT_IN_PLACE,
+                   control_colour=UPRIGHT_CONTROL) -> int:
+    """Print how the capture's transcript correlates with an upright copy of it."""
+    try:
+        from PIL import Image
+    except ImportError:
+        print("error: judging a capture needs Pillow (pip install pillow)", file=sys.stderr)
+        return 1
+
+    image = Image.open(image_path).convert("RGB")
+    scale = image.width / viewport["w"] if viewport.get("w") else 2
+    inset = max(2, round(4 * scale))
+    boxes = {}
+    for name, colour in (("in-place", in_place_colour), ("control", control_colour)):
+        box = colour_bbox(image, colour)
+        if box is None:
+            print(f"error: no {name} tile in {image_path} — did the probe inject?", file=sys.stderr)
+            return 1
+        boxes[name] = (box[0] + inset, box[1] + inset, box[2] - inset, box[3] - inset)
+    for name, box in boxes.items():
+        left, top, right, bottom = box
+        print(f"   {name} tile: {(right - left) / scale:.0f}x{(bottom - top) / scale:.0f} css px "
+              f"at {left / scale:.0f},{top / scale:.0f}")
+
+    in_place = _tile_rows(image.crop(boxes["in-place"]))
+    control = _tile_rows(image.crop(boxes["control"]))
+    mirrored_control = _tile_rows(image.crop(boxes["control"]).transpose(Image.FLIP_TOP_BOTTOM))
+    upright = _best_correlation(in_place, control)
+    mirrored = _best_correlation(in_place, mirrored_control)
+    print(f"   upright  correlation {upright:.3f}   (the transcript against an unflipped copy of itself)")
+    print(f"   mirrored correlation {mirrored:.3f}   (the same comparison, control flipped top-to-bottom)")
+    if abs(upright - mirrored) < 0.05:
+        print(f"   verdict: inconclusive — the two scores are within 0.05 of each other, so this "
+              f"capture's text does not say which way up it is")
+        return 2
+    if upright > mirrored:
+        print("   verdict: upright — the capture reads the right way up")
+        return 0
+    print("   verdict: MIRRORED — the transcript is rendered upside down "
+          "(an extra vertical flip, most likely the inverted list's refresh-control wrapper)")
+    return 1
+
+
+def check_upright(args: argparse.Namespace) -> int:
+    """Capture a scenario with the upright probe and judge the result by correlation."""
+    config = SCENARIOS[args.platform]
+    if port_free(config["port"]):
+        print(f"error: nothing is listening on port {config['port']}.", file=sys.stderr)
+        print(f"  start it first:  python3 scripts/screenshots/capture.py serve-{args.platform}", file=sys.stderr)
+        return 1
+    spec = config["scenarios"].get(args.scenario)
+    if spec is None:
+        print(f"error: unknown scenario {args.scenario!r} for {args.platform}", file=sys.stderr)
+        print(f"  available: {', '.join(config['scenarios'])}", file=sys.stderr)
+        return 2
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    shot = out_dir / f"upright-{args.scenario}.png"
+    probe = {
+        **spec,
+        "steps": [dict(step) for step in spec["steps"] if "shot" not in step]
+        + [{"inject": "upright-probe.js"}, {"wait": 300}, {"shot": shot.name}],
+    }
+    print(f"── {args.platform}/{args.scenario} (upright probe)")
+    with Browser(int(args.cdp_port)) as browser:
+        if run_scenario(args.platform, args.scenario, probe, out_dir, browser.port) != 0:
+            return 1
+    print(f"   image {shot}")
+    return report_upright(shot, config["viewport"])
+
+
 def changed_regions(mask, min_area: int = 24, pad: int = 4) -> list:
     """Group a difference mask into bounding boxes of changed content.
 
@@ -1267,6 +1431,12 @@ def main() -> int:
                                     help="ignore changed regions smaller than this")
         compare_parser.add_argument("--columns", type=int, default=3)
         compare_parser.set_defaults(func=compare, platform=platform)
+
+    upright_parser = sub.add_parser(
+        "check-upright-mobile",
+        help="judge a mobile capture's orientation against an unflipped copy of its own text")
+    upright_parser.add_argument("scenario")
+    upright_parser.set_defaults(func=check_upright, platform="mobile")
 
     terminal_parser = sub.add_parser("terminal", help="render a command's output as a terminal image", add_help=False)
     terminal_parser.add_argument("output")

@@ -404,12 +404,14 @@ check-prewarm-cache:
 test-prewarm-cache-check:
 	PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test-prewarm-cache-config.py
 
-# Regression tests for the screenshot harness's browser lifecycle: the startup
+# Regression tests for the screenshot harness: the browser lifecycle (the startup
 # sweep of browsers/profiles a killed run left behind, and the rule that only a
-# headless browser is ever driven. Starts real headless Chrome, so those cases
-# skip where none is installed.
+# headless browser is ever driven — starts real headless Chrome, so those cases
+# skip where none is installed), and the upright check's judge for mobile
+# captures of the inverted transcript (offline: it draws the tiles it judges).
 test-screenshot-harness:
 	PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test-screenshot-harness-reap.py
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test-screenshot-upright-check.py
 
 # Wire codegen owners: packages/rpc (future.proto) + channels (feishu_ws pbbp2).
 generate-proto:

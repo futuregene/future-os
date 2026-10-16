@@ -234,6 +234,12 @@ Consequences worth knowing before trusting a screenshot:
 - **Two things are stylised, not captured**: command-line output is rendered
   through `terminal.html` from a command's real stdout, and anything that lives
   only in the TUI (`future-tui`) is out of scope.
+- **One web-only rendering deviation is corrected rather than shown.** On the web
+  react-native-web gives an inverted list's refresh-control wrapper the list's own
+  flip, so the transcript renders upside down — which native does not do. A
+  mirrored phone screenshot would be worse than useless, so `cdp.mjs` neutralises
+  that extra flip for mobile captures (the DOM shows the correction: the wrapper
+  has no `transform`) and `check-upright-mobile` measures the result.
 
 ## Requirements
 
@@ -247,6 +253,7 @@ Consequences worth knowing before trusting a screenshot:
   browser and a `future-shot-` profile behind; every command sweeps those at
   startup, and a SIGTERM handler takes the browser down when a run is killed.
 - `pip install pillow` is optional: it only shrinks images in the generated PDF.
+  `compare-*` and `check-upright-mobile` do need it, and say so if it is missing.
 - The mobile harness additionally needs `react-native-web`, `@expo/metro-runtime`
   and `react-dom`; `capture.py serve-mobile` installs them into the mobile
   workspace on demand and leaves the manifests alone (see *Nothing is committed*).
@@ -286,6 +293,56 @@ resolve. `serve-mobile` sets `SHOT_WEB=1`; that flag is the only
 switch — `mobile/metro.config.js` redirects the remote context and the two native
 modules to `mobile/shot/mock/` **only** on the web platform and only when it is
 set, so native builds (`make run-mobile-android`) are unaffected.
+
+### The transcript is upright (the inverted list's extra flip)
+
+`mobile/src/features/chat/components/ChatTimeline.tsx` renders the transcript as
+an `inverted` FlatList. react-native-web implements that with two flips — the
+scroll view, and every cell back — which cancel out and put the newest row at the
+bottom. A list that also has a `refreshControl` gets a *third* one:
+`ScrollView.render` clones the refresh control with the scroll view's own style
+(`React.cloneElement(refreshControl, { style: props.style })` in
+`dist/exports/ScrollView/index.js`), which carries the inversion. The transcript
+then renders upside down — glyphs mirrored, rows reversed — which a phone does
+not, so such a capture disagrees with the device. (Reproduced with
+react-native-web 0.21.4, the version `serve-mobile` installs today.)
+
+`cdp.mjs` neutralises that one flip in the page for mobile captures
+(`UNFLIP_INVERTED_LIST`): it finds the wrapper whose only child is the mirrored
+scroller, takes its `transform` away and re-asserts it as React re-renders. No
+product code and no dependency version changes, and the correction is visible in
+the DOM. Every run reports what it did:
+
+```
+cdp: neutralized 1 inverted-list wrapper(s) (react-native-web gives a refresh control the scroll view's inversion)
+```
+
+The `chat` scenario asserts the outcome (`the transcript is not mirrored`), so a
+mirrored transcript fails the capture instead of being published, and the
+workaround cannot rot unnoticed. To judge a *capture* rather than a run:
+
+```bash
+python3 scripts/screenshots/capture.py check-upright-mobile chat
+```
+
+That captures the scenario with `upright-probe.js`, which puts the transcript's
+own text beside an unflipped clone of itself in a single screenshot, and
+correlates the two tiles straight and vertically mirrored. The clone hangs in
+`document.body`, so it is upright by construction — no device, no second browser,
+no OCR and no human reading it:
+
+```
+   in-place tile: 348x64 css px at 21,389
+   control tile: 348x64 css px at 7,773
+   upright  correlation 1.000   (the transcript against an unflipped copy of itself)
+   mirrored correlation 0.205   (the same comparison, control flipped top-to-bottom)
+   verdict: upright — the capture reads the right way up
+```
+
+Mirrored, the two numbers swap and the command exits non-zero; scores within 0.05
+of each other are reported as inconclusive rather than as a pass. The judge and
+that direction are pinned offline by
+`scripts/tests/test-screenshot-upright-check.py` (`make test-screenshot-harness`).
 
 ## Scenarios
 
@@ -426,6 +483,7 @@ than silent:
 | `scripts/screenshots/document.css` | Print stylesheet for generated documents |
 | `scripts/screenshots/terminal.html` | Terminal-styled frame for CLI output |
 | `scripts/screenshots/injects/` | Variant-styling JS (see recipe 5) |
+| `scripts/screenshots/upright-probe.js` | Puts a capture's own text beside an unflipped copy of it (see the mobile upright check) |
 | `scripts/screenshots/examples/` | Worked example: the 1.1.8 release notes content |
 | `scripts/screenshots/gen-demo-assets.py` | Regenerates the demo figures (needs matplotlib) |
 | `desktop/shot/` | Desktop mocks, demo data, harness entry, stand-in PTY server |
