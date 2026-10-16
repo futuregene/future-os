@@ -11,6 +11,14 @@ permissions: read-all
 # Push-to-main trigger is intentionally absent: "Require branches to be up
 # to date before merging" on branch protection already forces the PR check
 # to re-run on the merged result, so a post-merge run would be redundant.
+#
+# Because there is no push-to-main run here, every Swatinem/rust-cache step
+# below is read-only: `save-if` is false on a pull_request ref. The caches the
+# PR jobs read are written on main by `.github/workflows/prewarm.yml` — a
+# cache created on the default branch is restorable from every PR, while one
+# created by a PR is scoped to that PR. Cache keys must stay in step with that
+# file, so `scripts/ci/check-prewarm-cache.py` (run from the required
+# `Rust fmt + clippy (Linux)` job) fails the PR when they drift apart.
 on:
   pull_request:
   # Full PR-check suite by default; narrow scopes avoid rerunning unrelated
@@ -222,6 +230,23 @@ jobs:
     needs: changes
     runs-on: ubuntu-latest
     steps:
+      # Unconditional (the only step here not gated on the affected check): the
+      # cache-key guard below reads the workflow files, so this job checks out
+      # even when nothing else in it runs (~4s).
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Structural guard, deliberately placed in this required, always-present
+      # job so drift becomes a red required check instead of a silently cold
+      # cache: prewarm.yml owns every cache this workflow reads, so its keys,
+      # `workspaces` values and test package sets must match this file. The
+      # second command is the guard's own regression test (negative controls),
+      # so a checker that stopped detecting drift fails here too.
+      - name: Prewarm cache keys stay in sync
+        run: |
+          python3 scripts/ci/check-prewarm-cache.py
+          python3 scripts/tests/test-prewarm-cache-config.py
+
       # Always-present (no job-level `if`): a skipped required check is treated
       # as unsatisfied, which would block docs-only PRs. Evaluate the gate here
       # and gate every heavy step on it; an unaffected PR reports success via a
@@ -243,20 +268,21 @@ jobs:
         if: steps.affected.outputs.run != 'true'
         run: echo "No Rust workspace or desktop Tauri changes; lint skipped."
 
-      - name: Checkout
-        if: steps.affected.outputs.run == 'true'
-        uses: actions/checkout@v7
-
       # Pinned to match rust-toolchain.toml so CI and local dev use the same
       # compiler. Bump both together (see build.yml for the same pin).
       - name: Setup Rust
         if: steps.affected.outputs.run == 'true'
         uses: dtolnay/rust-toolchain@1.97.0
 
+      # Explicit `shared-key` (an explicit key replaces the automatic job-id
+      # key) so prewarm.yml can reproduce this key without depending on job
+      # names, and `save-if` so the PR run only ever reads: main writes.
       - name: Cache Rust
         if: steps.affected.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
         with:
+          shared-key: rust-quality
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: |
             .
             desktop/src-tauri
@@ -348,11 +374,12 @@ jobs:
           cargo clippy --no-default-features --features headless --all-targets --manifest-path desktop/src-tauri/Cargo.toml -- -D warnings
 
   # ─── Rust test gates (Linux) ──────────────────────────────────────────────
-  # One matrix job split into four parallel groups, each paying only its own
-  # compile+run cost instead of everything serializing behind one big
-  # `cargo test --workspace` and behind the desktop backend's independent
-  # webkit/gtk dep tree. Groups map to crate clusters that share a build
-  # graph; a PR pays setup+compile+run only for the groups it touches.
+  # The workspace crates run as a matrix of three parallel groups, each paying
+  # only its own compile+run cost instead of everything serializing behind one
+  # big `cargo test --workspace`. The desktop backend suite is its own pair of
+  # jobs (`rust-tests-desktop` below): a separate workspace with its own
+  # webkit/gtk dep tree, and the two feature configurations used to run one
+  # after the other in a single job, which made it the longest leg of the suite.
   #
   # Groups are always-present (per-step `if`, never job-level): branch
   # protection treats a *skipped* required check as unsatisfied, so e.g. a
@@ -368,7 +395,7 @@ jobs:
   # cross-platform build. Workspace crates do not depend on desktop/src-tauri,
   # so a desktop-only change cannot break them (the reverse is NOT true —
   # future-rpc feeds the Tauri backend, and the path filter marks packages/rpc/**
-  # as desktop_tauri too, so RPC changes also run the desktop group).
+  # as desktop_tauri too, so RPC changes also run the desktop jobs).
   #
   # CARGO_PROFILE_TEST_DEBUG=1 keeps file:line in panic backtraces while
   # dropping full debuginfo codegen — the dominant cost of building test
@@ -387,19 +414,12 @@ jobs:
           - name: agent
             filter: rust_agent
             packages: -p future-agent
-            desktop: 'false'
           - name: tui, cli
             filter: rust_tui_cli
             packages: -p future-tui -p future-cli -p future-app-settings -p future-app-workspaces
-            desktop: 'false'
           - name: channels, rpc, goal
             filter: rust_channels_rpc_goal
             packages: -p future-channel -p future-rpc -p future-goal -p future-tasks -p future-remote-crypto
-            desktop: 'false'
-          - name: desktop backend
-            filter: desktop_tauri
-            packages: ''
-            desktop: 'true'
     steps:
       # Per-group affected check: reads the matching `changes` output by name
       # so each group gates independently without a job-level `if` (which
@@ -425,69 +445,159 @@ jobs:
         if: steps.affected.outputs.run == 'true'
         uses: dtolnay/rust-toolchain@1.97.0
 
-      # All groups share the automatic cache key (job id is identical across
-      # matrix entries) so every group restores the same warm snapshot; per-
-      # group `key` slots would quadruple cache storage (~4 × ~500MB) and
-      # push the repo cache quota into LRU eviction of other jobs' entries.
-      # Concurrent saves race on one key (first wins) — the losers just
-      # recompile their own crates next run, which is bounded and parallel.
+      # One explicit key for all three workspace groups, written by exactly one
+      # writer: prewarm.yml's `tests-workspace` job, which runs every group into
+      # one target dir. That removes the old race (the first group to finish
+      # saved the entry, and the others restored a snapshot missing their own
+      # crates). PR runs only read, so nothing races on it any more.
+      #
+      # `workspaces: .` (root workspace only): these cargo commands never touch
+      # desktop/src-tauri/target, so this key does not snapshot it — the
+      # desktop jobs' cache step needs that dir and not this one, and uses the
+      # matching narrow value.
       - name: Cache Rust
         if: steps.affected.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            .
-            desktop/src-tauri
+          shared-key: rust-tests-workspace
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: .
           cache-on-failure: true
           cache-all-crates: true
 
-      # The WebKit/GTK stack is only needed by the desktop backend's -sys
-      # build scripts; workspace groups skip it (~40s of apt each). The root
-      # workspace has no openssl-sys dependency, so libssl-dev is unnecessary
-      # for its test groups.
+      # The root workspace has no WebKit/GTK or openssl-sys dependency, so its
+      # test groups install neither (the desktop jobs install that stack
+      # themselves).
       - name: Install Linux deps
         if: steps.affected.outputs.run == 'true'
         run: |
-          packages=(
+          bash scripts/ci/install-apt-packages.sh \
             build-essential \
             binutils \
             mold \
             pkg-config
-          )
-          if [ "${{ matrix.desktop }}" = 'true' ]; then
-            packages+=(
-              libayatana-appindicator3-dev \
-              libgtk-3-dev \
-              librsvg2-dev \
-              libwebkit2gtk-4.1-dev
-            )
-          fi
-          bash scripts/ci/install-apt-packages.sh "${packages[@]}"
-
-      # tauri-build's build script aborts with `resource path ... doesn't
-      # exist` unless every `bundle.externalBin` sidecar is present; empty
-      # placeholders suffice for tests.
-      - name: Create placeholder sidecars
-        if: steps.affected.outputs.run == 'true' && matrix.desktop == 'true'
-        run: |
-          triple=$(rustc -Vv | sed -n 's/^host: //p')
-          mkdir -p desktop/src-tauri/binaries
-          : > "desktop/src-tauri/binaries/future-$triple"
 
       - name: cargo test (${{ matrix.name }})
         if: steps.affected.outputs.run == 'true'
         env:
           CARGO_PROFILE_TEST_DEBUG: 1
+        run: cargo test ${{ matrix.packages }}
+
+  # The desktop backend suite: one job per feature configuration, so the gui
+  # suite (~7 min of tests) and the headless suite (~6 min) overlap instead of
+  # queueing behind each other. Both restore the same cache entry, written by
+  # prewarm.yml's `tests-desktop` job: they need the same manifest and target
+  # dir, so two near-identical multi-GB entries would only duplicate storage.
+  rust-tests-desktop:
+    name: Rust tests (Linux) (desktop ${{ matrix.flavor }})
+    needs: changes
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [gui, headless]
+    steps:
+      # Same always-present ± affected pattern as the groups above: the gate
+      # below turns these two entries into the required
+      # `Rust tests (Linux) (desktop backend)` context, so neither may be
+      # skipped (a skipped required check blocks the PR).
+      - name: Is this test group affected?
+        id: affected
+        env:
+          OUTPUTS: ${{ toJSON(needs.changes.outputs) }}
+        run: |
+          run=$(echo "$OUTPUTS" | jq -r '.desktop_tauri // "false"')
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+      - name: No affected Rust tests in this group
+        if: steps.affected.outputs.run != 'true'
+        run: echo "No affected Rust tests in this group; skipped."
+
+      - name: Checkout
+        if: steps.affected.outputs.run == 'true'
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        if: steps.affected.outputs.run == 'true'
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      # `workspaces: desktop/src-tauri` (that workspace only): its target dir
+      # is the only one these commands write, and the workspace groups' cache
+      # step uses the matching narrow value.
+      - name: Cache Rust
+        if: steps.affected.outputs.run == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-tests-desktop
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: desktop/src-tauri
+          cache-on-failure: true
+          cache-all-crates: true
+
+      # The desktop backend's -sys build scripts need the WebKit/GTK stack.
+      - name: Install Linux deps
+        if: steps.affected.outputs.run == 'true'
+        run: |
+          bash scripts/ci/install-apt-packages.sh \
+            build-essential \
+            binutils \
+            mold \
+            pkg-config \
+            libayatana-appindicator3-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev
+
+      # tauri-build's build script aborts with `resource path ... doesn't
+      # exist` unless every `bundle.externalBin` sidecar is present; empty
+      # placeholders suffice for tests.
+      - name: Create placeholder sidecars
+        if: steps.affected.outputs.run == 'true'
+        run: |
+          triple=$(rustc -Vv | sed -n 's/^host: //p')
+          mkdir -p desktop/src-tauri/binaries
+          : > "desktop/src-tauri/binaries/future-$triple"
+
+      # The manual `headless-cli` / `agent-lifecycle` scopes narrow the desktop
+      # suite to the headless CLI integration test, exactly as before the split;
+      # the gui flavor then has nothing to run.
+      - name: cargo test (desktop ${{ matrix.flavor }})
+        if: steps.affected.outputs.run == 'true'
+        env:
+          CARGO_PROFILE_TEST_DEBUG: 1
           REQUESTED_SCOPE: ${{ inputs.scope }}
         run: |
-          if [ "${{ matrix.desktop }}" = 'true' ] && { [ "$REQUESTED_SCOPE" = 'headless-cli' ] || [ "$REQUESTED_SCOPE" = 'agent-lifecycle' ]; }; then
-            cargo test --manifest-path desktop/src-tauri/Cargo.toml --no-default-features --features headless --test headless_cli
-          elif [ "${{ matrix.desktop }}" = 'true' ]; then
-            cargo test --manifest-path desktop/src-tauri/Cargo.toml
+          if [ "$REQUESTED_SCOPE" = 'headless-cli' ] || [ "$REQUESTED_SCOPE" = 'agent-lifecycle' ]; then
+            if [ "${{ matrix.flavor }}" = 'headless' ]; then
+              cargo test --manifest-path desktop/src-tauri/Cargo.toml --no-default-features --features headless --test headless_cli
+            else
+              echo "Scope $REQUESTED_SCOPE runs the headless CLI suite only; no gui desktop tests."
+            fi
+          elif [ "${{ matrix.flavor }}" = 'headless' ]; then
             cargo test --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml
           else
-            cargo test ${{ matrix.packages }}
+            cargo test --manifest-path desktop/src-tauri/Cargo.toml
           fi
+
+  # Keeps the branch-protection context "Rust tests (Linux) (desktop backend)"
+  # reporting after the desktop suite split: that string was the single entry's
+  # name, and the ruleset requires it by name (as it does the three workspace
+  # group names). It is red iff either flavor failed, so the split does not
+  # weaken the gate. `if: always()` for the same reason as the group gate
+  # below.
+  rust-tests-desktop-gate:
+    name: Rust tests (Linux) (desktop backend)
+    needs: [rust-tests-desktop]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Both desktop test flavors passed?
+        run: |
+          if [ "${{ needs.rust-tests-desktop.result }}" != 'success' ]; then
+            echo "Desktop test flavors result: ${{ needs.rust-tests-desktop.result }}"
+            exit 1
+          fi
+          echo "Desktop test flavors passed."
 
   # Aggregator keeping the required check name stable across group splits:
   # fails iff any Rust test group failed. `if: always()` so a failed group
@@ -497,14 +607,15 @@ jobs:
     name: Rust tests (Linux)
     # Keep the existing required-check name. New installer failures must also
     # block this gate without requiring a branch-protection configuration edit.
-    needs: [rust-tests, windows-update]
+    needs: [rust-tests, rust-tests-desktop, windows-update]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: All Rust test groups passed?
         run: |
-          if [ "${{ needs.rust-tests.result }}" != 'success' ] || [ "${{ needs.windows-update.result }}" != 'success' ]; then
+          if [ "${{ needs.rust-tests.result }}" != 'success' ] || [ "${{ needs.rust-tests-desktop.result }}" != 'success' ] || [ "${{ needs.windows-update.result }}" != 'success' ]; then
             echo "Rust test groups result: ${{ needs.rust-tests.result }}"
+            echo "Desktop test flavors result: ${{ needs.rust-tests-desktop.result }}"
             echo "Windows update fixtures result: ${{ needs.windows-update.result }}"
             exit 1
           fi
@@ -545,6 +656,10 @@ jobs:
         if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.desktop_tauri == 'true'
         uses: Swatinem/rust-cache@v2
         with:
+          # Written on main by prewarm.yml's build-{linux,windows,macos} jobs
+          # (same key name on all three OSes: rust-cache appends os/arch).
+          shared-key: rust-build
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: |
             .
             desktop/src-tauri
