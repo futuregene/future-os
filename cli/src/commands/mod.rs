@@ -13,6 +13,8 @@ pub mod desktop;
 pub mod doctor;
 pub mod init;
 pub mod mcp;
+pub mod mcp_client;
+pub mod mcp_servers;
 pub mod models;
 pub mod run;
 pub mod session;

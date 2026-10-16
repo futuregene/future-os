@@ -235,6 +235,28 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
         return 0;
     }
 
+    // `future mcp` — the server list, their tools, and calling one.
+    if group == Some("mcp")
+        && (command.is_none() || command == Some("--help") || command == Some("-h"))
+    {
+        out.log(help::MCP_GROUP_HELP);
+        return 0;
+    }
+
+    if group == Some("mcp") && commands::mcp_servers::is_mcp_command(command) {
+        let cmd = command.expect("is_mcp_command implies a command");
+        return catch(out, commands::mcp_servers::mcp(cmd, rest, out)).await;
+    }
+
+    if group == Some("mcp") {
+        out.log_err(&format!(
+            "Unknown command: {}\n",
+            command.unwrap_or("undefined")
+        ));
+        out.log(help::MCP_GROUP_HELP);
+        return 0;
+    }
+
     // if (group === "skills" && (!command || command === "--help" || command === "-h"))
     if group == Some("skills")
         && (command.is_none() || command == Some("--help") || command == Some("-h"))
@@ -476,6 +498,7 @@ mod tests {
             "skills",
             "task",
             "tools",
+            "mcp",
             "models",
             "session",
             "doctor",
@@ -747,6 +770,59 @@ mod tests {
         assert_eq!(code, 0);
         assert_eq!(stderr, "Unknown command: bogus\n\n");
         assert_eq!(stdout, format!("{}\n", help::TOOLS_GROUP_HELP));
+    }
+
+    #[tokio::test]
+    async fn mcp_dispatch_config_and_unknown_subcommand() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let _env = crate::test_env::EnvGuard::remove(&["FUTURE_HOME"]);
+
+        // Nothing configured yet: `list` says so and names the file it writes.
+        let (code, stdout, _) = run(&["mcp", "list"]).await;
+        assert_eq!(code, 0);
+        assert!(
+            stdout.contains("No MCP servers are configured."),
+            "stdout: {stdout}"
+        );
+        assert!(stdout.contains("mcp.json"), "stdout: {stdout}");
+
+        // A server that is not configured is an error, and it says what is.
+        let (code, _, stderr) = run(&["mcp", "tools", "nope"]).await;
+        assert_eq!(code, 1);
+        assert!(
+            stderr.contains("unknown MCP server 'nope'"),
+            "stderr: {stderr}"
+        );
+
+        // `add` writes the configuration; `list` reads it back. The repeated
+        // `--arg --mcp` is how an MCP server is spawned, dash and all.
+        let (code, stdout, _) =
+            run(&["mcp", "add", "rea", "--command", "rea", "--arg", "--mcp"]).await;
+        assert_eq!(code, 0);
+        assert!(stdout.contains("rea --mcp"), "stdout: {stdout}");
+        let (code, stdout, _) = run(&["mcp", "list"]).await;
+        assert_eq!(code, 0);
+        assert!(stdout.contains("rea --mcp"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("1 server(s) configured"),
+            "stdout: {stdout}"
+        );
+
+        // `remove` takes it back out.
+        let (code, _, _) = run(&["mcp", "remove", "rea"]).await;
+        assert_eq!(code, 0);
+        let (_, stdout, _) = run(&["mcp", "list"]).await;
+        assert!(
+            stdout.contains("No MCP servers are configured."),
+            "stdout: {stdout}"
+        );
+
+        // Unknown subcommand → group help, exit 0 (the tools/skills shape).
+        let (code, stdout, stderr) = run(&["mcp", "bogus"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stderr, "Unknown command: bogus\n\n");
+        assert_eq!(stdout, format!("{}\n", help::MCP_GROUP_HELP));
     }
 
     #[tokio::test]
