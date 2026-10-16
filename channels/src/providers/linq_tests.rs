@@ -14,7 +14,13 @@ use crate::test_support::{requests_to, spawn_http, HttpRoute};
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
 
-const SECRET: &str = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw7Jxx2Oll+OE=";
+/// The subscription secret deliveries are signed with.
+///
+/// Deliberately short and self-describing: a full-length `whsec_` token reads to
+/// GitHub's secret scanner as a leaked Stripe webhook signing secret, which is
+/// what the value this fixture used to carry (an example lifted from Linq's own
+/// SDK tests) was reported as.
+const SECRET: &str = "whsec_bGlucS10ZXN0";
 const CHAT_ID: &str = "8f392755-6865-4b18-880a-227f9d8b458f";
 const MESSAGE_ID: &str = "89e3566e-1d13-49e5-a8ee-48490d5bfeb7";
 const CUSTOMER: &str = "+12025559876";
@@ -277,7 +283,7 @@ fn a_missing_signature_is_rejected() {
 #[test]
 fn a_signature_from_another_secret_or_over_other_bytes_is_rejected() {
     let body = serde_json::to_vec(&received_message(json!({}))).unwrap();
-    let other_secret = "whsec_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    let other_secret = "whsec_YW5vdGhlcg==";
     let foreign = signed_request(&body, "evt-1", &now_seconds().to_string(), other_secret);
     assert!(!verify_delivery(&foreign, SECRET, now_seconds()));
 
