@@ -21,7 +21,7 @@ from pathlib import Path
 
 CACHE_ACTION = "Swatinem/rust-cache@"
 MAIN_ONLY = "${{ github.ref == 'refs/heads/main' }}"
-PR_OR_MAIN = "${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}"
+CI_WRITES = "${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}"
 
 # Cargo subcommands whose output the cache carries. `fmt` is excluded: it emits
 # nothing a later job reuses.
@@ -269,7 +269,7 @@ def main() -> int:
         prewarm_steps, prewarm_jobs = parsed[PREWARM_PATH]
 
         for path, steps, policy in (
-            (CI_PATH, ci_steps, PR_OR_MAIN),
+            (CI_PATH, ci_steps, CI_WRITES),
             (PREWARM_PATH, prewarm_steps, MAIN_ONLY),
         ):
             for step in steps:

@@ -75,7 +75,7 @@ class PrewarmCacheGuard(unittest.TestCase):
         """PRs must be able to save snapshots for their own later runs."""
         self.mutate(
             ".github/workflows/ci.yml",
-            "save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}",
+            "save-if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}",
             "save-if: ${{ github.ref == 'refs/heads/main' }}",
         )
         self.assertFails(self.run_guard(), "`save-if`")

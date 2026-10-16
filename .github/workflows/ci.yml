@@ -12,7 +12,7 @@ permissions: read-all
 # to date before merging" on branch protection already forces the PR check
 # to re-run on the merged result, so a post-merge run would be redundant.
 #
-# Each PR saves caches in its own merge-ref scope for later runs of that PR.
+# PRs save caches in their merge-ref scope; manual CI saves in its branch scope.
 # A manual prewarm on main can seed caches readable by new PRs. Its keys and
 # compile commands stay aligned through scripts/ci/check-prewarm-cache.py.
 on:
@@ -273,13 +273,13 @@ jobs:
 
       # Explicit `shared-key` (an explicit key replaces the automatic job-id
       # key) so prewarm.yml can reproduce this key without depending on job
-      # names. PRs save in their own scope; main saves optional shared seeds.
+      # names. PRs and manual branch runs save in their own ref scope.
       - name: Cache Rust
         if: steps.affected.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: rust-quality
-          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
           workspaces: .
           cache-on-failure: true
           cache-all-crates: true
@@ -438,7 +438,7 @@ jobs:
         with:
           shared-key: rust-tests-workspace
           key: ${{ matrix.filter }}
-          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
           workspaces: .
           cache-on-failure: true
           cache-all-crates: true
@@ -505,7 +505,7 @@ jobs:
         with:
           shared-key: rust-tests-desktop
           key: ${{ matrix.flavor }}
-          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
           workspaces: .
           cache-on-failure: true
           cache-all-crates: true
@@ -625,7 +625,7 @@ jobs:
           # Saved per PR; optional manual main prewarm uses the same key.
           # rust-cache appends OS/architecture to separate the native targets.
           shared-key: rust-build
-          save-if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
           workspaces: .
           cache-on-failure: true
           cache-all-crates: true
