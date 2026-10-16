@@ -1078,6 +1078,61 @@ mod tests {
         script_mock_agent(MockScript::default());
     }
 
+    /// The conversation whose prompt never reached the agent: the thread has no
+    /// agent session and its run row is still non-terminal. Deleting it has to
+    /// succeed — the agent has nothing to stop — where the old flow reported the
+    /// agent's "session not found" as a failure and left the conversation
+    /// undeletable, for as long as that row lived without ever being settled.
+    #[tokio::test]
+    async fn delete_thread_succeeds_when_the_agent_never_had_the_session() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_delete_unbound");
+        let thread = make_thread(&_home, None);
+        store::create_run(store::CreateRunInput {
+            id: Some("run_unbound".to_string()),
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("active run");
+        let agent = crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            errors: HashMap::from([(
+                "get_state".to_string(),
+                "session not found — pass a valid session_id (new_session creates one)".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let request_offset = agent.requests().len();
+
+        delete_thread(store::DeleteThreadInput {
+            thread_id: thread.id.clone(),
+            delete_files: false,
+        })
+        .await
+        .expect("a session that does not exist has nothing to stop");
+
+        let commands: Vec<String> = agent
+            .requests()
+            .into_iter()
+            .skip(request_offset)
+            .map(|request| request.0)
+            .collect();
+        assert!(
+            !commands.iter().any(|command| command == "abort"),
+            "no stop is attempted for a session the agent has no record of: {commands:?}"
+        );
+        // The user's delete still reclaims the Agent side, so the tombstone is
+        // delivered (idempotently) even though there is no session to remove.
+        assert!(
+            commands.iter().any(|command| command == "delete_sessions"),
+            "{commands:?}"
+        );
+        assert!(store::get_thread(&thread.id).expect("get").is_none());
+        script_mock_agent(MockScript::default());
+    }
+
     #[tokio::test]
     async fn batch_delete_threads_delegates() {
         let _lock = mock_agent_lock();
