@@ -19,6 +19,7 @@ Groups:
   skills    Install & manage agent skills
   task      Manage scheduled tasks (reusable prompt + trigger + runs)
   tools     List, describe, and call platform & browser tools
+  mcp       Configure MCP servers and call their tools
   models    List available AI models from the agent
   session   List, inspect, update, rename, and delete agent sessions
   doctor    Environment diagnostic
@@ -52,6 +53,7 @@ Run 'future <group> --help' for per-group details.
   future skills --help       Skills subcommands
   future task --help         Scheduled-task management (list/show/add/run/runs)
   future tools --help        Tool subcommands
+  future mcp --help          MCP server and tool subcommands
   future models --help       Model listing options
   future session --help      Session management options
   future agent --help        Agent server options (gRPC addr, logging, profiling)
@@ -469,6 +471,31 @@ Commands:
                      what arguments each tool accepts.
 
 Requires authentication: future auth login, or set the FUTURE_API_KEY environment variable."#;
+
+/// `future mcp` group help.
+pub const MCP_GROUP_HELP: &str = r#"future mcp — configure MCP servers and call their tools
+
+Servers are configured in ~/.future/mcp.json and run as local processes
+speaking MCP over stdio. The FutureOS agent has no MCP client, so this CLI is
+how an MCP server is reached from an agent session.
+
+Usage:
+  future mcp list [--json]
+  future mcp tools <server> [--query <text>] [--limit <n>] [--offset <n>]
+  future mcp describe <server> <tool>
+  future mcp call <server> <tool> [--args '<json>'] [--out <file>] [--max-bytes <n>]
+  future mcp add <name> --command <program> [--arg <value>]... [--env KEY=VALUE]...
+  future mcp remove <name>
+
+Commands:
+  list                     Configured servers, and the file they come from.
+  tools <server>           That server's tools, one line each, paged.
+  describe <server> <tool> One tool's full description and argument schema.
+  call <server> <tool>     Invoke one tool. Output is capped; --out writes all of it.
+  add / remove             Change the server list.
+
+Each call starts the server and stops it again. Add --timeout <secs> when a
+server is slow to start (default 60)."#;
 
 /// `future skills` group help (index.ts).
 pub const SKILLS_GROUP_HELP: &str = r#"future skills — install & manage agent skills

@@ -187,6 +187,31 @@ future tools call <name> --args '<json>' --output result.png
 
 File-path arguments are converted automatically where a tool expects file content.
 
+### `mcp` — configure MCP servers and call their tools
+
+```bash
+future mcp list                          # configured servers, and the file they come from
+future mcp add rea --command rea --arg --mcp
+future mcp tools rea --query binary      # that server's tools, one line each
+future mcp describe rea inspect_go_binary  # one tool's full argument schema
+future mcp call rea inspect_go_binary --args '{"path":"/usr/bin/foo"}'
+future mcp call rea inspect_go_binary --args '{...}' --out full.json  # write all of it
+future mcp remove rea
+```
+
+Servers live in `~/.future/mcp.json` (beside `agent/`, so `FUTURE_HOME` moves them
+with the instance) and run as local processes speaking MCP over stdio. The agent
+has no MCP client of its own, so this group is how an agent session reaches one:
+the skill or the user calls `future mcp` through the ordinary `shell` tool.
+
+Every step is bounded because the servers this exists for are large. `tools`
+shows one line per tool and pages (`--limit`, default 50; `--offset`
+continues). `describe` takes one exact name and prints its full JSON Schema.
+`call` prints at most `--max-bytes` (default 64 KB) and tells you to rerun with
+`--out <file>` for the rest, so a tool that returns hundreds of megabytes cannot
+flood the terminal it was asked from. Add `--timeout <secs>` (default 60) when a
+server is slow to start.
+
 ### `models` — list available models
 
 ```bash
