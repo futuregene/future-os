@@ -600,6 +600,20 @@ async fn mcp_call(args: &[String], out: &Output) -> Result<(), String> {
         header.push(format!("[the whole result is also in {path}]"));
     }
 
+    // A tool that reported an error is a failed command, exactly as it is for
+    // `future tools call`: the payload goes to stderr and the exit code is 1, so
+    // a script or an agent does not have to parse a marker out of stdout to
+    // learn that the call did not work. `--out` still wrote the full text.
+    if reported_error {
+        let mut message = header.join("\n");
+        if !message.is_empty() {
+            message.push('\n');
+        }
+        message.push_str(&body);
+        out.log_err(&message);
+        return Err(crate::HANDLED_EXIT.to_string());
+    }
+
     for line in header {
         out.log(&line);
     }
@@ -966,5 +980,164 @@ mod tests {
     fn an_empty_document_is_an_empty_configuration() {
         let config: McpConfig = serde_json::from_str("{}").unwrap();
         assert!(config.servers.is_empty());
+    }
+
+    // ── End to end against a real spawned server ───────────────────────────
+
+    /// These spawn `/bin/sh` as an MCP server over real pipes, so they cover
+    /// what the duplex tests cannot: the configuration file, process spawning,
+    /// the handshake against a real child, and the stdout/stderr split a
+    /// caller actually sees.
+    #[cfg(unix)]
+    mod process {
+        use super::*;
+        use crate::output::Output;
+
+        /// A minimal MCP server in POSIX shell: answers `initialize`,
+        /// `tools/list` and `tools/call`, echoing the request id back.
+        ///
+        /// `tools/call boom` answers `isError: true`; anything else succeeds.
+        const FAKE_SERVER: &str = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *notifications/initialized*) ;;
+    *'"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18"}}\n' "$id" ;;
+    *'"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"boom","description":"always fails"},{"name":"plain","description":"always works"}]}}\n' "$id" ;;
+    *'"tools/call"'*)
+      case "$line" in
+        *'"name":"boom"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"isError":true,"content":[{"type":"text","text":"engine missing"}]}}\n' "$id" ;;
+        *)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"fine"}]}}\n' "$id" ;;
+      esac ;;
+  esac
+done
+"#;
+
+        /// A throwaway FutureOS home whose `mcp.json` runs the fake server.
+        fn with_fake_server() -> (tempfile::TempDir, crate::test_env::EnvGuard) {
+            let home = tempfile::tempdir().expect("tempdir");
+            std::fs::write(
+                home.path().join("mcp.json"),
+                serde_json::to_string(&json!({
+                    "servers": {
+                        "fake": { "command": "/bin/sh", "args": ["-c", FAKE_SERVER] },
+                    },
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let paths = std::env::var_os("PATH").unwrap_or_default();
+            let guard = crate::test_env::EnvGuard::set(&[
+                ("FUTURE_HOME", home.path().as_os_str().to_owned()),
+                ("PATH", paths),
+            ]);
+            (home, guard)
+        }
+
+        fn split(captured: &crate::output::Captured) -> (String, String) {
+            let out = String::from_utf8(captured.out.lock().unwrap().clone()).unwrap();
+            let err = String::from_utf8(captured.err.lock().unwrap().clone()).unwrap();
+            (out, err)
+        }
+
+        #[tokio::test]
+        async fn a_successful_call_prints_the_tool_text_on_stdout() {
+            let _lock = crate::test_env::lock_env().await;
+            let _home = with_fake_server();
+            let (out, sink) = Output::memory();
+
+            mcp_call(&args(&["fake", "plain"]), &out)
+                .await
+                .expect("a normal tool result is a successful command");
+            let (stdout, stderr) = split(&sink);
+            assert_eq!(stdout, "fine\n");
+            assert_eq!(stderr, "");
+        }
+
+        #[tokio::test]
+        async fn a_tool_reported_error_goes_to_stderr_and_fails_the_command() {
+            let _lock = crate::test_env::lock_env().await;
+            let _home = with_fake_server();
+            let (out, sink) = Output::memory();
+
+            let error = mcp_call(&args(&["fake", "boom"]), &out)
+                .await
+                .expect_err("a tool error is a failed command");
+            assert_eq!(
+                error,
+                crate::HANDLED_EXIT,
+                "exit code 1, not a printed error"
+            );
+            let (stdout, stderr) = split(&sink);
+            assert_eq!(stdout, "", "a failure must not fill stdout");
+            assert!(stderr.contains("[the tool reported an error]"), "{stderr}");
+            assert!(stderr.contains("engine missing"), "{stderr}");
+        }
+
+        #[tokio::test]
+        async fn a_tool_reported_error_still_honours_out() {
+            let _lock = crate::test_env::lock_env().await;
+            let _home = with_fake_server();
+            let (out, sink) = Output::memory();
+            let path = std::env::temp_dir().join("future-mcp-call-error-out.txt");
+            let _ = std::fs::remove_file(&path);
+            let path_arg = path.display().to_string();
+
+            mcp_call(
+                &args(&["fake", "boom", "--max-bytes", "4", "--out", &path_arg]),
+                &out,
+            )
+            .await
+            .expect_err("a tool error is a failed command");
+            let (_, stderr) = split(&sink);
+            assert!(stderr.contains("first 4 bytes of 14"), "{stderr}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "engine missing");
+            let _ = std::fs::remove_file(&path);
+        }
+
+        #[tokio::test]
+        async fn tools_lists_the_spawned_servers_tools() {
+            let _lock = crate::test_env::lock_env().await;
+            let _home = with_fake_server();
+            let (out, sink) = Output::memory();
+
+            mcp_tools(&args(&["fake"]), &out).await.unwrap();
+            let (stdout, _) = split(&sink);
+            assert!(stdout.contains("boom"), "{stdout}");
+            assert!(stdout.contains("plain"), "{stdout}");
+            assert!(stdout.contains("Showing 2 of 2 tools."), "{stdout}");
+        }
+
+        #[tokio::test]
+        async fn a_server_that_dies_reports_its_stderr() {
+            let _lock = crate::test_env::lock_env().await;
+            let home = tempfile::tempdir().unwrap();
+            std::fs::write(
+                home.path().join("mcp.json"),
+                json!({
+                    "servers": { "broken": {
+                        "command": "/bin/sh",
+                        "args": ["-c", "echo 'no engine here' >&2; exit 3"],
+                    }},
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let _env = crate::test_env::EnvGuard::set(&[(
+                "FUTURE_HOME",
+                home.path().as_os_str().to_owned(),
+            )]);
+            let (out, _sink) = Output::memory();
+
+            let error = mcp_tools(&args(&["broken"]), &out)
+                .await
+                .expect_err("a server that dies during its handshake fails the command");
+            assert!(error.contains("failed its handshake"), "{error}");
+            assert!(error.contains("no engine here"), "{error}");
+        }
     }
 }
