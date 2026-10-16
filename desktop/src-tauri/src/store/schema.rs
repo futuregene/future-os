@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS threads (
     -- means "never auto-title": the thread arrived carrying a conversation's
     -- own name (an imported or forked conversation), and a later rename is
     -- permanent — see `store::rename_thread`. A thread is auto-titled only
-    -- while it still wears this exact title (run_control::title_settled_thread).
+    -- while it still wears this exact title (run_control::title_settled_thread_if_enabled).
     title_seed TEXT,
     status TEXT NOT NULL DEFAULT 'active',
     pinned INTEGER NOT NULL DEFAULT 0,

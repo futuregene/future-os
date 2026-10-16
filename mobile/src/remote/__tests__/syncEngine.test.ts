@@ -1242,6 +1242,66 @@ describe("SyncEngine", () => {
     }
   });
 
+  test("a lean feed's mid-run join recovers both the prompt and the exchanges it missed", async () => {
+    // The phone declares `lean_events_v1`, so its lane tolerates holes in the
+    // event sequence: the peer omits the streamed-only slices it does not send.
+    // That tolerance must not swallow a *mid-run join* — a run whose first
+    // frame this client sees above its start has a beginning the journal still
+    // holds (the prompt, `agent_start`, the reply's first text), and only a
+    // reconcile from -1 reads it back. The same reconcile re-reads durable
+    // history, which is what restores the exchanges this client never saw while
+    // it received nothing for the session.
+    const h = new Harness("");
+    h.feedOmitsIndices = true;
+    const stale: HistoryEntry = {
+      id: "u0", kind: "user", role: "user", createdAtMs: 1, runId: "older",
+      blocks: [{ kind: "text", text: "older question" }],
+    };
+    const staleReply: HistoryEntry = {
+      id: "a0", kind: "assistant", role: "assistant", createdAtMs: 2, runId: "older",
+      blocks: [{ kind: "text", text: "older reply" }],
+    };
+    h.history = timelineFromEntries([stale, staleReply]);
+    try {
+      await h.engine.open("s");
+      await h.settle();
+      expect(h.textOf("s")).toBe("older questionolder reply");
+
+      // While the phone was dark, another exchange was written and settled.
+      const missed: HistoryEntry = {
+        id: "u1", kind: "user", role: "user", createdAtMs: 3, runId: "blind",
+        blocks: [{ kind: "text", text: "missed question" }],
+      };
+      const missedReply: HistoryEntry = {
+        id: "a1", kind: "assistant", role: "assistant", createdAtMs: 4, runId: "blind",
+        blocks: [{ kind: "text", text: "missed reply" }],
+      };
+      h.history = timelineFromEntries([stale, staleReply, missed, missedReply]);
+
+      // A run starts and the first frame this client receives is above its
+      // start: the prompt was broadcast at idx 0, the reply already has text.
+      h.active("r");
+      h.journal.add(evt("user_message", "r", 0, JSON.stringify({ entry_id: "u2", run_id: "r", text: "the question" })));
+      h.journal.add(agentStart("r", 1));
+      h.journal.add(textChunk("r", 2, "the "));
+      h.journal.add(textChunk("r", 3, "answer"));
+      const joined = textChunk("r", 4, "!");
+      h.journal.add(joined);
+      h.engine.event("s", joined);
+      await h.settle();
+
+      expect(h.timelineOf("s").items.map((item) => (item.kind === "message" ? `${item.role}:${item.text}` : item.id)))
+        .toEqual([
+          "user:older question", "assistant:older reply",
+          "user:missed question", "assistant:missed reply",
+          "user:the question", "assistant:the answer!",
+        ]);
+      expect(h.replayCalls.some((call) => call.run === "r" && call.since === -1)).toBe(true);
+    } finally {
+      h.engine.clear();
+    }
+  });
+
   test("full reconcile drops a live user mirror duplicating a durable prompt", async () => {
     const h = new Harness();
     h.history = {

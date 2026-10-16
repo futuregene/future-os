@@ -637,9 +637,11 @@ mod tests {
             title: "人工命名".into(),
         })
         .expect("rename");
-        // The history a completed first turn leaves behind: the previous rule
-        // read it to decide "new conversation", and a one-exchange history made
-        // this conversation eligible. The title alone must decide.
+        // A completed first turn leaves a one-exchange history and an idle
+        // Agent behind. The superseded rule needed both to call this
+        // conversation a new one — and with them scripted it renamed a name
+        // someone chose, which is the failure this test pins. The title alone
+        // decides now, so neither is asked for.
         mock.push_typed_data("get_session_entries", first_pair());
         mock.push_state_for_session(
             "sess-named",
