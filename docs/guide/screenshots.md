@@ -239,6 +239,13 @@ Consequences worth knowing before trusting a screenshot:
 
 - Node.js (the driver uses `ws`, already a repo dependency) and Python 3.
 - Chrome, Edge or Chromium. Safari is not supported (the driver needs CDP).
+- The capture only drives a **headless** browser, and only one it started itself
+  (or a headless one already listening on `--cdp-port`). A *visible* browser on
+  that port is reported and skipped, never driven — driving it would navigate and
+  screenshot a window you are looking at — and the run starts its own on the next
+  free port instead. Interrupted runs (a turn timeout, an agent restart) leave a
+  browser and a `future-shot-` profile behind; every command sweeps those at
+  startup, and a SIGTERM handler takes the browser down when a run is killed.
 - `pip install pillow` is optional: it only shrinks images in the generated PDF.
 - The mobile harness additionally needs `react-native-web`, `@expo/metro-runtime`
   and `react-dom`; `capture.py serve-mobile` installs them into the mobile
@@ -424,7 +431,8 @@ than silent:
 
 | Symptom | Cause |
 |---|---|
-| `cdp: no page target on port …` | A stale browser from an earlier run holds the CDP port; close it or pass `--cdp-port`. |
+| `cdp: no page target on port …` | An earlier run's **headless** browser still holds the CDP port with no page target; close it or pass `--cdp-port`. A *visible* browser there is reported and skipped rather than driven. |
+| `note: CDP port … is held by …` / `… is a visible browser …` | Expected, not an error: that browser is not one this run may drive, so the capture started its own on the next free port. |
 | `target not found: …` | The `aria-label` changed, or the step ran before the screen settled — raise the preceding `wait`. |
 | A tap does nothing | Inside a scrollable list, react-native-web prefers the scroll responder; the driver already sends touch sequences, so check `--touch` was not disabled. |
 | Empty or partial mobile screen | Expo web is still bundling on the first request; wait for the first capture, then re-run. If the page is blank and the console reports "Incompatible React versions", the mobile workspace's react/react-dom pair drifted — `serve-mobile` checks this and prints the fix. |

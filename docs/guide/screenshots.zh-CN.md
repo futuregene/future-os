@@ -168,6 +168,7 @@ python3 scripts/screenshots/capture.py video-mobile chat
 
 - Node.js（驱动用到的 `ws` 已是仓库依赖）和 Python 3。
 - Chrome、Edge 或 Chromium。不支持 Safari（驱动需要 CDP）。
+- 截图只驱动 **headless** 浏览器，而且只驱动自己起的那个（或 `--cdp-port` 上已在跑的 headless 实例）。该端口上若是**可见**的浏览器，工具会提示并跳过、绝不去驱动——驱动它就会导航并截取你正看着的那个窗口——改在下一个空闲端口起自己的浏览器。被打断的运行（turn 超时、agent 重启）会留下浏览器和 `future-shot-` profile：每条命令启动时都会回收它们，SIGTERM 处理器则在运行被杀时收掉浏览器。
 - `pip install pillow` 是可选的：它只用来压小 PDF 里的图片。
 - 手机端工具另外需要 `react-native-web`、`@expo/metro-runtime` 和 `react-dom`；`capture.py serve-mobile` 会把它们按需装进 mobile workspace，且不动依赖清单（见"不入库的约定"）。
 - **录视频**另外需要 ffmpeg：macOS 用 `brew install ffmpeg`，Linux 用发行版包管理器。缺了会在开始录像前直接报错，不会录到一半失败。
@@ -287,7 +288,8 @@ mock 是唯一需要跟着产品走的部分，而漏掉的地方会主动报出
 
 | 现象 | 原因 |
 |---|---|
-| `cdp: no page target on port …` | 上一次运行留下的浏览器占着 CDP 端口；关掉它或换 `--cdp-port`。 |
+| `cdp: no page target on port …` | 上一次运行留下的 **headless** 浏览器占着 CDP 端口且没有页面目标；关掉它或换 `--cdp-port`。该端口上若是**可见**浏览器，工具会提示并跳过，而不是去驱动它。 |
+| `note: CDP port … 被占用 / 是可见浏览器` | 不是错误：那个浏览器不是本次运行可以驱动的，于是这次截图改在下一个空闲端口起自己的浏览器。 |
 | `target not found: …` | `aria-label` 变了，或步骤跑在界面稳定之前——把前一个 `wait` 调大。 |
 | 点击没有反应 | 在可滚动列表里，react-native-web 会优先响应滚动手势；驱动已经发送触摸序列，请确认没有关掉 `--touch`。 |
 | 手机端界面空白或不全 | 首次请求时 Expo web 还在打包；等第一次截图完成后再跑一次。若页面全白且控制台报 "Incompatible React versions"，说明 mobile workspace 里 react / react-dom 版本不一致——`serve-mobile` 会检查并给出修复命令。 |

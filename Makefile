@@ -393,6 +393,13 @@ check-docs:
 test-docs-check:
 	PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test-check-docs.py
 
+# Regression tests for the screenshot harness's browser lifecycle: the startup
+# sweep of browsers/profiles a killed run left behind, and the rule that only a
+# headless browser is ever driven. Starts real headless Chrome, so those cases
+# skip where none is installed.
+test-screenshot-harness:
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test-screenshot-harness-reap.py
+
 # Wire codegen owners: packages/rpc (future.proto) + channels (feishu_ws pbbp2).
 generate-proto:
 	cd packages/rpc && REGENERATE_PROTO=1 cargo build
