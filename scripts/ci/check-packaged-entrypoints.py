@@ -131,11 +131,6 @@ def main():
                         if binary_name == "future.exe":
                             probe(f"{name}-agent-help", binary, ["agent", "--help"],
                                   "--reset-windows-sandbox", home)
-                maintenance = list(nsis_root.rglob("futureos-maintenance.exe"))
-                require(len(maintenance) == 1, "Installer must contain exactly one maintenance CLI")
-                probe("nsis-maintenance-version", maintenance[0], ["--version"], version, home)
-                probe("nsis-maintenance-help", maintenance[0], ["agent", "--help"],
-                      "--reset-windows-sandbox", home)
             summary["status"] = "passed"
     except Exception as error:
         summary["status"] = "failed"

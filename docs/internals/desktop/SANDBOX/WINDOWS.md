@@ -166,17 +166,21 @@ The long-lived Agent holds the user-level lock
 `~/.future/agent/agent-instance.lock`; changing the gRPC port does not bypass
 it. Normal Desktop exit, confirmed force-quit cleanup, clear data, environment
 switch and update/restart drain the embedded service and revoke its tracked
-permissions before releasing ownership. Cleanup failure blocks installation and
-in-process restart and retains diagnostic metadata; OS force termination cannot
-guarantee cleanup. Attached external Agents retain ownership and are not reset
-or stopped by Desktop. An independent Agent's Ctrl+C also resets idempotently.
-Startup GC, settings reset, and
-uninstall continue reclaiming.
+permissions before releasing ownership. Cleanup failure blocks the managed
+automatic-update handoff and in-process restart and retains diagnostic metadata;
+OS force termination cannot guarantee cleanup. Attached external Agents retain
+ownership and are not reset or stopped by Desktop. An independent Agent's Ctrl+C
+also resets idempotently. Startup GC, settings reset, and uninstall continue
+reclaiming.
 
-NSIS installMode is currentUser; the uninstall pre-hook cleans up under the
-same user profile; a failed reset should keep the retryable sidecar rather than
-deleting the cleanup tool first. No manual `icacls /reset` overwriting
-unrelated ACLs.
+NSIS installMode is currentUser. Installation only handles process/file safety,
+replacement and verification; it does not bundle a temporary maintenance CLI or
+require old sandbox cleanup to succeed. On first start the new Agent takes its
+instance lock and attempts cleanup before accepting work. Failure reports a
+diagnostic and keeps the records for retry. The uninstall pre-hook attempts
+cleanup with the installed CLI under the same user profile; missing/broken CLI
+or cleanup failure does not block removal, and records remain for a later Agent
+startup. No manual `icacls /reset` overwriting unrelated ACLs.
 
 ## 3. Path capability approval
 

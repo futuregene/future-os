@@ -147,10 +147,6 @@ if ($Sign) {
     Write-Host "    signed: $p"
 }
 
-# Copy AFTER signing so installer-only maintenance has the same signature and
-# version as the bundled CLI. It repairs pre-sandbox/legacy installed versions.
-Copy-Item "desktop/src-tauri/binaries/future-$triple.exe" "desktop/src-tauri/binaries/installer-maintenance.exe" -Force
-
 Write-Host "==> Building desktop installers (Tauri)" -ForegroundColor Cyan
 $overlay = $null
 $failLog = $null

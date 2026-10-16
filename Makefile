@@ -159,7 +159,6 @@ desktop-sidecars: build-cli
 ifeq ($(OS),windows)
 	@if not exist desktop\src-tauri\binaries mkdir desktop\src-tauri\binaries
 	$(COPY_CMD) target\release\future$(EXE_SUFFIX) "desktop\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)"
-	$(COPY_CMD) target\release\future$(EXE_SUFFIX) "desktop\src-tauri\binaries\installer-maintenance.exe"
 else
 	@mkdir -p desktop/src-tauri/binaries
 	install -m 755 target/release/future desktop/src-tauri/binaries/future-$(TARGET)
