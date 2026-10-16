@@ -419,8 +419,12 @@ fn build_dynamic_tool_guidelines(tool_names: &[&str]) -> Vec<String> {
         // session cannot see for itself: the message arrives as a bare user
         // turn with no sender, and the payload can be mangled on the way — see
         // docs/guide/self-inspection.md.
+        //
+        // Spell the call forms out: they are not uniform. `transcript` and
+        // `run` take `--session <id>`, while `status` and `wait` take the id
+        // positionally and reject `--session` as an unknown option.
         guidelines.push(
-            "A user message may reference another conversation as [title](futureos://session/<session-id>): the id in that link identifies that conversation. Read it with the shell tool — `future session transcript --session <id>` (add --select/--grep/--limit/--counts to read it cheaply, --runs for its run outcomes) or `future session history search --session <id> --query \"<text>\"` to find a passage. To send it a message use `future run --session <id> \"<message>\"`, which starts a real run there and spends the user's credits; if that conversation is mid-run, you decide whether to append behind it (the default) or interrupt it with --steer. By default the command waits for that run to end; use `future run --no-wait --session <id> \"<message>\"` to get an ack immediately and continue working, then retrieve the result later with `future session transcript --session <id>` or `future session status --session <id>`. The target sees only a bare user turn, so state what it cannot infer: that the message comes from another conversation (name the sending session id) and whether you expect it to act on the content or merely take note. When the payload is long or non-ASCII, write it to a file and pass it as `@<file>` — the CLI reads the file itself — instead of reading it into a shell variable first: on Windows PowerShell 5.1 `Get-Content` decodes a BOM-less UTF-8 file with the ANSI code page, and the mojibake is what lands in the other conversation."
+            "A user message may reference another conversation as [title](futureos://session/<session-id>): the id in that link identifies that conversation. Read it with the shell tool — `future session transcript --session <id>` (add --select/--grep/--limit/--counts to read it cheaply, --runs for its run outcomes) or `future session history search --session <id> --query \"<text>\"` to find a passage. To send it a message use `future run --session <id> \"<message>\"`, which starts a real run there and spends the user's credits; if that conversation is mid-run, you decide whether to append behind it (the default) or interrupt it with --steer. By default the command waits for that run to end, so raise the shell tool's timeout for a long one (max 600s); `future run --no-wait --session <id> \"<message>\"` gets an ack immediately and continues, and the answer comes back later from `future session wait <id> [--run <run-id>]` — the ack carries the run id — while `future session status <id>` shows whether that run is still active. The target sees only a bare user turn, so state what it cannot infer: that the message comes from another conversation (name the sending session id) and whether you expect it to act on the content or merely take note. When the payload is long or non-ASCII, write it to a file and pass it as `@<file>` — the CLI reads the file itself — instead of reading it into a shell variable first: on Windows PowerShell 5.1 `Get-Content` decodes a BOM-less UTF-8 file with the ANSI code page, and the mojibake is what lands in the other conversation."
                 .to_string(),
         );
     }
@@ -943,10 +947,19 @@ mod tests {
         // leave it unable to judge, and naming only one would be an instruction.
         assert!(with_shell.contains("you decide whether to append behind it"));
         assert!(with_shell.contains("--steer"));
-        // The command waits for that run by default; --no-wait provides an
-        // immediate ack. Without this the model cannot size the shell timeout.
+        // The run waits by default and the shell tool caps at 600s, so a long
+        // relay needs the timeout raised; --no-wait is the other way out.
         assert!(with_shell.contains("waits for that run to end"));
+        assert!(with_shell.contains("raise the shell tool's timeout"));
         assert!(with_shell.contains("--no-wait"));
+        // Retrieval after --no-wait is `session wait`, not `transcript` (which
+        // merely contains the answer) and not `status` (which reports the run's
+        // state, never its answer).
+        assert!(with_shell.contains("future session wait <id>"));
+        // `session status` takes the id positionally and rejects `--session`;
+        // the guideline had it backwards, so pin the form.
+        assert!(with_shell.contains("future session status <id>"));
+        assert!(!with_shell.contains("future session status --session"));
         // The target sees a bare user turn: without provenance and intent in
         // the message it cannot tell a relayed report from the user's own
         // request.
