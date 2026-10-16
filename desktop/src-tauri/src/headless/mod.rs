@@ -59,6 +59,15 @@ pub fn run(options: Options) -> Result<(), String> {
     crate::host_environment::initialize().map_err(|e| e.to_string())?;
     let _guard = crate::instance::InstanceGuard::acquire().map_err(|e| e.to_string())?;
     crate::host_environment::start_logging().map_err(|e| e.to_string())?;
+    // Say where diagnostics land before any Agent work starts — after the data
+    // root is final, because hydration above can still change it. The Agent logs
+    // each startup phase to that file as well as this terminal, and on a host
+    // that kills the process for exceeding a memory or per-user CPU budget the
+    // file is the only surviving evidence.
+    eprintln!(
+        "FutureOS: startup progress is logged to {} and mirrored in this terminal.",
+        crate::host_environment::log_file_path().display()
+    );
     prepare_terminal();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -77,7 +86,22 @@ pub fn run(options: Options) -> Result<(), String> {
     });
     // Do not let a stuck blocking task make Ctrl+C wait forever.
     runtime.shutdown_timeout(Duration::from_secs(2));
-    result.map_err(|e| e.to_string())
+    result.map_err(|e| e.to_string()).map_err(with_log_hint)
+}
+
+/// A failure message this entry point cannot act on is still one the operator
+/// must be able to finish: name the log that holds the preceding startup phases
+/// whenever one was written.
+fn with_log_hint(message: String) -> String {
+    let log = crate::host_environment::log_file_path();
+    if log.is_file() {
+        format!(
+            "{message}\nThe Agent's last startup phase and any failure are in {}.",
+            log.display()
+        )
+    } else {
+        message
+    }
 }
 
 async fn until_shutdown(
@@ -100,7 +124,7 @@ async fn session(options: &Options, agent: &mut agent::Agent) -> Result<(), AppE
         require_terminal()?;
     }
     crate::store::initialize_app_store()?;
-    agent.ensure_running().await?;
+    ensure_agent_running(agent).await?;
     ensure_login(options).await?;
     let account_key = future_login::future_api_key()?;
     let platform = crate::future_platform::current_platform_url();
@@ -204,6 +228,51 @@ async fn session(options: &Options, agent: &mut agent::Agent) -> Result<(), AppE
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
         status = remote::status();
+    }
+}
+
+/// How long the owned Agent may take before the wait is worth explaining.
+const SLOW_STARTUP_NOTICE: Duration = Duration::from_secs(30);
+
+/// What the terminal says while the Agent is still initializing. On a cold or
+/// network-mounted data root that wait is normal; a host enforcing a per-user
+/// budget may instead kill the process without any error, so both readings of a
+/// long startup are named here.
+fn slow_startup_notice(log: &std::path::Path) -> String {
+    format!(
+        "The Agent is still starting: a cold or network-mounted data root can take minutes. \
+Progress is logged as it happens. If this process disappears instead of reporting an error, \
+the host killed it (memory or per-user budget); the phases it reached are in {}.",
+        log.display()
+    )
+}
+
+/// Initialize the owned Agent, explaining a long wait instead of leaving the
+/// terminal silent for the whole of it.
+async fn ensure_agent_running(agent: &mut agent::Agent) -> Result<(), AppError> {
+    starting_with_notice(
+        agent.ensure_running(),
+        &crate::host_environment::log_file_path(),
+    )
+    .await
+}
+
+/// Wait for `start` while reporting at most once that the wait is long. The
+/// remaining startup is never abandoned: the notice only explains the silence.
+async fn starting_with_notice<T>(
+    start: impl std::future::Future<Output = Result<T, AppError>>,
+    log: &std::path::Path,
+) -> Result<T, AppError> {
+    let start = start;
+    tokio::pin!(start);
+    let notice = tokio::time::sleep(SLOW_STARTUP_NOTICE);
+    tokio::pin!(notice);
+    tokio::select! {
+        result = start.as_mut() => result,
+        _ = notice.as_mut() => {
+            eprintln!("{}", slow_startup_notice(log));
+            start.await
+        }
     }
 }
 
@@ -565,6 +634,65 @@ mod tests {
         let result =
             until_shutdown(std::future::pending(), async { Err("setup failed".into()) }).await;
         assert_eq!(result.unwrap_err().to_string(), "setup failed");
+    }
+
+    /// A long Agent startup must be explained, and must still be allowed to
+    /// finish: the notice is not a timeout. Falsified by returning early from
+    /// the notice branch or by dropping the pending startup.
+    #[tokio::test(start_paused = true)]
+    async fn a_long_agent_start_is_explained_and_still_completes() {
+        let log = std::path::Path::new("/tmp/desktop.log");
+        let started = tokio::time::Instant::now();
+        let result = starting_with_notice(
+            async {
+                tokio::time::sleep(Duration::from_secs(45)).await;
+                Ok("ready")
+            },
+            log,
+        )
+        .await;
+        assert_eq!(result.unwrap(), "ready");
+        assert_eq!(started.elapsed(), Duration::from_secs(45));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_fast_agent_start_is_not_delayed_by_the_notice() {
+        let started = tokio::time::Instant::now();
+        let result = starting_with_notice(
+            async { Ok("ready") },
+            std::path::Path::new("/tmp/desktop.log"),
+        )
+        .await;
+        assert_eq!(result.unwrap(), "ready");
+        assert!(started.elapsed() < SLOW_STARTUP_NOTICE);
+    }
+
+    /// The notice is the only place a host-side kill is named. It has to point
+    /// at the log, because the process that gets SIGKILLed cannot report it.
+    #[test]
+    fn the_slow_startup_notice_points_at_the_log_and_a_host_kill() {
+        let notice =
+            slow_startup_notice(std::path::Path::new("/data/.future/app/logs/desktop.log"));
+        assert!(
+            notice.contains("/data/.future/app/logs/desktop.log"),
+            "{notice}"
+        );
+        assert!(notice.contains("the host killed it"), "{notice}");
+        assert!(notice.contains("network-mounted"), "{notice}");
+    }
+
+    /// The log hint is what makes an exited entry point actionable, and it must
+    /// not claim a log that was never written.
+    #[test]
+    fn the_exit_hint_names_an_existing_log_only() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("headless-log-hint");
+        let log = crate::host_environment::log_file_path();
+        assert_eq!(with_log_hint("failed".into()), "failed");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        std::fs::write(&log, "FutureOS: host starting\n").unwrap();
+        let hinted = with_log_hint("failed".into());
+        assert!(hinted.starts_with("failed\n"), "{hinted}");
+        assert!(hinted.contains(&log.display().to_string()), "{hinted}");
     }
 
     #[tokio::test(start_paused = true)]
