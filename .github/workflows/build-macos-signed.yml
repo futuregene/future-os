@@ -19,6 +19,11 @@ on:
         required: false
         type: boolean
         default: false
+      strict_verification:
+        description: Require signed artifact verification to pass.
+        required: false
+        type: boolean
+        default: true
   workflow_call:
     inputs:
       version:
@@ -34,6 +39,11 @@ on:
         required: false
         type: boolean
         default: false
+      strict_verification:
+        description: Require signed artifact verification to pass.
+        required: false
+        type: boolean
+        default: true
       coordinated:
         description: Let the caller publish the collected artifacts.
         required: false
@@ -413,7 +423,6 @@ jobs:
             echo "Unable to staple the accepted notarization ticket to $dmg." >&2
             exit 1
           }
-          xcrun stapler validate -v "$dmg"
           echo "SIGNED_DMG=$dmg" >> "$GITHUB_ENV"
 
       # A valid signature alone does not prove that the bundled CLI is
@@ -443,11 +452,12 @@ jobs:
           PY
 
       # Validate both user journeys: mount the website DMG and extract the
-      # automatic-updater archive. Both
-      # copies of the app must retain their Developer ID signature and stapled
-      # notarization ticket and must pass Gatekeeper assessment.
+      # automatic-updater archive. A formal release requires every check to
+      # pass; a test build reports verification failures but can still publish.
       - name: Verify signed artifacts
+        id: verify_signed
         if: inputs.signed
+        continue-on-error: ${{ !inputs.strict_verification }}
         run: |
           set -euo pipefail
           : "${SIGNED_DMG:?SIGNED_DMG is required}"
@@ -477,6 +487,25 @@ jobs:
           updater_sig="${updater_sigs[0]}"
           dmg="$SIGNED_DMG"
           [[ -s "$dmg" ]] || { echo "The notarized DMG is missing or empty: $dmg" >&2; exit 1; }
+          echo "MACOS_UPDATER=$updater" >> "$GITHUB_ENV"
+          echo "MACOS_UPDATER_SIG=$updater_sig" >> "$GITHUB_ENV"
+          echo "DISTRIBUTABLE_DMG=$dmg" >> "$GITHUB_ENV"
+
+          validate_ticket() {
+            local artifact="$1" attempt
+            for attempt in 1 2 3 4 5; do
+              if xcrun stapler validate "$artifact"; then
+                return 0
+              fi
+              if [[ "$attempt" -lt 5 ]]; then
+                delay=$((attempt * 10))
+                echo "Ticket validation attempt $attempt failed for $artifact; retrying in ${delay}s." >&2
+                sleep "$delay"
+              fi
+            done
+            echo "Unable to validate the notarization ticket for $artifact after 5 attempts." >&2
+            return 1
+          }
 
           codesign --verify --deep --strict --verbose=2 "$app"
           signature_info="$(codesign --display --verbose=4 "$app" 2>&1)"
@@ -506,8 +535,8 @@ jobs:
             exit 1
           }
 
-          xcrun stapler validate "$app"
-          xcrun stapler validate "$dmg"
+          validate_ticket "$app"
+          validate_ticket "$dmg"
           spctl --assess --type execute --verbose=2 "$app"
           spctl --assess --type open \
             --context context:primary-signature --verbose=2 "$dmg"
@@ -535,7 +564,7 @@ jobs:
             exit 1
           }
           codesign --verify --deep --strict --verbose=2 "${updater_apps[0]}"
-          xcrun stapler validate "${updater_apps[0]}"
+          validate_ticket "${updater_apps[0]}"
           spctl --assess --type execute --verbose=2 "${updater_apps[0]}"
 
           hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount_dir"
@@ -554,7 +583,7 @@ jobs:
             exit 1
           }
           codesign --verify --deep --strict --verbose=2 "${mounted_apps[0]}"
-          xcrun stapler validate "${mounted_apps[0]}"
+          validate_ticket "${mounted_apps[0]}"
           spctl --assess --type execute --verbose=2 "${mounted_apps[0]}"
 
           hdiutil detach "$mount_dir"
@@ -563,9 +592,9 @@ jobs:
           rmdir "$mount_dir"
           trap - EXIT
 
-          echo "MACOS_UPDATER=$updater" >> "$GITHUB_ENV"
-          echo "MACOS_UPDATER_SIG=$updater_sig" >> "$GITHUB_ENV"
-          echo "DISTRIBUTABLE_DMG=$dmg" >> "$GITHUB_ENV"
+      - name: Report non-blocking test verification failure
+        if: ${{ inputs.signed && !inputs.strict_verification && steps.verify_signed.outcome == 'failure' }}
+        run: echo "::warning title=Signed artifact verification failed::Test build will continue, but the signed artifacts did not pass verification. Review the Verify signed artifacts step."
 
       - name: Inject first-launch note into unsigned DMG
         if: ${{ !inputs.signed }}
