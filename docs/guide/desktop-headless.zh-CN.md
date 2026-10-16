@@ -144,7 +144,7 @@ cargo build --release --no-default-features --features headless \
 cargo build --release -p future-cli
 ```
 
-默认产物为 `desktop/src-tauri/target/release/futureos-headless`，Windows 后缀为 `.exe`。
+默认产物为 `target/release/futureos-headless`，Windows 后缀为 `.exe`。
 将 `target/release/future`（Windows 为 `future.exe`）放在它旁边或 PATH 中；Make 目标会自动复制到同目录。
 使用自定义 Cargo 输出目录时，请显式构建并复制相应产物。
 `headless` feature 选择独立入口；同时开启 `gui` 会被拒绝，避免生成名字像服务器版、实际仍依赖 GUI 的程序。

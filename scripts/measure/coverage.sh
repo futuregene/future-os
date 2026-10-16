@@ -44,7 +44,7 @@ done
 # (target/llvm-cov-target) so re-runs after adding tests stay incremental.
 cargo llvm-cov clean --workspace
 # ${args[@]+...} keeps an empty array legal under `set -u` on bash 3.2 (macOS).
-cargo llvm-cov --workspace --no-report ${args[@]+"${args[@]}"}
+cargo llvm-cov --workspace --exclude futureos --no-report ${args[@]+"${args[@]}"}
 
 cargo llvm-cov report --lcov --output-path "$out_dir/lcov.info"
 # NOTE: --html writes into <output-dir>/html/, so pass the base dir.

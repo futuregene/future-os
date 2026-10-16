@@ -456,7 +456,7 @@ frame:
 
 ```bash
 python3 scripts/screenshots/capture.py terminal t-headless.png -- \
-  desktop/src-tauri/target/debug/futureos --headless
+  target/debug/futureos --headless
 ```
 
 ## When the app changes

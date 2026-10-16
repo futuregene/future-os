@@ -114,14 +114,12 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.97.0
+        run: node scripts/ci/setup-rust.mjs
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            .
-            desktop/src-tauri
+          workspaces: .
           cache-on-failure: true
           cache-all-crates: true
 
@@ -184,20 +182,8 @@ jobs:
         working-directory: desktop
         run: npm ci
 
-      # The unified `future` CLI is the single sidecar (tauri.conf.json
-      # bundle.externalBin). Desktop embeds Agent; the CLI remains necessary
-      # for tool subprocesses and the standalone `future agent` entry point.
-      - name: Build CLI
-        working-directory: cli
-        env:
-          FUTURE_VERSION: ${{ steps.v.outputs.version }}
-        run: |
-          set -euo pipefail
-          cargo build --release
-          triple="$(rustc -Vv | sed -n 's/^host: //p')"
-          mkdir -p ../desktop/src-tauri/binaries
-          install -m 755 ../target/release/future "../desktop/src-tauri/binaries/future-$triple"
-
+      # tauri:build selects CLI + Desktop in one Cargo graph, then stages the
+      # CLI and bundles/signs the app using the shared root target directory.
       - name: Set Tauri bundle version
         env:
           FUTURE_VERSION: ${{ steps.v.outputs.version }}
@@ -308,10 +294,10 @@ jobs:
           }
 
           shopt -s nullglob
-          dmgs=(desktop/src-tauri/target/release/bundle/dmg/*.dmg)
+          dmgs=(target/release/bundle/dmg/*.dmg)
           if [[ ${#dmgs[@]} -ne 1 ]]; then
             echo "Expected exactly one DMG, found ${#dmgs[@]}." >&2
-            find desktop/src-tauri/target/release/bundle/dmg -maxdepth 1 -type f -print >&2 || true
+            find target/release/bundle/dmg -maxdepth 1 -type f -print >&2 || true
             exit 1
           fi
           dmg="${dmgs[0]}"
@@ -433,7 +419,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import os, pathlib, subprocess, tempfile
-          apps = list(pathlib.Path('desktop/src-tauri/target/release/bundle/macos').glob('*.app'))
+          apps = list(pathlib.Path('target/release/bundle/macos').glob('*.app'))
           assert len(apps) == 1, f'Expected one app, found {len(apps)}'
           with tempfile.TemporaryDirectory(prefix='futureos-package-probe-') as profile:
               env = os.environ.copy()
@@ -462,9 +448,9 @@ jobs:
           set -euo pipefail
           : "${SIGNED_DMG:?SIGNED_DMG is required}"
           shopt -s nullglob
-          apps=(desktop/src-tauri/target/release/bundle/macos/*.app)
-          updaters=(desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz)
-          updater_sigs=(desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig)
+          apps=(target/release/bundle/macos/*.app)
+          updaters=(target/release/bundle/macos/*.app.tar.gz)
+          updater_sigs=(target/release/bundle/macos/*.app.tar.gz.sig)
           [[ ${#apps[@]} -eq 1 ]] || {
             echo "Expected exactly one .app bundle, found ${#apps[@]}." >&2
             exit 1
@@ -600,7 +586,7 @@ jobs:
         if: ${{ !inputs.signed }}
         run: |
           set -euo pipefail
-          src="$(find desktop/src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
+          src="$(find target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
           [[ -n "$src" ]] || { echo "Tauri produced no DMG." >&2; exit 1; }
           work="$RUNNER_TEMP/rw.dmg"
           out="$RUNNER_TEMP/out.dmg"
@@ -625,9 +611,9 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          dmgs=(desktop/src-tauri/target/release/bundle/dmg/*.dmg)
-          updaters=(desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz)
-          updater_sigs=(desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig)
+          dmgs=(target/release/bundle/dmg/*.dmg)
+          updaters=(target/release/bundle/macos/*.app.tar.gz)
+          updater_sigs=(target/release/bundle/macos/*.app.tar.gz.sig)
           [[ ${#dmgs[@]} -eq 1 && -s "${dmgs[0]}" ]] || { echo "Expected one non-empty DMG." >&2; exit 1; }
           [[ ${#updaters[@]} -eq 1 && -s "${updaters[0]}" ]] || { echo "Expected one non-empty updater archive." >&2; exit 1; }
           [[ ${#updater_sigs[@]} -eq 1 && -s "${updater_sigs[0]}" ]] || { echo "Expected one non-empty updater signature." >&2; exit 1; }

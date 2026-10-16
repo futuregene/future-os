@@ -15,7 +15,7 @@ The Rust workspace (`Cargo.toml`) members and their slice of `~/.future/` (see `
 - `cli/` — `future-cli`, builds the unified `future` binary that embeds agent/tui/channel/goal.
 - `packages/rpc/` — `future-rpc`, the protobuf wire-contract crate (single source of truth; see proto notes below).
 
-`desktop/src-tauri` is deliberately **not** a workspace member (excluded): it builds on its own schedule via npm/tauri, and membership would pull it into every root cargo invocation. `packages/` also holds shared npm packages (`markdown`, `thread-projection`, `json-preview`) consumed by desktop/mobile; the repo-root `package.json` declares npm workspaces `["packages/*", "desktop", "mobile"]`, so a single `npm install` at the root hoists all deps.
+`desktop/src-tauri` (`futureos`) is a workspace member: every Rust entry point shares the root `Cargo.lock`, `target/`, and release profile (Thin LTO). `default-members` keeps GUI dependencies out of ordinary root builds; select `-p futureos` explicitly for Desktop, or `--workspace --exclude futureos` for all CLI/server crates. `packages/` also holds shared npm packages (`markdown`, `thread-projection`, `json-preview`) consumed by desktop/mobile; the repo-root `package.json` declares npm workspaces `["packages/*", "desktop", "mobile"]`, so a single `npm install` at the root hoists all deps.
 
 ## Project memory
 
@@ -63,11 +63,11 @@ Leave no leftovers — the next session must not inherit a stale worktree, branc
 2. **Delete the merged branch everywhere**: remove its worktree (`git worktree remove .worktrees/<name>` — confirm `git -C <path> status --short` is clean first; investigate before reaching for `--force`), then `git branch -d <type>/<name>` and drop the remote branch (`gh pr merge --delete-branch` already does this; otherwise `git push origin --delete <type>/<name>`). Finish with `git worktree prune` and `git fetch --prune`.
 3. **Clean up temporary files**: scratch scripts, logs, captured CI output, temp HOME dirs, and any other debris created while working. `git status --short` in every remaining worktree must show no untracked scratch files.
 
-### GUI Tauri sidecar binaries in a worktree
+### Desktop builds and CLI sidecars
 
-`desktop/src-tauri/tauri.conf.json` declares `externalBin: ["binaries/future"]`, and `tauri-build`'s build script **aborts** with `resource path ... doesn't exist` if those files are missing. They are build artifacts — present in the main worktree but absent from a fresh worktree, so `cargo check`/`clippy`/`test` under `desktop/src-tauri` fails for environmental reasons, not your code.
+Use `make build-desktop` / `make package-desktop` or `npm --prefix desktop run tauri:build`. `scripts/build/build-desktop.mjs` asks Tauri to build `future-cli` and `futureos` in one Cargo invocation so shared dependencies use the same resolved features. It stages the CLI only after compilation, then invokes `tauri bundle` unless `--no-bundle` was requested. Windows signs the staged sidecar between these phases. All Rust and bundle outputs live in root `target/`.
 
-CI works around this with **empty placeholder sidecars** (`.github/workflows/ci.yml`). Do the same before running GUI Rust checks in a worktree: `make desktop-sidecar-placeholder` creates the empty `future-$triple` file (gitignored); `make setup` bootstraps a fresh clone entirely (JS deps + skills submodule + placeholder).
+Desktop's build script disables tauri-build's sidecar copy locally: copying into the shared target directory could overwrite Cargo's `future` executable with a stale sidecar. Plain Cargo checks do not require placeholder sidecars. Linux release builds compile the musl CLI + headless entry together, then set `FUTURE_DESKTOP_CLI` to that artifact for the separate GNU GUI build; machine code cannot be shared across those target triples.
 
 ## Design principles
 

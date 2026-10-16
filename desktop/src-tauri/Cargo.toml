@@ -6,10 +6,6 @@ authors = ["FutureOS"]
 edition = "2021"
 default-run = "futureos"
 
-# Keep this crate out of the workspace so make targets that cd in
-# (check-desktop / build-desktop) work without workspace.members trickery.
-[workspace]
-
 [lib]
 name = "futureos_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
@@ -42,6 +38,7 @@ tokio-tungstenite = { version = "0.24", default-features = false, features = [
 ] }
 
 [build-dependencies]
+serde_json = "1"
 tauri-build = { version = "2", features = [], optional = true }
 
 # Tauri's `test` feature enables existing mock IPC tests. Keep it on the
@@ -156,13 +153,3 @@ objc2-foundation = { version = "0.3.2", optional = true, features = ["NSData", "
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5.18", default-features = false, features = ["tokio"], optional = true }
-
-# Stripped symbols + no debug info: smaller desktop binary and less link/scan
-# I/O, negligible runtime cost for a Tauri shell. See ../../.cargo/config.toml.
-# Thin LTO: cross-crate inlining for a few % runtime win and a smaller binary.
-# codegen-units stays at the default (16) — 1 would squeeze a bit more but
-# multiplies release build time, which CI pays on every tag.
-[profile.release]
-debug = false
-strip = true
-lto = "thin"

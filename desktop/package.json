@@ -13,8 +13,8 @@
     "preview": "vite preview --host 127.0.0.1",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
-    "desktop:package": "tauri build"
+    "tauri:build": "node ../scripts/build/build-desktop.mjs",
+    "desktop:package": "node ../scripts/build/build-desktop.mjs"
   },
   "dependencies": {
     "@future-os/json-preview": "*",

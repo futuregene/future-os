@@ -129,7 +129,7 @@ def target_dir():
     """
     configured = os.environ.get("CARGO_TARGET_DIR")
     if not configured:
-        return ROOT / "desktop" / "src-tauri" / "target"
+        return ROOT / "target"
     path = Path(configured)
     return path if path.is_absolute() else ROOT / "desktop" / "src-tauri" / path
 

@@ -345,7 +345,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\tests\test-windows-sandbox-li
 
 Portable is the root-level `FutureOS-portable-windows.zip`, keeping
 FutureOS.exe/future.exe in the same directory; NSIS is under
-`desktop\src-tauri\target\release\bundle\nsis\`. Each lifecycle call keeps an
+`target\release\bundle\nsis\`. Each lifecycle call keeps an
 independently timestamped log; full command lines are not recorded.
 
 For embedded-Agent releases, pass `-InstallDirectory` to every `Expect*` call.

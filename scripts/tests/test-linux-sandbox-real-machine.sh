@@ -165,7 +165,7 @@ run_step "future-agent clippy" clippy.log \
 
 if ((RUN_FULL)); then
   run_step "complete Rust workspace tests" workspace-tests.log \
-    cargo test --workspace -- --test-threads=1
+    cargo test --workspace --exclude futureos -- --test-threads=1
 else
   record "complete Rust workspace tests" "NOT RUN" "use --full to enable"
 fi

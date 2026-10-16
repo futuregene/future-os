@@ -1,5 +1,12 @@
 # Build & Install
 
+All Rust programs share the root Cargo workspace, lockfile, `target/` directory,
+and release profile (Thin LTO). Desktop builds compile the CLI and GUI in one
+Cargo invocation, then stage the CLI and package the outputs. `make build-cli`
+remains independent and does not compile GUI dependencies. On Linux, official
+releases build the static musl CLI and headless server together; the GNU GUI
+uses that prebuilt CLI via `FUTURE_DESKTOP_CLI`.
+
 How to build and install FutureOS on macOS, Linux, and Windows — the agent
 backend, the TUI/CLI frontends, the desktop GUI, the channel bridge, and the
 goal control plane (`future-goal`).
@@ -23,14 +30,14 @@ The TUI and CLI are Rust (`cargo build`) and no longer need Bun or Node.
 ```bash
 git clone https://github.com/futuregene/future-os.git
 cd future-os
-make setup    # JS deps (desktop/mobile) + skills submodule + sidecar placeholder
+make setup    # JS deps (desktop/mobile) + skills submodule
 ```
 
 `make setup` is a one-time bootstrap: it installs the shared `thread-projection`
 package and the desktop/mobile JavaScript dependencies, initializes the `skills`
-submodule, and creates an empty Tauri sidecar placeholder so `cargo check`/
-`clippy`/`test` under `desktop/src-tauri` run even before the first `cargo
-build`. It prepares the repository-level dependencies; app run targets still
+submodule. Rust checks do not require a staged CLI sidecar; the desktop build
+stages the real CLI after compilation. Setup prepares the repository-level
+dependencies; app run targets still
 need the platform SDKs and a suitable emulator or device.
 
 ## macOS
@@ -50,9 +57,9 @@ Build:
 ```bash
 make install        # GUI + unified `future` CLI + skills (agent/tui/channel/goal are embedded) → /opt/homebrew/bin
 make install-cli    # unified `future` CLI only
-make install-desktop    # desktop app only (stages its CLI tool)
+make install-desktop    # desktop app + matching CLI
 make install-skills # built-in skills + the /future-goal skill
-make package-desktop    # desktop bundle → .app + .dmg in desktop/src-tauri/target/release/bundle/
+make package-desktop    # desktop bundle → .app + .dmg in target/release/bundle/
 scripts/build/build-desktop-macos.sh  # local DMG; auto-signs when a Developer ID certificate is available
 ```
 
@@ -113,9 +120,9 @@ scripts/build/build-desktop-linux.sh --out-dir ./dist   # → ./dist/FutureOS_<v
 scripts/dev/start-desktop-linux.sh                    # local Linux Desktop + agent development session
 make install        # or install straight from source: GUI + unified `future` CLI + skills → /usr/local/bin (sudo)
 make install-cli    # unified `future` CLI only
-make install-desktop    # desktop app only (stages its CLI tool)
+make install-desktop    # desktop app + matching CLI
 make install-skills # built-in skills + the /future-goal skill
-make package-desktop    # desktop bundle → .deb in desktop/src-tauri/target/release/bundle/
+make package-desktop    # desktop bundle → .deb in target/release/bundle/
 ```
 
 `scripts/dev/start-desktop-linux.sh` starts GUI development with an embedded
@@ -162,26 +169,22 @@ Copy-Item target\release\future.exe $bin
 & "$bin\future.exe" skills install
 ```
 
-**Desktop app** — the GUI half of `make install` (stages its own sidecar,
-`make desktop-sidecars` — only the unified `future` CLI for skills/maintenance;
-Desktop runs its Agent library in-process):
+**Desktop app** — equivalent to `make install-desktop`. Build the CLI and GUI
+together; the build script stages the sidecar after compilation:
 
 ```powershell
-# Stage the unified CLI as the Tauri sidecar, named with the host triple
-$triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
-New-Item -ItemType Directory -Force -Path desktop\src-tauri\binaries | Out-Null
-Copy-Item target\release\future.exe "desktop\src-tauri\binaries\future-$triple.exe"
-
-# Build the app and install it as future-desktop.exe   (make install-desktop)
-Push-Location desktop; npm install; npx tauri build --no-bundle; Pop-Location
-Copy-Item desktop\src-tauri\target\release\futureos.exe "$env:USERPROFILE\.future\bin\future-desktop.exe"
+Push-Location desktop; npm install; npm run tauri:build -- --no-bundle; Pop-Location
+$bin = "$env:USERPROFILE\.future\bin"
+New-Item -ItemType Directory -Force -Path $bin | Out-Null
+Copy-Item target\release\future.exe $bin
+Copy-Item target\release\futureos.exe "$bin\future-desktop.exe"
 ```
 
-**Installer package** — equivalent to `make package-desktop`, once the sidecars are staged:
+**Installer package** — equivalent to `make package-desktop`:
 
 ```powershell
 node scripts\version.mjs --set-bundle
-Push-Location desktop; npm run tauri:build; Pop-Location   # → NSIS setup .exe under desktop\src-tauri\target\release\bundle\nsis\
+Push-Location desktop; npm run tauri:build; Pop-Location   # → NSIS setup .exe under target\release\bundle\nsis\
 ```
 
 Notes:

@@ -61,7 +61,8 @@ def main():
     summary_path = output / "summary.json"
     try:
         for name, args in suites:
-            command = ["cargo", "test", "--locked", *args, "--", "--test-threads=1", "--nocapture"]
+            command = ["cargo", "test", "--locked", *args]
+            command += ["--", "--test-threads=1", "--nocapture"]
             print(f"Running {name}: {' '.join(command)}", flush=True)
             started = time.monotonic()
             passed = 0

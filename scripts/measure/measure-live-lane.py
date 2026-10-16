@@ -65,7 +65,7 @@ def main() -> int:
     # measures an older revision of the trims — the numbers look plausible and
     # are simply from another commit.
     candidates = [path for path in
-                  (ROOT / "desktop" / "src-tauri" / "target" / "debug" / "deps").glob("futureos_lib-*")
+                  (ROOT / "target" / "debug" / "deps").glob("futureos_lib-*")
                   if path.is_file() and os.access(path, os.X_OK)]
     binary = max(candidates, key=lambda path: path.stat().st_mtime, default=None)
     if binary is None:
