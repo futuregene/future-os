@@ -292,3 +292,36 @@ fn delete_without_run_data_is_ok() {
     manager.delete("del").unwrap();
     assert!(!manager.contains("del").unwrap());
 }
+
+/// Headless startup is silent for as long as storage preparation takes, which
+/// on a cold or network-mounted data root can be minutes — and a host that kills
+/// the process leaves nothing else behind. The phases therefore have to be in
+/// the log, including one line per imported session.
+#[test]
+fn initialization_logs_storage_and_import_progress() {
+    let root = tempfile::tempdir().unwrap();
+    let sessions = root.path().join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    std::fs::write(
+        sessions.join("legacy.jsonl"),
+        "{\"id\":\"e\",\"type\":\"user\",\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"question\"}],\"timestamp\":\"2026-01-01T00:00:00Z\"}\n",
+    )
+    .unwrap();
+    let manager = Manager::new(sessions);
+    let (result, logs) = crate::test_support::capture_logs(|| manager.initialize());
+    result.unwrap();
+    for expected in [
+        "session storage: opening",
+        "Agent startup: scanning for legacy sessions to import",
+        "Agent startup: importing legacy session",
+        "Agent startup: legacy session scan complete",
+        "session storage: ready",
+    ] {
+        assert!(logs.contains(expected), "missing {expected:?} in:\n{logs}");
+    }
+    // The database path is what an operator needs to check size and permissions
+    // after the fact, and the per-session line names the session that is being
+    // read, so a slow import identifies its own culprit.
+    assert!(logs.contains("agent.db"), "{logs}");
+    assert!(logs.contains("session=legacy"), "{logs}");
+}
