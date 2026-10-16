@@ -593,6 +593,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn title_seed_migration_upgrades_the_released_schema() {
+        // The released schema (v1.2.1) has no `title_seed`. Upgrading must add
+        // it and leave every existing row unseeded: a title already in the
+        // database was written before this column existed, and an upgraded
+        // install must not start renaming conversations on their next turn.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("fixtures/v1.2.1.sql"))
+            .unwrap();
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                 VALUES ('ws-seed', 'W', 'user', '/tmp/ws-seed', 1, 1);
+             INSERT INTO threads (id, workspace_id, mode, title, created_at, updated_at)
+                 VALUES ('thread-legacy', 'ws-seed', 'chat', 'Legacy title', 1, 1);",
+        )
+        .unwrap();
+        assert!(!column_exists(&conn, "threads", "title_seed").unwrap());
+
+        apply_schema(&conn).unwrap();
+        apply_schema(&conn).unwrap();
+
+        assert!(column_exists(&conn, "threads", "title_seed").unwrap());
+        let seed: Option<String> = conn
+            .query_row(
+                "SELECT title_seed FROM threads WHERE id = 'thread-legacy'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(seed, None, "an upgrade never seeds an existing title");
+        let markers: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM schema_migrations WHERE version = 'v1.2.4-thread-title-seed'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(markers, 1);
+    }
+
+    #[test]
     fn deletion_indexes_upgrade_release_schema_and_serve_cleanup_queries() {
         for released in [false, true] {
             let conn = Connection::open_in_memory().unwrap();

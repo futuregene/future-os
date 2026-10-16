@@ -499,6 +499,12 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
                 title: best_title.clone(),
             };
             let _ = crate::store::rename_thread(input);
+            // `rename_thread` only moves the title, which would leave a seeded
+            // thread wearing a title that is no longer its seed. The importer's
+            // replacement is machine-derived like the one it replaced, so a
+            // conversation that could still be titled keeps that ability; one
+            // that never could stays unseeded.
+            let _ = crate::store::reseed_thread_auto_title(&existing.id, &best_title);
             // Sync the corrected title back to the agent.
             let session_id = summary.id.clone();
             let sync_title = best_title.clone();
@@ -537,6 +543,15 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
     store::sync_thread_parent_session(&summary.id, &summary.parent_session_id)?;
     if !created {
         return Ok(0);
+    }
+    // A derived conversation was named by a machine: the goal plane mints its
+    // workers with the goal's objective as the session name, which is a
+    // placeholder exactly like a fresh conversation's "New Chat" — it may be
+    // replaced once the worker settles. A standalone imported conversation is
+    // left alone: its name came from wherever the conversation did, and a rename
+    // made in another client never reaches this store.
+    if !summary.parent_session_id.trim().is_empty() {
+        store::seed_thread_auto_title(&thread.id, &title)?;
     }
 
     // Sync the agent's session_name to the newly-derived title so the sidebar
@@ -667,15 +682,21 @@ pub(crate) async fn import_discovered_session(session_id: &str) -> Result<bool, 
     };
     let title = session_title(&summary);
     let (mode, workspace_id, workspace_path, workspace_name) = thread_mode(&summary, &title);
-    let (_, created) = store::get_or_create_thread_for_agent_session(store::CreateThreadInput {
-        mode,
-        title: Some(title),
-        workspace_id,
-        workspace_path,
-        workspace_name,
-        agent_session_id: Some(session_id.to_string()),
-    })?;
+    let (thread, created) =
+        store::get_or_create_thread_for_agent_session(store::CreateThreadInput {
+            mode,
+            title: Some(title.clone()),
+            workspace_id,
+            workspace_path,
+            workspace_name,
+            agent_session_id: Some(session_id.to_string()),
+        })?;
     store::sync_thread_parent_session(session_id, &summary.parent_session_id)?;
+    // See `import_one`: a worker's name is a machine placeholder, an imported
+    // standalone conversation's is not.
+    if created && !summary.parent_session_id.trim().is_empty() {
+        store::seed_thread_auto_title(&thread.id, &title)?;
+    }
     Ok(created)
 }
 
@@ -1694,6 +1715,99 @@ mod tests {
             parent_session_id: parent.to_string(),
             is_streaming: false,
         }
+    }
+
+    /// A derived conversation is the one case where the importer records the
+    /// title as a placeholder the Desktop may replace: the goal plane names its
+    /// workers after the goal objective, and such a worker is steered into
+    /// further turns, so it only ever settles at the end — by then the
+    /// background title task must still be allowed to name it. A standalone
+    /// conversation arrived with a name this store did not invent (including a
+    /// rename made in another client, which never reaches this database), so it
+    /// is left alone.
+    #[tokio::test]
+    async fn import_seeds_auto_title_only_for_a_derived_conversation() {
+        let _home = super::super::test_support::TestHome::new("import-title-seed");
+        let mock = super::super::test_support::mock_agent();
+        let page = serde_json::json!({"entries": [
+            {"id":"u1","role":"user","kind":"user","blocks":[{"kind":"text","text":"hi"}],"runId":"history-worker","createdAtMs":1000}
+        ]});
+
+        // The periodic pass: a worker (parent declared) is seeded, a standalone
+        // conversation is not. Each session needs its own run identity.
+        mock.push_typed_data("get_session_entries", page.clone());
+        let worker = summary_with_parent("sess-seed-worker", "", "sess-supervisor");
+        import_one(&worker).await.expect("import worker");
+        let worker_thread = crate::store::find_thread_by_agent_session("sess-seed-worker")
+            .expect("find")
+            .expect("worker thread");
+        assert_eq!(
+            worker_thread.title_seed.as_deref(),
+            Some(worker_thread.title.as_str()),
+            "a worker's goal-objective title is a seed"
+        );
+        let standalone_page = serde_json::json!({"entries": [
+            {"id":"u1","role":"user","kind":"user","blocks":[{"kind":"text","text":"hi"}],"runId":"history-alone","createdAtMs":1000}
+        ]});
+        mock.push_typed_data("get_session_entries", standalone_page);
+        let standalone = summary("sess-seed-alone", "");
+        import_one(&standalone).await.expect("import standalone");
+        let standalone_thread = crate::store::find_thread_by_agent_session("sess-seed-alone")
+            .expect("find")
+            .expect("standalone thread");
+        assert_eq!(standalone_thread.title_seed, None);
+        settle_spawns().await;
+    }
+
+    /// The discovered-session path is the other way a worker enters the
+    /// database, and it must record the seed too — it is the path a goal plane
+    /// session takes when it appears while the Desktop is running.
+    #[tokio::test]
+    async fn import_discovered_session_seeds_a_derived_conversation() {
+        let _home = super::super::test_support::TestHome::new("import-disc-title-seed");
+        let mock = super::super::test_support::mock_agent();
+        let page = serde_json::json!({"entries": [
+            {"id":"u1","role":"user","kind":"user","blocks":[{"kind":"text","text":"hi"}],"createdAtMs":1000}
+        ]});
+
+        mock.push_data("get_session_entries", page.clone());
+        mock.push_data(
+            "get_state",
+            serde_json::json!({
+                "sessionId": "sess-disc-worker",
+                "sessionName": "goal objective",
+                "parentSessionId": "sess-supervisor",
+                "cwd": "",
+                "model": "future/k3"
+            }),
+        );
+        assert!(import_discovered_session("sess-disc-worker")
+            .await
+            .expect("import"));
+        let worker = crate::store::find_thread_by_agent_session("sess-disc-worker")
+            .expect("find")
+            .expect("worker thread");
+        assert_eq!(worker.title_seed.as_deref(), Some("goal objective"));
+
+        mock.push_data("get_session_entries", page);
+        mock.push_data(
+            "get_state",
+            serde_json::json!({
+                "sessionId": "sess-disc-alone",
+                "sessionName": "my own name",
+                "parentSessionId": null,
+                "cwd": "",
+                "model": "future/k3"
+            }),
+        );
+        assert!(import_discovered_session("sess-disc-alone")
+            .await
+            .expect("import"));
+        let standalone = crate::store::find_thread_by_agent_session("sess-disc-alone")
+            .expect("find")
+            .expect("standalone thread");
+        assert_eq!(standalone.title_seed, None);
+        assert_eq!(standalone.title, "my own name");
     }
 
     /// A child conversation hangs in its parent's workspace instead of opening

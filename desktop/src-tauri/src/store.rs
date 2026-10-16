@@ -66,9 +66,10 @@ pub use review_snapshots::{
 pub use runs::{
     active_run_sessions, advance_tool_projection, clear_all_run_events_files,
     clear_run_event_buffer, create_run, delete_run_events_file, fail_run_if_active,
-    find_run_by_trigger_message_id, get_tool_call_input, latest_run, latest_run_infos,
-    list_run_events, list_runs, mark_remote_prompt_accepted, update_run_status_if_active,
-    LatestRunInfo, RunEventRecord, RunRecord, ToolCallRecord, ToolOutputRecord,
+    find_run_by_trigger_message_id, get_tool_call_input, has_active_run, latest_run,
+    latest_run_infos, list_run_events, list_runs, mark_remote_prompt_accepted,
+    update_run_status_if_active, LatestRunInfo, RunEventRecord, RunRecord, ToolCallRecord,
+    ToolOutputRecord,
 };
 #[cfg(test)]
 pub(crate) use runs::{append_run_event, flush_run_event_log_for_test};
@@ -78,9 +79,10 @@ pub use threads::{
     delete_thread_trees, find_thread_by_agent_session, forget_thread_mirror,
     get_or_create_thread_for_agent_session, get_recent_thread, get_thread,
     inherit_thread_asset_root, list_threads, mark_thread_opened, pin_thread,
-    purge_soft_deleted_threads, record_thread_message_activity, rename_thread, restore_thread,
-    sync_thread_parent_session, sync_thread_title, thread_asset_root_id, thread_delete_closure,
-    update_thread_model, update_thread_thinking_level, ThreadRecord,
+    purge_soft_deleted_threads, record_thread_message_activity, rename_thread,
+    reseed_thread_auto_title, restore_thread, seed_thread_auto_title, sync_thread_parent_session,
+    sync_thread_title, thread_asset_root_id, thread_delete_closure, update_thread_model,
+    update_thread_thinking_level, ThreadRecord,
 };
 pub(crate) use util::strip_verbatim_prefix;
 pub use util::{create_id, now_millis, take_catalog_dirty};
