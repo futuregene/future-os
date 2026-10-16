@@ -440,6 +440,23 @@ async fn write_back_cwd(session_id: &str, cwd: &str) -> Result<(), String> {
 
 // ─── import ─────────────────────────────────────────────────────────────────
 
+/// Record that a machine-named conversation's title is a placeholder the
+/// background title task may replace once it settles (see
+/// `run_control::title_settled_thread_if_enabled` and
+/// `store::seed_thread_auto_title`).
+///
+/// Best-effort on purpose. The seed is a hint for an *optional* later title
+/// generation, while the thread and its run rows are the conversation itself:
+/// `import_one` synthesizes the runs *after* this point, and the next discovery
+/// pass sees the thread already exists and returns early, so failing the import
+/// here would strand the conversation without its runs for good. The other
+/// title write in this file is best-effort for the same reason.
+fn seed_auto_title_best_effort(thread_id: &str, title: &str) {
+    if let Err(error) = crate::store::seed_thread_auto_title(thread_id, title) {
+        eprintln!("FutureOS: auto-title seed write failed for {thread_id}: {error}");
+    }
+}
+
 /// Import a single agent session. Creates workspace, thread, and per-reply run
 /// records. Idempotent via `find_thread_by_agent_session`.
 async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppError> {
@@ -551,7 +568,7 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
     // left alone: its name came from wherever the conversation did, and a rename
     // made in another client never reaches this store.
     if !summary.parent_session_id.trim().is_empty() {
-        store::seed_thread_auto_title(&thread.id, &title)?;
+        seed_auto_title_best_effort(&thread.id, &title);
     }
 
     // Sync the agent's session_name to the newly-derived title so the sidebar
@@ -693,9 +710,10 @@ pub(crate) async fn import_discovered_session(session_id: &str) -> Result<bool, 
         })?;
     store::sync_thread_parent_session(session_id, &summary.parent_session_id)?;
     // See `import_one`: a worker's name is a machine placeholder, an imported
-    // standalone conversation's is not.
+    // standalone conversation's is not — and a failed seed write must not fail
+    // the discovery of an otherwise valid conversation.
     if created && !summary.parent_session_id.trim().is_empty() {
-        store::seed_thread_auto_title(&thread.id, &title)?;
+        seed_auto_title_best_effort(&thread.id, &title);
     }
     Ok(created)
 }
