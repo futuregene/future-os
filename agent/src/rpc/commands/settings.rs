@@ -461,7 +461,7 @@ pub(crate) fn handle_set_cwd(
     // Trim trailing whitespace / separators so the saved cwd is
     // always a clean directory path — "project/ " produces a
     // phantom workspace name (" ") on import.
-    let cwd: String = cmd.cwd.trim().trim_end_matches(['/', '\\']).to_string();
+    let cwd: String = crate::utils::normalize_cwd(&cmd.cwd);
     let (session_manager, session_id, persistence) = {
         let mut sess = session.write();
         sess.set_cwd(&cwd);

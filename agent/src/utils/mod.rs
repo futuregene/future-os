@@ -30,6 +30,23 @@ pub fn encode_cwd(cwd: &str) -> String {
     encoded.trim_end_matches('=').to_lowercase()
 }
 
+/// Normalize a workspace cwd for storage: trim surrounding whitespace and
+/// trailing path separators, but preserve the filesystem root. The root
+/// directory "/" would otherwise collapse to an empty string
+/// (`"/".trim_end_matches(['/', '\\'])` is empty), and an empty cwd later
+/// fails workspace validation with the misleading "workspace path does not
+/// exist: " — so a path that is entirely separators is kept verbatim.
+pub fn normalize_cwd(path: &str) -> String {
+    let trimmed = path.trim().trim_end_matches(['/', '\\']).to_string();
+    if trimmed.is_empty() && !path.trim().is_empty() {
+        // All separators (e.g. "/"): the root. Keep it instead of returning
+        // an empty path that workspace validation would reject.
+        path.trim().to_string()
+    } else {
+        trimmed
+    }
+}
+
 /// Detect image MIME type from file extension
 pub fn detect_image_mime_type_from_extension(path: &Path) -> Option<String> {
     match path.extension()?.to_str()?.to_lowercase().as_str() {
@@ -678,6 +695,32 @@ mod util_tests {
     fn encode_cwd_dot_fallback() {
         let encoded = encode_cwd(".");
         assert!(!encoded.is_empty());
+    }
+
+    #[test]
+    fn normalize_cwd_preserves_the_filesystem_root() {
+        // The root "/" must survive the trailing-separator trim: collapsing it
+        // to an empty string later fails workspace validation.
+        assert_eq!(normalize_cwd("/"), "/");
+        assert_eq!(normalize_cwd("//"), "//");
+    }
+
+    #[test]
+    fn normalize_cwd_trims_separators_from_ordinary_paths() {
+        assert_eq!(normalize_cwd("/tmp/project/"), "/tmp/project");
+        assert_eq!(normalize_cwd("/tmp/project\\"), "/tmp/project");
+        assert_eq!(normalize_cwd("  /tmp/project  "), "/tmp/project");
+    }
+
+    #[test]
+    fn normalize_cwd_keeps_an_already_clean_path_untouched() {
+        assert_eq!(normalize_cwd("/tmp/project"), "/tmp/project");
+    }
+
+    #[test]
+    fn normalize_cwd_empty_stays_empty() {
+        assert_eq!(normalize_cwd(""), "");
+        assert_eq!(normalize_cwd("   "), "");
     }
 
     #[test]

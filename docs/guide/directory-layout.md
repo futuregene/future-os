@@ -78,8 +78,13 @@ vars:
   [Running several isolated instances](#running-several-isolated-instances-future_home));
   changing only the TCP port does not bypass the lock.
 - `agent-instance.json` — readable process identity for installer diagnostics
-  (PID, executable path, FutureOS home and, on Windows, process creation time).
-  It may remain after a crash; the operating-system lock is authoritative.
+  (PID, host name, executable path, FutureOS home and, on Windows, process
+  creation time). It may remain after a crash; the operating-system lock is
+  authoritative. When the lock conflicts, the Agent reports the owning PID,
+  host and executable — and whether that host is reachable from here — with
+  the command to stop it or to run beside it via `--home` (essential on
+  shared-home hosts such as HPC clusters, where the conflicting Agent runs
+  on another node).
 - `skills/` — one of the two skill discovery directories
   (`APP_SKILLS_DIR`); the other is `~/.agents/skills/` (`AGENTS_SKILLS_DIR`).
   Skills are plain directories with a `SKILL.md` + YAML frontmatter.
