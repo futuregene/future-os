@@ -15,6 +15,10 @@ pub struct ThreadRecord {
     pub workspace_id: String,
     pub mode: String,
     pub title: String,
+    /// The title this thread was minted with, when a generated title may still
+    /// replace it; `None` for a thread that arrived with a conversation's own
+    /// name. See `store::schema`'s `threads.title_seed`.
+    pub title_seed: Option<String>,
     pub status: String,
     pub pinned: bool,
     pub readonly: bool,
@@ -33,7 +37,7 @@ pub struct ThreadRecord {
 // `pinned`/`readonly` are `bool` fields; rusqlite's `FromSql for bool` maps the
 // stored 0/1 integers (same as the prior explicit `i64 != 0`).
 sql_record!(pub(super) THREAD_COLUMNS, thread_from_row -> ThreadRecord {
-    id, workspace_id, mode, title, status, pinned, readonly,
+    id, workspace_id, mode, title, title_seed, status, pinned, readonly,
     agent_session_id, parent_session_id, asset_root_id, last_message_at, last_opened_at,
     created_at, updated_at, archived_at, deleted_at,
 });
@@ -104,6 +108,14 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
             "Workspace Thread".to_string()
         }
     });
+    // A thread born without a session of its own is a conversation the Desktop
+    // starts from nothing: its title is a placeholder that a finished first
+    // turn may replace. One created around an *existing* session (a fork, or an
+    // import) carries that conversation's own name instead, so it is left
+    // alone — a rename made in another client never reaches this store and
+    // must not be undone here. Imported worker conversations are seeded
+    // explicitly by the importer (`seed_thread_auto_title`).
+    let title_seed = agent_session_id.is_none().then(|| title.clone());
 
     // Resolve/create the workspace and insert the thread in one transaction so a
     // crash between the two writes can't leave an orphan workspace with no thread
@@ -132,10 +144,18 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
 
     tx.execute(
         "INSERT INTO threads (
-             id, workspace_id, mode, title, status, pinned, readonly,
+             id, workspace_id, mode, title, title_seed, status, pinned, readonly,
              agent_session_id, asset_root_id, last_opened_at, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, 'active', 0, 0, ?5, ?1, ?6, ?6, ?6)",
-        params![thread_id, workspace.id, mode, title, agent_session_id, now],
+         ) VALUES (?1, ?2, ?3, ?4, ?5, 'active', 0, 0, ?6, ?1, ?7, ?7, ?7)",
+        params![
+            thread_id,
+            workspace.id,
+            mode,
+            title,
+            title_seed,
+            agent_session_id,
+            now
+        ],
     )?;
 
     let thread = loaded(get_thread_in(&tx, &thread_id)?, "Created thread")?;
@@ -213,6 +233,50 @@ pub fn thread_asset_root_id(thread_id: &str) -> Result<String, crate::AppError> 
     .ok_or_else(|| "Thread could not be loaded.".to_string().into())
 }
 
+/// Record that a thread's current title is a placeholder the Desktop may
+/// replace with a generated one.
+///
+/// Used by the importer for a *derived* conversation — a session the agent
+/// reports as belonging to another one, e.g. a goal worker named after its
+/// goal. Such a name is minted by a machine, so it is a seed like a fresh
+/// conversation's; a standalone imported conversation keeps whatever name it
+/// arrived with. Idempotent, and deliberately narrow: it seeds only a thread
+/// that was never seeded (a name someone already chose is never whitelisted)
+/// and still wears exactly `title` (an import must not whitelist a title that
+/// changed under it). Returns whether this call seeded the row.
+pub fn seed_thread_auto_title(thread_id: &str, title: &str) -> Result<bool, crate::AppError> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Ok(false);
+    }
+    let conn = connect()?;
+    let seeded = conn.execute(
+        "UPDATE threads SET title_seed = ?1
+         WHERE id = ?2 AND status != 'deleted' AND title_seed IS NULL AND title = ?1",
+        params![title, thread_id],
+    )?;
+    Ok(seeded > 0)
+}
+
+/// Move an existing seed onto a title the importer re-derived for this thread
+/// (its healing pass replaces a fallback title with the one the session's first
+/// message implies). The replacement title is machine-derived like the one it
+/// replaces, so the thread stays auto-titleable. A thread that was never
+/// seeded stays unseeded — healing must not turn auto-titling on.
+pub fn reseed_thread_auto_title(thread_id: &str, title: &str) -> Result<bool, crate::AppError> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Ok(false);
+    }
+    let conn = connect()?;
+    let reseeded = conn.execute(
+        "UPDATE threads SET title_seed = ?1
+         WHERE id = ?2 AND status != 'deleted' AND title_seed IS NOT NULL",
+        params![title, thread_id],
+    )?;
+    Ok(reseeded > 0)
+}
+
 pub(super) fn get_thread_in(
     conn: &Connection,
     thread_id: &str,
@@ -226,6 +290,14 @@ pub(super) fn get_thread_in(
     .map_err(crate::AppError::from)
 }
 
+/// Rename a thread.
+///
+/// A rename is permanent in one direction only: it leaves `title_seed`
+/// untouched, so the thread is no longer wearing its seed and can never be
+/// auto-titled again (whether the rename came from the dialog, from the phone,
+/// from `rename_session` mirroring the agent's own name, or from another
+/// client's rename the importer synced back). Only the importer's healing pass
+/// re-seeds, via `reseed_thread_auto_title`.
 pub fn rename_thread(input: RenameThreadInput) -> Result<ThreadRecord, crate::AppError> {
     let title = input.title.trim();
     if title.is_empty() {
@@ -796,6 +868,126 @@ mod tests {
     fn workspace_count(conn: &Connection) -> i64 {
         conn.query_row("SELECT COUNT(*) FROM workspaces", [], |row| row.get(0))
             .expect("count workspaces")
+    }
+
+    /// A hosted home plus a workspace to create threads in. `create_thread`,
+    /// `rename_thread` and the seeding helpers all resolve the database from
+    /// `HOME`, so these tests need the real store, not `test_conn`.
+    fn title_seed_fixture(
+        label: &str,
+    ) -> (
+        crate::auth_store::test_support::HomeGuard,
+        crate::store::WorkspaceRecord,
+    ) {
+        let home = crate::auth_store::test_support::HomeGuard::new(label);
+        crate::store::initialize_app_store().expect("initialize store");
+        // The guard owns `HOME` for this test and removes it on drop, so a
+        // workspace inside it leaves nothing behind.
+        let path =
+            std::path::PathBuf::from(std::env::var("HOME").expect("fake home")).join("seed-ws");
+        std::fs::create_dir_all(&path).expect("create workspace dir");
+        let workspace = crate::store::create_workspace(crate::store::CreateWorkspaceInput {
+            name: Some("Seed WS".to_string()),
+            path: path.to_string_lossy().to_string(),
+            description: None,
+            create_directory: Some(false),
+        })
+        .expect("create workspace");
+        (home, workspace)
+    }
+
+    fn title_seed_thread(
+        workspace_id: &str,
+        title: &str,
+        agent_session_id: Option<&str>,
+    ) -> ThreadRecord {
+        crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "workspace".to_string(),
+            title: Some(title.to_string()),
+            workspace_id: Some(workspace_id.to_string()),
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: agent_session_id.map(str::to_string),
+        })
+        .expect("create thread")
+    }
+
+    /// Only a conversation the Desktop mints from nothing is auto-titleable.
+    /// One created around an existing Agent session (an import, a fork) carries
+    /// a name this store did not invent, and seeding it would let the title task
+    /// overwrite a name someone chose in another client.
+    #[test]
+    fn create_thread_seeds_auto_title_only_for_a_fresh_conversation() {
+        let (_home, workspace) = title_seed_fixture("title-seed-create");
+        let fresh = title_seed_thread(&workspace.id, "New Chat", None);
+        assert_eq!(fresh.title_seed.as_deref(), Some("New Chat"));
+        let imported = title_seed_thread(&workspace.id, "from the goal", Some("sess-worker"));
+        assert_eq!(imported.title_seed, None);
+    }
+
+    /// The importer's seeding is written once and never moved by a later
+    /// import: it records that the title the importer saw is a machine
+    /// placeholder, and it refuses to whitelist any other title. A rename
+    /// leaves the seed behind (the thread is no longer wearing it, so it can
+    /// never be auto-titled again), while the importer's own healing pass is
+    /// allowed to move it.
+    #[test]
+    fn auto_title_seed_is_recorded_once_and_survives_a_rename() {
+        let (_home, workspace) = title_seed_fixture("title-seed-write");
+        let thread = title_seed_thread(&workspace.id, "from the goal", Some("sess-worker"));
+        assert!(crate::store::seed_thread_auto_title(&thread.id, "from the goal").unwrap());
+        assert!(
+            !crate::store::seed_thread_auto_title(&thread.id, "from the goal").unwrap(),
+            "seeding is idempotent"
+        );
+        assert!(
+            !crate::store::seed_thread_auto_title(&thread.id, "another title").unwrap(),
+            "only the title the importer saw may be seeded"
+        );
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .unwrap()
+                .unwrap()
+                .title_seed
+                .as_deref(),
+            Some("from the goal")
+        );
+
+        crate::store::rename_thread(crate::store::RenameThreadInput {
+            thread_id: thread.id.clone(),
+            title: "人手命名".to_string(),
+        })
+        .unwrap();
+        let renamed = crate::store::get_thread(&thread.id).unwrap().unwrap();
+        assert_eq!(renamed.title, "人手命名");
+        assert_eq!(renamed.title_seed.as_deref(), Some("from the goal"));
+        assert_ne!(renamed.title_seed.as_deref(), Some(renamed.title.as_str()));
+
+        assert!(crate::store::reseed_thread_auto_title(&thread.id, "healed title").unwrap());
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .unwrap()
+                .unwrap()
+                .title_seed
+                .as_deref(),
+            Some("healed title")
+        );
+    }
+
+    /// Healing must not turn auto-titling on for a conversation that arrived
+    /// with a name of its own.
+    #[test]
+    fn reseed_never_creates_a_seed() {
+        let (_home, workspace) = title_seed_fixture("title-seed-reseed");
+        let thread = title_seed_thread(&workspace.id, "imported name", Some("sess-imported"));
+        assert!(!crate::store::reseed_thread_auto_title(&thread.id, "healed title").unwrap());
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .unwrap()
+                .unwrap()
+                .title_seed,
+            None
+        );
     }
 
     /// The workspace resolve/create and the thread insert commit together — both

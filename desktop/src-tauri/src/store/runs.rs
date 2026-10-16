@@ -160,6 +160,25 @@ pub fn active_run_sessions() -> Result<Vec<String>, crate::AppError> {
         .map_err(crate::AppError::from)
 }
 
+/// Whether this thread still owes a turn: any run row that has not reached a
+/// terminal state is either executing or queued behind one (the goal plane
+/// steering a worker, a user's follow-up message). A conversation is settled —
+/// and only then auto-titled — while this is false.
+pub fn has_active_run(thread_id: &str) -> Result<bool, crate::AppError> {
+    let conn = connect()?;
+    let active = conn.query_row(
+        &format!(
+            "SELECT EXISTS(
+                 SELECT 1 FROM runs
+                 WHERE thread_id = ?1 AND status NOT IN ({TERMINAL_RUN_STATUSES_SQL})
+             )"
+        ),
+        params![thread_id],
+        |row| row.get::<_, bool>(0),
+    )?;
+    Ok(active)
+}
+
 pub fn list_runs(thread_id: &str) -> Result<Vec<RunRecord>, crate::AppError> {
     let conn = connect()?;
     let columns = run_columns(&conn)?;
@@ -1246,6 +1265,33 @@ mod tests {
             params![id, status],
         )
         .expect("insert run");
+    }
+
+    #[test]
+    fn has_active_run_reports_a_running_or_queued_turn() {
+        let (_home, conn) = guarded_conn("runs-has-active");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                 VALUES ('ws-a', 'W', 'user', '/tmp/ws-a', 1, 1);
+             INSERT INTO threads (id, workspace_id, mode, title, created_at, updated_at)
+                 VALUES ('t-open', 'ws-a', 'chat', 'Open', 1, 1),
+                        ('t-settled', 'ws-a', 'chat', 'Settled', 1, 1);
+             -- A conversation that owes a turn: the previous reply settled, the
+             -- next one is already queued (the goal plane steering a worker).
+             INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+                 VALUES ('r1', 't-open', 'completed', 1, 1),
+                        ('r2', 't-open', 'running', 2, 2),
+                        ('r3', 't-settled', 'completed', 1, 1),
+                        ('r4', 't-settled', 'failed', 2, 2),
+                        ('r5', 't-settled', 'cancelled', 3, 3);",
+        )
+        .expect("seed runs");
+        assert!(super::has_active_run("t-open").expect("read"));
+        assert!(!super::has_active_run("t-settled").expect("read"));
+        assert!(
+            !super::has_active_run("t-unknown").expect("read"),
+            "a conversation with no run rows is settled"
+        );
     }
 
     #[test]
