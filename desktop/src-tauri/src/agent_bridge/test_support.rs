@@ -585,6 +585,25 @@ pub(crate) fn seed_thread(
     .expect("create thread")
 }
 
+/// Create a thread the background title task may name: bound to an Agent
+/// session (like an imported worker conversation) and carrying the title seed
+/// the importer records for a derived session. Without the seed the thread is
+/// a conversation that arrived with a name of its own, which is never
+/// auto-titled — see `store::create_thread` and `store::seed_thread_auto_title`.
+pub(crate) fn seed_titleable_thread(
+    workspace_id: &str,
+    agent_session_id: &str,
+) -> crate::store::ThreadRecord {
+    let thread = seed_thread(workspace_id, Some(agent_session_id));
+    assert!(
+        crate::store::seed_thread_auto_title(&thread.id, &thread.title).expect("seed auto title"),
+        "a freshly seeded thread must accept its own title as the seed"
+    );
+    crate::store::get_thread(&thread.id)
+        .expect("reload seeded thread")
+        .expect("seeded thread exists")
+}
+
 /// Create a (running) run row for the thread.
 pub(crate) fn seed_run(thread_id: &str) -> crate::store::RunRecord {
     crate::store::create_run(crate::store::CreateRunInput {

@@ -28,6 +28,14 @@ CREATE TABLE IF NOT EXISTS threads (
     workspace_id TEXT NOT NULL REFERENCES workspaces(id),
     mode TEXT NOT NULL CHECK (mode IN ('chat', 'workspace')),
     title TEXT NOT NULL,
+    -- The title this thread was minted with, when that title is a placeholder
+    -- the Desktop may replace with a generated one (a fresh conversation, or a
+    -- derived worker conversation the goal plane minted from its goal). NULL
+    -- means "never auto-title": the thread arrived carrying a conversation's
+    -- own name (an imported or forked conversation), and a later rename is
+    -- permanent — see `store::rename_thread`. A thread is auto-titled only
+    -- while it still wears this exact title (run_control::title_settled_thread_if_enabled).
+    title_seed TEXT,
     status TEXT NOT NULL DEFAULT 'active',
     pinned INTEGER NOT NULL DEFAULT 0,
     readonly INTEGER NOT NULL DEFAULT 0,
@@ -351,6 +359,12 @@ pub(super) const VERSIONED_MIGRATIONS: &[(&str, &str, &str, &str)] = &[
         "threads",
         "asset_root_id",
         "ALTER TABLE threads ADD COLUMN asset_root_id TEXT",
+    ),
+    (
+        "v1.2.4-thread-title-seed",
+        "threads",
+        "title_seed",
+        "ALTER TABLE threads ADD COLUMN title_seed TEXT",
     ),
 ];
 
