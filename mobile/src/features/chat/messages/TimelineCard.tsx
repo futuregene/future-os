@@ -1,8 +1,8 @@
 import { Check, CircleAlert, Copy, GitBranch } from "lucide-react-native";
-import { Fragment, memo, useCallback, useRef } from "react";
+import { Fragment, memo, useCallback, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, Text, useWindowDimensions, View } from "react-native";
 import { friendlyRunError, friendlyRunErrorTitle } from "../../../components/errorMessage";
 import { MarkdownText } from "../../../components/MarkdownText";
 import { canRecoverMessage } from "../../../remote/recovery";
@@ -13,6 +13,7 @@ import type { TimelineCardProps } from "./types";
 import { RunIndicator, formatDuration } from "./messageUtils";
 import { useCopyState } from "./useCopyState";
 import { AttachmentChip } from "./AttachmentChip";
+import { collapsedPromptHeight, isLongPrompt } from "./promptCollapse";
 import { StatusDivider } from "./MessageStatus";
 import { buildReplyBlocks, replyTailBlock, SegmentBlock, StepRunBlock } from "./ReplyBlocks";
 
@@ -29,9 +30,16 @@ function TimelineCardView({
   onReplyTailAnchor,
 }: TimelineCardProps) {
   const styles = useStyles();
-  const { colors } = useTheme();
+  const { colors, chat } = useTheme();
   const { t, i18n } = useTranslation();
   const { copied, copy } = useCopyState();
+  // The reader's own window: a collapsed prompt's cap is bounded by it (see
+  // `promptCollapse`), and a rotation has to recompute that bound.
+  const { height: windowHeight } = useWindowDimensions();
+  // One bubble per row, and only a user's own prompt is ever collapsible; the
+  // state lives here rather than in a wrapper component so the row keeps its
+  // memoized identity.
+  const [promptExpanded, setPromptExpanded] = useState(false);
   /**
    * Where this reply's tail anchor sits **inside its own row**: the block
    * list's own offset below the bubble's top, plus the anchor block's offset
@@ -219,13 +227,30 @@ function TimelineCardView({
         </View>
       );
     }
+    // A prompt of goal-sized prose (a multi-kilobyte envelope, a pasted log) is
+    // taller than the phone's viewport, which buries the reply under it and —
+    // measured on a reporting device — leaves the inverted transcript's layout
+    // drawing an empty bubble over the neighbouring rows. The bubble therefore
+    // starts collapsed to a fixed budget of wrapped lines and is expanded in
+    // place, the way a long code block and a long table already are. Nothing is
+    // dropped: the clipped remainder still renders, so long selection and a
+    // screen reader still reach the whole prompt.
+    const longPrompt = isLongPrompt(item.text);
+    const promptCollapsed = longPrompt && !promptExpanded;
+    const promptToggle = t(promptCollapsed ? "chat.expandPrompt" : "chat.collapsePrompt");
     return (
       <View style={styles.userBlock}>
         {item.text.trim().length > 0 && (
           // The prompt renders through the same markdown pipeline as a reply (a
           // heading, list or code block the user typed now arrives formatted),
           // on the bubble's own tone because that fill is the accent colour.
-          <View style={[styles.message, styles.userMessage]}>
+          <View style={[
+            styles.message,
+            styles.userMessage,
+            promptCollapsed
+              ? [styles.promptCollapsed, { maxHeight: collapsedPromptHeight(chat.lineHeight, windowHeight) }]
+              : null,
+          ]}>
             <MarkdownText
               onOpenFile={onOpenFile}
               onOpenSession={onOpenSession}
@@ -233,6 +258,17 @@ function TimelineCardView({
               tone="onAccent"
             />
           </View>
+        )}
+        {longPrompt && item.text.trim().length > 0 && (
+          <Pressable
+            accessibilityLabel={promptToggle}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: promptExpanded }}
+            onPress={() => setPromptExpanded(value => !value)}
+            style={styles.promptToggle}
+          >
+            <Text style={styles.promptToggleLabel}>{promptToggle}</Text>
+          </Pressable>
         )}
         {item.attachments && item.attachments.length > 0 && (
           <View style={styles.attachmentRow}>
