@@ -193,7 +193,7 @@ fn runtime() -> &'static Mutex<Runtime> {
 /// `HomeGuard` already serializes the tests and cancels the tasks that outlived
 /// their owner; this clears the state those tasks left behind.
 #[cfg(test)]
-pub(crate) async fn reset_for_test() {
+pub(crate) async fn reset_for_test(_home: &crate::remote::test_support::HomeGuard) {
     let mut live = runtime().lock().await;
     for (_, task) in live.tasks.drain() {
         task.abort();
@@ -1968,7 +1968,6 @@ mod tests {
         crate::remote_peer::testing::Fixture,
         String,
     ) {
-        reset_for_test().await;
         let (home, fx) = fixture(label).await;
         let desktop_id = fx.paired.creds.desktop_id.clone();
         connect(&desktop_id).await.expect("connect");
@@ -2145,7 +2144,7 @@ mod tests {
     #[tokio::test]
     async fn a_catalogue_reply_that_is_not_an_object_is_refused() {
         let _home = crate::remote::test_support::HomeGuard::new("peer-stamp-non-object");
-        reset_for_test().await;
+        reset_for_test(&_home).await;
         for reply in [
             serde_json::json!([1, 2, 3]),
             serde_json::json!("a string"),
@@ -2163,7 +2162,7 @@ mod tests {
     #[tokio::test]
     async fn disconnect_aborts_the_supervisor() {
         let _home = crate::remote::test_support::HomeGuard::new("peer-disconnect-supervisor");
-        reset_for_test().await;
+        reset_for_test(&_home).await;
         let handle = spawn_supervisor("desktop_a".into(), None);
         runtime()
             .lock()

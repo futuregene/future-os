@@ -646,6 +646,34 @@ impl ServerSession {
         ))
     }
 
+    /// Emit one compaction lifecycle signal.
+    ///
+    /// A standalone (manual) compaction is not part of any run — `handle_compact`
+    /// refuses a busy session, so it only ever runs with no active run. Between
+    /// runs the broadcaster still holds the run that just settled, and that
+    /// run's journal is already retired: run completion hands it to the
+    /// compactor, which publishes a snapshot and deletes its raw rows. Stamping
+    /// the signal with that run made the append permanently impossible
+    /// (`cannot append to a compacted settled run`), so a standalone
+    /// compaction's signals go to the session scope instead: never compacted,
+    /// durable, and already the path clients replay for the signals that belong
+    /// to no run. An in-run compaction keeps its run stamp — its progress
+    /// belongs to that run's stream.
+    fn broadcast_compaction_event(
+        &self,
+        phase: crate::compaction::CompactionPhase,
+        event: crate::agent::RunEvent,
+    ) {
+        let Some(event) = super::prompt_helpers::run_event_to_sse(event) else {
+            return;
+        };
+        if phase == crate::compaction::CompactionPhase::Standalone {
+            self.broadcaster.broadcast_session(event);
+        } else {
+            self.broadcaster.broadcast(event);
+        }
+    }
+
     async fn compact_with_policy(
         &self,
         instructions: &str,
@@ -706,16 +734,15 @@ impl ServerSession {
                 Err(_) => {
                     let error = anyhow::anyhow!("session configuration is busy; retry /compact");
                     self.compaction_in_progress.store(false, Ordering::Release);
-                    if let Some(event) = super::prompt_helpers::run_event_to_sse(
+                    self.broadcast_compaction_event(
+                        phase,
                         crate::agent::RunEvent::CompactionFailed {
                             operation_id,
                             trigger,
                             phase,
                             error: error.to_string(),
                         },
-                    ) {
-                        self.broadcaster.broadcast(event);
-                    }
+                    );
                     return Err(error);
                 }
             };
@@ -819,15 +846,14 @@ impl ServerSession {
             Some(instructions),
             interrupted.as_ref(),
             Some(&|| {
-                if let Some(event) = super::prompt_helpers::run_event_to_sse(
+                self.broadcast_compaction_event(
+                    phase,
                     crate::agent::RunEvent::CompactionStarted {
                         operation_id: operation_id.clone(),
                         trigger,
                         phase,
                     },
-                ) {
-                    self.broadcaster.broadcast(event);
-                }
+                );
             }),
             journal.as_ref(),
             &operation_id,
@@ -895,16 +921,15 @@ impl ServerSession {
             Ok(prepared) => prepared,
             Err(error) => {
                 self.compaction_in_progress.store(false, Ordering::Release);
-                if let Some(event) = super::prompt_helpers::run_event_to_sse(
+                self.broadcast_compaction_event(
+                    phase,
                     crate::agent::RunEvent::CompactionFailed {
                         operation_id,
                         trigger,
                         phase,
                         error: error.to_string(),
                     },
-                ) {
-                    self.broadcaster.broadcast(event);
-                }
+                );
                 return Err(error);
             }
         };
@@ -931,16 +956,15 @@ impl ServerSession {
                     if let Err(error) = ticket.finish(None, result.clone()) {
                         ticket.fail(&error.to_string());
                         self.compaction_in_progress.store(false, Ordering::Release);
-                        if let Some(event) = super::prompt_helpers::run_event_to_sse(
+                        self.broadcast_compaction_event(
+                            phase,
                             crate::agent::RunEvent::CompactionFailed {
                                 operation_id,
                                 trigger,
                                 phase,
                                 error: error.to_string(),
                             },
-                        ) {
-                            self.broadcaster.broadcast(event);
-                        }
+                        );
                         return Err(error);
                     }
                 }
@@ -972,16 +996,15 @@ impl ServerSession {
                         ticket.fail(&error.to_string());
                     }
                     self.compaction_in_progress.store(false, Ordering::Release);
-                    if let Some(event) = super::prompt_helpers::run_event_to_sse(
+                    self.broadcast_compaction_event(
+                        phase,
                         crate::agent::RunEvent::CompactionFailed {
                             operation_id,
                             trigger,
                             phase,
                             error: error.to_string(),
                         },
-                    ) {
-                        self.broadcaster.broadcast(event);
-                    }
+                    );
                     return Err(error);
                 }
                 self.last_prompt_tokens.store(0, Ordering::Relaxed);
@@ -999,14 +1022,13 @@ impl ServerSession {
                 // this event, so this ordering prevents a transient
                 // `session_busy` on the very next command.
                 self.compaction_in_progress.store(false, Ordering::Release);
-                if let Some(event) = super::prompt_helpers::run_event_to_sse(
+                self.broadcast_compaction_event(
+                    phase,
                     crate::agent::RunEvent::CompactionCommitted {
                         operation_id,
                         checkpoint: (*checkpoint).clone(),
                     },
-                ) {
-                    self.broadcaster.broadcast(event);
-                }
+                );
                 Ok(result)
             }
         }
@@ -3290,6 +3312,137 @@ mod tests {
         let result = session.compact("").unwrap();
         assert_eq!(result["messagesRemoved"], 0);
         assert_eq!(result["summary"], "");
+    }
+
+    /// A manual compaction runs with no active run (`handle_compact` refuses a
+    /// busy session), and the broadcaster keeps the last settled run's identity
+    /// until the next `start_run`. Stamping the compaction's own lifecycle
+    /// signals with that run put them beyond a journal that compaction had
+    /// already retired: the store refused the append ("cannot append to a
+    /// compacted settled run"), the refusal was recorded as a session-wide
+    /// journal failure, and every later prompt failed at the journal flush
+    /// barrier — the conversation was permanently unwritable while
+    /// `future session status` still looked healthy.
+    #[test]
+    fn a_manual_compaction_after_a_settled_run_keeps_the_session_writable() {
+        use std::sync::atomic::Ordering;
+
+        use crate::rpc::SseEvent;
+
+        let mut session = make_test_session("compact-keeps-journal");
+
+        // History to compact, so the manual compaction takes its real path
+        // (the summary request degrades to the evidence index offline).
+        session.agent_loop.try_write().unwrap().provider = Arc::new(FailingProvider);
+        session.model = "glm-4.5v".to_string();
+        session.last_prompt_tokens.store(50_000, Ordering::Relaxed);
+        {
+            let mut messages = session.messages.write();
+            for i in 0..5 {
+                messages.push(crate::types::AgentMessage::new_user(
+                    "user",
+                    serde_json::json!(format!("question {i}")),
+                ));
+                messages.push(crate::types::AgentMessage {
+                    role: "assistant".into(),
+                    content: vec![
+                        crate::types::ContentBlock::text(format!("answer {i}")),
+                        crate::types::ContentBlock::tool_call(
+                            format!("read-{i}"),
+                            "read",
+                            serde_json::json!({"path":"large.rs"}),
+                            Default::default(),
+                        ),
+                    ],
+                    ..Default::default()
+                });
+                messages.push(crate::types::AgentMessage {
+                    role: "tool".into(),
+                    content: vec![crate::types::ContentBlock::tool_result(
+                        format!("read-{i}"),
+                        format!("tool result {i} ").repeat(2000),
+                        false,
+                    )],
+                    ..Default::default()
+                });
+            }
+            for message in messages.iter_mut() {
+                message.ensure_journal_entry_id();
+            }
+        }
+        // The summarizer is only consulted for a session whose transcript is
+        // already persisted, and a transcript rewrite drops every `runs` row —
+        // so persist before the settled run below is set up.
+        persist_transcript(&session);
+
+        session
+            .broadcaster
+            .configure_journal(&session.session_id, &session.session_manager)
+            .unwrap();
+        // A run that completed and was handed to the journal compactor, which
+        // published its snapshot and deleted its raw rows.
+        session.broadcaster.start_run("run-settled".to_string(), 1);
+        session.broadcaster.broadcast(SseEvent::new(
+            "agent_end",
+            serde_json::json!({"state": "completed"}),
+        ));
+        session.broadcaster.flush_journal().unwrap();
+        session.session_manager.test_execute(
+            "INSERT INTO runs(session_id,run_id,status,completed_at_ms)              VALUES ('compact-keeps-journal','run-settled','completed',1)",
+        );
+        let store = session.session_manager.storage().unwrap().clone();
+        assert_eq!(
+            store
+                .compact_run("compact-keeps-journal", "run-settled")
+                .unwrap(),
+            1
+        );
+        assert!(store
+            .replay_page("compact-keeps-journal", "run-settled", -1, false, None)
+            .unwrap()
+            .snapshot
+            .is_some());
+
+        let result = session.compact("").unwrap();
+        assert!(
+            result["checkpointId"].as_str().is_some(),
+            "the manual compaction must commit: {result}"
+        );
+        assert!(
+            session.broadcaster.persistence_error().is_none(),
+            "a manual compaction's own lifecycle signals must not take the session's journal down: {:?}",
+            session.broadcaster.persistence_error()
+        );
+        let lifecycle: Vec<String> = session
+            .broadcaster
+            .session_events_since(-1)
+            .unwrap()
+            .into_iter()
+            .map(|event| event.event_type)
+            .collect();
+        assert!(
+            lifecycle
+                .iter()
+                .any(|event_type| event_type == "compaction_committed"),
+            "the compaction's terminal signal must be durable: {lifecycle:?}"
+        );
+
+        // The session must still accept the next run's events.
+        session.broadcaster.start_run("run-next".to_string(), 2);
+        session.broadcaster.broadcast(SseEvent::new(
+            "text_chunk",
+            serde_json::json!({"text": "still writable"}),
+        ));
+        // Deltas are batched, so drain the writer before reading the journal.
+        session.broadcaster.flush_journal().unwrap();
+        assert_eq!(
+            store
+                .events("compact-keeps-journal", "run-next")
+                .unwrap()
+                .len(),
+            1,
+            "the next run must journal normally"
+        );
     }
 
     #[test]

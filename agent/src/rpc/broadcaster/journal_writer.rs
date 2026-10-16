@@ -41,10 +41,37 @@ impl EventJournalHealth {
     }
 }
 
+/// Why one event did not reach the journal. The two arms are not
+/// interchangeable to a caller: a refusal cannot be retried, while a storage
+/// failure can — and only the storage failure makes the journal unhealthy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum AppendFailure {
+    /// The journal will never accept this event (see `EventRejected`).
+    Rejected(String),
+    /// The journal could not be written now; the writer keeps the event.
+    Unavailable(String),
+}
+
+impl AppendFailure {
+    fn unavailable(message: impl Into<String>) -> Self {
+        Self::Unavailable(message.into())
+    }
+}
+
+/// Renders the inner message, so a caller that only wants to report the failure
+/// (and the tests that assert on its text) keeps working unchanged.
+impl std::fmt::Display for AppendFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rejected(message) | Self::Unavailable(message) => f.write_str(message),
+        }
+    }
+}
+
 pub(super) enum EventWriteCommand {
     Append {
         event: serde_json::Value,
-        reply: Option<std::sync::mpsc::SyncSender<Result<(), String>>>,
+        reply: Option<std::sync::mpsc::SyncSender<Result<(), AppendFailure>>>,
     },
     Flush(std::sync::mpsc::SyncSender<Result<(), String>>),
     Shutdown(std::sync::mpsc::SyncSender<Result<(), String>>),
@@ -59,7 +86,7 @@ pub(super) enum EventWriteCommand {
 
 struct PendingEvent {
     event: serde_json::Value,
-    reply: Option<std::sync::mpsc::SyncSender<Result<(), String>>>,
+    reply: Option<std::sync::mpsc::SyncSender<Result<(), AppendFailure>>>,
 }
 
 pub(super) struct EventBatchWriter {
@@ -104,9 +131,13 @@ impl EventBatchWriter {
         })
     }
 
-    pub(super) fn append(&self, event: serde_json::Value, durable: bool) -> anyhow::Result<()> {
+    pub(super) fn append(
+        &self,
+        event: serde_json::Value,
+        durable: bool,
+    ) -> Result<(), AppendFailure> {
         if let Some(error) = self.health.error() {
-            anyhow::bail!(error);
+            return Err(AppendFailure::Unavailable(error));
         }
         let (reply, receiver) = if durable {
             let (sender, receiver) = std::sync::mpsc::sync_channel(1);
@@ -123,15 +154,15 @@ impl EventBatchWriter {
             .map_err(|_| {
                 let message = "event persistence worker is unavailable".to_string();
                 self.health.fail(message.clone());
-                anyhow::anyhow!(message)
+                AppendFailure::Unavailable(message)
             })?;
         if let Some(receiver) = receiver {
-            receiver
-                .recv()
-                .map_err(|_| anyhow::anyhow!("event persistence worker is unavailable"))?
-                .map_err(anyhow::Error::msg)?;
+            receiver.recv().map_err(|_| {
+                AppendFailure::unavailable("event persistence worker is unavailable")
+            })?
+        } else {
+            Ok(())
         }
-        Ok(())
     }
 
     pub(super) fn queue_flush(
@@ -280,9 +311,14 @@ fn run_event_batch_writer(
             EventWriteCommand::Append { event, reply } => {
                 if failed && reply.is_some() {
                     if let Some(reply) = reply {
-                        let _ = reply.send(Err(health
-                            .error()
-                            .unwrap_or_else(|| "event persistence is unavailable".to_string())));
+                        // Reached only when a storage failure is still blocking
+                        // the journal (`failed`), so it is an availability
+                        // problem, not a refusal of this event.
+                        let _ = reply.send(Err(AppendFailure::Unavailable(
+                            health
+                                .error()
+                                .unwrap_or_else(|| "event persistence is unavailable".to_string()),
+                        )));
                     }
                     continue;
                 }
@@ -425,15 +461,17 @@ fn flush_event_batch(
                             "dropping an event this journal refuses; events after it still land"
                         );
                         if let Some(reply) = item.reply {
-                            let _ =
-                                reply.send(Err(format!("event batch commit failed: {error:#}")));
+                            let _ = reply.send(Err(AppendFailure::Rejected(format!(
+                                "event batch commit failed: {error:#}"
+                            ))));
                         }
                     }
                     // Still a storage problem: keep it for the next attempt.
                     Err(error) => {
                         if let Some(reply) = item.reply {
-                            let _ =
-                                reply.send(Err(format!("event batch commit failed: {error:#}")));
+                            let _ = reply.send(Err(AppendFailure::Unavailable(format!(
+                                "event batch commit failed: {error:#}"
+                            ))));
                         } else {
                             retry.push(item);
                         }
@@ -453,7 +491,7 @@ fn flush_event_batch(
             let mut retry = Vec::new();
             for item in pending.drain(..) {
                 if let Some(reply) = item.reply {
-                    let _ = reply.send(Err(message.clone()));
+                    let _ = reply.send(Err(AppendFailure::Unavailable(message.clone())));
                 } else {
                     retry.push(item);
                 }

@@ -1043,6 +1043,14 @@ message SessionState {
   // used). A manual override, so it is small; the full built prompt is tens of
   // kilobytes and is served by `get_system_prompt` instead.
   string custom_system_prompt = 44;
+
+  // Why this session's event journal cannot be written; absent while it is
+  // healthy. The journal is the durable half of a conversation — while it is
+  // blocked every prompt fails ("session persistence is unavailable") and the
+  // rest of this state reads as idle and healthy, so a status reader cannot
+  // tell a writable session from a wedged one without asking. A typed
+  // get_state carries no JSON fallback: a field missing here is silently lost.
+  optional string event_journal_error = 45;
 }
 
 message SessionUsage {

@@ -2,8 +2,8 @@
 #[cfg(test)]
 use super::JournalFailPoint;
 use super::{
-    is_buffered_delta, EventBatchWriter, EventJournalState, RunProjectionSnapshot, SseBroadcaster,
-    SseEvent,
+    is_buffered_delta, AppendFailure, EventBatchWriter, EventJournalState, RunProjectionSnapshot,
+    SseBroadcaster, SseEvent,
 };
 
 impl SseBroadcaster {
@@ -166,19 +166,22 @@ impl SseBroadcaster {
     pub(super) fn append_journal(
         journal: &mut EventJournalState,
         event: &SseEvent,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), AppendFailure> {
         #[cfg(test)]
         if journal.fail_at.take().is_some() {
-            anyhow::bail!("injected event persistence failure");
+            return Err(AppendFailure::Unavailable(
+                "injected event persistence failure".to_string(),
+            ));
         }
         debug_assert!(!journal.closed);
         let Some(writer) = journal.writer.as_ref() else {
             return Ok(());
         };
-        writer.append(
-            serde_json::to_value(event)?,
-            !is_buffered_delta(&event.event_type),
-        )
+        let event_type = event.event_type.clone();
+        let event = serde_json::to_value(event).map_err(|error| {
+            AppendFailure::Unavailable(format!("event serialization failed: {error}"))
+        })?;
+        writer.append(event, !is_buffered_delta(&event_type))
     }
 
     pub(super) fn read_journal_since(

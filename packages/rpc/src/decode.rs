@@ -374,6 +374,7 @@ pub(crate) fn session_state_from_proto(state: &proto::SessionState) -> GetStateP
         append_system_prompt: state.append_system_prompt.clone(),
         context_files_enabled: state.context_files_enabled,
         custom_system_prompt: state.custom_system_prompt.clone(),
+        event_journal_error: state.event_journal_error.clone(),
     }
 }
 

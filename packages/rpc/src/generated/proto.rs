@@ -1130,6 +1130,14 @@ pub struct SessionState {
     /// kilobytes and is served by `get_system_prompt` instead.
     #[prost(string, tag = "44")]
     pub custom_system_prompt: ::prost::alloc::string::String,
+    /// Why this session's event journal cannot be written; absent while it is
+    /// healthy. The journal is the durable half of a conversation — while it is
+    /// blocked every prompt fails ("session persistence is unavailable") and the
+    /// rest of this state reads as idle and healthy, so a status reader cannot
+    /// tell a writable session from a wedged one without asking. A typed
+    /// get_state carries no JSON fallback: a field missing here is silently lost.
+    #[prost(string, optional, tag = "45")]
+    pub event_journal_error: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct SessionUsage {

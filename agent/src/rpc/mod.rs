@@ -694,6 +694,9 @@ fn get_state_internal(
         append_system_prompt: sess.append_system_prompt.clone(),
         context_files_enabled: !sess.no_context_files,
         custom_system_prompt: sess.custom_system_prompt.clone(),
+        // A blocked journal is otherwise invisible: the session reads as idle
+        // and healthy while every prompt fails at the journal flush barrier.
+        event_journal_error: sess.broadcaster.persistence_error(),
     })
     .unwrap_or_default();
     Some(payload)

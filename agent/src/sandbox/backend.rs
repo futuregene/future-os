@@ -85,6 +85,10 @@ impl PreparedShell {
             None
         };
         let mut command = tokio::process::Command::new(self.program);
+        // The embedded Agent runs in a Desktop process without a console.
+        // Piped output alone does not stop Windows allocating one for PowerShell.
+        #[cfg(windows)]
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
         command.args(self.args);
         for (key, value) in self.env_delta {
             match value {
@@ -155,6 +159,26 @@ impl PreparedShell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn plain_windows_shell_runs_without_a_console() {
+        // Inspect the actual child rather than command-builder flags: even
+        // when CI itself has a console, this shell must not inherit/create one.
+        let script = r#"Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class FutureOSConsoleProbe { [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); }'; [FutureOSConsoleProbe]::GetConsoleWindow().ToInt64()"#;
+        let output = PreparedShell::plain(script)
+            .into_command()
+            .expect("prepare plain shell")
+            .output()
+            .await
+            .expect("run console probe");
+        assert!(
+            output.status.success(),
+            "console probe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0");
+    }
 
     #[cfg(target_os = "linux")]
     #[tokio::test]

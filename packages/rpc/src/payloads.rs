@@ -82,6 +82,13 @@ pub struct GetStatePayload {
     /// tens of kilobytes and deliberately stays behind `get_system_prompt`.
     #[serde(default)]
     pub custom_system_prompt: String,
+    /// Why this session's event journal cannot be written, absent while it is
+    /// healthy. The journal is the durable half of a conversation: while it is
+    /// blocked every prompt fails ("session persistence is unavailable") and
+    /// `session status` otherwise looks entirely healthy, so the failure has to
+    /// travel with the state a status reader already fetches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_journal_error: Option<String>,
 }
 
 /// A run's live state (get_state `activeRun` / `interruptedRun`; proto
@@ -283,6 +290,7 @@ mod tests {
             append_system_prompt: String::new(),
             context_files_enabled: true,
             custom_system_prompt: String::new(),
+            event_journal_error: None,
         };
         let value = serde_json::to_value(&payload).unwrap();
 
@@ -298,6 +306,10 @@ mod tests {
         assert_eq!(value["appendSystemPrompt"], json!(""));
         assert_eq!(value["contextFilesEnabled"], json!(true));
         assert_eq!(value["customSystemPrompt"], json!(""));
+        // Nothing to report while the journal is healthy: the key is absent,
+        // and a blocked journal is the only thing that adds it (a reader must
+        // not have to guess between "healthy" and "field not sent").
+        assert!(value.get("eventJournalError").is_none());
         // No policy set must not be spelled as "off" — that is a real choice.
         assert!(
             value.get("sandboxTier").is_none(),
@@ -527,9 +539,14 @@ mod tests {
             append_system_prompt: "Always answer in haiku.".to_string(),
             context_files_enabled: true,
             custom_system_prompt: String::new(),
+            event_journal_error: Some("cannot append to a compacted settled run".to_string()),
         };
         let canonical = serde_json::to_value(&payload).unwrap();
         assert_eq!(canonical["sandboxTier"], json!("manual"));
+        assert_eq!(
+            canonical["eventJournalError"],
+            json!("cannot append to a compacted settled run")
+        );
         assert_eq!(
             canonical["appendSystemPrompt"],
             json!("Always answer in haiku.")
