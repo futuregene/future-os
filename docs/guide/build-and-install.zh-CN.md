@@ -160,7 +160,6 @@ Copy-Item desktop\src-tauri\target\release\futureos.exe "$env:USERPROFILE\.futur
 
 ```powershell
 node scripts\version.mjs --set-bundle
-Copy-Item "desktop\src-tauri\binaries\future-$triple.exe" desktop\src-tauri\binaries\installer-maintenance.exe -Force # 签名 CLI 时，在签名后复制
 Push-Location desktop; npm run tauri:build; Pop-Location   # → NSIS 安装 .exe 位于 desktop\src-tauri\target\release\bundle\nsis\
 ```
 

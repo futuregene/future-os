@@ -511,7 +511,7 @@ GUI、headless 与 Agent/RPC/CLI/TUI 的 all-targets Clippy（`-D warnings`）�
 
 Windows 当前发布使用已验签的原始 NSIS EXE。格式检查、临时文件、参数保存和日志可写检查在清理前完成；ZIP/MSI 不猜测启动方式，直接报错。独立 PowerShell 观察进程在 10 秒内确认就绪，取得原 Desktop 进程句柄；等它退出后才安装，60 秒未退出则中止。安装过程不因超时强杀，以免打断回滚。`/P /R /UPDATE /FUTUREOS_CLEAN` 入口只检查占用，任何 Agent/CLI/未知文件锁均阻止安装。保留原启动参数与环境；成功由 NSIS 启动新版。失败会记录安装退出码，核对同目录全部新旧可执行文件的原始 SHA-256 及回滚失败标记，只有完整恢复时才启动旧 Desktop。诊断保存在 `FUTURE_HOME/app/logs/update-recovery.log`。回滚不完整、无法核实、无法启动恢复程序时保留诊断，要求修复安装。
 
-安装器认识 `futureos.exe`、`futureos-headless.exe` 和旧 Desktop/Agent 身份，仍核对持锁 PID、可执行路径、数据根和创建时间。旧 `/UPDATE` 仅关闭本安装目录的已核实进程，不关闭其他目录的持锁 Agent；交互安装的“是”明确授权关闭使用同一数据根且已核实的外部宿主。一般静默/被动安装不隐式停止任务。租约覆盖权限清理、备份、替换、验证和回滚。安装包另带本次构建的维护 CLI，构建脚本及 Windows 发布工作流在 CLI 签名后复制为 `binaries/installer-maintenance.exe`，避免依赖旧维护命令；直接打 NSIS 包也必须先准备该文件。维护失败或超时，释放租约并中止，不替换文件。卸载仍保留既有尽力清理策略。
+安装器认识 `futureos.exe`、`futureos-headless.exe` 和旧 Desktop/Agent 身份，仍核对持锁 PID、可执行路径、数据根和创建时间。旧 `/UPDATE` 仅关闭本安装目录的已核实进程，不关闭其他目录的持锁 Agent；交互安装的“是”明确授权关闭使用同一数据根且已核实的外部宿主。一般静默/被动安装不隐式停止任务。租约覆盖备份、替换、验证和回滚。安装器不执行沙箱 reset，也不再携带第二份 CLI。新 Agent 取得实例锁后、接受任务前，由已有的启动清理回收残留权限记录；旧程序已被删除时同样适用。清理失败会报告错误并保留元数据供后续重试。Desktop 的受控停机仍要求清理成功后才把自动更新交给安装器。卸载使用已安装 CLI 尽力清理，失败保留元数据并继续卸载。
 
 非 Windows 安装失败也不恢复原进程的冻结任务。只有原程序及 CLI 的内容/权限仍匹配时才提供进程重启恢复；macOS 核对完整 app bundle。平台安装器已改变或丢失原文件时提示修复安装，避免重启混合版本。
 
@@ -653,7 +653,7 @@ macOS 发布工作流增加实际 app 内 CLI 可执行权限、精确版本、D
 
 ### 10.12 daily 未签名包验证脚本 review（2026-10-15）
 
-Windows 既有流程只运行暂存 CLI 和 C#/NSIS 模拟安装器，不能证明真实产品安装包包含正确入口。Linux 既有 deb 探测未验证 portable 和独立 CLI 压缩包。新增共享 `scripts/ci/check-packaged-entrypoints.py`，在平台原生 runner 上解包实际 NSIS/deb、portable 和 CLI 产物；运行包内 CLI 精确版本、Agent 帮助、Desktop 帮助，并验证 Windows 安装器内维护 CLI 的版本/重置能力。所有探测使用临时 HOME/USERPROFILE/FUTURE_HOME、清除端点 override、禁用 stdin 并设置超时；不得创建 Agent 数据目录。它不执行安装器、不启动真实 GUI/Agent，不代替安装、升级与沙箱完整验收。
+Windows 既有流程只运行暂存 CLI 和 C#/NSIS 模拟安装器，不能证明真实产品安装包包含正确入口。Linux 既有 deb 探测未验证 portable 和独立 CLI 压缩包。新增共享 `scripts/ci/check-packaged-entrypoints.py`，在平台原生 runner 上解包实际 NSIS/deb、portable 和 CLI 产物；运行包内 CLI 精确版本、Agent 帮助、Desktop 帮助。最初还验证 Windows 安装器内维护 CLI 的版本/重置能力；2026-10-16 简化流程时已移除冗余 CLI 及对应探测，残留沙箱清理由 Agent 已有的启动路径负责。所有探测使用临时 HOME/USERPROFILE/FUTURE_HOME、清除端点 override、禁用 stdin 并设置超时；不得创建 Agent 数据目录。它不执行安装器、不启动真实 GUI/Agent，不代替安装、升级与沙箱完整验收。
 
 Linux 对各 CLI 包检查静态链接，对 deb 和 portable 内 headless 执行 `check-headless-linux.sh`：真实 ELF、无网络 Rocky 8/旧 glibc、无 TTY 首次运行拒绝、未写凭据/配对/数据库。容器和内部程序均有超时，退出时清理专用命名容器。验证错误阻止产物上传，日志和 JSON 汇总单独以 Actions artifact 保存。
 

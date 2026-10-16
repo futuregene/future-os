@@ -163,6 +163,16 @@ try {
     Assert-Equal (Get-FileHash -LiteralPath (Join-Path $fresh 'future.exe')).Hash $newFixtureHash 'Fresh install writes new Agent'
     Assert-Equal (Get-FileHash -LiteralPath (Join-Path $fresh 'futureos.exe')).Hash $newFixtureHash 'Fresh install writes new desktop'
 
+    Write-Host 'Testing reinstall with sandbox metadata and no installed CLI...'
+    $capabilityState = Join-Path $root '.future\windows-capabilities.json'
+    $null = New-Item -ItemType Directory -Force -Path ([IO.Path]::GetDirectoryName($capabilityState))
+    $pendingRepair = '{"schema_version":1,"records":[]}'
+    [IO.File]::WriteAllText($capabilityState, $pendingRepair)
+    $reinstall = Join-Path $root 'missing old installation'
+    Assert-Equal (Wait-Exit (Start-Installer $reinstall)) 0 'Reinstall does not need an old cleanup executable'
+    Assert-Equal ([IO.File]::ReadAllText($capabilityState)) $pendingRepair 'Reinstall preserves metadata for Agent startup repair'
+    Remove-Item -LiteralPath $capabilityState
+
     Write-Host 'Testing the user-scoped Agent lock independently of EXE paths...'
     $state = Join-Path $root '.future\agent'
     $null = New-Item -ItemType Directory -Force -Path $state
@@ -221,13 +231,14 @@ try {
     Assert-Equal (Get-FileHash -LiteralPath (Join-Path $automatic 'futureos.exe')).Hash $newFixtureHash 'Automatic update writes new desktop'
     Assert-Equal (Test-Path (Join-Path $automatic 'future-agent.exe')) $false 'Automatic update removes legacy Agent'
 
-    Write-Host 'Testing mandatory pre-upgrade sandbox cleanup...'
-    foreach ($failure in @('fail-cleanup', 'unsupported-cleanup')) {
+    Write-Host 'Testing upgrades without relying on old CLI sandbox cleanup...'
+    foreach ($failure in @('fail-cleanup', 'unsupported-cleanup', 'hang-cleanup')) {
         $cleanupFailure = New-Install $failure
         Set-Content -LiteralPath (Join-Path $cleanupFailure $failure) -Value 'failure'
-        Assert-Equal (Wait-Exit (Start-Installer $cleanupFailure '/S /UPDATE')) 5 'Cleanup failure blocks replacement'
-        Assert-Unchanged $cleanupFailure
-        Assert-Equal (Invoke-Preflight $cleanupFailure) 0 'Cleanup failure releases installation lease'
+        Assert-Equal (Wait-Exit (Start-Installer $cleanupFailure '/S /UPDATE')) 0 'Old cleanup behavior does not block replacement'
+        Assert-Equal (Get-FileHash -LiteralPath (Join-Path $cleanupFailure 'future.exe')).Hash $newFixtureHash 'Upgrade writes new CLI'
+        Assert-Equal (Test-Path (Join-Path $cleanupFailure 'cleanup-invoked.marker')) $false 'Installer leaves sandbox repair to Agent startup'
+        Assert-Equal (Invoke-Preflight $cleanupFailure) 0 'Upgrade releases installation lease'
     }
 
     Write-Host 'Testing interactive cancellation...'
