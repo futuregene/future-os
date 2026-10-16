@@ -155,21 +155,24 @@ fn clean_cwd(raw: &str) -> &str {
     raw.trim().trim_end_matches(['/', '\\'])
 }
 
-/// Derive a display title for a session. Prefer the first user message, then
-/// the agent-stored name (unless it's just the workspace directory name),
-/// then the cwd basename.
+/// Derive a display title for a session. Prefer a name someone chose, then the
+/// first user message, then the cwd basename.
 fn session_title(summary: &AgentSessionSummary) -> String {
     // Trim trailing whitespace / separators so the basename is meaningful
     // (a lone space from "project/ " would otherwise leak into the title).
     let cwd = clean_cwd(&summary.cwd);
-    let cwd_basename = std::path::Path::new(cwd)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .map(str::trim)
-        .filter(|n| !n.is_empty())
-        .unwrap_or("");
+    let cwd_basename = cwd_basename(cwd);
 
-    // First user message is the most descriptive title.
+    // A name someone chose outranks the first message. It can come from
+    // `future session new --name`, `/name`, the CLI or a channel, and the first
+    // message is often machine-generated: this title is synced back to the
+    // agent (see `import_one`), so preferring the message renamed sessions to
+    // the first 40 characters of their own first prompt.
+    if let Some(name) = explicit_name(summary, cwd_basename) {
+        return name.to_string();
+    }
+
+    // Nothing named it: the first user message is the most descriptive title.
     if let Some(ref first) = summary.first_message {
         let trimmed = first.trim();
         if !trimmed.is_empty() {
@@ -182,19 +185,28 @@ fn session_title(summary: &AgentSessionSummary) -> String {
         }
     }
 
-    // Use the agent-stored name only when it's a meaningful user-assigned
-    // name, not just the workspace directory name leaked into session_name.
-    if let Some(ref name) = summary.name {
-        let name = name.trim();
-        if !name.is_empty() && name != cwd_basename {
-            return name.to_string();
-        }
-    }
-
     if !cwd_basename.is_empty() {
         return cwd_basename.to_string();
     }
     "Imported Chat".to_string()
+}
+
+/// The final directory name of a cleaned cwd, or `""` when there is none.
+fn cwd_basename(cwd: &str) -> &str {
+    std::path::Path::new(cwd)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .unwrap_or("")
+}
+
+/// The name this session was given, if it says more than the workspace
+/// directory the agent falls back to. Shared by the title derivation and the
+/// name sync-back so the two cannot disagree about what counts as a real name.
+fn explicit_name<'a>(summary: &'a AgentSessionSummary, cwd_basename: &str) -> Option<&'a str> {
+    let name = summary.name.as_deref()?.trim();
+    (!name.is_empty() && name != cwd_basename).then_some(name)
 }
 
 /// The entry roles a transcript renders as a message. Everything else a journal
@@ -407,10 +419,10 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
         return Ok(0);
     }
     let best_title = session_title(summary);
-    let cwd_basename = std::path::Path::new(&summary.cwd)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    // `explicit_name` compares against this, so it comes from the same helper
+    // `session_title` uses: a name equal to the workspace directory name is the
+    // agent's fallback, not a name someone chose.
+    let cwd_basename = cwd_basename(clean_cwd(&summary.cwd));
 
     // If a thread already exists, check whether its title needs healing:
     // old imports that couldn't parse first_message/name fell back to the
@@ -496,7 +508,14 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
     // Sync the agent's session_name to the newly-derived title so the sidebar
     // and agent state stay consistent — the agent may have a stale session_name
     // (e.g. workspace directory name) that no longer matches the thread title.
-    {
+    //
+    // Never for a session that was given a name: the agent shares its
+    // session_name with every client, and the title is derived from the first
+    // message when nothing named the session, so this write renamed a session
+    // to the first 40 characters of its own first prompt (a machine-generated
+    // payload, in the case that was reported). `session_title` already returns
+    // the chosen name for such a session, so there is nothing to converge.
+    if explicit_name(summary, cwd_basename).is_none() {
         let session_id = summary.id.clone();
         let sync_title = title.clone();
         tokio::spawn(async move {
@@ -1339,6 +1358,72 @@ mod tests {
             .expect("find")
             .expect("some");
         assert_eq!(thread.mode, "workspace");
+    }
+
+    /// A session named with `future session new --name` (or `/name`, the CLI, a
+    /// channel) keeps that name. Its first message is often machine-generated —
+    /// the reported case opened with a `<file name="…/turn_payload.json">`
+    /// payload — and preferring that message labelled the conversation with its
+    /// first 40 characters, on the agent too, because the derived title is
+    /// synced back to `session_name`.
+    #[tokio::test]
+    async fn import_one_keeps_a_chosen_name_over_the_first_message() {
+        let home = super::super::test_support::TestHome::new("import-explicit-name");
+        let mock = super::super::test_support::mock_agent();
+        mock.push_data(
+            "get_session_entries",
+            serde_json::json!({"entries": [
+                {"id":"u1","role":"user","kind":"user","blocks":[{"kind":"text","text":"<file name=\"/p/turn_payload.json\">"}],"runId":"history-1","createdAtMs":1000},
+                {"id":"a1","role":"assistant","kind":"assistant","blocks":[{"kind":"text","text":"ok"}],"runId":"history-1","createdAtMs":1001}
+            ]}),
+        );
+        let cwd = home.path().join("proj");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let mut s = summary("sess-named", &cwd.display().to_string());
+        s.name = Some("会话总管".to_string());
+        s.first_message =
+            Some("<file name=\"/Users/geilige/state/turn_payload.json\">".to_string());
+        let runs = import_one(&s).await.expect("import");
+        assert_eq!(runs, 1);
+        settle_spawns().await;
+        let thread = crate::store::find_thread_by_agent_session("sess-named")
+            .expect("find")
+            .expect("some");
+        assert_eq!(thread.title, "会话总管");
+        assert!(
+            mock.requests_of("set_session_name").is_empty(),
+            "a chosen name must not be rewritten from the first message"
+        );
+    }
+
+    /// The positive control for the test above: a session nobody named is still
+    /// labelled from its first message, and that label is still written back to
+    /// the agent. Without this, "no `set_session_name`" would also pass if the
+    /// sync never ran at all.
+    #[tokio::test]
+    async fn import_one_still_names_an_unnamed_session_and_syncs_it() {
+        let home = super::super::test_support::TestHome::new("import-unnamed");
+        let mock = super::super::test_support::mock_agent();
+        mock.push_data(
+            "get_session_entries",
+            serde_json::json!({"entries": [
+                {"id":"u1","role":"user","kind":"user","blocks":[{"kind":"text","text":"hi"}],"runId":"history-1","createdAtMs":1000}
+            ]}),
+        );
+        let cwd = home.path().join("proj");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let s = summary("sess-unnamed", &cwd.display().to_string());
+        assert_eq!(import_one(&s).await.expect("import"), 1);
+        settle_spawns().await;
+        let thread = crate::store::find_thread_by_agent_session("sess-unnamed")
+            .expect("find")
+            .expect("some");
+        assert_eq!(thread.title, "first message for sess-unnamed");
+        assert_eq!(
+            mock.requests_of("set_session_name").len(),
+            1,
+            "an unnamed session still takes its label from the first message"
+        );
     }
 
     /// A session announced at creation has no message until its first prompt

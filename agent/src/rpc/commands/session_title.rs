@@ -79,6 +79,22 @@ fn title_exchanges(messages: &[AgentMessage]) -> Vec<Exchange> {
         .collect()
 }
 
+/// Turn the text a model produced into a title.
+///
+/// Shared by the complete and the truncated finish, so a response cut off at
+/// the output limit is used rather than thrown away.
+fn finish_title(text: &str) -> Result<String> {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let title = crate::session::truncate_visible(
+        normalized.trim_matches(['\"', '\'', '`', '“', '”']),
+        crate::session::SESSION_TITLE_MAX_WIDTH,
+    );
+    if title.trim().is_empty() {
+        bail!("Model returned an empty title");
+    }
+    Ok(title)
+}
+
 async fn suggest(
     provider: &dyn LLMProvider,
     model: &str,
@@ -106,18 +122,20 @@ async fn suggest(
             ModelStreamEvent::Finish {
                 reason: FinishReason::Stop,
                 ..
-            } => {
-                let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                let title = crate::session::truncate_visible(
-                    normalized.trim_matches(['\"', '\'', '`', '“', '”']),
-                    crate::session::SESSION_TITLE_MAX_WIDTH,
-                );
-                if title.trim().is_empty() {
-                    bail!("Model returned an empty title");
-                }
-                return Ok(title);
-            }
+            } => return finish_title(&text),
+            // A reasoning model spends part of its output budget on thinking
+            // before it emits any text, so the response can be cut off at the
+            // limit with the title already written. Keeping the complete case
+            // only meant the text was discarded and the session stayed on its
+            // fallback title for good: the desktop logged "did not complete:
+            // length" on first turns and gave the run no second chance.
+            ModelStreamEvent::Finish {
+                reason: FinishReason::Length,
+                ..
+            } if !text.trim().is_empty() => return finish_title(&text),
             ModelStreamEvent::Error { message } => bail!("{message}"),
+            // Truncated with nothing to show for it (the budget went to
+            // thinking), or any other unfinished reason: report it as such.
             ModelStreamEvent::Finish { reason, .. } => {
                 bail!("Title generation did not complete: {}", reason.as_str())
             }
@@ -166,7 +184,13 @@ pub(super) fn handle(state: &AppState, cmd: &RpcCommand) -> String {
             if resolved != canonical {
                 bail!("Session model is unavailable");
             }
-            ResolvedModelTarget::from_model(&model, key, None, Some(1024))?
+            // Use the model's own output budget, the same source of truth the
+            // run loop uses, rather than a one-off constant. A title needs a
+            // few dozen tokens, but this budget also has to cover the model's
+            // thinking: at a fixed 1024 a reasoning model could spend all of it
+            // thinking and return a truncated response with nothing in it.
+            let max_output_tokens = crate::models::effective_max_tokens(&model);
+            ResolvedModelTarget::from_model(&model, key, None, Some(max_output_tokens))?
         };
         let provider = crate::llm::Client::from_target(target).with_thinking_level("low");
         // ExecuteCommand dispatches on spawn_blocking; no session lock is held while awaiting.
@@ -200,6 +224,66 @@ mod tests {
 
     fn message(role: &str, text: &str) -> AgentMessage {
         AgentMessage::new_user(role, serde_json::json!(text))
+    }
+
+    fn text_delta(text: &str) -> ModelStreamEvent {
+        ModelStreamEvent::TextDelta {
+            text: text.to_string(),
+            id: String::new(),
+        }
+    }
+
+    fn finish(reason: FinishReason) -> ModelStreamEvent {
+        ModelStreamEvent::Finish {
+            reason,
+            usage: None,
+        }
+    }
+
+    fn provider(events: Vec<ModelStreamEvent>) -> Provider {
+        Provider {
+            request: Mutex::new(None),
+            events: Mutex::new(events),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_length_finish_still_yields_the_title_already_written() {
+        let provider = provider(vec![
+            text_delta("  缓存失效排查 "),
+            finish(FinishReason::Length),
+        ]);
+        let title = suggest(&provider, "m", "[]".to_string(), "Simplified Chinese")
+            .await
+            .expect("a truncated response still names the conversation");
+        assert_eq!(title, "缓存失效排查");
+    }
+
+    /// Truncated with only whitespace to show: the budget went to thinking, so
+    /// there is genuinely nothing to name the session with.
+    #[tokio::test]
+    async fn a_length_finish_without_text_is_reported() {
+        let provider = provider(vec![text_delta("  "), finish(FinishReason::Length)]);
+        let error = suggest(&provider, "m", "[]".to_string(), "English")
+            .await
+            .expect_err("nothing was written to use as a title");
+        assert!(error.to_string().contains("did not complete"), "{error}");
+    }
+
+    /// The complete case keeps its behaviour: normalize, strip quotes, cut to
+    /// the display width.
+    #[tokio::test]
+    async fn a_stop_finish_normalizes_and_bounds_the_title() {
+        let provider = provider(vec![
+            text_delta("  \"a   very long\n"),
+            text_delta(" title that runs past the width\"  "),
+            finish(FinishReason::Stop),
+        ]);
+        let title = suggest(&provider, "m", "[]".to_string(), "English")
+            .await
+            .expect("a complete response yields a title");
+        assert_eq!(title, "a very long title that runs past");
+        assert!(title.chars().count() <= crate::session::SESSION_TITLE_MAX_WIDTH);
     }
 
     #[test]
