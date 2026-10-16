@@ -7,7 +7,7 @@ export const useStyles = createThemedStyles(theme => StyleSheet.create({
     maxWidth: "92%",
     borderRadius: radius.lg,
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    paddingVertical: spacing.md,
   },
   userMessage: { alignSelf: "flex-end", backgroundColor: theme.colors.accent },
   userBlock: { alignItems: "flex-end", gap: spacing.xs },
