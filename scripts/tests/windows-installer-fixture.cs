@@ -15,6 +15,11 @@ internal static class InstallerFixture
         {
             return 5;
         }
+        // Replacement health probes are independent of cleanup failure markers.
+        if (args.Length == 1 && (args[0] == "--help" || args[0] == "--version"))
+        {
+            return 0;
+        }
         // Keep the installer payload observably different from the old fixture
         // so rollback tests prove restoration rather than compare equal files.
         if (args.Length == 1 && args[0] == "--fixture-new")
@@ -57,6 +62,11 @@ internal static class InstallerFixture
         if (File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "record-launch")))
         {
             File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "recovered.ready"), "ready");
+        }
+        if ((args.Length == 2 && args[0] == "agent" && args[1] == "--reset-windows-sandbox") ||
+            (args.Length == 1 && args[0] == "--reset-windows-sandbox"))
+        {
+            File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "cleanup-invoked.marker"), "invoked");
         }
         // Simulate a mixed pre-sandbox CLI (clap uses exit 2 for an unknown
         // --reset-windows-sandbox flag) and an arbitrary cleanup failure
