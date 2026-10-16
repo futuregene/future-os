@@ -1143,7 +1143,7 @@ impl ServerSession {
                         .iter()
                         .find(|m| m.role == "user")
                         .map(|m| m.display_text())
-                        .map(|s| crate::session::truncate_visible(s.trim(), 40))
+                        .map(|s| crate::session::first_message_title(&s))
                         .unwrap_or_default()
                 } else {
                     session_name
@@ -1584,7 +1584,7 @@ impl ServerSession {
                             })
                             .unwrap_or_default()
                     })
-                    .map(|s| crate::session::truncate_visible(s.trim(), 40))
+                    .map(|s| crate::session::first_message_title(&s))
                     .unwrap_or_default()
             };
             let mut info = serde_json::json!({

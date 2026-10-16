@@ -5,7 +5,10 @@
 //!   emitting both tonic server and client modules;
 //! - (incoming batches) the payload structs and the encode/decode layer for
 //!   the typed `RpcResponse.payload` / `StreamEvent.payload` oneofs and the
-//!   transitional JSON-`data` fallback.
+//!   transitional JSON-`data` fallback;
+//! - the semantics the Agent and every client must agree on beyond the wire
+//!   shape itself: history paging, session deletion, and the plain title a
+//!   conversation falls back to ([`title`]).
 //!
 //! Consumers: `future-agent` (server side), `future-channel` and the desktop
 //! Tauri backend (client side). Dependency direction is strictly one-way:
@@ -37,6 +40,8 @@ pub mod payloads_ext;
 pub mod decode;
 pub mod encode;
 pub mod events;
+
+pub mod title;
 
 #[cfg(test)]
 mod parity;

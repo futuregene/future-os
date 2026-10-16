@@ -300,6 +300,14 @@ pub(crate) fn hydrate_entry_projections(entry: &mut SessionEntry) {
     }
 }
 
+/// The name an unnamed session takes from its first user message: the message's
+/// plain text (a markdown link never leaks into a title — see
+/// [`future_rpc::title::plain_title_text`]), trimmed to the ~40 visible columns
+/// the session list previews.
+pub fn first_message_title(text: &str) -> String {
+    truncate_visible(&future_rpc::title::plain_title_text(text), 40)
+}
+
 /// Truncate a string to max_vis visible columns using Unicode scalar widths.
 /// This is an approximate preview, not a grapheme-aware terminal layout engine.
 pub fn truncate_visible(s: &str, max_vis: usize) -> String {
@@ -321,6 +329,37 @@ mod tests {
     use super::*;
     use crate::session::entry::ENTRY_TYPE_COMPACTION;
     use crate::session::run_journal::RUN_STATE_COMPLETED;
+
+    // ─── first_message_title ────────────────────────────────────────────────
+
+    /// The fallback name is a title, not markdown: a first message that opens
+    /// with a reference to another conversation must not name this session
+    /// after that one, brackets and URL included.
+    #[test]
+    fn first_message_title_drops_a_leading_conversation_reference() {
+        let message = "[手机截图镜像修复](futureos://session/20261016-142101-2a944dead697482d8a6adad9942fe403) 这个会话在流式回复中";
+        assert_eq!(first_message_title(message), "这个会话在流式回复中");
+
+        // The reported shape: with the link counted first, the preview held
+        // nothing but the link and the reader never saw the topic.
+        let long = format!("{message}，但是在移动端标题右侧没有打圈");
+        let title = first_message_title(&long);
+        assert!(title.starts_with("这个会话在流式回复中"), "{title}");
+        assert!(!title.contains("futureos"), "{title}");
+    }
+
+    #[test]
+    fn first_message_title_keeps_an_ordinary_first_message() {
+        assert_eq!(
+            first_message_title("  fix the login bug  "),
+            "fix the login bug"
+        );
+        assert_eq!(
+            first_message_title(&"话".repeat(100)).chars().count(),
+            20,
+            "40 visible columns of CJK is 20 characters"
+        );
+    }
 
     // ─── truncate_visible ───────────────────────────────────────────────────
 
