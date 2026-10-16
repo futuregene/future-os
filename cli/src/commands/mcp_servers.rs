@@ -21,6 +21,7 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
+use tokio::io::AsyncBufReadExt;
 
 /// Tools one `future mcp tools` page shows unless `--limit` says otherwise.
 const DEFAULT_TOOL_LIMIT: usize = 50;
@@ -274,7 +275,7 @@ impl Flags {
 pub fn is_mcp_command(command: Option<&str>) -> bool {
     matches!(
         command,
-        Some("list" | "tools" | "describe" | "call" | "add" | "remove" | "status")
+        Some("list" | "tools" | "describe" | "call" | "add" | "remove" | "status" | "serve")
     )
 }
 
@@ -286,6 +287,7 @@ pub async fn mcp(command: &str, args: &[String], out: &Output) -> Result<(), Str
         "tools" => mcp_tools(args, out).await,
         "describe" => mcp_describe(args, out).await,
         "call" => mcp_call(args, out).await,
+        "serve" => mcp_serve(args, out).await,
         "add" => mcp_add(args, out),
         "remove" => mcp_remove(args, out),
         other => Err(format!("unknown mcp command: {other}")),
@@ -422,6 +424,146 @@ async fn mcp_status(args: &[String], out: &Output) -> Result<(), String> {
     // one is a deliberate configuration and does not fail the command.
     if failed > 0 {
         return Err(crate::HANDLED_EXIT.to_string());
+    }
+    Ok(())
+}
+
+// ── serve ──────────────────────────────────────────────────────────────────
+
+const SERVE_USAGE: &str =
+    "Usage: future mcp serve <server> [--timeout <secs>] [--max-frame-bytes <n>]";
+
+/// `future mcp serve <server>` — one long-lived session, driven by stdin.
+///
+/// Every other subcommand starts the server, uses it once and stops it, which is
+/// free for a fast server but not for an engine that must load and analyse the
+/// target on launch: with Ghidra that cold start is about four minutes, so five
+/// expensive calls cost five cold starts. `serve` pays it once and reuses the
+/// session.
+///
+/// The protocol is newline-delimited JSON in both directions, so it composes with
+/// `jq` and with a shell that keeps one process alive:
+///
+/// ```text
+/// -> {"tool":"inspect_go_binary","args":{"path":"/usr/bin/x"}}
+/// <- {"ok":true,"isError":false,"result":{...}}
+/// ```
+///
+/// The first line out is a ready ack, so a caller can wait for it instead of
+/// guessing how long analysis takes. Requests are answered in order, one at a
+/// time: a stateful engine session is not something to drive concurrently.
+async fn mcp_serve(args: &[String], out: &Output) -> Result<(), String> {
+    let flags = parse_flags(args, &["--timeout", "--max-frame-bytes"], &[], &[])?;
+    let name = flags.exactly_one_positional("a server name", SERVE_USAGE)?;
+    let timeout = flags.timeout()?;
+    let max_frame_bytes = flags.max_frame_bytes()?;
+
+    let config = load_config()?;
+    let spec = resolve(&config, &name)?;
+    let mut process =
+        ServerProcess::start_with_frame_cap(&name, spec, timeout, max_frame_bytes).await?;
+
+    // Announce readiness on stdout, and only then start answering: the caller can
+    // block on this line rather than on a timeout.
+    let ready = process.session().list_tools().await;
+    let stderr = process.stderr_tail();
+    let tools = match ready {
+        Ok(tools) => tools,
+        Err(error) => {
+            process.shutdown().await;
+            return Err(attach_stderr(error, &stderr));
+        }
+    };
+    out.log(
+        &json!({
+            "ok": true,
+            "ready": true,
+            "server": name,
+            "toolCount": tools.len(),
+        })
+        .to_string(),
+    );
+
+    let stdin = tokio::io::stdin();
+    let reader = tokio::io::BufReader::new(stdin);
+    serve_requests(&mut process, out, reader).await?;
+
+    let stderr = process.stderr_tail();
+    process.shutdown().await;
+    // Diagnostics go to stderr, so stdout stays a clean JSON stream.
+    let tail = stderr.trim();
+    if !tail.is_empty() {
+        out.log_err(tail);
+    }
+    Ok(())
+}
+
+/// The `serve` request loop, over any reader (stdin in production).
+///
+/// Split out so the protocol is testable without a pipe: malformed JSON, a
+/// request with no `tool`, a call the server fails, and ordering are all part of
+/// this contract, and all of them must leave the session running.
+async fn serve_requests<R: tokio::io::AsyncBufRead + Unpin>(
+    process: &mut ServerProcess,
+    out: &Output,
+    reader: R,
+) -> Result<(), String> {
+    let mut lines = reader.lines();
+    loop {
+        let next = lines.next_line().await;
+        let line = match next {
+            Ok(Some(line)) => line,
+            // EOF: the caller is done with this session.
+            Ok(None) => break,
+            Err(error) => {
+                out.log(&json!({ "ok": false, "error": format!("stdin: {error}") }).to_string());
+                break;
+            }
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let request: Value = match serde_json::from_str(&line) {
+            Ok(request) => request,
+            Err(error) => {
+                out.log(
+                    &json!({
+                        "ok": false,
+                        "error": format!("request is not valid JSON: {error}"),
+                    })
+                    .to_string(),
+                );
+                continue;
+            }
+        };
+        let Some(tool) = request.get("tool").and_then(Value::as_str) else {
+            out.log(
+                &json!({
+                    "ok": false,
+                    "error": "request needs a 'tool' string; see future mcp serve --help",
+                })
+                .to_string(),
+            );
+            continue;
+        };
+        let arguments = request.get("args").cloned().unwrap_or_else(|| json!({}));
+        match process.session().call_tool(tool, arguments).await {
+            Ok(result) => {
+                let reported = result
+                    .get("isError")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                out.log(&json!({ "ok": true, "isError": reported, "result": result }).to_string());
+            }
+            Err(error) => {
+                // A failed call does not end the session: the other requests may
+                // still be fine, and the point of `serve` is to stay up. The
+                // server's own stderr is attached because it is usually the real
+                // reason (a missing engine, a missing credential).
+                let detail = attach_stderr(error, &process.stderr_tail());
+                out.log(&json!({ "ok": false, "error": detail }).to_string());
+            }
+        }
     }
     Ok(())
 }
@@ -1008,7 +1150,9 @@ mod tests {
 
     #[test]
     fn is_mcp_command_covers_every_documented_subcommand() {
-        for command in ["list", "tools", "describe", "call", "add", "remove"] {
+        for command in [
+            "list", "tools", "describe", "call", "add", "remove", "status", "serve",
+        ] {
             assert!(is_mcp_command(Some(command)), "{command}");
         }
         assert!(!is_mcp_command(None));
@@ -1590,5 +1734,163 @@ while IFS= read -r line; do
   esac
 done
 "#;
+
+        // ── serve ──────────────────────────────────────────────────────────
+
+        /// The whole point of `serve`: one cold start for many calls. The fake
+        /// appends a line to `$MCP_START_LOG` on `initialize`, so the count of
+        /// handshakes is observable — with `call` there would be one per request.
+        /// `tools/call plain` succeeds, `boom` reports a tool error, and any
+        /// other name is a protocol-level error.
+        const COUNTING_SERVER: &str = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *notifications/initialized*) ;;
+    *'"initialize"'*)
+      printf 'start\n' >> "$MCP_START_LOG"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18"}}\n' "$id" ;;
+    *'"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"plain","description":"works"}]}}\n' "$id" ;;
+    *'"tools/call"'*)
+      case "$line" in
+        *'"name":"plain"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"called"}]}}\n' "$id" ;;
+        *'"name":"boom"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"isError":true,"content":[{"type":"text","text":"engine missing"}]}}\n' "$id" ;;
+        *)
+          printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32602,"message":"unknown tool"}}\n' "$id" ;;
+      esac ;;
+  esac
+done
+"#;
+
+        /// A FutureOS home configured with `server`, plus a start log path.
+        fn home_with(
+            server: &str,
+            log: &std::path::Path,
+        ) -> (tempfile::TempDir, crate::test_env::EnvGuard) {
+            let home = tempfile::tempdir().expect("tempdir");
+            std::fs::write(
+                home.path().join("mcp.json"),
+                serde_json::to_string(&json!({
+                    "servers": { "fake": { "command": "/bin/sh", "args": ["-c", server] } },
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let guard = crate::test_env::EnvGuard::set(&[
+                ("FUTURE_HOME", home.path().as_os_str().to_owned()),
+                ("MCP_START_LOG", log.as_os_str().to_owned()),
+            ]);
+            (home, guard)
+        }
+
+        fn starts_in(log: &std::path::Path) -> usize {
+            std::fs::read_to_string(log)
+                .map(|text| text.lines().filter(|line| !line.trim().is_empty()).count())
+                .unwrap_or(0)
+        }
+
+        /// `serve` takes its requests from stdin, so the test drives the loop with
+        /// an in-memory reader — the same code path, without a pipe.
+        #[tokio::test]
+        async fn serve_answers_many_requests_over_one_session() {
+            let _lock = crate::test_env::lock_env().await;
+            let log = tempfile::tempdir().unwrap();
+            let log_file = log.path().join("starts.log");
+            let _home = home_with(COUNTING_SERVER, &log_file);
+
+            let config = load_config().unwrap();
+            let spec = resolve(&config, "fake").unwrap();
+            let mut process = ServerProcess::start("fake", spec, Duration::from_secs(10))
+                .await
+                .unwrap();
+            assert_eq!(starts_in(&log_file), 1, "one handshake so far");
+
+            let requests = concat!(
+                "{\"tool\":\"plain\"}\n",
+                "{\"tool\":\"plain\",\"args\":{}}\n",
+                "{\"tool\":\"plain\"}\n",
+            );
+            let (out, sink) = Output::memory();
+            serve_requests(&mut process, &out, requests.as_bytes())
+                .await
+                .unwrap();
+
+            let (stdout, _) = split(&sink);
+            let answers: Vec<Value> = stdout
+                .lines()
+                .map(|line| serde_json::from_str(line).expect("one JSON object per line"))
+                .collect();
+            assert_eq!(answers.len(), 3, "one answer per request: {stdout}");
+            for answer in &answers {
+                assert_eq!(answer["ok"], json!(true));
+                assert_eq!(answer["isError"], json!(false));
+                assert_eq!(answer["result"]["content"][0]["text"], "called");
+            }
+            // Three calls, still one cold start: that is the feature.
+            assert_eq!(starts_in(&log_file), 1, "still one handshake after 3 calls");
+            process.shutdown().await;
+        }
+
+        /// A bad request must be answered and skipped, and a call the server
+        /// fails must not end the session — a caller sends a batch, and one
+        /// mistake should not cost the remaining requests.
+        #[tokio::test]
+        async fn serve_survives_bad_and_failing_requests() {
+            let _lock = crate::test_env::lock_env().await;
+            let log = tempfile::tempdir().unwrap();
+            let _home = home_with(COUNTING_SERVER, &log.path().join("starts.log"));
+
+            let config = load_config().unwrap();
+            let spec = resolve(&config, "fake").unwrap();
+            let mut process = ServerProcess::start("fake", spec, Duration::from_secs(10))
+                .await
+                .unwrap();
+
+            let requests = concat!(
+                "not json at all\n",
+                "\n",
+                "{\"args\":{}}\n",
+                "{\"tool\":\"boom\"}\n",
+                "{\"tool\":\"no_such_tool\"}\n",
+                "{\"tool\":\"plain\"}\n",
+            );
+            let (out, sink) = Output::memory();
+            serve_requests(&mut process, &out, requests.as_bytes())
+                .await
+                .unwrap();
+
+            let (stdout, _) = split(&sink);
+            let answers: Vec<Value> = stdout
+                .lines()
+                .map(|line| serde_json::from_str(line).expect("one JSON object per line"))
+                .collect();
+            // The blank line is skipped, so five answers for six lines.
+            assert_eq!(answers.len(), 5, "{stdout}");
+            assert!(answers[0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("not valid JSON"));
+            assert!(answers[1]["error"]
+                .as_str()
+                .unwrap()
+                .contains("needs a 'tool'"));
+            // A tool that reports its own error is a *successful* call carrying
+            // `isError`, exactly as `call` reports it on stderr.
+            assert_eq!(answers[2]["ok"], json!(true));
+            assert_eq!(answers[2]["isError"], json!(true));
+            // A protocol-level failure is reported, and the last request still
+            // runs: the session outlived both failures.
+            assert_eq!(answers[3]["ok"], json!(false));
+            assert!(answers[3]["error"]
+                .as_str()
+                .unwrap()
+                .contains("unknown tool"));
+            assert_eq!(answers[4]["ok"], json!(true));
+            assert_eq!(answers[4]["result"]["content"][0]["text"], "called");
+            process.shutdown().await;
+        }
     }
 }

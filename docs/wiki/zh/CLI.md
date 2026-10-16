@@ -188,6 +188,7 @@ future mcp tools rea --query binary      # 该服务器的工具,一行一个
 future mcp describe rea inspect_go_binary  # 一个工具的完整参数 schema
 future mcp call rea inspect_go_binary --args '{"path":"/usr/bin/foo"}'
 future mcp call rea inspect_go_binary --args '{...}' --out full.json  # 写出全部结果
+future mcp serve rea                     # 长驻一个会话,从 stdin 逐行收请求
 future mcp remove rea
 ```
 
@@ -214,6 +215,23 @@ JSON Schema。`call` 最多打印 `--max-bytes`(默认 64 KB),并提示用 `--ou
 工具自己报告的错误(`isError`)会把内容打到 **stderr** 并
 以退出码 1 结束,与 `future tools call` 报告工具失败的方式一致——脚本或 agent 不必从
 stdout 里解析标记来判断调用是否成功。
+
+`call` 每次都会重新启动服务器,对快服务器无所谓;但需要「启动时加载并分析目标」的引擎就
+很贵——Ghidra 一次冷启动约 4 分钟,五次调用就是五次。`serve` 只付一次:
+
+```bash
+printf '%s\n' '{"tool":"open_binary","args":{"path":"/bin/ls"}}' \
+              '{"tool":"open_binary","args":{"path":"/bin/cat"}}' \
+  | future mcp serve rea
+# {"ok":true,"ready":true,"server":"rea","toolCount":207}
+# {"ok":true,"isError":false,"result":{...}}
+# {"ok":true,"isError":false,"result":{...}}
+```
+
+两个方向都是行分隔 JSON:请求是 `{"tool":...,"args":{...}}`,应答是 `{"ok":...,"result"/"error":...}`。
+第一行是 ready 应答(握手已完成、工具数已知),所以调用方可以等这一行,而不必猜分析要多久。
+请求按序逐条处理:有状态的引擎会话不该并发驱动。单条请求失败(JSON 非法、缺 `tool`、
+服务器拒绝、工具报错)只影响它自己,会话继续。stderr 留给服务器自己的日志,stdout 始终是干净的 JSON 流。
 
 ### `models` —— 列出可用模型
 
