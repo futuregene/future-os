@@ -397,9 +397,22 @@ pub(super) async fn reconcile_active_run_once(
         .map_err(|e| format!("get_run_state: {e}"))?
         .into_inner();
     if !state.success {
-        // The Agent cannot resolve this session — leave the row as is; startup
-        // convergence settles genuinely dead rows on the next launch.
-        return Ok(());
+        // The Agent could not resolve this session. For a session it merely
+        // failed to load that is transient, so leave the row for a later pass.
+        // For one it has no record of it is definitive: the row can never be
+        // reconciled against a run, because no session was ever created (the
+        // prompt never reached the Agent) or it was deleted. Left alone, such a
+        // row keeps its conversation reading as "generating" forever and blocks
+        // that conversation's own deletion, which waits for the session to
+        // stop. Past the orphan age it is settled like a run the Agent has no
+        // marker for.
+        if !is_session_not_found(&state) || age_secs < WATCHDOG_ORPHAN_SECS {
+            return Ok(());
+        }
+        return settle_orphaned_run(
+            &run.run_id,
+            "The session for this run does not exist on Future Agent.",
+        );
     }
     let state_value = future_rpc::decode::response_data(&state);
     match plan_active_run_reconciliation(&state_value, canonical_run_id, age_secs) {
@@ -427,14 +440,20 @@ pub(super) async fn reconcile_active_run_once(
             .map(|_| ())
             .map_err(|e| format!("settle interrupted: {e}"))
         }
-        ActiveRunAction::SettleOrphaned => crate::store::fail_run_if_active(
+        ActiveRunAction::SettleOrphaned => settle_orphaned_run(
             &run.run_id,
             "Future Agent run is no longer active on the agent.",
-            "stream_interrupted",
-        )
-        .map(|_| ())
-        .map_err(|e| format!("settle orphaned: {e}")),
+        ),
     }
+}
+
+/// Settle a non-terminal row the Agent will never answer for: there is no run
+/// to attach to and no terminal marker to mirror. `message` says which evidence
+/// was missing, so the user sees why the run ended rather than only that it did.
+fn settle_orphaned_run(run_id: &str, message: &str) -> Result<(), String> {
+    crate::store::fail_run_if_active(run_id, message, "stream_interrupted")
+        .map(|_| ())
+        .map_err(|e| format!("settle orphaned: {e}"))
 }
 
 /// Launch the runtime watchdog for run rows the GUI cannot settle on its own: a

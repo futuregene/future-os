@@ -119,9 +119,11 @@ pub(super) async fn ensure_agent_session(
     })
 }
 
+/// The Agent's pre-code wording for a session it has no record of; the stable
+/// code is preferred where a caller has the whole response
+/// (`client::is_session_not_found`).
 fn is_missing_session_error(error: &str) -> bool {
-    let error = error.to_ascii_lowercase();
-    error.contains("session not found") || error.contains("no such session")
+    future_rpc::session_errors::legacy_session_not_found_message(error)
 }
 
 pub(super) async fn set_agent_permission_level(

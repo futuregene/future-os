@@ -1408,6 +1408,56 @@ mod bridge_tests {
             .await
             .expect("rejected is ok");
 
+        // A session the Agent has no record of, past the orphan age → the row
+        // is settled. No run and no session can ever reconcile it, and leaving
+        // it non-terminal keeps the conversation reading as "generating" and
+        // blocks that conversation's deletion, which waits for the session to
+        // stop. The legacy wording covers an agent older than the error code.
+        let run_missing = seed_run(&thread.id);
+        let active_missing = crate::store::ActiveRun {
+            run_id: run_missing.id.clone(),
+            thread_id: thread.id.clone(),
+            session_id: "thread-20260927-000000-abcdef".to_string(),
+            created_at: run_missing.created_at,
+        };
+        mock.push(
+            &format!("get_state#{}", run_missing.id),
+            Reply::Reject("session not found".to_string()),
+        );
+        reconcile_active_run_once(&active_missing, &run_missing.id, WATCHDOG_ORPHAN_SECS + 60)
+            .await
+            .expect("settle missing session");
+        let settled = crate::store::get_run(&run_missing.id)
+            .expect("run")
+            .expect("some");
+        assert_eq!(settled.status, "failed");
+        assert_eq!(settled.error_type.as_deref(), Some("stream_interrupted"));
+        assert!(settled.ended_at.is_some(), "the row ends when it settles");
+
+        // ...but not while the row is still inside the orphan age: the prompt
+        // may yet arrive and create the session.
+        let run_fresh = seed_run(&thread.id);
+        let active_fresh = crate::store::ActiveRun {
+            run_id: run_fresh.id.clone(),
+            thread_id: thread.id.clone(),
+            session_id: "thread-20260927-000001-abcdef".to_string(),
+            created_at: run_fresh.created_at,
+        };
+        mock.push(
+            &format!("get_state#{}", run_fresh.id),
+            Reply::Reject("session not found".to_string()),
+        );
+        reconcile_active_run_once(&active_fresh, &run_fresh.id, WATCHDOG_ORPHAN_SECS - 60)
+            .await
+            .expect("young rows are left alone");
+        assert_eq!(
+            crate::store::get_run(&run_fresh.id)
+                .expect("run")
+                .expect("some")
+                .status,
+            "running"
+        );
+
         // Transport failure → Err (the watchdog logs it).
         mock.push(
             &format!("get_state#{}", run.id),

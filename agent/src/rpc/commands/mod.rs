@@ -38,6 +38,7 @@ mod settings_tests;
 mod skills_tests;
 
 use super::{AppState, RpcCommand, RpcResponse};
+use future_rpc::session_errors::SESSION_NOT_FOUND_CODE;
 
 pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     let id = &cmd.id;
@@ -239,10 +240,16 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             }
         };
         if !known {
-            return RpcResponse::build_fail(
+            // The same definitive answer as the general branch below, code and
+            // all: a client may hold a row for a session that was never created
+            // or has been deleted, and it needs to tell that apart from a
+            // storage failure it should retry.
+            return RpcResponse::build_fail_code(
                 id,
                 cmd_type,
+                SESSION_NOT_FOUND_CODE,
                 "session not found — pass a valid session_id (new_session creates one)",
+                serde_json::json!({}),
             );
         }
         return session_lifecycle::cmd_read_session_entries(
@@ -257,14 +264,19 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         return session_title::handle(state, &cmd);
     }
     // No default-session fallback: an empty or unknown session_id is an
-    // explicit error, never a silent redirect into another conversation.
+    // explicit error, never a silent redirect into another conversation. The
+    // stable code marks it as definitive: clients holding a stale row for a
+    // session the Agent never created (a prompt that never arrived) settle
+    // that row instead of retrying it forever.
     let session = match state.try_get_session(&cmd.session_id) {
         Ok(Some(session)) => session,
         Ok(None) => {
-            return RpcResponse::build_fail(
+            return RpcResponse::build_fail_code(
                 id,
                 cmd_type,
+                SESSION_NOT_FOUND_CODE,
                 "session not found — pass a valid session_id (new_session creates one)",
+                serde_json::json!({}),
             );
         }
         Err(error) => {

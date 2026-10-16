@@ -34,6 +34,9 @@ pub(crate) enum Reply {
     TypedData(serde_json::Value),
     /// `success = false` with this error message.
     Reject(String),
+    /// `success = false` with a stable `error_code` (the shape the production
+    /// agent sends for a session it has no record of) and this message.
+    RejectCode(&'static str, String),
     /// Transport-level failure (tonic status).
     Status(tonic::Code, &'static str),
     /// Signal request arrival, then wait for a test-controlled JSON response.
@@ -195,6 +198,11 @@ impl FutureAgent for MockAgent {
                 String::new(),
                 error,
             ))),
+            Reply::RejectCode(code, error) => {
+                let mut response = rpc_response(&cmd, false, String::new(), error);
+                response.error_code = code.to_string();
+                Ok(tonic::Response::new(response))
+            }
             Reply::Status(code, message) => Err(tonic::Status::new(code, message)),
             Reply::Deferred { entered, data } => {
                 let _ = entered.send(());

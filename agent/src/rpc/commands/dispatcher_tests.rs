@@ -254,6 +254,13 @@ fn get_session_entries_rejects_an_empty_or_unknown_session_id() {
             .as_str()
             .unwrap()
             .contains("session not found"));
+        // The stable code is what a client holding a stale row for this session
+        // keys off: it means "this session does not exist", not "retry me".
+        assert_eq!(
+            response["error_code"],
+            future_rpc::session_errors::SESSION_NOT_FOUND_CODE,
+            "{session_id:?} must be reported as definitively missing: {response}"
+        );
     }
     // The store is still usable afterwards — the rejection is not corruption.
     let response = parse_response(&handle_command_internal(&state, make_cmd("get_state")));
