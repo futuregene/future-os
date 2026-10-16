@@ -62,6 +62,7 @@ fn get_state_fixture() -> Value {
             "contextFilesEnabled": true,
             "appendSystemPrompt": "Always answer in haiku.",
             "customSystemPrompt": "You are terse.",
+            "eventJournalError": "cannot append to a compacted settled run",
             "contextWindow": 200000,
             "contextTokens": 1234,
             "contextPercent": 0.62,
@@ -356,6 +357,12 @@ fn typed_getters_match_struct_semantics() {
     assert!(state.context_files_enabled);
     // The whole-prompt override survives the proto trip too.
     assert_eq!(state.custom_system_prompt, "You are terse.");
+    // …and so does the reason a session cannot be written: without the proto
+    // field this is exactly the fact a typed get_state would silently drop.
+    assert_eq!(
+        state.event_journal_error.as_deref(),
+        Some("cannot append to a compacted settled run")
+    );
 }
 
 #[test]

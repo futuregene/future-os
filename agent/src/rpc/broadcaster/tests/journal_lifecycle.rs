@@ -260,6 +260,57 @@ fn an_event_the_journal_refuses_is_dropped_without_taking_the_session_down() {
     );
 }
 
+/// A refused event is not a session-wide outage. The writer already drops the
+/// one event the journal refuses, but `broadcast` recorded that refusal as a
+/// journal health failure — and health is only cleared by a successful
+/// `start_run` journal read, which the failure itself blocks. So a single
+/// unappendable *durable* event (a manual compaction's lifecycle signal stamped
+/// with the run that just settled, whose journal was already snapshotted) left
+/// every later prompt failing at the flush barrier until the agent restarted:
+/// the conversation was permanently unwritable while its status read healthy.
+#[test]
+fn a_refused_durable_event_does_not_wedge_the_session() {
+    let directory = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(directory.path().to_path_buf());
+    let b = SseBroadcaster::new();
+    b.configure_journal("session-refused-durable", &manager)
+        .unwrap();
+
+    b.start_run("run-settled".to_string(), 1);
+    b.broadcast(SseEvent::new("agent_end", serde_json::json!({"n": 1})));
+    assert_eq!(b.journal_commit_count(), 1);
+    manager.test_execute(
+        "INSERT INTO runs(session_id,run_id,status,completed_at_ms) \
+         VALUES ('session-refused-durable','run-settled','completed',1)",
+    );
+    manager
+        .storage()
+        .unwrap()
+        .compact_run("session-refused-durable", "run-settled")
+        .unwrap();
+
+    // A durable event stamped with the retired run: the store refuses it for
+    // good, so it must be dropped — but only the event, not the session.
+    b.broadcast(SseEvent::new("agent_end", serde_json::json!({"n": 2})));
+    assert_eq!(
+        b.persistence_error(),
+        None,
+        "a refused event must not be reported as a session-wide journal failure"
+    );
+
+    // The session still accepts the next run's journal writes.
+    b.start_run("run-next".to_string(), 2);
+    b.broadcast(SseEvent::new(
+        "text_chunk",
+        serde_json::json!({"text": "next"}),
+    ));
+    assert_eq!(
+        b.read_journal("run-next").unwrap().len(),
+        1,
+        "the next run must journal normally"
+    );
+}
+
 /// `recover_storage` drains the writer before it can clear the health flag, so
 /// a refusal left in the batch used to make recovery fail too — leaving no way
 /// back but a restart.

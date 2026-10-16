@@ -113,6 +113,7 @@ pub(crate) fn get_state_to_proto(p: &GetStatePayload) -> proto::SessionState {
         append_system_prompt: p.append_system_prompt.clone(),
         context_files_enabled: p.context_files_enabled,
         custom_system_prompt: p.custom_system_prompt.clone(),
+        event_journal_error: p.event_journal_error.clone(),
     }
 }
 
