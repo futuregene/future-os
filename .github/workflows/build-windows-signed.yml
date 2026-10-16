@@ -111,19 +111,17 @@ jobs:
         with:
           node-version: "24"
 
-      # Match the toolchain pinned in rust-toolchain.toml and the other CI
-      # workflows, rather than accepting whichever stable version is current.
+      # Bootstrap rustup when absent; the setup step reads rust-toolchain.toml.
       - name: Install Rust
         if: inputs.signed && steps.detect.outputs.cargo == 'false'
         shell: powershell
         run: |
           Invoke-WebRequest https://win.rustup.rs -OutFile "$env:RUNNER_TEMP\rustup-init.exe"
-          & "$env:RUNNER_TEMP\rustup-init.exe" -y --default-toolchain 1.97.0
+          & "$env:RUNNER_TEMP\rustup-init.exe" -y --default-toolchain none
           "$env:USERPROFILE\.cargo\bin" | Add-Content -Path $env:GITHUB_PATH
 
-      - name: Setup Rust (GitHub-hosted)
-        if: ${{ !inputs.signed }}
-        uses: dtolnay/rust-toolchain@1.97.0
+      - name: Setup Rust
+        run: node scripts/ci/setup-rust.mjs
 
       - name: Enable lld-link if available
         if: ${{ !inputs.signed }}

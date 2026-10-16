@@ -13,8 +13,6 @@ permissions: read-all
 # to re-run on the merged result, so a post-merge run would be redundant.
 #
 # PRs save caches in their merge-ref scope; manual CI saves in its branch scope.
-# A manual prewarm on main can seed caches readable by new PRs. Its keys and
-# compile commands stay aligned through scripts/ci/check-prewarm-cache.py.
 on:
   pull_request:
   # Full PR-check suite by default; narrow scopes avoid rerunning unrelated
@@ -88,6 +86,7 @@ jobs:
             # Changing this workflow must revalidate every suite.
             ci:
               - '.github/workflows/ci.yml'
+              - 'scripts/ci/setup-rust.mjs'
             # Aggregate: any workspace crate (or a shared build-graph file) —
             # drives the workspace-level fmt/clippy and cross-platform build.
             rust_workspace:
@@ -227,22 +226,8 @@ jobs:
     needs: changes
     runs-on: ubuntu-latest
     steps:
-      # Unconditional (the only step here not gated on the affected check): the
-      # cache-key guard below reads the workflow files, so this job checks out
-      # even when nothing else in it runs (~4s).
       - name: Checkout
         uses: actions/checkout@v7
-
-      # Structural guard, deliberately placed in this required, always-present
-      # job so drift becomes a red required check instead of a silently cold
-      # cache: the optional manual prewarm must produce compatible keys,
-      # `workspaces` values and test package sets must match this file. The
-      # second command is the guard's own regression test (negative controls),
-      # so a checker that stopped detecting drift fails here too.
-      - name: Prewarm cache keys stay in sync
-        run: |
-          python3 scripts/ci/check-prewarm-cache.py
-          python3 scripts/tests/test-prewarm-cache-config.py
 
       # Always-present (no job-level `if`): a skipped required check is treated
       # as unsatisfied, which would block docs-only PRs. Evaluate the gate here
@@ -265,15 +250,12 @@ jobs:
         if: steps.affected.outputs.run != 'true'
         run: echo "No Rust workspace or desktop Tauri changes; lint skipped."
 
-      # Pinned to match rust-toolchain.toml so CI and local dev use the same
-      # compiler. Bump both together (see build.yml for the same pin).
+      # Read the project toolchain and isolate it from runner defaults.
       - name: Setup Rust
         if: steps.affected.outputs.run == 'true'
-        uses: dtolnay/rust-toolchain@1.97.0
+        run: node scripts/ci/setup-rust.mjs
 
-      # Explicit `shared-key` (an explicit key replaces the automatic job-id
-      # key) so prewarm.yml can reproduce this key without depending on job
-      # names. PRs and manual branch runs save in their own ref scope.
+      # PRs and manual branch runs save in their own ref scope.
       - name: Cache Rust
         if: steps.affected.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
@@ -428,7 +410,7 @@ jobs:
 
       - name: Setup Rust
         if: steps.affected.outputs.run == 'true'
-        uses: dtolnay/rust-toolchain@1.97.0
+        run: node scripts/ci/setup-rust.mjs
 
       # Each matrix group writes its own cache. Sharing one writable key would
       # let the first finisher save an incomplete snapshot for the other groups.
@@ -495,7 +477,7 @@ jobs:
 
       - name: Setup Rust
         if: steps.affected.outputs.run == 'true'
-        uses: dtolnay/rust-toolchain@1.97.0
+        run: node scripts/ci/setup-rust.mjs
 
       # GUI and headless write distinct entries under this shared-key family.
       - name: Cache Rust
@@ -614,13 +596,13 @@ jobs:
 
       - name: Setup Rust
         if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.desktop_tauri == 'true'
-        uses: dtolnay/rust-toolchain@1.97.0
+        run: node scripts/ci/setup-rust.mjs
 
       - name: Cache Rust
         if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.desktop_tauri == 'true'
         uses: Swatinem/rust-cache@v2
         with:
-          # Saved per PR; optional manual main prewarm uses the same key.
+          # Saved in the current PR or manual branch scope.
           # rust-cache appends OS/architecture to separate the native targets.
           shared-key: rust-build
           save-if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}

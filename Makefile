@@ -3,7 +3,7 @@
 	test test-agent test-channels test-cli test-app-settings test-tui test-cli-diff test-tui-diff test-tui-tmux \
 	test-desktop test-desktop-rust test-mobile \
 	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt \
-	check-docs test-docs-check check-prewarm-cache test-prewarm-cache-check \
+	check-docs test-docs-check \
 	run-agent run-tui run-cli run-desktop run-mobile-android run-mobile-ios run-channels run-goal \
 	profile-agent-build profile-agent profile-quick profile-heap \
 	generate-models generate-proto \
@@ -374,16 +374,6 @@ check-docs:
 test-docs-check:
 	PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test-check-docs.py
 
-# Check that PR caches and optional manual main seeds use compatible keys,
-# package selections and profiles. Prewarm must compile without running tests.
-check-prewarm-cache:
-	python3 scripts/ci/check-prewarm-cache.py
-
-# Regression tests for that gate (negative controls, so a checker that stopped
-# detecting drift fails here too).
-test-prewarm-cache-check:
-	PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test-prewarm-cache-config.py
-
 # Regression tests for the screenshot harness: the browser lifecycle (the startup
 # sweep of browsers/profiles a killed run left behind, and the rule that only a
 # headless browser is ever driven — starts real headless Chrome, so those cases
@@ -431,7 +421,6 @@ help:
 	@echo "  lint                                Rust (CI flags) + desktop + mobile lints"
 	@echo "  check-desktop / check-mobile        Lint + typecheck + tests without building apps"
 	@echo "  check-docs / test-docs-check        Docs placement/pairing/links gate + its regression tests"
-	@echo "  check-prewarm-cache / test-prewarm-cache-check  CI cache-key gate (PR caches vs manual seeds) + its regression tests"
 	@echo "  fmt                                 Format Rust code"
 	@echo "  run-agent / -tui / -cli / -channels / -goal   Run a component (debug build)"
 	@echo "  run-desktop / run-mobile-android / run-mobile-ios   Run an app in dev mode"

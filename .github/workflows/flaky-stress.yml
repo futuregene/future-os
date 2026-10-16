@@ -24,7 +24,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.97.0
+        run: node scripts/ci/setup-rust.mjs
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
