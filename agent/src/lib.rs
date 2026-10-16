@@ -159,37 +159,6 @@ pub(crate) mod test_support {
         }
     }
 
-    /// Run `body` under a thread-local capturing subscriber and return whatever
-    /// it logged. Startup progress is the operator's only evidence while a cold
-    /// or network-mounted data root is prepared, so the tests that guard those
-    /// phases assert on the rendered lines directly. The default subscriber is
-    /// thread-local, so a capture here cannot hide another test's output.
-    pub(crate) fn capture_logs<T>(body: impl FnOnce() -> T) -> (T, String) {
-        #[derive(Clone, Default)]
-        struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-        impl std::io::Write for Capture {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-
-        let capture = Capture::default();
-        let writer = capture.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .without_time()
-            .with_ansi(false)
-            .with_max_level(tracing::Level::INFO)
-            .with_writer(move || writer.clone())
-            .finish();
-        let value = tracing::subscriber::with_default(subscriber, body);
-        let bytes = capture.0.lock().unwrap();
-        (value, String::from_utf8_lossy(&bytes).into_owned())
-    }
-
     /// A provider whose stream never yields events. Shared by every test
     /// that needs a provider the run never actually queries for content —
     /// per-line coverage counts each uncalled mock's body, so there is
