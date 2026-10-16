@@ -85,11 +85,11 @@ python3 scripts/screenshots/capture.py variants-desktop running-icon-variants
 
 ```bash
 # 在版本 Y 的 checkout 里
-python3 scripts/screenshots/capture.py capture-desktop chat
-cp .screenshots/d-chat.png /tmp/y.png
+python3 scripts/screenshots/capture.py capture-desktop remote-conversation
+cp .screenshots/d-remote-conversation.png /tmp/y.png
 # 切到版本 X（或另开一个 worktree），同样截一次
-python3 scripts/screenshots/capture.py capture-desktop chat
-python3 scripts/screenshots/capture.py compare-desktop /tmp/y.png .screenshots/d-chat.png \
+python3 scripts/screenshots/capture.py capture-desktop remote-conversation
+python3 scripts/screenshots/capture.py compare-desktop /tmp/y.png .screenshots/d-remote-conversation.png \
     --output /tmp/style-diff.png --label-left "1.1.8" --label-right "1.1.7"
 ```
 
@@ -135,7 +135,7 @@ python3 scripts/screenshots/capture.py capture-desktop rail-offsets
 ```bash
 # 终端 1、2：先起服务（同上）
 python3 scripts/screenshots/capture.py video-desktop            # 全部场景
-python3 scripts/screenshots/capture.py video-desktop chat rename  # 或指定几个
+python3 scripts/screenshots/capture.py video-desktop steps-expanded rename  # 或指定几个
 python3 scripts/screenshots/capture.py video-mobile chat
 ```
 
@@ -180,8 +180,10 @@ python3 scripts/screenshots/capture.py video-mobile chat
 ```bash
 python3 scripts/screenshots/capture.py serve-desktop     # 终端 1：提供 http://localhost:5299/shot/
 python3 scripts/screenshots/capture.py capture-desktop       # 终端 2：跑全部场景
-python3 scripts/screenshots/capture.py capture-desktop d-rail-tree d-steps-folded            # 或只跑几个
+python3 scripts/screenshots/capture.py capture-desktop rail-tree steps-folded              # 或只跑几个
 ```
+
+场景名就是 `scripts/screenshots/scenarios.json` 里的键（`d-` 前缀属于输出 PNG，不属于场景名）；名字写错时 `capture-desktop` 会列出可用的场景。
 
 截图写到 `.screenshots/`（已 gitignore）。你也可以自己打开 <http://localhost:5299/shot/> 手动探索；工具还会在 7391 端口起一个替身 PTY 服务，让内嵌终端面板有东西可显示。
 

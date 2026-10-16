@@ -127,11 +127,11 @@ Capture each version, then compare:
 
 ```bash
 # in version Y's checkout
-python3 scripts/screenshots/capture.py capture-desktop chat
-cp .screenshots/d-chat.png /tmp/y.png
+python3 scripts/screenshots/capture.py capture-desktop remote-conversation
+cp .screenshots/d-remote-conversation.png /tmp/y.png
 # switch to version X (or use another worktree) and capture the same scenario
-python3 scripts/screenshots/capture.py capture-desktop chat
-python3 scripts/screenshots/capture.py compare-desktop /tmp/y.png .screenshots/d-chat.png \
+python3 scripts/screenshots/capture.py capture-desktop remote-conversation
+python3 scripts/screenshots/capture.py compare-desktop /tmp/y.png .screenshots/d-remote-conversation.png \
     --output /tmp/style-diff.png --label-left "1.1.8" --label-right "1.1.7"
 ```
 
@@ -195,7 +195,7 @@ change (e.g. `位移 +0, +8px · 宽 +4px`).
 ```bash
 # terminals 1 and 2: start the servers (as above)
 python3 scripts/screenshots/capture.py video-desktop              # every scenario
-python3 scripts/screenshots/capture.py video-desktop chat rename  # or just some
+python3 scripts/screenshots/capture.py video-desktop steps-expanded rename  # or just some
 python3 scripts/screenshots/capture.py video-mobile chat
 ```
 
@@ -261,8 +261,12 @@ Two terminals, because the dev server stays in the foreground:
 ```bash
 python3 scripts/screenshots/capture.py serve-desktop     # terminal 1: serves http://localhost:5299/shot/
 python3 scripts/screenshots/capture.py capture-desktop       # terminal 2: runs every scenario
-python3 scripts/screenshots/capture.py capture-desktop d-rail-tree d-steps-folded              # or just some
+python3 scripts/screenshots/capture.py capture-desktop rail-tree steps-folded                # or just some
 ```
+
+The scenario names are the keys in `scripts/screenshots/scenarios.json` (the `d-` prefix
+belongs to the output PNG, not the scenario); `capture-desktop` reports an unknown name with
+the ones it does have.
 
 The captured PNGs land in `.screenshots/` (gitignored). Open
 <http://localhost:5299/shot/> yourself to explore by hand; the harness also starts
