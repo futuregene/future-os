@@ -48,6 +48,7 @@ fn build_gui() -> Result<(), Box<dyn std::error::Error>> {
     }
     result?;
     embed_common_controls_manifest()?;
+    reserve_platform_stack()?;
 
     // Agent gRPC bindings come from the future-rpc crate (single codegen
     // owner; typed-RPC milestone) — nothing to generate here.
@@ -93,6 +94,38 @@ fn embed_common_controls_manifest() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
     println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
+    Ok(())
+}
+
+/// Reserve the stack every platform but Windows gives a process by default.
+///
+/// Windows sizes the main thread's stack from the PE header, and `link.exe`
+/// defaults to a 1 MB reserve where Linux and macOS reserve 8 MB. Tauri builds
+/// an async command's future on the thread that received the IPC message — the
+/// main thread — before moving it into the spawned task, so one dispatch needs
+/// several copies of that future at once: `tauri`'s resolver holds two, and the
+/// move into the task's heap allocation copies it twice more. The desktop's
+/// largest command future — `agent_prompt`, 143,736 bytes, because the whole
+/// prompt pipeline is inlined into it — therefore asked for a 575,856-byte
+/// frame. Together with the dispatcher's own frame that overran 1 MB, and the
+/// faulting instruction was the stack probe in the guard page: the process died
+/// with `STATUS_STACK_OVERFLOW` (0xc00000fd) the moment a prompt was sent, with
+/// no window, no log line and no chance to report anything (`desktop.log` stops
+/// at the last write the process managed to flush).
+///
+/// Reserving what the other platforms reserve leaves the dispatcher ~7x the
+/// headroom it needs for the futures this app ships today, and covers the
+/// commands whose futures are merely large (several run 100-135 KB) rather than
+/// relying on every one of them staying small. The reserve is address space,
+/// not memory: the commit stays at 64 KB and the stack grows into the reserve
+/// on demand, exactly as it does on Linux and macOS.
+#[cfg(feature = "gui")]
+fn reserve_platform_stack() -> Result<(), Box<dyn std::error::Error>> {
+    if !std::env::var("TARGET")?.contains("windows") {
+        return Ok(());
+    }
+
+    println!("cargo:rustc-link-arg=/STACK:8388608,65536");
     Ok(())
 }
 
