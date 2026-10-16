@@ -198,7 +198,9 @@ future mcp remove rea
 (`--limit`,默认 50;`--offset` 继续)。`describe` 需要一个精确的工具名并打印完整
 JSON Schema。`call` 最多打印 `--max-bytes`(默认 64 KB),并提示用 `--out <file>`
 取回其余部分,因此返回数百 MB 的工具不会淹没向它提问的那个终端。服务器启动慢时加
-`--timeout <secs>`(默认 60)。
+`--timeout <secs>`(默认 60)。工具自己报告的错误(`isError`)会把内容打到 **stderr** 并
+以退出码 1 结束,与 `future tools call` 报告工具失败的方式一致——脚本或 agent 不必从
+stdout 里解析标记来判断调用是否成功。
 
 ### `models` —— 列出可用模型
 
