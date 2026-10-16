@@ -485,6 +485,7 @@ Usage:
   future mcp tools <server> [--query <text>] [--limit <n>] [--offset <n>]
   future mcp describe <server> <tool>
   future mcp call <server> <tool> [--args '<json>'] [--out <file>] [--max-bytes <n>]
+  future mcp serve <server>
   future mcp add <name> --command <program> [--arg <value>]... [--env KEY=VALUE]...
   future mcp remove <name>
 
@@ -495,6 +496,12 @@ Commands:
   tools <server>           That server's tools, one line each, paged.
   describe <server> <tool> One tool's full description and argument schema.
   call <server> <tool>     Invoke one tool. Output is capped; --out writes all of it.
+  serve <server>           Hold one session and take requests from stdin, one JSON
+                           object per line: {"tool":"...","args":{...}}. Answers
+                           with {"ok":true,"result":{...}} or {"ok":false,"error":"..."},
+                           after a {"ok":true,"ready":true,...} ack. Use it when a
+                           server's start-up is expensive: `call` starts the server
+                           per invocation, `serve` pays that once.
   add / remove             Change the server list.
 
 Two budgets, both tunable per command:
@@ -505,9 +512,9 @@ Two budgets, both tunable per command:
                            cannot help when a frame does not fit at all; many
                            servers also have their own response budget.
 
-Each call starts the server and stops it again. Add --timeout <secs> when a
-server is slow to start (default 60); an engine that must analyse the target on
-every launch can need minutes."#;
+`call` starts the server and stops it again; add --timeout <secs> when a server is
+slow to start (default 60). An engine that must analyse the target on every launch
+can need minutes, which is what `serve` is for."#;
 
 /// `future skills` group help (index.ts).
 pub const SKILLS_GROUP_HELP: &str = r#"future skills — install & manage agent skills

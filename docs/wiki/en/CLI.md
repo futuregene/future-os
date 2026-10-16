@@ -197,6 +197,7 @@ future mcp tools rea --query binary      # that server's tools, one line each
 future mcp describe rea inspect_go_binary  # one tool's full argument schema
 future mcp call rea inspect_go_binary --args '{"path":"/usr/bin/foo"}'
 future mcp call rea inspect_go_binary --args '{...}' --out full.json  # write all of it
+future mcp serve rea                     # hold one session, take requests on stdin
 future mcp remove rea
 ```
 
@@ -226,7 +227,30 @@ There are two budgets with a flag each: `--max-bytes` caps what is **printed**,
 fit at all, so the over-cap error names the method being awaited, says which
 budget it is, and gives both knobs; many servers also have their own response
 budget (REA's is `REA_MCP_MAX_RESPONSE_BYTES`). A mistyped tool name gets the
-same "Did you mean" hint from `call` as from `describe`. A tool that reports its own error (`isError`) prints its
+same "Did you mean" hint from `call` as from `describe`.
+
+`call` starts the server on every invocation, which costs nothing for a fast one
+and a lot for an engine that loads and analyses the target at launch: a Ghidra
+cold start is about four minutes, so five calls cost five of them. `serve` pays it
+once:
+
+```bash
+printf '%s\n' '{"tool":"open_binary","args":{"path":"/bin/ls"}}' \
+              '{"tool":"open_binary","args":{"path":"/bin/cat"}}' \
+  | future mcp serve rea
+# {"ok":true,"ready":true,"server":"rea","toolCount":207}
+# {"ok":true,"isError":false,"result":{...}}
+# {"ok":true,"isError":false,"result":{...}}
+```
+
+Both directions are newline-delimited JSON: a request is `{"tool":...,"args":{...}}`
+and an answer is `{"ok":...,"result"/"error":...}`. The first line is a ready ack
+(the handshake is done and the tool count is known), so a caller waits on that
+line instead of guessing how long analysis takes. Requests are answered in order,
+one at a time: a stateful engine session is not something to drive concurrently.
+A request that fails on its own — malformed JSON, no `tool`, a server rejection,
+a tool error — only affects itself; the session continues. stderr is left to the
+server's own logs, so stdout stays a clean JSON stream. A tool that reports its own error (`isError`) prints its
 payload on **stderr** and exits 1, the same way `future tools call` reports a
 failed tool — a script or an agent does not have to parse a marker out of stdout
 to learn the call did not work.
