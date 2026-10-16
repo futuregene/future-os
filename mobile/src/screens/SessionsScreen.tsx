@@ -1101,6 +1101,28 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
                   </View>
                   {newMode === "workspace" && (
                     <View style={styles.workspaceOptionsContent}>
+                      {/* The phone can't browse the host, so it registers a
+                          directory the user typed — the same store write as the
+                          Desktop's own create-workspace dialog. Gated on the
+                          capability: an older desktop answers the command with
+                          "Unsupported command" — and on being the machine the
+                          phone is connected to, which is where that write
+                          lands. It leads the list, not trails it: the body
+                          scrolls, so on a machine with many workspaces the row
+                          was only reachable after scrolling past all of them. */}
+                      {canCreateWorkspaceHere && (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={t("sessions.createWorkspace")}
+                          onPress={openNewWorkspaceForm}
+                          style={styles.workspaceOption}
+                        >
+                          <Plus color={colors.accent} size={17} />
+                          <Text numberOfLines={1} style={styles.workspaceOptionName}>
+                            {t("sessions.createWorkspace")}
+                          </Text>
+                        </Pressable>
+                      )}
                       {workspaceOptions.map((workspace) => (
                         <Pressable
                           key={workspace.id}
@@ -1118,26 +1140,6 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
                           </Text>
                         </Pressable>
                       ))}
-                      {/* The phone can't browse the host, so it registers a
-                          directory the user typed — the same store write as the
-                          Desktop's own create-workspace dialog. Gated on the
-                          capability: an older desktop answers the command with
-                          "Unsupported command" — and on being the machine the
-                          phone is connected to, which is where that write
-                          lands. */}
-                      {canCreateWorkspaceHere && (
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel={t("sessions.createWorkspace")}
-                          onPress={openNewWorkspaceForm}
-                          style={styles.workspaceOption}
-                        >
-                          <Plus color={colors.accent} size={17} />
-                          <Text numberOfLines={1} style={styles.workspaceOptionName}>
-                            {t("sessions.createWorkspace")}
-                          </Text>
-                        </Pressable>
-                      )}
                       {workspaceOptions.length === 0 && (
                         <Text style={styles.emptyInside}>{t("sessions.noWorkspaces")}</Text>
                       )}
