@@ -1634,6 +1634,14 @@ mod bridge_tests {
         );
         let long = "abcdefghijklmnopqrstuvwxyz0123456789";
         assert_eq!(derive_thread_title(long), "abcdefghijklmnopqrstuvwxyz01...");
+        // A phone message may open with a reference to another conversation;
+        // the title is the question, not the link that addressed the peer.
+        assert_eq!(
+            derive_thread_title(
+                "[手机截图镜像修复](futureos://session/20261016-142101-2a944dead697482d8a6adad9942fe403) 这个会话在流式回复中"
+            ),
+            "这个会话在流式回复中"
+        );
     }
 
     fn bridge_creds() -> crate::remote::pairing::PairingCreds {

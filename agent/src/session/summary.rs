@@ -1,13 +1,14 @@
 //! SQLite-backed session listings.
 use super::entry::{SessionEntry, ENTRY_TYPE_SESSION_INFO};
 use super::model::{Session, SessionSummary};
-use super::projection::truncate_visible;
+use super::projection::first_message_title;
 use super::Manager;
 use anyhow::Result;
 
 impl Manager {
     /// Extract the display text of a user entry's content (first text block),
-    /// trimmed and truncated to ~40 visible columns for the session list.
+    /// rendered as plain text and truncated to ~40 visible columns for the
+    /// session list.
     fn summary_first_message(entry: &SessionEntry) -> Option<String> {
         let content_val = entry.content.as_ref()?;
         let text: String = if let Some(arr) = content_val.as_array() {
@@ -23,7 +24,7 @@ impl Manager {
         } else {
             String::new()
         };
-        let truncated: String = truncate_visible(text.trim(), 40);
+        let truncated: String = first_message_title(&text);
         if truncated.is_empty() {
             None
         } else {
@@ -267,6 +268,16 @@ mod tests {
         // summary_first_message only takes the FIRST text block
         let summary = Manager::summary_first_message(&e).unwrap();
         assert_eq!(summary, "first message block");
+    }
+
+    #[test]
+    fn summary_first_message_drops_a_conversation_reference() {
+        let e = SessionEntry::new_user(
+            "user",
+            serde_json::json!("[登录修复](futureos://session/s-1) 还是坏的"),
+        );
+        // The value the sidebar preview and an imported title are built from.
+        assert_eq!(Manager::summary_first_message(&e).unwrap(), "还是坏的");
     }
 
     #[test]

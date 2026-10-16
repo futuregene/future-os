@@ -2285,6 +2285,27 @@ mod pipeline_tests {
         assert!(titled.ends_with('…'), "truncated: {titled}");
         assert_eq!(titled.chars().count(), 41);
 
+        // A message that opens with a reference to another conversation is
+        // named by its question: the reference is addressing, not the topic
+        // (the Agent derives `session_name` from the message the same way).
+        let thread = seed_thread(&workspace.id, Some("sess-an-reference"));
+        crate::store::rename_thread(crate::store::RenameThreadInput {
+            thread_id: thread.id.clone(),
+            title: "New Chat".to_string(),
+        })
+        .expect("rename");
+        auto_name_thread(
+            &thread.id,
+            "[登录修复](futureos://session/20261016-142101-2a944dead697482d8a6adad9942fe403) 还是坏的",
+        );
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .expect("thread")
+                .expect("exists")
+                .title,
+            "还是坏的"
+        );
+
         // User-set titles are never overwritten.
         let thread = seed_thread(&workspace.id, Some("sess-an-custom"));
         auto_name_thread(&thread.id, "new message");
