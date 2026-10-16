@@ -20,7 +20,9 @@ Commands
 Options
   --out DIR        output directory (default .screenshots/)
   --port N         override the harness port
-  --cdp-port N     CDP port of the browser to use or start (default 9222)
+  --cdp-port N     CDP port of the headless browser to reuse or to start
+                   (default 9222; a port held by another kind of process moves
+                   to the next free port rather than driving that browser)
 
 Typical use
   python3 scripts/screenshots/capture.py serve-desktop     # terminal 1
@@ -28,18 +30,21 @@ Typical use
 """
 
 import argparse
+import atexit
 import base64
 import http.server
 import json
 import os
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 from functools import partial
 from pathlib import Path
@@ -91,29 +96,179 @@ def wait_for(url: str, timeout: float = 60.0) -> bool:
     return False
 
 
-def cdp_reachable(port: int) -> bool:
+CDP_DEFAULT_PORT = 9222
+PROFILE_PREFIX = "future-shot-"
+# A profile no live process references is only swept once it has been untouched
+# for this long, so a capture that is starting up right now keeps its browser.
+ORPHAN_PROFILE_GRACE_SECS = 300
+
+
+def cdp_version(port: int) -> dict | None:
+    """The `/json/version` payload of the CDP endpoint on `port`, or None.
+
+    A port that merely *listens* is not a CDP endpoint: a Chrome started without
+    remote debugging — including the default profile, which Chrome no longer
+    exposes — answers 404 there. Only a real endpoint says who it is.
+    """
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1.5):
-            return True
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1.5) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        error.close()  # a 404 is still a live socket: it is how the user's own Chrome answers
+        return None
     except Exception:
-        return False
+        return None
+
+
+def is_headless(info: dict) -> bool:
+    """True for a headless Chrome — the only browser a capture may drive.
+
+    Reusing a visible browser would navigate and screenshot the user's own
+    window, so what the UA says decides this, not whether the port answers.
+    """
+    return "HeadlessChrome" in info.get("User-Agent", "")
+
+
+def free_port(start: int) -> int:
+    """The first free TCP port at or after `start` (small search window)."""
+    for port in range(start, start + 64):
+        if port_free(port):
+            return port
+    raise SystemExit(f"error: no free TCP port in {start}..{start + 63} to run headless Chrome on")
+
+
+def list_processes() -> list[dict]:
+    """Every process as {pid, ppid, command}.
+
+    `ps` has no cross-platform structured output and this script needs only
+    those three columns (the same ones the reap below is documented against).
+    """
+    try:
+        listing = subprocess.run(["ps", "-Ao", "pid=,ppid=,command="],
+                                 capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    processes = []
+    for line in listing.splitlines():
+        pid, _, rest = line.strip().partition(" ")
+        ppid, _, command = rest.strip().partition(" ")
+        if pid.isdigit() and ppid.isdigit() and command:
+            processes.append({"pid": int(pid), "ppid": int(ppid), "command": command})
+    return processes
+
+
+def owned_profile(command: str) -> Path | None:
+    """The `future-shot-` profile a command line was started with, if any.
+
+    Only this script creates those (`tempfile.mkdtemp(prefix=PROFILE_PREFIX)`),
+    so the prefix — not the browser executable — is what identifies our own
+    leftover browser.
+    """
+    for token in command.split():
+        if token.startswith("--user-data-dir="):
+            profile = Path(token.split("=", 1)[1])
+            if profile.name.startswith(PROFILE_PREFIX):
+                return profile
+    return None
+
+
+def orphan_browsers(processes: list[dict]) -> list[dict]:
+    """Browsers a *dead* capture run left behind.
+
+    Our browser is a child of the capture process, so a live run's browser still
+    has that process as its parent. When a run is killed outright — SIGKILL, a
+    turn timeout, an agent restart — `Browser.close()` never runs, and the
+    browser is re-parented to init/launchd (ppid 1) while it keeps running with
+    its profile. Both facts must hold, so the user's own browsers and a
+    concurrent capture are never selected.
+    """
+    return [process for process in processes
+            if process["ppid"] == 1 and owned_profile(process["command"]) is not None]
+
+
+def reap_orphans() -> tuple[list[int], list[Path]]:
+    """Terminate browsers left over by earlier, killed capture runs, then drop
+    their temporary profiles. Returns the pids and profiles that were reaped.
+
+    SIGKILL cannot be caught, so this startup sweep — not a handler — is what
+    makes an interrupted run leave nothing behind. It runs before the browser
+    for this run starts, so a leftover that holds the CDP port is gone by then.
+    """
+    orphans = orphan_browsers(list_processes())
+    reaped_pids = []
+    for orphan in orphans:
+        try:
+            os.kill(orphan["pid"], signal.SIGTERM)
+            reaped_pids.append(orphan["pid"])
+        except OSError:
+            pass
+    if orphans:
+        time.sleep(1.0)  # let Chrome exit and release its profile directory
+    killed_profiles = {owned_profile(orphan["command"]) for orphan in orphans}
+    still_running = {owned_profile(process["command"]) for process in list_processes()}
+    reaped_profiles = []
+    for candidate in Path(tempfile.gettempdir()).glob(f"{PROFILE_PREFIX}*"):
+        if candidate in still_running:
+            continue
+        if candidate not in killed_profiles:
+            try:
+                age = time.time() - candidate.stat().st_mtime
+            except OSError:
+                continue
+            if age < ORPHAN_PROFILE_GRACE_SECS:
+                continue
+        shutil.rmtree(candidate, ignore_errors=True)
+        reaped_profiles.append(candidate)
+    return reaped_pids, reaped_profiles
 
 
 class Browser:
-    """A CDP endpoint: either one the caller already runs, or our own headless
-    Chrome. Owning the browser is what makes a capture work on a machine with no
-    display and no browser-following tooling."""
+    """A CDP endpoint: our own headless Chrome, or a headless browser the caller
+    already runs. Owning the browser is what makes a capture work on a machine
+    with no display and no browser-following tooling — and by the same token,
+    never driving one the user is looking at."""
 
     def __init__(self, port: int):
         self.port = port
         self.process = None
         self.profile = None
+        self._previous_sigterm = None
+        self._closed = False
 
     def __enter__(self):
-        if cdp_reachable(self.port):
-            print(f"using the browser already listening on CDP port {self.port}")
+        info = cdp_version(self.port)
+        if info is not None and is_headless(info):
+            print(f"using the headless browser already listening on CDP port {self.port}")
             return self
-        self.profile = tempfile.mkdtemp(prefix="future-shot-")
+        if info is not None:
+            agent = info.get("User-Agent", "unknown")[:48]
+            print(f"note: CDP port {self.port} answers but is a visible browser, not a headless "
+                  f"one ({agent!r}); not driving it")
+            self.port = free_port(self.port + 1)
+        elif not port_free(self.port):
+            print(f"note: CDP port {self.port} is held by something that is not a CDP endpoint")
+            self.port = free_port(self.port + 1)
+        atexit.register(self.close)
+        self._install_sigterm_handler()
+        self._start()
+        return self
+
+    def _start(self):
+        """Start our own headless Chrome, on the next free port if the one this
+        run picked is lost to another process between the check and the bind
+        (`port_free` can say free and Chrome still lose that race; it then exits
+        at once, which `_wait_for_cdp` notices instead of waiting out the 30 s)."""
+        for attempt in range(3):
+            self._spawn()
+            if self._wait_for_cdp(30 if attempt == 0 else 10):
+                print(f"started headless Chrome on CDP port {self.port} (pid {self.process.pid})")
+                return
+            self._stop_browser()
+            self.port = free_port(self.port + 1)
+        raise SystemExit(f"error: headless Chrome did not open CDP port {self.port}")
+
+    def _spawn(self):
+        self.profile = tempfile.mkdtemp(prefix=PROFILE_PREFIX)
         self.process = subprocess.Popen([
             chrome_path(),
             "--headless=new",
@@ -125,21 +280,58 @@ class Browser:
             "--hide-scrollbars",
             "about:blank",
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if not wait_for(f"http://127.0.0.1:{self.port}/json/version", 30):
-            raise SystemExit(f"error: headless Chrome did not open CDP port {self.port}")
-        print(f"started headless Chrome on CDP port {self.port} (pid {self.process.pid})")
-        return self
+
+    def _wait_for_cdp(self, timeout: float) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.process.poll() is not None:
+                return False  # Chrome gave up on the port; do not wait it out
+            if wait_for(f"http://127.0.0.1:{self.port}/json/version", timeout=1.0):
+                return True
+        return False
+
+    def _install_sigterm_handler(self):
+        if threading.current_thread() is not threading.main_thread():
+            return
+        self._previous_sigterm = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, self._on_sigterm)
+
+    def _on_sigterm(self, signum, _frame):
+        self.close()
+        handler = self._previous_sigterm
+        signal.signal(signum, handler if handler is not None else signal.SIG_DFL)
+        os.kill(os.getpid(), signum)  # re-deliver, so the exit status stays honest
 
     def __exit__(self, *exc):
-        if self.process:
+        self.close()
+        return False
+
+    def close(self):
+        """Terminate our browser and drop its profile. Idempotent: the `with`
+        body, the SIGTERM handler and atexit may all reach it."""
+        if self._closed:
+            return
+        self._closed = True
+        if self._previous_sigterm is not None:
+            try:
+                signal.signal(signal.SIGTERM, self._previous_sigterm)
+            except (OSError, ValueError):
+                pass
+            self._previous_sigterm = None
+        atexit.unregister(self.close)
+        self._stop_browser()
+
+    def _stop_browser(self):
+        if self.process and self.process.poll() is None:
             self.process.terminate()
             try:
                 self.process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 self.process.kill()
+        self.process = None
         if self.profile:
             shutil.rmtree(self.profile, ignore_errors=True)
-        return False
+        self.profile = None
 
 
 # ─── Servers ────────────────────────────────────────────────────────────────
@@ -1027,7 +1219,8 @@ def build_pdf(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", default=str(DEFAULT_OUT), help="output directory (default .screenshots/)")
-    parser.add_argument("--cdp-port", default=9222, help="Chrome DevTools Protocol port (default 9222)")
+    parser.add_argument("--cdp-port", default=CDP_DEFAULT_PORT,
+                        help=f"CDP port of the headless browser to reuse or to start (default {CDP_DEFAULT_PORT})")
     sub = parser.add_subparsers(dest="command", required=True)
 
     for platform in ("desktop", "mobile"):
@@ -1095,6 +1288,10 @@ def main() -> int:
             print("error: terminal needs a command after --", file=sys.stderr)
             return 2
     Path(args.out).mkdir(parents=True, exist_ok=True)
+    reaped_pids, reaped_profiles = reap_orphans()
+    if reaped_pids or reaped_profiles:
+        print(f"reaped {len(reaped_pids)} leftover headless browser(s) and "
+              f"{len(reaped_profiles)} profile dir(s) from earlier runs")
     return args.func(args)
 
 

@@ -419,11 +419,18 @@ jobs:
 
       # Run actual payloads, not the staged binaries or the C# hook fixtures.
       # Extraction avoids installing into the long-lived signing runner's profile.
+      - name: Setup Python for package verification
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
       - name: Verify actual Windows installer and portable payloads
         shell: pwsh
         env:
           FUTURE_VERSION: ${{ steps.v.outputs.version }}
-        run: python scripts/ci/check-packaged-entrypoints.py windows --version "$env:FUTURE_VERSION"
+        run: |
+          python --version
+          python -u scripts/ci/check-packaged-entrypoints.py windows --version "$env:FUTURE_VERSION"
 
       - name: Upload package verification logs
         if: always()

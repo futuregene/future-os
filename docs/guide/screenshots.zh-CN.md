@@ -85,11 +85,11 @@ python3 scripts/screenshots/capture.py variants-desktop running-icon-variants
 
 ```bash
 # 在版本 Y 的 checkout 里
-python3 scripts/screenshots/capture.py capture-desktop chat
-cp .screenshots/d-chat.png /tmp/y.png
+python3 scripts/screenshots/capture.py capture-desktop remote-conversation
+cp .screenshots/d-remote-conversation.png /tmp/y.png
 # 切到版本 X（或另开一个 worktree），同样截一次
-python3 scripts/screenshots/capture.py capture-desktop chat
-python3 scripts/screenshots/capture.py compare-desktop /tmp/y.png .screenshots/d-chat.png \
+python3 scripts/screenshots/capture.py capture-desktop remote-conversation
+python3 scripts/screenshots/capture.py compare-desktop /tmp/y.png .screenshots/d-remote-conversation.png \
     --output /tmp/style-diff.png --label-left "1.1.8" --label-right "1.1.7"
 ```
 
@@ -135,7 +135,7 @@ python3 scripts/screenshots/capture.py capture-desktop rail-offsets
 ```bash
 # 终端 1、2：先起服务（同上）
 python3 scripts/screenshots/capture.py video-desktop            # 全部场景
-python3 scripts/screenshots/capture.py video-desktop chat rename  # 或指定几个
+python3 scripts/screenshots/capture.py video-desktop steps-expanded rename  # 或指定几个
 python3 scripts/screenshots/capture.py video-mobile chat
 ```
 
@@ -168,6 +168,7 @@ python3 scripts/screenshots/capture.py video-mobile chat
 
 - Node.js（驱动用到的 `ws` 已是仓库依赖）和 Python 3。
 - Chrome、Edge 或 Chromium。不支持 Safari（驱动需要 CDP）。
+- 截图只驱动 **headless** 浏览器，而且只驱动自己起的那个（或 `--cdp-port` 上已在跑的 headless 实例）。该端口上若是**可见**的浏览器，工具会提示并跳过、绝不去驱动——驱动它就会导航并截取你正看着的那个窗口——改在下一个空闲端口起自己的浏览器。被打断的运行（turn 超时、agent 重启）会留下浏览器和 `future-shot-` profile：每条命令启动时都会回收它们，SIGTERM 处理器则在运行被杀时收掉浏览器。
 - `pip install pillow` 是可选的：它只用来压小 PDF 里的图片。
 - 手机端工具另外需要 `react-native-web`、`@expo/metro-runtime` 和 `react-dom`；`capture.py serve-mobile` 会把它们按需装进 mobile workspace，且不动依赖清单（见"不入库的约定"）。
 - **录视频**另外需要 ffmpeg：macOS 用 `brew install ffmpeg`，Linux 用发行版包管理器。缺了会在开始录像前直接报错，不会录到一半失败。
@@ -179,8 +180,10 @@ python3 scripts/screenshots/capture.py video-mobile chat
 ```bash
 python3 scripts/screenshots/capture.py serve-desktop     # 终端 1：提供 http://localhost:5299/shot/
 python3 scripts/screenshots/capture.py capture-desktop       # 终端 2：跑全部场景
-python3 scripts/screenshots/capture.py capture-desktop d-rail-tree d-steps-folded            # 或只跑几个
+python3 scripts/screenshots/capture.py capture-desktop rail-tree steps-folded              # 或只跑几个
 ```
+
+场景名就是 `scripts/screenshots/scenarios.json` 里的键（`d-` 前缀属于输出 PNG，不属于场景名）；名字写错时 `capture-desktop` 会列出可用的场景。
 
 截图写到 `.screenshots/`（已 gitignore）。你也可以自己打开 <http://localhost:5299/shot/> 手动探索；工具还会在 7391 端口起一个替身 PTY 服务，让内嵌终端面板有东西可显示。
 
@@ -287,7 +290,8 @@ mock 是唯一需要跟着产品走的部分，而漏掉的地方会主动报出
 
 | 现象 | 原因 |
 |---|---|
-| `cdp: no page target on port …` | 上一次运行留下的浏览器占着 CDP 端口；关掉它或换 `--cdp-port`。 |
+| `cdp: no page target on port …` | 上一次运行留下的 **headless** 浏览器占着 CDP 端口且没有页面目标；关掉它或换 `--cdp-port`。该端口上若是**可见**浏览器，工具会提示并跳过，而不是去驱动它。 |
+| `note: CDP port … 被占用 / 是可见浏览器` | 不是错误：那个浏览器不是本次运行可以驱动的，于是这次截图改在下一个空闲端口起自己的浏览器。 |
 | `target not found: …` | `aria-label` 变了，或步骤跑在界面稳定之前——把前一个 `wait` 调大。 |
 | 点击没有反应 | 在可滚动列表里，react-native-web 会优先响应滚动手势；驱动已经发送触摸序列，请确认没有关掉 `--touch`。 |
 | 手机端界面空白或不全 | 首次请求时 Expo web 还在打包；等第一次截图完成后再跑一次。若页面全白且控制台报 "Incompatible React versions"，说明 mobile workspace 里 react / react-dom 版本不一致——`serve-mobile` 会检查并给出修复命令。 |

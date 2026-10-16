@@ -127,11 +127,11 @@ Capture each version, then compare:
 
 ```bash
 # in version Y's checkout
-python3 scripts/screenshots/capture.py capture-desktop chat
-cp .screenshots/d-chat.png /tmp/y.png
+python3 scripts/screenshots/capture.py capture-desktop remote-conversation
+cp .screenshots/d-remote-conversation.png /tmp/y.png
 # switch to version X (or use another worktree) and capture the same scenario
-python3 scripts/screenshots/capture.py capture-desktop chat
-python3 scripts/screenshots/capture.py compare-desktop /tmp/y.png .screenshots/d-chat.png \
+python3 scripts/screenshots/capture.py capture-desktop remote-conversation
+python3 scripts/screenshots/capture.py compare-desktop /tmp/y.png .screenshots/d-remote-conversation.png \
     --output /tmp/style-diff.png --label-left "1.1.8" --label-right "1.1.7"
 ```
 
@@ -195,7 +195,7 @@ change (e.g. `位移 +0, +8px · 宽 +4px`).
 ```bash
 # terminals 1 and 2: start the servers (as above)
 python3 scripts/screenshots/capture.py video-desktop              # every scenario
-python3 scripts/screenshots/capture.py video-desktop chat rename  # or just some
+python3 scripts/screenshots/capture.py video-desktop steps-expanded rename  # or just some
 python3 scripts/screenshots/capture.py video-mobile chat
 ```
 
@@ -239,6 +239,13 @@ Consequences worth knowing before trusting a screenshot:
 
 - Node.js (the driver uses `ws`, already a repo dependency) and Python 3.
 - Chrome, Edge or Chromium. Safari is not supported (the driver needs CDP).
+- The capture only drives a **headless** browser, and only one it started itself
+  (or a headless one already listening on `--cdp-port`). A *visible* browser on
+  that port is reported and skipped, never driven — driving it would navigate and
+  screenshot a window you are looking at — and the run starts its own on the next
+  free port instead. Interrupted runs (a turn timeout, an agent restart) leave a
+  browser and a `future-shot-` profile behind; every command sweeps those at
+  startup, and a SIGTERM handler takes the browser down when a run is killed.
 - `pip install pillow` is optional: it only shrinks images in the generated PDF.
 - The mobile harness additionally needs `react-native-web`, `@expo/metro-runtime`
   and `react-dom`; `capture.py serve-mobile` installs them into the mobile
@@ -254,8 +261,12 @@ Two terminals, because the dev server stays in the foreground:
 ```bash
 python3 scripts/screenshots/capture.py serve-desktop     # terminal 1: serves http://localhost:5299/shot/
 python3 scripts/screenshots/capture.py capture-desktop       # terminal 2: runs every scenario
-python3 scripts/screenshots/capture.py capture-desktop d-rail-tree d-steps-folded              # or just some
+python3 scripts/screenshots/capture.py capture-desktop rail-tree steps-folded                # or just some
 ```
+
+The scenario names are the keys in `scripts/screenshots/scenarios.json` (the `d-` prefix
+belongs to the output PNG, not the scenario); `capture-desktop` reports an unknown name with
+the ones it does have.
 
 The captured PNGs land in `.screenshots/` (gitignored). Open
 <http://localhost:5299/shot/> yourself to explore by hand; the harness also starts
@@ -424,7 +435,8 @@ than silent:
 
 | Symptom | Cause |
 |---|---|
-| `cdp: no page target on port …` | A stale browser from an earlier run holds the CDP port; close it or pass `--cdp-port`. |
+| `cdp: no page target on port …` | An earlier run's **headless** browser still holds the CDP port with no page target; close it or pass `--cdp-port`. A *visible* browser there is reported and skipped rather than driven. |
+| `note: CDP port … is held by …` / `… is a visible browser …` | Expected, not an error: that browser is not one this run may drive, so the capture started its own on the next free port. |
 | `target not found: …` | The `aria-label` changed, or the step ran before the screen settled — raise the preceding `wait`. |
 | A tap does nothing | Inside a scrollable list, react-native-web prefers the scroll responder; the driver already sends touch sequences, so check `--touch` was not disabled. |
 | Empty or partial mobile screen | Expo web is still bundling on the first request; wait for the first capture, then re-run. If the page is blank and the console reports "Incompatible React versions", the mobile workspace's react/react-dom pair drifted — `serve-mobile` checks this and prints the fix. |
