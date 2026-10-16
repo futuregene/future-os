@@ -23,6 +23,7 @@ Usage:
   future session transcript --help                   Filter/window one session's records
   future session history --help                      Search/read original history
   future session compact --help                      Request manual compaction
+  future session reset <id> [selectors] [--yes]      Delete part of the history in place
   future session rename <id> <name>                  Give a session a readable name
   future session fork <id> --entry <entry-id>        Branch a new session at a user turn
   future session forks <id> [--json]                 List the turns a session can fork at
@@ -1369,6 +1370,10 @@ pub async fn session(
 
     if subcommand == "status" {
         return super::session_status::run(args, out).await;
+    }
+
+    if subcommand == "reset" {
+        return super::session_reset::run(args, out).await;
     }
 
     if subcommand == "wait" {

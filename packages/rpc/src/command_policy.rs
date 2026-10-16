@@ -111,6 +111,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "refresh_skills",
     "reload_auth",
     "reload_config",
+    "reset_session_history",
     "reset_windows_sandbox",
     "retry_persistence",
     "set_auth",
@@ -237,6 +238,7 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
         | "refresh_skills"
         | "reload_auth"
         | "reload_config"
+        | "reset_session_history"
         | "reset_windows_sandbox"
         | "retry_persistence"
         | "set_auth"

@@ -41,6 +41,8 @@ mod model;
 mod persistence;
 mod projection;
 mod repair;
+pub mod reset;
+pub use reset::{DropKind, ResetOutcome, ResetPlan, ResetPlanResult, ResetSelectors};
 mod run_journal;
 pub mod sqlite_store;
 mod summary;

@@ -197,6 +197,43 @@ pub struct RpcCommand {
     pub skill_id: ::prost::alloc::string::String,
     #[prost(string, tag = "183")]
     pub skill_version: ::prost::alloc::string::String,
+    /// ── reset_session_history ──────────────────────────────────────────────
+    /// In-place history reset selectors (typed sub-message, not JSON-in-string).
+    /// Read when type == "reset_session_history".
+    #[prost(message, optional, tag = "190")]
+    pub reset_history: ::core::option::Option<HistoryReset>,
+}
+/// ── HistoryReset ─────────────────────────────────────────────────────────────
+/// Selectors for an in-place history reset (`reset_session_history`) — the
+/// user-invoked, destructive counterpart of compaction. Compaction must never
+/// drop a protected user original; this path may, because the caller names what
+/// goes, sees the plan first (apply=false), and gets a lossless backup. The
+/// session record itself is never touched: only its entries.
+///
+/// Absent selector = "nothing selected", which the Agent rejects rather than
+/// treating as an empty rewrite.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct HistoryReset {
+    /// false = dry run: report the plan (counts, previews, token estimate) and
+    /// change nothing. The CLI defaults to this and requires --yes to apply.
+    #[prost(bool, tag = "1")]
+    pub apply: bool,
+    /// Which user turns to keep. A turn is one user entry plus every following
+    /// entry up to the next user entry — the same boundary `session forks` uses.
+    /// `all` and keep_first/keep_last are mutually exclusive; keep_first and
+    /// keep_last compose (keep a head and a tail, drop the middle).
+    #[prost(bool, optional, tag = "2")]
+    pub all: ::core::option::Option<bool>,
+    #[prost(int64, optional, tag = "3")]
+    pub keep_first: ::core::option::Option<i64>,
+    #[prost(int64, optional, tag = "4")]
+    pub keep_last: ::core::option::Option<i64>,
+    /// Entry kinds to remove from the part that is kept, e.g. "thinking",
+    /// "tool-calls", "tool-results", "attachments", "compaction". Deliberately a
+    /// list rather than a bitmask: an unknown name is an error, never a silent
+    /// no-op, so a typo cannot keep the data the caller meant to drop.
+    #[prost(string, repeated, tag = "5")]
+    pub drop: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Attachment {

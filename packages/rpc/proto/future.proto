@@ -266,6 +266,40 @@ message RpcCommand {
   // clients provide only a catalog id and the selected release version.
   string skill_id = 182;
   string skill_version = 183;
+
+  // ── reset_session_history ──────────────────────────────────────────────
+  // In-place history reset selectors (typed sub-message, not JSON-in-string).
+  // Read when type == "reset_session_history".
+  HistoryReset reset_history = 190;
+}
+
+// ── HistoryReset ─────────────────────────────────────────────────────────────
+// Selectors for an in-place history reset (`reset_session_history`) — the
+// user-invoked, destructive counterpart of compaction. Compaction must never
+// drop a protected user original; this path may, because the caller names what
+// goes, sees the plan first (apply=false), and gets a lossless backup. The
+// session record itself is never touched: only its entries.
+//
+// Absent selector = "nothing selected", which the Agent rejects rather than
+// treating as an empty rewrite.
+message HistoryReset {
+  // false = dry run: report the plan (counts, previews, token estimate) and
+  // change nothing. The CLI defaults to this and requires --yes to apply.
+  bool apply = 1;
+
+  // Which user turns to keep. A turn is one user entry plus every following
+  // entry up to the next user entry — the same boundary `session forks` uses.
+  // `all` and keep_first/keep_last are mutually exclusive; keep_first and
+  // keep_last compose (keep a head and a tail, drop the middle).
+  optional bool all = 2;
+  optional int64 keep_first = 3;
+  optional int64 keep_last = 4;
+
+  // Entry kinds to remove from the part that is kept, e.g. "thinking",
+  // "tool-calls", "tool-results", "attachments", "compaction". Deliberately a
+  // list rather than a bitmask: an unknown name is an error, never a silent
+  // no-op, so a typo cannot keep the data the caller meant to drop.
+  repeated string drop = 5;
 }
 
 // ── Attachment ───────────────────────────────────────────────────────────────

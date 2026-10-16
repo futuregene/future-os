@@ -441,6 +441,15 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             suggest_query: cmd.suggest_query,
             skill_id: cmd.skill_id,
             skill_version: cmd.skill_version,
+            reset_history: cmd
+                .reset_history
+                .map(|reset| crate::rpc::HistoryResetCommand {
+                    apply: reset.apply,
+                    all: reset.all,
+                    keep_first: reset.keep_first,
+                    keep_last: reset.keep_last,
+                    drop: reset.drop,
+                }),
             suggest_candidates: cmd
                 .suggest_candidates
                 .into_iter()

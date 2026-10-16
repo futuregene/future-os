@@ -246,6 +246,7 @@ future session status <id> [--json]     # 实时状态：权限、沙箱、上�
 future session transcript --help # 筛选并分窗查看单个会话的记录
 future session history --help   # 搜索并读取原始历史
 future session compact --help   # 请求手动压缩上下文
+future session reset <id> [选择器] [--yes]  # 原地删除部分历史
 future session rename <id> <name>
 future session new [--cwd <dir>] [--name <text>]
 future session forks <id>                # 该会话可分叉的轮次
@@ -300,6 +301,17 @@ future session delete <id>
 等级属于运行快照，随下一次运行写入记录。`future run` 只在显式传了 `--cwd`、或该会话由这次运行新建时
 才使用自己的 cwd（新会话默认落在调用方目录）；用 `--session`/`--continue` 挂到已有会话时不会改动
 这里设的 cwd。
+
+`session reset` 是 `session compact` 的破坏性对应物。压缩只能把历史**投影**掉：它必须保留
+每一段用户原文，因此当用户原文本身就超过上限时，会话会一直报
+`context compaction budget exceeded` 且不会自愈。`future session reset <id>` 则是真正删除
+你点名的那部分——整轮（`--all`、`--keep-first N`、`--keep-last N`），以及保留部分里的条目
+类型（`--drop thinking`、`tool-calls`、`tool-results`、`attachments`、`compaction`；一个「user
+轮」= 一条用户消息与它之后的内容，直到下一条用户消息，与 `session forks` 的口径一致）。
+不加 `--yes` 时只做预演；有活动 run 或正在压缩时会拒绝而不是打断；会话记录本身（id、标题、
+cwd、模型、提示词、权限）不会被改动；真正执行前会先写一份**完整**历史（含将被删的条目）的
+无损 JSON 备份并打印路径（`~/.future/agent/session-backups/<会话 id>-<时间戳>.json`），
+所以误操作可以恢复，将来的 restore 也有输入。
 
 会话数据存放在 Agent 的 SQLite 数据库 `~/.future/agent/agent.db`；`~/.future/agent/sessions/` 仅作为旧版
 JSONL 数据的导入来源保留。

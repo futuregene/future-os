@@ -28,7 +28,7 @@ pub use broadcaster::{
 pub use commands::handle_command_internal;
 #[cfg(test)]
 pub(crate) use commands::test_support::make_app_state as service_test_state;
-pub use protocol::{RpcCommand, RpcResponse, SseEvent};
+pub use protocol::{HistoryResetCommand, RpcCommand, RpcResponse, SseEvent};
 pub use session::ServerSession;
 
 /// Map one broadcaster/journal event into its replay payload carrier. The
