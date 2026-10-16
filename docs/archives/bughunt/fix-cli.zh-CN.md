@@ -72,7 +72,7 @@
 | w32 BUG-2 | 重复确认 w24-1 | 相同实现/测试。 |
 | w32 BUG-3 | 潜在，休眠钉钉 AI 卡片模块 | `stream_ai_card` 无桥调用方；裸字节切片存在但今天无生产影响。无推测激活/重构。 |
 | w32 BUG-4 | **非自有确认** `agent/src/llm/sse.rs::push` 每个换行排干/memmoves 后缀 | Supervisor/agent 交接：使用游标扫描完整行并每次 push 只排干前缀一次，保留拆分 UTF-8/CRLF 与事件边界；以许多短行测试实际解码器。本分支无 agent 编辑。 |
-| w32 BUG-5 | **非自有确认，有限** loop 页 goal ID 由 CLI 控制并经 encodeURIComponent 注入内联 onclick（撇号保留） | Supervisor/loop 交接：用数据属性/委托处理器替换内联 JS，或正确的 JS 字符串+HTML 转义。位置 `orchestration/loop/src/webui/page.rs` 370/381；todo-ID 537/713 当前已生成且潜在。此处无 loop 编辑。 |
+| w32 BUG-5 | **非自有确认，有限** loop 页 goal ID 由 CLI 控制并经 encodeURIComponent 注入内联 onclick（撇号保留） | Supervisor/loop 交接：用数据属性/委托处理器替换内联 JS，或正确的 JS 字符串+HTML 转义。位置 `orchestration/goal/src/webui/page.rs` 370/381；todo-ID 537/713 当前已生成且潜在。此处无 loop 编辑。 |
 | V4 N1 | 与 w26-8 同损坏数据族；原始 JSON 访问器有意承诺逐字数据 | 反驳为独立 bug：原始访问器承诺逐字字节，解析访问器无法表示无效 JSON；相同有效生产者输入一致。损坏输入恢复策略仍为潜在 w26-8，非生产修复声明。 |
 | V4 N2 | 重复空错误键问题 w26-10 | 实现序列化保留空错误键；空错误奇偶通过。 |
 | V4 N3 | 重复保存失败 w24-3 | 实现错误传播；失败时无成功保存路径。 |

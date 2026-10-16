@@ -160,9 +160,5 @@ test("task commands address the desktop, with the phone never keeping a copy", a
     expect(h.requestRetry).toHaveBeenCalledWith({ type: "list_task_runs", taskId: "tsk_1", limit: 20 }, "settings");
     await h.api.listTaskRuns("tsk_1", 5);
     expect(h.requestRetry).toHaveBeenCalledWith({ type: "list_task_runs", taskId: "tsk_1", limit: 5 }, "settings");
-
-    h.requestRetry.mockImplementation(async () => ({ data: { deps: [{ upstreamTaskId: "tsk_up" }] } }));
-    await expect(h.api.listTaskDeps("tsk_1")).resolves.toEqual([{ upstreamTaskId: "tsk_up" }]);
-    expect(h.requestRetry).toHaveBeenCalledWith({ type: "list_task_deps", taskId: "tsk_1" }, "settings");
   } finally { act(() => h.tree.unmount()); }
 });

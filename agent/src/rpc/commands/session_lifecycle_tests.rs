@@ -230,12 +230,12 @@ fn delete_idle_session_removes_the_live_runtime() {
 #[test]
 fn delete_session_publishes_global_session_deleted() {
     let state = make_app_state();
-    let mut rx = crate::rpc::global_events_broadcaster().subscribe();
+    let mut rx = state.control_plane.global_events_broadcaster().subscribe();
 
     let response = parse_response(&handle_command_internal(&state, make_cmd("delete_session")));
     assert_eq!(response["success"], true);
 
-    // Other tests broadcast on the same global stream concurrently — drain
+    // The instance owns this stream; inspect its session announcement. drain
     // until THIS session's announcement arrives.
     for _ in 0..64 {
         match rx.try_recv() {
@@ -279,7 +279,7 @@ fn refused_delete_session_does_not_announce_removal() {
         .runtime
         .begin(Some("run-active"), Some("request-active"))
         .unwrap();
-    let mut rx = crate::rpc::global_events_broadcaster().subscribe();
+    let mut rx = state.control_plane.global_events_broadcaster().subscribe();
 
     let response = parse_response(&handle_command_internal(
         &state,
@@ -770,6 +770,34 @@ fn new_session_honors_explicit_id_cwd_model_level_and_provenance() {
     assert_eq!(sess.model, "explicit/model");
     assert_eq!(sess.thinking_level, "low");
     assert_eq!(sess.cwd, "/tmp/some-workspace");
+}
+
+#[test]
+fn new_session_accepts_an_initial_system_prompt_append() {
+    let state = make_app_state();
+    let mut cmd = make_cmd_for("new_session", "ns-append");
+    cmd.system_prompt = "Always answer in haiku.".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true);
+    let session = state.get_session("ns-append").unwrap();
+    assert_eq!(
+        session.read().append_system_prompt,
+        "Always answer in haiku."
+    );
+
+    // The created session's rules are live before its first run: the prompt a
+    // run would build already carries them.
+    assert!(session
+        .read()
+        .current_system_prompt()
+        .contains("Always answer in haiku."));
+
+    // No value → no append (not an empty-string rule that would add a blank
+    // section to every prompt).
+    let cmd2 = make_cmd_for("new_session", "ns-no-append");
+    parse_response(&handle_command_internal(&state, cmd2));
+    let sess2 = state.get_session("ns-no-append").unwrap();
+    assert_eq!(sess2.read().append_system_prompt, "");
 }
 
 #[test]
@@ -1985,7 +2013,7 @@ fn activating_a_cold_persisted_session_announces_the_first_activation() {
     );
     assert!(!state.sessions.read().contains_key("cold-committed-child"));
 
-    let mut rx = crate::rpc::global_events_broadcaster().subscribe();
+    let mut rx = state.control_plane.global_events_broadcaster().subscribe();
     let activated = state
         .activate_persisted_session("cold-committed-child")
         .expect("a committed session activates");

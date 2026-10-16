@@ -1074,6 +1074,25 @@ pub struct SessionState {
     /// `set_sandbox_policy`; the OS availability of the tier is `probe_sandbox`.
     #[prost(string, optional, tag = "41")]
     pub sandbox_tier: ::core::option::Option<::prost::alloc::string::String>,
+    /// The session's persistent system-prompt append segment (empty when unset).
+    /// Read-back counterpart of `append_system_prompt` / `new_session`: it is
+    /// stored with the session and re-appended to the built prompt on every run,
+    /// so it does not depend on the agent process that set it. The full built
+    /// prompt is tens of kilobytes and is deliberately NOT carried here — ask
+    /// `get_system_prompt` for the body.
+    #[prost(string, tag = "42")]
+    pub append_system_prompt: ::prost::alloc::string::String,
+    /// Whether project instruction files (AGENTS.md / CLAUDE.md / GEMINI.md) are
+    /// folded into this session's prompt. Reported separately from
+    /// `context_files` because an enabled session with no files present has an
+    /// equally empty list — the two states are not the same thing.
+    #[prost(bool, tag = "43")]
+    pub context_files_enabled: bool,
+    /// The session's whole-prompt replacement (empty when the built-in prompt is
+    /// used). A manual override, so it is small; the full built prompt is tens of
+    /// kilobytes and is served by `get_system_prompt` instead.
+    #[prost(string, tag = "44")]
+    pub custom_system_prompt: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct SessionUsage {

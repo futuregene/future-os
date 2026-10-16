@@ -39,6 +39,7 @@ async fn observe_once(
     backoff: &mut Duration,
 ) -> Result<(), crate::AppError> {
     let mut client = connect_agent().await?;
+    let instance = client.readiness().agent_instance_id.clone();
     let mut stream = client
         .stream_events(crate::agent_proto::StreamRequest {
             event_types: vec!["ping".to_string(), "provider_config_changed".to_string()],
@@ -87,6 +88,9 @@ async fn observe_once(
             continue;
         }
         *last_revision = Some(revision);
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("agentInstanceId".into(), serde_json::json!(instance));
+        }
         let data = payload.to_string();
         #[cfg(feature = "gui")]
         if let Some(handle) = crate::APP_HANDLE.get() {
@@ -99,7 +103,7 @@ async fn observe_once(
             "",
             revision,
             0,
-            &format!("provider-config-{revision}"),
+            &format!("provider-config-{instance}-{revision}"),
             "",
             revision,
             -1,

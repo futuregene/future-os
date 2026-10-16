@@ -1,7 +1,7 @@
 # Directory layout: what lives under `~/.future/`
 
 FutureOS keeps most persistent user state under `~/.future/` (on Windows:
-`%USERPROFILE%\.future\`). Loop state defaults to the project. This page maps
+`%USERPROFILE%\.future\`). Goal state defaults to the project. This page maps
 each subdirectory to the component
 that owns it and what it stores. Paths below use the macOS/Linux form; the
 Windows layout is identical with `%USERPROFILE%\.future\` as the root.
@@ -213,15 +213,15 @@ Per-thread chat workspaces for the GUI, one subdir per agent session id (when
 known, e.g. from an import) or GUI thread id. User-chosen workspaces live
 elsewhere and are never touched by reclamation of this directory.
 
-## Loop control plane — project-local, not under `~/.future/`
+## Goal control plane — project-local, not under `~/.future/`
 
-The `future-loop` state is **project-local**: run it from the project
-directory and everything lives under `<cwd>/.future/loop/`
-(`FUTURE_LOOP_ROOT` overrides the root for special setups; `~/.future/loop/`
-is not the default). See [loop-control-plane.md](../architecture/loop-control-plane.md).
+The `future-goal` state is **project-local**: run it from the project
+directory and everything lives under `<cwd>/.future/goal/`
+(`FUTURE_GOAL_ROOT` overrides the root for special setups; `~/.future/goal/`
+is not the default). See [goal-control-plane.md](../architecture/goal-control-plane.md).
 
 ```text
-<cwd>/.future/loop/
+<cwd>/.future/goal/
 ├── registry.json                  # goal registry (one entry per goal)
 ├── goals/<goal_id>/
 │   ├── events.jsonl               # event-sourced ledger (the authoritative state)
@@ -255,6 +255,6 @@ The Windows installer installs to `%USERPROFILE%\.future\bin` as well.
 
 - `~/.agents/skills/` — second skill discovery directory (`AGENTS_SKILLS_DIR`),
   e.g. for machine-wide skills.
-- Project-local `.future/` — GUI chat workspaces and the loop control plane
-  also use a `.future/` directory inside a project (e.g. `.future/loop/`,
+- Project-local `.future/` — GUI chat workspaces and the goal control plane
+  also use a `.future/` directory inside a project (e.g. `.future/goal/`,
   `.future/approval_rule.json`). It is meant to be gitignored.

@@ -89,6 +89,10 @@ pub(crate) fn route(cmd_type: &str) -> Option<Route> {
         | "list_task_deps"
         | "set_task_dep"
         | "remove_task_dep"
+        // The three `*_task_dep*` names above are **transitional**: the feature
+        // was removed and the handler answers an empty read / an explicit
+        // refusal, so a phone of an older build does not see the screen it has
+        // break (see `tasks.rs`). The route stays until no shipped client asks.
         | "list_task_revisions"
         | "apply_task_revision" => Route::Tasks,
         "list_providers"
@@ -262,12 +266,13 @@ mod tests {
         }
     }
 
-    /// The regression the routing table exists for: both dependency commands
-    /// reach the task handler *through the dispatcher*. `tasks::execute`'s own
-    /// test covers the handler, which is why the missing route stayed green
-    /// while the phone's dependency editor failed.
+    /// The regression the routing table exists for: the dependency commands reach
+    /// the task handler *through the dispatcher*. The feature is gone, so what the
+    /// handler answers is now the removal message (and an empty read); what this
+    /// test still guards is the route itself — an unrouted name would answer
+    /// "Unsupported command" instead, which is the failure the phone hit before.
     #[tokio::test]
-    async fn a_dependency_write_reaches_the_task_handler_through_the_dispatcher() {
+    async fn the_dependency_commands_reach_the_task_handler_through_the_dispatcher() {
         let _home = HomeGuard::new("business-routes-task-deps");
         let store =
             future_tasks::Store::open(&crate::future_home_root()).expect("open the task store");
@@ -288,10 +293,11 @@ mod tests {
             &sink,
         )
         .await;
-        sink.ok_data();
-        let deps = store.list_deps(&downstream.id).expect("list deps");
-        assert_eq!(deps.len(), 1);
-        assert_eq!(deps[0].on, future_tasks::DepOn::Failure);
+        assert!(
+            sink.error_text().contains("removed"),
+            "the write is refused, not stored: {}",
+            sink.error_text()
+        );
 
         let sink = RecordingSink::default();
         execute(
@@ -304,13 +310,28 @@ mod tests {
             &sink,
         )
         .await;
-        sink.ok_data();
         assert!(
-            store
-                .list_deps(&downstream.id)
-                .expect("list deps")
+            sink.error_text().contains("removed"),
+            "removal is refused too: {}",
+            sink.error_text()
+        );
+
+        let sink = RecordingSink::default();
+        execute(
+            IncomingCmd {
+                cmd_type: "list_task_deps".into(),
+                task_id: downstream.id.clone(),
+                ..Default::default()
+            },
+            &sink,
+        )
+        .await;
+        assert!(
+            sink.ok_data()["deps"]
+                .as_array()
+                .expect("a list")
                 .is_empty(),
-            "the dispatcher removed the edge"
+            "the read answers an empty set"
         );
     }
 
@@ -349,7 +370,6 @@ mod tests {
             thread_id: None,
             trigger_kind: future_tasks::TriggerKind::Manual,
             trigger_json: serde_json::Value::Null,
-            dep_join: future_tasks::DepJoin::All,
             next_due_at: None,
             pending_request_at: None,
             pending_origin: None,

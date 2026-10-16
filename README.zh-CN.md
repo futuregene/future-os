@@ -13,7 +13,7 @@
 </p>
 
 <!-- TODO(demo): 录制 60–90 秒演示 GIF（TUI 审批门控 → 桌面 GUI → IM 机器人进度 →
-     会话 fork 树 → /future-loop 看板），保存为 docs/demo.gif 后替换上面的静态截图 -->
+     会话 fork 树 → /future-goal 看板），保存为 docs/demo.gif 后替换上面的静态截图 -->
 
 <p align="center">
   <a href="#快速开始">快速开始</a> •
@@ -37,7 +37,7 @@
 
 - **选择执行边界。** 为 Agent 工具配置文件访问审批与 OS 沙箱。桌面默认是不受限（`off`）；处理不可信内容前，请切换为手动或沙箱模式。默认值和限制见[安全模型](SECURITY.md)与[沙箱指南](docs/wiki/zh/Sandbox.md)。
 - **一个后端，所有界面。** 同一个 gRPC Agent 驱动终端界面、桌面应用、移动端、CLI 和 IM 机器人——同一份会话、同一份记忆、同一套技能，无论你身在何处。
-- **长任务靠工程，不靠提示词。** 内置 loop 控制面为 24 小时以上的任务提供持久化目标、事件溯源状态与验证门控——晚上布置一个调研任务，早上在手机上验收结果。
+- **长任务靠工程，不靠提示词。** 内置 goal 控制面为 24 小时以上的任务提供持久化目标、事件溯源状态与验证门控——晚上布置一个调研任务，早上在手机上验收结果。
 
 ## 特性
 
@@ -46,10 +46,11 @@
 | **多端统一** | 终端界面 (TUI)、桌面应用 (GUI)、移动端 App（Android · iOS）、命令行 (CLI)、IM 机器人——一个 Agent，无处不在。桌面后端还可**无头运行在服务器上**（`futureos-headless`，无需窗口或 WebView，可跑在 SSH 会话里），手机与桌面之间的通道是**端到端加密**的——Noise 握手 + ChaCha20-Poly1305 记录，中继只看到密文（[无头模式](docs/guide/desktop-headless.zh-CN.md)、[远程](docs/wiki/zh/Remote.md)） |
 | **可配置工具安全** | read, write, edit, shell——审批规则与沙箱分级（`off` / `manual` / `sandbox`）；支持 macOS Seatbelt、Linux 系统 Bubblewrap、Windows 受限令牌写保护。各平台可用性与保护范围不同（[指南](docs/wiki/zh/Sandbox.md)） |
 | **模型灵活** | **自带 API Key（BYOK）**：[内置目录](docs/wiki/zh/Models.md)覆盖主流 Provider，任何 OpenAI 或 Anthropic 兼容端点都可通过 `models.json` 接入。也可以登录 **FutureOS 托管 Provider**（`future auth login`），由平台直接配好 Key 与模型列表。两者可同时使用，并自行限定选择器里出现的模型（[配置](#配置模型)） |
-| **Loop 工程** | 持久化目标/todos/门禁/监控，支撑 24+ 小时长程任务连续执行——确定性 should-run 内核、事件溯源状态、硬校验（证据下限/验收契约/verify 闸门）、租约活性自愈、多 agent（[指南](docs/architecture/loop-control-plane.zh-CN.md)） |
-| **强大的预设技能** | 内置 15+ 技能开箱即用，覆盖日常 Agent 场景——图片读取与生成、PDF/Word 解析、网页搜索、浏览器控制、幻灯片与软件安装，以及 `/future-loop` 长程目标编排器（[builtin](https://github.com/futuregene/future-skills/tree/main/builtin)） |
+| **Goal 工程** | 持久化目标/todos/门禁/监控，支撑 24+ 小时长程任务连续执行——确定性 should-run 内核、事件溯源状态、硬校验（证据下限/验收契约/verify 闸门）、租约活性自愈、多 agent（[指南](docs/architecture/goal-control-plane.zh-CN.md)） |
+| **定时任务** | 不用盯着也会跑：可复用的提示词 + 工作目录 + 模型/思考等级，按计划（每隔 N 分钟 / 每天 / 每周 / 每月 / 每年，或指定某一天）以完全权限自动运行，也可以随时手动立即运行。每次运行都是一条普通会话，并留下运行台账——状态、结果摘要与提示词版本历史（[指南](docs/architecture/tasks.zh-CN.md)） |
+| **强大的预设技能** | 内置 15+ 技能开箱即用，覆盖日常 Agent 场景——图片读取与生成、PDF/Word 解析、网页搜索、浏览器控制、幻灯片与软件安装，以及 `/future-goal` 长程目标编排器（[builtin](https://github.com/futuregene/future-skills/tree/main/builtin)） |
 | **可分支会话** | 像仓库一样为对话开分支——fork、clone、树形导航，JSONL 存储 |
-| **Rust 核心** | Agent、IM 渠道桥、loop 控制面、CLI 与 TUI 均用 Rust 编写——高性能、内存安全 |
+| **Rust 核心** | Agent、IM 渠道桥、goal 控制面、CLI 与 TUI 均用 Rust 编写——高性能、内存安全 |
 
 ## 快速开始
 
@@ -167,7 +168,7 @@ test/nightly 构建检查 nightly；本地/源码构建跳过检查。网络失�
 </p>
 
 > `future <cmd>` 是所有 Rust 组件的统一入口：`future agent`、`future tui`、
-> `future channel`、`future loop`。每个都运行与同名独立二进制完全相同的代码
+> `future channel`、`future goal`。每个都运行与同名独立二进制完全相同的代码
 > （`future-*` 二进制仍是构建目标，可用 `cargo build -p future-tui` 等构建，
 > 但已不再默认安装）。
 >

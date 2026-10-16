@@ -1,8 +1,7 @@
 //! Core types for `future-tasks`.
 //!
 //! All types are serde-friendly and host-agnostic. The `Task` is the durable
-//! definition; `TaskRun` is one execution; `TaskDep`/`TaskDepState` model the
-//! dependency graph and join progress.
+//! definition and `TaskRun` is one execution.
 
 use serde::{Deserialize, Serialize};
 
@@ -33,29 +32,13 @@ pub const REVISION_SOURCE_USER: &str = "user";
 pub const REVISION_SOURCE_SUPERSEDED: &str = "superseded";
 pub const REVISION_SOURCE_ROLLBACK: &str = "rollback";
 
-/// Trigger kind (0 or 1 own schedule; deps are orthogonal).
+/// Trigger kind: does this task have a schedule of its own, or does it only run
+/// when something asks for it?
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TriggerKind {
     Manual,
     Schedule,
-}
-
-/// Join policy for a task's dependency edges.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DepJoin {
-    All,
-    Any,
-}
-
-/// Condition a dependency edge fires on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DepOn {
-    Success,
-    Failure,
-    Completed,
 }
 
 /// Session reuse policy.
@@ -100,6 +83,10 @@ pub enum ConversationMode {
 }
 
 /// Run kind (who asked for it).
+///
+/// `Chain` is **legacy read-only**: no build produces it any more (task
+/// dependencies are gone), but runs recorded while they existed are still rows
+/// in the ledger with `kind=chain`, so the label stays for them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RunKind {
@@ -109,6 +96,8 @@ pub enum RunKind {
 }
 
 /// Run origin (where the request came from).
+///
+/// `Chain` is **legacy read-only**, for the same reason as [`RunKind::Chain`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RunOrigin {
@@ -147,7 +136,6 @@ pub struct Task {
     pub thread_id: Option<String>,
     pub trigger_kind: TriggerKind,
     pub trigger_json: serde_json::Value,
-    pub dep_join: DepJoin,
     /// Next due (epoch ms); `None` = no longer scheduled.
     pub next_due_at: Option<i64>,
     /// Pending explicit/chain trigger (tick consumes).
@@ -188,23 +176,6 @@ pub struct TaskRun {
     /// can open should not look openable — so this is what says the run *had*
     /// one and it is gone, rather than it never got one.
     pub session_deleted: bool,
-}
-
-/// A dependency edge (downstream task → upstream task).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TaskDep {
-    pub task_id: String,
-    pub upstream_task_id: String,
-    pub on: DepOn,
-}
-
-/// Join progress for one edge (used when `dep_join=all`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TaskDepState {
-    pub task_id: String,
-    pub upstream_task_id: String,
-    pub satisfied_run_id: Option<String>,
-    pub satisfied_at: Option<i64>,
 }
 
 /// A prompt revision.

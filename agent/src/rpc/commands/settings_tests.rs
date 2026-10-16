@@ -129,8 +129,91 @@ fn append_system_prompt_works() {
     let state = make_app_state();
     let mut cmd = make_cmd("append_system_prompt");
     cmd.system_prompt = "Extra instructions".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd.clone()));
+    assert_eq!(resp["success"], true);
+    // The stored value and the echo agree — this is what the session's next
+    // run re-appends, so a caller can confirm the write without re-reading.
+    assert_eq!(resp["data"]["appendSystemPrompt"], "Extra instructions");
+    let session = state.get_session(&cmd.session_id).expect("session");
+    assert_eq!(session.read().append_system_prompt, "Extra instructions");
+
+    // An empty value is the documented way to clear it, and reports as such
+    // rather than as a no-op.
+    let mut clear = make_cmd("append_system_prompt");
+    clear.session_id = cmd.session_id.clone();
+    let resp = parse_response(&handle_command_internal(&state, clear));
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"]["appendSystemPrompt"], "");
+    assert_eq!(session.read().append_system_prompt, "");
+}
+
+/// `set_system_prompt` is the whole-prompt replacement, and it has to survive to
+/// the next run — it used to write the live loop's prompt, which the run
+/// boundary rebuilt, so it did nothing at all.
+#[test]
+fn set_system_prompt_stores_the_override_and_it_reaches_the_built_prompt() {
+    let state = make_app_state();
+    let mut cmd = make_cmd("set_system_prompt");
+    cmd.system_prompt = "You are terse.".to_string();
+    let session_id = cmd.session_id.clone();
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], true);
+    let session = state.get_session(&session_id).expect("session");
+    assert_eq!(session.read().custom_system_prompt, "You are terse.");
+
+    let mut read = make_cmd("get_system_prompt");
+    read.session_id = session_id.clone();
+    let first = parse_response(&handle_command_internal(&state, read));
+    assert_eq!(first["data"]["customSystemPrompt"], "You are terse.");
+    assert!(
+        first["data"]["systemPrompt"]
+            .as_str()
+            .unwrap()
+            .contains("You are terse."),
+        "the built prompt must reflect the replacement"
+    );
+    assert!(
+        !first["data"]["systemPrompt"]
+            .as_str()
+            .unwrap()
+            .contains("You are FutureAgent"),
+        "a replacement must not keep the built-in identity text"
+    );
+
+    // `get_state` carries it too, so a client sees the override without asking
+    // for the whole prompt body.
+    let state_value = crate::rpc::get_state_internal(&state, &session_id, None).expect("state");
+    assert_eq!(state_value["customSystemPrompt"], "You are terse.");
+
+    // An empty value restores the built-in prompt.
+    let mut clear = make_cmd("set_system_prompt");
+    clear.session_id = session_id;
+    parse_response(&handle_command_internal(&state, clear));
+    assert_eq!(session.read().custom_system_prompt, "");
+}
+
+/// `get_system_prompt` must return the prompt a run would send *and* be a pure
+/// read: asking twice cannot change the answer.
+#[test]
+fn get_system_prompt_returns_the_built_prompt_including_the_append() {
+    let state = make_app_state();
+    let mut cmd = make_cmd("append_system_prompt");
+    cmd.system_prompt = "MARKER_RULE".to_string();
+    let session_id = cmd.session_id.clone();
+    handle_command_internal(&state, cmd);
+
+    let mut read = make_cmd("get_system_prompt");
+    read.session_id = session_id.clone();
+    let first = parse_response(&handle_command_internal(&state, read.clone()));
+    assert_eq!(first["success"], true);
+    let prompt = first["data"]["systemPrompt"].as_str().unwrap();
+    assert!(prompt.contains("MARKER_RULE"));
+    assert!(prompt.contains("You are FutureAgent"));
+    assert_eq!(first["data"]["appendSystemPrompt"], "MARKER_RULE");
+    assert_eq!(first["data"]["contextFilesEnabled"], true);
+
+    let second = parse_response(&handle_command_internal(&state, read));
+    assert_eq!(first["data"], second["data"]);
 }
 
 #[test]

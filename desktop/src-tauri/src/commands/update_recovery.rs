@@ -6,11 +6,33 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct ProgramFingerprint {
     roots: Vec<PathBuf>,
     files: BTreeMap<PathBuf, Vec<u8>>,
 }
 impl ProgramFingerprint {
+    pub(super) fn save(&self, record: &Path) -> Result<(), crate::AppError> {
+        crate::config_io::write_json_atomic(
+            &record.with_file_name("original-files.json"),
+            &serde_json::to_value(self)?,
+            true,
+        )
+    }
+    pub(super) fn verify_saved(operation_id: &str) -> Result<(), crate::AppError> {
+        let path = future_rpc::home::future_home()
+            .join("app/updates")
+            .join(operation_id)
+            .join("original-files.json");
+        let original: Self = serde_json::from_slice(&std::fs::read(path)?)?;
+        if !original.unchanged() {
+            return Err(
+                "Original program files have changed; repair the installation before restarting."
+                    .into(),
+            );
+        }
+        Ok(())
+    }
     pub(super) fn capture() -> std::io::Result<Self> {
         let executable = std::env::current_exe()?;
         #[cfg(target_os = "macos")]
@@ -18,6 +40,10 @@ impl ProgramFingerprint {
             .map_err(std::io::Error::other)?;
         let mut roots = vec![executable];
         if let Ok(cli) = crate::cli_tool::resolve() {
+            let canonical = cli.canonicalize()?;
+            if canonical != cli {
+                roots.push(canonical);
+            }
             roots.push(cli);
         }
         Self::from_roots(roots)
@@ -72,6 +98,24 @@ fn fingerprint(path: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) -> std::io::
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn persisted_restoration_snapshot_is_rechecked_before_later_restart() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-original-snapshot");
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("program");
+        std::fs::write(&file, b"original").unwrap();
+        let original = ProgramFingerprint::from_roots(vec![file.clone()]).unwrap();
+        let operation = super::super::journal::Operation::begin("old").unwrap();
+        original.save(&operation.path()).unwrap();
+        let id = super::super::journal::latest()
+            .unwrap()
+            .unwrap()
+            .operation_id;
+        assert!(ProgramFingerprint::verify_saved(&id).is_ok());
+        std::fs::write(file, b"changed after the failure dialog").unwrap();
+        assert!(ProgramFingerprint::verify_saved(&id).is_err());
+    }
+
     #[test]
     fn changed_or_missing_bundle_files_disable_relaunch() {
         let directory = tempfile::tempdir().unwrap();

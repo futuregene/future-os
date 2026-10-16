@@ -19,7 +19,7 @@ desktop/src/integrations/
 | measure | `cd desktop && npx vitest run --coverage --coverage.reportsDirectory=coverage/d-settings --coverage.reportOnFailure=true --testTimeout=180000` |
 | report | `desktop/coverage/d-settings/coverage-summary.json` |
 | gate | `python .future/cov100/verify.py js-module group:d-settings 99.99 docs/testing/desktop-settings.md desktop/coverage/w-desk-c/coverage-summary.json` (exit **0**, `PASS`) |
-| agent id | this todo (`todo_2d25718c0bbc`) is `claimed_by=w-desk-c` in `.future/loop/goals/goal_6d61125ba837/ACTIVE_GOAL_STATE.md`, so `<agent-id>` in the task's verify line resolves to **`w-desk-c`** |
+| agent id | this todo (`todo_2d25718c0bbc`) is `claimed_by=w-desk-c` in `.future/goal/goals/goal_6d61125ba837/ACTIVE_GOAL_STATE.md`, so `<agent-id>` in the task's verify line resolves to **`w-desk-c`** |
 | iteration loop | `--coverage.include="<one file>" <its test files>` + `--coverage.reportsDirectory=coverage/d-tmp` (line numbers only; never for the gate — a narrowed `include` changes the denominator and hides the rest of the group) |
 
 `--coverage.reportOnFailure=true` is needed because four workers share one vitest
@@ -53,7 +53,7 @@ If the gate is ever run with the placeholder left **unsubstituted**, no file pla
 ### Why the harness's automatic validator cannot pass (harness-side, not coverage)
 
 The loop stores the verify command **verbatim, with the literal placeholder**, and
-never substitutes it. From `.future/loop/goals/goal_6d61125ba837/runs.jsonl`:
+never substitutes it. From `.future/goal/goals/goal_6d61125ba837/runs.jsonl`:
 
 ```json
 {"agent_id":"w-desk-c","turn":18,"todo_id":"todo_2d25718c0bbc",

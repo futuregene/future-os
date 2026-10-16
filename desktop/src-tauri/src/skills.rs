@@ -60,7 +60,7 @@ pub struct SkillGuide {
 pub async fn get_skill_guide() -> Result<SkillGuide, AppError> {
     let url = format!(
         "{}/client/v1/guide",
-        crate::future_platform::current_platform_url()
+        crate::future_platform::checked_platform_url()?
     );
     let response = http_client()
         .get(&url)

@@ -4,7 +4,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::future_platform::{PRODUCTION_PLATFORM_URL, TEST_PLATFORM_URL};
-use crate::{agent_supervisor, auth_store, store, AppError};
+use crate::{auth_store, store, AppError};
 
 /// Clear all GUI-local data (SQLite + temp workspaces + shadow review) and
 /// relaunch the app. Login / provider config is preserved. `restart()` does not
@@ -14,7 +14,9 @@ use crate::{agent_supervisor, auth_store, store, AppError};
 /// A cleanup error leaves the data intact and prevents relaunch.
 #[tauri::command]
 #[rustfmt::skip]
-pub fn clear_app_data(app: tauri::AppHandle) -> Result<(), AppError> { clear_app_data_with(app, |app| app.restart()) }
+pub async fn clear_app_data(app: tauri::AppHandle) -> Result<(), AppError> {
+    tokio::task::spawn_blocking(move || clear_app_data_with(app, |app| { crate::agent_supervisor::authorize_exit(); app.restart() })).await.map_err(|error| AppError::from(error.to_string()))?
+}
 
 /// Body of [`clear_app_data`] with the relaunch injectable — `restart()`
 /// re-execs the process, so tests inject a no-op (see [`clear_app_data`]).
@@ -22,7 +24,8 @@ fn clear_app_data_with<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     relaunch: impl FnOnce(tauri::AppHandle<R>) -> Result<(), AppError>,
 ) -> Result<(), AppError> {
-    agent_supervisor::shutdown_agent_gracefully()?;
+    let _action = crate::desktop_shutdown::claim_action("reset")?;
+    crate::desktop_shutdown::stop("reset")?;
     store::clear_all_data()?;
     relaunch(app)
 }
@@ -93,7 +96,9 @@ fn enforce_release_lock(is_release: bool, environment: &str) -> Result<(), AppEr
 /// An external owner must be stopped independently before this setting changes.
 #[tauri::command]
 #[rustfmt::skip]
-pub fn set_future_environment(app: tauri::AppHandle, environment: String) -> Result<(), AppError> { set_future_environment_with(app, &environment, |app| app.restart()) }
+pub async fn set_future_environment(app: tauri::AppHandle, environment: String) -> Result<(), AppError> {
+    tokio::task::spawn_blocking(move || set_future_environment_with(app, &environment, |app| { crate::agent_supervisor::authorize_exit(); app.restart() })).await.map_err(|error| AppError::from(error.to_string()))?
+}
 
 /// Body of [`set_future_environment`] with the relaunch injectable (see
 /// [`clear_app_data_with`]).
@@ -102,6 +107,7 @@ fn set_future_environment_with<R: tauri::Runtime>(
     environment: &str,
     relaunch: impl FnOnce(tauri::AppHandle<R>) -> Result<(), AppError>,
 ) -> Result<(), AppError> {
+    let _action = crate::desktop_shutdown::claim_action("environment")?;
     let platform_url = resolve_environment(environment)?;
     // Do not change shared credentials underneath an attached external owner.
     if crate::agent_host::host().phase() == crate::agent_host::Phase::Ready
@@ -109,7 +115,7 @@ fn set_future_environment_with<R: tauri::Runtime>(
     {
         return Err("Stop the external Agent before changing its environment".into());
     }
-    agent_supervisor::shutdown_agent_gracefully()?;
+    crate::desktop_shutdown::stop("environment")?;
     auth_store::set_future_base_url(&format!("{platform_url}/api"))?;
     relaunch(app)
 }

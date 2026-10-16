@@ -1,6 +1,6 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { TaskBackend } from "./taskBackend";
-import type { TaskDepView, TaskInput, TaskView } from "./useTasks";
+import type { TaskInput, TaskView } from "./useTasks";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, ChevronLeft, ChevronRight, FolderOpen, Play, Plus, Trash2 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
@@ -21,7 +21,7 @@ function formatEpoch(ms: number | null, locale: string): string {
 const WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 
 /** Trigger modes the form can edit (mirrors the kernel's schedule modes). */
-type TriggerMode = "manual" | "dependency" | "once" | "interval" | "daily" | "weekly" | "monthly" | "yearly";
+type TriggerMode = "manual" | "once" | "interval" | "daily" | "weekly" | "monthly" | "yearly";
 
 interface DraftTrigger {
   mode: TriggerMode;
@@ -44,19 +44,6 @@ const emptyTrigger: DraftTrigger = {
 };
 
 /**
- * One dependency edge as the editor holds it: the upstream, the label to show
- * for it, and the condition it fires on. The label is carried because an edge's
- * upstream is not necessarily in the candidate list the editor was handed (a
- * task filtered out of it, or simply not loaded yet) — and a row that shows a
- * bare `tsk_…` id tells the user nothing.
- */
-interface DraftDep {
-  upstreamTaskId: string;
-  name: string;
-  on: string;
-}
-
-/**
  * A new task's starting point.
  *
  * It deliberately leaves the model and the thinking level unset: both are
@@ -77,11 +64,6 @@ const emptyDraft = {
   conversationMode: "chat",
   enabled: true,
   trigger: { ...emptyTrigger },
-  // The dependencies the form wants, as a whole set: saving reconciles the
-  // stored edges against it (see `useTasks.saveDeps`). A new task starts with
-  // none — it runs on its own trigger until the user says otherwise.
-  deps: [] as DraftDep[],
-  depJoin: "all",
 };
 
 /**
@@ -100,14 +82,8 @@ const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as 
 type Draft = typeof emptyDraft;
 
 function triggerFromTask(task: TaskView): DraftTrigger {
-  if (task.triggerKind !== "schedule") {
-    // A task that is started by its upstreams reads as "dependency", not as
-    // "manual": nobody runs it by hand, and the schedule fields are not the
-    // thing that fires it.
-    if (task.depCount > 0)
-      return { ...emptyTrigger, mode: "dependency" };
+  if (task.triggerKind !== "schedule")
     return { ...emptyTrigger };
-  }
   const trigger = task.trigger as Record<string, unknown>;
   const mode = String(trigger.mode ?? "daily") as TriggerMode;
   return {
@@ -122,9 +98,7 @@ function triggerFromTask(task: TaskView): DraftTrigger {
 }
 
 function triggerPayload(draft: DraftTrigger): { kind: string; trigger: Record<string, unknown> } {
-  // `dependency` is a manual task in the store: the edges are what starts it,
-  // and they live in their own table (see `saveDeps`).
-  if (draft.mode === "manual" || draft.mode === "dependency")
+  if (draft.mode === "manual")
     return { kind: "manual", trigger: {} };
   switch (draft.mode) {
     case "once":
@@ -166,7 +140,7 @@ function summarizeTrigger(
   locale: string,
 ): string {
   if (task.triggerKind !== "schedule")
-    return task.depCount > 0 ? t("trigger.dependency") : t("trigger.manual");
+    return t("trigger.manual");
   const trigger = task.trigger as Record<string, unknown>;
   const time = String(trigger.time ?? "");
   switch (String(trigger.mode ?? "")) {
@@ -204,7 +178,7 @@ function summarizeTrigger(
   }
 }
 
-/** Left-nav "Tasks" panel: list, edit, runs. */
+/** Left-nav "Scheduled tasks" panel: list, edit, runs. */
 export function TasksView({
   backend,
   leftPanelExpanded,
@@ -235,14 +209,6 @@ export function TasksView({
     () => store.tasks.find(task => task.id === selectedId) ?? null,
     [store.tasks, selectedId],
   );
-  // The tasks a dependency can point at: every other live task. A cycle (this
-  // task depending on something that already waits on it) is refused by the
-  // backend, which sees the whole graph; the editor would have to fetch every
-  // task's edges to know better than that.
-  const depCandidates = useMemo(
-    () => store.tasks.filter(task => task.id !== selectedId).map(task => ({ id: task.id, name: task.name })),
-    [store.tasks, selectedId],
-  );
 
   const startCreate = useCallback(() => {
     setSelectedId(null);
@@ -252,11 +218,9 @@ export function TasksView({
   }, []);
 
   /**
-   * Open the editor on a stored task. `deps` comes from the detail view, which
-   * has already read them: the editor works on the whole dependency set, so it
-   * needs what is there before the user changes anything.
+   * Open the editor on a stored task.
    */
-  const startEdit = useCallback((task: TaskView, deps: TaskDepView[]) => {
+  const startEdit = useCallback((task: TaskView) => {
     setSelectedId(task.id);
     setEditing(true);
     setSaveError(null);
@@ -271,12 +235,6 @@ export function TasksView({
       conversationMode: task.conversationMode,
       enabled: task.enabled,
       trigger: triggerFromTask(task),
-      deps: deps.map(dep => ({
-        upstreamTaskId: dep.upstreamTaskId,
-        name: dep.upstreamName,
-        on: dep.on,
-      })),
-      depJoin: task.depJoin,
     });
   }, []);
 
@@ -295,7 +253,6 @@ export function TasksView({
       conversationMode: draft.conversationMode,
       triggerKind: kind,
       trigger,
-      depJoin: draft.depJoin,
       enabled: draft.enabled,
     };
     // One message per missing decision: a task that names no model would run on
@@ -315,25 +272,10 @@ export function TasksView({
       return;
     }
     try {
-      let taskId = selectedId;
-      if (taskId)
-        await store.updateTask(taskId, input);
+      if (selectedId)
+        await store.updateTask(selectedId, input);
       else
-        taskId = (await store.createTask(input)).id;
-      try {
-        await store.saveDeps(
-          taskId,
-          draft.deps.map(dep => ({ upstreamTaskId: dep.upstreamTaskId, on: dep.on })),
-        );
-      }
-      catch (caught) {
-        // The task itself is stored; only its edges failed (a cycle, say). Say
-        // so and stay in the editor, switched onto update — a retry must not
-        // create a second task.
-        setSelectedId(taskId);
-        setSaveError(caught instanceof Error ? caught.message : String(caught));
-        return;
-      }
+        await store.createTask(input);
       setEditing(false);
     }
     catch (caught) {
@@ -405,7 +347,6 @@ export function TasksView({
           {editing
             ? (
                 <TaskForm
-                  candidates={depCandidates}
                   draft={draft}
                   error={saveError}
                   models={modelOptions}
@@ -419,7 +360,7 @@ export function TasksView({
                   <TaskDetail
                     store={store}
                     task={selected}
-                    onEdit={deps => startEdit(selected, deps)}
+                    onEdit={() => startEdit(selected)}
                     onOpenThread={onOpenThread}
                   />
                 )
@@ -433,7 +374,6 @@ export function TasksView({
 function TaskForm({
   draft,
   error,
-  candidates,
   models,
   onChange,
   onCancel,
@@ -441,8 +381,6 @@ function TaskForm({
 }: {
   draft: Draft;
   error: string | null;
-  /** Other live tasks: the upstreams a dependency can point at. */
-  candidates: Array<{ id: string; name: string }>;
   /** Enabled models only — the same list the composer offers. */
   models: AgentModelOption[];
   onChange: (patch: Partial<Draft>) => void;
@@ -451,13 +389,8 @@ function TaskForm({
 }) {
   const { t } = useTranslation("tasks");
   const [browseError, setBrowseError] = useState<string | null>(null);
-  // The upstream the user has picked but not added yet.
-  const [pendingUpstream, setPendingUpstream] = useState("");
   const trigger = draft.trigger;
   const workspaceConversation = draft.conversationMode === "workspace";
-  // The dependency editor is part of the trigger choice, and stays visible for a
-  // task that already has upstreams (even next to a schedule of its own).
-  const depMode = trigger.mode === "dependency" || draft.deps.length > 0;
   const setTrigger = (patch: Partial<DraftTrigger>) => onChange({ trigger: { ...trigger, ...patch } });
   // A task may already point at a model the user has since disabled. It stays
   // selectable (dropping it would silently rewrite the task on the next save),
@@ -479,14 +412,6 @@ function TaskForm({
       thinkingLevel: modelSupportsThinking(modelId, models)
         ? normalizeThinkingLevel(draft.thinkingLevel)
         : "off",
-    });
-  const nameOf = (dep: DraftDep) => dep.name || dep.upstreamTaskId;
-  const addable = candidates.filter(
-    candidate => !draft.deps.some(dep => dep.upstreamTaskId === candidate.id),
-  );
-  const setDepOn = (upstreamTaskId: string, on: string) =>
-    onChange({
-      deps: draft.deps.map(dep => (dep.upstreamTaskId === upstreamTaskId ? { ...dep, on } : dep)),
     });
 
   /**
@@ -638,7 +563,6 @@ function TaskForm({
         <legend className="px-1 text-xs text-ink-soft">{t("form.trigger")}</legend>
         <Select value={trigger.mode} onChange={e => setTrigger({ mode: e.target.value as TriggerMode })}>
           <option value="manual">{t("triggerMode.manual")}</option>
-          <option value="dependency">{t("triggerMode.dependency")}</option>
           <option value="once">{t("triggerMode.once")}</option>
           <option value="interval">{t("triggerMode.interval")}</option>
           <option value="daily">{t("triggerMode.daily")}</option>
@@ -736,108 +660,6 @@ function TaskForm({
             )
           : null}
 
-        {/* The dependency editor appears with the choice that needs it — and,
-            for a task that already has upstreams next to a schedule of its own
-            (set from the CLI), it stays visible: an edge nobody can see is an
-            edge nobody can remove. */}
-        {depMode
-          ? (
-              <div className="space-y-3 border-t border-line-soft pt-3">
-                {trigger.mode !== "dependency"
-                  ? <p className="text-xs text-ink-muted">{t("form.depsAlongsideSchedule")}</p>
-                  : null}
-
-                {draft.deps.length === 0
-                  ? <p className="text-xs text-ink-muted">{t("form.depsNone")}</p>
-                  : (
-                      <ul className="space-y-2">
-                        {draft.deps.map(dep => (
-                          <li key={dep.upstreamTaskId} className="flex items-center gap-2">
-                            <span className="min-w-0 flex-1 truncate text-xs text-ink" title={nameOf(dep)}>
-                              {nameOf(dep)}
-                            </span>
-                            <Select
-                              aria-label={t("form.depCondition", { name: nameOf(dep) })}
-                              className="w-28 shrink-0"
-                              value={dep.on}
-                              onChange={e => setDepOn(dep.upstreamTaskId, e.target.value)}
-                            >
-                              <option value="success">{t("on.success")}</option>
-                              <option value="failure">{t("on.failure")}</option>
-                              <option value="completed">{t("on.completed")}</option>
-                            </Select>
-                            <Button
-                              aria-label={t("form.depRemove", { name: nameOf(dep) })}
-                              className="shrink-0"
-                              size="xs"
-                              variant="ghost"
-                              onClick={() => onChange({
-                                deps: draft.deps.filter(item => item.upstreamTaskId !== dep.upstreamTaskId),
-                              })}
-                            >
-                              {t("form.depRemoveShort")}
-                            </Button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-
-                <div className="flex items-center gap-2">
-                  <Select
-                    aria-label={t("form.depAdd")}
-                    className="min-w-0 flex-1"
-                    value={pendingUpstream}
-                    onChange={e => setPendingUpstream(e.target.value)}
-                  >
-                    <option value="">{t("form.depAddPlaceholder")}</option>
-                    {addable.map(candidate => (
-                      <option key={candidate.id} value={candidate.id}>{candidate.name}</option>
-                    ))}
-                  </Select>
-                  <Button
-                    className="shrink-0"
-                    disabled={!pendingUpstream}
-                    size="md"
-                    variant="secondary"
-                    onClick={() => {
-                      // A new edge waits for the upstream to finish
-                      // successfully: the common case, and the one the CLI's
-                      // bare `--depends-on` means.
-                      const chosen = candidates.find(candidate => candidate.id === pendingUpstream);
-                      onChange({
-                        deps: [
-                          ...draft.deps,
-                          { upstreamTaskId: pendingUpstream, name: chosen?.name ?? "", on: "success" },
-                        ],
-                      });
-                      setPendingUpstream("");
-                    }}
-                  >
-                    {t("form.depAddAction")}
-                  </Button>
-                </div>
-                {candidates.length === 0
-                  ? <p className="text-xs text-ink-muted">{t("form.depNoCandidates")}</p>
-                  : null}
-
-                {draft.deps.length > 1
-                  ? (
-                      <label className="block space-y-1.5">
-                        <span className="text-xs text-ink-soft">{t("form.depJoin")}</span>
-                        <Select
-                          aria-label={t("form.depJoin")}
-                          value={draft.depJoin}
-                          onChange={e => onChange({ depJoin: e.target.value })}
-                        >
-                          <option value="all">{t("join.all")}</option>
-                          <option value="any">{t("join.any")}</option>
-                        </Select>
-                      </label>
-                    )
-                  : null}
-              </div>
-            )
-          : null}
         {trigger.mode === "yearly"
           ? (
               <div className="space-y-2">
@@ -900,7 +722,7 @@ function TaskDetail({
 }: {
   task: TaskView;
   store: ReturnType<typeof useTasks>;
-  onEdit: (deps: TaskDepView[]) => void;
+  onEdit: () => void;
   onOpenThread: (threadId: string) => void;
 }) {
   const { t, i18n } = useTranslation("tasks");
@@ -909,25 +731,19 @@ function TaskDetail({
   // configured (see the section's comment).
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [runs, setRuns] = useState<Awaited<ReturnType<typeof store.listRuns>>>([]);
-  const [deps, setDeps] = useState<Awaited<ReturnType<typeof store.listDeps>>>([]);
 
   const refresh = useCallback(async () => {
-    const [nextRuns, nextDeps] = await Promise.all([
-      store.listRuns(task.id),
-      store.listDeps(task.id),
-    ]);
-    setRuns(nextRuns);
-    setDeps(nextDeps);
+    setRuns(await store.listRuns(task.id));
   }, [store, task.id]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  // The runs and dependencies of a task change while it is on screen (a run
-  // finishing, an edge satisfied). The host announces those with the same
-  // "threads-updated" event the sidebar listens to, so the detail re-reads its
-  // two lists rather than showing a ledger frozen at open time.
+  // The runs of a task change while it is on screen (a run finishing). The host
+  // announces those with the same "threads-updated" event the sidebar listens
+  // to, so the detail re-reads its list rather than showing a ledger frozen at
+  // open time.
   useTauriEvent("threads-updated", () => {
     void refresh();
   });
@@ -945,7 +761,7 @@ function TaskDetail({
         <Button leftIcon={<Play className="size-3.5" />} size="sm" variant="secondary" onClick={() => void store.runNow(task.id).then(refresh)}>
           {t("runNow")}
         </Button>
-        <Button size="sm" variant="secondary" onClick={() => onEdit(deps)}>{t("edit")}</Button>
+        <Button size="sm" variant="secondary" onClick={() => onEdit()}>{t("edit")}</Button>
         <Button
           size="sm"
           variant={task.enabled ? "ghost" : "secondary"}
@@ -1034,31 +850,6 @@ function TaskDetail({
                   <p className="pl-3.5 text-xs text-ink-muted">
                     {t("promptVersion", { version: task.promptVersion })}
                   </p>
-                </section>
-
-                <section className="space-y-2">
-                  <h3 className="pl-3.5 text-xs font-medium text-ink-soft">{t("deps")}</h3>
-                  {deps.length === 0
-                    ? <p className="pl-3.5 text-xs text-ink-muted">{t("depsNone")}</p>
-                    : (
-                        <ul className="divide-y divide-line-soft overflow-hidden rounded-md border border-line-soft">
-                          {deps.map(dep => (
-                            <li key={dep.upstreamTaskId} className="space-y-1 px-3.5 py-3">
-                              <div className="flex items-center gap-2 text-xs">
-                                <span className="min-w-0 flex-1 truncate text-ink">{dep.upstreamName}</span>
-                                <span className={dep.satisfied ? "text-accent" : "text-ink-muted"}>
-                                  {dep.satisfied ? t("depsReady") : t("depsWaiting")}
-                                </span>
-                              </div>
-                              <p className="text-[11px] text-ink-muted">
-                                {t(`on.${dep.on}`)}
-                                {" · "}
-                                {t(`join.${task.depJoin}`)}
-                              </p>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
                 </section>
 
               </div>

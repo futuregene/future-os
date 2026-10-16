@@ -8,7 +8,7 @@ use tokio::time::timeout;
 // Reuse the shared wire contract (single codegen owner).
 use future_rpc::proto;
 
-use proto::future_agent_client::FutureAgentClient;
+use future_rpc::connection::VerifiedAgentClient;
 use proto::{RpcCommand, StreamRequest};
 
 // `tool_id` mirrors the real client enum; only printed via Debug here.
@@ -36,7 +36,7 @@ enum AgentEvent {
 }
 
 async fn call(
-    client: &mut FutureAgentClient<tonic::transport::Channel>,
+    client: &mut VerifiedAgentClient,
     cmd_type: &str,
     session_id: &str,
     extra: RpcCommand,
@@ -110,13 +110,14 @@ fn parse_event(event: proto::StreamEvent) -> Option<AgentEvent> {
 #[ignore] // Requires running agent
 async fn test_agent_prompt_flow() {
     let addr = "http://127.0.0.1:50051";
-    let channel = tonic::transport::Endpoint::new(addr.to_string())
-        .unwrap()
-        .connect_timeout(Duration::from_secs(5))
-        .connect()
-        .await
-        .expect("Failed to connect to agent");
-    let mut client = FutureAgentClient::new(channel);
+    let mut client = future_rpc::connection::connect_verified(
+        addr,
+        future_rpc::connection::EXPECTED_AGENT_VERSION,
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("Failed to verify agent");
 
     // 1. Create a new session
     println!("--- Creating new session ---");
@@ -240,13 +241,14 @@ async fn test_old_session_prompt_flow() {
     println!("Using old session ID: {}", session_id);
 
     let addr = "http://127.0.0.1:50051";
-    let channel = tonic::transport::Endpoint::new(addr.to_string())
-        .unwrap()
-        .connect_timeout(Duration::from_secs(5))
-        .connect()
-        .await
-        .expect("Failed to connect to agent");
-    let mut client = FutureAgentClient::new(channel);
+    let mut client = future_rpc::connection::connect_verified(
+        addr,
+        future_rpc::connection::EXPECTED_AGENT_VERSION,
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("Failed to verify agent");
 
     // Simulate what channel does for existing sessions:
     // 1. Try switch_session (channel code sends it but it's broken with empty session_id)

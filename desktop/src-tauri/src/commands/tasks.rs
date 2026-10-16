@@ -4,8 +4,7 @@
 //! manage tasks; execution stays in `crate::tasks`'s tick loop.
 
 use future_tasks::{
-    ConversationMode, DepJoin, DepOn, RunOrigin, SessionPolicy, SessionRetention, Store, Task,
-    TriggerKind,
+    ConversationMode, RunOrigin, SessionPolicy, SessionRetention, Store, Task, TriggerKind,
 };
 use serde::{Deserialize, Serialize};
 
@@ -50,10 +49,10 @@ pub struct TaskView {
     pub conversation_mode: String,
     pub trigger_kind: String,
     pub trigger: serde_json::Value,
-    pub dep_join: String,
-    /// How many upstream dependencies this task waits on. A task with its own
-    /// schedule *and* dependencies is a real state (they are orthogonal), so the
-    /// form and the list need the count to say which kind of trigger is in play.
+    /// Always 0. Task dependencies were removed; the field stays because a phone
+    /// of an older build reads `depCount` to label a task's trigger, and an
+    /// absent field would leave it showing a trigger kind that no longer exists.
+    /// A constant is honest about that: no task waits on another any more.
     pub dep_count: usize,
     pub next_due_at: Option<i64>,
     /// An explicit request is waiting for the tick (the task was busy).
@@ -105,12 +104,6 @@ fn task_view(store: &Store, task: Task) -> TaskView {
         .ok()
         .flatten()
         .map(run_view);
-    // Counted here for the same reason: an edge lives in its own table, and a
-    // count that can disagree with it is worse than no count.
-    let dep_count = store
-        .list_deps(&task.id)
-        .map(|deps| deps.len())
-        .unwrap_or(0);
     TaskView {
         id: task.id,
         name: task.name,
@@ -125,8 +118,7 @@ fn task_view(store: &Store, task: Task) -> TaskView {
         conversation_mode: format!("{:?}", task.conversation_mode).to_lowercase(),
         trigger_kind: format!("{:?}", task.trigger_kind).to_lowercase(),
         trigger: task.trigger_json,
-        dep_join: format!("{:?}", task.dep_join).to_lowercase(),
-        dep_count,
+        dep_count: 0,
         next_due_at: task.next_due_at,
         queued: task.pending_request_at.is_some(),
         latest_run,
@@ -153,8 +145,6 @@ pub struct TaskInput {
     pub trigger_kind: Option<String>,
     #[serde(default)]
     pub trigger: Option<serde_json::Value>,
-    #[serde(default)]
-    pub dep_join: Option<String>,
     #[serde(default)]
     pub enabled: Option<bool>,
 }
@@ -192,13 +182,6 @@ fn parse_trigger_kind(raw: Option<&str>) -> TriggerKind {
     }
 }
 
-fn parse_dep_join(raw: Option<&str>) -> DepJoin {
-    match raw {
-        Some("any") => DepJoin::Any,
-        _ => DepJoin::All,
-    }
-}
-
 #[tauri::command]
 pub fn list_tasks() -> Result<Vec<TaskView>, crate::AppError> {
     let store = open()?;
@@ -232,7 +215,6 @@ pub fn create_task(input: TaskInput) -> Result<TaskView, crate::AppError> {
         thread_id: None,
         trigger_kind,
         trigger_json: trigger,
-        dep_join: parse_dep_join(input.dep_join.as_deref()),
         next_due_at: None,
         pending_request_at: None,
         pending_origin: None,
@@ -290,7 +272,6 @@ pub fn update_task(id: String, input: TaskInput) -> Result<TaskView, crate::AppE
     task.conversation_mode = parse_conversation_mode(input.conversation_mode.as_deref());
     task.trigger_kind = trigger_kind;
     task.trigger_json = trigger;
-    task.dep_join = parse_dep_join(input.dep_join.as_deref());
     if let Some(enabled) = input.enabled {
         task.enabled = enabled;
     }
@@ -329,12 +310,10 @@ pub fn delete_task(id: String) -> Result<(), crate::AppError> {
     store
         .update_task(&task)
         .map_err(|e| crate::AppError::Message(e.to_string()))?;
-    // Edges pointing at this task go with it. A deleted upstream can never
-    // report another run, so a downstream left holding that edge would wait on
-    // a name that no longer resolves.
-    store
-        .remove_deps_pointing_at(&id)
-        .map_err(|e| crate::AppError::Message(e.to_string()))
+    // Nothing else to clean up: the `task_deps` rows that used to point at this
+    // task are no longer read by anything (see `store::SCHEMA_SQL`), so deleting
+    // the task leaves them where they are.
+    Ok(())
 }
 
 #[tauri::command]
@@ -388,34 +367,16 @@ pub fn list_task_runs(id: String, limit: Option<i64>) -> Result<Vec<RunView>, cr
     Ok(runs.into_iter().map(run_view).collect())
 }
 
-/// Dependency edges for a task (upstream id/name + condition), for the UI.
+/// Dependency edges for a task.
+///
+/// **Transitional answer to a removed feature.** Task dependencies are gone, so
+/// there are never any edges: this returns an empty list rather than refusing,
+/// because a client of an older build reads it for the list it renders. The
+/// command (and the phone's `list_task_deps` on the remote bridge) stays until no
+/// shipped client asks for it.
 #[tauri::command]
-pub fn list_task_deps(id: String) -> Result<Vec<DepView>, crate::AppError> {
-    let store = open()?;
-    let deps = store
-        .list_deps(&id)
-        .map_err(|e| crate::AppError::Message(e.to_string()))?;
-    let mut out = Vec::new();
-    for dep in deps {
-        let upstream = store
-            .get_task(&dep.upstream_task_id)
-            .ok()
-            .flatten()
-            .map(|t| t.name)
-            .unwrap_or_else(|| dep.upstream_task_id.clone());
-        let satisfied = store
-            .get_dep_state(&id, &dep.upstream_task_id)
-            .ok()
-            .flatten()
-            .and_then(|s| s.satisfied_run_id);
-        out.push(DepView {
-            upstream_task_id: dep.upstream_task_id,
-            upstream_name: upstream,
-            on: format!("{:?}", dep.on).to_lowercase(),
-            satisfied: satisfied.is_some(),
-        });
-    }
-    Ok(out)
+pub fn list_task_deps(_id: String) -> Result<Vec<DepView>, crate::AppError> {
+    Ok(Vec::new())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -427,45 +388,29 @@ pub struct DepView {
     pub satisfied: bool,
 }
 
+/// Add or change a dependency edge.
+///
+/// **Transitional answer to a removed feature**: refused explicitly rather than
+/// accepted and dropped. A caller that got `Ok` would believe it wrote an edge
+/// that nothing will ever act on — the same silence this removal is meant to end.
 #[tauri::command]
 pub fn set_task_dep(
-    id: String,
-    upstream_task_id: String,
-    on: Option<String>,
+    _id: String,
+    _upstream_task_id: String,
+    _on: Option<String>,
 ) -> Result<(), crate::AppError> {
-    let store = open()?;
-    let dep_on = match on.as_deref() {
-        Some("failure") => DepOn::Failure,
-        Some("completed") => DepOn::Completed,
-        _ => DepOn::Success,
-    };
-    let dep = future_tasks::TaskDep {
-        task_id: id.clone(),
-        upstream_task_id,
-        on: dep_on,
-    };
-    // Reject a cycle before persisting, using the full current graph.
-    let mut all = store
-        .list_all_deps()
-        .map_err(|e| crate::AppError::Message(e.to_string()))?;
-    all.retain(|d| !(d.task_id == dep.task_id && d.upstream_task_id == dep.upstream_task_id));
-    all.push(dep.clone());
-    if future_tasks::would_cycle(&dep.task_id, &all) {
-        return Err(crate::AppError::Message(
-            "dependency cycle detected".to_string(),
-        ));
-    }
-    store
-        .add_dep(&dep)
-        .map_err(|e| crate::AppError::Message(e.to_string()))
+    Err(crate::AppError::Message(
+        "task dependencies have been removed; a task now runs on its own schedule or on demand"
+            .to_string(),
+    ))
 }
 
+/// Remove a dependency edge — likewise refused (see [`set_task_dep`]).
 #[tauri::command]
-pub fn remove_task_dep(id: String, upstream_task_id: String) -> Result<(), crate::AppError> {
-    let store = open()?;
-    store
-        .remove_dep(&id, &upstream_task_id)
-        .map_err(|e| crate::AppError::Message(e.to_string()))
+pub fn remove_task_dep(_id: String, _upstream_task_id: String) -> Result<(), crate::AppError> {
+    Err(crate::AppError::Message(
+        "task dependencies have been removed; there are no edges to remove".to_string(),
+    ))
 }
 
 /// Prompt revisions for the version history / diff UI.
@@ -544,7 +489,6 @@ mod tests {
             session_retention: None,
             trigger_kind: Some("schedule".into()),
             trigger: Some(serde_json::json!({"mode": "daily", "time": "09:00"})),
-            dep_join: Some("any".into()),
             enabled: None,
         }
     }
@@ -595,7 +539,6 @@ mod tests {
         assert_eq!(created.name, "daily");
         assert_eq!(created.session_policy, "existing");
         assert_eq!(created.conversation_mode, "chat");
-        assert_eq!(created.dep_join, "any");
         assert_eq!(created.trigger_kind, "schedule");
         assert_eq!(created.prompt_version, 1);
         assert!(
@@ -821,122 +764,29 @@ mod tests {
             .expect("the task is listed")
     }
 
-    #[test]
-    fn dependencies_are_set_listed_and_removed() {
-        let _home = init("cmd_tasks_deps");
-        let upstream = create_task(input("upstream")).expect("create upstream");
-        let downstream = create_task(input("downstream")).expect("create downstream");
-        assert!(list_task_deps(downstream.id.clone()).unwrap().is_empty());
-
-        set_task_dep(
-            downstream.id.clone(),
-            upstream.id.clone(),
-            Some("failure".into()),
-        )
-        .expect("set");
-        let deps = list_task_deps(downstream.id.clone()).expect("list");
-        assert_eq!(deps.len(), 1);
-        assert_eq!(deps[0].upstream_task_id, upstream.id);
-        assert_eq!(deps[0].upstream_name, "upstream");
-        assert_eq!(deps[0].on, "failure");
-        assert!(!deps[0].satisfied);
-
-        // Progress shows up once the edge is marked satisfied.
-        let store = open().expect("store");
-        store
-            .mark_dep_satisfied(&downstream.id, &upstream.id, "trn_1", 1)
-            .expect("mark");
-        assert!(list_task_deps(downstream.id.clone()).unwrap()[0].satisfied);
-
-        remove_task_dep(downstream.id.clone(), upstream.id.clone()).expect("remove");
-        assert!(list_task_deps(downstream.id).unwrap().is_empty());
-    }
-
-    /// Deleting an upstream takes the edges pointing at it. Otherwise the
-    /// downstream keeps an edge to a task that can never report again, and the
-    /// panel shows it a dependency it cannot resolve — the id falls through to
-    /// the name column as a bare `tsk_...`.
-    #[test]
-    fn deleting_a_task_drops_the_edges_pointing_at_it() {
-        let _home = init("cmd_tasks_delete_upstream");
-        let upstream = create_task(input("upstream")).expect("create upstream");
-        let downstream = create_task(input("downstream")).expect("create downstream");
-        let other = create_task(input("other")).expect("create other");
-        set_task_dep(downstream.id.clone(), upstream.id.clone(), None).expect("set");
-        set_task_dep(other.id.clone(), upstream.id.clone(), None).expect("set other");
-
-        let store = open().expect("store");
-        store
-            .mark_dep_satisfied(&downstream.id, &upstream.id, "trn_1", 1)
-            .expect("mark");
-
-        delete_task(upstream.id.clone()).expect("delete upstream");
-
-        assert!(
-            list_task_deps(downstream.id.clone()).unwrap().is_empty(),
-            "the downstream waits on nothing"
-        );
-        assert!(list_task_deps(other.id).unwrap().is_empty());
-        assert!(
-            store
-                .get_dep_state(&downstream.id, &upstream.id)
-                .unwrap()
-                .is_none(),
-            "the stale progress goes too"
-        );
-        // The deleted task's own definition survives as a tombstone.
-        assert!(store
-            .get_task(&upstream.id)
-            .unwrap()
-            .unwrap()
-            .deleted_at
-            .is_some());
-    }
-
-    /// A downstream whose upstream was deleted is not a chain candidate: there
-    /// is nothing left that could satisfy the join.
-    #[test]
-    fn a_downstream_with_a_deleted_upstream_never_fires() {
-        let _home = init("cmd_tasks_delete_upstream_chain");
-        let upstream = create_task(input("upstream")).expect("create upstream");
-        let downstream = create_task(input("downstream")).expect("create downstream");
-        set_task_dep(downstream.id.clone(), upstream.id.clone(), None).expect("set");
-        let store = open().expect("store");
-        store
-            .mark_dep_satisfied(&downstream.id, &upstream.id, "trn_1", 1)
-            .expect("mark");
-
-        delete_task(upstream.id.clone()).expect("delete upstream");
-
-        assert!(
-            !crate::tasks::candidates_for_test(&store, 1_000)
-                .unwrap()
-                .iter()
-                .any(|(task_id, _)| *task_id == downstream.id),
-            "a gone upstream cannot wake the downstream"
-        );
-    }
-
     /// Asking for the runs of a task that no longer exists answers with no runs
     /// rather than an error: the panel may hold an id it just deleted, and the
     /// ledger is empty either way.
+    /// The removed feature's wire commands still answer, so a client of an older
+    /// build does not see an unknown-command error: a read says "no edges", and a
+    /// write says outright that dependencies are gone rather than accepting an
+    /// edge nothing will act on.
     #[test]
-    fn runs_of_an_unknown_task_are_empty() {
-        let _home = init("cmd_tasks_runs_unknown");
-        assert!(list_task_runs("tsk_gone".into(), None).unwrap().is_empty());
-    }
+    fn the_dependency_commands_are_transitional() {
+        let _home = init("cmd_tasks_dep_removed");
+        let task = create_task(input("solo")).expect("create");
 
-    #[test]
-    fn a_dependency_cycle_is_refused() {
-        let _home = init("cmd_tasks_cycle");
-        let a = create_task(input("a")).expect("create a");
-        let b = create_task(input("b")).expect("create b");
-        set_task_dep(b.id.clone(), a.id.clone(), None).expect("b after a");
+        assert!(
+            list_task_deps(task.id.clone()).unwrap().is_empty(),
+            "there are no edges to list"
+        );
+        let error = set_task_dep(task.id.clone(), task.id.clone(), None).unwrap_err();
+        assert!(error.to_string().contains("removed"), "{error}");
+        let error = remove_task_dep(task.id.clone(), task.id.clone()).unwrap_err();
+        assert!(error.to_string().contains("removed"), "{error}");
 
-        let error = set_task_dep(a.id.clone(), b.id.clone(), None).unwrap_err();
-        assert!(error.to_string().contains("cycle"), "{error}");
-        // The refused edge is not persisted.
-        assert!(list_task_deps(a.id).unwrap().is_empty());
+        // And the view keeps the field a phone reads, always at zero.
+        assert_eq!(list_scheduled_tasks_includes(&task.id).dep_count, 0);
     }
 
     #[test]

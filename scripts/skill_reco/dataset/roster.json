@@ -60,11 +60,11 @@
       "descriptionZh": "文本到图像生成、自然语言图像编辑和图像分析"
     },
     {
-      "name": "future-loop",
+      "name": "future-goal",
       "builtin": true,
       "category": "tools",
       "nameZh": "长程目标循环",
-      "description": "FutureOS loop control plane — manage long-running goals, todos, human gates, workers, monitors, and validated completion. Use for cross-session work, ongoing task status, \"keep working\", \"run overnight\", or /future-loop. Not needed for a one-shot review or ordinary code edit.",
+      "description": "FutureOS goal control plane — manage long-running goals, todos, human gates, workers, monitors, and validated completion. Use for cross-session work, ongoing task status, \"keep working\", \"run overnight\", or /future-goal. Not needed for a one-shot review or ordinary code edit.",
       "descriptionZh": "FutureOS 循环控制平面——将对话转化为持久、可审查的长程目标：目标、todo、人工门禁、监控、证据与闭环验证都持久化在聊天之外"
     },
     {

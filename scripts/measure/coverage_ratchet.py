@@ -30,7 +30,7 @@ from pathlib import Path
 # Workspace source root -> crate name. First matching prefix wins; keep the
 # list ordered most-specific first.
 CRATE_ROOTS: list[tuple[str, str]] = [
-    ("orchestration/loop/", "future-loop"),
+    ("orchestration/goal/", "future-goal"),
     ("agent/", "future-agent"),
     ("channels/", "future-channels"),
     ("cli/", "future-cli"),

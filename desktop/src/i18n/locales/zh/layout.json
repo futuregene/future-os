@@ -54,7 +54,7 @@
     "chatSectionActions": "对话区操作",
     "threadsSelected": "已选择 {{count}} 个",
     "deleteSelected": "删除",
-    "tasks": "任务",
+    "tasks": "定时任务",
     "openSearch": "搜索会话",
     "searchConversations": "搜索会话",
     "clearSearch": "清除搜索",
@@ -143,7 +143,22 @@
     "failed": "Future Agent 启动失败",
     "fixFailed": "请根据错误提示检查后重启 FutureOS。使用外部 Agent 时，请检查其可用性和版本。",
     "incompatible": "Future Agent 与当前 FutureOS 版本不一致",
-    "fixIncompatible": "请更新或停止外部 Agent，然后重启 FutureOS。存在冲突时不能通过启动内置服务绕过检查。"
+    "fixIncompatible": "请更新或停止外部 Agent，然后重启 FutureOS。存在冲突时不能通过启动内置服务绕过检查。",
+    "stopping": "正在关闭 FutureOS",
+    "cleanupFailed": "FutureOS 未能完成清理",
+    "cleanupFailedHint": "更新、重置和重启已阻止。请保存诊断，退出整个进程后重新打开 FutureOS。",
+    "shutdownStages": {
+      "admission": "正在停止接收新工作",
+      "callers": "正在等待当前请求",
+      "remote": "正在断开设备连接",
+      "external_runs": "正在停止本 Desktop 提交的工作",
+      "terminals": "正在关闭终端",
+      "agent": "正在停止 Agent 工作",
+      "background": "正在完成后台清理",
+      "verification": "正在核实清理结果",
+      "complete": "清理已完成"
+    },
+    "cleanupComplete": "清理已完成"
   },
   "userMenu": {
     "balance": "账户余额：{{credits}}",

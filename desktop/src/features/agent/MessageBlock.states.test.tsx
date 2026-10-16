@@ -10,7 +10,7 @@ import { MessageBlock } from "./MessageBlock";
  * The *other* side of `MessageBlock`'s state conditions. Each case here asserts a
  * second arm of a branch that a happy-path render leaves untaken: the stopped /
  * no-final-reply dividers, the retry-vs-continue affordances, the un-hovered
- * fork button, a USER message's mention and link segments, and the compaction
+ * fork button, a USER prompt rendered as markdown, and the compaction
  * labels for every status × trigger × token shape.
  *
  * `MessageBlock.behaviour.test.tsx` covers the primary side (hover, copy,
@@ -173,27 +173,31 @@ it("paints the fork button on the hovered row", () => {
   expect(fork.classList.contains("pointer-events-none")).toBe(false);
 });
 
-it("renders a user message's mention pills and external links", () => {
-  // A user turn's own text carries `@`-mention markdown and URLs; both segment
-  // kinds are rendered (the mention as an accent span, the URL as a link), which
-  // the assistant path never exercises.
+it("renders a user prompt as markdown, keeping `#` references distinguishable", () => {
+  // A prompt renders through the same pipeline as a reply, so its own `**bold**`
+  // and `[name](./path)` mention markdown arrive formatted. The reference keeps
+  // the composer's `#` marker so it cannot be mistaken for a file mention; the
+  // literal link source is not shown alongside it.
   render(message({
-    content: "see [a.ts](./src/a.ts) and [docs](https://example.com/x)",
+    content: "see [a.ts](./src/a.ts) and [docs](https://example.com/x)\n\n**bold** and [Fix the flaky test](futureos://session/s-1)",
     id: "u1",
     role: "user",
   }));
 
-  const mentioned = [...container.querySelectorAll("span")].find(span => span.textContent === "a.ts")!;
-  expect(mentioned.className).toContain("text-accent");
+  expect(container.querySelector("strong")?.textContent).toBe("bold");
   const link = container.querySelector<HTMLAnchorElement>("a[href='https://example.com/x']")!;
   expect(link.textContent).toBe("docs");
-  // The literal markdown is not shown alongside the rendered parts.
+  const reference = [...container.querySelectorAll("span")]
+    .find(span => span.textContent === "#Fix the flaky test")!;
+  expect(reference.className).toContain("text-accent");
+  expect(reference.getAttribute("title")).toBe("futureos://session/s-1");
   expect(container.textContent).not.toContain("](./src/a.ts)");
+  expect(container.textContent).not.toContain("**bold**");
 });
 
 it("renders a user message with no markdown at all as plain text", () => {
-  // boundary: the plain branch of the same mapper (neither a mention nor a
-  // link), so the two conditions have both sides asserted.
+  // boundary: the plain-text branch of the same parser, so the two conditions
+  // have both sides asserted.
   render(message({ content: "just words", id: "u1", role: "user" }));
   expect(container.textContent).toContain("just words");
   expect(container.querySelector("a")).toBeNull();

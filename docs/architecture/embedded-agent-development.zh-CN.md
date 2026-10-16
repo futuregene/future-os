@@ -5,7 +5,7 @@
 > 设计日期：2026-10-13。源码基线：`88fe90a8`。
 > 状态：阶段一至六及阶段八代码/文档收尾已完成。macOS 验收见第 10.7 节，用户报告 Windows 全量单测通过见第 10.8 节。阶段七自动化验收、daily 包和阶段八最终原生 CI 记录见第 10.9–10.14 节；正式签名/公证、原生 Linux 沙箱、真实安装升级、完整 GUI 工具交互和性能对比仍待发布验收。
 
-Desktop 在默认本地端点没有外部 Agent 且成功取得实例锁时，以 Rust library 的方式在自己的进程内运行完整 Agent。兼容外部服务继续连接，不兼容或持锁不可用的服务明确报错。外部 Agent、CLI、TUI、channels 和 loop 继续使用统一 RPC。改动的主要目的，是减少 Windows 启动和升级过程中 Desktop 与 sidecar 生命周期不同步的问题，同时保留实例锁、完整工具能力、持久化和外部客户端接入。
+Desktop 在默认本地端点没有外部 Agent 且成功取得实例锁时，以 Rust library 的方式在自己的进程内运行完整 Agent。兼容外部服务继续连接，不兼容或持锁不可用的服务明确报错。外部 Agent、CLI、TUI、channels 和 goal 继续使用统一 RPC。改动的主要目的，是减少 Windows 启动和升级过程中 Desktop 与 sidecar 生命周期不同步的问题，同时保留实例锁、完整工具能力、持久化和外部客户端接入。
 
 实施应先提取服务层，再接入宿主，最后切换开发、构建与升级链路。第一版保持现有存储格式和业务 RPC，保留打包的 `future` CLI。单独裁剪 CLI、迁移数据库和修改工具权限不属于本次目标。
 
@@ -27,7 +27,7 @@ Desktop 在默认本地端点没有外部 Agent 且成功取得实例锁时，�
 
 ### 1.2 退出与客户端
 
-内置模式下，退出 Desktop 会结束该 Agent 上所有客户端的任务，包括 CLI、TUI、手机、channels 和 loop 发起的任务。退出提示使用 Agent 的全局活动快照，覆盖运行、排队、等待审批和会修改会话的长时操作。用户选择继续运行时，不提前关闭接单入口。
+内置模式下，退出 Desktop 会结束该 Agent 上所有客户端的任务，包括 CLI、TUI、手机、channels 和 goal 发起的任务。退出提示使用 Agent 的全局活动快照，覆盖运行、排队、等待审批和会修改会话的长时操作。用户选择继续运行时，不提前关闭接单入口。
 
 用户确认强制退出后，先停止接单、取消全部相关工作、等待持久化与清理，再退出。清理超过总期限时，由宿主执行进程级强制退出；不承诺异常退出也能送达取消事件。正常取消必须把明确终态和退出原因发送给客户端。
 
@@ -73,7 +73,7 @@ headless Desktop ─┼── future-agent 服务层 ── RPC、runtime、存�
 future agent ─────┤
 future-agent ─────┘
 
-CLI / TUI / channels / loop / Desktop bridge ── 统一 RPC ── 活跃 Agent
+CLI / TUI / channels / goal / Desktop bridge ── 统一 RPC ── 活跃 Agent
 ```
 
 在 `agent/src/service/` 提取服务层，模块名为实施时的建议组织：`config`、`instance`、`startup`、`activity`、`shutdown` 和后台工作登记。GUI/headless 复用不依赖 Tauri 的宿主管理部分，GUI 仅负责窗口、提示和事件适配。
@@ -126,11 +126,11 @@ Ready → Quiescing → Cancelling → Draining → Cleaning → Stopped
 
 对 `FUTURE_HOME`、默认 home、命名管道名、Unix socket、metadata 和安装器环境使用一致解析。检查大小写、软链接或 junction、UNC、空值和相对路径。取锁路径必须指向同一实际数据目录，端点别名差异不能让客户端绕过数据锁。
 
-Desktop 宿主锁与 Agent 锁用途不同，不合并成一把锁。修正宿主锁对数据根目录的解析：当前 `InstanceGuard` 按 HOME 下的 `.future/app` 取锁，需与 Desktop 实际 `FUTURE_HOME` 数据根保持一致；单实例窗口激活也要遵守相同的实例范围。
+Desktop 宿主锁与 Agent 锁用途不同，不合并成一把锁。Desktop 存储、宿主锁、单实例窗口激活、临时工作区、配对和设备身份统一遵循有效绝对 `FUTURE_HOME`；未设置时保持原有 HOME/USERPROFILE 下的 `.future` 路径。选择数据根不自动搬迁旧文件，也不改变数据库格式。复审修正见第 10.15 节。
 
 ### 4.2 兼容性与重连
 
-首次连接先取得 readiness，再判定协议和版本。最低方案是严格沿用仓库同步升级契约并消除数字版本相同的开发构建误判；需要额外字段时，通过共享 RPC crate 定义显式协议版本和必要能力。
+首次连接先取得 readiness，再判定协议和版本。兼容条件是 release core、RPC protocol version、storage schema 一致；相同契约下不同开发 hash 可以互连，hash 用于诊断身份，不单独作为兼容门禁。业务协议变化必须更新共享 RPC 协议契约。明确返回 `agent_stopping` 时阻止连接和本地启动，但不误报为版本不兼容。
 
 未知 readiness、缺少必要字段、不支持必要协议均返回明确不兼容错误。能力新增不构成业务协议新旧混搭支持。兼容性失败应在统一 bridge 入口拦截任务、配置、导入、删除和后台观察器，不仅关闭前端发送按钮。
 
@@ -274,7 +274,7 @@ Linux helper 请求版本、真实隔离执行与取消须有原生集成验证�
 
 实现位于 [service](../../agent/src/service/mod.rs)，CLI 参数、维护、日志、信号、profiling 保留在 [cli](../../agent/src/cli.rs)。[startup](../../agent/src/service/startup.rs)复用原 engine、SQLite 导入和 AppState 初始化；[instance](../../agent/src/service/instance.rs)保持锁路径、Windows 字节协议与 metadata 字段；正常路径不再泄漏锁对象，失败停机则保留所有权直到宿主进程退出。Ready 在初始化、绑定与 server 首次成功 poll 后通知。共享 Unix transport 修复预绑定后未 poll 就取消时的 socket 清理。
 
-[隔离服务回归](../../agent/tests/service_startup.rs)覆盖实际 TCP/本地 IPC、锁冲突、同 scope 重复初始化、取消、损坏存储、端点占用和原格式导入。已有生命周期测试迁到对应模块，审批中断回归由服务级停机测试覆盖。本地通过 Agent/RPC 和 CLI/TUI/channels/loop 的 `clippy --all-targets -D warnings`，以及 `dhat-heap` feature 的静态编译、fmt 与 diff 检查。2026-10-14 的本地单测与集成验收记录见第 10.4 节；原生 Windows/Linux 与 CI 回归结果尚未取得。
+[隔离服务回归](../../agent/tests/service_startup.rs)覆盖实际 TCP/本地 IPC、锁冲突、同 scope 重复初始化、取消、损坏存储、端点占用和原格式导入。已有生命周期测试迁到对应模块，审批中断回归由服务级停机测试覆盖。本地通过 Agent/RPC 和 CLI/TUI/channels/goal 的 `clippy --all-targets -D warnings`，以及 `dhat-heap` feature 的静态编译、fmt 与 diff 检查。2026-10-14 的本地单测与集成验收记录见第 10.4 节；原生 Windows/Linux 与 CI 回归结果尚未取得。
 
 阶段一保留存储实现、schema、protobuf、两个二进制入口和 CLI flag 声明。阶段二增加 writer 关闭和后台工作登记，仍不改变 schema、持久化格式或业务 RPC。全局 broadcaster 的订阅通过服务级关闭信号结束；丢弃 serving future 会使停机失败，不能作为成功清理的依据。Desktop 在阶段四接入。
 
@@ -314,7 +314,7 @@ CLI 接入完整停机，保留原有 Ctrl-C 第二次中断/5 秒独立强制�
 
 CLI/TUI 保持已有显示版本；门禁使用共享 `EXPECTED_AGENT_VERSION`。协调构建取注入的 `FUTURE_VERSION`，裸 Cargo 开发构建取 RPC/Agent 的 `0.0.0` release 基准，避免 CLI/TUI 的 `0.0.2` 显示版本误拒绝同源码服务。真实服务隔离回归使用这一共享预期版本验证握手，未来调整 Cargo release 基准时必须同步 Agent/RPC。
 
-GUI、headless、CLI 和 TUI 的业务请求及事件订阅统一使用 `VerifiedAgentClient`，每次派发前重新核对 readiness。已验证 Channel 禁止透明重连到替换服务；新物理连接必须重新握手。请求携带预期实例及数据根 header，Agent 在命令转换、接单和订阅初始化之前验证。旧的直接 RPC 调用仍可省略 header；已接入门禁的客户端始终发送它们。Desktop 缓存按端点及数据根配置区分，校验失败清除缓存，状态 UI 显示具体阻塞原因。channels/loop 保留原客户端接口，未在此阶段切换连接封装。
+GUI、headless、CLI 和 TUI 的业务请求及事件订阅统一使用 `VerifiedAgentClient`，每次派发前重新核对 readiness。已验证 Channel 禁止透明重连到替换服务；新物理连接必须重新握手。请求携带预期实例及数据根 header，Agent 在命令转换、接单和订阅初始化之前验证。旧的直接 RPC 调用仍可省略 header；已接入门禁的客户端始终发送它们。Desktop 缓存按端点及数据根配置区分，校验失败清除缓存，状态 UI 显示具体阻塞原因。channels/goal 保留原客户端接口，未在此阶段切换连接封装。
 
 只有默认本地连接明确返回端点不存在或拒绝连接，且现有实例锁可以取得时，`select_agent` 才产生不可自行构造的 `LocalStartPermit`。握手失败、版本/协议/schema/数据根不符、锁占用或权限错误、未知连接错误及显式端点失败均直接报错。预检不创建或改写锁文件、不初始化数据库；`AgentService::with_local_start` 消耗许可并重新取得权威锁，抢锁失败发生在宿主初始化回调之前。现有 sidecar 启动也复查许可，并显式传递 `--grpc-addr auto`。这段记录描述阶段三完成时的范围：该阶段未切换默认运行模式，内置宿主随后由阶段四接入。
 
@@ -405,7 +405,7 @@ Linux helper 继续由当前宿主可执行文件进入，保留统一 CLI 的 `
 | D1 | 正常取消后重开、强制结束后重开、停机中进程崩溃 | SQLite 事务保持一致；未完成运行收敛；历史保留 |
 | C1 | CLI 接入内置、Desktop 真退出、CLI/TUI 重连、新实例替换 | 取消与断线可理解；重新握手；旧游标和队列状态失效 |
 | C2 | 外部模式退出与重启；显式远端不可达；不兼容重连 | 外部任务按归属处理；无默认端点接管；业务门禁有效 |
-| C3 | 手机、channels、loop 长连接在停机与重新启动期间 | 断线与取消不记为成功；审批和队列状态收敛；新实例重新握手 |
+| C3 | 手机、channels、goal 长连接在停机与重新启动期间 | 断线与取消不记为成功；审批和队列状态收敛；新实例重新握手 |
 | U1 | 下载、签名、解包或安装启动失败 | 下载/验签不打断任务；停机后失败有明确恢复路径 |
 | U2 | 升级中有 CLI/技能进程、旧孤儿 sidecar、其他安装持锁服务 | 保留文件检查、范围授权、租约与退出码，不产生混合版本 |
 | U3 | 替换失败、加载探测失败、手动重装、先卸载再升级、卸载清理超时 | 可执行文件回滚；用户数据不删；安装/卸载结果真实 |
@@ -621,7 +621,7 @@ Windows 专项 [38672888594](https://github.com/futuregene/future-os/actions/run
 | Windows | 6 | 10 | 9 | 9 |
 | macOS | 6 | 10 | 9 | 9 |
 
-三份 `summary.json` 和分组日志已归档于 `agent/target/phase7-ci-results/native-{linux,windows,macos}/`。首轮的 Agent、CLI/TUI、channels/RPC/loop/tasks、前端以及 fmt/Clippy 检查通过；Linux GUI 全量中 `scheduler::tests::a_spawned_job_fires_at_its_deadline_and_reanchors` 失败（1,804 通过、1 失败、12 ignored）。该用例未持有与全局后台清理相同的 fixture guard，其他并行用例可取消它的循环。`887c5b77` 给两个启动后台循环的调度器用例加上已有 HomeGuard，保持产品调度不变；[Desktop Rust 范围复验](https://github.com/futuregene/future-os/actions/runs/38673788870) 单独验证此修复和 headless feature 检查。
+三份 `summary.json` 和分组日志已归档于 `agent/target/phase7-ci-results/native-{linux,windows,macos}/`。首轮的 Agent、CLI/TUI、channels/RPC/goal/tasks、前端以及 fmt/Clippy 检查通过；Linux GUI 全量中 `scheduler::tests::a_spawned_job_fires_at_its_deadline_and_reanchors` 失败（1,804 通过、1 失败、12 ignored）。该用例未持有与全局后台清理相同的 fixture guard，其他并行用例可取消它的循环。`887c5b77` 给两个启动后台循环的调度器用例加上已有 HomeGuard，保持产品调度不变；[Desktop Rust 范围复验](https://github.com/futuregene/future-os/actions/runs/38673788870) 单独验证此修复和 headless feature 检查。
 
 macOS 本地真实打包还发现：在已有 mode 0644 编译占位文件上执行 `cp` 会保留不可执行权限，使 app 正常但包内 CLI 无法运行。Unix 开发、打包、Makefile 和发布 CI 的 CLI 暂存统一改用 `install -m 755`；此问题必须以重新封装后的包内 CLI smoke 验收，不能只验证源码目录中的 CLI。
 
@@ -712,6 +712,100 @@ Windows 两份包也通过公开 OSS 地址下载回本地、校验大小和 SHA
 Linux `headless_cli` 入口/信号集成 8 例通过，CI fmt/Clippy 及三平台 GUI/headless 编译通过。三平台日志和摘要在 `agent/target/phase8-ci-results/native-{linux,windows,macos}/`，入口日志为 `headless-cli-0df3e57e.log`。计数包含 fixture 入口，不表示独立用户场景数；构建时间不作为产品性能数据。阶段八代码与文档收尾完成。
 
 开发 Ctrl+C 是工具链中断：Unix 发送 TERM，超过 10 秒可能 KILL 本次进程组，不承诺 Agent 完整清理；正常清理由应用内退出触发。真实 headless 信号语义保持原有有界清理。阶段七未完成的真实安装、正式签名、原生沙箱与性能验收继续保留，阶段八代码完成不等于发布批准。
+
+### 10.15 自审问题修正（2026-10-15）
+
+针对已合入 `639a5fd6` 的只读自审，用户授权修复四项 P2 与四项 P3，并明确不在本地运行单测。实现保留锁赢家、兼容性、当前用户 IPC、完整清理和安装失败门禁，数据库 schema 与文件格式不变。
+
+| 问题 | 修正与回归覆盖 |
+| --- | --- |
+| P2-1：ready 前干净取消被误判为长期清理失败 | 在同一循环处理 readiness、serving 和 drain；接受 `Stopped` 报告，继续完成服务清理，仅规范化明确的启动取消类型。原生子进程 fixture 在首次 poll serve 前完成停机，原取消 fixture 改为断言停止成功。 |
+| P2-2：collector/排队路径结束后运行所有权泄漏 | 终态观察事件和已核实状态释放所有权，另设有界台账扫描覆盖本地已非 active 的行。排队、活动、未知状态仍保留；prompt 确认不复活已终止条目。测试覆盖排队至终态及确认竞态。 |
+| P2-3：外部连接绕过 release 环境策略 | release 在报告外部连接就绪前拒绝本地非生产配置，不改写外部服务共享认证或 key。仅锁赢家执行原有默认环境策略。测试验证 release 拒绝、开发环境接受及认证字节不变。 |
+| P2-4：停止中被误报为不兼容 | 既有 `agent_stopping` 错误码映射为 `StartupBlocked`，仍不允许内置回退。mock RPC 验证分类和零业务修改。 |
+| P3-1：Desktop 数据根分裂 | app 数据库、宿主锁、GUI 实例范围、临时工作区、配对及身份统一遵循有效绝对 FUTURE_HOME。默认路径和既有身份迁移保持兼容。测试验证两个根隔离、旧数据字节保留、覆盖根和默认根的凭据保护；不自动迁移数据。 |
+| P3-2：两份 schema 常量可能漂移 | 编译期断言 Agent 数据库版本与 RPC 公布的存储契约一致，schema 仍为 6。 |
+| P3-3：早期调用者等待产生假长期失败 | 在最终清理屏障检查仍在执行的调用。测试区分后续清理中完成的调用与最终仍未退出的调用；后者继续阻止更新、重置和重启。 |
+| P3-4：开发 hash 文档与实现不一致 | 保留 release core/protocol/schema 契约并修正文档。测试接受同契约不同开发 hash，拒绝 protocol/schema 不匹配。 |
+
+直接登录、账户资料/余额和技能指南 HTTP 请求同样使用只读渠道检查；Agent 未启动就绪时也不能绕过。
+
+静态验收覆盖 workspace、GUI、headless 的 all-target Clippy（`-D warnings`）、两套 fmt 和文档一致性。新测试只编译、不在本地执行，运行结果待 CI 验收。用户在 macOS 应用内成功完成自审，证明真实常用工作流可用，但不代替第 10.9 节的安装、签名、沙箱和性能发布验收。不新增启动脚本 Action 或启动脚本 CI 分组。
+
+### 10.16 综合复审 A、B 阶段实现（2026-10-15）
+
+用户授权在既有修复之上完成统一连接门禁、Unix 端点所有权及外部任务停止确认，不执行本地单测。本节记录实现与待验收边界；第 10.15 节之前的计数和协议版本属于对应历史提交，不作为本轮执行结果。
+
+**A：连接契约。** 共享 RPC 协议从 1 升至 2，数据库 schema 保持 6，protobuf 字段和存储格式不变。只有 `get_agent_readiness` 允许在业务握手前访问。所有业务命令（包括只读命令）和订阅必须携带客户端版本、protocol/schema、预期 Agent 实例及数据根；服务端在命令分派和 session hydration 前统一拒绝缺失、部分、格式异常及不匹配的契约。版本继续按 release core 判断，不要求开发 hash 相等。这些头用于兼容性和实例隔离，不代替 Unix UID/socket 权限和 Windows pipe DACL。
+
+Channels 与 CLI/TUI/Desktop 一样使用 `VerifiedAgentClient`，每次业务调用和订阅验证 readiness 并绑定实例；物理连接不透明重连到替代实例。重新建立 Channels 客户端时重新验证并创建新的运行映射；旧客户端克隆仍被旧实例约束，不能自动向新实例提交工作。原有显式端点只连接、不兼容或停止中不接管、持锁不可用不启动内置服务的策略不变。旧客户端须同步升级；不保留无头业务请求的隐式放行路径。
+
+**B：Unix 端点。** 取锁顺序为数据根实例锁、端点租约，然后打开 SQLite。端点租约位于 socket 路径加 `.owner.lock`，使用独立 OS 排他锁，持有至 listener 清理完成，租约文件不删除。它不合并或替代 Agent 数据根锁，也不是数据库迁移。租约拒绝符号链接、非普通文件、其他所有者和硬链接；原端点仅在确认属于当前用户且拒绝连接时视为陈旧。可连接、超时、权限异常、非 socket 或身份变化一律拒绝替换。清理 guard 核对创建时的设备号和 inode，防止旧 listener 删除替代端点。目录仍为 0700、socket 为 0600，连接仍检查当前 UID；Windows 保持已有首次 pipe 实例和 DACL 语义。对不遵循租约的旧服务仍执行活跃检测和保守拒绝；该机制不承诺防御具有同 UID 文件修改权限的恶意程序。
+
+**B：外部运行停止。** Desktop 关闭准入后，只按精确 session/run ID 取消自己提交的运行，不停止外部 Agent 或其他客户端任务。取消确认不等于完成，随后核实对应 run 的终态；活动或排队证据优先于终态快照，其他 run 的终态不算成功。正常的 `run_not_queued` 竞争可继续通过 abort 和状态核实收敛。最多 8 个运行并发，在同一个 3 秒总期限内处理，每次 RPC 最多 500 毫秒；未处理或未核实的条目均返回带 session/run 的失败报告并保留台账。清理失败写入既有长期失败门禁，阻止更新、重置和重启；不通过清空未知条目宣称成功。内置模式仍由 Agent 全局 drain 处理所有客户端工作。
+
+| 回归范围 | 新增或加强的证据要求 |
+| --- | --- |
+| 服务端业务门禁 | 无头、逐项缺失、版本/protocol/schema/实例/根不匹配，均不能创建或 hydration session；readiness 仍可发现 |
+| Channels | 不兼容握手不派发业务命令；已缓存客户端遇到替代实例拒绝创建 session |
+| 原生服务 | 真实 listener 上原始客户端只可探测，不能执行无头修改或订阅；已验证客户端继续正常使用 |
+| Unix 端点 | 跨进程租约排斥、绑定前竞争、旧活跃服务保留、陈旧 socket 恢复、拒绝符号链接租约与普通文件占位、旧 guard 不删替代 socket |
+| 宿主 | 端点已预留时，启动在业务数据库初始化前失败 |
+| 外部清理 | 排队转活动、精确运行终态、错误 run 终态、未知状态超时、失败保留台账与安装门禁 |
+
+验收仅运行静态检查：workspace、Desktop GUI/headless 的 all-target Clippy（`-D warnings`）、两套 fmt、文档和 diff 检查。测试代码参与编译，但未在本地运行，动态结果待现有 CI。没有新增启动脚本 Action 或启动脚本 CI。综合方案 C、D（统一停止协调器、实例级控制面、协作取消、CLI 能力发现、持久化更新状态）未在本节宣称完成；真实包升级、签名和原生沙箱验收继续保留。
+
+### 10.17 综合复审 C 阶段实现（2026-10-15）
+
+本阶段在 A、B 和既有修复之上统一 Desktop 停止协调、后台进度、慢启动协作取消和实例级控制面。不运行本地单测；本节的测试描述是新增代码及 CI 验收要求，不表示已经动态执行。
+
+**一次停止、共享结果。** GUI 退出、headless 信号、更新、重置、环境切换和重启通过同一个进程内停止操作。首次请求关闭业务准入，固定操作 ID、原因和 20 秒总期限；后续调用共享同一结果，不重启清理或延长期限。原生清理线程执行分阶段收尾，独立原生 watchdog 不依赖 Tokio、GUI、日志或 SQLite 确认。超时和 panic 产生长期失败；晚完成不能把失败改成成功。阶段预算受总期限限制，仍保持生产者、远程入口、运行、终端、Agent、后台任务和最终调用者屏障的依赖顺序。
+
+**GUI 与进度。** 主窗口关闭和 ExitRequested 在窗口仍可渲染时拦截，后台等待停止结果；最终 Exit 只发出兜底停止请求，不同步等待清理。状态查询和 `desktop-shutdown-progress` 事件提供操作 ID、阶段、耗时和终态错误；界面显示清理阶段与失败，不伪造百分比。进行中的就绪查询或进度事件不能覆盖已显示的停止终态。正常清理失败会询问是否结束整个进程；已明确选择强制退出时记录失败后退出。更新、重置和重启仍必须取得成功结果，不能把用户强退授权当作安装许可。
+
+**维护动作互斥。** 重置、环境切换、重启及更新的清理后动作有独立互斥 guard，防止两个调用者共享成功屏障后同时删除数据或替换程序。安装器接管前的维护期间，关窗不能抢先退出；只有已完成清理并由动作所有者明确授权的退出才放行。清理失败后仍允许用户选择结束进程。重置和重启 invoke 的阻塞部分移到后台，调用名及返回契约保持不变。安装过程的长期恢复记录属于 D 阶段，本阶段没有增加定时强杀。
+
+**慢启动取消。** 同一 `StartupCancellation` 传入 Manager、SQLite 初始化和旧数据导入。打开数据库前、schema 事务阶段及提交前、目录枚举、分块读取/哈希、逐行解析和会话导入事务前后检查取消。取消与无效源文件分别表示：不将取消记为 skipped，不提前写整批完成标记。已提交会话保持持久化；未完成事务回滚，下次按既有导入记录恢复。该机制不 force-kill 同步 I/O 或线程，也不承诺打断单个卡死的 OS/SQLite 调用；超过期限时报告失败，锁保留至资源安全收尾或进程退出。
+
+**实例级控制面。** `AppState` 显式持有 `ControlPlane`，其中包含全局控制事件 broadcaster、config revision 和 provider 命令锁。这里的 global 表示实例内所有会话，不再表示整个进程。所有生产者和订阅者选择自己的实例，不保留自动选择当前实例的静态转发器。新实例从 revision 0 开始，旧订阅不会收到新实例事件。订阅首个 ping 增加实例 ID，Desktop 转发的配置事件标识也包含实例 ID；既有事件内容与存储格式保持兼容，schema 仍为 6，RPC 协议仍为 A 阶段的 2。
+
+| 回归范围 | 新增或加强的代码覆盖 |
+| --- | --- |
+| 共享停止 | 多调用者共享一个 worker、首次原因和终态；关闭准入；独立 deadline；晚成功不覆盖失败；worker panic；维护动作互斥与释放 |
+| GUI 进度 | 阶段与终态错误展示；旧 ready 查询和旧 running 事件不能覆盖停止或失败；事件监听随组件释放 |
+| 启动取消 | 已取消初始化不创建数据库；解析取消不变成损坏源；Unix 原生子进程在第二个源文件读取处取消，验证首个会话保留、无 skipped/完成标记，再启动恢复导入 |
+| 控制面 | 两个实例的 revision 与订阅互不影响，旧实例释放后关闭旧流；既有 RPC 全局订阅和会话创建/删除测试改为观察明确实例 |
+
+验收使用 workspace、Desktop GUI/headless 的 all-target Clippy（`-D warnings`）、两套 fmt、Desktop ESLint/typecheck、文档和 diff 静态检查。新增测试只编译，不在本地执行；真实 UI 响应、三平台退出与原生导入取消结果待现有 CI/实机确认。不新增启动脚本 Action 或启动脚本 CI。D 阶段的 CLI 能力发现、持久化更新结果以及真实包签名/升级/沙箱验收继续保留。
+
+### 10.18 综合复审 D 阶段实现（2026-10-15）
+
+提交前已合并最新远程主干：保留主干已结算运行对账和 FutureOS home 下的 Unix 端点路径/诊断，并接入本轮运行所有权台账及端点租约。goal 控制面也改为共享的已验证客户端，命令和订阅均执行实例门禁；更新 mock 契约，新增不兼容与实例替换时禁止业务和订阅的回归代码。本地不运行这些测试。
+
+本阶段补齐 CLI 能力发现、持久化更新结果及失败恢复。不运行本地单测；以下回归是新增代码与 CI 验收要求，不能作为真实安装包已经通过验收的声明。
+
+CI 收尾同时修正了 Windows PowerShell 5.1 将 `File.Replace` 的空备份参数转换为空路径的问题，保持同目录原子替换并在替换失败时保留备份；补齐停止事件和 goal readiness 的测试替身契约；更新旧对账测试，要求状态查询失败时保留运行及所有权。CI 还暴露了既有 HTTP 重定向 fixture 的连接复用竞态：改为完整读取请求、显式关闭连接、单次明确拒绝重定向并回收线程，保留生产分类逻辑和强断言，不通过删除测试或重试到通过来处理。真实 CLI smoke 发现零秒 profiling 定时器可能早于服务首次轮询关闭门禁；CLI 现在先轮询服务并等待共享就绪通知，再启用定时器和退出信号处理，消除时序竞争，不添加延时或放宽停止门禁。既有零秒定时退出和默认 IPC 重开回归由 CI 执行。
+
+**CLI 描述符与只读探测。** `future version --json` 保留既有构建信息，并增加版本化的 `desktopCapabilities`，包含 Agent release core、RPC 协议、存储 schema 和具体命令能力。该精确参数组合在 CLI runtime、日志、服务和存储初始化之前返回。Desktop 按既有顺序选择相邻打包 CLI、开发产物、绝对 PATH 候选，拒绝空占位、目录和不可执行文件。结构化探测不经过 shell，默认 3 秒超时，检测 stdout/stderr 超过 64 KiB 后终止；输出使用文件捕获，避免管道堵塞和无界内存读取。Windows 探测前检查 PE 文件头，回归不执行伪造 EXE。
+
+描述符包含路径、来源、显示版本和能力。缓存以物理路径、文件长度、时间和 Unix inode/ctime 为身份，探测后再次确认；时间只用于缓存失效，不能推断版本。失败缓存 5 秒后可重试。显示版本与 Agent 连接契约分别处理：开发提交后缀不同不导致误报，但 release core、协议、schema 或所需能力不符时拒绝执行，显示路径、探测版本和修复方向，不自动改用另一份旧 CLI。技能初始化明确要求 `skills.init`。缺少 CLI 继续允许内置 Agent 运行，不自动安装或覆盖用户 PATH 中的工具。
+
+**独立更新记录。** 当前数据根下的 `app/updates/<operation-id>/result.json` 保存来源/目标版本、阶段、终态、诊断、重启许可和手工修复确认；`latest.json` 指向最近操作。记录通过同目录临时文件、flush 和原子替换发布，不修改 Agent/桌面数据库。检查、下载、签名校验完成、完整清理、等待退出、安装及终态分别记录。读取失败、未确认交接或需修复状态不能当作成功，也不能自动覆盖。下载/校验等安装前失败保留原因，后续可重新下载并验证签名。原生 worker 保留安装互斥与操作引用；未交接的未完成操作释放时记录 interrupted，不能把取消 invoke 误记为成功。
+
+**Windows 跨进程接管。** 观察进程从已持久化的 awaiting-exit 记录接管，并持有独立排他文件句柄。ready 只确认观察进程就绪，不表示已安装；Rust 不再写它接管后的终态。观察进程等待精确父进程退出，默认 60 秒；超时记录 not-installed，不启动安装器、不结束父进程。安装器一旦启动就等待真实退出，不定时强杀。退出 0 记录 installed，失败记录诊断与恢复判定。日志继续在 `app/logs/update-recovery.log`，结果不随临时安装目录清理而删除。暂存包不作为后续可直接执行的恢复指令；重试重新下载、验签和清理。
+
+**恢复完整性。** Windows 比较安装目录完整清单与文件 SHA-256，拒绝 reparse point；缺失、内容变化或新增残留均禁止自动启动旧程序。完整恢复且父进程已退出后，才请求启动原程序；启动请求成功不等于应用已健康运行，启动失败补写诊断。macOS/Linux 将原程序及发现的 CLI 快照保存在同一操作目录，失败后确认完整恢复；后续通过更新重启命令请求重启时重新核验快照，不仅信任旧的安全布尔值。已有清理失败门禁、动作互斥、签名验证和实例锁不变。
+
+**诊断与界面。** `app_maintenance_status` 独立于 Agent 业务门禁，查询 CLI 描述符和持久化更新结果。更新设置页显示 CLI 版本/路径、不匹配原因、操作 ID、阶段和诊断；交接未完成不显示“更新已安装”。停止后原设置页会卸载，因此更新停止页有独立面板持续查询结果，仅在 installed 或 failed-restored 且门禁允许时提供重启，不恢复业务准入。结果未知或原文件不完整时保持停止。用户手工修复后可明确确认；原结果和诊断保留，另记 repairAcknowledged，不改成 installed，不授予自动重启许可。活跃安装及 Windows 观察进程持有句柄时不能确认修复。观察进程异常丢失的记录保持未知，不凭 PID、超时或目标版本猜测安装成功。
+
+| 回归范围 | 新增或加强的代码覆盖 |
+| --- | --- |
+| CLI 契约 | 开发版本后缀、协议/schema、缺失能力、旧/无效 JSON；真实 CLI 子进程在不存在的数据根下只读探测 |
+| 更新记录 | 终态持久化、不覆盖原失败、损坏记录阻止新操作、未完成操作阻止重入、手工确认保留 interrupted 且不授予重启 |
+| 原生观察进程 | 使用真实编译的无害 EXE；成功、启动失败、安装失败、回滚不完整、父进程退出超时；检查持久结果和暂存清理 |
+| 界面 | 交接不等于已安装；CLI 版本诊断及需修复结果可见；不安全时不提供重启 |
+
+静态验收包括 workspace、Desktop GUI/headless all-target Clippy（`-D warnings`）、两套 fmt、Desktop ESLint/typecheck、PowerShell 语法解析、文档及 diff 检查。测试只编译、不本地执行；Windows 脚本只解析、不在 macOS 模拟执行。未新增启动脚本 Action 或启动脚本 CI。真实签名包、安装器退出/恢复、原生沙箱及三平台生命周期仍需现有 CI 和实机验收。
 
 ## 11 发布条件与回退
 

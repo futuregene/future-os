@@ -147,7 +147,12 @@ fn try_capture_after(thread_id: &str, run_id: &str) -> Result<Vec<String>, AppEr
 /// commits, so it is safe to run off the IPC path.
 pub fn materialize_changeset(thread_id: &str, run_id: &str, sensitive: Vec<String>) {
     if let Err(error) = try_materialize_changeset(thread_id, run_id, sensitive) {
-        eprintln!("FutureOS shadow review materialize failed: {error}");
+        // Name the Run and Thread: the same line used to read only
+        // "FOREIGN KEY constraint failed", which said neither what failed nor
+        // which Run it belonged to.
+        eprintln!(
+            "FutureOS shadow review materialize failed for run {run_id} (thread {thread_id}): {error}"
+        );
     }
 }
 
@@ -200,7 +205,9 @@ fn try_materialize_changeset(
     // §13: surface changed sensitive files as metadata-only rows (no content).
     append_sensitive_rows(&mut diff, &sensitive);
 
-    store::upsert_run_changeset(UpsertRunChangesetInput {
+    // `None` means a parent row was deleted while this was in flight (the
+    // conversation went away); there is nothing to attach a changeset to.
+    let _ = store::upsert_run_changeset(UpsertRunChangesetInput {
         run_id: run_id.to_string(),
         thread_id: thread_id.to_string(),
         workspace_id: Some(ctx.workspace_id.clone()),
@@ -256,7 +263,10 @@ pub fn retry(run_id: &str) -> Result<(), AppError> {
     };
     let omitted_files = after.omitted_count;
 
-    store::upsert_run_changeset(UpsertRunChangesetInput {
+    // A deleted conversation (or a Run deleted by retention) can take the
+    // parents away between the reads above and this write. The user asked for
+    // this retry, so say so rather than returning an empty review.
+    if store::upsert_run_changeset(UpsertRunChangesetInput {
         run_id: run_id.to_string(),
         thread_id,
         workspace_id: Some(ctx.workspace_id),
@@ -273,7 +283,15 @@ pub fn retry(run_id: &str) -> Result<(), AppError> {
         confidence: "normal".to_string(),
         error_message: None,
         files: diff.files,
-    })?;
+    })?
+    .is_none()
+    {
+        return Err(
+            "The Run or its conversation was deleted; there is nothing to re-materialize."
+                .to_string()
+                .into(),
+        );
+    }
     Ok(())
 }
 

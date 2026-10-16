@@ -9,7 +9,7 @@
 Desktop will run the complete Agent inside its Rust process when the default
 local endpoint has no external Agent and it acquires the instance lock.
 Compatible external services remain attached; incompatible or unreachable lock
-owners produce explicit errors. External Agents and CLI, TUI, channels and loop
+owners produce explicit errors. External Agents and CLI, TUI, channels and the goal plane
 clients retain the shared RPC interface. The change reduces Windows startup and
 upgrade failures caused by divergent Desktop and sidecar lifetimes while
 preserving instance locking, tools, persistence and external client access.
@@ -40,7 +40,7 @@ connection does not authorize binding an address.
 ### 1.2 Exit and clients
 
 Exiting Desktop in embedded mode stops every task on that Agent, including
-tasks initiated by CLI, TUI, mobile, channels and loop. The exit prompt uses an
+tasks initiated by CLI, TUI, mobile, channels and the goal plane. The exit prompt uses an
 Agent-wide activity snapshot covering running work, queues, approvals and
 long-running session mutations. Choosing to keep running must not close
 admission early.
@@ -108,7 +108,7 @@ headless Desktop ─┼── future-agent service ── RPC, runtime, storage,
 future agent ─────┤
 future-agent ─────┘
 
-CLI / TUI / channels / loop / Desktop bridge ── shared RPC ── active Agent
+CLI / TUI / channels / goal / Desktop bridge ── shared RPC ── active Agent
 ```
 
 Extract `agent/src/service/`, with suggested modules for configuration,
@@ -203,18 +203,20 @@ environment consistently. Cover case, symlinks/junctions, UNC, empty and
 relative paths. Locking must protect the same physical data directory even
 when endpoint spellings differ.
 
-Keep Desktop and Agent locks separate. Align the host lock with the actual
-Desktop data root: current `InstanceGuard` uses HOME `.future/app`, which must
-be reconciled with the `FUTURE_HOME` override. Single-instance window activation
-must respect the same instance scope.
+Keep Desktop and Agent locks separate. Desktop storage, the host lock,
+single-instance window activation, scratch workspaces, pairing and identity
+resolve the same valid absolute `FUTURE_HOME`; without an override the existing
+HOME/USERPROFILE `.future` paths remain unchanged. Root selection never moves
+legacy files or changes database formats. See the review corrections in 10.15.
 
 ### 4.2 Compatibility and reconnection
 
-Read readiness before business calls. The minimum solution preserves the
-repository's coordinated upgrade contract and prevents false compatibility
-between different development builds sharing a numeric version. If additional
-fields are required, define explicit protocol version and capabilities in the
-shared RPC crate.
+Read readiness before business calls. Compatibility requires matching release
+core, RPC protocol version and storage schema. Different development hashes
+with that same contract may connect; the hash is diagnostic identity, not a
+separate compatibility gate. Business protocol changes must update the shared
+RPC protocol contract. An explicit `agent_stopping` reply blocks connection and
+local startup without misreporting a version incompatibility.
 
 Unknown readiness, missing required fields or unsupported protocol is an
 explicit incompatibility. Additional identity fields do not imply mixed-version
@@ -478,7 +480,7 @@ Phase one implementation: branch `codex/agent-service-layer`, implementation bas
 
 [Service](../../agent/src/service/mod.rs) owns the extraction while [CLI](../../agent/src/cli.rs) retains argument, maintenance, logging, signal and profiling policy. [Startup](../../agent/src/service/startup.rs) reuses engine, SQLite import and AppState initialization. [Instance](../../agent/src/service/instance.rs) preserves the lock path, Windows byte protocol and metadata fields without leaking the lock allocation. Ready follows initialization, binding and the server's first successful poll. Shared Unix transport now cleans an unpolled bound socket on cancellation.
 
-[Isolated regression fixtures](../../agent/tests/service_startup.rs) cover real TCP/local IPC, contention, duplicate initialization in one scope, cancellation, corrupt storage, occupied endpoints and original-format import. Existing lifecycle tests moved with their implementation; service-wide shutdown tests now cover approval interruption. Local Agent/RPC and CLI/TUI/channels/loop all-target Clippy passed with warnings denied, along with the `dhat-heap` feature check, formatting and diff checks. Local unit/integration execution on 2026-10-14 is recorded in section 10.4; native Windows/Linux and CI outcomes remain pending.
+[Isolated regression fixtures](../../agent/tests/service_startup.rs) cover real TCP/local IPC, contention, duplicate initialization in one scope, cancellation, corrupt storage, occupied endpoints and original-format import. Existing lifecycle tests moved with their implementation; service-wide shutdown tests now cover approval interruption. Local Agent/RPC and CLI/TUI/channels/goal all-target Clippy passed with warnings denied, along with the `dhat-heap` feature check, formatting and diff checks. Local unit/integration execution on 2026-10-14 is recorded in section 10.4; native Windows/Linux and CI outcomes remain pending.
 
 Phase one preserved storage implementation/schema, protobuf, binary entry points and CLI flag declarations. Phase two adds explicit writer closure and work registration while preserving schema, storage formats and business RPC. Global broadcaster subscriptions terminate through a service shutdown signal. Dropping serving produces a failed stop rather than evidence of complete cleanup. Phase four integrates Desktop.
 
@@ -525,7 +527,7 @@ The data-root identifier hashes the canonical directory path with SHA-256; it is
 
 CLI/TUI retain their existing display versions but use shared `EXPECTED_AGENT_VERSION` for gates. Coordinated builds use injected `FUTURE_VERSION`; bare Cargo development builds use the RPC/Agent `0.0.0` release baseline, avoiding false rejection due to CLI/TUI's `0.0.2` display scheme. Isolated real-service fixtures verify this shared expected version. Future changes to the Cargo release baseline must keep Agent/RPC aligned.
 
-GUI, headless, CLI and TUI business commands and subscriptions use `VerifiedAgentClient`, rechecking readiness before dispatch. Verified Channels cannot transparently reconnect to replacement servers; a new physical connection requires a fresh handshake. Requests carry expected-instance and expected-root headers, validated by the Agent before command conversion, admission or subscription initialization. Legacy direct RPC callers may omit headers; gated clients always send both. Desktop caches distinguish endpoint/root configuration, discard failed verification and display specific blocking reasons. channels/loop retain their existing client interfaces and have not switched wrappers in this phase.
+GUI, headless, CLI and TUI business commands and subscriptions use `VerifiedAgentClient`, rechecking readiness before dispatch. Verified Channels cannot transparently reconnect to replacement servers; a new physical connection requires a fresh handshake. Requests carry expected-instance and expected-root headers, validated by the Agent before command conversion, admission or subscription initialization. Legacy direct RPC callers may omit headers; gated clients always send both. Desktop caches distinguish endpoint/root configuration, discard failed verification and display specific blocking reasons. channels/goal retain their existing client interfaces and have not switched wrappers in this phase.
 
 Only an absent/refused default local endpoint with an available instance lock yields an opaque `LocalStartPermit`. Failed handshakes, version/protocol/schema/root mismatches, held/unavailable locks, permission or unknown connection errors and explicit endpoint failures return errors. Preflight does not create/rewrite lock files or initialize databases. `AgentService::with_local_start` consumes the permit and reacquires the authoritative lock before host initialization, closing startup races. Existing sidecar launches also recheck permission and explicitly pass `--grpc-addr auto`. This historical phase-three record predates phase-four Desktop hosting and did not change the default hosting mode.
 
@@ -638,7 +640,7 @@ agree; no implicit external prelaunch is required for successful verification.
 | D1 | Reopen after cancellation, forced exit or shutdown crash | Consistent transactions, interrupted-run recovery, retained history |
 | C1 | CLI embedded connection, Desktop exit, reconnect/replacement | Clear cancellation/disconnect, fresh handshake, stale cursor/queue reset |
 | C2 | External exit/restart, explicit unreachable endpoint, incompatible reconnect | Ownership respected, no endpoint takeover, effective gates |
-| C3 | Mobile/channels/loop streams across shutdown and restart | Disconnect/cancellation is not success; approvals/queues converge; new instance is validated |
+| C3 | Mobile/channels/goal streams across shutdown and restart | Disconnect/cancellation is not success; approvals/queues converge; new instance is validated |
 | U1 | Download, signature, extraction or launch failure | Early failure keeps tasks; post-stop failure has recovery |
 | U2 | CLI/skill process, old orphan sidecar, other-install owner | File/scope/lease/outcome checks prevent mixed versions |
 | U3 | Copy/loader failure, reinstall, uninstall-first upgrade, cleanup timeout | Executable rollback, retained data, truthful install/uninstall results |
@@ -1019,7 +1021,7 @@ platforms at `07e3c932`:
 Counts include fixture entry points and are not all disjoint product scenarios.
 Reported suite seconds include compilation, not startup performance. Summaries
 and logs are archived under `agent/target/phase7-ci-results/native-{linux,windows,macos}/`.
-Agent, CLI/TUI, channels/RPC/loop/tasks, frontend and fmt/Clippy checks passed.
+Agent, CLI/TUI, channels/RPC/goal/tasks, frontend and fmt/Clippy checks passed.
 Linux GUI full tests had one failure in
 `scheduler::tests::a_spawned_job_fires_at_its_deadline_and_reanchors` (1,804 passed,
 1 failed, 12 ignored). That test lacked the fixture guard used for global task
@@ -1254,6 +1256,197 @@ Use app exit for coordinated shutdown. Actual headless signal cleanup remains
 unchanged. Outstanding phase-seven real installation, release signing, native
 sandbox and performance acceptance remain required; code cleanup is not release
 approval.
+
+### 10.15 Self-review corrections (2026-10-15)
+
+Following the read-only review of merged `639a5fd6`, the user authorized fixing
+the four P2 and four P3 findings without local unit-test execution. Implementation
+keeps the existing lock winner, compatibility, current-user IPC, complete cleanup
+and failed-install barriers, as well as the existing database schema/formats.
+
+| Finding | Correction and regression coverage |
+| --- | --- |
+| P2-1: clean cancellation before readiness becomes sticky failure | Poll readiness, serving and drain in one loop; accept a `Stopped` report, continue service cleanup, and normalize only typed startup cancellation. A native child fixture completes shutdown before the first serve poll; the earlier cancellation fixture now asserts a successful stop. |
+| P2-2: submitted-run ownership leaks after collector/queue exits | Release on terminal observer events and verified reconciliation. A separate bounded ownership sweep covers runs absent from locally active rows. Queued, active and unknown runs remain tracked; prompt acknowledgment cannot recreate a terminal entry. Tests cover queued-to-terminal ownership and the acknowledgment race. |
+| P2-3: external attachment bypasses release environment policy | Release rejects a non-production local configuration before reporting external readiness, without rewriting shared authentication or keys. Only the lock owner applies existing defaults. Tests verify release rejection, development acceptance and byte-for-byte unchanged auth. |
+| P2-4: stopping response misclassified as incompatible | Classify the existing `agent_stopping` error code as `StartupBlocked`; never authorize embedded fallback. A mock RPC fixture checks the classification and absence of business mutations. |
+| P3-1: split Desktop data roots | Align app database, host lock, GUI namespace, scratch workspaces, pairing and identity with valid absolute FUTURE_HOME. Default paths and identity migration remain unchanged. Tests isolate two roots, preserve legacy bytes and protect credentials in both selected and default roots. No automatic data migration. |
+| P3-2: duplicated schema constants drift | A compile-time assertion ties the Agent database schema constant to the advertised RPC storage contract. Schema stays at 6. |
+| P3-3: early caller wait produces false sticky failure | Check remaining admitted commands at the final cleanup barrier. Tests distinguish a command finishing during later cleanup from one still active after cleanup; the latter still blocks update/reset/restart. |
+| P3-4: development hash documentation contradicts implementation | Preserve release-core/protocol/schema compatibility and document it accurately. Tests accept different development hashes only with that contract, and reject protocol/schema mismatch. |
+
+Direct login, account profile/balance and skill-guide HTTP requests also use
+the read-only channel check, even when Agent startup did not reach readiness.
+
+Static validation covers workspace, GUI and headless all-target Clippy with
+`-D warnings`, both fmt checks and documentation consistency. New tests are
+compiled, not executed locally; their runtime acceptance remains for CI. The
+user's successful macOS in-app review exercises a real normal workflow, but does
+not close the installation, signing, sandbox or performance release gates in
+section 10.9. No startup-script Action or startup-script CI suite is added.
+
+### 10.16 Consolidated review: phases A and B (2026-10-15)
+
+The user authorized the shared connection gate, Unix endpoint ownership and
+external-run stop confirmation on top of the existing corrections, without local
+unit-test execution. Earlier counts and protocol versions describe their recorded
+commits, not this round's runtime acceptance.
+
+**A: connection contract.** RPC protocol advances from 1 to 2. Database schema
+remains 6; protobuf fields and storage formats are unchanged. Only
+`get_agent_readiness` is exempt from the business gate. All commands, including
+read-only business calls, and subscriptions require client version, protocol,
+schema, expected instance and data-root metadata. Missing, partial, malformed or
+mismatched contracts fail before dispatch or session hydration. Release-core
+compatibility remains; development hashes need not match. Metadata does not
+replace Unix UID/socket protections or Windows named-pipe DACLs.
+
+Channels now uses `VerifiedAgentClient` like CLI/TUI/Desktop: readiness is checked
+and instance identity bound for every command/subscription, with no transparent
+physical reconnection into a replacement instance. A new Channels client performs
+a fresh handshake and creates a fresh run map; old clones remain fenced to their
+old instance. Explicit endpoints stay attach-only. Incompatibility, stopping or
+an unavailable lock owner never authorizes embedded fallback. Old clients must
+upgrade; headerless business access is no longer an implicit compatibility path.
+
+**B: Unix endpoints.** Acquisition order is data-root instance lock, endpoint
+lease, then SQLite initialization. A persistent `<socket>.owner.lock` file holds
+an independent OS exclusive lock until listener cleanup. It is never unlinked;
+it neither replaces the Agent lock nor migrates data. Symlink, non-regular,
+foreign-owner and hard-linked lease files are rejected. Only a current-user
+socket refusing connections is considered stale. Live endpoints, timeouts,
+permission errors, non-socket occupants and changed identities block replacement.
+Cleanup compares the original device/inode so an old listener cannot unlink a
+replacement. Directory/socket modes remain 0700/0600 and peers require the same
+UID. Windows retains its existing first-pipe-instance/DACL behavior. Legacy
+services without leases are still checked for liveness; the lease does not
+claim protection against malicious same-UID filesystem mutation.
+
+**B: external runs.** After closing admission, Desktop cancels only its own exact
+session/run IDs, preserving the external Agent and other clients. A cancellation
+acknowledgment is not completion: authoritative state must confirm that exact
+run's terminal. Active/queued evidence overrides terminal snapshots. Another
+run's terminal cannot satisfy cleanup. A normal `run_not_queued` race can settle
+through abort and verification. Up to eight runs are processed concurrently
+within one three-second deadline, each RPC capped at 500 ms. Unprocessed or
+unverified entries return identified failures and remain in the ledger. Existing
+sticky cleanup failure blocks installation, reset and restart. Embedded mode
+continues to drain all clients through the Agent owner.
+
+| Regression scope | Required behavior |
+| --- | --- |
+| Server gate | Headerless, individually missing and incompatible version/protocol/schema/instance/root requests cannot mutate or hydrate sessions; readiness remains discoverable |
+| Channels | Incompatible handshake dispatches no business command; cached clients reject a replacement instance |
+| Native service | Raw clients may discover a real listener but cannot mutate or subscribe without the contract; verified clients continue normally |
+| Unix endpoint | Cross-process lease exclusion, pre-bind contention, live legacy listener preservation, stale recovery, symlink lease/non-socket rejection, old cleanup preserving replacement sockets |
+| Host | A reserved endpoint fails startup before the business database is initialized |
+| External cleanup | Queue-to-active races, exact terminal identity, wrong-run terminal rejection, unknown-state timeout, retained ledger and installation barrier |
+
+Validation is static only: workspace and GUI/headless all-target Clippy with
+`-D warnings`, both fmt checks, documentation and diff checks. Tests compile but
+are not run locally; runtime acceptance remains for existing CI. No startup
+script Action or startup-script CI suite is added. Consolidated phases C/D
+(shutdown coordinator, instance control plane, cooperative cancellation, CLI
+capabilities and durable update status) are not claimed complete here. Real
+installation, signing and native sandbox acceptance remain release gates.
+
+### 10.17 Consolidated review: phase C (2026-10-15)
+
+Phase C builds on A/B and the previous corrections: one Desktop stop coordinator,
+background progress, cooperative slow-start cancellation and instance-owned
+control-plane state. No local unit tests run. Test descriptions below identify
+new code and CI acceptance requirements, not executed runtime evidence.
+
+**One stop, shared result.** GUI exit, headless signals, updates, reset,
+environment changes and restart share one process-local operation. The first
+request closes business admission and fixes its ID, reason and twenty-second
+deadline. Later callers share the result without restarting cleanup or extending
+the deadline. A native cleanup worker performs ordered stages; an independent
+native watchdog needs no Tokio, GUI, logger or SQLite acknowledgment. Timeout
+and panic produce sticky failure; late success cannot reopen the barrier. Stage
+budgets are capped by the common deadline while preserving producer, remote,
+run, terminal, Agent, background-task and final-caller dependencies.
+
+**GUI and progress.** Main-window close and ExitRequested are intercepted while
+the window can still render. A background waiter observes cleanup; final Exit
+only requests fallback stop and does not synchronously drain. Status queries and
+`desktop-shutdown-progress` events expose operation ID, stage, elapsed time and
+terminal errors. The UI shows stages without invented percentages. Stale ready
+queries or running events cannot replace an observed terminal. Normal cleanup
+failure asks whether to end the process; explicitly forced quit logs failure
+and exits. Updates, reset and restart still require successful cleanup; force
+quit authorization is never installation permission.
+
+**Exclusive maintenance.** A separate action guard serializes reset, environment
+change, restart and update follow-up work after the shared barrier. Closing the
+window cannot exit between cleanup and installer handoff; the action owner
+authorizes exit after safe cleanup. Cleanup failure still permits the user to
+end the process. Blocking reset/restart invoke work moves off the GUI dispatch
+thread without changing command names or return contracts. Durable update
+recovery records belong to phase D; no timed process kill is introduced.
+
+**Slow-start cancellation.** The same `StartupCancellation` flows through Manager,
+SQLite initialization and legacy import. Checks occur before database opening,
+during schema transaction stages/before commit, directory enumeration, chunked
+reading/hashing, line parsing and session import transaction boundaries.
+Cancellation is distinct from invalid-source diagnostics: it is never persisted
+as skipped and cannot prematurely mark the batch complete. Committed sessions
+survive; unfinished transactions roll back and existing import records support
+resume. Synchronous OS/SQLite calls are not force-killed; if one stalls beyond
+the deadline, failure is reported and ownership remains until safe teardown or
+process exit.
+
+**Instance control plane.** `AppState` owns a `ControlPlane` containing the global
+control-event broadcaster, config revision and provider command lock. Global now
+means all sessions within that instance. Producers/subscribers select their
+instance explicitly, without a static current-instance forwarding layer. New
+instances start revision zero; old subscriptions receive no new-instance events.
+The initial ping includes the instance ID, and Desktop's forwarded config event
+IDs include it. Existing event/storage shapes stay compatible; database schema
+remains 6 and the RPC protocol remains A's version 2.
+
+| Regression scope | Added or strengthened coverage |
+| --- | --- |
+| Shared stop | Concurrent callers share one worker, initial reason and result; closed admission; independent deadline; immutable failure after late completion; worker panic; maintenance exclusion/release |
+| GUI progress | Stage and failure rendering; stale ready/running updates cannot overwrite terminal state; listener disposal |
+| Startup cancellation | Pre-cancel creates no database; cancelled parse is not source corruption; native Unix child cancels while reading a second source, preserves the first commit without skipped/completion markers and resumes on restart |
+| Control plane | Independent revisions and subscriptions, old-channel closure on instance release; existing global RPC/session-event fixtures observe explicit instances |
+
+Static validation uses workspace and GUI/headless all-target Clippy with
+`-D warnings`, both fmt checks, Desktop ESLint/typecheck, documentation and diff
+checks. New tests compile but are not executed locally. UI responsiveness,
+three-platform exits and native cancellation await existing CI/manual acceptance.
+No startup-script Action or startup-script CI is added. Phase D CLI capabilities,
+durable update outcomes and real signing/install/sandbox release acceptance remain.
+
+### 10.18 Consolidated review phase D (2026-10-15)
+
+Before submission, merge the latest remote main while retaining its settled-run reconciliation and FutureOS-home Unix endpoint selection/diagnostics alongside this work's ownership ledger and endpoint lease. The goal control plane now also uses the shared verified client for commands and subscriptions. Its mocks implement the same contract, with regressions rejecting incompatible Agents and fencing replaced instances before business calls or subscriptions. These tests are not run locally.
+
+This phase adds CLI capability discovery, durable update outcomes and failure recovery. No local unit tests are run. Regression descriptions below specify code coverage and CI acceptance, not successful real-package installation evidence.
+
+CI follow-up corrects Windows PowerShell 5.1 coercing a null `File.Replace` backup argument into an empty pathname, retaining same-directory atomic replacement and a backup on replacement failure. It also completes shutdown-event/goal-readiness mocks and updates reconciliation assertions to retain runs and ownership on rejected queries. An existing HTTP redirect fixture exposed a connection-reuse race: drain the request, declare connection closure, explicitly reject one redirect and join the server thread. Production classification and strong assertions remain unchanged; the test is neither removed nor retried until green. Real CLI smoke exposed a zero-second profiling timer closing admission before the serving future's first poll. The CLI now polls the service and awaits its shared readiness notification before enabling timers and exit-signal handling, without delays or relaxed shutdown admission. Existing zero-second shutdown and default-IPC restart regressions run in CI.
+
+**Read-only CLI discovery.** `future version --json` preserves build information and adds versioned `desktopCapabilities`: the Agent release core, protocol, storage schema and explicit command capabilities. This exact argument combination returns before runtime, logging, service or storage initialization. Desktop retains adjacent bundle, development artifact and absolute PATH priority. It rejects empty placeholders, directories and non-executable files. Structured probing uses no shell, has a three-second deadline, and terminates discovery when stdout/stderr exceed 64 KiB. File-backed capture avoids blocked pipes and unbounded memory reads. Windows validates the PE header before probing; tests never execute fabricated EXEs.
+
+The descriptor includes path, source, display version and capabilities. Its cache uses physical path, file size, timestamps and Unix inode/ctime, rechecking identity after discovery. Timestamps invalidate cached results; they never imply a version. Failed probes can retry after five seconds. Display identity and the Agent connection contract remain separate: different development commit suffixes are acceptable, but incompatible release cores, protocol/schema or missing capabilities block execution with path/version/remediation diagnostics. An incompatible selected tool does not trigger a silent fallback to another CLI. Skill initialization explicitly requires `skills.init`. Missing tools do not prevent the embedded Agent from running, and no global CLI is automatically installed or replaced.
+
+**Durable operation records.** Under the selected data root, `app/updates/<operation-id>/result.json` records source/target versions, phase, outcome, diagnostics, restart permission and manual repair acknowledgement; `latest.json` selects the latest operation. Same-directory temporary files, flush and atomic replacement publish results without changing either database. Checking, downloading, verified payload, cleanup, waiting for exit, installation and terminal results are distinct. Unreadable records, unresolved handoffs and repair-required outcomes cannot count as success or be silently overwritten. Pre-install failures retain diagnostics and permit another signed download. Native workers retain the install guard and operation reference when an invoke disappears; unfinished operations dropped before handoff record interrupted rather than success.
+
+**Windows handoff.** The observer takes over a persisted awaiting-exit record and holds an exclusive file handle. Readiness means the observer is ready, never that installation succeeded; Rust stops writing outcomes after handoff. The observer waits for the exact parent handle, for 60 seconds by default. Timeout records not-installed without starting setup or terminating Desktop. Once started, setup is awaited without a timed kill. Exit zero records installed; failures retain diagnostics and restoration decisions. Records and `app/logs/update-recovery.log` survive staging cleanup. Staged executables are not persisted as runnable recovery instructions: retries download, verify signatures and clean up again.
+
+**Restoration and restart.** Windows compares the complete installation inventory and file SHA-256 hashes, rejecting reparse points. Missing, changed or additional files disable automatic relaunch. Only complete restoration after parent exit permits requesting the old program to start. A successful launch request is not an application health check; launch failure updates diagnostics. macOS/Linux save the original program and discovered CLI fingerprint alongside the operation; a later update restart request rechecks that snapshot instead of trusting a stale boolean. Cleanup failures, action exclusion, signature verification and Agent ownership gates remain in force.
+
+**Diagnostics and UI.** `app_maintenance_status` queries tool identity and durable results independently of Agent business admission. Update settings show path/version mismatches, operation identity, phase and diagnostics. A pending observer never produces an installed message. Because shutdown unmounts settings, a separate maintenance panel remains on the update shutdown screen; it offers restart only for installed or failed-restored results when restart gates permit it, without reopening business admission. Unknown or incomplete outcomes remain stopped. After manual repair, explicit acknowledgement preserves the original outcome and diagnostics and adds repairAcknowledged; it neither changes the outcome to installed nor grants restart permission. An active installation or Windows observer handle prevents acknowledgement. Lost observers remain unconfirmed; PID guesses, elapsed time and target-version matches never prove success.
+
+| Regression scope | Added or strengthened coverage |
+| --- | --- |
+| CLI contract | Development suffixes, protocol/schema mismatch, missing capabilities, legacy/invalid JSON; a real CLI subprocess probes a nonexistent data root without creating it |
+| Update journal | Durable terminal results, immutable original failure, corrupt-record rejection, unfinished-operation exclusion, repair acknowledgement retaining interrupted and denying restart |
+| Native observer | Real compiled harmless EXE fixtures for success, launch failure, installer failure, incomplete rollback and parent-exit timeout; durable outcomes and staging cleanup |
+| UI | Handoff cannot claim installed; CLI mismatch and repair diagnostics remain visible; unsafe results offer no restart |
+
+Static acceptance covers workspace and GUI/headless all-target Clippy (`-D warnings`), both fmt checks, Desktop ESLint/typecheck, PowerShell parsing, documentation and diff checks. Tests are compiled but not run locally; Windows scripts are parsed without executing them on macOS. No launcher Action or launcher CI is added. Signed packages, installer exit/recovery, native sandbox behavior and platform lifecycle acceptance still require existing CI and real machines.
 
 ## 11 Release conditions and rollback
 

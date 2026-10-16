@@ -64,7 +64,6 @@ function task(overrides: Partial<TaskView> = {}): TaskView {
     conversationMode: "workspace",
     triggerKind: "schedule",
     trigger: { mode: "daily", time: "09:00" },
-    depJoin: "all",
     depCount: 0,
     nextDueAt: 1_700_000_000_000,
     queued: false,
@@ -141,33 +140,15 @@ function backendFor(
   switch (command) {
     case "list_tasks":
       return tasks;
-    // A write answers with the stored task (the shape the backend returns), so
-    // a save that creates one can go on to write its dependency edges.
+    // A write answers with the stored task (the shape the backend returns).
     case "create_task":
     case "update_task":
       return tasks[0];
     case "list_task_runs":
       return args?.id === "tsk_1" ? runs : [];
-    case "list_task_deps":
-      return args?.id === "tsk_1"
-        ? [{ upstreamTaskId: "tsk_up", upstreamName: "upstream", on: "success", satisfied: false }]
-        : [];
     default:
       return undefined;
   }
-}
-
-/** A second live task, so a dependency has somewhere to point. */
-function upstreamTask(overrides: Partial<TaskView> = {}): TaskView {
-  return task({ id: "tsk_up2", name: "upstream two", depJoin: "all", ...overrides });
-}
-
-/** The `[command, args]` pairs a mock recorded, in order. */
-function calls() {
-  return mocks.invokeCommand.mock.calls.map(([command, args]) => ({
-    command: command as string,
-    args: args as Record<string, unknown> | undefined,
-  }));
 }
 
 async function renderView(
@@ -205,7 +186,7 @@ function rows(container: HTMLElement) {
 
 /**
  * The detail's 设置 disclosure. The page opens on what the task did, so a test
- * that reads the definition (model, prompt, dependencies…) has to unfold it —
+ * that reads the definition (model, prompt, working directory…) has to unfold it —
  * which is also what pins the default (`opens on the run history`).
  */
 function settingsToggle(container: HTMLElement) {
@@ -252,26 +233,6 @@ function triggerModeSelect(container: HTMLElement) {
   return select;
 }
 
-/** A control by its aria-label (the dependency rows carry names in theirs). */
-function labelled(container: HTMLElement, label: string) {
-  const control = container.querySelector<HTMLInputElement | HTMLSelectElement>(
-    `[aria-label="${label}"]`,
-  );
-  if (!control)
-    throw new Error(`no control labelled ${label}`);
-  return control;
-}
-
-/**
- * The dependency editor, when it is on screen: it lives inside the trigger
- * fieldset and appears with the `dependency` trigger mode (or when the task
- * already has upstreams).
- */
-function dependencyFieldset(container: HTMLElement): HTMLElement | undefined {
-  const picker = container.querySelector("[aria-label=\"Add an upstream task\"]");
-  return picker?.closest("fieldset") ?? undefined;
-}
-
 async function click(button: HTMLButtonElement | undefined) {
   expect(button, "button must exist").toBeDefined();
   await act(async () => {
@@ -315,7 +276,7 @@ describe("tasksView", () => {
 
   it("says so when there are no tasks", async () => {
     const { container } = await renderView([]);
-    expect(container.textContent).toContain("No tasks yet");
+    expect(container.textContent).toContain("No scheduled tasks yet");
   });
 
   // Pressing "run now" while a run is in flight leaves the request queued for
@@ -353,14 +314,11 @@ describe("tasksView", () => {
     expect(container.textContent).toContain("store unreadable");
   });
 
-  it("opens a task's detail with runs and dependencies", async () => {
+  it("opens a task's detail with its runs", async () => {
     const { container, onOpenThread } = await renderView();
     await openDetail(container);
 
     expect(container.textContent).toContain("summarize yesterday");
-    // Dependencies show as waiting until the upstream run lands.
-    expect(container.textContent).toContain("upstream");
-    expect(container.textContent).toContain("waiting");
     // The run ledger shows the result summary and links to its conversation.
     expect(container.textContent).toContain("all good");
     await click(buttonByText(container, "Open"));
@@ -368,7 +326,7 @@ describe("tasksView", () => {
   });
 
   // The detail is opened to see what the task did, so the run ledger leads and
-  // the definition (settings, prompt, dependencies) is one press away.
+  // the definition (settings, prompt) is one press away.
   it("opens on the run history, with the definition folded", async () => {
     const { container } = await renderView(
       [task()],
@@ -383,7 +341,6 @@ describe("tasksView", () => {
     expect(text).toContain("all good");
     // Folded, not just scrolled past: none of the definition is in the DOM.
     expect(text).not.toContain("summarize yesterday");
-    expect(text).not.toContain("upstream");
     expect(text).not.toContain("Default model");
 
     await click(settingsToggle(container));
@@ -402,178 +359,6 @@ describe("tasksView", () => {
     expect(text).toContain("High");
     expect(text).toContain("Working directory");
     expect(text).toContain("/tmp/repo");
-  });
-
-  // A task can be created from the editor with the upstream it waits on. The
-  // edges are written once the task exists (an edge needs both ids).
-  it("creates a task that depends on another task", async () => {
-    const { container } = await renderView([task(), upstreamTask()]);
-    await click(buttonByText(container, "New task"));
-    await setValue(field(container, "Name") as HTMLInputElement, "downstream");
-    await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
-    await chooseModelAndThinking(container);
-
-    // The dependency editor belongs to the trigger choice: it is not there
-    // while the task runs on a schedule or on request.
-    expect(dependencyFieldset(container)).toBeUndefined();
-    await setValue(triggerModeSelect(container), "dependency");
-    const fieldset = dependencyFieldset(container)!;
-
-    const picker = labelled(fieldset, "Add an upstream task") as HTMLSelectElement;
-    expect([...picker.options].map(option => option.textContent)).toEqual([
-      "Pick an upstream task",
-      "daily report",
-      "upstream two",
-    ]);
-    await setValue(picker, "tsk_up2");
-    await click(buttonByText(fieldset, "Add"));
-    expect(dependencyFieldset(container)!.textContent).toContain("upstream two");
-
-    mocks.invokeCommand.mockClear();
-    backend([task(), upstreamTask()]);
-    await click(buttonByText(container, "Save"));
-
-    const sent = calls();
-    expect(sent.find(call => call.command === "create_task")?.args).toMatchObject({
-      input: { depJoin: "all" },
-    });
-    expect(sent).toContainEqual({
-      command: "set_task_dep",
-      args: { id: "tsk_1", upstreamTaskId: "tsk_up2", on: "success" },
-    });
-  });
-
-  it("edits and removes a task's dependencies", async () => {
-    const { container } = await renderView([
-      task({ triggerKind: "manual", trigger: {}, nextDueAt: null, depJoin: "all", depCount: 1 }),
-      upstreamTask(),
-      task({ id: "tsk_up3", name: "upstream three", depJoin: "all" }),
-    ]);
-    await click(rows(container)[0]);
-    await click(buttonByText(container, "Edit"));
-
-    // A task started by its upstreams opens on the dependency trigger, with the
-    // stored edge and its condition.
-    expect((triggerModeSelect(container) as HTMLSelectElement).value).toBe("dependency");
-    const fieldset = dependencyFieldset(container)!;
-    expect(fieldset.textContent).toContain("upstream");
-    const condition = labelled(fieldset, "When upstream finishes") as HTMLSelectElement;
-    expect(condition.value).toBe("success");
-    await setValue(condition, "failure");
-
-    // A second upstream makes the join policy meaningful, so it appears.
-    await setValue(labelled(fieldset, "Add an upstream task") as HTMLSelectElement, "tsk_up3");
-    await click(buttonByText(fieldset, "Add"));
-    const join = labelled(dependencyFieldset(container)!, "With several upstreams, run") as HTMLSelectElement;
-    await setValue(join, "any");
-
-    mocks.invokeCommand.mockClear();
-    backend([task()]);
-    await click(buttonByText(container, "Save"));
-
-    const sent = calls();
-    expect(sent).toContainEqual({
-      command: "set_task_dep",
-      args: { id: "tsk_1", upstreamTaskId: "tsk_up", on: "failure" },
-    });
-    expect(sent).toContainEqual({
-      command: "set_task_dep",
-      args: { id: "tsk_1", upstreamTaskId: "tsk_up3", on: "success" },
-    });
-    expect(sent.find(call => call.command === "update_task")?.args).toMatchObject({
-      input: { depJoin: "any" },
-    });
-
-    // Dropping the stored edge removes it rather than leaving it behind.
-    await click(rows(container)[0]);
-    await click(buttonByText(container, "Edit"));
-    await click(buttonByText(dependencyFieldset(container)!, "Remove"));
-    mocks.invokeCommand.mockClear();
-    backend([task()]);
-    await click(buttonByText(container, "Save"));
-    expect(calls()).toContainEqual({
-      command: "remove_task_dep",
-      args: { id: "tsk_1", upstreamTaskId: "tsk_up" },
-    });
-  });
-
-  // A refused edge (the backend sees a cycle the editor cannot) must not make
-  // the user create the task again: the task is stored, so the editor stays on
-  // update.
-  it("keeps a created task when its dependency is refused", async () => {
-    const { container } = await renderView([task(), upstreamTask()]);
-    await click(buttonByText(container, "New task"));
-    await setValue(field(container, "Name") as HTMLInputElement, "downstream");
-    await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
-    await chooseModelAndThinking(container);
-    await setValue(triggerModeSelect(container), "dependency");
-    await setValue(labelled(dependencyFieldset(container)!, "Add an upstream task") as HTMLSelectElement, "tsk_up2");
-    await click(buttonByText(dependencyFieldset(container)!, "Add"));
-
-    mocks.invokeCommand.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
-      if (command === "create_task")
-        return task({ id: "tsk_new", name: "downstream" });
-      if (command === "set_task_dep")
-        throw new Error("dependency cycle detected");
-      return backendFor([task(), upstreamTask()], command, args);
-    });
-    await click(buttonByText(container, "Save"));
-
-    expect(container.textContent).toContain("dependency cycle detected");
-    // Still in the editor, now editing the task that was created: saving again
-    // updates it instead of creating a second one.
-    mocks.invokeCommand.mockClear();
-    backend([task()]);
-    await click(buttonByText(container, "Save"));
-    const commands = calls().map(call => call.command);
-    expect(commands).toContain("update_task");
-    expect(commands).not.toContain("create_task");
-  });
-
-  it("offers no upstream candidates when this is the only task", async () => {
-    const { container } = await renderView([task({ depCount: 1 })]);
-    await click(rows(container)[0]);
-    await click(buttonByText(container, "Edit"));
-    const fieldset = dependencyFieldset(container)!;
-    expect(fieldset.textContent).toContain("no other task to depend on");
-    expect([...((labelled(fieldset, "Add an upstream task") as HTMLSelectElement).options)]).toHaveLength(1);
-  });
-
-  // The two trigger kinds are orthogonal in the store (a CLI task can have
-  // both), so a task with a schedule *and* upstreams keeps its edges on screen:
-  // an edge nobody can see is an edge nobody can remove.
-  it("keeps a schedule's upstreams visible, and says the task runs for both", async () => {
-    const { container } = await renderView([
-      task({ depJoin: "all", depCount: 1 }),
-      upstreamTask(),
-    ]);
-    await click(rows(container)[0]);
-    await click(buttonByText(container, "Edit"));
-    await setValue(triggerModeSelect(container), "daily");
-
-    const fieldset = dependencyFieldset(container)!;
-    expect(fieldset.textContent).toContain("also has its own schedule");
-    expect(fieldset.textContent).toContain("upstream");
-  });
-
-  // Switching the trigger to a schedule leaves the edges in the draft (they are
-  // written on save), so choosing a schedule does not silently delete them.
-  it("does not drop the upstreams when the trigger changes to a schedule", async () => {
-    const { container } = await renderView([task({ depCount: 1 }), upstreamTask()]);
-    await click(rows(container)[0]);
-    await click(buttonByText(container, "Edit"));
-    await setValue(triggerModeSelect(container), "daily");
-    mocks.invokeCommand.mockClear();
-    backend([task()]);
-    await click(buttonByText(container, "Save"));
-
-    const sent = calls();
-    expect(sent.find(call => call.command === "update_task")?.args).toMatchObject({
-      input: { triggerKind: "schedule" },
-    });
-    // The stored edge is kept, and not rewritten.
-    expect(sent.some(call => call.command === "remove_task_dep")).toBe(false);
-    expect(sent.some(call => call.command === "set_task_dep")).toBe(false);
   });
 
   it("falls back to the defaults when a task pins neither model nor thinking level", async () => {
@@ -648,14 +433,14 @@ describe("tasksView", () => {
     expect(mocks.invokeCommand).toHaveBeenCalledWith("set_task_enabled", { id: "tsk_1", enabled: false });
 
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-    await click(container.querySelector<HTMLButtonElement>("button[aria-label='Delete task']")!);
+    await click(container.querySelector<HTMLButtonElement>("button[aria-label='Delete scheduled task']")!);
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining("daily report"));
     expect(mocks.invokeCommand).toHaveBeenCalledWith("delete_task", { id: "tsk_1" });
 
     // A declined confirmation must not delete anything.
     mocks.invokeCommand.mockClear();
     confirm.mockReturnValue(false);
-    await click(container.querySelector<HTMLButtonElement>("button[aria-label='Delete task']")!);
+    await click(container.querySelector<HTMLButtonElement>("button[aria-label='Delete scheduled task']")!);
     expect(mocks.invokeCommand).not.toHaveBeenCalledWith("delete_task", { id: "tsk_1" });
   });
 
@@ -677,7 +462,7 @@ describe("tasksView", () => {
 
   it("creates a chat task that needs no directory", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     mocks.invokeCommand.mockClear();
 
     // Saving an incomplete form reports what is missing instead of calling out.
@@ -708,7 +493,7 @@ describe("tasksView", () => {
 
   it("refuses a save without a model or a thinking level", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     await setValue(field(container, "Name") as HTMLInputElement, "unconfigured");
     await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
     mocks.invokeCommand.mockClear();
@@ -731,7 +516,7 @@ describe("tasksView", () => {
 
   it("asks for a directory only for a workspace conversation", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     await setValue(field(container, "Name") as HTMLInputElement, "filed");
     await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
     await chooseModelAndThinking(container);
@@ -752,7 +537,7 @@ describe("tasksView", () => {
 
   it("says so when no model is enabled", async () => {
     const { container } = await renderView([], vi.fn(), []);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     expect(container.textContent).toContain("No models are enabled");
     expect(container.querySelectorAll("select")).not.toHaveLength(0);
   });
@@ -794,7 +579,7 @@ describe("tasksView", () => {
       extra: (container: HTMLElement) => Promise<void> = async () => {},
     ) {
       const { container } = await renderView([]);
-      await click(buttonByText(container, "New task"));
+      await click(buttonByText(container, "New scheduled task"));
       await setValue(field(container, "Name") as HTMLInputElement, "scheduled");
       await setValue(field(container, "Prompt") as HTMLTextAreaElement, "prompt");
       await chooseModelAndThinking(container);
@@ -850,7 +635,7 @@ describe("tasksView", () => {
 
   it("shows the short-month rule and the full-permission warning while editing", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     await setValue(triggerModeSelect(container), "monthly");
     expect(container.textContent).toContain("last day of the month");
     expect(container.textContent).toContain("full permission");
@@ -858,7 +643,7 @@ describe("tasksView", () => {
 
   it("adds and removes weekdays on a weekly trigger", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     await setValue(triggerModeSelect(container), "weekly");
 
     const boxes = [...container.querySelectorAll<HTMLInputElement>("input[type=checkbox]")];
@@ -929,7 +714,7 @@ describe("tasksView", () => {
 
   it("switches the session policy and says what reusing a conversation means", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     await setValue(field(container, "Conversation") as HTMLSelectElement, "existing");
     // Each run continues the same conversation, and nothing is compacted for
     // the user — the point of reusing it is the accumulated context.
@@ -939,11 +724,11 @@ describe("tasksView", () => {
 
   it("cancels the editor without saving", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     mocks.invokeCommand.mockClear();
     await click(buttonByText(container, "Cancel"));
     expect(mocks.invokeCommand).not.toHaveBeenCalledWith("create_task", expect.anything());
-    expect(container.textContent).toContain("Select a task");
+    expect(container.textContent).toContain("Select a scheduled task");
   });
 
   it("edits a manual task back to the manual trigger", async () => {
@@ -957,9 +742,8 @@ describe("tasksView", () => {
     expect(container.querySelector("fieldset")!.querySelectorAll("input")).toHaveLength(0);
     mocks.invokeCommand.mockClear();
     // Re-install the canned backend rather than answering *every* command with
-    // the task list: a blanket mock also feeds task objects to the dependency
-    // list, whose rows are keyed by `upstreamTaskId` — undefined there, which
-    // React reports as a missing key and which would drown out a real one.
+    // the task list: a blanket mock would answer the other reads with a task
+    // list too, which is not a shape any of them returns.
     backend([task()]);
     await click(buttonByText(container, "Save"));
     const call = mocks.invokeCommand.mock.calls.find(([command]) => command === "update_task");
@@ -968,7 +752,7 @@ describe("tasksView", () => {
 
   it("does not offer a default model or thinking level", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     const model = field(container, "Model") as HTMLSelectElement;
     const thinking = field(container, "Thinking level") as HTMLSelectElement;
     // Neither picker offers "default": the run's model and thinking level are
@@ -987,7 +771,7 @@ describe("tasksView", () => {
     // picker is disabled rather than left offering a choice the run ignores —
     // the same rule the composer applies.
     const { container } = await renderView([], vi.fn(), MODELS_WITHOUT_THINKING);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     expect((field(container, "Thinking level") as HTMLSelectElement).disabled).toBe(false);
 
     await setValue(field(container, "Model") as HTMLSelectElement, "future/jev");
@@ -996,7 +780,7 @@ describe("tasksView", () => {
 
   it("normalises the thinking level when the model changes", async () => {
     const { container } = await renderView([], vi.fn(), MODELS_WITHOUT_THINKING);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     await setValue(field(container, "Model") as HTMLSelectElement, "future/gpt-5");
 
     // A model that cannot think pins "off": the stored level must not keep
@@ -1015,7 +799,7 @@ describe("tasksView", () => {
 
   it("gives a model change the app default when no level was chosen yet", async () => {
     const { container } = await renderView([], vi.fn(), MODELS_WITHOUT_THINKING);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     // Untouched, the picker still says "not chosen yet"; picking a model fills in
     // the app default rather than leaving the required field empty.
     expect((field(container, "Thinking level") as HTMLSelectElement).value).toBe("");
@@ -1025,7 +809,7 @@ describe("tasksView", () => {
 
   it("carries every editor field into the saved task", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     await setValue(field(container, "Name") as HTMLInputElement, "configured");
     await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
     await chooseModelAndThinking(container);
@@ -1061,7 +845,7 @@ describe("tasksView", () => {
   // sends `keep` rather than storing a combination nothing honours.
   it("offers the delete-after-run choice only for a per-run conversation", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     await chooseModelAndThinking(container);
 
     const retention = () => fieldOrNull(container, "Conversation after the run");
@@ -1164,7 +948,7 @@ describe("tasksView", () => {
 
   it("opens a new task on a chat conversation, and switches to workspace on request", async () => {
     const { container } = await renderView([]);
-    await click(buttonByText(container, "New task"));
+    await click(buttonByText(container, "New scheduled task"));
     // Chat is the default: it needs no directory, so none is asked for.
     expect((field(container, "Conversation type") as HTMLSelectElement).value).toBe("chat");
     expect(container.querySelector("input[aria-label='Working directory']")).toBeNull();

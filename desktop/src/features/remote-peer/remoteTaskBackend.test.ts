@@ -32,7 +32,6 @@ function detail(overrides: Record<string, unknown> = {}) {
     conversationMode: "workspace",
     triggerKind: "schedule",
     trigger: { every: "1h" },
-    depJoin: "all",
     depCount: 0,
     nextDueAt: 1234,
     queued: false,
@@ -109,7 +108,6 @@ it("writes through the host's command names", async () => {
     sessionRetention: "keep",
     conversationMode: "workspace",
     enabled: true,
-    depJoin: "all",
     triggerKind: "schedule",
     trigger: { every: "1h" },
   };
@@ -126,16 +124,12 @@ it("writes through the host's command names", async () => {
   await backend.remove("t1");
   await backend.setEnabled("t1", false);
   await backend.runNow("t1");
-  await backend.setDep("t1", "up", "failure");
-  await backend.removeDep("t1", "up");
   expect(request.mock.calls.map(([, command]) => command)).toEqual([
     { type: "delete_task", taskId: "t1" },
     { type: "set_task_enabled", taskId: "t1", enabled: false },
     // The host's name for "run it now" is `run_task`; `run_task_now` is this
     // app's own command and would be refused there.
     { type: "run_task", taskId: "t1" },
-    { type: "set_task_dep", taskId: "t1", upstreamTaskId: "up", on: "failure" },
-    { type: "remove_task_dep", taskId: "t1", upstreamTaskId: "up" },
   ]);
 });
 
@@ -152,7 +146,6 @@ it("says null for a cleared choice rather than leaving the key out", async () =>
     sessionRetention: "keep",
     conversationMode: "workspace",
     enabled: true,
-    depJoin: "all",
   });
 
   const [, command] = request.mock.calls[0]!;
@@ -163,7 +156,7 @@ it("says null for a cleared choice rather than leaving the key out", async () =>
   expect("modelId" in task).toBe(true);
 });
 
-it("unwraps the host's envelopes for runs and dependencies", async () => {
+it("unwraps the host's envelope for runs", async () => {
   request.mockImplementation(async (_desktop, command) => {
     if (command.type === "list_task_runs") {
       return {
@@ -186,9 +179,6 @@ it("unwraps the host's envelopes for runs and dependencies", async () => {
         ],
       };
     }
-    if (command.type === "list_task_deps") {
-      return { deps: [{ upstreamTaskId: "u1", upstreamName: "Build", on: "completed", satisfied: true }] };
-    }
     return undefined;
   });
 
@@ -198,10 +188,6 @@ it("unwraps the host's envelopes for runs and dependencies", async () => {
   expect(runs[0]).toMatchObject({ id: "r1", sessionId: "s1", sessionDeleted: true, dueAt: null });
   // The host's `limit` is carried through, not dropped.
   expect(request).toHaveBeenCalledWith("desktop_a", { type: "list_task_runs", taskId: "t1", limit: 5 }, "list");
-
-  expect(await backend.listDeps("t1")).toEqual([
-    { upstreamTaskId: "u1", upstreamName: "Build", on: "completed", satisfied: true },
-  ]);
 });
 
 /** Malformed entries are dropped, not rendered as empty rows. */
@@ -209,16 +195,11 @@ it("drops entries the host sent in a shape it does not use", async () => {
   request.mockImplementation(async (_desktop, command) => {
     if (command.type === "list_task_runs")
       return { runs: ["nonsense", 7, { id: "ok" }] };
-    if (command.type === "list_task_deps")
-      return { deps: [null, { upstreamTaskId: "u" }] };
     return undefined;
   });
 
   const backend = remoteTaskBackend("desktop_a");
   expect((await backend.listRuns("t1", 20)).map(run => run.id)).toEqual(["ok"]);
-  expect(await backend.listDeps("t1")).toEqual([
-    { upstreamTaskId: "u", upstreamName: "", on: "", satisfied: false },
-  ]);
 });
 
 /** A host that answers nothing for the list is empty, not a crash. */

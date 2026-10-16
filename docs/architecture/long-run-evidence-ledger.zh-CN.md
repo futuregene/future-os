@@ -1,7 +1,7 @@
 # 长程运行证据台账
 
 > （[English](long-run-evidence-ledger.md)）长程目标的问责记录——经
-> [Loop 控制面](loop-control-plane.zh-CN.md)驱动的多日、多 turn
+> [Goal 控制面](goal-control-plane.zh-CN.md)驱动的多日、多 turn
 > 工作。每个关闭的长程目标在此留一条记录。
 
 长程目标会在多个有界 turn 中消耗真实的墙钟时间、token 和费用。本台账
@@ -15,13 +15,13 @@
 数据源（全部本地、全部可核验）：
 
 - **turn / 墙钟 / 花费**——目标运行历史账本
-  `.future/loop/goals/<goal-id>/runs.jsonl`（每次运行的
+  `.future/goal/goals/<goal-id>/runs.jsonl`（每次运行的
   `terminal_state`、token 增量、`cost`、工具调用数；每回合实时日志在
-  `.future/loop/runs/<run-id>.live.jsonl`），
-  以及 `future loop runs history --goal <id> --format json` /
-  `future loop quota usage --goal <id>` 的紧凑投影。
+  `.future/goal/runs/<run-id>.live.jsonl`），
+  以及 `future goal runs history --goal <id> --format json` /
+  `future goal quota usage --goal <id>` 的紧凑投影。
 - **验证**——目标的官方测量（写明工具、命令、commit、日期），以及
-  `future loop evidence-log --goal <id>`。
+  `future goal evidence-log --goal <id>`。
 - **PR**——在目标工作窗口内 `git log --grep`。
 - **边界**——目标的豁免/签收记录（用户门禁、验收 todo），以及任何
   读者可能误认为是遗漏的事项。
@@ -83,7 +83,7 @@ lines 98.80%**，**3,864 个测试，0 失败**。
 | future-rpc | 91.77% | 99.79%（summary 7 / per-line 0） | #139 |
 | future-tui | 67.80% | 100.00%（0） | #140、#141 |
 | future-cli | 42.46% | 99.83%（summary 40 / per-line 15） | #146、#147 |
-| future-loop | 77.72% | 98.43%（summary 279 / per-line 191） | #148 |
+| future-goal | 77.72% | 98.43%（summary 279 / per-line 191） | #148 |
 | future-agent | 84.44% | 96.75%（summary 987 / per-line 700） | #149 |
 | future-channel | 31.50% | 99.84%（summary 17 / per-line 0；lcov DA 100%） | #150 |
 | **总计** | **70.15%**（54,559/77,775） | **98.80%** | — |
@@ -98,7 +98,7 @@ lines 98.80%**，**3,864 个测试，0 失败**。
 + ~460 行防御性/死 arm 代码，并经 lcov DA 零命中 = HTML uncovered-line
 交叉验证。
 
-推进中发现的真实缺陷：**6 个真 bug**——future-loop 4 个（#148：
+推进中发现的真实缺陷：**6 个真 bug**——future-goal 4 个（#148：
 `doctor --agent-addr` 与 `benchmark run --agent-addr` 嵌套 `block_on`
 panic、monitor 无变化轮询追加伪 `TodoCompleted`、`try_claim_todo`
 重建漏掉过期 arm）、future-channel 1 个（#150：gRPC client
@@ -124,7 +124,7 @@ panic、monitor 无变化轮询追加伪 `TodoCompleted`、`try_claim_todo`
 - **交付物仅本地**：`coverage/`（lcov.info、html/、summary.txt、
   missed-lines.txt、acceptance-waivers.md）按 `scripts/measure/coverage.sh`
   的设计被 gitignore。
-- **归因限制**：运行历史花费只覆盖 10 次 loop 运行。future-loop 推进
+- **归因限制**：运行历史花费只覆盖 10 次 goal 运行。future-goal 推进
   （PR #148）与 future-cli 收尾（PR #146/#147）部分由共享 worktree
   的并发交互会话执行（双执行器冲突），其花费未计入上表。token 数为
   台账按次记录的累计上下文 token，非去重 token；error/incomplete

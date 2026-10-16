@@ -1,28 +1,28 @@
-# Tasks architecture
+# Scheduled tasks architecture
 
-> A task is a reusable unit of work: a prompt, working directory, model/thinking level and full permissions. A **trigger** decides when it runs. Each run creates or reuses an ordinary conversation and records its outcome and prompt version.
+> A scheduled task is a reusable unit of work: a prompt, working directory, model/thinking level and full permissions. A **trigger** decides when it runs, and any of them can also be run on demand. Each run creates or reuses an ordinary conversation and records its outcome and prompt version.
 
-`future loop` manages a long-term goal, evidence, gates and multiple agents. Tasks run a **fixed action when triggered**. They have separate tables and purposes.
+`future goal` manages a long-term goal, evidence, gates and multiple agents. Scheduled tasks run a **fixed action when triggered**. They have separate tables and purposes.
 
 ## 0. Scope
 
-- **Crate:** `orchestration/tasks` (`future-tasks`), alongside `orchestration/loop`.
+- **Crate:** `orchestration/tasks` (`future-tasks`), alongside `orchestration/goal`.
 - **Hosts:** GUI and headless desktop share the same tick loop. TUI hosting is not connected. Mobile uses the desktop remote bridge.
-- **Layers:** deterministic `next_due`, dependency joins, claim decisions and truncation are host-independent pure functions. One executor serves both desktop hosts; their difference is a `Notifier` closure (§8).
+- **Layers:** the deterministic `next_due`, truncation and prompt-revision helpers are host-independent pure functions. One executor serves both desktop hosts; their difference is a `Notifier` closure (§8).
 
-Implemented: kernel, store, the `future task` CLI (§9), desktop tick loop and panel, headless hosting, mobile bridge/pages, and the `future-task` skill. Reserved work: TUI hosting, a `threads.task_id` badge (§2), and an instance-level `.lock`. Current overlap detection assumes one host per home.
+Implemented: kernel, store, the `future task` CLI (§9), desktop tick loop and panel, headless hosting, mobile bridge/pages, and the `future-scheduled-task` skill. Reserved work: TUI hosting, a `threads.task_id` badge (§2), and an instance-level `.lock`. Current overlap detection assumes one host per home.
 
-## 1. Lessons from loop
+## 1. Lessons from the goal control plane
 
-| Loop design | Tasks equivalent |
+| Goal-plane design | Tasks equivalent |
 |---|---|
-| Deterministic kernel; agents supply judgments | claim, `next_due`, joins, truncation and `prompt_change_revisions` are pure functions |
+| Deterministic kernel; agents supply judgments | `next_due`, truncation and `prompt_change_revisions` are pure functions |
 | Commit first; refresh compatibility state afterward (`sync_compat`) | notification failure does not roll back a committed run |
-| Turn envelope with schema header, upstream budget, head/tail truncation and retained index | `future_tasks_run_envelope_v1`: identity/run/trigger/settings blocks, bounded upstream summaries and index, instruction, completion contract; full-output pointer: `future task output <run-id>` |
-| Distinct task classes prevent incorrect frontier claims | `task_runs.kind` distinguishes `main`, `manual` and `chain` |
-| Separate state root (`<cwd>/.future/loop/`) | `<home>/.future/tasks/`, with its own SQLite database |
+| Turn envelope with a schema header and a completion contract | `future_tasks_run_envelope_v1`: identity/run/trigger/settings blocks, the instruction and the completion contract; full-output pointer: `future task output <run-id>` |
+| Distinct task classes prevent incorrect frontier claims | `task_runs.kind` distinguishes `main` and `manual` (`chain` is a legacy kind of earlier runs) |
+| Separate state root (`<cwd>/.future/goal/`) | `<home>/.future/tasks/`, with its own SQLite database |
 
-Tasks do not adopt fencing tokens, multi-agent competition, claim stealing or JSONL event sourcing. SQLite supplies durability. Loop's monitoring cadence stays separate; task eligibility is decided at tick/claim time instead of adding quota or should-run layers.
+Scheduled tasks do not adopt fencing tokens, multi-agent competition, claim stealing or JSONL event sourcing. SQLite supplies durability. The goal plane's monitoring cadence stays separate; task eligibility is decided at tick/claim time instead of adding quota or should-run layers.
 
 ## 2. Data model
 
@@ -48,39 +48,25 @@ CREATE TABLE tasks (
   thread_id        TEXT,                      -- host conversation binding for existing policy (created lazily)
   trigger_kind     TEXT NOT NULL,             -- manual | schedule
   trigger_json     TEXT NOT NULL,
-  dep_join         TEXT NOT NULL DEFAULT 'all',  -- all | any
+  dep_join         TEXT NOT NULL DEFAULT 'all',  -- legacy, unread
   next_due_at      INTEGER,                   -- schedule only; NULL means no future due time
   last_run_at      INTEGER,
-  pending_request_at INTEGER,                 -- pending explicit/chained request consumed by tick
-  pending_origin   TEXT,                      -- ui | cli | chain | schedule
+  pending_request_at INTEGER,                 -- pending explicit request consumed by tick
+  pending_origin   TEXT,                      -- ui | cli | schedule
   pending_actor    TEXT,                      -- agent:<sid> / user / cli / task:<id>
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER
 );
 CREATE UNIQUE INDEX tasks_active_name ON tasks(name) WHERE deleted_at IS NULL;
 
-CREATE TABLE task_deps (                      -- upstream dependencies of a downstream task
-  task_id          TEXT NOT NULL REFERENCES tasks(id),
-  upstream_task_id TEXT NOT NULL REFERENCES tasks(id),
-  on               TEXT NOT NULL,             -- success | failure | completed
-  PRIMARY KEY (task_id, upstream_task_id),
-  FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
-  FOREIGN KEY (upstream_task_id) REFERENCES tasks(id) ON DELETE CASCADE
-);
-
-CREATE TABLE task_dep_state (                 -- join progress (for join=all)
-  task_id          TEXT NOT NULL,
-  upstream_task_id TEXT NOT NULL,
-  satisfied_run_id TEXT,                      -- NULL means this edge is not satisfied yet
-  satisfied_at     INTEGER,
-  PRIMARY KEY (task_id, upstream_task_id),
-  FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
-);
+-- `task_deps` and `task_dep_state` are legacy: the dependency graph was
+-- removed (see §12), nothing reads or writes them any more, and they are kept
+-- so an existing database loses no rows to a migration nobody asked for.
 
 CREATE TABLE task_runs (
   id             TEXT PRIMARY KEY,            -- trn_...
   task_id        TEXT NOT NULL REFERENCES tasks(id),
-  kind           TEXT NOT NULL,               -- main | manual | chain
-  origin         TEXT NOT NULL,               -- schedule | ui | cli | chain
+  kind           TEXT NOT NULL,               -- main | manual (chain is legacy)
+  origin         TEXT NOT NULL,               -- schedule | ui | cli (chain is legacy)
   actor          TEXT,                        -- agent:<sid> / user / cli / task:<id>
   due_at         INTEGER,                     -- kind=main only
   status         TEXT NOT NULL,               -- running|completed|failed|skipped
@@ -91,7 +77,7 @@ CREATE TABLE task_runs (
   session_deleted INTEGER NOT NULL DEFAULT 0,  -- conversation deleted under section 6.1; bindings cleared
   feedback       TEXT, feedback_note TEXT,    -- good | bad plus note
   started_at INTEGER, finished_at INTEGER, error_message TEXT,
-  UNIQUE(task_id, due_at)                     -- NULL values do not conflict; manual/chain are unconstrained
+  UNIQUE(task_id, due_at)                     -- NULL values do not conflict; manual runs are unconstrained
 );
 
 CREATE TABLE task_prompt_revisions (
@@ -107,7 +93,7 @@ CREATE TABLE task_prompt_revisions (
 );
 ```
 
-Tasks do **not** live in `app.db`. Task conversations are ordinary conversations, identified by a title such as `Task name · timestamp`; `task_runs.thread_id` provides the mapping and lets the Runs panel open them.
+Scheduled tasks do **not** live in `app.db`. A scheduled task's conversations are ordinary conversations, identified by a title such as `Task name · timestamp`; `task_runs.thread_id` provides the mapping and lets the Runs panel open them.
 
 A nullable `threads.task_id` badge is deferred until needed. It would require a versioned GUI migration under rule 7 in `desktop/CLAUDE.md`, plus the ER documentation update; titles already satisfy the conversation-list requirement.
 
@@ -130,21 +116,6 @@ A nullable `threads.task_id` badge is deferred until needed. It would require a 
 - **Short months:** a requested day beyond the month's length uses its final day. UI and CLI expose this rule.
 - **Once:** completion sets `enabled=0`.
 
-## 4. Dependencies and joins
-
-`dep_join` is `all` or `any`; each edge uses `on = success | failure | completed`.
-
-- An upstream terminal outcome matching `on` records its run in `task_dep_state.satisfied_run_id`. Each edge retains only its latest satisfied run. `skipped` and `test` runs do not satisfy edges.
-- **All:** claim when every edge is satisfied, then clear all markers.
-- **Any:** claim when at least one is satisfied, then clear the markers satisfied at that moment.
-- Manual runs never consume dependency markers; only `kind=chain` consumes them.
-- Dependencies satisfied while a task runs wait for the next tick. Chained work is pending; scheduled overlap is skipped.
-- Claim-time cycle detection marks a cycle as `failed("cycle")` and bounds traversal at depth 32. Writes also reject cycles early.
-
-All three clients offer one trigger selection: **Manual / Dependency / Once / Interval / Daily / Weekly / Monthly**. Dependency mode stores `trigger_kind=manual` plus edges. Its editor requires at least one upstream task. Triggers and dependency edges are orthogonal in storage: the CLI can combine `--daily` and `--depends-on A`. Existing scheduled tasks with dependencies keep those edges visible and explain the combination; changing the trigger preserves the dependency draft. Lists label a task with only dependencies as dependency-triggered rather than manual.
-
-CLI `add/edit --depends-on A[:success|failure|completed]`, the desktop editor and the mobile editor (`task_deps_v1`) share cycle validation against the complete resulting graph. Editors submit the desired edge set; storage reconciles it, retaining unchanged edges and changing only additions, removals or conditions. Mobile and desktop use the same `tasks.db` and permission rules.
-
 ## 5. Execution: tick → claim → run
 
 ```text
@@ -160,20 +131,19 @@ tick (30-second wall-clock interval; Run now also wakes it immediately)
            2. existing session: wait for idle and retain its context
            3. build future_tasks_run_envelope_v1
            4. provision and run_prompt (permission=all, sandbox tier=off)
-           5. save status, finished_at, result_summary and result_text;
-              satisfy downstream dependency markers
+           5. save status, finished_at, result_summary and result_text
            6. session_retention=delete: delete this run's conversation,
               mark session_deleted and clear its bindings on success
            7. notify (GUI events or headless ledger only)
 ```
 
-Claim is described as four separate steps, rather than one atomic transaction. Startup reconciliation marks abandoned `running` runs `failed("interrupted")`. Updating chain markers shares the upstream completion transaction, so process death does not lose the dependency trigger.
+Claim is described as four separate steps, rather than one atomic transaction. Startup reconciliation marks abandoned `running` runs `failed("interrupted")`.
 
 New triggers while a task runs are recorded as `skipped`, rather than queued. Failed conversation deletion retains its bindings and logs the failure; the saved run answer remains available.
 
 ### 5.1 Run envelope (`future_tasks_run_envelope_v1`)
 
-Each initial prompt contains the envelope, the task's instruction and its completion contract. Like loop's turn envelope, this uses plain-text blocks rather than XML:
+Each initial prompt contains the envelope, the task's instruction and its completion contract. Like the goal plane's turn envelope, this uses plain-text blocks rather than XML:
 
 ```text
 ── future_tasks_run_envelope_v1 ──
@@ -181,10 +151,6 @@ task: Weekly progress report | id: tsk_... | prompt-version: 3
 run: kind=main | due=2026-10-07T09:00:00+08:00
 trigger: {"mode":"weekly","days":["mon","fri"],"time":"10:00"}
 run settings: cwd=/Users/... | conversation=workspace | session=new (fresh conversation per run) | model=... | thinking=high
-
-Upstream results: (summaries only …)
-- upstream tsk_a "upstream" [run trn_b status=completed finished=...]: …
-Full output of one source: future task output <run-id> …
 
 Instruction:
 <original task prompt>
@@ -195,7 +161,7 @@ Completion contract:
   and remaining uncertainty. It becomes the run's result_summary.
 ```
 
-The envelope supplies trusted identity and run context, including execution time, model and directory. A chat task without a directory omits an empty `cwd=`. `session=existing` identifies the reused conversation and retains earlier context. Upstream summaries are included only when dependencies exist, with the budget and retained-index rules from §1.
+The envelope supplies trusted identity and run context, including execution time, model and directory. A chat task without a directory omits an empty `cwd=`. `session=existing` identifies the reused conversation and retains earlier context.
 
 ## 6. Session policy
 
@@ -257,7 +223,6 @@ future task show <id|name> [--json] [--prompt]
 future task add --name N --prompt P|--prompt-file F [--cwd D]
                 [--model M] [--thinking L] [--session new|existing]
                 [--conversation workspace|chat]
-                [--depends-on A[:success|failure|completed]]… [--join-any]
                 (--manual | --at | --every | --daily | --weekly | --monthly)
 future task edit <id|name> [any add flag] [--enable|--disable]
 future task enable|disable <id|name>
@@ -266,7 +231,6 @@ future task run <id|name> [--wait] [--timeout 15m] [--json]
 future task runs <id|name> [--limit N] [--json]
 future task output <run-id> [--tail N] [--json]
 future task feedback <run-id> good|bad [--note "…"]
-future task upstream|deps <id|name> [--json]
 future task prompt log|apply|revert <id|name> [revision-id]
 ```
 
@@ -275,14 +239,14 @@ future task prompt log|apply|revert <id|name> [revision-id]
 - `output <run-id>` supplies the envelope's full-output pointer. Prefer the answer saved on that run, which survives conversation deletion. Only older runs lacking a saved answer fall back to the conversation's last assistant text. Print task/status/prompt-version/session identity before the body; when the fallback conversation has been reused by a newer run, identify that run to avoid misattribution. `--tail N` prints only the end.
 - `prompt log` lists versions and identifies the active one. `prompt apply <revision-id>` creates a new rollback version unless that version is already active; `prompt revert` applies the previous version.
 - `runs` and `prompt log` remain readable for soft-deleted tasks by ID or name; they no longer appear in `list`.
-- `enable` recalculates the next scheduled time; `remove` soft-deletes the task and clears dependency edges pointing to it.
-- Help distinguishes tasks from `future loop todo`.
+- `enable` recalculates the next scheduled time; `remove` soft-deletes the task (its runs and conversations are kept).
+- Help distinguishes tasks from `future goal todo`.
 
 A test in `cli/src/commands/task.rs` parses `help::TASK_HELP` and requires the same subcommand set as the dispatcher, in both directions. This guards against documenting commands that produce `Unknown argument`.
 
-## 10. The `future-task` skill
+## 10. The `future-scheduled-task` skill
 
-`skills/builtin/future-task/SKILL.md` lives in the skills submodule and has its own PR. It focuses on writing prompts: eight unattended-run constraints, trigger selection and the short-month rule, the `run → assess → feedback → edit → rerun` loop, and using `future task run --wait --json` from other agents. External side effects require user consent.
+`skills/builtin/future-scheduled-task/SKILL.md` lives in the skills submodule and has its own PR. It focuses on writing prompts: eight unattended-run constraints, trigger selection and the short-month rule, the `run → assess → feedback → edit → rerun` loop, and using `future task run --wait --json` from other agents. External side effects require user consent.
 
 Real Agent/model verification is manual, outside CI. Desktop `tasks.rs` has ignored `a_queued_run_against_a_real_agent_*` tests and `serve_pending_runs_until_idle`, a one-shot host using the same tick as headless without login or the remote bridge:
 
@@ -294,21 +258,18 @@ HOME=/tmp/try FUTURE_AGENT_GRPC_ADDR=127.0.0.1:5099 \
   cargo test --lib tasks::tests::serve_pending_runs_until_idle -- --ignored --nocapture
 ```
 
-Skill commands must match implemented commands in §9. Earlier skill instructions named commands before implementation; those were aligned with the actual command surface. Implemented companion commands now include `edit`, `enable`, `disable`, `remove`, `feedback`, `upstream` and `prompt log|apply|revert`.
+Skill commands must match implemented commands in §9. Earlier skill instructions named commands before implementation; those were aligned with the actual command surface. Implemented companion commands now include `edit`, `enable`, `disable`, `remove`, `feedback` and `prompt log|apply|revert`.
 
 There is no automated skill/CLI version guard: skills are a separate repository and parent CI does not check out that submodule. Help/dispatcher tests cannot catch cross-repository drift. Update this document and the skill together when changing that contract. Built-in reflection was removed (§7a); the skill must not promise automatic prompt proposals.
 
 ## 11. UI
 
-- **Desktop:** Tasks appears after Skills and before phone control in both ActivityRail states. Its panel has a list, editor and run ledger. This is a two-column task view; it omits the conversation's right context panel.
-- **Detail order:** show run results first. Settings, prompt and dependencies are lower-frequency definition work, reached through Edit. A new task opens its form immediately because it has no history.
+- **Desktop:** Scheduled tasks appear after Skills and before phone control in both ActivityRail states. Its panel has a list, editor and run ledger. This is a two-column task view; it omits the conversation's right context panel.
+- **Detail order:** show run results first. Settings and prompt are lower-frequency definition work, reached through Edit. A new scheduled task opens its form immediately because it has no history.
 - **Desktop definition:** a Settings disclosure renders definition nodes only while open, rather than putting a long form below a scrolling history.
 - **Mobile definition:** Settings pushes a separate `TaskForm` layer (`settingsOpen`), hiding runs while editing. Back and successful Save return to detail; failed Save preserves the form/draft for retry. A separate layer avoids placing a multi-screen form after run history.
-- **Mobile entry:** “Task settings” in the Settings stack, gated by `tasks_v1`. Lists omit prompt bodies to meet wire budgets; detail fetches them separately and shows runs and dependency state.
-- **Mobile dependency editing:** separately gated by `task_deps_v1`, `set_task_dep` and `remove_task_dep`. Older desktop hosts expose read-only dependencies and an upgrade hint. Newer hosts support the same dependency-trigger block as desktop, with edge conditions, add/remove and multi-upstream joins.
-- **Both dependency editors:** appear for Dependency mode and remain visible for existing upstream edges. Draft the whole edge set and reconcile on Save. Candidate tasks exclude deleted tasks and the current task; a new task has no current ID. Backend cycle rejection supplies the shared error; clients need not fetch the entire graph. New edges default to success.
-
-Both forms default new tasks to **chat conversations**, requiring a directory only for workspace mode. Model and thinking level must be selected explicitly; there is no Default option, and validation identifies the missing field. Model lists include enabled models plus the task's currently bound model even if disabled, avoiding an accidental model change while editing other fields.
+- **Mobile entry:** “Scheduled task settings” in the Settings stack, gated by `tasks_v1`. Lists omit prompt bodies to meet wire budgets; detail fetches them separately and shows the run ledger.
+Both forms default new scheduled tasks to **chat conversations**, requiring a directory only for workspace mode. Model and thinking level must be selected explicitly; there is no Default option, and validation identifies the missing field. Model lists include enabled models plus the task's currently bound model even if disabled, avoiding an accidental model change while editing other fields.
 
 **Immediate runs:** desktop/mobile Run now writes `pending_request_at`, then calls `tasks::wake()`. The tick loop remains the sole claimer but wakes immediately rather than waiting for the 30-second interval. Start/end `threads-updated` events refresh the list and open detail so they do not stay at Queued.
 
@@ -320,12 +281,12 @@ The run ledger follows the task's actions. Desktop's Settings disclosure precede
 
 ## 12. Out of scope
 
-Annual triggers, cron expressions, named timezones, orchestration beyond dependency joins, OS background services, shell/loop/skill action kinds, system notifications and per-task tool allowlists. Full permissions remain the only policy.
+Removed: task dependencies (edges, joins, chained runs, the `--depends-on`/`--join-any` flags and both dependency editors) — a scheduled task is started by its own schedule or on demand. Out of scope: cron expressions, named timezones, orchestration between tasks, OS background services, shell/goal/skill action kinds, system notifications and per-task tool allowlists. Full permissions remain the only policy.
 
 ## 13. Core invariants
 
 - Desktop is the executor; headless shares the implementation with fewer notifications. CLI/mobile only queue work and read/write state.
 - v1 uses `permission_level="all"` and sandbox tier `off`.
-- Five schedule forms, plus manual/dependency triggering; short months use the month's final day.
-- Manual runs do not consume dependency markers; chained runs do.
+- Five schedule forms, plus on-demand runs; short months use the month's final day.
+- A manual run consumes nothing: there are no dependency markers left to consume.
 - `prompt_change_revisions` is the single prompt-version write-decision entry point, with exactly one active version at a time.

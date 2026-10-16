@@ -17,7 +17,7 @@ Groups:
   account   Platform account info
   run       Send a prompt to the agent (one-shot, non-interactive)
   skills    Install & manage agent skills
-  task      Manage FutureOS tasks (reusable prompt + trigger + runs)
+  task      Manage scheduled tasks (reusable prompt + trigger + runs)
   tools     List, describe, and call platform & browser tools
   models    List available AI models from the agent
   session   List, inspect, update, rename, and delete agent sessions
@@ -28,7 +28,7 @@ Apps (run the FutureOS components — same as their standalone binaries):
   agent     Start the agent gRPC server (future-agent)
   tui       Launch the terminal UI (future-tui)
   channel   Start the IM channel bridge (future-channel)
-  loop      Loop control plane: goals/todos/gates (future-loop)
+  goal      Goal control plane: goals/todos/gates (future-goal)
 
 Quick start:
   future init                                Initialize Future OS
@@ -50,13 +50,13 @@ Run 'future <group> --help' for per-group details.
   future auth --help         Auth subcommands
   future account --help      Account subcommands
   future skills --help       Skills subcommands
-  future task --help         Task management (list/show/add/run/runs)
+  future task --help         Scheduled-task management (list/show/add/run/runs)
   future tools --help        Tool subcommands
   future models --help       Model listing options
   future session --help      Session management options
   future agent --help        Agent server options (gRPC addr, logging, profiling)
   future tui --help          TUI options (print mode, list models, etc.)
-  future loop --help         Loop control plane commands
+  future goal --help         Goal control plane commands
   future version --json      Build identity: version, commit, target
   future --version           Print version and exit"#;
 
@@ -276,42 +276,40 @@ The running desktop app is unaffected until it next reads the settings; a change
 made in the app's own Settings screen applies immediately."#;
 
 /// `future task --help` output.
-pub const TASK_HELP: &str = r#"future task — manage FutureOS tasks (reusable prompt + trigger + full-permission runs)
+pub const TASK_HELP: &str = r#"future task — manage scheduled tasks (reusable prompt + trigger + full-permission runs)
 
-A task is a reusable work unit: prompt + working directory + model/thinking
-level, run at full permission when its trigger fires. Each run produces an
-ordinary conversation and a durable run-ledger entry.
+A scheduled task is a reusable work unit: prompt + working directory +
+model/thinking level, run at full permission when its trigger fires — and on
+demand whenever you ask. Each run produces an ordinary conversation and a
+durable run-ledger entry.
 
 Usage:
-  future task list [--all] [--json]                 List tasks
-  future task show <id|name> [--json] [--prompt]    Show one task
+  future task list [--all] [--json]                 List scheduled tasks
+  future task show <id|name> [--json] [--prompt]    Show one scheduled task
   future task add --name N --prompt P|--prompt-file F --cwd D
         [--model M] [--thinking L] [--session new|existing]
         [--session-retention keep|delete]
         [--conversation workspace|chat] [--disabled] [--json]
-        [--depends-on A[:success|failure|completed]]… [--join-any]
         (--manual | --at "YYYY-MM-DD HH:MM" | --every 30m
          | --daily [--time 09:00]
          | --weekly --days mon,wed,fri [--time 10:00]
          | --monthly --day 31 [--time 09:00]
          | --yearly --month 12 --day 31 [--time 22:00])
-  future task edit <id|name> [any add flag] [--enable|--disable]
-        [--join-all|--join-any] [--depends-on …] [--json]
+  future task edit <id|name> [any add flag] [--enable|--disable] [--json]
   future task enable|disable <id|name>
   future task remove <id|name> [--yes]              Soft-delete; runs are kept
   future task run <id|name> [--wait] [--timeout 15m] [--json]
   future task runs <id|name> [--limit N] [--json]
   future task output <run-id> [--tail N] [--json]   A run's full answer
   future task feedback <run-id> good|bad [--note "…"]
-  future task upstream|deps <id|name> [--json]     Dependency edges + progress
   future task prompt log <id|name> [--json]         The prompt version history
   future task prompt apply <id|name> <revision-id>  Put a stored version back in force
   future task prompt revert <id|name>               Back to the previous version
 
 Triggers:
   --manual    Only runs when triggered: `future task run`, the desktop panel,
-              the phone, or a dependency of another task. This is also what an
-              add without any trigger flag produces.
+              the phone, or another agent. This is also what an add without any
+              trigger flag produces.
   --at        One-shot on a calendar date/time (local time).
   --every     Every N minutes (30m, 2h, 1d). Anchored to a grid; no drift.
   --daily     Every day at --time (default 09:00).
@@ -321,14 +319,6 @@ Triggers:
   --yearly    Once a year on --month (1-12) and --day (1-31) at --time
               (default 09:00). A day the month cannot hold runs on the last
               day of that month, so 2/29 runs on the 28th in a common year.
-
-Dependencies:
-  --depends-on A            Run when A finishes successfully.
-  --depends-on A:failure    …when A fails. Also :completed for either.
-  --join-any                Run when any one upstream has finished (default is
-                            to wait for all of them).
-  The upstream's result summary is injected into the run's prompt, and
-  `future task upstream` shows which edges have fired.
 
 Session:
   --session new       Each run opens a new conversation (default).
@@ -342,9 +332,8 @@ Session:
                       What the run *did* is not lost — its status, its result
                       summary and its whole answer are recorded on the run, so
                       `future task runs` and `future task output <run-id>`
-                      still answer, and a dependent task still receives the
-                      summary. Only the conversation (its reasoning, its tools,
-                      its transcript) goes.
+                      still answer. Only the conversation (its reasoning, its
+                      tools, its transcript) goes.
   --conversation workspace  File the conversation under the working directory
                             (default).
   --conversation chat       Open it as a chat conversation instead (it runs in
@@ -353,10 +342,10 @@ Session:
 
 Prompt versions:
   Editing a prompt (here or in the desktop) records a new version and keeps the
-  one it replaced, so `prompt revert` can walk all the way back to the task's
-  first prompt. Version source reads as: user (manual edit), rollback (a version
-  re-applied), reflection (a version accepted from an older build's prompt
-  suggestions), superseded (an outgoing version kept for the history).
+  one it replaced, so `prompt revert` can walk all the way back to the scheduled
+  task's first prompt. Version source reads as: user (manual edit), rollback (a
+  version re-applied), reflection (a version accepted from an older build's
+  prompt suggestions), superseded (an outgoing version kept for the history).
 
 Reading a run:
   `future task runs` lists the ledger (statuses, versions, summaries).
@@ -370,8 +359,8 @@ Execution:
   `--wait` blocks until the run reaches a terminal state and prints its
   status, thread/session ids, and result summary.
 
-Not to be confused with `future loop todo` (long-running goals with evidence
-and gates). Tasks are fixed actions with triggers."#;
+Not to be confused with `future goal todo` (long-running goals with evidence
+and gates). Scheduled tasks are fixed actions with triggers."#;
 
 /// `future version --help` output.
 pub const VERSION_HELP: &str = r#"future version — print the build identity of this CLI

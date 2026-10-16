@@ -2,7 +2,7 @@
 
 How to build and install FutureOS on macOS, Linux, and Windows — the agent
 backend, the TUI/CLI frontends, the desktop GUI, the channel bridge, and the
-loop control plane (`future-loop`).
+goal control plane (`future-goal`).
 
 > For *using* FutureOS (models, skills, running the agent), see the
 > [README](../README.md).
@@ -48,10 +48,10 @@ brew install protobuf                                             # optional —
 Build:
 
 ```bash
-make install        # GUI + unified `future` CLI + skills (agent/tui/channel/loop are embedded) → /opt/homebrew/bin
+make install        # GUI + unified `future` CLI + skills (agent/tui/channel/goal are embedded) → /opt/homebrew/bin
 make install-cli    # unified `future` CLI only
 make install-desktop    # desktop app only (stages its CLI tool)
-make install-skills # built-in skills + the /future-loop skill
+make install-skills # built-in skills + the /future-goal skill
 make package-desktop    # desktop bundle → .app + .dmg in desktop/src-tauri/target/release/bundle/
 scripts/build/build-desktop-macos.sh  # local DMG; auto-signs when a Developer ID certificate is available
 ```
@@ -114,7 +114,7 @@ scripts/dev/start-desktop-linux.sh                    # local Linux Desktop + ag
 make install        # or install straight from source: GUI + unified `future` CLI + skills → /usr/local/bin (sudo)
 make install-cli    # unified `future` CLI only
 make install-desktop    # desktop app only (stages its CLI tool)
-make install-skills # built-in skills + the /future-loop skill
+make install-skills # built-in skills + the /future-goal skill
 make package-desktop    # desktop bundle → .deb in desktop/src-tauri/target/release/bundle/
 ```
 
@@ -146,7 +146,7 @@ Install the toolchain:
 No `make` needed — the PowerShell commands below mirror the make targets step for step. Run them from the repo root.
 
 **Terminal stack** — equivalent to `make install-cli install-skills`: only the unified
-`future` CLI is needed (agent/tui/channel/loop are embedded in it); skills are
+`future` CLI is needed (agent/tui/channel/goal are embedded in it); skills are
 installed by the CLI itself:
 
 ```powershell
@@ -188,53 +188,53 @@ Push-Location desktop; npm run tauri:build; Pop-Location   # → NSIS setup .exe
 Notes:
 
 - `scripts\dev\start-desktop-windows.bat` delegates to the PowerShell launcher; Desktop embeds Agent or connects to a compatible external service.
-- The scripts under `scripts/build/` (`build-desktop-macos.sh`, `build-desktop-windows-portable.ps1`, `build-desktop-windows-installer.ps1`) wrap these same steps into a single command and replicate the CI packaging pipeline (DMG / portable zip / NSIS installer). They check the toolchain up front and require `protoc` (`brew install protobuf` / `choco install protoc`). Their artifacts contain the GUI and the unified `future` CLI (agent/TUI/channel/loop embedded) — not a separate TUI.
+- The scripts under `scripts/build/` (`build-desktop-macos.sh`, `build-desktop-windows-portable.ps1`, `build-desktop-windows-installer.ps1`) wrap these same steps into a single command and replicate the CI packaging pipeline (DMG / portable zip / NSIS installer). They check the toolchain up front and require `protoc` (`brew install protobuf` / `choco install protoc`). Their artifacts contain the GUI and the unified `future` CLI (agent/TUI/channel/goal embedded) — not a separate TUI.
 
-## Loop control plane (`future-loop`)
+## Goal control plane (`future-goal`)
 
-The loop control plane lives in `orchestration/loop` and builds as a normal
+The goal control plane lives in `orchestration/goal` and builds as a normal
 workspace member:
 
 ```bash
-cargo build -p future-loop                 # debug build → target/debug/future-loop
-cargo build -p future-loop --release       # release build → target/release/future-loop
+cargo build -p future-goal                 # debug build → target/debug/future-goal
+cargo build -p future-goal --release       # release build → target/release/future-goal
 ```
 
-To use it with the agent, link the `/future-loop` skill (no build needed —
+To use it with the agent, link the `/future-goal` skill (no build needed —
 the control plane runs through the unified `future` CLI):
 
 ```bash
-make install-skills                    # built-in skills + the /future-loop skill → ~/.future/agent/skills/
+make install-skills                    # built-in skills + the /future-goal skill → ~/.future/agent/skills/
 ```
 
-Optionally install the standalone `future-loop` binary as well (dev use):
+Optionally install the standalone `future-goal` binary as well (dev use):
 
 ```bash
-bash scripts/release/install-future-loop.sh        # CLI → ~/.local/bin/future-loop, skill → ~/.future/agent/skills/
-bash scripts/release/install-future-loop.sh --release
+bash scripts/release/install-future-goal.sh        # CLI → ~/.local/bin/future-goal, skill → ~/.future/agent/skills/
+bash scripts/release/install-future-goal.sh --release
 ```
 
 Verify:
 
 ```bash
-future loop status        # primary entry (same code as `future-loop status`)
+future goal status        # primary entry (same code as `future-goal status`)
 ```
 
 > All Rust components are also reachable through the unified `future` CLI:
-> `future agent`, `future tui`, `future channel`, `future loop` — each runs
+> `future agent`, `future tui`, `future channel`, `future goal` — each runs
 > the same code as its standalone binary (`future-agent`, `future-tui`,
-> `future-channel`, `future-loop`). The standalone binaries remain buildable
+> `future-channel`, `future-goal`). The standalone binaries remain buildable
 > with `cargo build -p <crate>` and runnable via `make run-*` (dev use); the
-> standalone future-loop binary installs via scripts/release/install-future-loop.sh.
+> standalone future-goal binary installs via scripts/release/install-future-goal.sh.
 
-See the [loop control plane guide](../architecture/loop-control-plane.md) for what it does
+See the [goal control plane guide](../architecture/goal-control-plane.md) for what it does
 and how to use it.
 
 ## Install skills (optional)
 
 FutureOS includes a set of curated skills — specialized instructions for
 common tasks like deep research, browser automation, document processing,
-long-running goal orchestration (`/future-loop`), and more. These are
+long-running goal orchestration (`/future-goal`), and more. These are
 maintained in the [future-skills](https://github.com/futuregene/future-skills)
 repository:
 
@@ -261,7 +261,7 @@ make lint        # lint all: agent, channels, TUI, CLI, GUI (+stylelint), mobile
 Source builds use the repo Makefile from the repo root:
 
 ```bash
-make build          # build GUI + unified CLI (no system install; agent/tui/channel/loop embedded in future, GUI stages its own sidecars)
+make build          # build GUI + unified CLI (no system install; agent/tui/channel/goal embedded in future, GUI stages its own sidecars)
 make lint           # lint all: agent, channels, TUI, CLI, GUI (+stylelint), mobile
 make fmt            # cargo fmt --all (workspace) + desktop/src-tauri + mobile formatting
 make test           # all 7 suites: agent, channels, CLI, TUI, GUI, GUI Rust, mobile

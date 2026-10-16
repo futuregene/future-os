@@ -19,8 +19,6 @@ export function mayContainThreadSearch(message: AgentMessage, query: string): bo
   const needle = query.toLocaleLowerCase();
   if (text.toLocaleLowerCase().includes(needle))
     return true;
-  if (message.role === "user")
-    return false;
   const document = parseFutureMarkdown(text);
   if (document.references.length)
     return true;

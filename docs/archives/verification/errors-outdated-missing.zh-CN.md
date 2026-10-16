@@ -62,7 +62,7 @@ commit `eed93369`（2026-07-16）`refactor(cli): remove service management and l
 
 | 声明 | 位置 | 依据 |
 |---|---|---|
-| `make test # cargo test (agent + loop control plane)`（zh：「agent + loop 控制面」） | docs/build-and-install.md L182；zh L168 | Makefile `test:` = test-agent + test-channels + test-cli + test-tui + test-desktop + test-desktop-rust + test-mobile（Makefile L203-229）。**没有 test-loop 目标**，loop 不在 make test 内 |
+| `make test # cargo test (agent + goal control plane)`（zh：「agent + loop 控制面」） | docs/build-and-install.md L182；zh L168 | Makefile `test:` = test-agent + test-channels + test-cli + test-tui + test-desktop + test-desktop-rust + test-mobile（Makefile L203-229）。**没有 test-loop 目标**，loop 不在 make test 内 |
 | （同文件开发节）`make test # cargo test (agent)` | docs/build-and-install.md L194；zh L180 | 同上，实际 7 个套件 |
 
 → 两处均改为「all 7 suites: agent, channels, CLI, TUI, GUI, GUI Rust, mobile」（zh 同）。`make clean`（删构建产物+已安装二进制）、`future init`（装技能+macOS/Linux 链接本地命令）、mold（仅 x86_64-linux）、loop 为 workspace 成员（Cargo.toml L17）等声明复核无误。
@@ -150,11 +150,11 @@ commit `eed93369`（2026-07-16）`refactor(cli): remove service management and l
 
 → ✅ **已修复（todo_bcf715c7cc0e）**：en/zh Installation.md 改为「官方签名发布流水线签名 macOS/Windows 安装包并对 macOS 做 Apple 公证；当前下载版本未签名、未公证，首次启动告警见 FAQ」。
 
-### B9. future-loop CLI 一览的呈现方式过时（轻微）—— ✅ 已修复（todo_63c718c2a3d5）
+### B9. future-goal CLI 一览的呈现方式过时（轻微）—— ✅ 已修复（todo_63c718c2a3d5）
 
 | 声明 | 位置 | 依据 |
 |---|---|---|
-| CLI 一览以 `ops <cmd>`、`work-items <cmd>`、`cli registry` 分组呈现 | docs/loop-control-plane.md L115-127 | 实际 `future-loop` 是**扁平顶层命令**分发（orchestration/loop/src/main.rs L93-137，共 42 个顶层命令）；`ops`/`work-items`/`cli` 只是注册表里的帮助分组名（cli/registry.rs），**不是可运行命令**。所列底层命令（goal/todo/gate/capability/extension/handoff/benchmark protocol|run|ledger/replay record|run|corpus/canary smoke/version/doctor/history/turn/todo-event/evidence-log/backup/…）全部存在 ✓，仅呈现层级需校正（文档 L127 已有「无参运行看全量帮助」提示，属低危） |
+| CLI 一览以 `ops <cmd>`、`work-items <cmd>`、`cli registry` 分组呈现 | docs/goal-control-plane.md L115-127 | 实际 `future-goal` 是**扁平顶层命令**分发（orchestration/goal/src/main.rs L93-137，共 42 个顶层命令）；`ops`/`work-items`/`cli` 只是注册表里的帮助分组名（cli/registry.rs），**不是可运行命令**。所列底层命令（goal/todo/gate/capability/extension/handoff/benchmark protocol|run|ledger/replay record|run|corpus/canary smoke/version/doctor/history/turn/todo-event/evidence-log/backup/…）全部存在 ✓，仅呈现层级需校正（文档 L127 已有「无参运行看全量帮助」提示，属低危） |
 
 → 本轮（todo_63c718c2a3d5）与 `build_cli_registry()`（main.rs L176-471）逐一比对后修正 CLI 一览（en/zh 同步）：
 
@@ -162,7 +162,7 @@ commit `eed93369`（2026-07-16）`refactor(cli): remove service management and l
 - **extension 漏 `upgrade`**：实际为 `install|upgrade|enable|disable|rollback|status|capabilities`（L2597 `"install" | "upgrade"` 同分支）→ 已补入 extension 行
 - **`cli registry` 少 `--include-experimental`**：实际 `registry [--json] [--include-experimental]`（main.rs L466）→ 已补
 
-其余核对通过：`todo add|claim|complete|supersede|update|archive`（L613-618）、`gate resolve`、`replan ack`、`lease`、`task-graph`、`agent onboard/scope/lane/supervisor`、`capability list|propose|commands` + `catalog`、`handoff [--write]`、`benchmark protocol|run|ledger`、`replay record|run|corpus build|run`、`canary smoke [--profile core-control-plane|extension-runtime|release-gate]`、ops 组全 19 命令、quota 三来源 run/agent/heartbeat（quota/slot_accounting.rs L42-44）、九种 disposition（decision/）、`--class monitor --cadence`（L655-660）、`--verify/--max-validation-attempts`（L656-657）、backup `--restore`（L991-1002）、状态布局 registry.json + goals/<id>/events.jsonl + ACTIVE_GOAL_STATE.md + runs/、`cargo build -p future-loop`、`scripts/install-future-loop.sh` 均 ✓
+其余核对通过：`todo add|claim|complete|supersede|update|archive`（L613-618）、`gate resolve`、`replan ack`、`lease`、`task-graph`、`agent onboard/scope/lane/supervisor`、`capability list|propose|commands` + `catalog`、`handoff [--write]`、`benchmark protocol|run|ledger`、`replay record|run|corpus build|run`、`canary smoke [--profile core-control-plane|extension-runtime|release-gate]`、ops 组全 19 命令、quota 三来源 run/agent/heartbeat（quota/slot_accounting.rs L42-44）、九种 disposition（decision/）、`--class monitor --cadence`（L655-660）、`--verify/--max-validation-attempts`（L656-657）、backup `--restore`（L991-1002）、状态布局 registry.json + goals/<id>/events.jsonl + ACTIVE_GOAL_STATE.md + runs/、`cargo build -p future-goal`、`scripts/install-future-goal.sh` 均 ✓
 
 ---
 
@@ -190,12 +190,12 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 - **I-1** Models.md 再生成说明 → 已解决（todo_bcf715c7cc0e：`make generate-models` 注释写入脚本模板与文件头）。
 - **I-2** Linux 页面决策 → **维持 macOS+Windows**：release.yml 只发布 macOS（arm64+x64 dmg/updater）+ Windows（x64 setup）；Linux 便携包为 tester-only，wiki 不加 Linux 页。
 - **I-3** 新增 **docs/channels-config.md / zh**：`~/.future/channels/config.json` 统一参考——`agent`/`feishu`/`dingtalk` 三块 schema、全部默认值与合法取值（逐字段核对 channels/src/config.rs + feishu/policy.rs；dm_policy=open|disabled|allowlist、group_policy=open|disabled|allowlist、首启写模板并退出、9 个本地斜杠命令、未知斜杠转发、Feishu keepalive 30s / DingTalk 20s、DingTalk webhook 新消息回复）。
-- **I-4** loop-control-plane.md / zh 新增「Multi-agent workflow / 多 agent 工作流」章节：`agent`（注册 + `onboard --capability`）、`scope`（identity 边界 frontier 输出）、`lane`、`supervisor propose|receipt|events`、`handoff [--write]`（交付契约 + HANDOFF.md）、`task-graph`、`attention [--goal|--all]`、`inbox --project` 的完整示例；并注明这些是**扁平顶层命令**（main.rs L94/L119-127 顶层分发；帮助输出里的 agent/todo/work-items 分组仅为展示）。
+- **I-4** goal-control-plane.md / zh 新增「Multi-agent workflow / 多 agent 工作流」章节：`agent`（注册 + `onboard --capability`）、`scope`（identity 边界 frontier 输出）、`lane`、`supervisor propose|receipt|events`、`handoff [--write]`（交付契约 + HANDOFF.md）、`task-graph`、`attention [--goal|--all]`、`inbox --project` 的完整示例；并注明这些是**扁平顶层命令**（main.rs L94/L119-127 顶层分发；帮助输出里的 agent/todo/work-items 分组仅为展示）。
 - **I-5** 新增 **docs/README.md / zh**：docs 目录导航索引（顶层指南表、wiki 页面清单、dist 活文档、内部工作文档、文档保持正确的方法）。
 - **I-6** 新增 **docs/tui.md / zh**：TUI 使用文档——17 个可用斜杠命令（/export /import 为 stub）、8 个快捷键、settings.json/keybindings.json/debug.log/write.log 路径（`write.log` 仅在 `PI_TUI_WRITE_LOG=1` 时写入，见 tui/src/tui.ts L282-287；无 crash.log）、常见排障（依据 tui/src/app.ts 等）。
-- **I-7** 新增 **docs/directory-layout.md / zh**：`~/.future/` 完整布局——agent（settings/models/auth/sessions/skills/logs）、channels、tui、app（app.db/images/review）、workspaces/chat、loop（FUTURE_LOOP_ROOT 可覆盖）、bin；另附 `~/.agents/skills/` 与项目本地 `.future/`（loop、approval_rule.json）说明。
+- **I-7** 新增 **docs/directory-layout.md / zh**：`~/.future/` 完整布局——agent（settings/models/auth/sessions/skills/logs）、channels、tui、app（app.db/images/review）、workspaces/chat、loop（FUTURE_GOAL_ROOT 可覆盖）、bin；另附 `~/.agents/skills/` 与项目本地 `.future/`（loop、approval_rule.json）说明。
 
-> 交叉链接闭环：docs/README.md（索引）⇄ tui.md ⇄ directory-layout.md ⇄ channels-config.md ⇄ loop-control-plane.md ⇄ wiki 各页，无悬空链接（`grep -rn '](…' docs/*.md` 抽查通过）。
+> 交叉链接闭环：docs/README.md（索引）⇄ tui.md ⇄ directory-layout.md ⇄ channels-config.md ⇄ goal-control-plane.md ⇄ wiki 各页，无悬空链接（`grep -rn '](…' docs/*.md` 抽查通过）。
 
 ---
 
@@ -205,18 +205,18 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 |---|---|
 | TUI 快捷键 8 个 | ✓ README L122-131 与源码完全一致：ctrl+c 中断/退出、ctrl+p 循环模型、ctrl+r 浏览会话、ctrl+t 循环思考、tab 补全、enter 提交/接受、escape 关弹窗、↑↓ 滚动（tui/src/app.ts L226-232；help-screen.ts 同） |
 | agent 端口 | ✓ 默认 `127.0.0.1:50051`（agent/src/main.rs L14）；CLI/TUI/channels 默认连接一致 |
-| 配置路径 | ✓ `~/.future/agent/auth.json` 格式 `{"provider":{"type":"api_key","key":…}}` + 可选 `baseUrl`（agent/src/auth/mod.rs serde）；`~/.future/agent/models.json` `providers{apiKey,baseUrl,models[{id,name,contextWindow}]}`（agent/src/models/mod.rs L402-432）；`~/.future/channels/config.json`（channels/src/config.rs default_path）；TUI 本地 `~/.future/tui/settings.json`；loop 状态根 `~/.future/loop/`（FUTURE_LOOP_ROOT 可覆盖） |
+| 配置路径 | ✓ `~/.future/agent/auth.json` 格式 `{"provider":{"type":"api_key","key":…}}` + 可选 `baseUrl`（agent/src/auth/mod.rs serde）；`~/.future/agent/models.json` `providers{apiKey,baseUrl,models[{id,name,contextWindow}]}`（agent/src/models/mod.rs L402-432）；`~/.future/channels/config.json`（channels/src/config.rs default_path）；TUI 本地 `~/.future/tui/settings.json`；loop 状态根 `~/.future/goal/`（FUTURE_GOAL_ROOT 可覆盖） |
 | channels 配置默认值 | ✓ grpc_addr=http://127.0.0.1:50051、model=future/deepseek-v4-pro、thinking_level=xhigh、permission_level=all；feishu dm_policy=allowlist、group_policy=disabled、require_mention/streaming/resolve_sender_names=true、max_image_mb=10、typing_indicator=false；dingtalk domain=api.dingtalk.com；config.json 不存在→写模板并退出（config.rs 全默认值 + main.rs 行为） |
 | channels 斜杠命令 | ✓ 两桥各 9 个：/new /status /stop /model /models /compact /effort /cwd /help（feishu/bridge.rs L424-714；dingtalk/bridge.rs L141-262） |
 | DingTalk keepalive 20s | ✓ PING_INTERVAL_SECS=20（dingtalk/dingtalk_ws.rs L32） |
 | 工具链版本 | ✓ rust-toolchain.toml `1.97.0`；.nvmrc `24`；.cargo/config.toml：mold 仅 x86_64-unknown-linux-gnu、windows-msvc /DEBUG:NONE（「mold 在 x86_64 必需、ARM Linux 不需要」表述正确） |
-| Makefile 其余目标 | ✓ install/install-desktop/install-agent|tui|cli|desktop|channels|skills|loop、uninstall、build*（agent/tui/cli/desktop/desktop-dist/channels/mobile）、package-desktop、run-agent|tui|cli|desktop|channels、generate-models、generate-proto、fmt、clean 全存在；install 前缀 per-OS 正确（macOS /opt/homebrew/bin、Linux /usr/local/bin sudo、Windows %USERPROFILE%\.future\bin）；install-skills 符号链接/Windows 拷贝；install-loop → scripts/install-future-loop.sh；scripts/（build-desktop-macos.sh、build-desktop-windows-portable.ps1、build-desktop-windows-installer.ps1、start-desktop-windows.bat）全存在 |
+| Makefile 其余目标 | ✓ install/install-desktop/install-agent|tui|cli|desktop|channels|skills|loop、uninstall、build*（agent/tui/cli/desktop/desktop-dist/channels/mobile）、package-desktop、run-agent|tui|cli|desktop|channels、generate-models、generate-proto、fmt、clean 全存在；install 前缀 per-OS 正确（macOS /opt/homebrew/bin、Linux /usr/local/bin sudo、Windows %USERPROFILE%\.future\bin）；install-skills 符号链接/Windows 拷贝；install-loop → scripts/install-future-goal.sh；scripts/（build-desktop-macos.sh、build-desktop-windows-portable.ps1、build-desktop-windows-installer.ps1、start-desktop-windows.bat）全存在 |
 | build-desktop-macos.sh | ✓ 唯一 Developer ID 自动签名、`--identity`/`--out-dir`/`--notary-profile` 等选项与 B4 描述一致 |
 | CLI run 选项 | ✓ --model 支持 `model:thinking`、--thinking off/minimal/low/medium/high/xhigh、@<path> 文件包含、--continue/-c、--cwd、--mode text|json、--no-session（cli/src/commands/run.ts 帮助文本） |
 | CLI tools | ✓ list / describe / call（--key value、--args '<json>'、--stdin、--output、--timeout 等） |
 | `future init` | ✓ = 装内置技能 + macOS/Linux 链接 future/future-agent 到 ~/.future/bin（cli/src/index.ts L41-46 帮助文本）——build-and-install B14 描述正确 |
-| future-loop 命令面 | ✓ 顶层 42 命令（main.rs L93-137）；goal init/cancel/delete（L494-586）、todo add/claim/complete/supersede/update/archive（L613-618）、gate、capability/catalog、extension install|upgrade|enable|disable|rollback|status|capabilities（L2593-2670）、handoff（L2958）、benchmark protocol|run|ledger（L3393-3395）、replay record|run|corpus build|run（L3610-3614）、canary smoke --profile（L3631-）、run --goal/--model/--thinking-level/--max-turns（L375）、todo add --verify/--max-validation-attempts（L656-657）全部存在 |
-| install-future-loop.sh | ✓ CLI → ~/.local/bin/future-loop、skill → ~/.future/agent/skills/future-loop/SKILL.md、`future-loop status` 验证 |
+| future-goal 命令面 | ✓ 顶层 42 命令（main.rs L93-137）；goal init/cancel/delete（L494-586）、todo add/claim/complete/supersede/update/archive（L613-618）、gate、capability/catalog、extension install|upgrade|enable|disable|rollback|status|capabilities（L2593-2670）、handoff（L2958）、benchmark protocol|run|ledger（L3393-3395）、replay record|run|corpus build|run（L3610-3614）、canary smoke --profile（L3631-）、run --goal/--model/--thinking-level/--max-turns（L375）、todo add --verify/--max-validation-attempts（L656-657）全部存在 |
+| install-future-goal.sh | ✓ CLI → ~/.local/bin/future-goal、skill → ~/.future/agent/skills/future-goal/SKILL.md、`future-goal status` 验证 |
 | proto | ✓ proto/future.proto 存在；生成代码入库（agent/src/grpc/generated/proto.rs、channels/src/generated/proto.rs）；make generate-proto 再生 agent+channels+desktop/src-tauri+tui |
 
 ---
@@ -237,14 +237,14 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 
 ### F1. 中英一致性
 
-- 成对文档标题结构逐一比对（排除代码围栏内的 shell 注释行）：README（10/10）、docs/README（6/6）、tui（5/5）、directory-layout（9/9）、channels-config（8/8）、loop-control-plane（**19/19**，h1/h2/h3 全等；初查 15 vs 14 的差异来自代码块内 `#` 注释行，非标题）、build-and-install（19/19）、wiki-prompt（23/23）。全部一致。
+- 成对文档标题结构逐一比对（排除代码围栏内的 shell 注释行）：README（10/10）、docs/README（6/6）、tui（5/5）、directory-layout（9/9）、channels-config（8/8）、goal-control-plane（**19/19**，h1/h2/h3 全等；初查 15 vs 14 的差异来自代码块内 `#` 注释行，非标题）、build-and-install（19/19）、wiki-prompt（23/23）。全部一致。
 - 关键事实抽查一致：TUI 斜杠命令表 en/zh 均为 17 可用 + 2 stub（/export /import）；快捷键 4 项（ctrl+p/t/r/c）逐字一致；channels-config 默认值表 en/zh 数字一致（50051、deepseek-v4-pro、xhigh、10MiB、30s/20s）。
 
 ### F2. 链接有效性
 
 - 全量链接检查（16 个 md：docs/*.md + README*），0 断链。检查器先剥离行内代码与代码围栏（wiki-prompt 里 `[x](Quick-Start)` 这类**语法示例**在反引号内，非真实链接；Quick-Start.md 实际存在于 en/zh 两目录）。
 - wiki 交叉链接 + 锚点检查（en/zh 各 13 页，含 `#锚点` 解析为 GitHub slug），0 错误。
-- 新增文档交叉引用闭环（docs/README ⇄ tui ⇄ directory-layout ⇄ channels-config ⇄ loop-control-plane ⇄ wiki）全部可达。
+- 新增文档交叉引用闭环（docs/README ⇄ tui ⇄ directory-layout ⇄ channels-config ⇄ goal-control-plane ⇄ wiki）全部可达。
 
 ### F3. 变更清单（7383eca1..HEAD，15 commits，全部已推送分支）
 
@@ -253,13 +253,13 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 | 05a9a575 | README en/zh 全量复核完成标记（B3 收尾） |
 | dd14b60a | loop skill：长回合超过默认 shell 超时——阻塞运行 + 显式超时 |
 | 9cac0b48 | build-and-install en/zh：make test/lint/fmt/generate-proto 范围 + 技能数 14（A5/B2/B5/B6） |
-| 3a587ad4 | loop-control-plane en/zh：CLI 一览对齐实际命令面（B9：goal 补 models/diagnose、extension 补 upgrade、cli registry 补 --include-experimental） |
+| 3a587ad4 | goal-control-plane en/zh：CLI 一览对齐实际命令面（B9：goal 补 models/diagnose、extension 补 upgrade、cli registry 补 --include-experimental） |
 | 9512b972 | wiki-prompt en/zh：CLI 命令面/二进制名/打包/清单全面对齐（A1/A2/B4 + Models.md 生成说明） |
 | c7c95d03 | wiki 全部页面 en/zh：CLI.md 重写、Feishu/DingTalk（A3/A4/B7）、Installation（B8）、Settings 页码、Models.md 生成头注 |
 | fff6c18b | architecture-audit 标注时点快照 + dist readmes 核验（X10） |
 | 8fe97b57 | loop 代码修复：流式文本 UTF-8 边界截断（panic 修复） |
 | b19bf933 | loop skill：每回合后显式「反思与改进」步骤（超智能体主动再规划） |
-| 950039f1 | **缺失文档补齐（C3/I-1..I-7）**：docs/README（索引）、tui、directory-layout、channels-config、loop-control-plane 多 agent 章节 |
+| 950039f1 | **缺失文档补齐（C3/I-1..I-7）**：docs/README（索引）、tui、directory-layout、channels-config、goal-control-plane 多 agent 章节 |
 | a2b7105c | tui/directory-layout en/zh：crash.log 事实修正 → write.log（PI_TUI_WRITE_LOG=1 才写），4 个文件 |
 
 遗留（见 §E）：GUI 功能声明核验（Using-FutureOS/Settings/Skills/Quick-Start 页面内容，✅ 已核验 todo_cab9a84ced24）、TUI help-screen 与补全清单不一致（✅ 已修复 commit 042a7d07，todo_b98a9381ad9e）。
@@ -324,7 +324,7 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 ## H. 2026-08-18 复核：loop 文档、技能数、目录布局（branch `docs/claude-md-improvements`）
 
 > 对照当前工作树源码（loop 控制面已删 capability/extension 生态、默认状态根改
-> 为项目本地 `<cwd>/.future/loop/`；skills/builtin 含 15 个 future-* 技能）逐条核验。
+> 为项目本地 `<cwd>/.future/goal/`；skills/builtin 含 15 个 future-* 技能）逐条核验。
 
 ### H1. 已修正（本轮）
 
@@ -332,17 +332,17 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 |---|---|---|
 | loop 文档 todo 类别「三类」过时 | 五类：advancement / user-gate / user-action / monitor / blocker（en/zh 核心概念表） | state.rs `TaskClass` 枚举 5 变体；console.rs L824 `--role/--class` 校验文案 |
 | loop 文档「PLAN_REVIEW checkpoints are agent-resolved」无源码依据 | 删除；改为 user-action 语义（`user_action` 展示给用户但**不冻结** agent，decision/mod.rs L111-114 注释 + UserChannel 分支） | 全库 grep `PLAN_REVIEW` 0 命中 |
-| loop 文档「三端体验」（TUI/GUI/移动端可见 loop 状态）与代码不符 | 改为「loop 状态以 CLI 为准」：状态项目本地、TUI/GUI/移动端/IM 无内置 loop 视图，经 `/future-loop` 技能编排 `future loop` 命令驱动 | desktop/src、mobile/src、tui/src 均无 future_loop 引用（grep 0 命中）；loop 状态仅 CLI 可读 |
+| loop 文档「三端体验」（TUI/GUI/移动端可见 loop 状态）与代码不符 | 改为「loop 状态以 CLI 为准」：状态项目本地、TUI/GUI/移动端/IM 无内置 loop 视图，经 `/future-goal` 技能编排 `future goal` 命令驱动 | desktop/src、mobile/src、tui/src 均无 future_goal 引用（grep 0 命中）；loop 状态仅 CLI 可读 |
 | loop 文档「渠道桥消息可触发 loop 操作、门禁回聊天」无集成代码 | 改为「任何客户端可经技能驱动；桥与 loop 无原生集成」 | channels/src 无 loop 集成（grep 0 命中） |
-| loop 文档 CLI 分组清单过时 | 按 `future loop registry` 实测输出修正：agent 组补 `list`、ops 组补 `serve-status`、删除「质量组」改为 handoff / cli / benchmark / replay / canary 五组（10 组 43 命令数不变） | `./target/debug/future loop registry` 实测；cli/registry.rs |
+| loop 文档 CLI 分组清单过时 | 按 `future goal registry` 实测输出修正：agent 组补 `list`、ops 组补 `serve-status`、删除「质量组」改为 handoff / cli / benchmark / replay / canary 五组（10 组 43 命令数不变） | `./target/debug/future goal registry` 实测；cli/registry.rs |
 | loop 文档 gate 示例缺必填 `--text` | 补 `--text`（`--gate-question` 默认为 `--text`） | console.rs `--text required` |
-| directory-layout 声称 loop 状态根默认 `~/.future/loop/` | 实际默认 `<cwd>/.future/loop/`（项目本地），`FUTURE_LOOP_ROOT` 覆盖；`~/.future/loop/` 不再使用。已改章节标题与正文、从 `~/.future/` 目录树删除 `loop/` 行 | console.rs `root_dir()` L56-66（无 home 回退） |
-| console.rs 模块注释「State lives under `--root` (default `~/.future/loop/`)」 | 改为项目本地 `<cwd>/.future/loop/`（`--root` 旗标亦不存在） | console.rs `root_dir()` |
-| build-and-install「install all future-* skills (14)」 | → 15（skills/builtin 现含 future-loop） | `ls skills/builtin/` 15 目录 |
+| directory-layout 声称 loop 状态根默认 `~/.future/goal/` | 实际默认 `<cwd>/.future/goal/`（项目本地），`FUTURE_GOAL_ROOT` 覆盖；`~/.future/goal/` 不再使用。已改章节标题与正文、从 `~/.future/` 目录树删除 `loop/` 行 | console.rs `root_dir()` L56-66（无 home 回退） |
+| console.rs 模块注释「State lives under `--root` (default `~/.future/goal/`)」 | 改为项目本地 `<cwd>/.future/goal/`（`--root` 旗标亦不存在） | console.rs `root_dir()` |
+| build-and-install「install all future-* skills (14)」 | → 15（skills/builtin 现含 future-goal） | `ls skills/builtin/` 15 目录 |
 | build-and-install「开发（源码方式）」节重复两份（第二份为过时版：make test=cargo test (agent)、lint 少 GUI/mobile） | 删除过时副本；`make fmt` 注释改为 `cargo fmt --all (workspace) + desktop/src-tauri + mobile`（en/zh） | Makefile `fmt:` = cargo fmt --all + src-tauri + fmt-mobile |
-| wiki Skills.md 内置技能表缺 Loop（14 项） | 补 **Loop** 行（en/zh），技能总数 15 | skills/builtin/future-loop（v3.0.2） |
+| wiki Skills.md 内置技能表缺 Loop（14 项） | 补 **Loop** 行（en/zh），技能总数 15 | skills/builtin/future-goal（v3.0.2） |
 | wiki-prompt 内置技能示例清单含 3 个不存在技能（Hand-drawn posters/slides、Subagent） | 替换为实际 15 个（含 Loop） | skills/builtin/ 目录实测 |
-| README「14+ skills」、docs/README loop 行「extensions」 | README → 15+ 并补 `/future-loop` 例子；docs/README loop 行「扩展与多 agent」→「交付闭环、多 agent」（extension/capability 命令已删，`future loop extension status` 报 unknown command） | 实测 CLI 0 命中 extension/capability |
+| README「14+ skills」、docs/README loop 行「extensions」 | README → 15+ 并补 `/future-goal` 例子；docs/README loop 行「扩展与多 agent」→「交付闭环、多 agent」（extension/capability 命令已删，`future goal extension status` 报 unknown command） | 实测 CLI 0 命中 extension/capability |
 
 ### H2. 核验无误（供后继跳过）
 
@@ -354,7 +354,7 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 
 ### H3. 技能仓库遗留 → 已解决（future-skills#14，v3.0.3）
 
-- skills 子模块 future-loop/SKILL.md 的「PLAN_REVIEW checkpoints are agent-resolved」
+- skills 子模块 future-goal/SKILL.md 的「PLAN_REVIEW checkpoints are agent-resolved」
   已在上游修正（future-skills#14，squash 合入，b045032），同批还修了
   `agent register`（实际为 `onboard|list|contract|recipe|succession|collective`）
   与 `canary [--premerge]`（实际为 `canary smoke [--profile …] | canary premerge`）；
@@ -375,10 +375,10 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 |---|---|---|
 | README/SECURITY 沙箱三档名 | 「off / manual / macOS Seatbelt」→「`off` / `manual` / `sandbox`」；SECURITY 已知差距更新（Windows 已落地受限令牌沙箱、Linux 无沙箱） | agent/src/sandbox/mod.rs `SandboxTier{Off,Manual,Sandbox}`；`platform_sandbox_availability()` 含 windows 探针；agent/src/sandbox/windows/ 目录存在（#342） |
 | CLAUDE.md 本地主分支名 | `dev` → `main`（git branch 实测仅 `main`） | `git branch` 输出 |
-| loop-control-plane CLI 全景 | 「10 组 43 命令」→「7 组 40 命令」；删 handoff/benchmark/replay 组与 serve-status；agent 组去顶层 `list`（实为 `agent list` 子命令）、补 `worker`；goal 组补 `ui` | `future loop registry` 实测：goal5/todo6/agent5/ops18/work-items3/cli2/canary1 |
+| goal-control-plane CLI 全景 | 「10 组 43 命令」→「7 组 40 命令」；删 handoff/benchmark/replay 组与 serve-status；agent 组去顶层 `list`（实为 `agent list` 子命令）、补 `worker`；goal 组补 `ui` | `future goal registry` 实测：goal5/todo6/agent5/ops18/work-items3/cli2/canary1 |
 | tui/directory-layout 的 debug.log | 「始终写入」→ `PI_DEBUG_REDRAW=1` 才写 | tui/src/app.rs `log_redraw`（`PI_DEBUG_REDRAW` != "1" 即 return） |
 | long-run-evidence-ledger crate 名 | `future-channels` → `future-channel`（en 4 处 + zh 4 处） | channels/Cargo.toml `name = "future-channel"`（自 PR #150 起即此名） |
-| orchestration/loop/UPSTREAM.md | 删除已移除的「explore graph, pr_review_queue」 | loop/src 全库 grep 0 命中（capability 生态已删） |
+| orchestration/goal/UPSTREAM.md | 删除已移除的「explore graph, pr_review_queue」 | loop/src 全库 grep 0 命中（capability 生态已删） |
 | packages/rpc/README proto 路径 | `../proto/future.proto` → `proto/future.proto` | packages/rpc/build.rs `rerun-if-changed=proto/future.proto` |
 | desktop/CLAUDE.md | ①沙箱「(macOS only)」去掉（Windows 已支持）②悬空 `DEV_MD/PLAN.md` → `agent_providers/validate.rs` ③`agent_providers.rs` → `agent_providers/` 目录 ④文档地图尺寸+补全 plan 文档 | GeneralPage.tsx `useSandboxAvailability`+`isWindows`；agent_providers/ 目录；DEV_MD 无 PLAN.md |
 

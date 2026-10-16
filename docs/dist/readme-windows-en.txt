@@ -34,7 +34,7 @@ website and try again.
 · The command-line tool future.exe is included in the same directory.
 
 [License]
-FutureOS is distributed under the MIT License; the bundled future loop
+FutureOS is distributed under the MIT License; the bundled future goal
 component is derived from LoopX and distributed under Apache-2.0.
 Full license texts and attribution notices: see the licenses/ directory.
 

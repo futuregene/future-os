@@ -423,9 +423,6 @@ const NO_MANAGEMENT = {
   setTaskEnabled: noop as never,
   runTask: noop as never,
   listTaskRuns: noop as never,
-  listTaskDeps: noop as never,
-  setTaskDep: noop as never,
-  removeTaskDep: noop as never,
 };
 
 /**
@@ -663,14 +660,23 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     async (desktopId: string, sessionId: string) => {
       const target = desktopId || activeDesktopId;
       if (!target) return;
-      if (target !== activeDesktopId) await selectDesktop(target);
+      // A machine that is no longer paired has no runtime to wait for: the
+      // caller gets the same answer an unreachable machine gives, without the
+      // wait. A machine the phone is still *booting* into is a different state —
+      // its runtime is about to appear — so the check waits for the pairing to
+      // have been read.
+      if (!pairing.booting && !pairedIds.has(target)) throw new Error("desktop_unavailable");
       const entry = await waitForRuntime(target);
       // A machine that cannot be reached must say so: the caller reports it,
       // rather than the row appearing to open onto an empty conversation.
       if (!entry) throw new Error("desktop_unavailable");
+      // Moved only once the conversation has somewhere to open: a tap naming a
+      // machine that never answers must not leave the screens reading a machine
+      // with nothing on it.
+      if (target !== activeDesktopId) await selectDesktop(target);
       await entry.conversation.selectSession(sessionId);
     },
-    [activeDesktopId, selectDesktop, waitForRuntime],
+    [activeDesktopId, pairedIds, pairing.booting, selectDesktop, waitForRuntime],
   );
 
   /**

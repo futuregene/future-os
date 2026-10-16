@@ -66,6 +66,22 @@ pub struct GetStatePayload {
     /// policy was ever set, which is not the same as `Some("off")`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_tier: Option<String>,
+    /// The session's persistent system-prompt append segment; empty when unset.
+    /// Read-back counterpart of `append_system_prompt` / `new_session`. The full
+    /// built prompt is deliberately not part of this payload — ask
+    /// `get_system_prompt` for the body.
+    #[serde(default)]
+    pub append_system_prompt: String,
+    /// Whether project instruction files (AGENTS.md / CLAUDE.md / GEMINI.md) are
+    /// folded into this session's prompt. Separate from `context_files` because
+    /// an enabled session with no files present also has an empty list.
+    #[serde(default)]
+    pub context_files_enabled: bool,
+    /// The session's whole-prompt replacement; empty when the built-in prompt is
+    /// used. Small (a manual override), unlike the built prompt itself, which is
+    /// tens of kilobytes and deliberately stays behind `get_system_prompt`.
+    #[serde(default)]
+    pub custom_system_prompt: String,
 }
 
 /// A run's live state (get_state `activeRun` / `interruptedRun`; proto
@@ -264,6 +280,9 @@ mod tests {
             requested_run: None,
             pending_approvals: vec![],
             sandbox_tier: None,
+            append_system_prompt: String::new(),
+            context_files_enabled: true,
+            custom_system_prompt: String::new(),
         };
         let value = serde_json::to_value(&payload).unwrap();
 
@@ -273,6 +292,12 @@ mod tests {
         assert!(value.get("sessionName").is_none(), "empty name is omitted");
         assert!(value.get("session_name").is_none(), "no legacy alias");
         assert!(value.get("extensions").is_none());
+        // The append segment and the context-files switch are always present —
+        // "no append" and "context files off" are values a reader must see, not
+        // absences it has to infer.
+        assert_eq!(value["appendSystemPrompt"], json!(""));
+        assert_eq!(value["contextFilesEnabled"], json!(true));
+        assert_eq!(value["customSystemPrompt"], json!(""));
         // No policy set must not be spelled as "off" — that is a real choice.
         assert!(
             value.get("sandboxTier").is_none(),
@@ -499,9 +524,16 @@ mod tests {
             requested_run: None,
             pending_approvals: vec![],
             sandbox_tier: Some("manual".to_string()),
+            append_system_prompt: "Always answer in haiku.".to_string(),
+            context_files_enabled: true,
+            custom_system_prompt: String::new(),
         };
         let canonical = serde_json::to_value(&payload).unwrap();
         assert_eq!(canonical["sandboxTier"], json!("manual"));
+        assert_eq!(
+            canonical["appendSystemPrompt"],
+            json!("Always answer in haiku.")
+        );
         let decoded: GetStatePayload = serde_json::from_value(canonical.clone()).unwrap();
         assert_eq!(serde_json::to_value(&decoded).unwrap(), canonical);
     }

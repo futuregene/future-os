@@ -203,9 +203,9 @@ jobs:
           cp "target/${{ matrix.arch }}-unknown-linux-musl/release/future" "$dir/future"
           chmod +x "$dir"/*
           cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"
-          mkdir -p "$dir/licenses/loop"
+          mkdir -p "$dir/licenses/goal"
           cp LICENSE "$dir/licenses/"
-          cp orchestration/loop/LICENSE orchestration/loop/NOTICE orchestration/loop/UPSTREAM.md "$dir/licenses/loop/"
+          cp orchestration/goal/LICENSE orchestration/goal/NOTICE orchestration/goal/UPSTREAM.md "$dir/licenses/goal/"
           tar -czf "FutureOS_${FUTURE_ARTIFACT_VERSION}_linux_${{ matrix.arch }}-portable.tar.gz" \
             -C "$dir" .
 

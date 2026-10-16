@@ -24,13 +24,14 @@ use std::collections::HashSet;
 const HELP: &str = "future session status — one session's live state and configuration
 
 Usage:
-  future session status <session-id> [--json] [--metrics]
+  future session status <session-id> [--json] [--metrics] [--system-prompt]
 
 Reads the agent's own view of the session (get_state), so it reports what the
 session would actually use, not what the global settings file says:
   Permission     the effective tool permission level (all|workspace|none)
   Context        tokens in context / the model's window / percent used
-  Context files  CLAUDE.md and friends that were loaded
+  Context files  AGENTS.md and friends that were loaded
+  Append prompt  the session's persistent system-prompt segment
   Skills         how many skills were discovered for this session
   Runs           the active run, queued runs and recent terminal outcomes
   Approvals      pending approval requests, if the session is waiting on one
@@ -38,6 +39,10 @@ session would actually use, not what the global settings file says:
 Options:
   --json          Print the agent's canonical state object verbatim
   --metrics       Also include runtime metrics (journal health, broadcast lag)
+  --system-prompt Print the full system prompt this session's next run would
+                  send (tens of kilobytes), instead of the state summary. The
+                  state object only carries the append segment and the context
+                  -file list, so this is how a human reads the whole thing.
   -h, --help      Show this help
 
 This is the live view; `session info` is the persisted one (messages, tool
@@ -48,12 +53,14 @@ struct Options {
     session: String,
     json: bool,
     metrics: bool,
+    system_prompt: bool,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
     let mut session = None;
     let mut json = false;
     let mut metrics = false;
+    let mut system_prompt = false;
     let mut seen = HashSet::new();
     let mut index = 0;
     while index < args.len() {
@@ -62,6 +69,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
             json = true;
         } else if flag == "--metrics" {
             metrics = true;
+        } else if flag == "--system-prompt" {
+            system_prompt = true;
         } else if flag.starts_with("--") {
             return Err(format!(
                 "unknown option: {flag}; see future session status --help"
@@ -80,6 +89,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         session: session.ok_or("a session id is required")?,
         json,
         metrics,
+        system_prompt,
     })
 }
 
@@ -108,6 +118,29 @@ fn yes_no(flag: bool) -> &'static str {
         "yes"
     } else {
         "no"
+    }
+}
+
+/// One line summarising an appended prompt: the first non-empty line, clipped,
+/// plus how many further lines are hidden. A status line has to stay one line —
+/// printing the whole segment would make `session status` unreadable for the
+/// multi-rule case it exists to report, and `--system-prompt` is where the full
+/// text belongs.
+pub(super) fn first_line_summary(text: &str) -> String {
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let head = lines.first().copied().unwrap_or("").trim();
+    let clipped: String = if head.chars().count() > 60 {
+        format!("{}…", head.chars().take(59).collect::<String>())
+    } else {
+        head.to_string()
+    };
+    if lines.len() > 1 {
+        format!("{clipped}  (+{} more line(s))", lines.len() - 1)
+    } else {
+        clipped
     }
 }
 
@@ -186,8 +219,17 @@ fn format_status(state: &Value, metrics: Option<&Value>) -> String {
         .as_array()
         .cloned()
         .unwrap_or_default();
+    // Whether project context is folded in at all is a separate answer from
+    // which files were found: a session with context files switched off and a
+    // session whose directory simply has none both load nothing, and the file
+    // list alone cannot tell them apart. An older agent that does not report
+    // the flag keeps the pre-existing reading (files present ⇒ enabled).
+    let context_enabled = state
+        .get("contextFilesEnabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(!files.is_empty());
     out.push_str(&format!(
-        "  Context files: {}\n",
+        "  Context files: {}{}\n",
         if files.is_empty() {
             "(none)".to_string()
         } else {
@@ -196,8 +238,34 @@ fn format_status(state: &Value, metrics: Option<&Value>) -> String {
                 .map(|f| f.as_str().unwrap_or("").to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
+        },
+        if context_enabled {
+            String::new()
+        } else {
+            "  [disabled for this session]".to_string()
         }
     ));
+    // The append segment is the session's own persistent rules. Shown as
+    // (none) rather than omitted, because "this session appends nothing" is
+    // the answer a caller checking for it needs.
+    let append = text(state, "appendSystemPrompt");
+    out.push_str(&format!(
+        "  Append prompt: {}\n",
+        if append.is_empty() {
+            "(none)".to_string()
+        } else {
+            first_line_summary(&append)
+        }
+    ));
+    // A whole-prompt replacement is the rarer, more drastic state — a reader
+    // who sees it must not assume the built-in prompt is in force.
+    let custom = text(state, "customSystemPrompt");
+    if !custom.is_empty() {
+        out.push_str(&format!(
+            "  System prompt: REPLACED — {}\n",
+            first_line_summary(&custom)
+        ));
+    }
     out.push_str(&format!(
         "  Skills:        {} loaded\n",
         state["skills"].as_array().map_or(0, Vec::len)
@@ -293,6 +361,39 @@ pub(super) async fn run(args: &[String], out: &Output) -> Result<(), String> {
     }
     let options = parse(args)?;
     let client = RunClient::new(&grpc_addr());
+
+    // `--system-prompt` is the one mode that does not need `get_state`: the
+    // prompt body comes from its own command, so an older agent that lacks it
+    // reports that instead of silently printing the summary.
+    if options.system_prompt {
+        let prompt = client
+            .get_system_prompt(&options.session)
+            .await
+            .map_err(|err| super::session::missing_session_error(err, &options.session))?;
+        // `--json` keeps the machine-readable shape instead of the prose dump:
+        // a caller that asked for the full prompt in JSON gets the built text
+        // plus the fields that explain how it was assembled.
+        if options.json {
+            out.log(&serde_json::to_string_pretty(&prompt).map_err(|e| e.to_string())?);
+            return Ok(());
+        }
+        let body = prompt["systemPrompt"].as_str().unwrap_or("");
+        if body.is_empty() {
+            out.log_err(
+                "The agent returned no system prompt; it may predate \
+                 `session status --system-prompt`.",
+            );
+            return Err(crate::HANDLED_EXIT.to_string());
+        }
+        out.log(&format!(
+            "# System prompt for session {} ({} bytes)\n\n{}",
+            options.session,
+            body.len(),
+            body
+        ));
+        return Ok(());
+    }
+
     let state = client
         .get_state(Some(&options.session))
         .await
@@ -397,6 +498,168 @@ mod tests {
         assert!(rendered.contains("Queued:        1"));
         assert!(rendered.contains("Approvals:     1 pending"));
         assert!(rendered.contains("ap-1  shell  Run ls"), "{rendered}");
+    }
+
+    /// The append segment is a first-class line: "no append" has to be visible
+    /// as such, and a multi-line segment must not blow up the one-line layout.
+    #[test]
+    fn append_prompt_is_summarised_on_one_line() {
+        let mut state = state_payload();
+        state["appendSystemPrompt"] = json!("");
+        let rendered = format_status(&state, None);
+        assert!(rendered.contains("Append prompt: (none)"), "{rendered}");
+
+        let mut state = state_payload();
+        state["appendSystemPrompt"] = json!("Rule one.\nRule two.\nRule three.");
+        let rendered = format_status(&state, None);
+        assert!(
+            rendered.contains("Append prompt: Rule one.  (+2 more line(s))"),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains("Rule two."),
+            "a status line stays one line"
+        );
+
+        // A long single line is clipped, not wrapped into the rest of the panel.
+        let long = "x".repeat(200);
+        let mut state = state_payload();
+        state["appendSystemPrompt"] = json!(long);
+        let rendered = format_status(&state, None);
+        let line = rendered
+            .lines()
+            .find(|line| line.contains("Append prompt:"))
+            .expect("append line");
+        assert!(line.contains('…'), "{line}");
+        assert!(line.chars().count() < 100, "{line}");
+    }
+
+    /// The file list alone cannot say whether context files are switched off or
+    /// merely absent — the flag is the difference, and it is spelled out.
+    #[test]
+    fn a_session_with_context_files_disabled_says_so() {
+        let mut state = state_payload();
+        state["contextFilesEnabled"] = json!(false);
+        let rendered = format_status(&state, None);
+        assert!(
+            rendered.contains("[disabled for this session]"),
+            "{rendered}"
+        );
+
+        // An older agent that does not report the flag keeps the old reading:
+        // files present ⇒ enabled, so no marker and no false alarm.
+        let mut state = state_payload();
+        state.as_object_mut().unwrap().remove("contextFilesEnabled");
+        let rendered = format_status(&state, None);
+        assert!(!rendered.contains("[disabled"), "{rendered}");
+    }
+
+    /// `--system-prompt` prints the whole prompt from its own command, since the
+    /// state object deliberately carries only the append segment.
+    #[tokio::test]
+    async fn status_system_prompt_prints_the_full_prompt() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = MockAgent::respond("get_state", &state_payload().to_string());
+        agent.responses.insert(
+            "get_system_prompt".into(),
+            json!({"systemPrompt": "You are FutureAgent.\n\nRule.", "appendSystemPrompt": "Rule."})
+                .to_string(),
+        );
+        let (_agent, _env) = spawn(agent).await;
+        let (out, cap) = Output::memory();
+        run(&args(&["s1", "--system-prompt"]), &out)
+            .await
+            .expect("status --system-prompt");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("You are FutureAgent."), "{stdout}");
+        assert!(stdout.contains("Rule."), "{stdout}");
+        // A byte count so a reader can tell a stub from a real prompt.
+        assert!(stdout.contains("bytes"), "{stdout}");
+    }
+
+    /// A whole-prompt replacement is a drastic state, and the summary must say
+    /// so rather than leaving a reader to assume the built-in prompt is live.
+    #[test]
+    fn a_replaced_prompt_is_called_out() {
+        let mut state = state_payload();
+        state["customSystemPrompt"] = json!("You are terse.");
+        let rendered = format_status(&state, None);
+        assert!(
+            rendered.contains("System prompt: REPLACED — You are terse."),
+            "{rendered}"
+        );
+
+        // The built-in prompt is the default, so it gets no line at all: a
+        // "(built-in)" marker on every session would be noise.
+        let rendered = format_status(&state_payload(), None);
+        assert!(!rendered.contains("System prompt:"), "{rendered}");
+    }
+
+    /// `session status --json --system-prompt` keeps the machine-readable shape
+    /// instead of the prose dump, so a script can read the built prompt.
+    #[tokio::test]
+    async fn status_system_prompt_json_is_structured() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = MockAgent::respond("get_state", &state_payload().to_string());
+        agent.responses.insert(
+            "get_system_prompt".into(),
+            json!({
+                "systemPrompt": "You are FutureAgent.",
+                "appendSystemPrompt": "Rule.",
+                "customSystemPrompt": "",
+                "contextFiles": ["AGENTS.md"],
+                "contextFilesEnabled": true,
+            })
+            .to_string(),
+        );
+        let (_agent, _env) = spawn(agent).await;
+        let (out, cap) = Output::memory();
+        run(&args(&["s1", "--system-prompt", "--json"]), &out)
+            .await
+            .expect("status --system-prompt --json");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(parsed["systemPrompt"], "You are FutureAgent.");
+        assert_eq!(parsed["appendSystemPrompt"], "Rule.");
+        assert_eq!(parsed["contextFilesEnabled"], json!(true));
+    }
+
+    /// An agent too old to know `get_system_prompt` says so instead of printing
+    /// a summary the caller did not ask for.
+    #[tokio::test]
+    async fn status_system_prompt_reports_an_agent_that_lacks_it() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = MockAgent::respond("get_state", &state_payload().to_string());
+        agent.fail_with.insert(
+            "get_system_prompt".into(),
+            "unknown command: get_system_prompt".into(),
+        );
+        let (_agent, _env) = spawn(agent).await;
+        let (out, _cap) = Output::memory();
+        let error = run(&args(&["s1", "--system-prompt"]), &out)
+            .await
+            .unwrap_err();
+        assert!(error.contains("get_system_prompt"), "{error}");
+    }
+
+    /// A reply that carries no prompt body is a failure, not an empty render:
+    /// printing nothing would look like a session with a blank system prompt.
+    #[tokio::test]
+    async fn status_system_prompt_refuses_an_empty_body() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = MockAgent::respond("get_state", &state_payload().to_string());
+        agent.responses.insert(
+            "get_system_prompt".into(),
+            json!({"systemPrompt": ""}).to_string(),
+        );
+        let (_agent, _env) = spawn(agent).await;
+        let (out, cap) = Output::memory();
+        let error = run(&args(&["s1", "--system-prompt"]), &out)
+            .await
+            .unwrap_err();
+        assert_eq!(error, crate::HANDLED_EXIT.to_string());
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("predate"), "{stderr}");
     }
 
     #[test]

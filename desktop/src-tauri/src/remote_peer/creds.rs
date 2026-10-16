@@ -116,12 +116,7 @@ impl PeerBook {
 }
 
 fn book_path() -> Result<PathBuf, crate::AppError> {
-    let home = crate::home_dir().ok_or_else(|| {
-        crate::AppError::Message("HOME/USERPROFILE environment variable is not set.".to_string())
-    })?;
-    Ok(PathBuf::from(home)
-        .join(".future")
-        .join("remote_peers.json"))
+    Ok(crate::store::future_dir()?.join("remote_peers.json"))
 }
 
 /// Read the book. A missing file is an empty book; a corrupt one is an error —

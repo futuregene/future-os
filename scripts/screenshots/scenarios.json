@@ -808,7 +808,7 @@
             "wait": 1200
           },
           {
-            "tap": "任务"
+            "tap": "定时任务"
           },
           {
             "wait": 900
@@ -828,7 +828,7 @@
             "wait": 1200
           },
           {
-            "tap": "任务"
+            "tap": "定时任务"
           },
           {
             "wait": 900
@@ -840,7 +840,7 @@
             "wait": 900
           },
           {
-            "eval": "(() => { const t = document.body.innerText; if (!t.includes('运行记录')) throw new Error('the run history is not on the opened page'); if (t.includes('提示词版本')) throw new Error('the prompt-version list is on the app page; history belongs to the CLI'); if (document.querySelector('dl')) throw new Error('a definition list is rendered while folded'); ['工作目录', '本周新增或改动', '全部到齐'].forEach(k => { if (t.includes(k)) throw new Error('the definition is not folded: ' + k + ' is visible'); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (!toggle) throw new Error('the settings disclosure is missing'); if (toggle.getAttribute('aria-expanded') !== 'false') throw new Error('the settings start expanded'); const runs = [...document.querySelectorAll('h3')].find(h => (h.textContent || '').trim() === '运行记录'); if (!runs) throw new Error('the run history heading is missing'); if (toggle.compareDocumentPosition(runs) & Node.DOCUMENT_POSITION_PRECEDING) throw new Error('the settings fold is below the run history'); })()"
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('运行记录')) throw new Error('the run history is not on the opened page'); if (t.includes('提示词版本')) throw new Error('the prompt-version list is on the app page; history belongs to the CLI'); if (document.querySelector('dl')) throw new Error('a definition list is rendered while folded'); ['工作目录', '本周新增或改动'].forEach(k => { if (t.includes(k)) throw new Error('the definition is not folded: ' + k + ' is visible'); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (!toggle) throw new Error('the settings disclosure is missing'); if (toggle.getAttribute('aria-expanded') !== 'false') throw new Error('the settings start expanded'); const runs = [...document.querySelectorAll('h3')].find(h => (h.textContent || '').trim() === '运行记录'); if (!runs) throw new Error('the run history heading is missing'); if (toggle.compareDocumentPosition(runs) & Node.DOCUMENT_POSITION_PRECEDING) throw new Error('the settings fold is below the run history'); })()"
           },
           {
             "shot": "d-tasks-detail.png"
@@ -852,7 +852,7 @@
             "wait": 400
           },
           {
-            "eval": "(() => { const t = document.body.innerText; if (!document.querySelector('dl')) throw new Error('the unfolded definition has no settings list'); ['工作目录', '本周新增或改动', '全部到齐'].forEach(k => { if (!t.includes(k)) throw new Error('the unfolded definition is missing ' + k); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (toggle.getAttribute('aria-expanded') !== 'true') throw new Error('the disclosure did not report itself open'); })()"
+            "eval": "(() => { const t = document.body.innerText; if (!document.querySelector('dl')) throw new Error('the unfolded definition has no settings list'); ['工作目录', '本周新增或改动'].forEach(k => { if (!t.includes(k)) throw new Error('the unfolded definition is missing ' + k); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (toggle.getAttribute('aria-expanded') !== 'true') throw new Error('the disclosure did not report itself open'); })()"
           }
         ]
       },
@@ -864,7 +864,7 @@
             "wait": 1200
           },
           {
-            "tap": "任务"
+            "tap": "定时任务"
           },
           {
             "wait": 900
@@ -934,68 +934,6 @@
           }
         ]
       },
-      "tasks-deps": {
-        "url": "http://localhost:5299/shot/?lang=zh",
-        "steps": [
-          {
-            "wait": 1200
-          },
-          {
-            "tap": "任务"
-          },
-          {
-            "wait": 900
-          },
-          {
-            "tapText": "每周进展周报"
-          },
-          {
-            "wait": 900
-          },
-          {
-            "tap": "编辑"
-          },
-          {
-            "wait": 900
-          },
-          {
-            "eval": "(() => { const trigger = document.querySelector('fieldset'); const mode = [...trigger.querySelectorAll('select')].find(s => [...s.options].some(o => o.value === 'dependency')); if (!mode) throw new Error('dependency is not a trigger choice'); if (mode.value !== 'weekly') throw new Error('a scheduled task does not open on its schedule: ' + mode.value); const fs = document.querySelector('select[aria-label=\"添加上游任务\"]').closest('fieldset'); if (!fs) throw new Error('no dependency editor'); if (!fs.innerText.includes('本任务还有定时触发')) throw new Error('a scheduled task with upstreams does not explain itself: ' + fs.innerText.slice(0, 200)); const stored = fs.querySelector('select[aria-label=\"文献监控 的触发条件\"]'); if (!stored) throw new Error('the stored edge has no condition picker'); if (stored.value !== 'completed') throw new Error('the stored condition is not shown: ' + stored.value); const offered = [...fs.querySelector('select[aria-label=\"添加上游任务\"]').options].map(o => o.textContent); if (!offered.includes('月末归档')) throw new Error('the other tasks are not offered: ' + offered.join(',')); if (offered.includes('每周进展周报')) throw new Error('a task offers itself as its own upstream'); })()"
-          },
-          {
-            "eval": "(() => { const fs = document.querySelector('select[aria-label=\"添加上游任务\"]').closest('fieldset'); if (!fs) throw new Error('no dependency editor'); fs.scrollIntoView({ block: 'center' }); return 'scrolled'; })()"
-          },
-          {
-            "wait": 300
-          },
-          {
-            "shot": "d-tasks-deps.png"
-          },
-          {
-            "eval": "(() => { const fs = document.querySelector('select[aria-label=\"添加上游任务\"]').closest('fieldset'); if (!fs) throw new Error('no dependency editor');const picker = fs.querySelector('select[aria-label=\"添加上游任务\"]');const option = [...picker.options].find(o => o.textContent === '月末归档');if (!option) throw new Error('月末归档 is not offered');const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;setter.call(picker, option.value);picker.dispatchEvent(new Event('change', { bubbles: true })); return 'picked'; })()"
-          },
-          {
-            "wait": 300
-          },
-          {
-            "eval": "(() => { const fs = document.querySelector('select[aria-label=\"添加上游任务\"]').closest('fieldset'); if (!fs) throw new Error('no dependency editor'); const button = [...fs.querySelectorAll('button')].find(b => b.textContent.trim() === '添加'); if (!button) throw new Error('no add button'); if (button.disabled) throw new Error('the add button is disabled after picking an upstream'); button.click(); return 'added'; })()"
-          },
-          {
-            "wait": 400
-          },
-          {
-            "eval": "(() => { const fs = document.querySelector('select[aria-label=\"添加上游任务\"]').closest('fieldset'); if (!fs) throw new Error('no dependency editor'); const rows = [...fs.querySelectorAll('li')].map(li => li.innerText.replace(/\\n/g, ' ')); if (rows.length !== 2) throw new Error('expected two dependency rows, got ' + rows.length + ': ' + rows.join(' | ')); if (!rows.some(r => r.includes('月末归档'))) throw new Error('the added upstream is not listed: ' + rows.join(' | ')); if (!fs.querySelector('select[aria-label=\"多个上游的到达条件\"]')) throw new Error('two upstreams do not offer the join policy'); })()"
-          },
-          {
-            "eval": "(() => { const fs = document.querySelector('select[aria-label=\"添加上游任务\"]').closest('fieldset'); if (!fs) throw new Error('no dependency editor'); fs.scrollIntoView({ block: 'center' }); return 'scrolled'; })()"
-          },
-          {
-            "wait": 300
-          },
-          {
-            "shot": "d-tasks-deps-two.png"
-          }
-        ]
-      },
       "tasks-new": {
         "url": "http://localhost:5299/shot/?lang=zh",
         "steps": [
@@ -1003,22 +941,19 @@
             "wait": 1200
           },
           {
-            "tap": "任务"
+            "tap": "定时任务"
           },
           {
             "wait": 900
           },
           {
-            "tap": "新建任务"
+            "tap": "新建定时任务"
           },
           {
             "wait": 900
           },
           {
             "eval": "(() => { if (document.querySelector(\"input[aria-label='工作目录']\")) throw new Error('a chat task must not ask for a directory'); const pickers = [...document.querySelectorAll('select')]; const values = pickers.map(s => s.value); if (!values.includes('chat')) throw new Error('the conversation picker does not open on chat: ' + values.join(',')); if (values.filter(v => v === '').length < 2) throw new Error('the model and thinking pickers are not both unset: ' + values.join(',')); const model = pickers.find(s => [...s.options].some(o => o.textContent === '请选择模型')); if (!model) throw new Error('no model picker'); if ([...model.options].some(o => o.textContent.includes('默认'))) throw new Error('a default model option is still offered'); })()"
-          },
-          {
-            "eval": "(() => { if (document.querySelector('select[aria-label=\"添加上游任务\"]')) throw new Error('a new task shows the dependency editor before its trigger asks for it'); const mode = [...document.querySelectorAll('select')].map(s => s.value); if (!mode.includes('manual')) throw new Error('a new task does not open on the manual trigger: ' + mode.join(',')); })()"
           },
           {
             "shot": "d-tasks-new.png"
@@ -1147,7 +1082,7 @@
             "wait": 1500
           },
           {
-            "eval": "(() => { const t = document.body.innerText; if (!t.includes('审批模式')) throw new Error('the settings page did not open'); if (/sk-[A-Za-z0-9]{8}/.test(t)) throw new Error('an API key appears in the UI'); if (t.includes('让别的设备连接本机')) throw new Error('the hub is still rendered behind the settings'); const back = [...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('返回桌面列表')); if (!back) throw new Error('there is no way back'); const header = back.closest('header'); if (!header) throw new Error('the back control is not in a page header'); const headerBox = header.getBoundingClientRect(); const box = back.getBoundingClientRect(); if (box.top - headerBox.top > 24) throw new Error('the back control is not at the top of the page'); const leftmost = [...header.querySelectorAll('button')].every(b => b.getBoundingClientRect().left >= box.left); if (!leftmost) throw new Error('the back control is not the leftmost control in the header'); if (box.left - headerBox.left > 40) throw new Error('the back control is not at the left of the page'); for (const label of ['模型', '技能', '提供方与密钥', '工作区', '任务'])   if (![...document.querySelectorAll('button')].some(b => (b.textContent || '').startsWith(label))) throw new Error('no row for ' + label); if (t.includes('每周进展周报')) throw new Error('the task list is rendered inline');\n  // The machine's icon row: two dozen glyphs in a 768px column. Beside the label\n  // they took every pixel of it — the label drawn one character per line — and the\n  // grid ran out of the card. Measured, because a class list says neither.\n  const picker = document.querySelector(\"[role='radiogroup']\");\n  if (!picker) throw new Error('the icon picker is not on the settings page');\n  const iconRow = picker.closest(\"div[class*='py-3.5']\");\n  if (!iconRow) throw new Error('the icon picker is not in a settings row');\n  const iconLabel = iconRow.firstElementChild.getBoundingClientRect();\n  const iconCard = iconRow.parentElement.getBoundingClientRect();\n  const iconGrid = picker.getBoundingClientRect();\n  if (iconLabel.width < 120) throw new Error('the icon row leaves its label ' + Math.round(iconLabel.width) + 'px wide');\n  if (iconGrid.right > iconCard.right) throw new Error('the icon grid runs ' + Math.round(iconGrid.right - iconCard.right) + 'px past its card');\n  if (Math.round(iconGrid.left) !== Math.round(iconLabel.left)) throw new Error('the icon grid is not aligned with its label');\n  if (iconGrid.top < iconLabel.bottom) throw new Error('the icon grid is not below its label');\n})()"
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('审批模式')) throw new Error('the settings page did not open'); if (/sk-[A-Za-z0-9]{8}/.test(t)) throw new Error('an API key appears in the UI'); if (t.includes('让别的设备连接本机')) throw new Error('the hub is still rendered behind the settings'); const back = [...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('返回桌面列表')); if (!back) throw new Error('there is no way back'); const header = back.closest('header'); if (!header) throw new Error('the back control is not in a page header'); const headerBox = header.getBoundingClientRect(); const box = back.getBoundingClientRect(); if (box.top - headerBox.top > 24) throw new Error('the back control is not at the top of the page'); const leftmost = [...header.querySelectorAll('button')].every(b => b.getBoundingClientRect().left >= box.left); if (!leftmost) throw new Error('the back control is not the leftmost control in the header'); if (box.left - headerBox.left > 40) throw new Error('the back control is not at the left of the page'); for (const label of ['模型', '技能', '提供方与密钥', '工作区', '定时任务'])   if (![...document.querySelectorAll('button')].some(b => (b.textContent || '').startsWith(label))) throw new Error('no row for ' + label); if (t.includes('每周进展周报')) throw new Error('the task list is rendered inline');\n  // The machine's icon row: two dozen glyphs in a 768px column. Beside the label\n  // they took every pixel of it — the label drawn one character per line — and the\n  // grid ran out of the card. Measured, because a class list says neither.\n  const picker = document.querySelector(\"[role='radiogroup']\");\n  if (!picker) throw new Error('the icon picker is not on the settings page');\n  const iconRow = picker.closest(\"div[class*='py-3.5']\");\n  if (!iconRow) throw new Error('the icon picker is not in a settings row');\n  const iconLabel = iconRow.firstElementChild.getBoundingClientRect();\n  const iconCard = iconRow.parentElement.getBoundingClientRect();\n  const iconGrid = picker.getBoundingClientRect();\n  if (iconLabel.width < 120) throw new Error('the icon row leaves its label ' + Math.round(iconLabel.width) + 'px wide');\n  if (iconGrid.right > iconCard.right) throw new Error('the icon grid runs ' + Math.round(iconGrid.right - iconCard.right) + 'px past its card');\n  if (Math.round(iconGrid.left) !== Math.round(iconLabel.left)) throw new Error('the icon grid is not aligned with its label');\n  if (iconGrid.top < iconLabel.bottom) throw new Error('the icon grid is not below its label');\n})()"
           },
           {
             "shot": "d-remote-host-settings.png"
@@ -1177,7 +1112,7 @@
             "wait": 1200
           },
           {
-            "tap": "任务 · 工作室 iMac"
+            "tap": "定时任务 · 工作室 iMac"
           },
           {
             "wait": 2200
@@ -3568,7 +3503,7 @@
             "wait": 1800
           },
           {
-            "eval": "(() => {\n  const text = document.body.innerText;\n  // The machine's own page names it, offers its label fields, and lists the\n  // settings that live on it. Every one of these used to be on the phone's\n  // settings screen; none of them may come back there.\n  for (const wanted of ['实验室的 MacBook Pro', '设备标识', '名称', '图标', '该桌面端的设置', '自动化与审批', '模型可见性', '提供商与模型', '技能管理', '任务设置']) {\n    if (!text.includes(wanted)) throw new Error('the device page is missing ' + wanted + ': ' + text.slice(0, 300));\n  }\n  // And no connection step: every paired machine keeps its own live runtime,\n  // so its settings are read over that machine's own connection. The row that\n  // used to ask to \"connect to this desktop\" first is gone.\n  if (text.includes('连接该桌面端')) throw new Error('the page still asks to connect first: ' + text.slice(0, 300));\n  const grid = [...document.querySelectorAll('[role=radio]')];\n  if (grid.length < 20) throw new Error('the icon grid is not on the page: ' + grid.length);\n  return grid.length + ' icons, no connection step';\n})()"
+            "eval": "(() => {\n  const text = document.body.innerText;\n  // The machine's own page names it, offers its label fields, and lists the\n  // settings that live on it. Every one of these used to be on the phone's\n  // settings screen; none of them may come back there.\n  for (const wanted of ['实验室的 MacBook Pro', '设备标识', '名称', '图标', '该桌面端的设置', '自动化与审批', '模型可见性', '提供商与模型', '技能管理', '定时任务设置']) {\n    if (!text.includes(wanted)) throw new Error('the device page is missing ' + wanted + ': ' + text.slice(0, 300));\n  }\n  // And no connection step: every paired machine keeps its own live runtime,\n  // so its settings are read over that machine's own connection. The row that\n  // used to ask to \"connect to this desktop\" first is gone.\n  if (text.includes('连接该桌面端')) throw new Error('the page still asks to connect first: ' + text.slice(0, 300));\n  const grid = [...document.querySelectorAll('[role=radio]')];\n  if (grid.length < 20) throw new Error('the icon grid is not on the page: ' + grid.length);\n  return grid.length + ' icons, no connection step';\n})()"
           },
           {
             "shot": "m-device-settings.png"
@@ -3603,7 +3538,7 @@
             "wait": 2200
           },
           {
-            "eval": "(() => {\n  const text = document.body.innerText;\n  for (const wanted of ['手机本机', '语言', '微信公众号', '检查更新']) {\n    if (!text.includes(wanted)) throw new Error('the phone settings are missing ' + wanted);\n  }\n  for (const gone of ['当前桌面端', '模型可见性', '任务设置', '技能管理']) {\n    if (text.includes(gone)) throw new Error('a device setting is still on the phone screen: ' + gone);\n  }\n  return 'phone-only settings';\n})()"
+            "eval": "(() => {\n  const text = document.body.innerText;\n  for (const wanted of ['手机本机', '语言', '微信公众号', '检查更新']) {\n    if (!text.includes(wanted)) throw new Error('the phone settings are missing ' + wanted);\n  }\n  for (const gone of ['当前桌面端', '模型可见性', '定时任务设置', '技能管理']) {\n    if (text.includes(gone)) throw new Error('a device setting is still on the phone screen: ' + gone);\n  }\n  return 'phone-only settings';\n})()"
           },
           {
             "shot": "m-settings.png"
@@ -3940,13 +3875,13 @@
             "wait": 1800
           },
           {
-            "tap": "任务设置"
+            "tap": "定时任务设置"
           },
           {
             "wait": 1200
           },
           {
-            "eval": "(() => { const t = document.body.innerText; if (!t.includes('新建任务')) throw new Error('the list has no create control'); if (!t.includes('每周进展周报')) throw new Error('the list lost its rows'); const leaks = [...new Set(t.match(/tasks\\.[a-zA-Z.]+/g) || [])]; if (leaks.length) throw new Error('LEAK:' + leaks.join('/')); })()"
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('新建定时任务')) throw new Error('the list has no create control'); if (!t.includes('每周进展周报')) throw new Error('the list lost its rows'); const leaks = [...new Set(t.match(/tasks\\.[a-zA-Z.]+/g) || [])]; if (leaks.length) throw new Error('LEAK:' + leaks.join('/')); })()"
           },
           {
             "shot": "m-settings-tasks.png"
@@ -3983,7 +3918,7 @@
             "wait": 1800
           },
           {
-            "tap": "任务设置"
+            "tap": "定时任务设置"
           },
           {
             "wait": 1200
@@ -4038,7 +3973,7 @@
             "wait": 1800
           },
           {
-            "tap": "任务设置"
+            "tap": "定时任务设置"
           },
           {
             "wait": 1200
@@ -4097,7 +4032,7 @@
             "wait": 1800
           },
           {
-            "tap": "任务设置"
+            "tap": "定时任务设置"
           },
           {
             "wait": 1200
@@ -4115,7 +4050,7 @@
             "wait": 400
           },
           {
-            "eval": "(() => { const t = document.body.innerText; const missing = [\"任务信息\", \"名称\", \"提示词\", \"工作目录\", \"模型\", \"思考等级\", \"会话策略\", \"会话类型\", \"状态\", \"删除\", \"返回\"].filter(k => !t.includes(k)); if (missing.length) throw new Error('MISSING:' + missing.join('/')); const leaks = [...new Set(t.match(/tasks\\.[a-zA-Z.]+/g) || [])]; if (leaks.length) throw new Error('LEAK:' + leaks.join('/')); })()"
+            "eval": "(() => { const t = document.body.innerText; const missing = [\"定时任务信息\", \"名称\", \"提示词\", \"工作目录\", \"模型\", \"思考等级\", \"会话策略\", \"会话类型\", \"状态\", \"删除\", \"返回\"].filter(k => !t.includes(k)); if (missing.length) throw new Error('MISSING:' + missing.join('/')); const leaks = [...new Set(t.match(/tasks\\.[a-zA-Z.]+/g) || [])]; if (leaks.length) throw new Error('LEAK:' + leaks.join('/')); })()"
           },
           {
             "shot": "m-settings-tasks-form.png"
@@ -4153,19 +4088,19 @@
             "wait": 1800
           },
           {
-            "tap": "任务设置"
+            "tap": "定时任务设置"
           },
           {
             "wait": 1200
           },
           {
-            "tapText": "新建任务"
+            "tapText": "新建定时任务"
           },
           {
             "wait": 1200
           },
           {
-            "eval": "(() => { const t = document.body.innerText; const missing = ['新建任务', '任务信息', '名称', '提示词', '工作目录'].filter(k => !t.includes(k)); if (missing.length) throw new Error('MISSING:' + missing.join('/')); const blank = [...document.querySelectorAll('input,textarea')].filter(el => el.value === '').length; if (blank < 2) throw new Error('the create form is not blank: ' + blank); const leaks = [...new Set(t.match(/tasks\\.[a-zA-Z.]+/g) || [])]; if (leaks.length) throw new Error('LEAK:' + leaks.join('/')); })()"
+            "eval": "(() => { const t = document.body.innerText; const missing = ['新建定时任务', '定时任务信息', '名称', '提示词', '工作目录'].filter(k => !t.includes(k)); if (missing.length) throw new Error('MISSING:' + missing.join('/')); const blank = [...document.querySelectorAll('input,textarea')].filter(el => el.value === '').length; if (blank < 2) throw new Error('the create form is not blank: ' + blank); const leaks = [...new Set(t.match(/tasks\\.[a-zA-Z.]+/g) || [])]; if (leaks.length) throw new Error('LEAK:' + leaks.join('/')); })()"
           },
           {
             "shot": "m-settings-tasks-create.png"
@@ -4203,13 +4138,13 @@
             "wait": 1800
           },
           {
-            "tap": "任务设置"
+            "tap": "定时任务设置"
           },
           {
             "wait": 1200
           },
           {
-            "tapText": "新建任务"
+            "tapText": "新建定时任务"
           },
           {
             "wait": 1200
@@ -4221,7 +4156,7 @@
             "wait": 700
           },
           {
-            "eval": "(() => { const t = document.body.innerText; const missing = [\"触发器\", \"保存\", \"任务以完全权限运行\", \"取消\", \"给任务起个名字\"].filter(k => !t.includes(k)); if (missing.length) throw new Error('MISSING:' + missing.join('/')); const leaks = [...new Set(t.match(/tasks\\.[a-zA-Z.]+/g) || [])]; if (leaks.length) throw new Error('LEAK:' + leaks.join('/')); })()"
+            "eval": "(() => { const t = document.body.innerText; const missing = [\"触发器\", \"保存\", \"定时任务以完全权限运行\", \"取消\", \"给这个定时任务起个名字\"].filter(k => !t.includes(k)); if (missing.length) throw new Error('MISSING:' + missing.join('/')); const leaks = [...new Set(t.match(/tasks\\.[a-zA-Z.]+/g) || [])]; if (leaks.length) throw new Error('LEAK:' + leaks.join('/')); })()"
           },
           {
             "shot": "m-settings-tasks-create-bottom.png"
@@ -4259,7 +4194,7 @@
             "wait": 1800
           },
           {
-            "eval": "(() => {\n  const text = document.body.innerText;\n  // The machine the phone is not reading is the page that used to open\n  // with \"Connect to this desktop\" and no rows at all.\n  for (const wanted of ['办公室主机', '设备标识', '名称', '图标', '该桌面端的设置', '自动化与审批', '模型可见性', '提供商与模型', '技能管理', '任务设置']) {\n    if (!text.includes(wanted)) throw new Error('the other machine page is missing ' + wanted + ': ' + text.slice(0, 300));\n  }\n  if (text.includes('连接该桌面端')) throw new Error('the page still asks to connect first: ' + text.slice(0, 300));\n  return 'its own settings, with no connection step';\n})()"
+            "eval": "(() => {\n  const text = document.body.innerText;\n  // The machine the phone is not reading is the page that used to open\n  // with \"Connect to this desktop\" and no rows at all.\n  for (const wanted of ['办公室主机', '设备标识', '名称', '图标', '该桌面端的设置', '自动化与审批', '模型可见性', '提供商与模型', '技能管理', '定时任务设置']) {\n    if (!text.includes(wanted)) throw new Error('the other machine page is missing ' + wanted + ': ' + text.slice(0, 300));\n  }\n  if (text.includes('连接该桌面端')) throw new Error('the page still asks to connect first: ' + text.slice(0, 300));\n  return 'its own settings, with no connection step';\n})()"
           },
           {
             "shot": "m-device-settings-other.png"

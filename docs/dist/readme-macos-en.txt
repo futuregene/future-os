@@ -32,7 +32,7 @@ a "unidentified developer" or "damaged" warning. This is expected. Choose one:
   FutureOS.app/Contents/MacOS/future.
 
 [License]
-FutureOS is distributed under the MIT License; the bundled future loop
+FutureOS is distributed under the MIT License; the bundled future goal
 component is derived from LoopX and distributed under Apache-2.0.
 Full license texts and attribution notices: see the licenses/ directory.
 

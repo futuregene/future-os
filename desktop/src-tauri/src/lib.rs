@@ -516,8 +516,8 @@ mod gui {
     }
 
     /// Ask the window to open the Remote page, which is the only place a
-    /// `--re-pair` invitation (or its failure) becomes visible: this entry point
-    /// prints no code, and a flag whose whole effect is off-screen would look
+    /// `--re-pair` invitation (or its failure) becomes visible: the graphical entry
+    /// point prints no code, and a flag whose whole effect is off-screen would look
     /// like it did nothing.
     fn emit_remote_re_pair() {
         if let Some(handle) = APP_HANDLE.get() {
@@ -837,6 +837,8 @@ mod gui {
         // rustls providers. Select ring and hydrate tool environment before
         // Tauri starts threads or creates any HTTP clients.
         crate::host_environment::initialize()?;
+        let mut context = tauri::generate_context!();
+        context.config_mut().identifier = instance::gui_identifier(&context.config().identifier)?;
         let app = tauri::Builder::default()
             .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
                 // A second instance was launched — activate the existing window.
@@ -846,13 +848,18 @@ mod gui {
                     let _ = window.show();
                     let _ = window.set_focus();
                 }
-                // `--re-pair` belongs to the instance that owns the pairing: the
-                // launching process holds no credentials, so forwarding the flag
-                // is the only way a shell can ask this window to re-pair. The flag
-                // was already validated by that process — an unrecognized option
-                // never reaches here.
-                if crate::launch::requests_re_pair(&args) {
-                    spawn_remote_re_pair();
+                // A shell cannot re-pair this machine itself: the pairing and the
+                // data directory belong to this instance. What it can do is ask,
+                // through the channel that reaches us — its `argv` — and name a
+                // file to be answered in. Without that file the invitation only
+                // reaches the window below.
+                if let Some(crate::launch::Forwarded::RePair { reply }) =
+                    crate::launch::forwarded_request(&args)
+                {
+                    spawn_remote_re_pair(match reply {
+                        Some(path) => RePairDelivery::Reply(path),
+                        None => RePairDelivery::Terminal,
+                    });
                 }
             }))
             .plugin(tauri_plugin_dialog::init())
@@ -885,10 +892,18 @@ mod gui {
                 // Guard quit: if a conversation is still generating, warn before we
                 // tear the agent down. The confirmation is a native dialog (see
                 // agent_supervisor) so it survives even a hung webview.
+                if window.label() != "main" {
+                    return;
+                }
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     use tauri::Manager;
                     match agent_supervisor::on_close_requested() {
-                        agent_supervisor::QuitDecision::Proceed => {}
+                        agent_supervisor::QuitDecision::Proceed => {
+                            if !agent_supervisor::exit_authorized() {
+                                api.prevent_close();
+                                agent_supervisor::request_quit(window.app_handle().clone(), false);
+                            }
+                        }
                         agent_supervisor::QuitDecision::Confirm { open_dialog } => {
                             api.prevent_close();
                             if open_dialog {
@@ -950,6 +965,8 @@ mod gui {
                 app_build_info,
                 get_agent_status,
                 check_app_update,
+                app_maintenance_status,
+                acknowledge_update_repair,
                 install_app_update,
                 restart_after_app_update,
                 open_path,
@@ -1099,7 +1116,7 @@ mod gui {
                 terminal_server_info,
                 open_url
             ])
-            .build(tauri::generate_context!())
+            .build(context)
             .map_err(|error| AppError::from(format!("Could not start Desktop: {error}")))?;
 
         // Build initializes the single-instance plugin first, so a second GUI
@@ -1144,7 +1161,12 @@ mod gui {
             // way so a running conversation can't be torn down without warning.
             tauri::RunEvent::ExitRequested { api, .. } => {
                 match agent_supervisor::on_close_requested() {
-                    agent_supervisor::QuitDecision::Proceed => {}
+                    agent_supervisor::QuitDecision::Proceed => {
+                        if !agent_supervisor::exit_authorized() {
+                            api.prevent_exit();
+                            agent_supervisor::request_quit(app_handle.clone(), false);
+                        }
+                    }
                     agent_supervisor::QuitDecision::Confirm { open_dialog } => {
                         api.prevent_exit();
                         if open_dialog {
@@ -1154,9 +1176,9 @@ mod gui {
                 }
             }
             tauri::RunEvent::Exit => {
-                if let Err(error) = agent_supervisor::shutdown_agent_gracefully() {
-                    eprintln!("FutureOS exit cleanup failed: {error}");
-                }
+                // The ordinary exit path already waited outside the UI thread.
+                // Unexpected OS exits can only request best-effort background stop.
+                let _ = crate::desktop_shutdown::begin("exit");
             }
             _ => {}
         });
@@ -1242,7 +1264,7 @@ mod gui {
         // running the auto-connect pass as well would race two starts for the same
         // pairing (the loser's invitation is then revoked by the winner's).
         if launch.re_pair {
-            spawn_remote_re_pair();
+            spawn_remote_re_pair(RePairDelivery::Terminal);
         } else {
             spawn_remote_auto_connect();
         }
@@ -1278,22 +1300,42 @@ mod gui {
         });
     }
 
-    /// `--re-pair`: replace the saved pairing and show the fresh invitation.
+    /// Where a finished re-pair reports its outcome.
+    enum RePairDelivery {
+        /// This process is the Desktop and the command was typed at its terminal,
+        /// so the invitation goes there.
+        Terminal,
+        /// Another process asked and is waiting on this file: it owns the terminal
+        /// this Desktop was not started from, and it is the one that can print.
+        Reply(std::path::PathBuf),
+    }
+
+    /// `--re-pair`: replace the saved pairing, then report the outcome.
     ///
     /// Like the auto-connect pass, this never fails the launch: the outcome is a
     /// status the Remote page renders, and the event below is what opens that page
-    /// (the window shows the code; this entry point has nothing to print it to).
-    fn spawn_remote_re_pair() {
-        crate::runtime::spawn(async {
-            match crate::remote::re_pair().await {
-                Ok(status) if status.pairing_code.is_some() => {
-                    eprintln!("FutureOS remote re-pair: a new invitation is ready")
+    /// when the invitation is not printed here.
+    fn spawn_remote_re_pair(delivery: RePairDelivery) {
+        crate::runtime::spawn(async move {
+            let reply = match crate::remote::re_pair().await {
+                Ok(status) => crate::launch::Reply::of_status(&status),
+                Err(error) => crate::launch::Reply::of_error(error.to_string()),
+            };
+            match delivery {
+                RePairDelivery::Terminal => {
+                    use std::io::Write;
+                    let _ = std::io::stdout()
+                        .write_all(crate::launch::invitation_notice(&reply).as_bytes());
+                    let _ = std::io::stdout().flush();
                 }
-                Ok(status) => eprintln!(
-                    "FutureOS remote re-pair: no invitation was issued ({:?} {:?})",
-                    status.phase, status.reason
-                ),
-                Err(error) => eprintln!("FutureOS remote re-pair failed: {error}"),
+                RePairDelivery::Reply(path) => {
+                    if let Err(error) = crate::launch::write_reply(&path, &reply) {
+                        eprintln!(
+                            "remote: could not deliver the re-pair result to the waiting \
+                             terminal: {error}"
+                        );
+                    }
+                }
             }
             emit_remote_re_pair();
         });

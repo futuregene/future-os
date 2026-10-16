@@ -33,7 +33,7 @@ themselves.
 | `future session transcript --session <id>` | One session's records, filtered and windowed — every user message, thinking, one tool's inputs or outputs, the paths it touched, and per-run outcomes (`--runs`) |
 | `future session forks <id>` | The user turns that session can be branched at |
 | `future session approvals <id>` | Approval requests the session is parked on right now |
-| `future loop status` | Long-running goals for the current project directory |
+| `future goal status` | Long-running goals for the current project directory |
 
 Two of those are worth separating carefully, because they answer different
 questions about the same session. `session info` reads the **persisted journal**
@@ -149,7 +149,7 @@ rather than answer from memory); the skills list lives in
 
 | Where | What it gives you |
 |---|---|
-| `CLAUDE.md` | Workspace layout: which crate owns what, and which slice of `~/.future/` |
+| `AGENTS.md` | Workspace layout: which crate owns what, and which slice of `~/.future/` |
 | `docs/README.md` | The docs index — guides, architecture, internals |
 | `docs/guide/`, `docs/architecture/` | Released behaviour, and the design behind a subsystem |
 | `FUTURE.md` + `.future/memory/` | Institutional gotchas recorded by earlier sessions |
@@ -253,25 +253,43 @@ they are used*:
 | `compaction.*`, `retry.*`, `maxTurns` | The next Agent start |
 
 Session-scoped settings stay with `future session set <id>`, which reaches the
-running session at once and covers two groups:
+running session at once and covers two groups — plus the one setting that is
+deliberately stored *with* the session rather than held live:
 
 ```sh
 # recorded with the session
 future session set <id> --model <id> --thinking <level> --cwd <dir> --title <name> --parent <id>
+future session set <id> --append-system-prompt "Always answer in haiku."
+future session set <id> --system-prompt "You are a terse reviewer."
 
 # applied to the live session (until this agent stops)
 future session set <id> --tools read,shell --permission workspace --sandbox manual
-future session set <id> --system-prompt "…" --append-system-prompt "…"
 future session set <id> --context-files off --auto-compact off --auto-retry on
 ```
 
-`--tools` / `--no-tools` / `--no-builtin-tools` / `--system-prompt` /
-`--append-system-prompt` / `--permission` / `--sandbox` / `--context-files` /
-`--auto-compact` / `--auto-retry` are the live group. Read any of them back with
-`future session status <id>` — which is why `--sandbox` is no longer
-write-only. `--permission` is the approval gate and `--sandbox` the OS wrapping;
-they are independent, and `sandbox` is refused when the platform cannot provide
-one.
+`--tools` / `--no-tools` / `--no-builtin-tools` / `--permission` / `--sandbox` /
+`--context-files` / `--auto-compact` / `--auto-retry` are the live group. Read any
+of them back with `future session status <id>` — which is why `--sandbox` is no
+longer write-only. `--permission` is the approval gate and `--sandbox` the OS
+wrapping; they are independent, and `sandbox` is refused when the platform cannot
+provide one.
+
+Both system-prompt flags are recorded with the session rather than held live —
+the run boundary rebuilds the prompt, so anything written only to the live loop
+is gone before a request is sent. They are the two settings to reach for when a
+rule should keep applying:
+
+- `--append-system-prompt` adds text after the project context and workspace
+  memory, on every run.
+- `--system-prompt` replaces the prompt's opening section (the built-in identity
+  and tool rules); the project context, workspace memory and the append are still
+  added after it. An empty string restores the built-in prompt from either flag.
+
+`future session new` takes both at creation. `future session status <id>` reports
+both and whether project context is folded in; `future session status <id>
+--system-prompt` prints the whole prompt the session's next run would send (add
+`--json` for it as an object). `future session info` reads the recorded values
+back from the journal.
 
 Plus `future session rename <id> <name>` for a title, `future session compact
 --session <id>` for on-demand compaction (which acknowledges asynchronously — it
@@ -303,10 +321,12 @@ already under way alone, interrupting pre-empts it, and only the caller knows
 what the user actually wanted. This is the send half of a `#`-picked conversation
 reference: a user message can carry `[title](futureos://session/<id>)`, and the id
 in that link is what `--session` takes. It is a full run in the other
-conversation, so it spends credits, and the command returns when that run ends
-(the shell tool's own timeout applies) — a long one needs a raised timeout. The
-read half is `future session transcript --session <id>` /
-`future session history search --session <id>` above.
+conversation, so it spends credits. The command returns when that run ends by
+default; use `--no-wait` to get an immediate ack (run id and accepted state),
+continue working, and retrieve the result later with `future session wait <id>`
+or `future session transcript --session <id>` (a long run may still need a
+raised shell timeout). The read half is `future session transcript --session <id>`
+/ `future session history search --session <id>` above.
 
 Two things only the sender can supply, because the target conversation receives
 a bare user turn: **provenance** — that the message came from another

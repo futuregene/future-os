@@ -318,6 +318,30 @@ describe("remoteView connection actions", () => {
     }
   });
 
+  it("offers sign-in, not pairing, when an unpaired device has no account", async () => {
+    const events: string[] = [];
+    const listener = () => events.push("show-onboarding");
+    window.addEventListener("futureos:show-onboarding", listener);
+    try {
+      // Unpaired, and the failure is the account's: the platform issues pairing
+      // codes, so "Pair & start" here could only fail again. The primary action
+      // has to be the one that can succeed.
+      await mount({ remoteStatus: status({ phase: "failed", reason: "account_authorization" }) });
+      expect(container.textContent).toContain("Your FutureOS sign-in has expired. Sign in again.");
+      expect(buttonByText("Sign in again")).toBeTruthy();
+      expect(buttonByText("Pair & start")).toBeUndefined();
+
+      await act(async () => {
+        buttonByText("Sign in again")?.click();
+      });
+      expect(events).toEqual(["show-onboarding"]);
+      expect(startRemote).not.toHaveBeenCalled();
+    }
+    finally {
+      window.removeEventListener("futureos:show-onboarding", listener);
+    }
+  });
+
   it("names each terminal failure with its support code", async () => {
     const cases: Array<[RemoteStatus["reason"], string, string]> = [
       ["network", "Network unavailable. Check your connection and try again later. (NW001)", "Reconnect"],

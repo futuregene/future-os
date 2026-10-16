@@ -37,6 +37,7 @@ struct RunArgs {
     verbose: bool,
     auto_title: bool,
     busy_policy: String,
+    no_wait: bool,
     file_args: Vec<String>,
     messages: Vec<String>,
 }
@@ -60,6 +61,10 @@ Session options:
   --steer                  Interrupt the session's in-progress run and ask
                            immediately (supersede_session). Default: append the
                            prompt behind any in-progress run (enqueue_if_busy).
+  --no-wait                Submit the prompt, print an ack, and exit without
+                           waiting for the answer. Useful for scripting and
+                           fire-and-forget runs. Default without this flag is
+                           to stream the response and exit when the run ends.
   --no-session             Ephemeral mode: do not persist the session to disk
 
 Model & behavior:
@@ -76,8 +81,18 @@ Tool control:
   --no-builtin-tools, -nbt Disable built-in tools only (keep MCP extensions active)
 
 Prompt control:
-  --system-prompt <text>   Replace the system prompt
-  --append-system-prompt <text>  Append to the system prompt (can repeat)
+  --system-prompt <text>   Replace this session's system prompt. Recorded with
+                           the session, so it persists and applies to later runs
+                           too (an empty string restores the built-in prompt).
+  --append-system-prompt <text>
+                           Append rules to the end of this session's system
+                           prompt (can repeat). Recorded with the session, so it
+                           persists and applies to later runs too (an empty
+                           string clears it). Read either back with
+                           `future session status <id>`.
+                           On a run that creates a new session these are
+                           one-shot in practice; with --session/--continue they
+                           change that session from now on.
 
 Output:
   --mode <mode>            text (default): stream to stdout; json: one JSON object on exit
@@ -142,6 +157,7 @@ fn parse_run_args(args: &[String], out: &Output) -> Option<RunArgs> {
         verbose: false,
         auto_title: true,
         busy_policy: String::new(),
+        no_wait: false,
         file_args: Vec::new(),
         messages: Vec::new(),
     };
@@ -244,6 +260,7 @@ fn parse_run_args(args: &[String], out: &Output) -> Option<RunArgs> {
             "--steer" => {
                 result.busy_policy = "supersede_session".to_string();
             }
+            "--no-wait" => result.no_wait = true,
             "--mode" => {
                 if i + 1 < args.len() {
                     i += 1;
@@ -367,6 +384,7 @@ pub async fn run_command(args: &[String], out: &Output) -> Result<(), String> {
         permission: parsed.permission,
         no_session: parsed.no_session,
         mode: parsed.mode,
+        no_wait: parsed.no_wait,
         // Passed through untouched: `None` (no --cwd) must stay distinguishable
         // from an explicit cwd, so attaching to an existing session leaves its
         // recorded working directory alone.
@@ -474,6 +492,14 @@ mod tests {
         assert_eq!(parsed.busy_policy, "supersede_session");
         // No flag → empty (the default follow-up policy at the RPC layer).
         assert_eq!(parse(&["hi"]).unwrap().busy_policy, "");
+    }
+
+    #[test]
+    fn parse_no_wait_flag() {
+        let parsed = parse(&["--no-wait", "hi"]).unwrap();
+        assert!(parsed.no_wait);
+        // No flag → false (the default wait-for-completion path).
+        assert!(!parse(&["hi"]).unwrap().no_wait);
     }
 
     #[test]
@@ -649,6 +675,19 @@ mod tests {
             stdout.contains("never renamed"),
             "help must say existing sessions are left alone: {stdout}"
         );
+        // --no-wait is documented and points at the wait/default distinction.
+        assert!(stdout.contains("--no-wait"), "stdout: {stdout}");
+        // The prompt flags record with the session, which is why a one-shot run
+        // can change later runs too — the help has to say so, or the effect is
+        // invisible to the caller.
+        assert!(
+            stdout.contains("Recorded with\n                           the session"),
+            "the run help must state that --system-prompt persists: {stdout}"
+        );
+        assert!(
+            stdout.contains("future session status <id>"),
+            "the run help must point at the read-back: {stdout}"
+        );
 
         // No message and no @files → usage error.
         let (out, cap) = Output::memory();
@@ -673,6 +712,73 @@ mod tests {
             stderr.contains("Failed to read file: /no/such/file.txt"),
             "stderr: {stderr}"
         );
+    }
+
+    #[tokio::test]
+    async fn run_command_no_wait_against_mock() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = crate::test_server::MockAgent::default();
+        agent
+            .responses
+            .insert("new_session".into(), "{\"sessionId\":\"s-no-wait\"}".into());
+        agent.responses.insert(
+            "prompt".into(),
+            "{\"run_id\":\"r-no-wait\",\"run_epoch\":1,\"accepted_state\":\"queued\",\"queue_position\":2}"
+                .into(),
+        );
+        let addr = crate::test_server::spawn_mock(agent.clone()).await;
+
+        // text mode: prints an ack line and exits without streaming.
+        let (out, cap) = Output::memory();
+        run_command(
+            &[
+                "--grpc-addr".to_string(),
+                addr.clone(),
+                "--no-wait".to_string(),
+                "hi".to_string(),
+            ],
+            &out,
+        )
+        .await
+        .expect("run --no-wait");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("Run r-no-wait accepted (queued) in session s-no-wait"));
+        assert!(stdout.contains("queue position: 2"));
+        let prompts = agent.seen_of("prompt");
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].busy_policy, "enqueue_coalescing");
+
+        // json mode: emits the ack fields.
+        let mut agent = crate::test_server::MockAgent::default();
+        agent
+            .responses
+            .insert("new_session".into(), "{\"sessionId\":\"s-no-wait\"}".into());
+        agent.responses.insert(
+            "prompt".into(),
+            "{\"run_id\":\"r-no-wait\",\"run_epoch\":1,\"accepted_state\":\"queued\",\"queue_position\":2}"
+                .into(),
+        );
+        let addr = crate::test_server::spawn_mock(agent.clone()).await;
+        let (out, cap) = Output::memory();
+        run_command(
+            &[
+                "--grpc-addr".to_string(),
+                addr,
+                "--no-wait".to_string(),
+                "--mode".to_string(),
+                "json".to_string(),
+                "hi".to_string(),
+            ],
+            &out,
+        )
+        .await
+        .expect("run --no-wait --mode json");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(parsed["sessionId"], "s-no-wait");
+        assert_eq!(parsed["runId"], "r-no-wait");
+        assert_eq!(parsed["acceptedState"], "queued");
+        assert_eq!(parsed["queuePosition"], 2);
     }
 
     #[tokio::test]

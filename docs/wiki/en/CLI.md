@@ -137,7 +137,8 @@ Useful options and forms:
 | `--permission <level>` | `all` (fresh-session default, unrestricted), `workspace` (approval-gated access), or `none` (deny all tool calls). This does not select an OS sandbox; see [[Sandbox]]. |
 | `--tools, -t <names>` | Comma-separated tool names to enable (e.g. `read,shell`); `--no-tools` / `--no-builtin-tools` disable them. |
 | `--steer` | Interrupt the session's current run; without it, the prompt queues behind a busy run. |
-| `--system-prompt`, `--append-system-prompt` | Replace or extend the system prompt. |
+| `--no-wait` | Submit the prompt, print an ack, and exit; retrieve the result later with `future session wait <id>`. |
+| `--system-prompt`, `--append-system-prompt` | Replace or extend the system prompt. Both are recorded with the session, so they persist. |
 | `--cwd <dir>` | Set the working directory. |
 | `--mode json` | Print the answer as JSON instead of text. |
 | `--verbose` | Write progress and tool calls to stderr. |
@@ -219,7 +220,7 @@ build targets but no longer ship by default):
 ```bash
 future tui                # terminal UI
 future channel            # IM channel bridge: Feishu / DingTalk
-future loop status        # loop control plane: goals/todos/gates
+future goal status        # goal control plane: goals/todos/gates
 ```
 
 ### `session` — manage sessions
@@ -242,6 +243,7 @@ future session title <id> [--apply]      # generate a title (a model call)
 future session export <id> [--out <path>]
 future session abort <id>                # stop the active run, clear the queue
 future session cancel <id> --run <run-id>
+future session wait <id> [--run <run-id>] [--timeout <duration>]  # wait for a run and print its answer
 future session approvals <id>
 future session approve <id> <request-id> [--allow <glob>]
 future session reject <id> <request-id>
@@ -254,13 +256,26 @@ configured *now*: the effective tool permission, the sandbox tier, context
 occupancy, loaded context files and skills, active and queued runs, and pending
 approvals). Only the second can answer a question about a session whose settings
 differ from the global defaults. `session set` writes both groups — the recorded
-options (`--model`, `--thinking`, `--cwd`, `--title`, `--parent`) and the live
-ones (`--tools`, `--no-tools`, `--no-builtin-tools`, `--system-prompt`,
-`--append-system-prompt`, `--permission`, `--sandbox`, `--context-files`,
-`--auto-compact`, `--auto-retry`) — and `session status` reads the live ones
-back. `abort`/`cancel`/`approve`/`reject` are the CLI counterpart of the TUI's
+options (`--model`, `--thinking`, `--cwd`, `--title`, `--parent`,
+`--system-prompt`, `--append-system-prompt`) and the live ones (`--tools`,
+`--no-tools`, `--no-builtin-tools`, `--permission`, `--sandbox`,
+`--context-files`, `--auto-compact`, `--auto-retry`) — and `session status` reads
+them back.
+`abort`/`cancel`/`approve`/`reject` are the CLI counterpart of the TUI's
 `/stop`, `/cancel` and `/approve`, so a run started from a script can also be
 stopped from one.
+
+Both system-prompt flags are stored with the session record rather than held
+live: the run boundary rebuilds the prompt, so a value written only to the live
+loop is gone before a request is sent. `--append-system-prompt` adds text after
+the project context and workspace memory; `--system-prompt` replaces the
+prompt's opening section (the built-in identity and tool rules), with the
+context, memory and append still following it. Either is set at creation with
+`future session new`, and an empty value restores the built-in prompt.
+`session status` reports both plus whether project context is folded in,
+`session status <id> --system-prompt` prints the whole prompt the next run would
+send (add `--json` for it as an object), and `session info` reads the recorded
+values back.
 
 `future session history search --all --query "<text>"` searches across sessions
 instead of one, so "have we ever discussed this" does not require knowing which

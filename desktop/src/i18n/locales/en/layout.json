@@ -54,7 +54,7 @@
     "chatSectionActions": "Chat section actions",
     "threadsSelected": "{{count}} selected",
     "deleteSelected": "Delete",
-    "tasks": "Tasks",
+    "tasks": "Scheduled tasks",
     "openSearch": "Search conversations",
     "searchConversations": "Search conversations",
     "clearSearch": "Clear search",
@@ -143,7 +143,22 @@
     "failed": "Future Agent could not start",
     "fixFailed": "Restart FutureOS and check the reported error. If using an external Agent, check its availability and version.",
     "incompatible": "Future Agent does not match this FutureOS version",
-    "fixIncompatible": "Update or stop the external Agent, then restart FutureOS. A conflicting Agent cannot be bypassed by starting an embedded service."
+    "fixIncompatible": "Update or stop the external Agent, then restart FutureOS. A conflicting Agent cannot be bypassed by starting an embedded service.",
+    "stopping": "Stopping FutureOS",
+    "cleanupFailed": "FutureOS cleanup could not finish",
+    "cleanupFailedHint": "Updates, reset and restart are blocked. Save diagnostics, then exit the process and reopen FutureOS.",
+    "shutdownStages": {
+      "admission": "Stopping new work",
+      "callers": "Waiting for current requests",
+      "remote": "Disconnecting devices",
+      "external_runs": "Stopping this Desktop’s submitted work",
+      "terminals": "Closing terminals",
+      "agent": "Stopping Agent work",
+      "background": "Finishing background work",
+      "verification": "Checking cleanup results",
+      "complete": "Cleanup complete"
+    },
+    "cleanupComplete": "Cleanup complete"
   },
   "userMenu": {
     "balance": "Balance: {{credits}}",

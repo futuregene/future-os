@@ -13,7 +13,7 @@
 </p>
 
 <!-- TODO(demo): replace the static screenshot with a 60-90s demo GIF (TUI approval gate →
-     desktop GUI → IM-bot progress → session fork tree → /future-loop board), saved as docs/demo.gif -->
+     desktop GUI → IM-bot progress → session fork tree → /future-goal board), saved as docs/demo.gif -->
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
@@ -37,7 +37,7 @@
 
 - **Choose the execution boundary.** Configure file-access approvals and OS sandboxing for agent tools. The desktop defaults to Unrestricted (`off`); select Manual or Sandboxed before working with untrusted content. See the [security model](SECURITY.md) and [sandbox guide](docs/wiki/en/Sandbox.md) for defaults and limitations.
 - **One backend, every surface.** A single gRPC agent drives the terminal UI, desktop app, mobile apps, CLI, and IM bots — same sessions, same memory, same skills, wherever you happen to be.
-- **Long runs need engineering, not prompting.** The built-in loop control plane gives durable goals, event-sourced state, and verification gates to runs of 24+ hours — start a research task at night, review the results from your phone in the morning.
+- **Long runs need engineering, not prompting.** The built-in goal control plane gives durable goals, event-sourced state, and verification gates to runs of 24+ hours — start a research task at night, review the results from your phone in the morning.
 
 ## Features
 
@@ -46,10 +46,11 @@
 | **Multi-Interface** | Terminal UI (TUI), desktop app (GUI), mobile apps (Android & iOS), CLI, IM bots — one agent, everywhere. The desktop backend also runs **headless on a server** (`futureos-headless`: no window or WebView, works over SSH), and the phone↔desktop channel is **end-to-end encrypted** — a Noise handshake with ChaCha20-Poly1305 records, so the relay only carries ciphertext ([headless](docs/guide/desktop-headless.md), [remote](docs/wiki/en/Remote.md)) |
 | **Configurable Tool Safety** | read, write, edit, shell — approval rules and sandbox tiers (`off` / `manual` / `sandbox`); macOS Seatbelt, Linux system Bubblewrap, Windows restricted-token write protection. Availability and guarantees differ by platform ([guide](docs/wiki/en/Sandbox.md)) |
 | **Model Flexibility** | **Bring your own key**: the [built-in catalog](docs/wiki/en/Models.md) covers the major providers, and any OpenAI- or Anthropic-compatible endpoint can be added through `models.json`. Or sign in to the **FutureOS provider** (`future auth login`) and have the keys and model list provisioned for you. Both work side by side, and you choose which models the picker offers ([setup](#configure-a-model)) |
-| **Loop Engineering** | Durable goals/todos/gates/monitors for long-horizon runs of 24+ hours — deterministic should-run kernel, event-sourced state, hard checks (evidence floor / acceptance contracts / verify gates), lease liveness, multi-agent ([guide](docs/architecture/loop-control-plane.md)) |
-| **Powerful Built-in Skills** | 15+ skills out of the box for everyday agent work — image read & generation, PDF/Word parsing, web search, browser control, slides, software install, and the `/future-loop` long-run goal orchestrator ([builtin](https://github.com/futuregene/future-skills/tree/main/builtin)) |
+| **Goal Engineering** | Durable goals/todos/gates/monitors for long-horizon runs of 24+ hours — deterministic should-run kernel, event-sourced state, hard checks (evidence floor / acceptance contracts / verify gates), lease liveness, multi-agent ([guide](docs/architecture/goal-control-plane.md)) |
+| **Scheduled Tasks** | Recurring work without you in the loop: a reusable prompt + working directory + model/thinking level, run at full permission on a schedule (interval / daily / weekly / monthly / yearly, or a single date) — and on demand whenever you want. Every run is an ordinary conversation plus a run ledger with status, result summary and prompt-version history ([guide](docs/architecture/tasks.md)) |
+| **Powerful Built-in Skills** | 15+ skills out of the box for everyday agent work — image read & generation, PDF/Word parsing, web search, browser control, slides, software install, and the `/future-goal` long-run goal orchestrator ([builtin](https://github.com/futuregene/future-skills/tree/main/builtin)) |
 | **Forkable Sessions** | Branch any conversation like a repo — fork, clone, and tree navigation over JSONL session history |
-| **Rust Core** | Agent, IM channel bridge, loop control plane, CLI, and TUI are all written in Rust — high performance with memory safety |
+| **Rust Core** | Agent, IM channel bridge, goal control plane, CLI, and TUI are all written in Rust — high performance with memory safety |
 
 ## Quick Start
 
@@ -193,7 +194,7 @@ non-interactive commands never perform it.
 </p>
 
 > `future <cmd>` is the unified entry point for every Rust component: `future agent`,
-> `future tui`, `future channel`, `future loop`. Each runs the same code as the
+> `future tui`, `future channel`, `future goal`. Each runs the same code as the
 > standalone binary of the same name (the `future-*` binaries still exist as
 > build targets — `cargo build -p future-tui` etc. — but are no longer
 > installed by default).

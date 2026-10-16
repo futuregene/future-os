@@ -53,6 +53,13 @@ pub enum AppError {
     /// network outage, so retrying forever cannot repair it.
     #[error("{0}")]
     RemoteAuthorization(String),
+    /// This desktop holds no FutureOS account credential. Typed (not a
+    /// `Message`) because the Remote page has to tell "sign in again" apart
+    /// from "this device is broken": pairing codes are issued by the platform,
+    /// so a signed-out desktop can never start the bridge, and that is an
+    /// account fault the user can fix rather than a local one to retry.
+    #[error("Not signed in to FutureOS.")]
+    NotSignedIn,
     #[error("{0}")]
     Message(String),
 }

@@ -92,7 +92,7 @@ def diagnostic(path, message):
 
 # Repository entry points, runtime assets and companion files outside docs/.
 WHITELIST = {
-    "CLAUDE.md",
+    "AGENTS.md",
     "README.md",
     "README.zh-CN.md",
     "SECURITY.md",
@@ -107,11 +107,11 @@ WHITELIST = {
     "agent/src/prompt/execution.md",
     # Release-pipeline dependency: build-macos-signed.yml, build-windows-signed.yml
     # and build-linux.yaml copy this provenance notice into the shipped
-    # licenses/loop/ directory. It cannot move under docs/ without editing those
+    # licenses/goal/ directory. It cannot move under docs/ without editing those
     # workflows, so it is whitelisted for placement only — bilingual pairing is
     # still enforced through EXTRA_PAIR_SCOPED below.
-    "orchestration/loop/UPSTREAM.md",
-    "orchestration/loop/UPSTREAM.zh-CN.md",
+    "orchestration/goal/UPSTREAM.md",
+    "orchestration/goal/UPSTREAM.zh-CN.md",
     # Experiment companion docs. They sit beside the scripts they describe because a reader
     # reproducing a run needs the commands and the flags together with the code, and they
     # must move with it. The findings themselves are under docs/internals/compaction/.
@@ -133,10 +133,10 @@ WHITELIST = {
 
 # Bilingual pairing also applies to these paths outside docs/.
 EXTRA_PAIR_SCOPED = {
-    "orchestration/loop/UPSTREAM.md",
+    "orchestration/goal/UPSTREAM.md",
     # Root documents that stay at the repo root by convention (GitHub surfaces,
     # legal notices) but are still user-facing documents and must be bilingual.
-    # CLAUDE.md / desktop/CLAUDE.md are deliberately excluded: they are
+    # AGENTS.md / desktop/CLAUDE.md are deliberately excluded: they are
     # agent-harness instruction files, not documentation read by users.
     "SECURITY.md",
     "THIRD_PARTY_NOTICES.md",

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getAgentStatus } from "../../../integrations/agent/agentStatus";
+import { getAgentStatus, subscribeShutdownProgress } from "../../../integrations/agent/agentStatus";
 import { flushAsync, renderHook } from "../../../test/renderHook";
 import {
   AGENT_STARTUP_TIMEOUT_MS,
@@ -12,10 +12,12 @@ import {
 
 vi.mock("../../../integrations/agent/agentStatus", () => ({
   getAgentStatus: vi.fn(),
+  subscribeShutdownProgress: vi.fn(() => Promise.resolve(() => {})),
 }));
 
 describe("useAgentStatus", () => {
   beforeEach(() => {
+    vi.mocked(subscribeShutdownProgress).mockImplementation(() => Promise.resolve(() => {}));
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-18T00:00:00Z"));
     vi.mocked(getAgentStatus).mockResolvedValue({
@@ -28,6 +30,27 @@ describe("useAgentStatus", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.mocked(getAgentStatus).mockReset();
+  });
+
+  it("accepts live cleanup stages and cannot be reset by a stale ready probe", async () => {
+    let receive: Parameters<typeof subscribeShutdownProgress>[0] | undefined;
+    const unlisten = vi.fn();
+    vi.mocked(subscribeShutdownProgress).mockImplementation((callback) => {
+      receive = callback;
+      return Promise.resolve(unlisten);
+    });
+    const hook = renderHook(useAgentStatus);
+    await flushAsync();
+    const progress = { operationId: "stop-1", reason: "quit", state: "running" as const, stage: "agent" as const, elapsedMs: 10, errors: [] };
+    act(() => receive?.(progress));
+    expect(hook.current.phase).toBe("stopping");
+    act(() => vi.advanceTimersByTime(MINIMUM_AGENT_SPLASH_MS));
+    expect(hook.current.phase).toBe("stopping");
+    act(() => receive?.({ ...progress, state: "failed", errors: ["deadline exceeded"] }));
+    expect(hook.current.shutdown?.state).toBe("failed");
+    expect(hook.current.error).toBe("deadline exceeded");
+    act(() => receive?.(progress));
+    expect(hook.current.shutdown?.state).toBe("failed");
   });
 
   it("keeps the startup screen visible for at least one second when Agent is already ready", async () => {

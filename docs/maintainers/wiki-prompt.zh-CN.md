@@ -10,7 +10,7 @@ Android/iOS 是运行中桌面的远程客户端。Research/Data 导航仍隐藏
 Skills 与 Remote 已面向用户，不要沿用旧的隐藏功能假设将其排除。
 
 Wiki 不必单独创建 TUI 页，仓库已有 `docs/guide/tui*.md`；CLI 页可以介绍 `future tui`、
-`future channel` 和 `future loop`。普通 App 页面不展开协议内部实现；排障所需的准确
+`future channel` 和 `future goal`。普通 App 页面不展开协议内部实现；排障所需的准确
 连接方式与默认值放到 CLI 和仓库指南。
 
 ## 输出与链接

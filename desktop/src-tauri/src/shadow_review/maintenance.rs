@@ -159,7 +159,9 @@ fn recover_one(run_id: &str, thread_id: &str, workspace_id: &str) -> Result<(), 
         "complete"
     };
 
-    store::upsert_run_changeset(UpsertRunChangesetInput {
+    // `None` means the Run or its snapshots were deleted while the sweep held
+    // them; there is nothing to attach a changeset to.
+    let _ = store::upsert_run_changeset(UpsertRunChangesetInput {
         run_id: run_id.to_string(),
         thread_id: thread_id.to_string(),
         workspace_id: Some(workspace_id.to_string()),

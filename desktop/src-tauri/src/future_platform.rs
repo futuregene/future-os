@@ -72,6 +72,31 @@ pub(crate) fn current_platform_url() -> String {
     resolve_future_platform_url(&auth)
 }
 
+/// External ownership forbids silently changing its shared auth file. A
+/// production Desktop must reject a non-production environment instead.
+pub(crate) fn validate_external_environment() -> Result<(), crate::AppError> {
+    validate_external_environment_for(crate::build_info::is_release())
+}
+
+fn validate_external_environment_for(is_release: bool) -> Result<(), crate::AppError> {
+    checked_platform_url_for(is_release).map(|_| ())
+}
+
+/// Direct account/guide requests can run while Agent startup is blocked. They
+/// must enforce the same read-only channel policy before making HTTP requests.
+pub(crate) fn checked_platform_url() -> Result<String, crate::AppError> {
+    checked_platform_url_for(crate::build_info::is_release())
+}
+
+fn checked_platform_url_for(is_release: bool) -> Result<String, crate::AppError> {
+    let auth = Value::Object(crate::auth_store::read()?);
+    let platform = resolve_future_platform_url(&auth);
+    if is_release && platform != PRODUCTION_PLATFORM_URL {
+        return Err(format!("Production Desktop cannot use Future environment {platform}. Stop any external Agent independently, then restart Desktop to restore the production environment.").into());
+    }
+    Ok(platform)
+}
+
 /// Apply the environment policy for this build channel at startup (called once
 /// before the agent is spawned, so the agent reads the right `base_url`).
 ///
@@ -119,6 +144,22 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn external_channel_policy_rejects_nonproduction_without_mutating_auth_or_keys() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fp-external-policy");
+        crate::auth_store::set_future_base_url(&format!("{TEST_PLATFORM_URL}/api")).unwrap();
+        crate::auth_store::set_provider_key(FUTURE_PROVIDER_ID, "keep-external-key").unwrap();
+        let path = crate::auth_store::auth_json_path().unwrap();
+        let original = std::fs::read(&path).unwrap();
+        assert!(validate_external_environment_for(true).is_err());
+        assert!(checked_platform_url_for(true).is_err());
+        assert_eq!(checked_platform_url_for(false).unwrap(), TEST_PLATFORM_URL);
+        validate_external_environment_for(false).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        crate::auth_store::set_future_base_url(&format!("{PRODUCTION_PLATFORM_URL}/api")).unwrap();
+        validate_external_environment_for(true).unwrap();
+    }
 
     #[test]
     fn platform_url_defaults_when_absent() {

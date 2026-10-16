@@ -36,7 +36,7 @@ IM bots are all interfaces that connect to it.
 - `cli/`: Rust `future-cli`, building the unified `future` binary that
   aggregates component management.
 - `channels/`: Rust `future-channel`, the Feishu / DingTalk IM bridge.
-- `orchestration/loop/`: Rust `future-loop`, the loop control plane.
+- `orchestration/goal/`: Rust `future-goal`, the goal control plane.
 - `packages/rpc/`: Rust `future-rpc`, the protobuf wire contract (single source
   of truth).
 
@@ -695,9 +695,12 @@ calls, command previews, error states, and follow-up interactions.
 
 Message bodies render as Markdown: beyond ordinary rich text, inline and block
 LaTeX math (KaTeX) are supported; links are filtered through a protocol
-whitelist (non-http(s) protocols degrade to plain text), external links open in
-the system default browser, and `[text](http…)` links in user messages are
-clickable too. Markdown images load inline automatically, including resolved
+whitelist (non-http(s) protocols degrade to plain text), and external links open
+in the system default browser. The user's own message renders through the same
+pipeline, so a heading, list or code block they typed arrives formatted, their
+`[text](http…)` links are clickable, and their `@` file mentions and `#`
+conversation references keep the chip (and the `#` marker) the composer gives
+them. Markdown images load inline automatically, including resolved
 local paths outside the workspace; local images still pass backend path and
 size validation before an asset URL is exposed. Clicking an unlinked image opens
 a viewport-sized preview, dismissed with Escape, the close button, or the

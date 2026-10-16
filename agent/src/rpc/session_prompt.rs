@@ -788,6 +788,8 @@ impl ServerSession {
         let creator_id = self.creator_id.clone();
         let source_meta = self.source_meta.clone();
         let auto_compaction = self.auto_compaction;
+        let append_system_prompt = self.append_system_prompt.clone();
+        let custom_system_prompt = self.custom_system_prompt.clone();
         run_loop.clear_interrupt();
         let mut approval_gate = self.approval_gate.clone();
         let is_ephemeral = self.ephemeral;
@@ -1163,6 +1165,8 @@ impl ServerSession {
                         .load(std::sync::atomic::Ordering::Relaxed),
                     "session_name": resolved_name,
                     "auto_compaction": auto_compaction,
+                    "append_system_prompt": append_system_prompt,
+                    "system_prompt": custom_system_prompt,
                     "parent_session_id": parent_session_id,
                     "thinking_level": session_thinking,
                     "model": session_model,
@@ -1478,9 +1482,39 @@ impl ServerSession {
             session_id: self.session_id.clone(),
             model: model.to_owned(),
             thinking_level: thinking_level.to_owned(),
+            // The session's persistent append segment. `build_prompt` places it
+            // after the project context and workspace memory so it can override
+            // earlier rules, and it is re-read from the session here on every
+            // run — which is exactly what the old in-memory-only append (into
+            // `agent_loop.system_prompt`, overwritten at each run boundary)
+            // failed to survive.
+            append_prompt: self.append_system_prompt.clone(),
+            custom_prompt: self.custom_system_prompt.clone(),
             ..Default::default()
         });
         (prompt, context_files)
+    }
+
+    /// The system prompt this session's next run would send, built exactly the
+    /// way the run path builds it (same context files, skills and append
+    /// segment). Read-only: builds a throwaway string and mutates nothing.
+    ///
+    /// Falls back to the full tool set when the live loop is momentarily
+    /// write-locked, so a concurrent run cannot make this read fail.
+    pub(super) fn current_system_prompt(&self) -> String {
+        let tools = self
+            .agent_loop
+            .try_read()
+            .map(|loop_| loop_.tools.clone())
+            .unwrap_or_else(|_| crate::tools::all_tools());
+        let (prompt, _) = self.build_system_prompt(
+            &self.cwd,
+            tools,
+            &self.model,
+            &self.thinking_level,
+            self.no_context_files,
+        );
+        prompt
     }
 
     /// Persist the just-pushed user message so the GUI sees it mid-stream.
@@ -1570,6 +1604,8 @@ impl ServerSession {
                     .load(std::sync::atomic::Ordering::Relaxed),
                 "session_name": session_name,
                 "auto_compaction": self.auto_compaction,
+                "append_system_prompt": self.append_system_prompt.clone(),
+                "system_prompt": self.custom_system_prompt.clone(),
                 "parent_session_id": parent_session_id,
                 "thinking_level": self.thinking_level.clone(),
                 "model": self.model.clone(),

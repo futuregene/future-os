@@ -35,7 +35,7 @@ spec.loader.exec_module(checker)
 
 # Every whitelisted path must exist, or the checker reports it missing.
 WHITELISTED_FILES = [
-    "CLAUDE.md",
+    "AGENTS.md",
     "README.md",
     "README.zh-CN.md",
     "SECURITY.md",
@@ -46,8 +46,8 @@ WHITELISTED_FILES = [
     "agent/src/prompt/approval.md",
     "agent/src/prompt/communication.md",
     "agent/src/prompt/execution.md",
-    "orchestration/loop/UPSTREAM.md",
-    "orchestration/loop/UPSTREAM.zh-CN.md",
+    "orchestration/goal/UPSTREAM.md",
+    "orchestration/goal/UPSTREAM.zh-CN.md",
     "scripts/compaction_experiment/README.md",
     "scripts/compaction_experiment/CLOSED_BOOK_PROTOCOL.md",
     "scripts/compaction_experiment/OPEN_BOOK_PROTOCOL.md",
@@ -202,11 +202,11 @@ class PairScopeTests(unittest.TestCase):
     def test_extra_paths_are_scoped_in_both_directions(self):
         self.assertTrue(checker.in_pair_scope("SECURITY.md"))
         self.assertTrue(checker.in_pair_scope("SECURITY.zh-CN.md"))
-        self.assertTrue(checker.in_pair_scope("orchestration/loop/UPSTREAM.md"))
-        self.assertTrue(checker.in_pair_scope("orchestration/loop/UPSTREAM.zh-CN.md"))
+        self.assertTrue(checker.in_pair_scope("orchestration/goal/UPSTREAM.md"))
+        self.assertTrue(checker.in_pair_scope("orchestration/goal/UPSTREAM.zh-CN.md"))
 
     def test_md_pair_round_trips(self):
-        for rel in ("docs/guide/a.md", "orchestration/loop/UPSTREAM.zh-CN.md"):
+        for rel in ("docs/guide/a.md", "orchestration/goal/UPSTREAM.zh-CN.md"):
             self.assertEqual(checker.md_pair(checker.md_pair(rel)), rel)
 
     def test_end_to_end_new_directory_gap_is_reported(self):

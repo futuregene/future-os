@@ -110,6 +110,9 @@ pub(crate) fn get_state_to_proto(p: &GetStatePayload) -> proto::SessionState {
             .filter_map(approval_card_to_proto)
             .collect(),
         sandbox_tier: p.sandbox_tier.clone(),
+        append_system_prompt: p.append_system_prompt.clone(),
+        context_files_enabled: p.context_files_enabled,
+        custom_system_prompt: p.custom_system_prompt.clone(),
     }
 }
 

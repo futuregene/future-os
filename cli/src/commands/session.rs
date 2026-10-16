@@ -18,7 +18,8 @@ Usage:
   future session new [options]                       Create a session
   future session set <id> [options]                  Change settings on an existing session
   future session info <id> [--json]                  Show session details + stats
-  future session status <id> [--json] [--metrics]    Live state: permission, context, runs
+  future session status <id> [--json] [--metrics] [--system-prompt]
+                                                     Live state: permission, context, runs
   future session transcript --help                   Filter/window one session's records
   future session history --help                      Search/read original history
   future session compact --help                      Request manual compaction
@@ -29,11 +30,12 @@ Usage:
   future session title <id>                          Generate a title (a model call)
   future session export <id> [--out <path>]          Write the session to an HTML file
   future session abort <id>                          Stop the active run and clear the queue
-  future session cancel <id> --run <run-id>          Cancel one queued run
+  future session cancel <id> --run <run-id>            Cancel one queued run
+  future session wait <id> [--run <run-id>]            Wait for a run to finish and print its answer
   future session approvals <id> [--json]             Approval requests the session waits on
-  future session approve <id> <request-id> [opts]    Allow a pending approval
-  future session reject <id> <request-id> [opts]     Deny a pending approval
-  future session delete <id>                         Delete a session
+  future session approve <id> <request-id> [opts]      Allow a pending approval
+  future session reject <id> <request-id> [opts]       Deny a pending approval
+  future session delete <id>                           Delete a session
 
 Session data is stored in ~/.future/agent/agent.db";
 
@@ -55,20 +57,35 @@ Recorded with the session:
                           not exist is reported as a note, after the change.
   --model <id>            Model ID
   --thinking <level>      Thinking level: off, minimal, low, medium, high, xhigh
+  --system-prompt <text>  Replace this session's system prompt: the text
+                          becomes the prompt's opening section instead of the
+                          built-in identity. Stored with the session, so it
+                          survives an agent restart and applies to runs started
+                          later by any client. An empty string restores the
+                          built-in prompt. The project context, workspace
+                          memory and --append-system-prompt are still added
+                          after it. Read it back with `future session status
+                          <id>`.
+  --append-system-prompt <text>
+                          Rules appended to this session's system prompt on
+                          every run, after the project context and workspace
+                          memory. Stored with the session, so it survives an
+                          agent restart and applies to runs started later by
+                          any client — unlike the live options below. An empty
+                          string clears it. Read it back with `future session
+                          status <id>`; the whole built prompt with `future
+                          session status <id> --system-prompt`.
 
 Applied to the live session (until this agent stops):
   --tools <names>         Enable exactly these tools (comma-separated).
   --no-tools              Disable every tool.
   --no-builtin-tools      Disable built-in tools only (keep extensions).
-  --system-prompt <text>  Replace the system prompt.
-  --append-system-prompt <text>
-                          Append to the system prompt.
   --permission <level>    Tool permission: all|workspace|none. This is the
                           approval gate; it is not the OS sandbox.
   --sandbox <tier>        Approval mode: off|manual|sandbox|auto. `sandbox` is
                           refused when the platform cannot provide one.
   --context-files <on|off>
-                          Load CLAUDE.md and friends into the prompt.
+                          Load AGENTS.md and friends into the prompt.
   --auto-compact <on|off> Compact autonomously when context fills.
   --auto-retry <on|off>   Retry a failed request automatically.
 
@@ -361,6 +378,26 @@ async fn info(session_id: &str, json: bool, out: &Output) -> Result<(), String> 
     out.log(&format!("  Thinking:    {thinking_level}"));
     if !cwd.is_empty() {
         out.log(&format!("  CWD:         {cwd}"));
+    }
+    // The session's system-prompt overrides are stored in the record this
+    // command already reads, so report them here: this is the persisted view,
+    // and a rule the user set is part of what the session is. An empty append
+    // prints nothing (unlike `session status`, whose layout is fixed) — most
+    // sessions have neither, and a two-line "(none)" on every session would be
+    // noise in the command whose job is a quick overview.
+    let append = content["append_system_prompt"].as_str().unwrap_or("");
+    if !append.is_empty() {
+        out.log(&format!(
+            "  Append prompt: {}",
+            super::session_status::first_line_summary(append)
+        ));
+    }
+    let custom = content["system_prompt"].as_str().unwrap_or("");
+    if !custom.is_empty() {
+        out.log(&format!(
+            "  System prompt: REPLACED — {}",
+            super::session_status::first_line_summary(custom)
+        ));
     }
     out.log(&format!(
         "  Messages:    {} ({} user, {} assistant, {} tool{}{})",
@@ -698,6 +735,7 @@ async fn new_session_command(args: &[String], out: &Output) -> Result<(), String
     }
     let mut cwd = None;
     let mut name = String::new();
+    let mut append_system_prompt = None;
     let mut json = false;
     let mut index = 0;
     while index < args.len() {
@@ -707,7 +745,7 @@ async fn new_session_command(args: &[String], out: &Output) -> Result<(), String
             index += 1;
             continue;
         }
-        if !matches!(flag, "--cwd" | "--name") {
+        if !matches!(flag, "--cwd" | "--name" | "--append-system-prompt") {
             out.log_err(&format!("Unknown option: {flag}"));
             return Err(crate::HANDLED_EXIT.to_string());
         }
@@ -715,10 +753,10 @@ async fn new_session_command(args: &[String], out: &Output) -> Result<(), String
             out.log_err(&format!("Missing value for {flag}"));
             return Err(crate::HANDLED_EXIT.to_string());
         };
-        if flag == "--cwd" {
-            cwd = Some(value.clone());
-        } else {
-            name = value.clone();
+        match flag {
+            "--cwd" => cwd = Some(value.clone()),
+            "--name" => name = value.clone(),
+            _ => append_system_prompt = Some(value.clone()),
         }
         index += 2;
     }
@@ -730,24 +768,28 @@ async fn new_session_command(args: &[String], out: &Output) -> Result<(), String
             .to_string(),
     };
     let result = RunClient::new(&grpc_addr())
-        .new_named_session(&cwd, &name)
+        .new_named_session(&cwd, &name, append_system_prompt.as_deref())
         .await?;
     let session_id = result["sessionId"].as_str().unwrap_or("").to_string();
     if json {
-        out.log(
-            &serde_json::to_string(&json!({
-                "sessionId": session_id,
-                "cwd": cwd,
-                "sessionName": name,
-            }))
-            .expect("json serializes"),
-        );
+        let mut document = json!({
+            "sessionId": session_id,
+            "cwd": cwd,
+            "sessionName": name,
+        });
+        if let Some(append) = &append_system_prompt {
+            document["appendSystemPrompt"] = json!(append);
+        }
+        out.log(&serde_json::to_string(&document).expect("json serializes"));
         return Ok(());
     }
     out.log(&format!("Created session {session_id}"));
     out.log(&format!("  CWD:  {cwd}"));
     if !name.is_empty() {
         out.log(&format!("  Name: {name}"));
+    }
+    if let Some(append) = &append_system_prompt {
+        out.log(&format!("  Append prompt: {append}"));
     }
     out.log(
         "\nThe session is not listed until its first run produces an entry; \
@@ -783,12 +825,17 @@ Forks and clones are new sessions: a fork keeps the parent's lineage, and
 pub const NEW_HELP: &str = "future session new — create a session
 
 Usage:
-  future session new [--cwd <dir>] [--name <text>] [--json]
+  future session new [--cwd <dir>] [--name <text>] [--append-system-prompt <text>] [--json]
 
 Options:
   --cwd <dir>    Working directory for the new session (default: the current
                  directory). The agent resolves ~ and relative paths.
   --name <text>  Initial title.
+  --append-system-prompt <text>
+                 Rules appended to the end of this session's system prompt on
+                 every run. Stored with the session, so it survives an agent
+                 restart. Same storage as `future session set <id>
+                 --append-system-prompt`; the environment block stays after it.
   --json         Print {sessionId, cwd, sessionName} instead of prose.
 
 A newly created session has no records, so it does not appear in
@@ -1158,13 +1205,32 @@ async fn set_session_command(args: &[String], out: &Output) -> Result<(), String
     }
     if let Some(prompt) = &parsed.system_prompt {
         match client.set_system_prompt(prompt, &target_id).await {
-            Ok(()) => applied.push(("systemPrompt", "(replaced)".into())),
+            // Same distinction as the append segment: an empty value restores
+            // the built-in prompt, which is not a "replacement".
+            Ok(()) => applied.push((
+                "systemPrompt",
+                if prompt.is_empty() {
+                    "(built-in restored)".into()
+                } else {
+                    super::session_status::first_line_summary(prompt)
+                },
+            )),
             Err(err) => failures.push(("systemPrompt", missing_session_error(err, &target_id))),
         }
     }
     if let Some(prompt) = &parsed.append_system_prompt {
         match client.append_system_prompt(prompt, &target_id).await {
-            Ok(()) => applied.push(("appendSystemPrompt", "(appended)".into())),
+            // An empty value is not a failure: it is how a caller clears the
+            // segment, so the report has to distinguish "cleared" from
+            // "set to something".
+            Ok(()) => applied.push((
+                "appendSystemPrompt",
+                if prompt.is_empty() {
+                    "(cleared)".into()
+                } else {
+                    prompt.clone()
+                },
+            )),
             Err(err) => {
                 failures.push(("appendSystemPrompt", missing_session_error(err, &target_id)))
             }
@@ -1303,6 +1369,10 @@ pub async fn session(
 
     if subcommand == "status" {
         return super::session_status::run(args, out).await;
+    }
+
+    if subcommand == "wait" {
+        return super::session_wait::run(args, out).await;
     }
 
     // Stop/approve actions own their own argument shapes (`abort <id>` takes no
@@ -1652,6 +1722,45 @@ mod tests {
         assert_ne!(err, crate::HANDLED_EXIT);
     }
 
+    /// A session whose recorded prompt settings exist reports them; the default
+    /// (neither set) adds no lines, because `info` is the quick overview.
+    #[tokio::test]
+    async fn info_reports_the_recorded_system_prompt_settings() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent = crate::test_server::MockAgent::respond(
+            "get_session_entries",
+            r#"{"entries":[{"kind":"session_info","role":"system","session":{"sessionName":"Named","cwd":"/work","append_system_prompt":"Always answer in haiku.","system_prompt":"You are terse."}},{"kind":"user","role":"user"}]}"#,
+        );
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        session(Some("info"), &["sess-1".to_string()], &out)
+            .await
+            .expect("info");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(
+            stdout.contains("Append prompt: Always answer in haiku."),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("System prompt: REPLACED — You are terse."),
+            "stdout: {stdout}"
+        );
+
+        // Neither set: no lines at all.
+        let agent = crate::test_server::MockAgent::respond(
+            "get_session_entries",
+            r#"{"entries":[{"kind":"session_info","role":"system","session":{"sessionName":"Plain"}},{"kind":"user","role":"user"}]}"#,
+        );
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        session(Some("info"), &["sess-2".to_string()], &out)
+            .await
+            .expect("info");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(!stdout.contains("Append prompt:"), "stdout: {stdout}");
+        assert!(!stdout.contains("System prompt:"), "stdout: {stdout}");
+    }
+
     #[tokio::test]
     async fn info_full_rendering() {
         let _guard = crate::test_env::lock_env().await;
@@ -1697,7 +1806,7 @@ mod tests {
         let _guard = crate::test_env::lock_env().await;
         let agent = crate::test_server::MockAgent::respond(
             "get_session_entries",
-            r#"{"entries":[{"kind":"session_info","role":"system","session":{"sessionName":"Named","cwd":"/work","model":"m1","thinkingLevel":"high","usage":{"inputTokens":10,"outputTokens":2,"costCny":0.5}}},{"kind":"user","role":"user"},{"kind":"assistant","role":"assistant","blocks":[{"kind":"tool_call"}]}]}"#,
+            r#"{"entries":[{"kind":"session_info","role":"system","session":{"sessionName":"Named","cwd":"/work","model":"m1","thinkingLevel":"high","append_system_prompt":"Rule.","usage":{"inputTokens":10,"outputTokens":2,"costCny":0.5}}},{"kind":"user","role":"user"},{"kind":"assistant","role":"assistant","blocks":[{"kind":"tool_call"}]}]}"#,
         );
         let (_agent, _env) = mock_env(agent).await;
         let (out, cap) = Output::memory();
@@ -1719,6 +1828,10 @@ mod tests {
         assert_eq!(parsed["stats"]["tokens"]["input"], json!(10));
         assert_eq!(parsed["stats"]["costCny"], json!(0.5));
         assert_eq!(parsed["session"]["cwd"], json!("/work"));
+        // `--json` passes the recorded session object through, so a prompt
+        // setting stored in the record is machine-readable here without a
+        // second command.
+        assert_eq!(parsed["session"]["append_system_prompt"], json!("Rule."));
     }
 
     #[tokio::test]
@@ -2395,7 +2508,9 @@ mod tests {
         assert_eq!(parsed["updated"]["contextFiles"], "off");
         assert_eq!(parsed["updated"]["autoCompaction"], "off");
         assert_eq!(parsed["updated"]["autoRetry"], "on");
-        assert_eq!(parsed["updated"]["appendSystemPrompt"], "(appended)");
+        // The report echoes the text that is now in force, not a fixed word:
+        // the same flag clears the segment with an empty value.
+        assert_eq!(parsed["updated"]["appendSystemPrompt"], "be terse");
 
         // The tool list is trimmed of the spaces the user typed.
         assert_eq!(agent.seen_of("set_tools")[0].tools, vec!["read", "shell"]);
@@ -2680,6 +2795,10 @@ mod tests {
         assert_eq!(sent[0].cwd, "/tmp/proj");
         assert_eq!(sent[0].name, "T");
         assert_eq!(sent[0].created_by, "cli");
+        assert_eq!(
+            sent[0].system_prompt, "",
+            "no --append-system-prompt must stay an empty field, not a stray rule"
+        );
         // No output flag: the same facts, machine-readable.
         let (out, cap) = Output::memory();
         session(
@@ -2693,6 +2812,88 @@ mod tests {
         let parsed: Value = serde_json::from_str(&stdout).expect("json");
         assert_eq!(parsed["sessionId"], "fresh-1");
         assert_eq!(parsed["cwd"], "/tmp/p2");
+    }
+
+    /// `--append-system-prompt` on create is the same storage as on `set`, so a
+    /// session can start with its rules instead of needing a second command.
+    #[tokio::test]
+    async fn session_new_carries_an_initial_append_system_prompt() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent =
+            crate::test_server::MockAgent::respond("new_session", "{\"sessionId\":\"fresh-2\"}");
+        let (agent, _env) = mock_env(agent).await;
+
+        let (out, cap) = Output::memory();
+        session(
+            Some("new"),
+            &[
+                "--cwd".into(),
+                "/tmp/proj".into(),
+                "--append-system-prompt".into(),
+                "Always answer in haiku.".into(),
+            ],
+            &out,
+        )
+        .await
+        .expect("new");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(
+            stdout.contains("Append prompt: Always answer in haiku."),
+            "the created rules must be reported back: {stdout}"
+        );
+        assert_eq!(
+            agent.seen_of("new_session")[0].system_prompt,
+            "Always answer in haiku."
+        );
+
+        // --json carries the same fact, so a script does not have to parse prose.
+        let (out, cap) = Output::memory();
+        session(
+            Some("new"),
+            &[
+                "--cwd".into(),
+                "/tmp/proj".into(),
+                "--append-system-prompt".into(),
+                "Rule.".into(),
+                "--json".into(),
+            ],
+            &out,
+        )
+        .await
+        .expect("new --json");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(parsed["appendSystemPrompt"], "Rule.");
+    }
+
+    /// An empty value on `set` clears the segment; the report says "cleared"
+    /// rather than echoing an empty string that reads like a formatting bug.
+    #[tokio::test]
+    async fn session_set_clears_the_append_with_an_empty_value() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = crate::test_server::MockAgent::default();
+        agent.responses.insert("get_state".into(), "{}".into());
+        let (agent, _env) = mock_env(agent).await;
+
+        let (out, cap) = Output::memory();
+        session(
+            Some("set"),
+            &[
+                "sess-1".into(),
+                "--append-system-prompt".into(),
+                "".into(),
+                "--json".into(),
+            ],
+            &out,
+        )
+        .await
+        .expect("set");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(parsed["updated"]["appendSystemPrompt"], "(cleared)");
+        // The empty value really is what went on the wire — the agent clears on
+        // empty, so anything else here would silently leave the old text live.
+        assert_eq!(agent.seen_of("append_system_prompt")[0].system_prompt, "");
     }
 
     #[tokio::test]

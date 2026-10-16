@@ -149,6 +149,48 @@ describe("agent provider catalogue", () => {
     expect(peekFutureProfile()).not.toBeNull();
   });
 
+  it("saving the FutureOS provider on the Providers page announces the account change too", async () => {
+    invokeMock.mockResolvedValue(EMPTY_VIEW);
+    invokeMock.mockResolvedValueOnce({ email: "a@b.c", userId: "u", emailVerified: true, createdAt: null });
+    await getFutureProfile();
+    invokeMock.mockResolvedValueOnce({ credits: 5 });
+    await getFutureBalance();
+    expect(peekFutureProfile()).not.toBeNull();
+    expect(peekFutureBalance()).not.toBeNull();
+
+    // This is the path the page's own dialog takes — it may carry the account
+    // key with it, so it has to invalidate exactly like the other one does.
+    const events = await countAuthEvents(async () => {
+      await updateBuiltinProvider({
+        id: FUTURE_PROVIDER_ID,
+        baseUrl: "https://future.example/api",
+        apiKey: "k",
+        updateApiKey: true,
+      });
+    });
+
+    expect(events).toBe(1);
+    expect(peekFutureProfile()).toBeNull();
+    expect(peekFutureBalance()).toBeNull();
+  });
+
+  it("saving another provider on the Providers page leaves the FutureOS account caches alone", async () => {
+    invokeMock.mockResolvedValue(EMPTY_VIEW);
+    invokeMock.mockResolvedValueOnce({ email: "a@b.c", userId: "u", emailVerified: true, createdAt: null });
+    await getFutureProfile();
+
+    const events = await countAuthEvents(async () => {
+      await updateBuiltinProvider({
+        id: "anthropic",
+        baseUrl: "https://anthropic.example",
+        updateApiKey: false,
+      });
+    });
+
+    expect(events).toBe(0);
+    expect(peekFutureProfile()).not.toBeNull();
+  });
+
   it("starts a device login and returns the server payload verbatim", async () => {
     const start = {
       userCode: "ABCD-1234",

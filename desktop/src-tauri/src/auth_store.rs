@@ -158,6 +158,7 @@ pub(crate) mod test_support {
 
     pub(crate) struct HomeGuard {
         previous: Option<String>,
+        previous_future_home: Option<std::ffi::OsString>,
         dir: PathBuf,
         _lock: MutexGuard<'static, ()>,
     }
@@ -172,6 +173,8 @@ pub(crate) mod test_support {
             // cancelled and observed before this fixture publishes a new path.
             crate::runtime::cancel_test_tasks();
             let previous = std::env::var("HOME").ok();
+            let previous_future_home = std::env::var_os("FUTURE_HOME");
+            std::env::remove_var("FUTURE_HOME");
             let dir = std::env::temp_dir().join(format!(
                 "futureos-test-{}-{}",
                 std::process::id(),
@@ -182,6 +185,7 @@ pub(crate) mod test_support {
             std::env::set_var("HOME", &dir);
             HomeGuard {
                 previous,
+                previous_future_home,
                 dir,
                 _lock: lock,
             }
@@ -198,6 +202,10 @@ pub(crate) mod test_support {
             match &self.previous {
                 Some(value) => std::env::set_var("HOME", value),
                 None => std::env::remove_var("HOME"),
+            }
+            match &self.previous_future_home {
+                Some(value) => std::env::set_var("FUTURE_HOME", value),
+                None => std::env::remove_var("FUTURE_HOME"),
             }
             // Release pooled connections first: Windows cannot unlink a file
             // that is still open, so deleting while the pool holds this home's
@@ -246,6 +254,7 @@ pub(crate) mod test_support {
         // remove HOME rather than overwrite it.
         let mut guard = HomeGuard {
             previous: None,
+            previous_future_home: std::env::var_os("FUTURE_HOME"),
             dir: dir.clone(),
             _lock: lock,
         };

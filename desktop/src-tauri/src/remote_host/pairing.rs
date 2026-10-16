@@ -33,12 +33,7 @@ struct RefreshTokenResponse {
 }
 
 fn pairing_path() -> Result<PathBuf, crate::AppError> {
-    let home = crate::home_dir().ok_or_else(|| {
-        crate::AppError::Message("HOME/USERPROFILE environment variable is not set.".to_string())
-    })?;
-    Ok(PathBuf::from(home)
-        .join(".future")
-        .join("remote_pairing.json"))
+    Ok(crate::store::future_dir()?.join("remote_pairing.json"))
 }
 
 pub fn load_creds() -> Option<PairingCreds> {
@@ -423,6 +418,12 @@ mod tests {
                 message: "boom".to_string(),
             }),
             Some("server"),
+        );
+        // A missing account credential is the account's problem, and the type
+        // says so — no message is consulted.
+        assert_eq!(
+            error_code(&crate::AppError::NotSignedIn),
+            Some("account_authorization"),
         );
         // Local failures carry no remote category.
         assert_eq!(

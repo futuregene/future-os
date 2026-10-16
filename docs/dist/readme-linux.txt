@@ -42,7 +42,7 @@ future agent --probe-sandbox 与 future doctor。主机 namespace 策略可能�
 · 同目录已附带独立 futureos-headless 入口和统一 future CLI。
 
 【许可】
-FutureOS 主体按 MIT 许可发布；内置的 future loop 组件派生自 LoopX，
+FutureOS 主体按 MIT 许可发布；内置的 future goal 组件派生自 LoopX，
 按 Apache-2.0 许可发布。许可证全文与归属声明见 licenses/ 目录。
 
 如遇问题，请反馈版本、架构和错误信息，不要包含凭据。

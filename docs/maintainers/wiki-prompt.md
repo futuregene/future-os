@@ -12,7 +12,7 @@ Describe implemented, visible behavior in plain language. Desktop platforms are
 Research/Data navigation remains outside the user guide while hidden. Skills and
 Remote are user-facing: do not omit them based on old hidden-feature assumptions.
 No separate TUI page is required here; the repository has `docs/guide/tui*.md`. The CLI
-page may document `future tui`, `future channel` and `future loop`. Avoid protocol
+page may document `future tui`, `future channel` and `future goal`. Avoid protocol
 internals in general app pages; precise transport/defaults belong in CLI and the
 repository guides when necessary for troubleshooting.
 

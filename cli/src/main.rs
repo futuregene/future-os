@@ -2,10 +2,10 @@
 //! for the other Rust components.
 //!
 //! `future <group> <command>` keeps the CLI's own groups (auth, run, skills,
-//! tools, models, session, doctor, ...). `future agent|tui|channel|loop
+//! tools, models, session, doctor, ...). `future agent|tui|channel|goal
 //! <args>` runs the corresponding component in-process — the same code as the
 //! standalone `future-agent` / `future-tui` / `future-channel` /
-//! `future-loop` binaries, which remain installed and usable directly.
+//! `future-goal` binaries, which remain installed and usable directly.
 //!
 //! The embedded components build their OWN tokio runtimes, so they must be
 //! dispatched from main() BEFORE the CLI's runtime is entered (nested
@@ -20,6 +20,11 @@ fn main() -> ExitCode {
 
 /// Everything past the OS argv read (unit-testable entry).
 fn run_from_args(args: &[String]) -> ExitCode {
+    // Discovery must never initialize storage, logs, an Agent or a runtime.
+    if args == ["version", "--json"] {
+        print!("{}", future_cli::version::build_info_json());
+        return ExitCode::SUCCESS;
+    }
     // Hidden helper entry also works for renamed/staged unified CLI artifacts.
     // Dispatch before any CLI runtime, logging or service initialization.
     if args.first().map(String::as_str) == Some("--linux-sandbox-helper") {
@@ -32,7 +37,7 @@ fn run_from_args(args: &[String]) -> ExitCode {
             "agent" => return run_agent(&args[1..]),
             "tui" => return run_tui(&args[1..]),
             "channel" | "channels" => return run_channel(&args[1..]),
-            "loop" => return run_loop(&args[1..]),
+            "goal" => return run_goal(&args[1..]),
             _ => {}
         }
     }
@@ -74,9 +79,9 @@ fn run_channel(args: &[String]) -> ExitCode {
     }
 }
 
-/// `future loop <args>` — loop control plane (same as `future-loop`).
-fn run_loop(args: &[String]) -> ExitCode {
-    match future_loop::console::run("future loop", args.to_vec()) {
+/// `future goal <args>` — goal control plane (same as `future-goal`).
+fn run_goal(args: &[String]) -> ExitCode {
+    match future_goal::console::run("future goal", args.to_vec()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("Error: {err}");
@@ -94,15 +99,17 @@ mod tests {
         // --version → dispatch prints and exits 0 (writes to real stdio —
         // captured by the test harness).
         assert_eq!(run_from_args(&["--version".to_string()]), ExitCode::SUCCESS);
-        // A bare bogus group prints the main help, still exit 0.
-        assert_eq!(run_from_args(&["bogus".to_string()]), ExitCode::SUCCESS);
+        // A bare `future` prints the main help and succeeds.
+        assert_eq!(run_from_args(&[]), ExitCode::SUCCESS);
+        // An unknown group is an error, not a silent help print.
+        assert_eq!(run_from_args(&["bogus".to_string()]), ExitCode::from(1));
     }
 
     #[test]
-    fn embedded_loop_unknown_command_errors() {
-        // `future loop bogus` → the loop console rejects it without a runtime.
+    fn embedded_goal_unknown_command_errors() {
+        // `future goal bogus` → the goal console rejects it without a runtime.
         assert_eq!(
-            run_from_args(&["loop".to_string(), "bogus-cmd-xyz".to_string()]),
+            run_from_args(&["goal".to_string(), "bogus-cmd-xyz".to_string()]),
             ExitCode::from(1)
         );
     }

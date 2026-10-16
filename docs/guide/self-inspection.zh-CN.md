@@ -28,7 +28,7 @@
 | `future session transcript --session <id>` | 单个会话记录的筛选/分窗视图——全部用户消息、thinking、某个工具的输入或输出、它碰过的文件路径，以及逐 run 结果（`--runs`） |
 | `future session forks <id>` | 该会话可以分叉的用户轮次 |
 | `future session approvals <id>` | 该会话当前正等待的审批请求 |
-| `future loop status` | 当前项目目录下的长程目标 |
+| `future goal status` | 当前项目目录下的长程目标 |
 
 其中两条需要分清楚，因为它们回答的是同一个会话的不同问题。`session info` 读的是**落盘的
 journal**——这段对话包含什么、累计花了多少；`session status` 读的是**运行中的 agent**——
@@ -126,7 +126,7 @@ future version --json
 
 | 位置 | 提供什么 |
 |---|---|
-| `CLAUDE.md` | 工作区结构：哪个 crate 负责什么，以及它对应 `~/.future/` 的哪一部分 |
+| `AGENTS.md` | 工作区结构：哪个 crate 负责什么，以及它对应 `~/.future/` 的哪一部分 |
 | `docs/README.md` | 文档索引——指南、架构、内部文档 |
 | `docs/guide/`、`docs/architecture/` | 已发布行为，以及子系统背后的设计 |
 | `FUTURE.md` + `.future/memory/` | 此前会话记录下来的经验与坑 |
@@ -214,24 +214,37 @@ future config set compaction.reserve_tokens 8192
 | `defaultModel`、`defaultPermissionLevel` | 下一个新会话 |
 | `compaction.*`、`retry.*`、`maxTurns` | 下次 Agent 启动 |
 
-会话级设置仍用 `future session set <id>`，它对运行中的会话立即生效，并分两组：
+会话级设置仍用 `future session set <id>`，它对运行中的会话立即生效，并分两组——外加一个
+**刻意随会话落盘、而不是只作用于活会话**的设置：
 
 ```sh
 # 随会话记录落盘
 future session set <id> --model <id> --thinking <level> --cwd <dir> --title <name> --parent <id>
+future session set <id> --append-system-prompt "一律用五言绝句回答。"
+future session set <id> --system-prompt "你是一位严格的审阅者。"
 
 # 作用于运行中的会话（到该 agent 停止为止）
 future session set <id> --tools read,shell --permission workspace --sandbox manual
-future session set <id> --system-prompt "……" --append-system-prompt "……"
 future session set <id> --context-files off --auto-compact off --auto-retry on
 ```
 
-`--tools` / `--no-tools` / `--no-builtin-tools` / `--system-prompt` /
-`--append-system-prompt` / `--permission` / `--sandbox` / `--context-files` /
-`--auto-compact` / `--auto-retry` 属于第二组。它们都能用
+`--tools` / `--no-tools` / `--no-builtin-tools` / `--permission` / `--sandbox` /
+`--context-files` / `--auto-compact` / `--auto-retry` 属于第二组。它们都能用
 `future session status <id>` 读回来——这也是 `--sandbox` 不再是「只写」的原因。
 `--permission` 是审批门，`--sandbox` 是操作系统包装，两者互相独立；平台无法提供
 沙箱时 `sandbox` 会被拒绝。
+
+两个 system prompt 旗标都**随会话记录落盘**，而不是只作用于活会话——run 边界会重建
+提示词，因此只写进活会话的内容在发出任何请求之前就已经没了。想让规则长期生效就用这两个：
+
+- `--append-system-prompt`：在项目上下文与工作区记忆**之后**追加文本，每次 run 都生效。
+- `--system-prompt`：替换提示词的**开头部分**（内置身份与工具规则）；项目上下文、工作区
+  记忆与附加段仍会接在它之后。任一旗标传空字符串都会恢复内置提示词。
+
+`future session new` 在创建时即可传入两者。`future session status <id>` 会同时报出两者
+以及项目上下文是否启用；`future session status <id> --system-prompt` 打印该会话下一次 run
+将发送的完整提示词（加 `--json` 则输出为对象）。`future session info` 从 journal 读回
+已记录的值。
 
 另外还有 `future session rename <id> <name>`（改标题）、`future session compact
 --session <id>`（按需压缩，只返回确认，不是完成的摘要，且忙时会拒绝），以及生命周期
@@ -258,8 +271,10 @@ future run --session <id> "<message>"     # 在那个会话里起一次 run
 只有调用方知道用户真正想要什么。
 它就是 `#` 选中的会话引用的「发送」那一半：用户消息里可以带
 `[标题](futureos://session/<id>)`，链接里的 id 正是 `--session` 的参数。
-这是另一个会话里的一次完整 run，因此会花积分；命令会在那次 run 结束时返回
-（受 shell 工具自身的超时约束），长时间的任务需要相应调大超时。
+这是另一个会话里的一次完整 run，因此会花积分。默认情况下命令会在那次 run
+结束时返回；加 `--no-wait` 可立即拿到 ack（run id 与 accepted state），
+之后再用 `future session wait <id>` 或 `future session transcript --session <id>`
+取回结果（长时间任务仍需要相应调大 shell 超时）。
 「读」的那一半是上面的 `future session transcript --session <id>` /
 `future session history search --session <id>`。
 

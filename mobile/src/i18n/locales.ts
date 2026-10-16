@@ -712,7 +712,7 @@ export const resources = {
         loadFailed: "Could not load desktop data. Please retry.",
         saveFailed: "Could not confirm the save. The desktop's latest settings have been requested; check them before retrying.",
         skillFailed: "The skill operation could not be confirmed. The list has been reloaded; check it before retrying. Earlier upgrades in a batch may have completed.",
-        tasks: "Task settings",
+        tasks: "Scheduled task settings",
         providers: "Providers and models",
         providerKey: "Provider",
         providerForm: "Custom provider",
@@ -823,20 +823,20 @@ export const resources = {
         installFailed: "The update could not be downloaded or installed.",
       },
       tasks: {
-        title: "Tasks",
-        empty: "No tasks on this desktop yet.",
-        phoneHint: "Tasks run on the paired desktop. Create, edit, run and delete them from here.",
-        new: "New task",
-        newTitle: "New task",
+        title: "Scheduled tasks",
+        empty: "No scheduled tasks on this desktop yet.",
+        phoneHint: "Scheduled tasks run on the paired desktop. Create, edit, run and delete them from here.",
+        new: "New scheduled task",
+        newTitle: "New scheduled task",
         delete: "Delete",
         deleteConfirmAction: "Confirm delete",
         deleteConfirm: "Delete \u300c{{name}}\u300d? Its past runs and conversations are kept.",
         runNow: "Run now",
         enable: "Enable",
         disable: "Disable",
-        deps: "Dependencies",
-        depsReady: "ready",
-        depsWaiting: "waiting",
+
+
+
         runs: "Runs",
         runNoSummary: "No summary recorded.",
         runSessionDeleted: "This run's conversation was deleted as configured; the output is saved on the run.",
@@ -849,7 +849,7 @@ export const resources = {
         thinkingLabels: { off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "XHigh" },
         trigger: {
           manual: "Manual",
-          dependency: "Dependency",
+
           every: "Every {{minutes}} min",
           everyHours: "Every {{hours}} h",
           everyDays: "Every {{days}} d",
@@ -859,7 +859,7 @@ export const resources = {
         },
         triggerMode: {
           manual: "Manual",
-          dependency: "Dependency",
+
           once: "Once",
           interval: "Interval",
           daily: "Daily",
@@ -889,17 +889,11 @@ export const resources = {
           sat: "Sat",
           sun: "Sun",
         },
-        join: { all: "all upstreams", any: "any upstream" },
-        on: {
-          success: "after success",
-          failure: "after failure",
-          completed: "after any result",
-        },
         form: {
-          details: "Task details",          name: "Name",
+          details: "Scheduled task details",          name: "Name",
           model: "Model",
           thinking: "Thinking",
-          modelsFailed: "The model list could not be loaded; the task keeps its current model.",
+          modelsFailed: "The model list could not be loaded; the scheduled task keeps its current model.",
           session: "Conversation policy",
           sessionNew: "New conversation each run",
           sessionExisting: "Reuse one conversation",
@@ -907,15 +901,15 @@ export const resources = {
         sessionRetention: "Conversation after the run",
         sessionRetentionKeep: "Keep",
         sessionRetentionDelete: "Delete",
-        sessionRetentionHint: "Delete the run's conversation once it settles, success or failure. The run's status, summary and full output stay on the run, and a dependent task still receives the summary.",
+        sessionRetentionHint: "Delete the run's conversation once it settles, success or failure. The run's status, summary and full output stay on the run.",
           prompt: "Prompt",
-          deps: "Dependency triggers",
-          depsNone: "No upstream tasks yet: add one and this task runs when it finishes.",
-          depsAlongsideSchedule: "This task also has its own schedule; it runs when the upstreams below finish too.",
-          depsUnsupported: "Update FutureOS Desktop to set dependencies here. The current ones are listed below.",
-          depNoCandidates: "There is no other task to depend on yet — create the upstream task first.",
-          depRemove: "Remove the dependency on {{name}}",
-          depJoin: "With several upstreams, run",
+
+
+
+
+
+
+
           conversation: "Conversation type",
           conversationWorkspace: "Workspace conversation",
           conversationChat: "Chat conversation",
@@ -932,15 +926,15 @@ export const resources = {
           day: "Day of month",
           dayOfMonth: "Day",
           shortMonthHint: "Months without this day run on the last day of the month.",
-          fullPermissionWarning: "Tasks run with full permission and never prompt for approval.",
+          fullPermissionWarning: "Scheduled tasks run with full permission and never prompt for approval.",
           save: "Save",
           cancel: "Cancel",
           enablement: "State",
           enabled: "Enabled",
           disabled: "Disabled",
           problem: {
-            name: "Give the task a name.",
-            prompt: "A task needs a prompt to run.",
+            name: "Give the scheduled task a name.",
+            prompt: "A scheduled task needs a prompt to run.",
             cwd: "A workspace conversation needs a working directory.",
             model: "Choose a model.",
             thinking: "Choose a thinking level.",
@@ -1589,7 +1583,7 @@ export const resources = {
         loadFailed: "无法读取桌面端数据，请重试。",
         saveFailed: "未能确认保存结果。已重新请求桌面端最新设置，请核对后重试。",
         skillFailed: "未能确认技能操作结果。已重新请求列表，请核对后重试；批量升级中先前的项目可能已完成。",
-        tasks: "任务设置",
+        tasks: "定时任务设置",
         providers: "提供商与模型",
         providerKey: "提供商设置",
         providerForm: "自定义提供商",
@@ -1700,11 +1694,11 @@ export const resources = {
         installFailed: "下载或安装失败，请稍后重试。",
       },
       tasks: {
-        title: "任务",
-        empty: "该桌面端还没有任务。",
-        phoneHint: "任务在已配对的桌面端上运行。你可以在这里新建、修改、运行和删除。",
-        new: "新建任务",
-        newTitle: "新建任务",
+        title: "定时任务",
+        empty: "该桌面端还没有定时任务。",
+        phoneHint: "定时任务在已配对的桌面端上运行。你可以在这里新建、修改、运行和删除。",
+        new: "新建定时任务",
+        newTitle: "新建定时任务",
         delete: "删除",
         deleteConfirmAction: "确认删除",
         deleteConfirm: "删除「{{name}}」？它的历史运行与对话会保留。",
@@ -1712,9 +1706,9 @@ export const resources = {
         enable: "启用",
         disable: "停用",
         openConversation: "打开会话",
-        deps: "依赖",
-        depsReady: "已到达",
-        depsWaiting: "未到达",
+
+
+
         runs: "运行记录",
         runNoSummary: "本次没有记录摘要。",
         runSessionDeleted: "这次运行的会话已按设置删除；输出保存在运行记录里。",
@@ -1726,7 +1720,7 @@ export const resources = {
         thinkingLabels: { off: "关闭", minimal: "最简", low: "低", medium: "中", high: "高", xhigh: "极高" },
         trigger: {
           manual: "手动",
-          dependency: "依赖触发",
+
           every: "每 {{minutes}} 分钟",
           everyHours: "每 {{hours}} 小时",
           everyDays: "每 {{days}} 天",
@@ -1736,7 +1730,7 @@ export const resources = {
         },
         triggerMode: {
           manual: "手动",
-          dependency: "依赖触发",
+
           once: "一次性",
           interval: "间隔",
           daily: "每天",
@@ -1766,18 +1760,12 @@ export const resources = {
           sat: "周六",
           sun: "周日",
         },
-        join: { all: "全部到齐", any: "任一到达" },
-        on: {
-          success: "成功后",
-          failure: "失败后",
-          completed: "结束后",
-        },
         form: {
-          details: "任务信息",
+          details: "定时任务信息",
           name: "名称",
           model: "模型",
           thinking: "思考等级",
-          modelsFailed: "模型列表读取失败；该任务会保留当前模型。",
+          modelsFailed: "模型列表读取失败；该定时任务会保留当前模型。",
           session: "会话策略",
           sessionNew: "每次运行新建会话",
           sessionExisting: "复用同一条会话",
@@ -1785,15 +1773,15 @@ export const resources = {
         sessionRetention: "运行后会话",
         sessionRetentionKeep: "保留",
         sessionRetentionDelete: "删除",
-        sessionRetentionHint: "每次运行结束后删除它的会话（成功或失败都一样）。运行的状态、摘要与完整输出仍保留在运行记录里，后续依赖的任务也照常拿到摘要。",
+        sessionRetentionHint: "每次运行结束后删除它的会话（成功或失败都一样）。运行的状态、摘要与完整输出仍保留在运行记录里。",
           prompt: "提示词",
-          deps: "依赖触发",
-          depsNone: "还没有上游任务：添加一个，本任务就会在它完成后运行。",
-          depsAlongsideSchedule: "本任务还有定时触发；下面的上游完成后它也会运行。",
-          depsUnsupported: "请更新 FutureOS 桌面端，才能在这里设置依赖；当前依赖见下方列表。",
-          depNoCandidates: "没有其它任务可以依赖；先新建一个上游任务。",
-          depRemove: "移除对 {{name}} 的依赖",
-          depJoin: "多个上游的到达条件",
+
+
+
+
+
+
+
           conversation: "会话类型",
           conversationWorkspace: "工作区会话",
           conversationChat: "对话会话",
@@ -1810,15 +1798,15 @@ export const resources = {
           day: "每月几号",
           dayOfMonth: "几号",
           shortMonthHint: "没有该日期的月份自动顺延到当月最后一天。",
-          fullPermissionWarning: "任务以完全权限运行，不会弹出审批。",
+          fullPermissionWarning: "定时任务以完全权限运行，不会弹出审批。",
           save: "保存",
           cancel: "取消",
           enablement: "状态",
           enabled: "启用",
           disabled: "停用",
           problem: {
-            name: "给任务起个名字。",
-            prompt: "任务需要有提示词才能运行。",
+            name: "给这个定时任务起个名字。",
+            prompt: "定时任务需要有提示词才能运行。",
             cwd: "工作区会话需要设置工作目录。",
             model: "先选择模型。",
             thinking: "先选择思考等级。",

@@ -18,7 +18,7 @@ FutureOS 是「一个 AI agent 到处跑」的多端系统：核心是 Rust gRPC
 - `tui/`：Rust `future-tui` 终端界面。
 - `cli/`：Rust `future-cli`，构建统一 `future` 二进制，聚合各组件管理能力。
 - `channels/`：Rust `future-channel`，Feishu / DingTalk IM 桥。
-- `orchestration/loop/`：Rust `future-loop`，loop 控制面。
+- `orchestration/goal/`：Rust `future-goal`，goal 控制面。
 - `packages/rpc/`：Rust `future-rpc`，protobuf 线协议（单一真源）。
 
 GUI 和 headless Desktop 将完整 Agent 服务作为 Rust library 编入自身进程，共用一个宿主。优先连接兼容外部 Agent；只有默认端点不存在且成功取得实例锁才启动内置服务。不兼容或持锁不可用时直接报错，不打开第二份 Agent 数据库。显式远端只连接、不接管。客户端仍使用每用户本地 IPC（Unix socket、当前用户 Windows 命名管道），沿用 FUTURE_HOME 和端点覆盖规则。打包 CLI 继续提供技能、维护及独立 Agent 能力。退出内置宿主会取消所有客户端任务；连接外部服务时外部 owner 保持运行。参见[生命周期指南](../../guide/desktop-agent.zh-CN.md)和[实现计划](../../architecture/embedded-agent-development.zh-CN.md)。
@@ -289,7 +289,7 @@ GUI 采用三栏结构：
 
 中间区域展示用户消息、assistant 流式输出、计划、工具调用、命令预览、错误状态和 follow-up 交互。
 
-消息正文以 Markdown 渲染：除常规富文本外支持行内与块级 LaTeX 数学公式（KaTeX）；链接经协议白名单过滤（非 http(s) 协议降级为纯文本），外部链接在系统默认浏览器打开，用户消息中的 `[文字](http…)` 链接同样可点击。
+消息正文以 Markdown 渲染：除常规富文本外支持行内与块级 LaTeX 数学公式（KaTeX）；链接经协议白名单过滤（非 http(s) 协议降级为纯文本），外部链接在系统默认浏览器打开。用户消息与 assistant 消息走同一条渲染管线：用户输入的标题、列表、代码块按格式呈现，`[文字](http…)` 链接可点击，`@` 文件引用与 `#` 会话引用保持 composer 给出的引用样式（含 `#` 标记）。
 
 失败 / 已结束的 assistant 消息下方提供恢复动作：重试 / 继续（仅最新一轮失败消息）与分叉（任意已结束消息），语义见 4.4。
 
