@@ -1,22 +1,20 @@
-# Workspace root for the two Rust binaries (agent / channels).
+# Shared Rust workspace: core libraries and CLI/Desktop entry points.
 #
 # The remote-control bridge is embedded in the desktop Tauri backend
 # (desktop/src-tauri/src/remote/) — see docs/internals/desktop/remote-control-*.md. The
 # former standalone `remote/` crate is gone; only `desktop/web/` (the
 # verification web client served by the embedded bridge) remains.
 #
-# desktop/src-tauri is deliberately NOT a member: the Tauri app builds on its own
-# schedule via npm/tauri tooling, and membership would force it into every
-# root-level cargo invocation. It is excluded so no path-dependency accident
-# can pull it in either.
+# Desktop shares the lockfile, build profiles and target directory.
+# default-members keeps GUI dependencies out of ordinary root builds; use
+# -p futureos explicitly (or the Tauri build script) to select Desktop.
 #
 # Versions for dependencies shared by ≥2 members live here, once — bump in
 # one place instead of chasing drift across the Cargo.tomls. Members opt in
 # with `{ workspace = true }` and may add features (cargo unifies them).
 [workspace]
-members = ["agent", "channels", "packages/rpc", "packages/remote-crypto", "packages/app-settings", "packages/app-workspaces", "orchestration/goal", "orchestration/tasks", "tui", "cli"]
+members = ["agent", "channels", "packages/rpc", "packages/remote-crypto", "packages/app-settings", "packages/app-workspaces", "orchestration/goal", "orchestration/tasks", "tui", "cli", "desktop/src-tauri"]
 default-members = ["agent", "channels", "packages/rpc"]
-exclude = ["desktop"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -48,3 +46,4 @@ tempfile = "3"
 [profile.release]
 debug = false
 strip = true
+lto = "thin"

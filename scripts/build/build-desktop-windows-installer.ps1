@@ -7,10 +7,9 @@
 .DESCRIPTION
     The installer counterpart to build-desktop-windows-portable.ps1 (which produces a zip
     of loose .exe files). Steps:
-      1. compile the unified `future` CLI (release) and stage it as the Tauri
-         sidecar,
-      2. sign the sidecar (-Sign only) — see below,
-      3. build the desktop app with Tauri, producing bundle/nsis/*.exe.
+      1. compile the CLI and desktop in one Tauri/Cargo build,
+      2. sign the staged sidecar (-Sign only) — see below,
+      3. bundle the compiled app with Tauri, producing bundle/nsis/*.exe.
 
     Signing splits across two mechanisms, which is the whole reason this script
     exists separately:
@@ -132,21 +131,6 @@ if (-not $SkipDeps) {
     Push-Location desktop; try { Invoke-Native { npm ci } } finally { Pop-Location }
 }
 
-
-Write-Host "==> Building CLI (release) and staging as Tauri sidecar" -ForegroundColor Cyan
-Invoke-Native { cargo build --release --manifest-path cli/Cargo.toml }
-New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
-Copy-Item "target/release/future.exe" "desktop/src-tauri/binaries/future-$triple.exe" -Force
-
-# Sign the sidecar now: the bundler embeds it as-is, so this is the last
-# moment it can be signed without unpacking the installer afterwards.
-if ($Sign) {
-    Write-Host "==> Signing sidecar" -ForegroundColor Cyan
-    $p = Join-Path "$Root\desktop\src-tauri\binaries" "future-$triple.exe"
-    Invoke-SignFile -SignTool $signTool -Thumbprint $signThumbprint -Path $p -TimestampUrl $TimestampUrl
-    Write-Host "    signed: $p"
-}
-
 Write-Host "==> Building desktop installers (Tauri)" -ForegroundColor Cyan
 $overlay = $null
 $failLog = $null
@@ -166,7 +150,19 @@ if ($Sign) {
 }
 
 Push-Location desktop
-try { Invoke-Native { npm run tauri:build -- @tauriArgs } }
+try {
+    Invoke-Native { npm run tauri:build -- --no-bundle @tauriArgs }
+    # The joint build stages the CLI. Sign that copy before the bundler
+    # embeds it as-is into the installer.
+    if ($Sign) {
+        Write-Host "==> Signing sidecar" -ForegroundColor Cyan
+        $p = Join-Path "$Root\desktop\src-tauri\binaries" "future-$triple.exe"
+        Invoke-SignFile -SignTool $signTool -Thumbprint $signThumbprint -Path $p -TimestampUrl $TimestampUrl
+        Write-Host "    signed: $p"
+    }
+
+    Invoke-Native { npm run tauri -- bundle @tauriArgs }
+}
 finally {
     Pop-Location
     if ($overlay -and (Test-Path $overlay)) { Remove-Item -Force $overlay }
@@ -180,7 +176,7 @@ if ($failLog) {
 }
 
 Write-Host "==> Installer" -ForegroundColor Cyan
-$bundle = Join-Path $Root "desktop\src-tauri\target\release\bundle"
+$bundle = Join-Path $Root "target\release\bundle"
 $artifacts = @(Get-ChildItem -Path (Join-Path $bundle "nsis\*.exe") -ErrorAction SilentlyContinue)
 if (-not $artifacts) { throw "Tauri produced no installer under $bundle\nsis." }
 

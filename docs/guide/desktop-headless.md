@@ -179,7 +179,7 @@ cargo build --release --no-default-features --features headless \
 cargo build --release -p future-cli
 ```
 
-The default output is `desktop/src-tauri/target/release/futureos-headless`, with
+The default output is `target/release/futureos-headless`, with
 `.exe` on Windows. Put `target/release/future` (Windows: `future.exe`) beside it or
 on PATH; the Make target copies it beside the server automatically. If using
 custom Cargo output directories, build and copy the outputs explicitly.

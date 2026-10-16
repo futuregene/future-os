@@ -20,16 +20,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(feature = "gui")]
 fn build_gui() -> Result<(), Box<dyn std::error::Error>> {
-    ensure_placeholder_sidecars_for_non_release_builds()?;
+    // The CLI is a workspace binary in the same target directory. tauri-build
+    // copies externalBin into that directory and could overwrite it with a
+    // stale sidecar while Cargo is linking it. Stage the CLI after compilation
+    // in scripts/build/build-desktop.mjs; keep the original config for the
+    // application and bundler (this override is local to the build script).
+    let original_config = std::env::var_os("TAURI_CONFIG");
+    let mut config: serde_json::Value = original_config
+        .as_ref()
+        .map(|value| serde_json::from_str(&value.to_string_lossy()))
+        .transpose()?
+        .unwrap_or_else(|| serde_json::json!({}));
+    config["bundle"]["externalBin"] = serde_json::json!([]);
+    std::env::set_var("TAURI_CONFIG", serde_json::to_string(&config)?);
     // Tauri embeds its default common-controls v6 manifest only into the bin
     // (via `resource.lib` + `rustc-link-arg-bins`), which leaves `cargo test`
     // lib-test binaries without one. Disable Tauri's bin-only manifest and
     // embed the same dependency ourselves for every target instead (see
     // `embed_common_controls_manifest`).
-    tauri_build::try_build(
+    let result = tauri_build::try_build(
         tauri_build::Attributes::new()
             .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest()),
-    )?;
+    );
+    match original_config {
+        Some(value) => std::env::set_var("TAURI_CONFIG", value),
+        None => std::env::remove_var("TAURI_CONFIG"),
+    }
+    result?;
     embed_common_controls_manifest()?;
     reserve_platform_stack()?;
 
@@ -109,32 +126,6 @@ fn reserve_platform_stack() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("cargo:rustc-link-arg=/STACK:8388608,65536");
-    Ok(())
-}
-
-#[cfg(feature = "gui")]
-fn ensure_placeholder_sidecars_for_non_release_builds() -> Result<(), Box<dyn std::error::Error>> {
-    if std::env::var("PROFILE").ok().as_deref() == Some("release") {
-        return Ok(());
-    }
-
-    let target = std::env::var("TARGET")?;
-    let ext = if target.contains("windows") {
-        ".exe"
-    } else {
-        ""
-    };
-    let binaries_dir = std::path::Path::new("binaries");
-    std::fs::create_dir_all(binaries_dir)?;
-
-    // Compile-only CLI placeholder. Desktop embeds Agent as a Rust library;
-    // the real packaged CLI remains required for skills/maintenance. Runtime
-    // tool discovery rejects these empty files; packaging stages a real CLI.
-    let path = binaries_dir.join(format!("future-{target}{ext}"));
-    if !path.exists() {
-        std::fs::File::create(path)?;
-    }
-
     Ok(())
 }
 

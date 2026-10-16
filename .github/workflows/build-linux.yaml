@@ -80,14 +80,12 @@ jobs:
           echo "Linux version: $version (artifacts $artifact_version)"
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.97.0
+        run: node scripts/ci/setup-rust.mjs
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            .
-            desktop/src-tauri
+          workspaces: .
           cache-on-failure: true
           cache-all-crates: true
 
@@ -112,35 +110,13 @@ jobs:
         working-directory: desktop
         run: npm ci
 
-      # Build the unified CLI as a fully static musl binary. It is both the
-      # Tauri sidecar and a standalone distribution for headless Linux hosts.
-      - name: Build static CLI
-        working-directory: cli
-        env:
-          CC_x86_64_unknown_linux_musl: musl-gcc
-          CC_aarch64_unknown_linux_musl: musl-gcc
-        run: |
-          set -euo pipefail
-          target="${{ matrix.arch }}-unknown-linux-musl"
-          rustup target add "$target"
-          cargo build --release --target "$target"
-          triple=$(rustc -Vv | sed -n 's/^host: //p')
-          mkdir -p ../desktop/src-tauri/binaries
-          install -m 755 "../target/$target/release/future" "../desktop/src-tauri/binaries/future-$triple"
-          tar -czf "FutureOS_${FUTURE_ARTIFACT_VERSION}_linux_${{ matrix.arch }}-cli.tar.gz" \
-            -C "../target/$target/release" future
-
       - name: Set Tauri bundle version
         run: node scripts/version.mjs --set-bundle
 
-      # This is a standalone user-facing entrypoint, not a Tauri sidecar. Build
-      # it without the GUI feature so the server binary cannot acquire
-      # GTK/WebKit dependencies. Like the CLI above it is a static musl build:
-      # headless hosts are exactly the old-glibc enterprise/HPC systems where
-      # a gnu binary linked against the ubuntu-latest glibc dies with
-      # "GLIBC_2.xx not found". tauri.linux.conf.json adds it to the .deb as
-      # /usr/bin/futureos-headless; the portable bundle is assembled below.
-      - name: Build and verify headless desktop
+      # The musl CLI and headless server share one dependency graph. The GUI
+      # requires GNU/GTK and is built separately; those target artifacts cannot
+      # be reused across musl and GNU.
+      - name: Build static CLI and headless desktop
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
           CC_aarch64_unknown_linux_musl: musl-gcc
@@ -148,18 +124,15 @@ jobs:
           set -euo pipefail
           target="${{ matrix.arch }}-unknown-linux-musl"
           rustup target add "$target"
-          cargo build --release --target "$target" --no-default-features \
-            --features headless --bin futureos-headless \
-            --manifest-path desktop/src-tauri/Cargo.toml
-          bash scripts/ci/check-headless-linux.sh \
-            "desktop/src-tauri/target/$target/release/futureos-headless"
-          # Stage the static binary where tauri.linux.conf.json (.deb) and the
-          # portable assembly expect it. The later gui-features tauri build
-          # cannot clobber it: futureos-headless carries
-          # required-features = ["headless"], unsatisfied by a default build.
-          mkdir -p desktop/src-tauri/target/release
-          cp "desktop/src-tauri/target/$target/release/futureos-headless" \
-            "desktop/src-tauri/target/release/futureos-headless"
+          cargo build --release --target "$target" -p future-cli -p futureos \
+            --no-default-features --features futureos/headless \
+            --bin future --bin futureos-headless
+          bash scripts/ci/check-headless-linux.sh "target/$target/release/futureos-headless"
+          mkdir -p target/release
+          cp "target/$target/release/futureos-headless" "target/release/futureos-headless"
+          tar -czf "cli/FutureOS_${FUTURE_ARTIFACT_VERSION}_linux_${{ matrix.arch }}-cli.tar.gz" \
+            -C "target/$target/release" future
+          echo "FUTURE_DESKTOP_CLI=target/$target/release/future" >> "$GITHUB_ENV"
 
       - name: Build desktop bundle (.deb)
         if: inputs.release != true
@@ -198,8 +171,8 @@ jobs:
           set -euo pipefail
           dir="futureos-portable-linux"
           mkdir -p "$dir"
-          cp "desktop/src-tauri/target/release/futureos" "$dir/futureos"
-          cp "desktop/src-tauri/target/release/futureos-headless" "$dir/futureos-headless"
+          cp "target/release/futureos" "$dir/futureos"
+          cp "target/release/futureos-headless" "$dir/futureos-headless"
           cp "target/${{ matrix.arch }}-unknown-linux-musl/release/future" "$dir/future"
           chmod +x "$dir"/*
           cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"
@@ -213,7 +186,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release-assets
-          mapfile -t debs < <(find desktop/src-tauri/target/release/bundle/deb -maxdepth 1 -name '*.deb' -print)
+          mapfile -t debs < <(find target/release/bundle/deb -maxdepth 1 -name '*.deb' -print)
           [[ ${#debs[@]} -eq 1 ]] || {
             echo "Expected exactly one .deb bundle, found ${#debs[@]}." >&2
             exit 1

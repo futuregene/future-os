@@ -12,18 +12,14 @@ Owner: `todo_78a3eaaa0a28` (goal `cov-100-multidim`). Write scope:
 
 ## 1. Task identity and the exact measurement
 
-The crate is **not a workspace member** (`desktop/src-tauri/Cargo.toml` declares
-its own empty `[workspace]`), so it is measured by its own run from inside the
-directory.
+The historical measurement below was scoped to the Desktop crate. Desktop
+now belongs to the root workspace; keep measurements scoped with `-p futureos`
+and use a private target directory when other workers share the checkout.
 
 ```powershell
-# (0) tauri-build aborts without the externalBin placeholders, and they are
-#     gitignored build artifacts — absent in a fresh worktree.
-make desktop-sidecar-placeholder            # creates binaries/future-<triple>.exe
-
 cd desktop/src-tauri
 $env:CARGO_TARGET_DIR = "target/cov-tauri"  # private dir: several workers share this checkout
-cargo llvm-cov --json --output-path D:/future-os/.worktrees/cov100/coverage/llvm-cov-tauri.json
+cargo llvm-cov -p futureos --json --output-path D:/future-os/.worktrees/cov100/coverage/llvm-cov-tauri.json
 ```
 
 Gate (run from the goal cwd):

@@ -89,14 +89,9 @@ if [[ "$SKIP_DEPS" != true ]]; then
   (cd desktop && npm ci)
 fi
 
-
 # Unlike official CI's static musl release, this local build uses the host target.
 # The shared portable Readme.txt describes both variants; do not promise static linkage here.
-echo "==> Building CLI (release) and staging as Tauri sidecar"
-cargo build --release --manifest-path cli/Cargo.toml
-mkdir -p desktop/src-tauri/binaries
-# A previous check may have left a non-executable externalBin placeholder.
-install -m 755 target/release/future "desktop/src-tauri/binaries/future-$TRIPLE"
+echo "==> Preparing unified CLI/Desktop build"
 
 echo "==> Setting Tauri bundle version"
 node scripts/version.mjs --set-bundle
@@ -104,13 +99,15 @@ BUNDLE_VERSION="$(node -e \
   "process.stdout.write(require('./desktop/src-tauri/tauri.conf.json').version)")"
 
 echo "==> Building standalone headless desktop (release, no GUI features)"
-cargo build --release --no-default-features --features headless \
-  --bin futureos-headless --manifest-path desktop/src-tauri/Cargo.toml
+cargo build --release -p future-cli -p futureos --no-default-features \
+  --features futureos/headless --bin future --bin futureos-headless
+
+export FUTURE_DESKTOP_CLI="target/release/future"
 
 echo "==> Building desktop app and .deb (Tauri)"
 (cd desktop && npm run tauri:build)
 
-DEB="$(find desktop/src-tauri/target/release/bundle/deb -maxdepth 1 -name '*.deb' -print -quit)"
+DEB="$(find target/release/bundle/deb -maxdepth 1 -name '*.deb' -print -quit)"
 [[ -n "$DEB" ]] || fail "Tauri produced no .deb bundle"
 
 # Debian arch convention (Tauri uses amd64/arm64), independent of the Rust
@@ -124,8 +121,8 @@ esac
 echo "==> Assembling portable tarball"
 dir="futureos-portable-linux"
 mkdir -p "$dir"
-cp "desktop/src-tauri/target/release/futureos" "$dir/futureos"
-cp "desktop/src-tauri/target/release/futureos-headless" "$dir/futureos-headless"
+cp "target/release/futureos" "$dir/futureos"
+cp "target/release/futureos-headless" "$dir/futureos-headless"
 cp "target/release/future" "$dir/future"
 chmod +x "$dir"/*
 cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"

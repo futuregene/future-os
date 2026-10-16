@@ -172,12 +172,7 @@ if [[ "$SKIP_DEPS" != true ]]; then
   (cd desktop && npm ci)
 fi
 
-
-echo "==> Building CLI (release) and staging as Tauri sidecar"
-cargo build --release --manifest-path cli/Cargo.toml
-mkdir -p desktop/src-tauri/binaries
-# Replace compile-only placeholders with an executable, including on rebuilds.
-install -m 755 target/release/future "desktop/src-tauri/binaries/future-$TRIPLE"
+echo "==> Preparing unified CLI/Desktop build"
 
 echo "==> Setting Tauri bundle version"
 node scripts/version.mjs --set-bundle
@@ -227,8 +222,8 @@ else
   )
 fi
 
-APP="$(find desktop/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
-DMG="$(find desktop/src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
+APP="$(find target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+DMG="$(find target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
 [[ -n "$APP" ]] || fail "Tauri produced no .app bundle"
 [[ -n "$DMG" ]] || fail "Tauri produced no DMG"
 

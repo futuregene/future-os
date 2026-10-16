@@ -42,7 +42,7 @@ def load_measure_history():
 def measurement_binary():
     candidates = sorted(
         (path for path in
-         (ROOT / "desktop" / "src-tauri" / "target" / "debug" / "deps").glob("futureos_lib-*")
+         (ROOT / "target" / "debug" / "deps").glob("futureos_lib-*")
          if path.is_file() and os.access(path, os.X_OK)),
         key=lambda path: path.stat().st_mtime, reverse=True)
     if not candidates:

@@ -1,6 +1,5 @@
 # Pin the Rust toolchain so local development and CI use the same compiler.
-# Bump deliberately, in step with the `dtolnay/rust-toolchain` pins in the
-# GitHub Actions workflows.
+# CI reads this file through scripts/ci/setup-rust.mjs.
 [toolchain]
 channel = "1.97.0"
 components = ["rustfmt", "clippy"]

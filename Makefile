@@ -3,7 +3,7 @@
 	test test-agent test-channels test-cli test-app-settings test-tui test-cli-diff test-tui-diff test-tui-tmux \
 	test-desktop test-desktop-rust test-mobile \
 	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt \
-	check-docs test-docs-check check-prewarm-cache test-prewarm-cache-check \
+	check-docs test-docs-check \
 	run-agent run-tui run-cli run-desktop run-mobile-android run-mobile-ios run-channels run-goal \
 	profile-agent-build profile-agent profile-quick profile-heap \
 	generate-models generate-proto \
@@ -53,16 +53,15 @@ CARGO_PINNED := rustup run $(RUST_TOOLCHAIN) cargo
 # in PREFIX: `future` and `future-desktop`.
 
 # One-time developer bootstrap for a fresh clone. Installs the workspace JS
-# deps (shared packages, desktop, mobile), the skills submodule, and an empty
-# sidecar placeholder — so any build / run / lint / test target below works
+# deps (shared packages, desktop, mobile) and the skills submodule,
+# so any build / run / lint / test target below works
 # without knowing which one installs what.
 setup:
 	git submodule update --init skills
 	$(call npm-install-if-needed,desktop)
 	$(call npm-install-if-needed,mobile)
-	$(MAKE) desktop-sidecar-placeholder
 
-install: install-cli install-desktop install-skills
+install: install-desktop install-skills
 
 install-cli: build-cli
 ifeq ($(OS),windows)
@@ -75,13 +74,14 @@ else
 	$(SUDO) install -m 755 target/release/future "$(PREFIX)/future"
 endif
 
-install-desktop: install-cli desktop-sidecars
-	$(call npm-install-if-needed,desktop)
-	cd desktop && npx tauri build --no-bundle
+install-desktop: build-desktop
 ifeq ($(OS),windows)
-	$(COPY_CMD) desktop\src-tauri\target\release\futureos$(EXE_SUFFIX) "$(PREFIX)\future-desktop$(EXE_SUFFIX)"
+	@if not exist "$(USERPROFILE)\.future\bin" mkdir "$(USERPROFILE)\.future\bin"
+	$(COPY_CMD) target\release\future$(EXE_SUFFIX) "$(PREFIX)\future$(EXE_SUFFIX)"
+	$(COPY_CMD) target\release\futureos$(EXE_SUFFIX) "$(PREFIX)\future-desktop$(EXE_SUFFIX)"
 else
-	$(SUDO) install -m 755 desktop/src-tauri/target/release/futureos "$(PREFIX)/future-desktop"
+	$(SUDO) install -m 755 target/release/future "$(PREFIX)/future"
+	$(SUDO) install -m 755 target/release/futureos "$(PREFIX)/future-desktop"
 endif
 
 # Also removes pre-unification installs (future-agent/-tui/-channel).
@@ -138,7 +138,7 @@ update-skills:
 
 # ─── Build ──────────────────────────────────────────────────────────────────
 
-build: build-cli build-desktop
+build: build-desktop
 
 build-cli:
 	cargo build --release -p future-cli
@@ -164,33 +164,17 @@ else
 	install -m 755 target/release/future desktop/src-tauri/binaries/future-$(TARGET)
 endif
 
-# Compile-only CLI placeholder: tauri-build validates externalBin for checks.
-# Desktop embeds Agent without this file; runtime CLI lookup rejects empty
-# placeholders. Builds/packages must still stage the real CLI for tools.
-desktop-sidecar-placeholder:
-ifeq ($(OS),windows)
-	@if not exist "desktop\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)" (if not exist desktop\src-tauri\binaries mkdir desktop\src-tauri\binaries & type NUL > "desktop\src-tauri\binaries\future-$(TARGET)$(EXE_SUFFIX)")
-else
-	@mkdir -p desktop/src-tauri/binaries
-	@[ -f "desktop/src-tauri/binaries/future-$(TARGET)" ] || : > "desktop/src-tauri/binaries/future-$(TARGET)"
-endif
-
 # Self-contained standalone binary (no installer):
-#   desktop/src-tauri/target/release/futureos$(EXE_SUFFIX)
+#   target/release/futureos$(EXE_SUFFIX)
 # `tauri build` runs the frontend build (`npm run build`) via beforeBuildCommand,
 # so it is not repeated here.
-build-desktop: desktop-sidecars
+build-desktop:
 	$(call npm-install-if-needed,desktop)
-	cd desktop && npx tauri build --no-bundle
+	cd desktop && npm run tauri:build -- --no-bundle
 
 # GUI-free server binary plus the matching Agent/CLI, with no npm/Tauri build.
-build-desktop-headless: build-cli
-	$(CARGO_PINNED) build --release --no-default-features --features headless --bin futureos-headless --manifest-path desktop/src-tauri/Cargo.toml
-ifeq ($(OS),windows)
-	$(COPY_CMD) target\release\future.exe desktop\src-tauri\target\release\future.exe
-else
-	install -m 755 target/release/future desktop/src-tauri/target/release/future
-endif
+build-desktop-headless:
+	$(CARGO_PINNED) build --release -p future-cli -p futureos --no-default-features --features futureos/headless --bin future --bin futureos-headless
 
 # Mobile native projects are generated locally by Expo (gitignored).
 build-mobile-android:
@@ -235,7 +219,7 @@ test-desktop:
 	$(call npm-install-if-needed,desktop)
 	cd desktop && npm test
 
-test-desktop-rust: desktop-sidecar-placeholder
+test-desktop-rust:
 	cd desktop/src-tauri && cargo test
 
 test-mobile:
@@ -247,11 +231,10 @@ test-mobile:
 
 lint: lint-rust lint-desktop stylelint-desktop lint-mobile
 
-lint-rust: desktop-sidecar-placeholder
+lint-rust:
 	$(CARGO_PINNED) fmt --check --all
 	$(CARGO_PINNED) clippy --workspace --all-targets -- -D warnings
-	$(CARGO_PINNED) fmt --check --manifest-path desktop/src-tauri/Cargo.toml
-	$(CARGO_PINNED) clippy --all-targets --manifest-path desktop/src-tauri/Cargo.toml -- -D warnings
+	$(CARGO_PINNED) clippy -p futureos --no-default-features --features headless --all-targets -- -D warnings
 
 lint-desktop:
 	$(call npm-install-if-needed,desktop)
@@ -265,7 +248,7 @@ lint-mobile:
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm run typecheck && npm run lint
 
-check-desktop: lint-desktop stylelint-desktop desktop-sidecar-placeholder
+check-desktop: lint-desktop stylelint-desktop
 	$(call npm-install-if-needed,desktop)
 	cd desktop && npm run build
 	cd desktop/src-tauri && cargo check
@@ -274,7 +257,6 @@ check-mobile: lint-mobile test-mobile
 
 fmt:
 	cargo fmt --all
-	cargo fmt --manifest-path desktop/src-tauri/Cargo.toml
 
 # ─── Run ────────────────────────────────────────────────────────────────────
 # Kept as `cd <crate> && cargo run` on purpose: the process cwd is user-visible
@@ -392,18 +374,6 @@ check-docs:
 test-docs-check:
 	PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test-check-docs.py
 
-# Cache-key gate for the Rust CI: the caches the pull-request suite reads are
-# written on main by .github/workflows/prewarm.yml, so the two workflows' keys,
-# `workspaces` values and test commands must match. CI runs this from the
-# required `Rust fmt + clippy (Linux)` job; the target exists for local parity.
-check-prewarm-cache:
-	python3 scripts/ci/check-prewarm-cache.py
-
-# Regression tests for that gate (negative controls, so a checker that stopped
-# detecting drift fails here too).
-test-prewarm-cache-check:
-	PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test-prewarm-cache-config.py
-
 # Regression tests for the screenshot harness: the browser lifecycle (the startup
 # sweep of browsers/profiles a killed run left behind, and the rule that only a
 # headless browser is ever driven — starts real headless Chrome, so those cases
@@ -434,7 +404,8 @@ endif
 
 # ─── Package ────────────────────────────────────────────────────────────────
 
-package-desktop: install-desktop
+package-desktop:
+	$(call npm-install-if-needed,desktop)
 	node scripts/version.mjs --set-bundle
 	cd desktop && npm run tauri:build
 
@@ -450,7 +421,6 @@ help:
 	@echo "  lint                                Rust (CI flags) + desktop + mobile lints"
 	@echo "  check-desktop / check-mobile        Lint + typecheck + tests without building apps"
 	@echo "  check-docs / test-docs-check        Docs placement/pairing/links gate + its regression tests"
-	@echo "  check-prewarm-cache / test-prewarm-cache-check  CI cache-key gate (main prewarm vs ci.yml) + its regression tests"
 	@echo "  fmt                                 Format Rust code"
 	@echo "  run-agent / -tui / -cli / -channels / -goal   Run a component (debug build)"
 	@echo "  run-desktop / run-mobile-android / run-mobile-ios   Run an app in dev mode"
