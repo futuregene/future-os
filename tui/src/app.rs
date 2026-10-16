@@ -2815,10 +2815,10 @@ impl<T: TerminalIo> App<T> {
                         || msg.contains("Connect Failed")
                         || msg.contains("ECONNREFUSED");
                     if !is_transport {
-                        self.add_system_message(
-                            "Not connected to agent. Start the agent or check the gRPC connection."
-                                .into(),
-                        );
+                        // A business failure (e.g. an invalid workspace path) is
+                        // not a connectivity problem — surface the real reason
+                        // instead of the misleading "Not connected to agent".
+                        self.add_system_message(format!("Failed to send prompt: {msg}"));
                     }
                     self.request_render(false);
                 }
@@ -12581,7 +12581,7 @@ mod tests {
             local_id: "x".into(),
             result: Err("some random failure".into()),
         });
-        assert!(last_system(&app).contains("Not connected to agent"));
+        assert!(last_system(&app).contains("Failed to send prompt: some random failure"));
         let before = system_messages(&app).len();
         app.handle_cmd(UiCmd::PromptAck {
             local_id: "x".into(),

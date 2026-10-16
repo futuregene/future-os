@@ -416,7 +416,7 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
     // Trim trailing whitespace / separators so the saved cwd doesn't
     // produce a phantom workspace name (e.g. "project/ " → name " ").
     let session_cwd = if !cmd.cwd.is_empty() {
-        cmd.cwd.trim().trim_end_matches(['/', '\\']).to_string()
+        crate::utils::normalize_cwd(&cmd.cwd)
     } else {
         crate::rpc::session::default_workspace()
     };
