@@ -143,10 +143,18 @@ impl Manager {
         }
         let _guard = self.initialization.lock();
         if self.store.get().is_none() {
+            // Emitted where the work actually happens, so the CLI's own
+            // initialization paths report the same progress. `agent.db` and the
+            // legacy history can both live on slow shared storage.
+            tracing::info!(
+                database = %self.database_path().display(),
+                "session storage: opening"
+            );
             let store = SqliteStore::open_cancellable(&self.database_path(), cancellation.clone())?;
             store.import_legacy_cancellable(&self.dir, None, cancellation)?;
             cancellation.check()?;
             let _ = self.store.set(store);
+            tracing::info!("session storage: ready");
         }
         Ok(self.store.get().expect("initialized SQLite store"))
     }
