@@ -114,6 +114,7 @@ access its Desktop data; an override selects its own isolated Desktop state.
 | Explicit endpoint unreachable | Check its address, service and user environment; remove an unwanted explicit override before reopening |
 | CLI missing but Agent works | Restore a matching CLI beside Desktop or on absolute PATH; skills/maintenance require it, embedded hosting does not require another Agent process |
 | Cleanup failure prevents update | Preserve diagnostics; exit related clients and retry; if persistent, reboot and use the full installer |
+| The host killed the process (no error was printed) | A host OOM killer or a per-user CPU/memory budget sends SIGKILL, which cannot be reported in-process. The log keeps every startup phase up to the kill; then check the host records (`dmesg -T`, `journalctl -k`, or the node's own quota/job logs) |
 | Installation failure without automatic reopen | Inspect recovery/installer logs and repair completely; do not launch mixed binaries or an incomplete rollback |
 
 Update settings show the selected CLI path and version. Desktop probes

@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 const CASE_ENV: &str = "FUTURE_AGENT_SERVICE_FIXTURE_CASE";
 
-fn run_case(case: &str) {
+fn run_case(case: &str) -> String {
     let parent = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("target")
         .join("service-fixtures");
@@ -56,6 +56,13 @@ fn run_case(case: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    // Both streams: the logging check below reads what a host's layer wrote,
+    // and the test runner's own chatter shares this pipe.
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
 }
 
 #[test]
@@ -101,6 +108,40 @@ fn readiness_follows_legacy_import_without_changing_storage_format() {
     run_case("legacy");
 }
 
+/// A cold or network-mounted data root can keep the Agent busy for minutes
+/// before it serves anything, and a host that kills the process for exceeding a
+/// memory or per-user budget leaves no error behind. The phases therefore have
+/// to be visible through the host's own logging layer, which is what makes the
+/// next such report actionable. Captured from a real startup in its own process:
+/// a thread-local subscriber inside the shared test binary cannot observe these
+/// callsites deterministically.
+#[test]
+fn startup_progress_reaches_the_hosts_logging_layer() {
+    // ANSI-stripped: this is the text an operator reads in the log file, which
+    // is where a killed process's last phase has to be recognizable.
+    let output = future_agent::logfile::strip_ansi(&run_case("logging"));
+    for expected in [
+        "Agent startup: loading the model catalogue",
+        "session storage: opening",
+        "Agent startup: scanning for legacy sessions to import",
+        "Agent startup: importing legacy session",
+        "Agent startup: legacy session scan complete",
+        "session storage: ready",
+        "Agent startup: binding the gRPC endpoint",
+        "gRPC server listening",
+    ] {
+        assert!(
+            output.contains(expected),
+            "missing {expected:?} in:\n{output}"
+        );
+    }
+    // The database path is what an operator checks after a kill, and the
+    // per-session line names the session that a slow import is spending its
+    // time on.
+    assert!(output.contains("agent.db"), "{output}");
+    assert!(output.contains("session=legacy"), "{output}");
+}
+
 #[test]
 fn connection_gate_blocks_held_locks_and_startup_races_before_storage() {
     run_case("gated-lock");
@@ -113,6 +154,12 @@ fn service_fixture() {
     let Ok(case) = std::env::var(CASE_ENV) else {
         return;
     };
+    // A host installs its own logging layer before starting the service; the
+    // service never installs one itself, which is why this fixture must. Only
+    // the case that asserts on rendered progress does so.
+    if case == "logging" {
+        future_agent::logfile::init_embedded_tracing();
+    }
     let mut config = AgentConfig::default();
     let root = config.future_home().to_owned();
     if case.starts_with("gated-") {
@@ -202,7 +249,7 @@ fn service_fixture() {
         std::fs::create_dir_all(root.join("agent")).unwrap();
         std::fs::write(root.join("agent").join("agent.db"), "not sqlite").unwrap();
     }
-    let legacy = if case == "legacy" {
+    let legacy = if matches!(case.as_str(), "legacy" | "logging") {
         let sessions = root.join("agent").join("sessions");
         std::fs::create_dir_all(&sessions).unwrap();
         let original = serde_json::json!({
@@ -283,7 +330,12 @@ fn service_fixture() {
             let client = async {
                 let ready = ready_rx.await.context("service never announced ready")?;
                 assert_eq!(ready, expected);
-                verify_rpc(&ready.endpoint, &ready.agent_instance_id, case == "legacy").await
+                verify_rpc(
+                    &ready.endpoint,
+                    &ready.agent_instance_id,
+                    matches!(case.as_str(), "legacy" | "logging"),
+                )
+                .await
             };
             tokio::pin!(server);
             let mut streams = tokio::select! {

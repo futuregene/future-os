@@ -179,6 +179,11 @@ bash scripts/ci/check-headless-linux.sh /path/to/futureos-headless
 `~/.future/remote_pairing.json` 和 `~/.future/app/`。本机已经登录，不代表 SSH 服务器已登录；
 更换系统用户或 HOME 也不会自动继承原凭证。后台托管时应使用与首次交互设置相同的用户和目录。
 
+启动时会打印日志文件路径，退出报错时再次给出该路径。Desktop 及其内置 Agent 写入
+`<根目录>/app/logs/desktop.log`（见 [Desktop Agent 生命周期与恢复](desktop-agent.zh-CN.md)），
+Agent 会按阶段记录启动过程（模型目录、数据库、历史会话导入、端点绑定），
+因此冷启动或网络存储上启动较慢时，可以与卡死区分开。
+
 | 现象 | 处理方式 |
 |---|---|
 | 缺少 `libwebkit2gtk-4.1.so.0` | 当前运行的是 GUI 二进制；请构建并运行 `futureos-headless` |
@@ -189,6 +194,7 @@ bash scripts/ci/check-headless-linux.sh /path/to/futureos-headless
 | 平台授权拒绝或过期 | 按提示重新启动并登录，不要把登录码当作 App 配对码 |
 | 配对邀请过期 | 重新启动申请邀请；已完成配对无需因此重配 |
 | 已有 Desktop 占用目录 | 退出使用该数据目录的 GUI 或另一无头进程；不要删除锁文件来绕过互斥 |
+| 进程直接消失，或节点管理员反馈被清理 | 主机的 OOM killer 或登录节点按用户配额会直接发 SIGKILL，进程自身无法报告。先看 `<根目录>/app/logs/desktop.log` 最后记录到哪个启动阶段，再查主机侧记录（`dmesg -T`、`journalctl -k`，以及节点自己的配额/作业日志）。若触发配额的是历史会话导入，可用 `FUTURE_HOME` 把数据根目录移出共享存储 |
 | 手机无法领取邀请 | 检查手机与主机的生产/测试环境是否匹配，确认邀请未过期且未被使用 |
 | 平台账号退出、切换或续期授权被拒 | 无头入口会关闭或进入需处理的错误状态；恢复正确登录后重新启动 |
 
