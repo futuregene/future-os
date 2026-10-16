@@ -1,5 +1,10 @@
 # 构建与安装
 
+所有 Rust 程序共用根 Cargo workspace、锁文件、`target/` 目录和 release 配置（Thin LTO）。
+桌面构建在一次 Cargo 调用中编译 CLI 与 GUI，再放置 CLI sidecar 并打包。
+`make build-cli` 仍可单独执行，不编译 GUI 依赖。Linux 正式发布将 musl 静态 CLI
+与 headless 服务一起编译；GNU GUI 通过 `FUTURE_DESKTOP_CLI` 使用该 CLI 产物。
+
 在 macOS、Linux 和 Windows 上构建与安装 FutureOS——包括 agent 后端、TUI/CLI 前端、桌面 GUI、渠道桥接，以及 goal 控制面（`future-goal`）。
 
 > 关于*使用* FutureOS（模型、技能、启动 agent），请见 [README](../README.zh-CN.md)。
@@ -20,13 +25,12 @@ TUI 与 CLI 均为 Rust（`cargo build`），不再需要 Bun 或 Node。
 ```bash
 git clone https://github.com/futuregene/future-os.git
 cd future-os
-make setup    # 安装 JS 依赖（desktop/mobile）+ 初始化 skills 子模块 + 创建 sidecar 占位文件
+make setup    # 安装 JS 依赖（desktop/mobile）+ 初始化 skills 子模块
 ```
 
 `make setup` 只准备仓库级依赖：安装共享的 `thread-projection`、desktop/mobile
-JavaScript 依赖、初始化 `skills` 子模块，并创建空的 Tauri sidecar 占位文件，
-使 `desktop/src-tauri` 的 `cargo check` / `clippy` / `test` 可在首次 `cargo build`
-前运行。应用启动目标仍需要相应平台的 SDK 与模拟器或真机。
+JavaScript 依赖、初始化 `skills` 子模块。Rust 检查不需要 CLI sidecar，
+桌面构建会在编译完成后放置真实 CLI 产物。应用启动目标仍需要相应平台的 SDK 与模拟器或真机。
 
 ## macOS
 
@@ -47,7 +51,7 @@ make install        # GUI + 统一 `future` CLI + 技能（agent/tui/channel/goa
 make install-cli    # 仅统一 `future` CLI
 make install-desktop    # 仅桌面应用（自带 agent/CLI sidecar）
 make install-skills # 内置技能 + /future-goal 技能
-make package-desktop    # 桌面打包 → .app + .dmg 位于 desktop/src-tauri/target/release/bundle/
+make package-desktop    # 桌面打包 → .app + .dmg 位于 target/release/bundle/
 scripts/build/build-desktop-macos.sh  # 本地 DMG；有 Developer ID 证书时自动签名
 ```
 
@@ -103,7 +107,7 @@ make install        # 或直接从源码安装：GUI + 统一 `future` CLI + 技
 make install-cli    # 仅统一 `future` CLI
 make install-desktop    # 仅桌面应用（自带 agent/CLI sidecar）
 make install-skills # 内置技能 + /future-goal 技能
-make package-desktop    # 桌面打包 → .deb 位于 desktop/src-tauri/target/release/bundle/
+make package-desktop    # 桌面打包 → .deb 位于 target/release/bundle/
 ```
 
 `scripts/dev/start-desktop-linux.sh` 默认启动内置 Agent 的 GUI，也可以连接兼容的外部服务。脚本不会另起或结束 Agent；Bubblewrap 可用性和安全边界仍由 Agent 原有探测与执行链路决定。
@@ -143,24 +147,22 @@ Copy-Item target\release\future.exe $bin
 & "$bin\future.exe" skills install
 ```
 
-**桌面应用** —— `make install` 的 desktop 部分（自身暂存 sidecar，对应 `make desktop-sidecars`；统一 `future` CLI 用于技能和维护，GUI 在自身进程中运行 Agent library）：
+**桌面应用** —— 等价于 `make install-desktop`。一次构建 CLI 与 GUI，
+构建脚本会在编译完成后放置 CLI sidecar：
 
 ```powershell
-# 将统一 CLI 以 host triple 命名暂存为 Tauri sidecar
-$triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
-New-Item -ItemType Directory -Force -Path desktop\src-tauri\binaries | Out-Null
-Copy-Item target\release\future.exe "desktop\src-tauri\binaries\future-$triple.exe"
-
-# 构建应用并安装为 future-desktop.exe                 （对应 make install-desktop）
-Push-Location desktop; npm install; npx tauri build --no-bundle; Pop-Location
-Copy-Item desktop\src-tauri\target\release\futureos.exe "$env:USERPROFILE\.future\bin\future-desktop.exe"
+Push-Location desktop; npm install; npm run tauri:build -- --no-bundle; Pop-Location
+$bin = "$env:USERPROFILE\.future\bin"
+New-Item -ItemType Directory -Force -Path $bin | Out-Null
+Copy-Item target\release\future.exe $bin
+Copy-Item target\release\futureos.exe "$bin\future-desktop.exe"
 ```
 
-**安装包** —— 等价于 `make package-desktop`（sidecar 就绪后）：
+**安装包** —— 等价于 `make package-desktop`：
 
 ```powershell
 node scripts\version.mjs --set-bundle
-Push-Location desktop; npm run tauri:build; Pop-Location   # → NSIS 安装 .exe 位于 desktop\src-tauri\target\release\bundle\nsis\
+Push-Location desktop; npm run tauri:build; Pop-Location   # → NSIS 安装 .exe 位于 target\release\bundle\nsis\
 ```
 
 说明：

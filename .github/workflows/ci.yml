@@ -154,6 +154,7 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
             desktop_tauri:
+              - 'scripts/build/build-desktop.mjs'
               - 'scripts/ci/check-embedded-agent.py'
               - 'packages/remote-crypto/**'
               # The desktop backend path-depends on the shared settings schema.
@@ -283,9 +284,7 @@ jobs:
         with:
           shared-key: rust-quality
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          workspaces: |
-            .
-            desktop/src-tauri
+          workspaces: .
           cache-on-failure: true
           cache-all-crates: true
 
@@ -334,22 +333,12 @@ jobs:
             libssl-dev \
             libwebkit2gtk-4.1-dev
 
-      # tauri-build's build script aborts with `resource path ... doesn't exist`
-      # unless every `bundle.externalBin` sidecar is present. For lint empty
-      # placeholders suffice.
-      - name: Create placeholder sidecars
-        if: steps.affected.outputs.run == 'true' && needs.changes.outputs.desktop_tauri == 'true'
-        run: |
-          triple=$(rustc -Vv | sed -n 's/^host: //p')
-          mkdir -p desktop/src-tauri/binaries
-          : > "desktop/src-tauri/binaries/future-$triple"
-
       # ── Workspace crates (agent / channels) ──
       # --all because the root manifest is a virtual workspace (no [package]);
       # --manifest-path would fail with "Failed to find targets".
       - name: clippy (workspace)
         if: steps.affected.outputs.run == 'true' && needs.changes.outputs.rust_workspace == 'true'
-        run: cargo clippy --workspace --all-targets --manifest-path Cargo.toml -- -D warnings
+        run: cargo clippy --workspace --exclude futureos --all-targets --manifest-path Cargo.toml -- -D warnings
 
       # The generated wire code (future-rpc proto.rs, channels feishu_ws.rs) is
       # checked in; guard against proto edits that skip `make generate-proto`.
@@ -370,15 +359,15 @@ jobs:
       - name: clippy (desktop backend)
         if: steps.affected.outputs.run == 'true' && needs.changes.outputs.desktop_tauri == 'true'
         run: |
-          cargo clippy --all-targets --manifest-path desktop/src-tauri/Cargo.toml -- -D warnings
+          cargo clippy -p future-cli -p futureos --all-targets -- -D warnings
           cargo clippy --no-default-features --features headless --all-targets --manifest-path desktop/src-tauri/Cargo.toml -- -D warnings
 
   # ─── Rust test gates (Linux) ──────────────────────────────────────────────
   # The workspace crates run as a matrix of three parallel groups, each paying
   # only its own compile+run cost instead of everything serializing behind one
   # big `cargo test --workspace`. The desktop backend suite is its own pair of
-  # jobs (`rust-tests-desktop` below): a separate workspace with its own
-  # webkit/gtk dep tree, and the two feature configurations used to run one
+  # jobs (`rust-tests-desktop` below): the GUI has a separate
+  # webkit/gtk dependency tree, and the two feature configurations used to run one
   # after the other in a single job, which made it the longest leg of the suite.
   #
   # Groups are always-present (per-step `if`, never job-level): branch
@@ -451,10 +440,8 @@ jobs:
       # saved the entry, and the others restored a snapshot missing their own
       # crates). PR runs only read, so nothing races on it any more.
       #
-      # `workspaces: .` (root workspace only): these cargo commands never touch
-      # desktop/src-tauri/target, so this key does not snapshot it — the
-      # desktop jobs' cache step needs that dir and not this one, and uses the
-      # matching narrow value.
+      # All members share target/. Keep distinct keys for these CLI/server
+      # test artifacts and the GUI/headless test configurations below.
       - name: Cache Rust
         if: steps.affected.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
@@ -521,16 +508,15 @@ jobs:
         if: steps.affected.outputs.run == 'true'
         uses: dtolnay/rust-toolchain@1.97.0
 
-      # `workspaces: desktop/src-tauri` (that workspace only): its target dir
-      # is the only one these commands write, and the workspace groups' cache
-      # step uses the matching narrow value.
+      # Desktop writes the shared root target/. Its separate key preserves
+      # the GUI/headless test configurations without racing other writers.
       - name: Cache Rust
         if: steps.affected.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: rust-tests-desktop
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          workspaces: desktop/src-tauri
+          workspaces: .
           cache-on-failure: true
           cache-all-crates: true
 
@@ -547,16 +533,6 @@ jobs:
             libgtk-3-dev \
             librsvg2-dev \
             libwebkit2gtk-4.1-dev
-
-      # tauri-build's build script aborts with `resource path ... doesn't
-      # exist` unless every `bundle.externalBin` sidecar is present; empty
-      # placeholders suffice for tests.
-      - name: Create placeholder sidecars
-        if: steps.affected.outputs.run == 'true'
-        run: |
-          triple=$(rustc -Vv | sed -n 's/^host: //p')
-          mkdir -p desktop/src-tauri/binaries
-          : > "desktop/src-tauri/binaries/future-$triple"
 
       # The manual `headless-cli` / `agent-lifecycle` scopes narrow the desktop
       # suite to the headless CLI integration test, exactly as before the split;
@@ -660,9 +636,7 @@ jobs:
           # (same key name on all three OSes: rust-cache appends os/arch).
           shared-key: rust-build
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          workspaces: |
-            .
-            desktop/src-tauri
+          workspaces: .
           cache-on-failure: true
           cache-all-crates: true
 
@@ -688,36 +662,16 @@ jobs:
             libssl-dev \
             libwebkit2gtk-4.1-dev
 
-      # tauri-build's build script aborts with `resource path ... doesn't exist`
-      # unless every `bundle.externalBin` sidecar is present (host triple
-      # appended, `.exe` on Windows). The packaging jobs build+copy the real
-      # ones; for a type-check empty placeholders suffice. Split per-OS so
-      # Windows uses pwsh natively instead of relying on git-bash's sed/case.
-      - name: Create placeholder sidecars (Unix)
-        if: runner.os != 'Windows' && needs.changes.outputs.desktop_tauri == 'true'
-        run: |
-          triple=$(rustc -Vv | sed -n 's/^host: //p')
-          mkdir -p desktop/src-tauri/binaries
-          : > "desktop/src-tauri/binaries/future-$triple"
-
-      - name: Create placeholder sidecars (Windows)
-        if: runner.os == 'Windows' && needs.changes.outputs.desktop_tauri == 'true'
-        shell: pwsh
-        run: |
-          $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
-          New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
-          New-Item -ItemType File -Force -Path "desktop/src-tauri/binaries/future-$triple.exe" | Out-Null
-
       - name: cargo check (workspace)
         if: needs.changes.outputs.rust_workspace == 'true'
-        run: cargo check --workspace --manifest-path Cargo.toml
+        run: cargo check --workspace --exclude futureos --manifest-path Cargo.toml
 
       # Keep native commands in separate steps: on Windows, PowerShell can
       # otherwise overwrite a failed GUI check's exit code with a successful
       # no-default-features check and report a green required build check.
       - name: cargo check (desktop Tauri backend)
         if: needs.changes.outputs.desktop_tauri == 'true'
-        run: cargo check --manifest-path desktop/src-tauri/Cargo.toml
+        run: cargo check -p future-cli -p futureos
 
       - name: cargo check (desktop Tauri backend, no default features)
         if: needs.changes.outputs.desktop_tauri == 'true'

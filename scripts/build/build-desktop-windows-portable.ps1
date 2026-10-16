@@ -5,10 +5,8 @@
 
 .DESCRIPTION
     Replicates the CI "Windows portable" pipeline (.github/workflows/build.yml):
-      1. compile the unified `future` CLI (release) and stage it as the Tauri
-         sidecar,
-      2. build the desktop app with Tauri (--no-bundle: just the .exe, no installer),
-      3. assemble FutureOS.exe + future.exe + Readme.txt
+      1. build the CLI and desktop together through Tauri (--no-bundle),
+      2. assemble FutureOS.exe + future.exe + Readme.txt
          into FutureOS-portable-windows.zip.
 
     The resulting app needs the Microsoft Edge WebView2 runtime (ships with
@@ -129,12 +127,6 @@ if (-not $SkipDeps) {
     Push-Location desktop; try { Invoke-Native { npm ci } } finally { Pop-Location }
 }
 
-
-Write-Host "==> Building CLI (release) and staging as Tauri sidecar" -ForegroundColor Cyan
-Invoke-Native { cargo build --release --manifest-path cli/Cargo.toml }
-New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
-Copy-Item "target/release/future.exe" "desktop/src-tauri/binaries/future-$triple.exe" -Force
-
 Write-Host "==> Building desktop (Tauri, no installer)" -ForegroundColor Cyan
 # --no-bundle: compile the frontend + release .exe but skip NSIS packaging.
 Push-Location desktop
@@ -148,7 +140,7 @@ New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
 # The unified CLI sidecar is renamed without the triple (as Tauri does on
 # bundling) so the desktop app finds it next to its own exe.
-Copy-Item "desktop/src-tauri/target/release/futureos.exe" (Join-Path $stage "FutureOS.exe") -Force
+Copy-Item "target/release/futureos.exe" (Join-Path $stage "FutureOS.exe") -Force
 Copy-Item "target/release/future.exe" (Join-Path $stage "future.exe") -Force
 Copy-Item "docs/dist/readme-windows.txt" (Join-Path $stage "Readme.txt") -Force
 

@@ -53,7 +53,7 @@ command -v node >/dev/null || { echo "Node.js is required for Desktop developmen
 # Repair only that compiler metadata; never disable the compilation cache.
 : >"$LOG_DIR/rust-cache-preflight.log"
 node "$ROOT_DIR/scripts/dev/start-desktop-rust-cache.mjs" "$LOG_DIR/rust-cache-preflight.log" \
-  "$CLI_TARGET" "${CARGO_TARGET_DIR:-$DESKTOP_DIR/src-tauri/target}"
+  "$CLI_TARGET"
 [[ -d "$DESKTOP_DIR/node_modules" ]] || (cd "$ROOT_DIR" && npm ci)
 if [[ "${BUILD_CLI:-1}" == 1 ]]; then
   if ! (cd "$ROOT_DIR" && cargo build -p future-cli) >"$LOG_DIR/future-cli-dev.build.log" 2>&1; then

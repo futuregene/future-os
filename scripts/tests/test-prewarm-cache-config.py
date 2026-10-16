@@ -58,11 +58,17 @@ class PrewarmCacheGuard(unittest.TestCase):
 
     def test_a_drifted_workspaces_value_fails(self) -> None:
         """The input the prewarm must copy verbatim, or the key hash differs."""
-        self.mutate(
-            ".github/workflows/prewarm.yml",
+        path = self.tmp / ".github/workflows/prewarm.yml"
+        content = path.read_text(encoding="utf-8")
+        start = content.index("  tests-workspace:")
+        tail = content[start:]
+        self.assertIn("          workspaces: .\n", tail)
+        tail = tail.replace(
             "          workspaces: .\n",
             "          workspaces: |\n            .\n            desktop/src-tauri\n",
+            1,
         )
+        path.write_text(content[:start] + tail, encoding="utf-8")
         self.assertFails(self.run_guard(), "key 'rust-tests-workspace': cache inputs differ")
 
     def test_a_pr_writable_cache_step_fails(self) -> None:
@@ -117,7 +123,7 @@ class PrewarmCacheGuard(unittest.TestCase):
         """Sibling writers diverging is the same defect in reverse."""
         self.mutate(
             ".github/workflows/prewarm.yml",
-            "      - name: cargo check (workspace)\n        run: cargo check --workspace --manifest-path Cargo.toml\n\n      - name: cargo check (desktop Tauri backend)\n        run: cargo check --manifest-path desktop/src-tauri/Cargo.toml\n\n      - name: cargo check (desktop Tauri backend, no default features)\n        run: cargo check --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml\n\n      - name: Embedded Agent native lifecycle\n        run: python scripts/ci/check-embedded-agent.py\n\n  build-macos:",
+            "      - name: cargo check (workspace)\n        run: cargo check --workspace --exclude futureos --manifest-path Cargo.toml\n\n      - name: cargo check (desktop Tauri backend)\n        run: cargo check -p future-cli -p futureos\n\n      - name: cargo check (desktop Tauri backend, no default features)\n        run: cargo check --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml\n\n      - name: Embedded Agent native lifecycle\n        run: python scripts/ci/check-embedded-agent.py\n\n  build-macos:",
             "      - name: Embedded Agent native lifecycle\n        run: python scripts/ci/check-embedded-agent.py\n\n  build-macos:",
         )
         self.assertFails(self.run_guard(), "run different commands")

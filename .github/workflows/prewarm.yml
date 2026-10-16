@@ -58,6 +58,7 @@ on:
       - 'orchestration/**'
       - 'desktop/src-tauri/**'
       - 'scripts/ci/check-embedded-agent.py'
+      - 'scripts/build/build-desktop.mjs'
       - 'scripts/ci/install-apt-packages.sh'
       - '.github/workflows/ci.yml'
       - '.github/workflows/prewarm.yml'
@@ -90,11 +91,8 @@ jobs:
         with:
           shared-key: rust-build
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          # Same value as ci.yml's `rust-build` cache step; this job runs cargo
-          # commands in both workspaces, so it populates both target dirs.
-          workspaces: |
-            .
-            desktop/src-tauri
+          # Same root workspace/target directory as ci.yml's rust-build job.
+          workspaces: .
           cache-on-failure: true
           cache-all-crates: true
 
@@ -115,17 +113,11 @@ jobs:
             libssl-dev \
             libwebkit2gtk-4.1-dev
 
-      - name: Create placeholder sidecars
-        run: |
-          triple=$(rustc -Vv | sed -n 's/^host: //p')
-          mkdir -p desktop/src-tauri/binaries
-          : > "desktop/src-tauri/binaries/future-$triple"
-
       - name: cargo check (workspace)
-        run: cargo check --workspace --manifest-path Cargo.toml
+        run: cargo check --workspace --exclude futureos --manifest-path Cargo.toml
 
       - name: cargo check (desktop Tauri backend)
-        run: cargo check --manifest-path desktop/src-tauri/Cargo.toml
+        run: cargo check -p future-cli -p futureos
 
       - name: cargo check (desktop Tauri backend, no default features)
         run: cargo check --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml
@@ -151,24 +143,15 @@ jobs:
         with:
           shared-key: rust-build
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          workspaces: |
-            .
-            desktop/src-tauri
+          workspaces: .
           cache-on-failure: true
           cache-all-crates: true
 
-      - name: Create placeholder sidecars (Windows)
-        shell: pwsh
-        run: |
-          $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
-          New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
-          New-Item -ItemType File -Force -Path "desktop/src-tauri/binaries/future-$triple.exe" | Out-Null
-
       - name: cargo check (workspace)
-        run: cargo check --workspace --manifest-path Cargo.toml
+        run: cargo check --workspace --exclude futureos --manifest-path Cargo.toml
 
       - name: cargo check (desktop Tauri backend)
-        run: cargo check --manifest-path desktop/src-tauri/Cargo.toml
+        run: cargo check -p future-cli -p futureos
 
       - name: cargo check (desktop Tauri backend, no default features)
         run: cargo check --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml
@@ -192,23 +175,15 @@ jobs:
         with:
           shared-key: rust-build
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          workspaces: |
-            .
-            desktop/src-tauri
+          workspaces: .
           cache-on-failure: true
           cache-all-crates: true
 
-      - name: Create placeholder sidecars
-        run: |
-          triple=$(rustc -Vv | sed -n 's/^host: //p')
-          mkdir -p desktop/src-tauri/binaries
-          : > "desktop/src-tauri/binaries/future-$triple"
-
       - name: cargo check (workspace)
-        run: cargo check --workspace --manifest-path Cargo.toml
+        run: cargo check --workspace --exclude futureos --manifest-path Cargo.toml
 
       - name: cargo check (desktop Tauri backend)
-        run: cargo check --manifest-path desktop/src-tauri/Cargo.toml
+        run: cargo check -p future-cli -p futureos
 
       - name: cargo check (desktop Tauri backend, no default features)
         run: cargo check --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml
@@ -235,9 +210,7 @@ jobs:
         with:
           shared-key: rust-quality
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          workspaces: |
-            .
-            desktop/src-tauri
+          workspaces: .
           cache-on-failure: true
           cache-all-crates: true
 
@@ -258,21 +231,15 @@ jobs:
             libssl-dev \
             libwebkit2gtk-4.1-dev
 
-      - name: Create placeholder sidecars
-        run: |
-          triple=$(rustc -Vv | sed -n 's/^host: //p')
-          mkdir -p desktop/src-tauri/binaries
-          : > "desktop/src-tauri/binaries/future-$triple"
-
       # protobuf-compiler / the proto-freshness check is not prewarmed: it
       # builds with REGENERATE_PROTO and its artifacts are not what the PR job
       # reuses.
       - name: clippy (workspace)
-        run: cargo clippy --workspace --all-targets --manifest-path Cargo.toml -- -D warnings
+        run: cargo clippy --workspace --exclude futureos --all-targets --manifest-path Cargo.toml -- -D warnings
 
       - name: clippy (desktop backend)
         run: |
-          cargo clippy --all-targets --manifest-path desktop/src-tauri/Cargo.toml -- -D warnings
+          cargo clippy -p future-cli -p futureos --all-targets -- -D warnings
           cargo clippy --no-default-features --features headless --all-targets --manifest-path desktop/src-tauri/Cargo.toml -- -D warnings
 
   # ─── rust-tests (Linux): the workspace test groups ───────────────────────
@@ -297,9 +264,7 @@ jobs:
         with:
           shared-key: rust-tests-workspace
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          # Root workspace only: these cargo commands never touch
-          # desktop/src-tauri/target, so the desktop job's cache step uses the
-          # matching narrow value.
+          # Root target directory; this key holds the CLI/server test groups.
           workspaces: .
           cache-on-failure: true
           cache-all-crates: true
@@ -343,10 +308,9 @@ jobs:
         with:
           shared-key: rust-tests-desktop
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          # desktop/src-tauri is its own workspace with its own target dir; the
-          # test jobs never build the root workspace, so they cache only this
-          # one (their cache step in ci.yml uses the same value).
-          workspaces: desktop/src-tauri
+          # Same root target directory as the desktop test jobs. A distinct
+          # key keeps their GUI/headless configurations in one cache entry.
+          workspaces: .
           cache-on-failure: true
           cache-all-crates: true
 
@@ -361,12 +325,6 @@ jobs:
             libgtk-3-dev \
             librsvg2-dev \
             libwebkit2gtk-4.1-dev
-
-      - name: Create placeholder sidecars
-        run: |
-          triple=$(rustc -Vv | sed -n 's/^host: //p')
-          mkdir -p desktop/src-tauri/binaries
-          : > "desktop/src-tauri/binaries/future-$triple"
 
       # Both feature configurations, in one job: cargo builds each into its own
       # fingerprint in the same target dir, so a single writer holds what both
