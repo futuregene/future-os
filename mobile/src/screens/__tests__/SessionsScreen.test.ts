@@ -10,7 +10,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { Check } from "lucide-react-native";
+import { ChevronRight } from "lucide-react-native";
 import { ConnectionBadge } from "../../components/ConnectionBadge";
 import { Button } from "../../components/Button";
 import { DialogSurface } from "../../components/DialogSurface";
@@ -827,11 +827,17 @@ describe("creating on the machine the user picks", () => {
     expect(modalText()).toContain("sessions.chooseDevice");
     // Nothing has been created yet: the machine is the user's to name.
     expect(mockRemote.newConversationOn).not.toHaveBeenCalled();
-    // The machine the phone is on is the one marked — it is the row that needs
-    // no move, so the reader can tell it from the machines to move to.
-    const current = deviceRow("A very long desktop name");
-    expect(current.props.accessibilityState).toMatchObject({ selected: true, disabled: false });
-    expect(current.findAllByType(Check)).toHaveLength(1);
+    // Every row is a machine to go into, so the row the phone is already on
+    // reads like any other — the chevron that says the tap opens something,
+    // and no mark claiming it is the picked one. A tick there read as a
+    // selection to confirm when the tap is the confirmation.
+    const mine = deviceRow("A very long desktop name");
+    const peer = deviceRow("Office");
+    expect(mine.props.accessibilityState).toMatchObject({ disabled: false });
+    expect(mine.props.accessibilityState.selected).toBeUndefined();
+    expect(peer.props.accessibilityState.selected).toBeUndefined();
+    expect(mine.findAllByType(ChevronRight)).toHaveLength(1);
+    expect(peer.findAllByType(ChevronRight)).toHaveLength(1);
 
     const dialog = visibleModal()!;
     await act(async () => { deviceRow("Office").props.onPress(); });
@@ -897,7 +903,7 @@ describe("creating on the machine the user picks", () => {
     expect(offline.props.accessibilityState).toMatchObject({ disabled: true });
     expect(offline.findAllByType(Text).some(node => node.props.children === "connection.machine.offline"))
       .toBe(true);
-    expect(offline.findAllByType(Check)).toHaveLength(0);
+    expect(offline.findAllByType(ChevronRight)).toHaveLength(0);
     expect(offline.findAllByType(ActivityIndicator)).toHaveLength(0);
   });
 
@@ -1081,7 +1087,7 @@ describe("the machine the picker names", () => {
     expect(mockRemote.newConversation).not.toHaveBeenCalled();
   });
 
-  test("a workspace list for a named machine starts by confirming that machine", () => {
+  test("a workspace list for a named machine starts on the machine list", async () => {
     mockCatalogs.machines = [{ ...peer, status: "connected" }];
     mockCatalogs.commandsFor = jest.fn(() => ({ capabilities: new Set<string>() }));
     act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
@@ -1090,11 +1096,16 @@ describe("the machine the picker names", () => {
 
     act(() => button("sessions.new").props.onPress());
     // A workspace list is that machine's, and the step that reads it is the one
-    // that names the machine — so the dialog opens there, with the machine the
-    // list names already the one it is about.
+    // that names the machine — so the dialog opens on the machine list, where
+    // the machine the list names is one tap away.
     expect(modalText()).toContain("sessions.chooseDevice");
-    expect(dialogRow("Office").props.accessibilityState).toMatchObject({ selected: true });
-    expect(dialogRow("A very long desktop name").props.accessibilityState).toMatchObject({ selected: false });
+    // It is not pre-marked as picked: a tick on it read as a chosen option
+    // waiting to be confirmed, when tapping its row is itself what goes into
+    // that machine, and the header that follows is where it gets named.
+    expect(dialogRow("Office").props.accessibilityState.selected).toBeUndefined();
+    expect(dialogRow("A very long desktop name").props.accessibilityState.selected).toBeUndefined();
+    await act(async () => { dialogRow("Office").props.onPress(); });
+    expect(modalText()).toContain("sessions.newOnDevice:Office");
   });
 
   test("a scope on a machine that is no longer paired goes back to every desktop", () => {
