@@ -275,6 +275,20 @@ impl RpcResponseExt for RpcResponse {
     }
 }
 
+/// Whether a failed `RpcResponse` is the Agent's definitive answer that it has
+/// no such session (`future_rpc::session_errors`), as opposed to a transient
+/// failure worth retrying.
+///
+/// A caller acts on it as "there is nothing there": no session-scoped command
+/// can succeed for that id, and neither can waiting for one to answer. The
+/// stable error code is matched first, with the pre-code wording as a fallback
+/// so an older Agent is still understood.
+pub fn is_session_not_found(response: &RpcResponse) -> bool {
+    !response.success
+        && (response.error_code == future_rpc::session_errors::SESSION_NOT_FOUND_CODE
+            || future_rpc::session_errors::legacy_session_not_found_message(&response.error))
+}
+
 pub fn get_state_command(session_id: String) -> RpcCommand {
     base_command("get_state", session_id)
 }
@@ -749,6 +763,41 @@ mod tests {
         };
         let error = without_error.ok_or_rpc_error("fallback").unwrap_err();
         assert_eq!(error.to_string(), "fallback");
+    }
+
+    #[test]
+    fn is_session_not_found_matches_the_code_then_the_legacy_wording() {
+        let failed = |code: &str, error: &str| RpcResponse {
+            success: false,
+            error_code: code.to_string(),
+            error: error.to_string(),
+            ..Default::default()
+        };
+
+        // The stable code, as the agent sends it, whatever the wording.
+        assert!(is_session_not_found(&failed(
+            future_rpc::session_errors::SESSION_NOT_FOUND_CODE,
+            "session not found — pass a valid session_id (new_session creates one)"
+        )));
+        // An older agent reports the same condition in the message only.
+        assert!(is_session_not_found(&failed("", "session not found")));
+        assert!(is_session_not_found(&failed("", "No such session")));
+        // A transient failure keeps its retry meaning.
+        assert!(!is_session_not_found(&failed(
+            "",
+            "session_storage_unavailable"
+        )));
+        assert!(!is_session_not_found(&failed(
+            "session_busy",
+            "session context compaction is in progress"
+        )));
+        // A successful response is never the failure answer, even if a handler
+        // echoes the phrasing back.
+        assert!(!is_session_not_found(&RpcResponse {
+            success: true,
+            error: "session not found".to_string(),
+            ..Default::default()
+        }));
     }
 
     #[test]

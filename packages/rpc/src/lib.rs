@@ -14,6 +14,9 @@
 //! Tauri backend (client side). Dependency direction is strictly one-way:
 //! this crate also owns the cross-client local transport so every frontend
 //! discovers the same per-user Agent endpoint.
+//!
+//! It owns the session-not-found error code both sides key off as well
+//! ([`session_errors`]).
 
 pub mod cli_capabilities;
 pub mod command_policy;
@@ -21,6 +24,7 @@ pub mod connection;
 pub mod history;
 pub mod home;
 pub mod session_deletion;
+pub mod session_errors;
 pub mod shell_result;
 pub mod transport;
 

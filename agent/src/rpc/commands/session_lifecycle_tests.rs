@@ -1683,6 +1683,12 @@ fn session_scoped_command_requires_known_session() {
         .as_str()
         .unwrap()
         .contains("session not found"));
+    // Definitive, not transient: clients holding a row for a session the Agent
+    // never created settle that row instead of retrying the command forever.
+    assert_eq!(
+        resp["error_code"],
+        future_rpc::session_errors::SESSION_NOT_FOUND_CODE
+    );
 }
 
 #[test]
