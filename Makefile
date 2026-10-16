@@ -3,7 +3,7 @@
 	test test-agent test-channels test-cli test-app-settings test-tui test-cli-diff test-tui-diff test-tui-tmux \
 	test-desktop test-desktop-rust test-mobile \
 	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt \
-	check-docs test-docs-check \
+	check-docs test-docs-check check-prewarm-cache test-prewarm-cache-check \
 	run-agent run-tui run-cli run-desktop run-mobile-android run-mobile-ios run-channels run-goal \
 	profile-agent-build profile-agent profile-quick profile-heap \
 	generate-models generate-proto \
@@ -392,6 +392,18 @@ check-docs:
 test-docs-check:
 	PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test-check-docs.py
 
+# Cache-key gate for the Rust CI: the caches the pull-request suite reads are
+# written on main by .github/workflows/prewarm.yml, so the two workflows' keys,
+# `workspaces` values and test commands must match. CI runs this from the
+# required `Rust fmt + clippy (Linux)` job; the target exists for local parity.
+check-prewarm-cache:
+	python3 scripts/ci/check-prewarm-cache.py
+
+# Regression tests for that gate (negative controls, so a checker that stopped
+# detecting drift fails here too).
+test-prewarm-cache-check:
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test-prewarm-cache-config.py
+
 # Regression tests for the screenshot harness's browser lifecycle: the startup
 # sweep of browsers/profiles a killed run left behind, and the rule that only a
 # headless browser is ever driven. Starts real headless Chrome, so those cases
@@ -436,6 +448,7 @@ help:
 	@echo "  lint                                Rust (CI flags) + desktop + mobile lints"
 	@echo "  check-desktop / check-mobile        Lint + typecheck + tests without building apps"
 	@echo "  check-docs / test-docs-check        Docs placement/pairing/links gate + its regression tests"
+	@echo "  check-prewarm-cache / test-prewarm-cache-check  CI cache-key gate (main prewarm vs ci.yml) + its regression tests"
 	@echo "  fmt                                 Format Rust code"
 	@echo "  run-agent / -tui / -cli / -channels / -goal   Run a component (debug build)"
 	@echo "  run-desktop / run-mobile-android / run-mobile-ios   Run an app in dev mode"
