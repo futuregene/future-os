@@ -196,6 +196,7 @@ impl AgentService<'_> {
             anyhow::bail!("Agent service initialization has already been started");
         }
         self.startup_cleanup();
+        tracing::info!("Agent startup: loading the model catalogue and credentials");
         let model_registry = Arc::new(parking_lot::RwLock::new(crate::ModelRegistry::new()));
         cancellation.check()?;
         Ok(PreparedAgent {
