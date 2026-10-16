@@ -312,7 +312,7 @@ async fn one_desktop_app_connects_to_several_headless_hosts_at_once() {
     // Under the guard: the guard is what serializes these tests, so clearing
     // before it is taken leaves a window for the previous test's work to
     // repopulate the runtime.
-    reset_for_test().await;
+    reset_for_test(&_home).await;
     init_store();
     let platform = MockPlatform::start().await;
     let nats = FakeNats::start().await;
@@ -497,7 +497,7 @@ async fn a_spent_secret_that_cannot_be_dropped_is_only_housekeeping() {
     use std::os::unix::fs::PermissionsExt;
 
     let _home = HomeGuard::new("peer-e2e-readonly-home");
-    reset_for_test().await;
+    reset_for_test(&_home).await;
     init_store();
     let platform = MockPlatform::start().await;
     let nats = FakeNats::start().await;

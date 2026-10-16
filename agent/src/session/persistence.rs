@@ -1591,6 +1591,9 @@ mod tests {
             "session-1".to_string(),
             Duration::from_millis(20),
         );
+        // Arm before starting the worker: it may retire before the test thread
+        // resumes after barrier(), especially under full-suite load.
+        persistence.drain_on_timeout_for_test();
         persistence
             .append(vec![SessionEntry::new_user(
                 "user",
@@ -1598,11 +1601,17 @@ mod tests {
             )])
             .unwrap();
         persistence.barrier().unwrap();
-        persistence.drain_on_timeout_for_test();
         // The next idle timeout finds the injected append in the drain window,
-        // executes it, and only then retires.
-        std::thread::sleep(Duration::from_millis(200));
-        assert!(persistence.inner.worker.lock().is_none());
+        // executes it, and only then retires. Wait for that state, not a fixed
+        // wall-clock margin that can expire while CI has starved the worker.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while persistence.inner.worker.lock().is_some() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            persistence.inner.worker.lock().is_none(),
+            "worker never retired"
+        );
         let loaded = manager.load("session-1").unwrap();
         assert!(loaded
             .entries

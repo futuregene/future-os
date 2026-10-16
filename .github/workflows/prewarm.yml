@@ -121,11 +121,6 @@ jobs:
           mkdir -p desktop/src-tauri/binaries
           : > "desktop/src-tauri/binaries/future-$triple"
 
-      # Keep the shared cache command set aligned with CI's platform matrix.
-      - name: Windows shell console regression
-        if: runner.os == 'Windows'
-        run: cargo test -p future-agent --lib sandbox::backend::tests::plain_windows_shell_runs_without_a_console -- --exact
-
       - name: cargo check (workspace)
         run: cargo check --workspace --manifest-path Cargo.toml
 
@@ -169,11 +164,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
           New-Item -ItemType File -Force -Path "desktop/src-tauri/binaries/future-$triple.exe" | Out-Null
 
-      # Keep the shared cache command set aligned with CI's platform matrix.
-      - name: Windows shell console regression
-        if: runner.os == 'Windows'
-        run: cargo test -p future-agent --lib sandbox::backend::tests::plain_windows_shell_runs_without_a_console -- --exact
-
       - name: cargo check (workspace)
         run: cargo check --workspace --manifest-path Cargo.toml
 
@@ -213,11 +203,6 @@ jobs:
           triple=$(rustc -Vv | sed -n 's/^host: //p')
           mkdir -p desktop/src-tauri/binaries
           : > "desktop/src-tauri/binaries/future-$triple"
-
-      # Keep the shared cache command set aligned with CI's platform matrix.
-      - name: Windows shell console regression
-        if: runner.os == 'Windows'
-        run: cargo test -p future-agent --lib sandbox::backend::tests::plain_windows_shell_runs_without_a_console -- --exact
 
       - name: cargo check (workspace)
         run: cargo check --workspace --manifest-path Cargo.toml

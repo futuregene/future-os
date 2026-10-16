@@ -180,7 +180,7 @@ pub(crate) struct Fixture {
 /// the only point at which nothing else can be writing.
 pub(crate) async fn fixture(label: &str) -> (HomeGuard, Fixture) {
     let home = HomeGuard::new(label);
-    super::runtime::reset_for_test().await;
+    super::runtime::reset_for_test(&home).await;
     init_store();
     let platform = MockPlatform::start().await;
     let nats = FakeNats::start().await;
