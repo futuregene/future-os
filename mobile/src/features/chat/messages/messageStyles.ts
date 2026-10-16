@@ -10,6 +10,14 @@ export const useStyles = createThemedStyles(theme => StyleSheet.create({
     paddingVertical: spacing.md,
   },
   userMessage: { alignSelf: "flex-end", backgroundColor: theme.colors.accent },
+  // A collapsed prompt keeps its own box: the height cap is inline (it depends on
+  // the reader's text size and window), and clipping is what makes the cap
+  // visible — the rest of the prompt is laid out below and simply not shown.
+  promptCollapsed: { overflow: "hidden" },
+  // The expand/collapse control sits under the bubble on the chat surface, the
+  // way a long table's row toggle sits under its table.
+  promptToggle: { minHeight: 44, justifyContent: "center", paddingHorizontal: spacing.sm },
+  promptToggleLabel: { color: theme.colors.accent, fontSize: theme.font(12) },
   userBlock: { alignItems: "flex-end", gap: spacing.xs },
   attachmentRow: {
     maxWidth: "88%",

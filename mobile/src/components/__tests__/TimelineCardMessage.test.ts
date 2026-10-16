@@ -1,11 +1,12 @@
 import { createElement } from "react";
-import { AppState, StyleSheet, type AppStateStatus } from "react-native";
-import { layout } from "../../theme/tokens";
+import { AppState, Dimensions, StyleSheet, type AppStateStatus } from "react-native";
+import { layout, lightColors } from "../../theme/tokens";
 import * as Clipboard from "expo-clipboard";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { PausedTimeline } from "../PausedTimeline";
 import { TimelineCard } from "../TimelineCard";
 import { useStyles } from "../../features/chat/messages/messageStyles";
+import { collapsedPromptHeight, PROMPT_COLLAPSE_LINES } from "../../features/chat/messages/promptCollapse";
 import { lightTheme } from "../../theme/theme";
 import type { HistoryAttachment, TimelineItem, TimelineSegment } from "../../remote/types";
 import i18n from "../../i18n";
@@ -134,6 +135,89 @@ describe("a user message is the user's own markdown, plus their attachments", ()
     render(message({ role: "user", id: "empty", text: "" }));
     expect(tree.root.findAll(node =>
       typeof node.type === "string" && node.props.children === "")).toHaveLength(0);
+  });
+});
+
+describe("a prompt taller than the phone starts collapsed", () => {
+  /** A prompt of the size the phone reported: goal-sized prose that wraps to far
+   * more lines than a viewport holds. */
+  const giantPrompt = Array.from({ length: 40 }, (_, index) =>
+    `TODO todo_${index}: ${'Coverage residual lines for this subtree — measured, classified and recorded. '.repeat(6)}`,
+  ).join("\n");
+  /** The prompt bubble: the only box painting the accent fill. */
+  const bubble = () => tree.root.findAll(node =>
+    typeof node.type === "string"
+    && StyleSheet.flatten(node.props.style)?.backgroundColor === lightColors.accent)[0];
+  const bubbleStyle = () => StyleSheet.flatten(bubble()?.props.style);
+  const toggles = () => tree.root.findAll(node =>
+    typeof node.props.onPress === "function"
+    && node.props.accessibilityLabel === "Show full prompt");
+  const collapseToggles = () => tree.root.findAll(node =>
+    typeof node.props.onPress === "function"
+    && node.props.accessibilityLabel === "Collapse prompt");
+  /** The markdown rows this row rendered (a host stub in this suite). */
+  const markdownNodes = () => tree.root.findAll(node => String(node.type) === "MarkdownText");
+
+  test("the bubble is capped at the shared wrapped-line budget, with a control under it", () => {
+    render(message({ role: "user", text: giantPrompt }));
+    // The cap is a real height, derived from the reader's own line height and
+    // window rather than a hard-coded dp: it has to grow with the text size and
+    // stay inside the viewport on a short phone.
+    const expectedCap = collapsedPromptHeight(
+      lightTheme.chat.lineHeight,
+      Dimensions.get("window").height,
+    );
+    expect(bubbleStyle()).toMatchObject({ maxHeight: expectedCap, overflow: "hidden" });
+    expect(expectedCap).toBeGreaterThan(lightTheme.chat.lineHeight * (PROMPT_COLLAPSE_LINES - 1));
+    expect(expectedCap).toBeLessThanOrEqual(Dimensions.get("window").height / 2);
+    expect(toggles()).toHaveLength(1);
+    expect(collapseToggles()).toHaveLength(0);
+    // The whole prompt is still mounted: a collapse hides the tail, it never
+    // drops the reader's own words from selection or from a screen reader.
+    expect(markdownNodes()[0]!.props.text).toBe(giantPrompt);
+  });
+
+  test("the control sits after the bubble, and expands and collapses it in place", () => {
+    render(message({ role: "user", text: giantPrompt }));
+    // Structure, not presence: a control painted above the bubble would be a
+    // different screen even though both strings are on it. The DFS order of the
+    // rendered tree is the document order.
+    const ordered = tree.root.findAll(() => true);
+    const bubbleAt = ordered.findIndex(node =>
+      StyleSheet.flatten(node.props.style)?.backgroundColor === lightColors.accent);
+    const controlAt = ordered.findIndex(node => node.props.accessibilityLabel === "Show full prompt");
+    expect(bubbleAt).toBeGreaterThanOrEqual(0);
+    expect(controlAt).toBeGreaterThan(bubbleAt);
+
+    press("Show full prompt");
+    expect(bubbleStyle()?.maxHeight).toBeUndefined();
+    expect(bubbleStyle()?.overflow).toBeUndefined();
+    expect(collapseToggles()).toHaveLength(1);
+    expect(toggles()).toHaveLength(0);
+
+    press("Collapse prompt");
+    expect(bubbleStyle()?.maxHeight).toBe(collapsedPromptHeight(
+      lightTheme.chat.lineHeight,
+      Dimensions.get("window").height,
+    ));
+  });
+
+  test("a prompt within the budget keeps its bubble and offers no control", () => {
+    // 16 lines is the code block's own threshold: at it, a prompt is short.
+    const atBudget = Array.from({ length: PROMPT_COLLAPSE_LINES }, () => "one line of prompt").join("\n");
+    render(message({ role: "user", text: atBudget }));
+    expect(bubbleStyle()?.maxHeight).toBeUndefined();
+    expect(toggles()).toHaveLength(0);
+  });
+
+  test("a reply is never capped, however long it is", () => {
+    // The reply side has to stay fully readable: it is the answer, not the
+    // question, and it already folds its own steps.
+    render(message({ id: "a1", role: "assistant", text: giantPrompt }));
+    expect(tree.root.findAll(node =>
+      typeof node.type === "string"
+      && StyleSheet.flatten(node.props.style)?.maxHeight !== undefined)).toHaveLength(0);
+    expect(toggles()).toHaveLength(0);
   });
 });
 
