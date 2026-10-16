@@ -59,7 +59,7 @@ impl Manager {
         }
     }
 
-    pub(super) fn invalidate_display_projection(&self, id: &str) {
+    pub(crate) fn invalidate_display_projection(&self, id: &str) {
         self.display_projection_cache
             .lock()
             .retain(|entry| entry.session_id != id);

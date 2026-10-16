@@ -11,6 +11,7 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 │   ├── models.json            # provider/模型目录：apiKey、baseUrl、models[]
 │   ├── auth.json              # 凭据，按模型 id 或 provider 键控
 │   ├── agent.db               # 会话、运行和事件的 SQLite 权威存储
+│   ├── session-backups/       # `future session reset` 的无损重置前历史快照
 │   ├── sessions/              # 保留的旧 JSONL 迁移来源
 │   ├── run-events/            # 保留的旧事件迁移来源
 │   ├── agent-instance.lock    # 每用户 Agent 单例锁
@@ -61,6 +62,10 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 - `auth.json` — 凭据，先按模型 id、再按 provider、最后按默认条目键控：
   `{"<provider>": {"type": "api_key", "key": …, "baseUrl": …}}`。
 - `agent.db` — 会话、消息、运行及回放事件的 SQLite 权威存储。
+- `session-backups/` — 每次真正执行的 `future session reset` 对应一个 JSON 文件：
+  重置**之前**该会话的完整条目列表，写在数据库旁边，并由命令打印路径。它按构造就是无损的
+  （数组即存储表示，不是投影），也是将来 `--restore` 的输入。只有重置会写这里，也没有任何
+  清理机制——重置本身罕见且显式，而这个文件是被删内容唯一的副本。
 - `sessions/`、`run-events/<session_id>/` — 保留的旧 JSONL 迁移来源；自定义旧目录的事件来源为 `.run-events/`。迁移后不再更新这些文件。排队 prompt 仍只保存在内存中。
 - `agent-instance.lock` — 当前 FutureOS home 的单例锁。测试应隔离 HOME（Windows 同时
   隔离 USERPROFILE），或用 `FUTURE_HOME` / `future agent --home` 把 Agent 指向另一个

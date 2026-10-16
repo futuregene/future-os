@@ -302,6 +302,7 @@ future session status <id> [--json]     # live state: permission, sandbox, conte
 future session transcript --help # filter and window one session's records
 future session history --help   # search and read original history
 future session compact --help   # request manual context compaction
+future session reset <id> [selectors] [--yes]  # delete part of the history in place
 future session rename <id> <name>
 future session new [--cwd <dir>] [--name <text>]
 future session forks <id>                # turns this session can be branched at
@@ -371,6 +372,21 @@ session record with the next run (they are part of the run snapshot). `future ru
 only applies a cwd of its own when `--cwd` is passed, or when it creates the
 session (a new session starts in the caller's directory); attaching to an existing
 session with `--session`/`--continue` leaves the cwd set here as it is.
+
+`session reset` is the destructive counterpart of `session compact`. Compaction
+can only *project* history: it is required to keep every user original, so a
+session whose user turns alone exceed its ceiling reports `context compaction
+budget exceeded` and cannot recover on its own. `future session reset <id>`
+deletes what you name instead — whole turns (`--all`, `--keep-first N`,
+`--keep-last N`) and, inside what it keeps, entry kinds (`--drop thinking`,
+`tool-calls`, `tool-results`, `attachments`, `compaction`; a user turn is one user
+message plus everything up to the next, the boundary `session forks` shows). It is
+a dry run unless you pass `--yes`, an active run or compaction is refused rather
+than interrupted, the session record (id, name, cwd, model, prompts, permissions)
+is never touched, and applying writes a lossless JSON backup of the complete
+pre-reset history first — printed path included, at
+`~/.future/agent/session-backups/<session-id>-<timestamp>.json` — so a wrong call
+is recoverable and a future restore has an input.
 
 Session data is stored in the agent's SQLite database, `~/.future/agent/agent.db`.
 The `~/.future/agent/sessions/` directory is retained only as a legacy JSONL import
