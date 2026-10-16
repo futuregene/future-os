@@ -327,23 +327,31 @@ fn format_status(state: &Value, metrics: Option<&Value>) -> String {
         }
     }
 
-    if let Some(metrics) = metrics {
+    // Journal health, from `--metrics` or, when the caller did not ask for
+    // metrics, from the state itself. Only the *unhealthy* case prints without
+    // `--metrics`: a blocked journal is invisible in every other line here —
+    // the session reads as idle and healthy while each prompt fails at the
+    // journal flush barrier — and that is exactly the state a reader must not
+    // have to discover by sending one.
+    let journal_error = metrics
+        .and_then(|metrics| metrics.get("eventJournalError"))
+        .or_else(|| state.get("eventJournalError"))
+        .and_then(Value::as_str)
+        .filter(|error| !error.is_empty());
+    if metrics.is_some() || journal_error.is_some() {
         out.push_str(&format!(
-            "  Journal:       {}",
-            if metrics["eventJournalHealthy"] == true {
-                "healthy"
-            } else {
+            "  Journal:       {}{}\n",
+            if journal_error.is_some() {
                 "degraded"
-            }
+            } else {
+                "healthy"
+            },
+            journal_error
+                .map(|error| format!(" ({error})"))
+                .unwrap_or_default()
         ));
-        if let Some(error) = metrics
-            .get("eventJournalError")
-            .and_then(Value::as_str)
-            .filter(|e| !e.is_empty())
-        {
-            out.push_str(&format!(" ({error})"));
-        }
-        out.push('\n');
+    }
+    if let Some(metrics) = metrics {
         out.push_str(&format!(
             "  Broadcast lag: {} event(s), {} ring truncation(s), {} stale-epoch drop(s)\n",
             number(metrics, "broadcastLag"),
@@ -716,6 +724,25 @@ mod tests {
             "{rendered}"
         );
         assert!(!rendered.contains("tokens ("), "{rendered}");
+    }
+
+    /// A session whose journal is blocked reads as idle and healthy in every
+    /// other line here, so the plain `status` output has to say it — the user
+    /// otherwise only learns it by sending a prompt and watching it fail, which
+    /// is how a compacted session stayed "fine" while every prompt was refused.
+    #[test]
+    fn an_unwritable_journal_is_reported_without_asking_for_metrics() {
+        let mut state = state_payload();
+        state["eventJournalError"] = json!("cannot append to a compacted settled run");
+        let rendered = format_status(&state, None);
+        assert!(
+            rendered.contains("Journal:       degraded (cannot append to a compacted settled run)"),
+            "{rendered}"
+        );
+
+        // Healthy sessions keep the output they had: silence is the healthy case.
+        let healthy = format_status(&state_payload(), None);
+        assert!(!healthy.contains("Journal:"), "{healthy}");
     }
 
     #[test]

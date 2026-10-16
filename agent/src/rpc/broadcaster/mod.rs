@@ -1,6 +1,6 @@
 //! Live delivery, reconnect projection and durable journal backfill.
 use super::protocol::{is_session_scoped_event, SseEvent};
-use journal_writer::{EventBatchWriter, EventJournalHealth};
+use journal_writer::{AppendFailure, EventBatchWriter, EventJournalHealth};
 #[cfg(test)]
 use journal_writer::{EventWriteCommand, EVENT_BATCH_WINDOW};
 use tokio::sync::broadcast;
@@ -159,9 +159,29 @@ impl SseBroadcaster {
     /// Stamp `run_id` + `epoch` + monotonic `idx`, buffer the event, and
     /// broadcast — all under one lock so stream order matches idx order (no
     /// reordering race).
-    pub fn broadcast(&self, mut event: SseEvent) {
-        let mut run = self.run.lock();
+    pub fn broadcast(&self, event: SseEvent) {
         let session_scoped = is_session_scoped_event(&event.event_type);
+        self.broadcast_stamped(event, session_scoped);
+    }
+
+    /// Broadcast a signal about the **session** rather than about a run.
+    ///
+    /// Use it for what a session does between runs. `broadcast` stamps an event
+    /// with the current run, and the broadcaster keeps the last settled run's
+    /// identity until the next `start_run` — but that run's journal is already
+    /// retired: run completion hands it to the journal compactor, which
+    /// publishes a snapshot and deletes its raw rows. A run-stamped append there
+    /// can never succeed (`cannot append to a compacted settled run`), and the
+    /// refusal used to be recorded as a session-wide journal failure. The
+    /// session scope is never compacted, is durable, and is the path clients
+    /// already replay for the events that have no run (`model_changed`,
+    /// `cwd_changed`, …).
+    pub fn broadcast_session(&self, event: SseEvent) {
+        self.broadcast_stamped(event, true);
+    }
+
+    fn broadcast_stamped(&self, mut event: SseEvent, session_scoped: bool) {
+        let mut run = self.run.lock();
         let mut journal = self.journal.lock();
         if journal.closed {
             return;
@@ -190,11 +210,35 @@ impl SseBroadcaster {
                 event.session_id, event.run_id, event.epoch, event.idx
             )
         };
-        if let Err(error) = Self::append_journal(&mut journal, &event) {
-            let message = format!("event journal append failed: {error:#}");
-            self.journal_health.fail(message.clone());
-            tracing::error!(run_id = %event.run_id, idx = event.idx, "{message}");
-            return;
+        if let Err(failure) = Self::append_journal(&mut journal, &event) {
+            match failure {
+                // The journal refuses this event for good, so retrying could
+                // never store it — and reporting it as a session-wide journal
+                // failure is what turned one misplaced event into a session no
+                // prompt could be sent to. Name it, drop it, and keep the rest
+                // of the session writable.
+                AppendFailure::Rejected(reason) => {
+                    tracing::warn!(
+                        session = %event.session_id,
+                        run_id = %event.run_id,
+                        epoch = event.epoch,
+                        idx = event.idx,
+                        event_id = %event.event_id,
+                        event_type = %event.event_type,
+                        %reason,
+                        "dropping an event this journal refuses; the session's journal stays live"
+                    );
+                    return;
+                }
+                // A storage problem: fail closed and keep the journal blocked
+                // until it is recovered, as before.
+                AppendFailure::Unavailable(message) => {
+                    let message = format!("event journal append failed: {message}");
+                    self.journal_health.fail(message.clone());
+                    tracing::error!(run_id = %event.run_id, idx = event.idx, "{message}");
+                    return;
+                }
+            }
         }
         drop(journal);
         if !session_scoped {
