@@ -1,5 +1,5 @@
 import { createElement, type ReactElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import {
   ActivityIndicator,
   Modal,
@@ -382,6 +382,22 @@ test("an empty workspace list still offers the create row", () => {
   act(() => tree.root.findByType(SessionList).props.onTabChange("workspace"));
   act(() => button("sessions.new").props.onPress());
   expect(createWorkspaceRow()).toBeDefined();
+});
+
+test("the create-workspace row leads the workspace list", () => {
+  mockRemote.workspaces = Array.from({ length: 25 }, (_, index) => ({ id: `w${index}`, name: `Workspace ${index}` }));
+  act(() => tree.root.findByType(SessionList).props.onTabChange("workspace"));
+  act(() => button("sessions.new").props.onPress());
+  // The dialog body scrolls while the footer stays pinned, so a row trailing
+  // the workspaces is only reachable below the fold; creation has to come
+  // first, ahead of the workspaces it can add to.
+  const rows = createWorkspaceRow().parent!.children.filter(
+    (child): child is ReactTestInstance => typeof child !== "string",
+  );
+  expect(rows[0]!.props.accessibilityLabel).toBe("sessions.createWorkspace");
+  expect(rows.slice(1).map(row => row.props.accessibilityRole)).toEqual(
+    Array.from({ length: 25 }, () => "radio"),
+  );
 });
 
 test("a desktop that does not advertise the capability hides the create row", () => {
