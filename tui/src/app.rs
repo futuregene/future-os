@@ -1619,6 +1619,13 @@ pub struct App<T: TerminalIo> {
     /// Deliberately not folded into `cached_models`, whose emptiness is what
     /// drives the `/model` autocomplete fetch.
     model_image_support: HashMap<String, bool>,
+    /// Model id → `ModelInfo.label` (display name), filled wherever
+    /// `model_image_support` is: the footer shows the label, not the id, and
+    /// `state.model` (the id) is what it has to be looked up by. Both bare
+    /// and provider-qualified spellings are recorded, mirroring the image
+    /// map — `state.model` arrives either way depending on where it came
+    /// from.
+    model_labels: HashMap<String, String>,
     cached_sessions: Vec<String>,
     /// The `#` menu's view of the same list: what each session is called and the
     /// workspace it is filed under. Filled wherever `cached_sessions` is, since
@@ -1803,6 +1810,7 @@ impl<T: TerminalIo> App<T> {
             pending_approval: None,
             cached_models: Vec::new(),
             model_image_support: HashMap::new(),
+            model_labels: HashMap::new(),
             cached_sessions: Vec::new(),
             cached_session_refs: Vec::new(),
             session_labels: HashMap::new(),
@@ -8773,7 +8781,40 @@ impl<T: TerminalIo> App<T> {
                 .insert(model.id.clone(), model.supports_images);
             self.model_image_support
                 .insert(model.full_id(), model.supports_images);
+            self.remember_model_label(model);
         }
+    }
+
+    /// Record one model's display name (`label`) under both id spellings, for
+    /// the footer's `model_display` lookup. A label identical to the id (the
+    /// agent's fallback for unnamed models) is skipped: it would only shadow
+    /// the qualified-id entry with a bare id.
+    fn remember_model_label(&mut self, model: &ModelInfo) {
+        if model.label.is_empty() || model.label == model.id {
+            return;
+        }
+        self.model_labels
+            .insert(model.id.clone(), model.label.clone());
+        let full = model.full_id();
+        if full != model.id {
+            self.model_labels.insert(full, model.label.clone());
+        }
+    }
+
+    /// The footer's model readout: the display name when the TUI knows it,
+    /// else the id without its provider prefix (`anthropic/claude-…` →
+    /// `claude-…`). Placeholder models (`(no model)`, `(not connected)`) pass
+    /// through unchanged — they have no catalog entry to strip.
+    fn model_display(&self) -> String {
+        if let Some(label) = self.model_labels.get(&self.state.model) {
+            return label.clone();
+        }
+        self.state
+            .model
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .to_string()
     }
 
     /// Whether the active model accepts image input: `Some(false)` is what the
@@ -9580,7 +9621,9 @@ impl<T: TerminalIo> App<T> {
         // Render editor first to determine its height (multi-line aware).
         let footer_data = FooterData {
             cwd: Some(self.state.cwd.clone()),
-            model: Some(self.state.model.clone()),
+            // The display name, not the id: the catalog's `label` when known,
+            // else the id's tail after the provider prefix.
+            model: Some(self.model_display()),
             thinking: Some(self.state.thinking.clone()),
             streaming: self.state.streaming,
             compacting: self.state.compacting || self.state.compaction_requested,
@@ -10731,6 +10774,53 @@ mod tests {
         assert_eq!(app.state.session_id, "s1");
         assert_eq!(app.state.skills, vec!["a", "b"]); // sorted
         assert_eq!(app.state.tokens_in, 10);
+    }
+
+    /// The footer names the model by its display label when the catalog has
+    /// been seen, and falls back to the id tail when it has not (or the model
+    /// is not in it). `state.model` keeps carrying the id everywhere else —
+    /// `/model` values, `set_model`, new-session inheritance — so the lookup
+    /// has to key on exactly that string, in both its bare and
+    /// provider-qualified spellings.
+    #[tokio::test]
+    async fn model_display_prefers_the_catalog_label() {
+        let (mut app, _rx) = make_app(100, 30);
+
+        // No catalog yet: a qualified id shows its tail, a bare id itself.
+        app.state.model = "anthropic/claude-sonnet-4".into();
+        assert_eq!(app.model_display(), "claude-sonnet-4");
+        app.state.model = "deepseek-v4-flash".into();
+        assert_eq!(app.model_display(), "deepseek-v4-flash");
+
+        // Catalog arrives (`sample_models` carries labels for both spellings'
+        // models) — the label wins, whichever spelling `state.model` holds.
+        app.remember_model_image_support(&sample_models());
+        app.state.model = "openai/gpt-4o".into();
+        assert_eq!(app.model_display(), "GPT-4o");
+        app.state.model = "claude-sonnet-4".into();
+        assert_eq!(app.model_display(), "Claude Sonnet 4");
+
+        // Placeholder models have no catalog entry: they pass through intact.
+        app.state.model = "(no model)".into();
+        assert_eq!(app.model_display(), "(no model)");
+        app.state.model = "(not connected)".into();
+        assert_eq!(app.model_display(), "(not connected)");
+    }
+
+    /// A label identical to the model id is not recorded: it is the agent's
+    /// fallback for unnamed models, and recording it would shadow the
+    /// qualified spelling with a bare id — same id, no information gained.
+    #[tokio::test]
+    async fn model_display_ignores_labels_that_just_repeat_the_id() {
+        let (mut app, _rx) = make_app(100, 30);
+        let redundant = serde_json::from_value(json_parse(
+            r#"{"id":"gpt-4o","label":"gpt-4o","provider":"openai"}"#,
+        ))
+        .expect("model");
+        app.remember_model_image_support(&[redundant]);
+        assert!(app.model_labels.is_empty());
+        app.state.model = "openai/gpt-4o".into();
+        assert_eq!(app.model_display(), "gpt-4o");
     }
 
     #[tokio::test]
