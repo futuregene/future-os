@@ -128,6 +128,37 @@ impl RunClient {
         .await
     }
 
+    /// In-place history reset. One bounded round trip: the report (plan or the
+    /// applied result) comes back with the request, because the caller decides
+    /// what to do next from the numbers and the backup path.
+    ///
+    /// `selectors` carries the typed proto sub-message, so the Agent validates
+    /// the drop kinds and the bounds rather than decoding a JSON string.
+    pub async fn reset_session_history(
+        &self,
+        session_id: &str,
+        selectors: &future_rpc::proto::HistoryReset,
+    ) -> Result<Value, String> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = format!(
+            "reset-{}-{}-{}",
+            std::process::id(),
+            now_id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        self.execute_command(
+            "reset_session_history",
+            RpcCommand {
+                id,
+                reset_history: Some(selectors.clone()),
+                ..Default::default()
+            },
+            Some(session_id),
+            30,
+        )
+        .await
+    }
+
     /// `getAgentInfo()` — `get_agent_info` → `{version, skillsCount}`.
     pub async fn get_agent_info(&self) -> Result<Value, String> {
         self.execute_command("get_agent_info", RpcCommand::default(), None, 5)

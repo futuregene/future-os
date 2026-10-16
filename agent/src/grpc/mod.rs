@@ -441,6 +441,15 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             suggest_query: cmd.suggest_query,
             skill_id: cmd.skill_id,
             skill_version: cmd.skill_version,
+            reset_history: cmd
+                .reset_history
+                .map(|reset| crate::rpc::HistoryResetCommand {
+                    apply: reset.apply,
+                    all: reset.all,
+                    keep_first: reset.keep_first,
+                    keep_last: reset.keep_last,
+                    drop: reset.drop,
+                }),
             suggest_candidates: cmd
                 .suggest_candidates
                 .into_iter()
@@ -958,6 +967,103 @@ mod tests {
             "typed command must not dual-write data"
         );
         assert!(resp.payload.is_some(), "typed payload present");
+    }
+
+    /// The typed reset selectors must survive the proto hop: the command handler
+    /// is covered against the internal command, so this pins the *wire* path
+    /// (`HistoryReset` → internal selectors → the store) end to end, including
+    /// the machine-readable rejection of an unknown drop kind.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reset_session_history_carries_its_typed_selectors_over_the_wire() {
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        let manager = service.state.session_manager.clone();
+        manager
+            .storage()
+            .unwrap()
+            .replace(
+                "wire",
+                vec![
+                    serde_json::json!({"id":"info","type":"session_info","role":"system",
+                        "timestamp":"2026-01-01T00:00:00Z",
+                        "content":{"session_name":"wire","cwd":"/tmp/wire","model":"mock"}}),
+                    serde_json::json!({"id":"u1","type":"user","role":"user",
+                        "timestamp":"2026-01-01T00:00:01Z",
+                        "content":[{"type":"text","text":"old"}],"meta":{"run_id":"r1"}}),
+                    serde_json::json!({"id":"a1","type":"assistant","role":"assistant",
+                        "timestamp":"2026-01-01T00:00:02Z",
+                        "content":[{"type":"text","text":"old answer"}],"meta":{"run_id":"r1"}}),
+                    serde_json::json!({"id":"u2","type":"user","role":"user",
+                        "timestamp":"2026-01-01T00:00:03Z",
+                        "content":[{"type":"text","text":"new"}],"meta":{"run_id":"r2"}}),
+                    serde_json::json!({"id":"a2","type":"assistant","role":"assistant",
+                        "timestamp":"2026-01-01T00:00:04Z",
+                        "content":[{"type":"text","text":"new answer"}],"meta":{"run_id":"r2"}}),
+                ],
+            )
+            .unwrap();
+        let reset = |apply: bool, drop: Vec<String>| proto::RpcCommand {
+            r#type: "reset_session_history".into(),
+            session_id: "wire".into(),
+            reset_history: Some(proto::HistoryReset {
+                apply,
+                keep_last: Some(1),
+                drop,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let dry = service
+            .execute_command(business_request(reset(false, vec!["thinking".into()])))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(dry.success, "{}", dry.error);
+        let data: serde_json::Value = serde_json::from_str(&dry.data).unwrap();
+        assert_eq!(data["applied"], serde_json::json!(false));
+        assert_eq!(data["selectors"]["keepLast"], serde_json::json!(1));
+        assert_eq!(data["selectors"]["drop"], serde_json::json!(["thinking"]));
+        assert_eq!(
+            manager.storage().unwrap().entries("wire").unwrap().len(),
+            5,
+            "a dry run must leave the transcript alone"
+        );
+
+        let applied = service
+            .execute_command(business_request(reset(true, vec![])))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(applied.success, "{}", applied.error);
+        let ids: Vec<String> = manager
+            .storage()
+            .unwrap()
+            .entries("wire")
+            .unwrap()
+            .iter()
+            .map(|entry| entry["id"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(ids.len(), 3, "{ids:?}");
+        assert!(ids.contains(&"u2".to_string()) && ids.contains(&"a2".to_string()));
+        assert!(!ids.contains(&"u1".to_string()));
+
+        // A typo in a drop kind is a command error the caller can act on, with
+        // the known kinds enumerated rather than silently ignored.
+        let refused = service
+            .execute_command(business_request(reset(true, vec!["thnking".into()])))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!refused.success);
+        assert_eq!(refused.error_code, "invalid_selectors");
+        assert!(
+            refused.error.contains("unknown drop kind"),
+            "{}",
+            refused.error
+        );
+        assert!(refused.error.contains("tool-results"), "{}", refused.error);
     }
 
     #[tokio::test]

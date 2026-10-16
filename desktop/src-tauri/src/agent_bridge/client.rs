@@ -574,6 +574,10 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         suggest_candidates: vec![],
         skill_id: String::new(),
         skill_version: String::new(),
+        // In-place history reset selectors: only `future session reset` sends
+        // them, so a desktop-issued command leaves them absent (the Agent then
+        // rejects the command for having no selector at all).
+        reset_history: None,
     }
 }
 

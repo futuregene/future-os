@@ -148,6 +148,13 @@ pub struct RpcCommand {
     #[serde(skip)]
     pub suggest_candidates: Vec<crate::skill_reco::SkillCandidate>,
 
+    // reset_session_history — in-place history reset selectors. Populated from
+    // the proto `HistoryReset` sub-message by the gRPC layer; the handler owns
+    // validation, so a bad selector is a `invalid_selectors` command error
+    // rather than a transport-level rejection.
+    #[serde(skip)]
+    pub reset_history: Option<HistoryResetCommand>,
+
     #[serde(default)]
     pub skill_id: String,
     #[serde(default)]
@@ -155,6 +162,22 @@ pub struct RpcCommand {
 }
 
 // ─── RPC Response (stdout) ───────────────────────────────────────────────
+
+/// In-place history reset selectors as the wire carries them (proto
+/// `HistoryReset`). Raw on purpose: the handler parses the drop kinds and the
+/// bounds, so an unknown kind or a negative bound is a command error the caller
+/// can act on, not a transport failure with no detail.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HistoryResetCommand {
+    /// false = dry run: report the plan, change nothing.
+    pub apply: bool,
+    /// Drop every turn (mutually exclusive with the keep bounds).
+    pub all: Option<bool>,
+    pub keep_first: Option<i64>,
+    pub keep_last: Option<i64>,
+    /// Entry kinds to remove from the retained part.
+    pub drop: Vec<String>,
+}
 
 // ─── RPC Response (stdout) ───────────────────────────────────────────────
 

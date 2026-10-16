@@ -21,6 +21,7 @@ pub mod session;
 mod session_compact;
 mod session_control;
 mod session_history;
+mod session_reset;
 mod session_status;
 mod session_transcript;
 mod session_wait;
