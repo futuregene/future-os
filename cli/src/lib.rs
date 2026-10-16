@@ -843,6 +843,15 @@ mod tests {
             "stdout: {stdout}"
         );
 
+        // `serve` is dispatched too; with no such server it fails before reading
+        // any request, rather than blocking on stdin.
+        let (code, _, stderr) = run(&["mcp", "serve", "nope"]).await;
+        assert_eq!(code, 1);
+        assert!(
+            stderr.contains("unknown MCP server 'nope'"),
+            "stderr: {stderr}"
+        );
+
         // Unknown subcommand → group help, exit 0 (the tools/skills shape).
         let (code, stdout, stderr) = run(&["mcp", "bogus"]).await;
         assert_eq!(code, 0);
