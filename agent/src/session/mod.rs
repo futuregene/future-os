@@ -4,7 +4,8 @@
 //! - [`entry`]: the `SessionEntry` journal-line model + entry-type constants
 //! - [`model`]: the `Session` / `SessionSummary` in-memory models
 //! - [`run_journal`]: run lifecycle markers + unterminated-run recovery helpers
-//! - [`projection`]: entries ↔ LLM-message mappings and `truncate_visible`
+//! - [`projection`]: entries ↔ LLM-message mappings, `truncate_visible`, and the
+//!   name a session falls back to from its first message
 //! - [`repair`]: in-memory healing of corrupted/legacy session histories
 //! - [`fork`]: typed fork-point resolution and independent snapshot creation
 //! - [`database`]: ordered SQLite worker, schema, transactions and reclamation
@@ -58,7 +59,8 @@ pub use manager::Manager;
 pub use model::{Session, SessionSummary, CURRENT_SESSION_VERSION};
 pub use persistence::SessionPersistence;
 pub use projection::{
-    agent_message_to_entry, build_context, entries_to_agent_messages, truncate_visible,
+    agent_message_to_entry, build_context, entries_to_agent_messages, first_message_title,
+    truncate_visible,
 };
 pub use run_journal::{
     find_run_terminal, find_unterminated_run, is_run_marker, next_run_sequence,

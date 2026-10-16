@@ -111,6 +111,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // id) through the *real* reducer, so the composer state in a capture is the
   // state the app would have.
   const delayedCompaction = new URLSearchParams(window.location.search).get("compactionDelay") === "1";
+  // `?peers=1` makes the second paired desktop answer as well — see
+  // `peerMachines` below. It is what puts the new-conversation dialog on its
+  // machine step, which only exists while more than one machine can take the
+  // conversation.
+  const withPeers = new URLSearchParams(window.location.search).get("peers") === "1";
   const [compactionFinished, setCompactionFinished] = useState(false);
   const scriptedCompaction = compactionFinished || new URLSearchParams(window.location.search).get("compacted") === "1";
   // `?multiTurnOlder=1` keeps one page of history above the multi-turn
@@ -164,6 +169,25 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     pairId: pairedDesktop?.pairId ?? demoCredentials.pairId,
   };
 
+  // The second machine, live or absent — see the `machines` note below. Its
+  // commands are the same answers the open machine gives, which is what a
+  // paired desktop really offers its client, so a capture can act on a peer's
+  // row exactly as it can on the phone's own.
+  const peerId = demoDesktops[1]?.desktopId ?? "";
+  const peerMachines = withPeers && peerId
+    ? [{ desktopId: peerId, label: demoDesktops[1]!.name, active: false, status: "connected" }]
+    : [];
+  const peerCommands = {
+    capabilities: new Set<string>(),
+    renameSession: async () => {},
+    generateTitle: async () => {},
+    setSessionPinned: async () => {},
+    deleteSession: async () => {},
+    renameWorkspace: async () => {},
+    setWorkspacePinned: async () => {},
+    deleteWorkspace: async () => {},
+  };
+
   const value = withFallback({
     // Connection
     phase: "ready",
@@ -214,10 +238,13 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         label: pairedDesktop?.name ?? desktopId,
         sessions,
       }],
-      machines: [] as { desktopId: string; label: string; active: boolean; status: string }[],
+      // `?peers=1` gives the second paired desktop a live connection, the state
+      // that puts the dialog below on its machine step; every other capture
+      // wants the ordinary one-machine phone this file describes above.
+      machines: peerMachines,
       refresh: async () => {},
       reconnect: () => {},
-      commandsFor: () => null,
+      commandsFor: (id: string) => (withPeers && id === peerId ? peerCommands : null),
       readWorkspaces: async () => demoWorkspaces,
     },
     skillsRevision: 0,
