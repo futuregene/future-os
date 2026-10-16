@@ -481,6 +481,7 @@ how an MCP server is reached from an agent session.
 
 Usage:
   future mcp list [--json]
+  future mcp status [<server>] [--json]
   future mcp tools <server> [--query <text>] [--limit <n>] [--offset <n>]
   future mcp describe <server> <tool>
   future mcp call <server> <tool> [--args '<json>'] [--out <file>] [--max-bytes <n>]
@@ -489,13 +490,24 @@ Usage:
 
 Commands:
   list                     Configured servers, and the file they come from.
+  status [<server>]        Start each server, shake hands, count tools, stop. Says
+                           whether a configured server is actually usable.
   tools <server>           That server's tools, one line each, paged.
   describe <server> <tool> One tool's full description and argument schema.
   call <server> <tool>     Invoke one tool. Output is capped; --out writes all of it.
   add / remove             Change the server list.
 
+Two budgets, both tunable per command:
+  --max-bytes <n>          How much of a result is *printed* (default 65536). The
+                           rest is kept by --out.
+  --max-frame-bytes <n>    How large one protocol frame may be *read* (default
+                           33554432, or FUTURE_MCP_MAX_FRAME_BYTES). --max-bytes
+                           cannot help when a frame does not fit at all; many
+                           servers also have their own response budget.
+
 Each call starts the server and stops it again. Add --timeout <secs> when a
-server is slow to start (default 60)."#;
+server is slow to start (default 60); an engine that must analyse the target on
+every launch can need minutes."#;
 
 /// `future skills` group help (index.ts).
 pub const SKILLS_GROUP_HELP: &str = r#"future skills — install & manage agent skills
