@@ -191,6 +191,7 @@ File-path arguments are converted automatically where a tool expects file conten
 
 ```bash
 future mcp list                          # configured servers, and the file they come from
+future mcp status                        # start each, shake hands, report tool counts
 future mcp add rea --command rea --arg --mcp
 future mcp tools rea --query binary      # that server's tools, one line each
 future mcp describe rea inspect_go_binary  # one tool's full argument schema
@@ -204,13 +205,28 @@ with the instance) and run as local processes speaking MCP over stdio. The agent
 has no MCP client of its own, so this group is how an agent session reaches one:
 the skill or the user calls `future mcp` through the ordinary `shell` tool.
 
+`list` answers "what is configured"; `status` answers "is it usable" — it starts
+each server, completes the handshake, reports the tool count and timing, and stops
+it again, without calling a tool. On failure it appends the server's own stderr
+(usually the real explanation: a missing engine, a missing credential), and any
+unreachable server makes the command exit 1; `enabled: false` is reported as
+`disabled` and does not fail the check.
+
 Every step is bounded because the servers this exists for are large. `tools`
 shows one line per tool and pages (`--limit`, default 50; `--offset`
 continues). `describe` takes one exact name and prints its full JSON Schema.
 `call` prints at most `--max-bytes` (default 64 KB) and tells you to rerun with
 `--out <file>` for the rest, so a tool that returns hundreds of megabytes cannot
 flood the terminal it was asked from. Add `--timeout <secs>` (default 60) when a
-server is slow to start. A tool that reports its own error (`isError`) prints its
+server is slow to start.
+
+There are two budgets with a flag each: `--max-bytes` caps what is **printed**,
+`--max-frame-bytes` caps one **read** frame (default 32 MiB, or
+`FUTURE_MCP_MAX_FRAME_BYTES`). `--max-bytes` cannot help when a frame does not
+fit at all, so the over-cap error names the method being awaited, says which
+budget it is, and gives both knobs; many servers also have their own response
+budget (REA's is `REA_MCP_MAX_RESPONSE_BYTES`). A mistyped tool name gets the
+same "Did you mean" hint from `call` as from `describe`. A tool that reports its own error (`isError`) prints its
 payload on **stderr** and exits 1, the same way `future tools call` reports a
 failed tool — a script or an agent does not have to parse a marker out of stdout
 to learn the call did not work.

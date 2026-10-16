@@ -795,6 +795,15 @@ mod tests {
             "stderr: {stderr}"
         );
 
+        // `status` with nothing configured says so too, and does not fail: an
+        // empty list is a state, not an unreachable server.
+        let (code, stdout, _) = run(&["mcp", "status"]).await;
+        assert_eq!(code, 0, "stdout: {stdout}");
+        assert!(
+            stdout.contains("No MCP servers are configured."),
+            "stdout: {stdout}"
+        );
+
         // `add` writes the configuration; `list` reads it back. The repeated
         // `--arg --mcp` is how an MCP server is spawned, dash and all.
         let (code, stdout, _) =
@@ -808,6 +817,22 @@ mod tests {
             stdout.contains("1 server(s) configured"),
             "stdout: {stdout}"
         );
+
+        // An unreachable server is a failed check (the entry above only records
+        // what is configured). A nonexistent program is the deterministic case:
+        // `rea` itself would be reachable wherever REA is installed.
+        let (code, _, _) = run(&["mcp", "add", "ghost", "--command", "no-such-program-xyz"]).await;
+        assert_eq!(code, 0);
+        let (code, stdout, _) = run(&["mcp", "status", "ghost"]).await;
+        assert_eq!(code, 1, "stdout: {stdout}");
+        assert!(stdout.contains("FAILED"), "stdout: {stdout}");
+        assert!(stdout.contains("no-such-program-xyz"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("0/1 server(s) reachable"),
+            "stdout: {stdout}"
+        );
+        let (code, _, _) = run(&["mcp", "remove", "ghost"]).await;
+        assert_eq!(code, 0);
 
         // `remove` takes it back out.
         let (code, _, _) = run(&["mcp", "remove", "rea"]).await;
