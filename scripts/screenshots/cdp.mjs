@@ -690,6 +690,71 @@ if (TOUCH)
 if (FRAMES_DIR)
   await startScreencast();
 
+// The mobile app is the React Native one, and react-native-web renders an
+// `inverted` list by giving the *scroll view* a `scaleY(-1)` and each *cell* the
+// same flip back — two flips that cancel out, which is why the newest row ends
+// up at the bottom and the text reads the right way up. When such a list also
+// has a `refreshControl`, `ScrollView.render` clones it with the scroll view's
+// own style (`{ style: props.style }`), so react-native-web's refresh-control
+// wrapper carries that inversion too: the transcript then sits under a *third*
+// flip and is rendered upside down — glyphs mirrored and row order reversed.
+// Native does not do this, so a phone screenshot and the device disagree, which
+// is precisely what a harness must not do.
+//
+// Neutralising the wrapper here is the one place to do it without touching
+// product code or the dependency: install a page-level sweep before the app's
+// own scripts run, and keep re-asserting it as React re-renders. The fix is
+// legible in the DOM — the wrapper ends up with no `transform` — and what it did
+// is reported per capture (`neutralized N …`, and `window.__shotUnflipped` for a
+// scenario to assert on). It cannot match a page that has no inverted list, so
+// it is a no-op for the desktop app.
+const UNFLIP_INVERTED_LIST = `
+(() => {
+  const MARK = 'data-shot-unflip';
+  window.__shotUnflipped = 0;
+  const verticalMirror = (el) => {
+    const parts = getComputedStyle(el).transform.match(/^matrix\\(([^)]+)\\)$/);
+    if (!parts) return false;
+    const [a, b, c, d, e, f] = parts[1].split(',').map(Number);
+    return a === 1 && b === 0 && c === 0 && d === -1 && e === 0 && f === 0;
+  };
+  const scrolls = (el) => {
+    const overflow = getComputedStyle(el).overflowY;
+    return (overflow === 'auto' || overflow === 'scroll') && el.scrollHeight > el.clientHeight + 10;
+  };
+  // The wrapper whose only child is the mirrored scroller: two nested vertical
+  // mirrors where the inner one is the scroll container. A single mirror (the
+  // scroller) or a mirrored cell never matches.
+  const extraInversion = (el) => {
+    if (!verticalMirror(el) || scrolls(el)) return false;
+    const children = [...el.children];
+    return children.length === 1 && verticalMirror(children[0]) && scrolls(children[0]);
+  };
+  const sweep = () => {
+    let neutralized = 0;
+    for (const el of document.querySelectorAll('div')) {
+      if (!extraInversion(el)) continue;
+      if (!el.hasAttribute(MARK)) {
+        el.setAttribute(MARK, '1');
+        window.__shotUnflipped += 1;
+      }
+      el.style.transform = 'none';
+      neutralized += 1;
+    }
+    return neutralized;
+  };
+  // React re-renders the list as it scrolls and virtualizes, and it owns the
+  // class that carries the flip, so the sweep has to run again on any change.
+  // It cannot loop: once the wrapper has no transform it is no longer a match.
+  new MutationObserver(sweep).observe(document, {
+    childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'],
+  });
+  sweep();
+})()`;
+
+if (MOBILE)
+  await send("Page.addScriptToEvaluateOnNewDocument", { source: UNFLIP_INVERTED_LIST });
+
 if (URL_ARG) {
   await send("Page.navigate", { url: URL_ARG });
   if (READY) {
@@ -813,6 +878,13 @@ for (const step of steps) {
 
 if (FRAMES_DIR)
   await stopScreencast();
+if (MOBILE) {
+  // Report what the sweep did, so a capture never quietly depends on the fix
+  // (a phone screen that needed no neutralisation is worth knowing about).
+  const neutralized = await evaluate("window.__shotUnflipped ?? 0");
+  console.log(`cdp: neutralized ${neutralized} inverted-list wrapper(s) `
+    + "(react-native-web gives a refresh control the scroll view's inversion)");
+}
 if (MEASURE_FILE) {
   writeFileSync(MEASURE_FILE, JSON.stringify({
     viewport: { width: WIDTH, height: HEIGHT, scale: SCALE },

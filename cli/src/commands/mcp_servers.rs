@@ -12,7 +12,9 @@
 //! `--out` for the rest. Nothing here writes an unbounded amount of text to a
 //! terminal an agent is reading.
 
-use crate::commands::mcp_client::{ServerProcess, ServerSpec, DEFAULT_TIMEOUT};
+use crate::commands::mcp_client::{
+    max_frame_bytes_from_env, ServerProcess, ServerSpec, DEFAULT_TIMEOUT,
+};
 use crate::output::Output;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -238,6 +240,23 @@ impl Flags {
         }
     }
 
+    /// The frame cap for this run: `--max-frame-bytes` if given, otherwise
+    /// `FUTURE_MCP_MAX_FRAME_BYTES`, otherwise the default.
+    fn max_frame_bytes(&self) -> Result<usize, String> {
+        match self.value("--max-frame-bytes") {
+            None => Ok(max_frame_bytes_from_env()),
+            Some(raw) => {
+                let bytes: usize = raw
+                    .parse()
+                    .map_err(|_| "--max-frame-bytes must be a whole number of bytes".to_string())?;
+                if bytes == 0 {
+                    return Err("--max-frame-bytes must be at least 1 byte".to_string());
+                }
+                Ok(bytes)
+            }
+        }
+    }
+
     fn exactly_one_positional(&self, what: &str, usage: &str) -> Result<String, String> {
         match self.positional.len() {
             1 => Ok(self.positional[0].clone()),
@@ -255,7 +274,7 @@ impl Flags {
 pub fn is_mcp_command(command: Option<&str>) -> bool {
     matches!(
         command,
-        Some("list" | "tools" | "describe" | "call" | "add" | "remove")
+        Some("list" | "tools" | "describe" | "call" | "add" | "remove" | "status")
     )
 }
 
@@ -263,6 +282,7 @@ pub fn is_mcp_command(command: Option<&str>) -> bool {
 pub async fn mcp(command: &str, args: &[String], out: &Output) -> Result<(), String> {
     match command {
         "list" => mcp_list(args, out),
+        "status" => mcp_status(args, out).await,
         "tools" => mcp_tools(args, out).await,
         "describe" => mcp_describe(args, out).await,
         "call" => mcp_call(args, out).await,
@@ -270,6 +290,140 @@ pub async fn mcp(command: &str, args: &[String], out: &Output) -> Result<(), Str
         "remove" => mcp_remove(args, out),
         other => Err(format!("unknown mcp command: {other}")),
     }
+}
+
+// ── status ─────────────────────────────────────────────────────────────────
+
+const STATUS_USAGE: &str =
+    "Usage: future mcp status [<server>] [--timeout <secs>] [--max-frame-bytes <n>] [--json]";
+
+/// `future mcp status [server]` — is each server actually usable?
+///
+/// The handshake is the whole test: start it, initialize, count tools, stop.
+/// That is one cheap round trip (no tool is called), and it is the question
+/// `list` cannot answer, since a configured server may have no interpreter, no
+/// engine, or a missing credential. Measured in the same shape `future doctor`
+/// uses: a per-server verdict plus, on failure, the server's own stderr, which
+/// is usually the real explanation.
+async fn mcp_status(args: &[String], out: &Output) -> Result<(), String> {
+    let flags = parse_flags(args, &["--timeout", "--max-frame-bytes"], &[], &["--json"])?;
+    if flags.positional.len() > 1 {
+        return Err(format!(
+            "expected at most one server name ({})\n\n{STATUS_USAGE}",
+            flags.positional.len()
+        ));
+    }
+    let timeout = flags.timeout()?;
+    let max_frame_bytes = flags.max_frame_bytes()?;
+
+    let config = load_config()?;
+    let targets: Vec<String> = match flags.positional.first() {
+        Some(name) => {
+            resolve(&config, name)?;
+            vec![name.clone()]
+        }
+        None => config.servers.keys().cloned().collect(),
+    };
+    if targets.is_empty() {
+        out.log(&format!(
+            "No MCP servers are configured.\n\nConfiguration file: {}\nAdd one:            future mcp add rea --command rea --arg --mcp",
+            config_path().display()
+        ));
+        return Ok(());
+    }
+
+    let mut reports: Vec<Value> = Vec::new();
+    let mut failed = 0usize;
+    for name in &targets {
+        // A disabled server is a configuration state, not a failure to reach it.
+        let Some(spec) = config.servers.get(name) else {
+            continue;
+        };
+        if !spec.enabled {
+            reports.push(json!({ "name": name, "state": "disabled" }));
+            continue;
+        }
+        let started = std::time::Instant::now();
+        match ServerProcess::start_with_frame_cap(name, spec, timeout, max_frame_bytes).await {
+            Err(error) => {
+                failed += 1;
+                reports.push(json!({
+                    "name": name,
+                    "state": "failed",
+                    "error": error,
+                    "handshakeMs": started.elapsed().as_millis() as u64,
+                    "command": spec.command_line(),
+                }));
+            }
+            Ok(mut process) => {
+                let handshaked = started.elapsed();
+                let listed = process.session().list_tools().await;
+                let stderr = process.stderr_tail();
+                process.shutdown().await;
+                match listed {
+                    Ok(tools) => reports.push(json!({
+                        "name": name,
+                        "state": "ok",
+                        "toolCount": tools.len(),
+                        "handshakeMs": handshaked.as_millis() as u64,
+                        "totalMs": started.elapsed().as_millis() as u64,
+                        "command": spec.command_line(),
+                    })),
+                    Err(error) => {
+                        failed += 1;
+                        reports.push(json!({
+                            "name": name,
+                            "state": "failed",
+                            "error": attach_stderr(error, &stderr),
+                            "handshakeMs": handshaked.as_millis() as u64,
+                            "command": spec.command_line(),
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    if flags.has("--json") {
+        out.log(
+            &serde_json::to_string_pretty(&json!({
+                "configPath": config_path().display().to_string(),
+                "servers": reports,
+            }))
+            .unwrap_or_default(),
+        );
+    } else {
+        for report in &reports {
+            let name = report["name"].as_str().unwrap_or_default();
+            match report["state"].as_str().unwrap_or_default() {
+                "ok" => out.log(&format!(
+                    "{name:<16} ok      {} tool(s), handshake {} ms",
+                    report["toolCount"], report["handshakeMs"]
+                )),
+                "disabled" => out.log(&format!("{name:<16} disabled")),
+                _ => {
+                    out.log(&format!("{name:<16} FAILED  {}", report["command"]));
+                    if let Some(error) = report["error"].as_str() {
+                        for line in error.lines() {
+                            out.log(&format!("                 {line}"));
+                        }
+                    }
+                }
+            }
+        }
+        let ok = reports
+            .iter()
+            .filter(|report| report["state"] == "ok")
+            .count();
+        out.log(&format!("\n{ok}/{} server(s) reachable", targets.len()));
+    }
+
+    // Unreachable servers are a failed check, so this is scriptable; a disabled
+    // one is a deliberate configuration and does not fail the command.
+    if failed > 0 {
+        return Err(crate::HANDLED_EXIT.to_string());
+    }
+    Ok(())
 }
 
 // ── list ───────────────────────────────────────────────────────────────────
@@ -328,12 +482,18 @@ fn mcp_list(args: &[String], out: &Output) -> Result<(), String> {
 
 // ── tools ──────────────────────────────────────────────────────────────────
 
-const TOOLS_USAGE: &str = "Usage: future mcp tools <server> [--query <text>] [--limit <n>] [--offset <n>] [--timeout <secs>] [--json]";
+const TOOLS_USAGE: &str = "Usage: future mcp tools <server> [--query <text>] [--limit <n>] [--offset <n>] [--timeout <secs>] [--max-frame-bytes <n>] [--json]";
 
 async fn mcp_tools(args: &[String], out: &Output) -> Result<(), String> {
     let flags = parse_flags(
         args,
-        &["--query", "--limit", "--offset", "--timeout"],
+        &[
+            "--query",
+            "--limit",
+            "--offset",
+            "--timeout",
+            "--max-frame-bytes",
+        ],
         &[],
         &["--json"],
     )?;
@@ -341,11 +501,13 @@ async fn mcp_tools(args: &[String], out: &Output) -> Result<(), String> {
     let limit = flags.usize_value("--limit", DEFAULT_TOOL_LIMIT, MAX_TOOL_LIMIT)?;
     let offset = flags.usize_value("--offset", 0, usize::MAX)?;
     let timeout = flags.timeout()?;
+    let max_frame_bytes = flags.max_frame_bytes()?;
     let query = flags.value("--query").map(str::to_lowercase);
 
     let config = load_config()?;
     let spec = resolve(&config, &name)?;
-    let mut process = ServerProcess::start(&name, spec, timeout).await?;
+    let mut process =
+        ServerProcess::start_with_frame_cap(&name, spec, timeout, max_frame_bytes).await?;
     let listed = process.session().list_tools().await;
     let stderr = process.stderr_tail();
     process.shutdown().await;
@@ -444,10 +606,10 @@ fn tool_matches(tool: &Value, lowercase_query: &str) -> bool {
 // ── describe ───────────────────────────────────────────────────────────────
 
 const DESCRIBE_USAGE: &str =
-    "Usage: future mcp describe <server> <tool> [--timeout <secs>] [--json]";
+    "Usage: future mcp describe <server> <tool> [--timeout <secs>] [--max-frame-bytes <n>] [--json]";
 
 async fn mcp_describe(args: &[String], out: &Output) -> Result<(), String> {
-    let flags = parse_flags(args, &["--timeout"], &[], &["--json"])?;
+    let flags = parse_flags(args, &["--timeout", "--max-frame-bytes"], &[], &["--json"])?;
     if flags.positional.len() != 2 {
         return Err(format!(
             "expected a server and a tool name ({})\n\n{DESCRIBE_USAGE}",
@@ -457,26 +619,19 @@ async fn mcp_describe(args: &[String], out: &Output) -> Result<(), String> {
     let name = flags.positional[0].clone();
     let wanted = flags.positional[1].clone();
     let timeout = flags.timeout()?;
+    let max_frame_bytes = flags.max_frame_bytes()?;
 
     let config = load_config()?;
     let spec = resolve(&config, &name)?;
-    let mut process = ServerProcess::start(&name, spec, timeout).await?;
+    let mut process =
+        ServerProcess::start_with_frame_cap(&name, spec, timeout, max_frame_bytes).await?;
     let listed = process.session().list_tools().await;
     let stderr = process.stderr_tail();
     process.shutdown().await;
     let tools = listed.map_err(|error| attach_stderr(error, &stderr))?;
 
     let Some(tool) = tools.iter().find(|tool| tool_name(tool) == wanted) else {
-        let mut message = format!("server '{name}' has no tool named '{wanted}'");
-        let suggestions = suggest_tools(&tools, &wanted);
-        if suggestions.is_empty() {
-            message.push_str(&format!(
-                "\nList what it has: future mcp tools {name} --query <text>"
-            ));
-        } else {
-            message.push_str(&format!("\nDid you mean: {}", suggestions.join(", ")));
-        }
-        return Err(message);
+        return Err(missing_tool_error(&name, &wanted, &tools));
     };
 
     if flags.has("--json") {
@@ -495,43 +650,85 @@ async fn mcp_describe(args: &[String], out: &Output) -> Result<(), String> {
     Ok(())
 }
 
+/// "no such tool" with the nearest alternatives — shared by `describe` and
+/// `call`, so a typo reads the same either way.
+fn missing_tool_error(server: &str, wanted: &str, tools: &[Value]) -> String {
+    let mut message = format!("server '{server}' has no tool named '{wanted}'");
+    let suggestions = suggest_tools(tools, wanted);
+    if suggestions.is_empty() {
+        message.push_str(&format!(
+            "\nList what it has: future mcp tools {server} --query <text>"
+        ));
+    } else {
+        message.push_str(&format!("\nDid you mean: {}", suggestions.join(", ")));
+    }
+    message
+}
+
 /// Up to [`MAX_SUGGESTIONS`] tool names resembling `wanted`, for the error text.
+///
+/// Scored by token *rarity*, not just containment: `inspect_ghidra_binary` must not
+/// be answered with `inspect_adb_client`, which shares only the prefix every other
+/// inspection tool also has. A token found in fewer names identifies one better,
+/// which is what separates "binary" from "inspect".
 fn suggest_tools(tools: &[Value], wanted: &str) -> Vec<String> {
     let wanted = wanted.to_lowercase();
-    let wanted_stem = wanted.split('_').next().unwrap_or(&wanted).to_string();
-    let mut scored: Vec<(usize, String)> = tools
-        .iter()
-        .filter_map(|tool| {
-            let name = tool_name(tool);
-            let lowercase = name.to_lowercase();
-            let score = if lowercase.contains(&wanted) {
-                0
-            } else if wanted.contains(&lowercase) {
-                1
-            } else if !wanted_stem.is_empty() && lowercase.contains(&wanted_stem) {
-                2
-            } else {
-                return None;
-            };
-            Some((score, name))
-        })
-        .collect();
-    scored.sort();
+    let names: Vec<String> = tools.iter().map(tool_name).collect();
+    let lowercase: Vec<String> = names.iter().map(|name| name.to_lowercase()).collect();
+
+    let wanted_tokens: Vec<&str> = wanted.split('_').filter(|token| token.len() >= 3).collect();
+    // How many tool names contain each wanted token; a rare one scores higher.
+    let mut rarity = vec![0.0f64; wanted_tokens.len()];
+    for (index, token) in wanted_tokens.iter().enumerate() {
+        let documents = lowercase.iter().filter(|name| name.contains(token)).count();
+        rarity[index] = 1.0 / documents.max(1) as f64;
+    }
+
+    let mut scored: Vec<(f64, usize, &str)> = Vec::new();
+    for (index, name) in names.iter().enumerate() {
+        let lower = &lowercase[index];
+        let mut score = 0.0;
+        if lower.contains(&wanted) || wanted.contains(lower.as_str()) {
+            // One name is a prefix/extension of the other: the strongest signal.
+            score += 1_000.0;
+        }
+        for (position, token) in wanted_tokens.iter().enumerate() {
+            if lower.contains(token) {
+                score += rarity[position];
+            }
+        }
+        if score > 0.0 {
+            scored.push((score, name.len(), name.as_str()));
+        }
+    }
+    // Best score, then the shortest name, then alphabetical: stable and readable.
+    scored.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.cmp(&b.1))
+            .then(a.2.cmp(b.2))
+    });
     scored
         .into_iter()
         .take(MAX_SUGGESTIONS)
-        .map(|(_, name)| name)
+        .map(|(_, _, name)| name.to_string())
         .collect()
 }
 
 // ── call ───────────────────────────────────────────────────────────────────
 
-const CALL_USAGE: &str = "Usage: future mcp call <server> <tool> [--args '<json>'] [--out <file>] [--max-bytes <n>] [--timeout <secs>] [--json]";
+const CALL_USAGE: &str = "Usage: future mcp call <server> <tool> [--args '<json>'] [--out <file>] [--max-bytes <n>] [--timeout <secs>] [--max-frame-bytes <n>] [--json]";
 
 async fn mcp_call(args: &[String], out: &Output) -> Result<(), String> {
     let flags = parse_flags(
         args,
-        &["--args", "--out", "--max-bytes", "--timeout"],
+        &[
+            "--args",
+            "--out",
+            "--max-bytes",
+            "--timeout",
+            "--max-frame-bytes",
+        ],
         &[],
         &["--json"],
     )?;
@@ -544,6 +741,7 @@ async fn mcp_call(args: &[String], out: &Output) -> Result<(), String> {
     let name = flags.positional[0].clone();
     let tool = flags.positional[1].clone();
     let timeout = flags.timeout()?;
+    let max_frame_bytes = flags.max_frame_bytes()?;
     let max_bytes = flags.usize_value("--max-bytes", DEFAULT_MAX_BYTES, usize::MAX)?;
     let arguments = match flags.value("--args") {
         None => json!({}),
@@ -559,8 +757,22 @@ async fn mcp_call(args: &[String], out: &Output) -> Result<(), String> {
 
     let config = load_config()?;
     let spec = resolve(&config, &name)?;
-    let mut process = ServerProcess::start(&name, spec, timeout).await?;
+    let mut process =
+        ServerProcess::start_with_frame_cap(&name, spec, timeout, max_frame_bytes).await?;
     let called = process.session().call_tool(&tool, arguments).await;
+
+    // A failed call may simply be a mistyped tool name, which the server reports
+    // in its own words. Only then is the tool list fetched, so the happy path
+    // pays nothing for the check (REA's list is 3.1 MB).
+    let called = match called {
+        Ok(result) => Ok(result),
+        Err(error) => match process.session().list_tools().await {
+            Ok(tools) if !tools.iter().any(|entry| tool_name(entry) == tool) => {
+                Err(missing_tool_error(&name, &tool, &tools))
+            }
+            _ => Err(error),
+        },
+    };
     let stderr = process.stderr_tail();
     process.shutdown().await;
     let result = called.map_err(|error| attach_stderr(error, &stderr))?;
@@ -895,6 +1107,31 @@ mod tests {
             .any(|name| name == "analyze_javascript_application"));
     }
 
+    /// A rare token must beat a shared prefix. Against real REA,
+    /// `inspect_ghidra_binary` used to be answered with `inspect_adb_client`,
+    /// which shares only "inspect" — the prefix of most of the 207 tools.
+    #[test]
+    fn suggestions_prefer_a_distinctive_token_over_a_common_prefix() {
+        let tools = vec![
+            json!({ "name": "inspect_adb_client" }),
+            json!({ "name": "inspect_adb_device" }),
+            json!({ "name": "inspect_adb_package" }),
+            json!({ "name": "inspect_go_binary" }),
+            json!({ "name": "inspect_pe_binary" }),
+        ];
+        let suggestions = suggest_tools(&tools, "inspect_ghidra_binary");
+        // "binary" is shared by two names, "inspect" by all five: the two binary
+        // tools must come first.
+        assert!(
+            suggestions[0].contains("binary") && suggestions[1].contains("binary"),
+            "{suggestions:?}"
+        );
+        assert!(
+            !suggestions[..2].iter().any(|name| name.contains("adb")),
+            "{suggestions:?}"
+        );
+    }
+
     #[test]
     fn text_content_is_joined_and_other_blocks_are_named() {
         let result = json!({
@@ -1139,5 +1376,219 @@ done
             assert!(error.contains("failed its handshake"), "{error}");
             assert!(error.contains("no engine here"), "{error}");
         }
+
+        // ── status ─────────────────────────────────────────────────────────
+
+        #[tokio::test]
+        async fn status_reports_a_reachable_server_with_its_tool_count() {
+            let _lock = crate::test_env::lock_env().await;
+            let _home = with_fake_server();
+            let (out, sink) = Output::memory();
+
+            mcp_status(&args(&[]), &out).await.unwrap();
+            let (stdout, _) = split(&sink);
+            assert!(stdout.contains("fake"), "{stdout}");
+            assert!(stdout.contains("ok"), "{stdout}");
+            assert!(stdout.contains("2 tool(s)"), "{stdout}");
+            assert!(stdout.contains("1/1 server(s) reachable"), "{stdout}");
+        }
+
+        /// The point of `status` over `list`: an unreachable server fails, and
+        /// its own stderr is what explains why.
+        #[tokio::test]
+        async fn status_fails_and_shows_stderr_for_an_unreachable_server() {
+            let _lock = crate::test_env::lock_env().await;
+            let home = tempfile::tempdir().unwrap();
+            std::fs::write(
+                home.path().join("mcp.json"),
+                json!({
+                    "servers": {
+                        "broken": {
+                            "command": "/bin/sh",
+                            "args": ["-c", "echo 'JAVA_HOME is not set' >&2; exit 4"],
+                        },
+                        "fine": { "command": "/bin/sh", "args": ["-c", FAKE_SERVER] },
+                    },
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let _env = crate::test_env::EnvGuard::set(&[(
+                "FUTURE_HOME",
+                home.path().as_os_str().to_owned(),
+            )]);
+            let (out, sink) = Output::memory();
+
+            let error = mcp_status(&args(&[]), &out)
+                .await
+                .expect_err("one unreachable server fails the check");
+            assert_eq!(error, crate::HANDLED_EXIT.to_string());
+            let (stdout, _) = split(&sink);
+            assert!(stdout.contains("JAVA_HOME is not set"), "{stdout}");
+            assert!(stdout.contains("1/2 server(s) reachable"), "{stdout}");
+        }
+
+        #[tokio::test]
+        async fn a_disabled_server_is_reported_but_does_not_fail_status() {
+            let _lock = crate::test_env::lock_env().await;
+            let home = tempfile::tempdir().unwrap();
+            std::fs::write(
+                home.path().join("mcp.json"),
+                json!({
+                    "servers": {
+                        "off": { "command": "/nonexistent", "enabled": false },
+                        "fake": { "command": "/bin/sh", "args": ["-c", FAKE_SERVER] },
+                    },
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let _env = crate::test_env::EnvGuard::set(&[(
+                "FUTURE_HOME",
+                home.path().as_os_str().to_owned(),
+            )]);
+            let (out, sink) = Output::memory();
+
+            mcp_status(&args(&[]), &out).await.unwrap();
+            let (stdout, _) = split(&sink);
+            assert!(stdout.contains("disabled"), "{stdout}");
+            assert!(stdout.contains("1/2 server(s) reachable"), "{stdout}");
+        }
+
+        // ── a mistyped tool name ───────────────────────────────────────────
+
+        /// `describe` has always suggested alternatives; `call` used to hand the
+        /// typo to the server and print whatever it said back.
+        #[tokio::test]
+        async fn call_suggests_the_tool_the_name_was_meant_to_be() {
+            let _lock = crate::test_env::lock_env().await;
+            let home = tempfile::tempdir().unwrap();
+            std::fs::write(
+                home.path().join("mcp.json"),
+                json!({
+                    "servers": { "fake": {
+                        "command": "/bin/sh",
+                        "args": ["-c", REJECTING_SERVER],
+                    }},
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let _env = crate::test_env::EnvGuard::set(&[(
+                "FUTURE_HOME",
+                home.path().as_os_str().to_owned(),
+            )]);
+            let (out, _sink) = Output::memory();
+
+            let error = mcp_call(&args(&["fake", "plai"]), &out)
+                .await
+                .expect_err("an unknown tool fails the command");
+            assert!(error.contains("has no tool named 'plai'"), "{error}");
+            assert!(error.contains("plain"), "{error}");
+            assert!(error.contains("Did you mean"), "{error}");
+        }
+
+        /// A failing call whose tool *does* exist keeps the server's own error —
+        /// the suggestion path must not swallow a genuine failure.
+        #[tokio::test]
+        async fn call_keeps_the_servers_error_when_the_tool_exists() {
+            let _lock = crate::test_env::lock_env().await;
+            let _home = with_fake_server();
+            let (out, sink) = Output::memory();
+
+            let error = mcp_call(&args(&["fake", "boom"]), &out)
+                .await
+                .expect_err("a tool-reported error fails the command");
+            assert_eq!(error, crate::HANDLED_EXIT.to_string());
+            let (stdout, stderr) = split(&sink);
+            assert!(stderr.contains("engine missing"), "{stderr}");
+            assert!(stdout.is_empty(), "{stdout}");
+        }
+
+        // ── the frame budget ──────────────────────────────────────────────
+
+        /// A frame past the cap must say which budget it is and how to raise it;
+        /// `--max-bytes` is a print cap and cannot help here.
+        #[tokio::test]
+        async fn a_frame_over_the_cap_explains_the_read_budget() {
+            let _lock = crate::test_env::lock_env().await;
+            let home = tempfile::tempdir().unwrap();
+            std::fs::write(
+                home.path().join("mcp.json"),
+                json!({
+                    "servers": { "big": {
+                        "command": "/bin/sh",
+                        "args": ["-c", BIG_FRAME_SERVER],
+                    }},
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let _env = crate::test_env::EnvGuard::set(&[(
+                "FUTURE_HOME",
+                home.path().as_os_str().to_owned(),
+            )]);
+            let (out, _sink) = Output::memory();
+
+            // A cap this small is under any real handshake, so the failure is
+            // deterministic and does not need a multi-megabyte fixture.
+            let error = mcp_tools(&args(&["big", "--max-frame-bytes", "64"]), &out)
+                .await
+                .expect_err("a frame past the cap fails the command");
+            assert!(error.contains("larger than 64 bytes"), "{error}");
+            assert!(error.contains("--max-frame-bytes"), "{error}");
+            assert!(error.contains("FUTURE_MCP_MAX_FRAME_BYTES"), "{error}");
+            assert!(error.contains("--max-bytes"), "{error}");
+
+            // The same server passes at the default cap.
+            mcp_tools(&args(&["big"]), &out)
+                .await
+                .expect("the default cap fits a handshake");
+        }
+
+        #[tokio::test]
+        async fn a_non_numeric_frame_budget_is_rejected() {
+            let _lock = crate::test_env::lock_env().await;
+            let _home = with_fake_server();
+            let (out, _sink) = Output::memory();
+
+            let error = mcp_tools(&args(&["fake", "--max-frame-bytes", "lots"]), &out)
+                .await
+                .expect_err("a non-numeric cap is a usage error");
+            assert!(error.contains("whole number of bytes"), "{error}");
+        }
+
+        /// A server that refuses `tools/call` the way a real one refuses an
+        /// unknown name, but still answers `tools/list`.
+        const REJECTING_SERVER: &str = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *notifications/initialized*) ;;
+    *'"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18"}}\n' "$id" ;;
+    *'"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"plain","description":"works"}]}}\n' "$id" ;;
+    *'"tools/call"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32602,"message":"unknown tool"}}\n' "$id" ;;
+  esac
+done
+"#;
+
+        /// The big-frame server: a normal handshake, plus a `tools/list` answer
+        /// far larger than a deliberately tiny cap.
+        const BIG_FRAME_SERVER: &str = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *notifications/initialized*) ;;
+    *'"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18"}}\n' "$id" ;;
+    *'"tools/list"'*)
+      pad=$(printf 'x%.0s' $(seq 1 4000))
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"only","description":"%s"}]}}\n' "$id" "$pad" ;;
+  esac
+done
+"#;
     }
 }
