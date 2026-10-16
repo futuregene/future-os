@@ -22,13 +22,30 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader
 /// revision; the client keeps using what it was given.
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 
-/// Largest single JSON-RPC frame accepted from a server.
+/// Default limit on one JSON-RPC frame accepted from a server.
 ///
 /// A real server can answer `tools/list` with a few megabytes (REA: 3.1 MB for
-/// 207 tools), which must still fit. The cap is the backstop behind
-/// `future mcp call --max-bytes`: that flag bounds what is *printed*, this
-/// bounds what can be read into memory at all.
-pub const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
+/// 207 tools), which must still fit. This bounds what is *read into memory*,
+/// which is a different budget from `future mcp call --max-bytes` (what is
+/// *printed*): the print cap cannot help when the frame itself will not fit.
+/// Raise it with `--max-frame-bytes` or `FUTURE_MCP_MAX_FRAME_BYTES`.
+pub const DEFAULT_MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
+
+/// Environment variable that overrides [`DEFAULT_MAX_FRAME_BYTES`].
+pub const MAX_FRAME_BYTES_ENV: &str = "FUTURE_MCP_MAX_FRAME_BYTES";
+
+/// The frame cap in effect: `FUTURE_MCP_MAX_FRAME_BYTES` when it parses, the
+/// default otherwise.
+///
+/// A malformed value is ignored rather than fatal: this is a read budget, and
+/// refusing to run because it is misspelled would be worse than using it.
+pub fn max_frame_bytes_from_env() -> usize {
+    std::env::var(MAX_FRAME_BYTES_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|bytes| *bytes > 0)
+        .unwrap_or(DEFAULT_MAX_FRAME_BYTES)
+}
 
 /// Ceiling on `tools/list` pages followed, so a server that repeats the same
 /// `nextCursor` cannot spin forever.
@@ -85,6 +102,7 @@ pub struct Session<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> {
     writer: W,
     next_id: u64,
     timeout: Duration,
+    max_frame_bytes: usize,
 }
 
 impl<R, W> Session<R, W>
@@ -98,7 +116,14 @@ where
             writer,
             next_id: 1,
             timeout,
+            max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
         }
+    }
+
+    /// Override the frame cap (see [`DEFAULT_MAX_FRAME_BYTES`]).
+    pub fn with_max_frame_bytes(mut self, bytes: usize) -> Self {
+        self.max_frame_bytes = bytes;
+        self
     }
 
     /// `initialize` followed by the `notifications/initialized` ack.
@@ -191,7 +216,8 @@ where
 
     async fn await_response(&mut self, id: u64, method: &str) -> Result<Value, String> {
         loop {
-            let Some(frame) = read_frame(&mut self.reader, MAX_FRAME_BYTES).await? else {
+            let Some(frame) = read_frame(&mut self.reader, self.max_frame_bytes, method).await?
+            else {
                 return Err(format!(
                     "the MCP server closed its output before answering '{method}'"
                 ));
@@ -240,10 +266,13 @@ fn describe_error(error: &Value) -> String {
 
 /// Read one newline-delimited frame, refusing anything past `limit` bytes.
 ///
-/// `Ok(None)` means the server closed its output.
+/// `Ok(None)` means the server closed its output. `method` names what was being
+/// awaited, and the over-limit error explains both budgets, because the print
+/// cap (`call --max-bytes`) cannot rescue a frame that will not fit in memory.
 async fn read_frame<R: AsyncRead + Unpin>(
     reader: &mut BufReader<R>,
     limit: usize,
+    method: &str,
 ) -> Result<Option<Vec<u8>>, String> {
     let mut frame = Vec::new();
     loop {
@@ -255,6 +284,12 @@ async fn read_frame<R: AsyncRead + Unpin>(
             return Ok(if frame.is_empty() { None } else { Some(frame) });
         }
         if let Some(end) = available.iter().position(|byte| *byte == b'\n') {
+            // The cap has to be checked here too: a frame that arrives together
+            // with its newline is otherwise never measured, and the limit would
+            // depend on how the pipe happened to chunk it.
+            if frame.len() + end > limit {
+                return Err(over_cap_error(limit, method));
+            }
             frame.extend_from_slice(&available[..end]);
             reader.consume(end + 1);
             return Ok(Some(frame));
@@ -263,11 +298,20 @@ async fn read_frame<R: AsyncRead + Unpin>(
         frame.extend_from_slice(available);
         reader.consume(taken);
         if frame.len() > limit {
-            return Err(format!(
-                "the MCP server sent a frame larger than {limit} bytes"
-            ));
+            return Err(over_cap_error(limit, method));
         }
     }
+}
+
+/// The over-cap message: it names what was being awaited and both budgets, so
+/// the reader is not left with only `--max-bytes`, which cannot help.
+fn over_cap_error(limit: usize, method: &str) -> String {
+    format!(
+        "the MCP server sent a frame larger than {limit} bytes while answering '{method}'\n\
+         This is the read budget (what is held in memory), which `--max-bytes` does not affect. \
+         Raise it with --max-frame-bytes <bytes> or {MAX_FRAME_BYTES_ENV}, or make the server \
+         answer with less — many servers have their own response budget."
+    )
 }
 
 // ── The spawned server ─────────────────────────────────────────────────────
@@ -286,6 +330,17 @@ pub struct ServerProcess {
 impl ServerProcess {
     /// Spawn `name` (the configured server) and complete the MCP handshake.
     pub async fn start(name: &str, spec: &ServerSpec, timeout: Duration) -> Result<Self, String> {
+        Self::start_with_frame_cap(name, spec, timeout, max_frame_bytes_from_env()).await
+    }
+
+    /// [`start`](Self::start) with an explicit frame cap (see
+    /// [`DEFAULT_MAX_FRAME_BYTES`]).
+    pub async fn start_with_frame_cap(
+        name: &str,
+        spec: &ServerSpec,
+        timeout: Duration,
+        max_frame_bytes: usize,
+    ) -> Result<Self, String> {
         let mut command = tokio::process::Command::new(&spec.command);
         command
             .args(&spec.args)
@@ -329,7 +384,8 @@ impl ServerProcess {
             tokio::spawn(async move { drain_stderr(stderr, tail).await });
         }
 
-        let mut session = Session::new(stdout, stdin, timeout);
+        let mut session =
+            Session::new(stdout, stdin, timeout).with_max_frame_bytes(max_frame_bytes);
         if let Err(error) = session.initialize().await {
             let mut message = format!("the MCP server '{name}' failed its handshake: {error}");
             let tail = tail_of(&stderr_tail);
@@ -553,7 +609,81 @@ mod tests {
         server_out.write_all(&[b'x'; 200]).await.unwrap();
 
         let mut reader = BufReader::new(client_in);
-        let error = read_frame(&mut reader, 64).await.unwrap_err();
+        let error = read_frame(&mut reader, 64, "tools/call").await.unwrap_err();
         assert!(error.contains("larger than 64 bytes"), "{error}");
+    }
+
+    /// The over-cap error must be actionable: name the method being awaited,
+    /// distinguish the read budget from the print budget, and give both knobs.
+    #[tokio::test]
+    async fn an_over_cap_frame_says_how_to_raise_the_budget() {
+        let (client_out, server_in) = tokio::io::duplex(4096);
+        let (mut server_out, client_in) = tokio::io::duplex(4096);
+        drop(client_out);
+        drop(server_in);
+        server_out.write_all(&[b'x'; 200]).await.unwrap();
+
+        let mut reader = BufReader::new(client_in);
+        let error = read_frame(&mut reader, 64, "tools/call").await.unwrap_err();
+        assert!(error.contains("answering 'tools/call'"), "{error}");
+        assert!(error.contains("--max-frame-bytes"), "{error}");
+        assert!(error.contains(MAX_FRAME_BYTES_ENV), "{error}");
+        assert!(error.contains("--max-bytes"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn the_frame_cap_can_be_raised_for_one_session() {
+        // A frame that arrives together with its newline must still be measured,
+        // not accepted because of how the pipe chunked it.
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": { "tools": [], "padding": "y".repeat(20_000) },
+        });
+        let mut bytes = serde_json::to_vec(&payload).unwrap();
+        bytes.push(b'\n');
+
+        // The server ends stay alive: dropping the read end would turn the
+        // client's *write* into a broken pipe, and the cap would never be read.
+        let (client_out, _server_in) = tokio::io::duplex(64 * 1024);
+        let (mut server_out, client_in) = tokio::io::duplex(64 * 1024);
+        server_out.write_all(&bytes).await.unwrap();
+        server_out.flush().await.unwrap();
+
+        let mut strict =
+            Session::new(client_in, client_out, Duration::from_secs(5)).with_max_frame_bytes(1024);
+        let error = strict.request("tools/list", json!({})).await.unwrap_err();
+        assert!(error.contains("larger than 1024 bytes"), "{error}");
+
+        // The same bytes pass under a raised cap: that is what the knob buys.
+        let (client_out, _server_in) = tokio::io::duplex(64 * 1024);
+        let (mut server_out, client_in) = tokio::io::duplex(64 * 1024);
+        server_out.write_all(&bytes).await.unwrap();
+        server_out.flush().await.unwrap();
+        let mut relaxed = Session::new(client_in, client_out, Duration::from_secs(5))
+            .with_max_frame_bytes(64 * 1024);
+        let result = relaxed.request("tools/list", json!({})).await.unwrap();
+        assert_eq!(result["tools"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn a_malformed_frame_budget_falls_back_to_the_default() {
+        // Env vars are process-global and cargo runs tests in threads, so this
+        // holds the shared lock (see `crate::test_env`).
+        let _lock = crate::test_env::lock_env().await;
+        let _guard = crate::test_env::EnvGuard::remove(&[MAX_FRAME_BYTES_ENV]);
+        assert_eq!(max_frame_bytes_from_env(), DEFAULT_MAX_FRAME_BYTES);
+
+        // Not fatal: this is a read budget, and a typo should not stop the CLI.
+        for raw in ["", "  ", "abc", "0", "-5", "12.5"] {
+            std::env::set_var(MAX_FRAME_BYTES_ENV, raw);
+            assert_eq!(
+                max_frame_bytes_from_env(),
+                DEFAULT_MAX_FRAME_BYTES,
+                "raw={raw:?}"
+            );
+        }
+        std::env::set_var(MAX_FRAME_BYTES_ENV, "1048576");
+        assert_eq!(max_frame_bytes_from_env(), 1_048_576);
     }
 }
