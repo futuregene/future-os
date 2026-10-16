@@ -22,6 +22,7 @@
 | `future account profile` / `balance` | 用户账户与剩余额度 |
 | `future skills list` | 已安装与目录中的技能 |
 | `future tools list` / `describe <name>` | **CLI** 可调用的平台/浏览器工具（不是模型的 `read`/`write`/`edit`/`shell`，那组按会话设置） |
+| `future mcp list` | `~/.future/mcp.json` 中配置的 MCP 服务器，以及每个要执行什么命令 |
 | `future session list --json` | 全部已记录会话（新的在前，每条带 `cwd`、模型与标题） |
 | `future session info <id> [--json]` | 单个会话的模型、cwd、消息/工具计数、token 与成本 |
 | `future session status <id> [--json] [--metrics]` | 单个会话的**实时**状态：生效中的工具权限与沙箱档、上下文占用、已加载的上下文文件与技能、活动/排队 run、待审批项 |
