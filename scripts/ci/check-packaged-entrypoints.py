@@ -99,7 +99,7 @@ def main():
                     require("NEEDED" not in dynamic, f"{name} CLI is dynamically linked")
                     if name != "cli":
                         probe(f"{name}-desktop-help", directory / "futureos", ["--help"],
-                              "Usage: futureos [--help]", home)
+                              "Usage: futureos [--re-pair] [--help]", home)
                         probe(f"{name}-headless-help", directory / "futureos-headless", ["--help"],
                               "Usage: futureos-headless", home)
                         run(f"{name}-headless-old-glibc", ["bash", "scripts/ci/check-headless-linux.sh",
@@ -121,7 +121,7 @@ def main():
                 for name, directory in [("nsis", nsis_root), ("portable", portable_root)]:
                     for binary_name, flags, expected in [
                         ("future.exe", ["--version"], version),
-                        ("futureos.exe", ["--help"], "Usage: futureos [--help]"),
+                        ("futureos.exe", ["--help"], "Usage: futureos [--re-pair] [--help]"),
                     ]:
                         matches = [p for p in directory.rglob("*")
                                    if p.is_file() and p.name.lower() == binary_name]
