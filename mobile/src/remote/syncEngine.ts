@@ -914,12 +914,22 @@ export class SyncEngine {
       if (verdict.kind === "apply") {
         advanceCursor(lane.cursor, event.runId!, verdict.idx);
         append(event);
-        // A run whose first seen event has idx > 0 (mid-run join or an
-        // out-of-order first delivery) has an unknown prefix (H3) — reconcile
-        // it from -1 so the missing prefix is recovered. A feed that omits
-        // indices by design has no recoverable prefix: the peer never sends
-        // those slices, so the reconcile would only show a sync notice.
-        if (wasFirst && (verdict.idx ?? 0) > 0 && !omitsIndices) {
+        // A run whose first seen frame leaves its prefix incomplete is a run
+        // this client joined in flight: the beginning — the prompt, the reply's
+        // first half — is only in the journal, so reconcile it from -1. The
+        // cursor already knows whether the beginning is present: a frame that
+        // covers it (a coalesced range from idx 0) marks the prefix complete and
+        // spends nothing here.
+        //
+        // The trimmed lane's tolerance for holes (above) is the *other* case and
+        // must not reach this one: it is about slices the peer omits inside a run
+        // this client already renders whole. A join is missing the *envelope*
+        // events — the prompt, `agent_start`, the reply's text — and
+        // `remote_host::lean` drops reasoning/argument slices, never those, so
+        // the journal can rebuild exactly what this client displays. The
+        // desktop's remote client (`useRemoteTimeline`) draws the same line
+        // between a joined run and a hole it is already following.
+        if (wasFirst && !isPrefixComplete(lane.cursor, event.runId)) {
           this.enqueueReplay(lane, { reason: "prefix", runId: event.runId ?? "" });
         }
       } else {
