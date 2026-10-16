@@ -197,6 +197,9 @@ pub(super) async fn initialize(
     // two different roots must never replace each other's local listener.
     #[cfg(unix)]
     let local_endpoint = if tcp_bind.is_none() {
+        // A shared/network-mounted data root can make this reservation slow;
+        // name the phase so a long wait reads as progress, not a hang.
+        tracing::info!("Agent startup: reserving the local endpoint");
         Some(future_rpc::transport::reserve_local_endpoint().await?)
     } else {
         None
@@ -255,6 +258,7 @@ pub(super) async fn initialize(
 
     cancellation.check()?;
     config.validate_environment()?;
+    tracing::info!("Agent startup: binding the gRPC endpoint");
     let listener = match tcp_bind {
         Some((host, port)) => crate::grpc::AgentListener::bind_tcp(&host, port).await?,
         None => {

@@ -249,7 +249,14 @@ impl SqliteStore {
                 bail!("legacy retry source is missing");
             }
         }
-        for path in paths {
+        let candidates = paths.len();
+        if candidates > 0 {
+            tracing::info!(
+                candidates,
+                "Agent startup: scanning for legacy sessions to import"
+            );
+        }
+        for (index, path) in paths.into_iter().enumerate() {
             cancellation.check()?;
             let id = path
                 .file_stem()
@@ -275,6 +282,15 @@ impl SqliteStore {
             {
                 continue;
             }
+            // One line per session: the only visible signal while a large
+            // history is read from slow storage, so it is deliberately
+            // per-session and not a periodic summary.
+            tracing::info!(
+                session = %id,
+                index = index + 1,
+                candidates,
+                "Agent startup: importing legacy session"
+            );
             let mut sources = vec![read_source_cancellable(path, cancellation)?];
             let events_root = if directory.file_name().and_then(|s| s.to_str()) == Some("sessions")
             {
@@ -367,6 +383,9 @@ impl SqliteStore {
                 tx.commit()?;
                 Ok(())
             })?;
+        }
+        if candidates > 0 {
+            tracing::info!(candidates, "Agent startup: legacy session scan complete");
         }
         cancellation.check()?;
         let cancellation = cancellation.clone();
