@@ -441,9 +441,12 @@ pub(super) fn auto_name_thread(thread_id: &str, first_message: &str) {
     if trimmed.is_empty() {
         return;
     }
-    // Truncate to ~40 chars visible width (same as the TUI's truncate_visible).
-    let title: String = trimmed.chars().take(40).collect();
-    let title = if title.len() < trimmed.len() {
+    // Truncate to ~40 chars visible width (same as the TUI's truncate_visible),
+    // from the message's plain text — a title is not a place to draw markdown,
+    // and the Agent names an unnamed session the same way (future_rpc::title).
+    let plain = future_rpc::title::plain_title_text(trimmed);
+    let title: String = plain.chars().take(40).collect();
+    let title = if title.len() < plain.len() {
         format!("{}…", title)
     } else {
         title

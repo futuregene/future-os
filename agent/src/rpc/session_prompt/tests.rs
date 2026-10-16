@@ -230,7 +230,7 @@ fn session_info_session_name_never_empty() {
                 c.as_str().unwrap_or("").to_string()
             }
         })
-        .map(|s| crate::session::truncate_visible(s.trim(), 40))
+        .map(|s| crate::session::first_message_title(s.as_str()))
         .unwrap_or_default();
     assert!(!name.is_empty());
     assert_eq!(name, "hello world");

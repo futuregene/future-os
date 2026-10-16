@@ -418,11 +418,15 @@ pub(crate) async fn prepare_remote_prompt(
 }
 
 /// Derive a thread title from the first message, matching the GUI new-chat
-/// draft (`deriveThreadTitle`): collapse whitespace, take 28 chars, ellipsize.
-/// Empty input falls back to the default chat title so the row isn't blank.
+/// draft (`deriveThreadTitle`): plain text, whitespace collapsed, 28 chars,
+/// ellipsized. Empty input falls back to the default chat title so the row
+/// isn't blank.
+///
+/// The plain text matters here: a phone message may open with a reference to
+/// another conversation (`[标题](futureos://session/<id>)`), and a title made of
+/// that link names this conversation after the one it points at.
 pub(crate) fn derive_thread_title(content: &str) -> String {
-    let compact = content.split_whitespace().collect::<Vec<_>>().join(" ");
-    let compact = compact.trim();
+    let compact = future_rpc::title::plain_title_text(content);
     if compact.is_empty() {
         return "New Chat".to_string();
     }
@@ -430,7 +434,7 @@ pub(crate) fn derive_thread_title(content: &str) -> String {
     if chars.len() > 28 {
         format!("{}...", chars.into_iter().take(28).collect::<String>())
     } else {
-        compact.to_string()
+        compact
     }
 }
 

@@ -173,11 +173,14 @@ fn session_title(summary: &AgentSessionSummary) -> String {
     }
 
     // Nothing named it: the first user message is the most descriptive title.
+    // `plain_title_text` is the same rule the Agent applies when it falls back
+    // to the message for `session_name`, so a reference to another conversation
+    // does not become this thread's title on one surface and not the other.
     if let Some(ref first) = summary.first_message {
-        let trimmed = first.trim();
-        if !trimmed.is_empty() {
-            let title: String = trimmed.chars().take(40).collect();
-            return if title.len() < trimmed.len() {
+        let plain = future_rpc::title::plain_title_text(first);
+        if !plain.is_empty() {
+            let title: String = plain.chars().take(40).collect();
+            return if title.len() < plain.len() {
                 format!("{}…", title)
             } else {
                 title
@@ -1174,6 +1177,26 @@ mod tests {
             super::super::test_support::Reply::Reject(String::new()),
         );
         assert!(list_agent_sessions().await.is_empty());
+    }
+
+    /// A first message may open with a reference to another conversation. The
+    /// title must be the question, not the link: this thread is not that one,
+    /// and its own name then appears twice in a list.
+    #[test]
+    fn session_title_drops_a_conversation_reference_from_the_first_message() {
+        let summary = AgentSessionSummary {
+            id: "abc".into(),
+            name: None,
+            cwd: "/Users/test/proj".into(),
+            model: "m".into(),
+            first_message: Some(
+                "[手机截图镜像修复](futureos://session/20261016-142101-2a944dead697482d8a6adad9942fe403) 这个会话在流式回复中"
+                    .into(),
+            ),
+            parent_session_id: String::new(),
+            is_streaming: false,
+        };
+        assert_eq!(session_title(&summary), "这个会话在流式回复中");
     }
 
     #[test]
