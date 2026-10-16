@@ -156,6 +156,10 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'desktop/src-tauri/**'
+              # Installer-only inputs are covered by windows_update. Keep
+              # update-launcher.ps1 included: Rust embeds it with include_str!.
+              - '!desktop/src-tauri/windows/installer-hooks.nsh'
+              - '!desktop/src-tauri/windows/installer-preflight.ps1'
               - '.cargo/**'
               - 'rust-toolchain.toml'
               # The desktop backend path-depends on future-rpc; changes there must
@@ -170,6 +174,9 @@ jobs:
               - 'packages/app-workspaces/**'
               - 'orchestration/tasks/**'
               - 'desktop/src-tauri/**'
+              # These two scripts do not change the Agent runtime lifecycle.
+              - '!desktop/src-tauri/windows/installer-hooks.nsh'
+              - '!desktop/src-tauri/windows/installer-preflight.ps1'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.cargo/**'
