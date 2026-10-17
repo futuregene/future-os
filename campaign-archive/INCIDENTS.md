@@ -2994,3 +2994,88 @@ and "owned" are different states, and only the second one routes work.**
 
 Recorded because it took a live inspection of `agent list` to see the mismatch at all: nothing in the
 ticket, the lease, or the delivery said "the claimer cannot write these files".
+## F.98 — 494 commits of campaign work sat on one machine, and the reason they could not simply be pushed
+
+**What was true.** `test/cov100-r2` was 494 commits ahead of `origin/main` and no remote branch
+contained its tip. The relay caught it, correctly: one worktree, one disk, no second copy of the
+ledger, the nine reviews, or the measurements.
+
+**Why `git push -u origin test/cov100-r2` was not the fix.** That branch tracks `.future/**`, which:
+
+* `.gitignore` excludes (lines 42 and 90) and **no remote branch tracks** — `origin/main`,
+  `docs/auto-approval-design` and `remote_execution` all contain **zero** `.future/` paths;
+* holds **1.5 GB** of the agent's own run journals (`run_*.live.jsonl`, one alone at 17.5 MB) plus
+  the lcov captures.
+
+So pushing it verbatim would write 1.5 GB of private run logs permanently into the remote history, in a
+repository whose own convention says that directory is not versioned. The measurement: 2365 blobs,
+**1649.7 MB** total, of which **1495.2 MB is `.future/goal`** and 52.8 MB `.future/cov100`. The real
+payload — every source and document I actually authored — is **35 files / 3085 insertions**.
+
+**What I did instead.** A clean branch `cov100/ledger-backup` from `origin/main`:
+
+* the **real payload** (module records, nine review documents, waiver ledger, platform-coverage,
+  real-network, and the source changes already merged via #1167), checked out path by path so nothing
+  under `.future/` could leak — verified `git status | grep -c .future` = 0;
+* `campaign-archive/` — the 1.5 MB **text** of `.future/cov100` (158 files: every `accept-*.txt`
+  verdict, `INCIDENTS` F.1–F.97, the tool suite with its self-tests, CLOSEOUT, PLAN, FLAKES, and the
+  final report), under a name git does not ignore. Its README states it is a backup and that
+  `docs/testing/` remains the source of truth for every number.
+
+**Deliberately excluded: the `.info` captures and `baseline/`.** They measure a specific revision, and
+the module records already name which artifact each figure came from. A stale capture sitting in the
+repo under an inviting name is exactly the failure this campaign spent its time removing — better to
+have no capture than one a reader might mistake for current.
+
+**Result.** Remote tracked size of the backup branch: 55.2 MB, versus 1.65 GB for a verbatim push. The
+work is off the single disk; the campaign branch stays where it is, unpushed, by design.
+
+**The rule.** A "just push it" instruction is about **durability**, not about a specific command. When
+the literal command would have a side effect the requester did not mention (here: 1.5 GB of private
+logs forever), the honest reading is to achieve the durability and report the deviation with numbers.
+I am not recording this as a disagreement — the relay asked for backup and that is what it got.
+## F.99 — I merged two different records' "8 failures" into one, and got the family wrong too
+
+**What I wrote.** Commit `9646dd097`'s message, describing the app-data module's upper bound:
+
+> "the headless leg had 8 failures, all the standing port-8022 family in `remote/remote_peer`,
+> outside the ten measured scopes."
+
+**What the record actually says** (`module-tauri-appdata.md`, §S29 area, line 2126):
+
+> "`2054 passed; 8 failed`. All eight are the **CLI-discovery family** of S5.5a — five `cli_tool::tests::*`
+> …, two `headless::tests::*` bootstrap tests and `skills_bootstrap::tests::the_bootstrap_spawns_the_cli_…`
+> — every one of them in a module **outside this unit's eleven scopes**."
+
+Two errors in one sentence, both created by the same act:
+
+1. **Wrong family.** I attributed them to the port-8022 bind-contention family. Port-8022 belongs to a
+   *different* record — `module-tauri-headless.md` §5.3, whose failure list is "7 × `8022` (outside
+   scope) + 1 × `cli_tool::tests::a_runnable_cli_on_path_is_discovered_and_probed` (**in scope**, cost
+   0 lines, because that file's uncovered set is identical to the run where it passed) + the
+   segment-3 revoked arm, recovered by a re-run". My sentence took the *headless* record's 8022 family
+   and the *app-data* record's count and joined them.
+2. **Wrong reachability of the attribution.** "outside the ten measured scopes" is true for app-data's
+   eleven scopes. But `cli_tool.rs`, `headless/` and `skills_bootstrap.rs` are **inside**
+   `module-tauri-headless`'s twelve scopes — so the same failure set is in-scope for that module and
+   out-of-scope for this one. A claim "outside the scopes" is only meaningful with the module named.
+
+**Why the second error matters more than the first.** The campaign's whole method rests on
+"out of scope" meaning something checkable. A sentence that says "8 failures, all outside" without
+naming which module's scopes is **true of one record and false of another in the same tree**, and it
+reads identically either way. The relay caught the in-scope `cli_tool` failure from §5.3; the deeper
+problem is that I had pulled the family from §5.3 and the count from app-data and never noticed they
+were two lists.
+
+**Where the error did and did not propagate.** Checked: `FINAL-REPORT.md` and
+`docs/testing/waiver-ledger.md` carry **no** such claim (`grep` for `8022`, `upper bound`,
+`CLI-discovery` finds nothing in the report). The record itself is correct. The error lives only in an
+immutable commit message, which is why it is recorded here rather than silently amended.
+
+**Rules.**
+* When two records both report "8 failures", the count is not an identifier — **the family is**. Quote
+  the mechanism, not the number.
+* "Outside the scope" must name the module: *this* module's scopes. The same failing test can be
+  outside one module's scope and inside another's, and both statements are useful only when labelled.
+* A failure that is in-scope but costs 0 lines is a *stronger* fact than an out-of-scope one, because
+  it shows the residual does not depend on it. It deserves the extra sentence, not the summary's bin.
