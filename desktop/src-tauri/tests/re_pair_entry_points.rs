@@ -261,6 +261,15 @@ fn the_bin_refuses_re_pair_without_a_terminal() {
 /// `invitation_notice` turns into "No pairing invitation was issued: …". Either shape proves
 /// the reply reached the launcher, and asserting one would make this test depend on the
 /// account state of whoever runs it.
+///
+/// macOS only, for a measured precondition: this test needs a REAL `futureos` process to
+/// bind the single-instance socket and answer the hand-off, and on the headless Linux
+/// runner the Desktop cannot start at all (tao panics with "Failed to initialize GTK").
+/// The failure mode was `the Desktop never bound …_si.sock within 60s`, which the shell
+/// record already tracks as §S11.10.2 - a late or absent listener bind, not a launcher
+/// defect. Gated rather than turned into a skip, so the arm stays exercised where a
+/// Desktop can actually run.
+#[cfg(target_os = "macos")]
 #[test]
 fn the_pty_launcher_forwards_to_a_running_desktop_and_prints_the_answer() {
     let root = isolated_root("forwarded");
