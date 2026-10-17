@@ -790,7 +790,17 @@ mod tests {
     /// An explicit update check takes the endpoint its caller resolved; here it
     /// is a dead loopback port, so the check fails without a network and
     /// without ever reaching the production CDN.
-    #[cfg(feature = "gui")]
+    ///
+    /// macOS only, and the reason is a product rule rather than a platform gap:
+    /// `commands::update::check_app_update_impl` returns early with
+    /// `Ok(UpdateStatus { platform_supported: false, .. })` when
+    /// `platform_allows_updates()` is false, and that predicate is
+    /// `is_debian_deb_install()` on Linux and `bundle_type() == Some(Nsis)` on
+    /// Windows - both false in a `cargo test` build. So on those targets the
+    /// function correctly never looks at the endpoint this test supplies, and
+    /// `is_err()` cannot hold. The macOS run is where the endpoint is actually
+    /// consumed.
+    #[cfg(all(feature = "gui", target_os = "macos"))]
     #[tokio::test]
     async fn an_explicit_update_check_uses_the_endpoint_it_is_given() {
         crate::install_rustls_provider();
