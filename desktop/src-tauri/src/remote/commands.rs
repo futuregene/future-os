@@ -342,28 +342,21 @@ pub(super) async fn command_loop_with_ready(
                         )
                         .await;
                 } else {
+                    // Whether this is the pairing's first handshake — the one
+                    // that puts the device in front of the machine. Read before
+                    // the commit, acted on after it: the access epoch's critical
+                    // section is for deciding *whether* a result installs, and
+                    // it must stay short. Persisting a control change is file
+                    // work, and a handshake that held that lock while writing
+                    // would stall every other connection's handshake behind it.
+                    let first_handshake = !handshake.confirmed.load(Ordering::Acquire);
                     let process = || {
                         let result = handshake
                             .secure
                             .handshake(&msg.payload, &handshake.bridge_instance_id);
                         if let Ok(data) = &result {
                             if data.get("confirmation").is_some() {
-                                // A pairing that has *ever* completed a secure
-                                // handshake is the moment its device joins this
-                                // machine, and the moment it takes control: the
-                                // user has just scanned a code or pressed
-                                // "add a device" on the machine in front of
-                                // them. Only the first such handshake counts —
-                                // a reconnect must leave control where it is,
-                                // or two devices would evict each other forever.
-                                if !handshake.confirmed.swap(true, Ordering::AcqRel) {
-                                    let moved =
-                                        super::SUPERVISOR.claim_control(&handshake.creds.pair_id);
-                                    if let Some(previous) = moved {
-                                        super::publish_standby(&previous);
-                                    }
-                                    super::publish_control(&handshake.creds.pair_id, "active");
-                                }
+                                handshake.confirmed.store(true, Ordering::Release);
                             }
                         }
                         result
@@ -375,6 +368,13 @@ pub(super) async fn command_loop_with_ready(
                         },
                         None => process(),
                     };
+                    if first_handshake && result.is_ok() {
+                        let moved = super::SUPERVISOR.claim_control(&handshake.creds.pair_id);
+                        if let Some(previous) = moved {
+                            super::publish_standby(&previous);
+                        }
+                        super::publish_control(&handshake.creds.pair_id, "active");
+                    }
                     // A refused handshake is the one pairing failure that used to
                     // leave no trace anywhere: the phone only reports that the
                     // desktop would not authenticate, and the reason never left
