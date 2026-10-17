@@ -158,12 +158,26 @@ fn hold_desktop_lock(root: &Path) -> std::fs::File {
 /// `forkpty`, and the child sees a real tty (`isatty(0) && isatty(1)`), which is the exact
 /// predicate `require_terminal` reads.
 fn run_on_a_pty(root: &Path, args: &[&str]) -> std::process::Output {
-    Command::new("/usr/bin/script")
-        .arg("-q")
-        .arg("/dev/null")
-        .arg(bin())
-        .args(args)
-        .stdin(Stdio::null())
+    // `script` allocates the pty, but the two implementations disagree about how the
+    // command is passed: BSD (macOS) takes it as trailing argv (`script -q /dev/null cmd
+    // args...`), while util-linux (the Linux runners) takes it as ONE `-c` string and would
+    // otherwise read `--re-pair` as its own option ("unrecognized option '--re-pair'").
+    // `-e` makes util-linux return the child's status instead of its own.
+    let mut cmd = Command::new("/usr/bin/script");
+    #[cfg(target_os = "macos")]
+    {
+        cmd.arg("-q").arg("/dev/null").arg(bin()).args(args);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut line = bin().to_string_lossy().into_owned();
+        for a in args {
+            line.push(' ');
+            line.push_str(a);
+        }
+        cmd.arg("-q").arg("-e").arg("-c").arg(line).arg("/dev/null");
+    }
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("HOME", root)
