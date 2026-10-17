@@ -1999,6 +1999,40 @@ test("two machines' same-named workspace folds one at a time", () => {
   expect(mergedTitles()).toEqual(["Local plan"]);
 });
 
+/**
+ * A fold made on a group stays on that group when the phone moves.
+ *
+ * Opening a conversation in a peer's workspace opens it on the machine that owns
+ * it, and the phone moves onto that machine with it. While a heading's fold key
+ * depended on which machine was active, that move renamed every heading: the
+ * group the reader had just folded came back open, and a fold left over from an
+ * earlier visit to that machine came back closed in its place.
+ */
+test("a workspace fold survives the phone moving onto its machine", () => {
+  // Workspaces of this test's own: folds persist in storage and in a module-level
+  // cache, so a shared id would leak into (or pick up) another test's folds.
+  const local = { workspaceId: "w-fold-move-a", workspaceName: "Fold move A" };
+  const remote = { workspaceId: "w-fold-move-b", workspaceName: "Fold move B" };
+  const rows = [
+    mergedRow("desk-a", "a1", "Local plan", local),
+    mergedRow("desk-b", "b1", "Remote plan", remote),
+  ];
+  renderMerged(rows, "desk-a");
+
+  // Fold the peer's group; the local one stays open.
+  act(() => button("Fold move B").props.onPress());
+  expect(mergedTitles()).toEqual(["Local plan"]);
+
+  // Opening a conversation under it takes the phone onto that machine — the
+  // fold the reader made there is that machine's, and must still hold.
+  renderMerged(rows, "desk-b");
+  expect(mergedTitles()).toEqual(["Local plan"]);
+
+  // And it is still the same fold: one tap opens it again.
+  act(() => button("Fold move B").props.onPress());
+  expect(mergedTitles()).toEqual(["Local plan", "Remote plan"]);
+});
+
 test("a row's own machine is named only when several machines are in the list", () => {
   renderMerged([
     mergedRow("desk-a", "a1", "Local plan"),
