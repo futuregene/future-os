@@ -44,6 +44,8 @@ Windows PowerShell：
 
 不需要也不接受 `--headless` 参数。`futureos` 只启动图形 Desktop，原来的 `--headless` 选项已移除。
 旧命令如 `futureos --headless --no-qr` 应改成 `futureos-headless --no-qr`。
+图形入口接受 `--re-pair`：在运行它的终端上打印新邀请（二维码 + 完整链接）；与它一起加
+`--no-qr` 则只打印链接。
 两个程序共享后端、数据和手机协议，不是另一套实现。
 
 无需额外指定 `--pair --qr`。程序会按当前登录与配对状态引导下一步；配对成功后也不会
@@ -197,7 +199,7 @@ Agent 会按阶段记录启动过程（模型目录、数据库、历史会话�
 | 现象 | 处理方式 |
 |---|---|
 | 缺少 `libwebkit2gtk-4.1.so.0` | 当前运行的是 GUI 二进制；请构建并运行 `futureos-headless` |
-| 提示 `--headless` 已移除或未知参数 | 使用不带该参数的 `futureos-headless`；`--no-qr`、`--re-pair` 属于独立入口 |
+| 提示 `--headless` 已移除或未知参数 | 使用不带该参数的 `futureos-headless`；`--re-pair`（以及搭配它的 `--no-qr`）两个入口都支持，其余选项属于 `futureos-headless` |
 | Agent 不可用、不兼容或实例锁占用 | 根据错误确认 owner、版本、用户和数据根，升级或正常退出外部服务；不删除锁或绕过互斥。显式端点与 external 模式只连接、不接管 |
 | 内置技能没有装上 | 查看 stderr 上的 `[skills]` 输出：`future init` 需要 `futureos-headless` 旁的 CLI 或在 PATH 上，且能访问技能目录。手机仍可自行安装技能 |
 | 提示需要交互终端 | 首次登录/配对请在真实终端执行，不要使用管道、重定向或非交互服务启动 |

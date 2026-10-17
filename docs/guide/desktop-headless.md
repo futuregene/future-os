@@ -54,6 +54,9 @@ Windows PowerShell:
 No `--headless` flag is needed or accepted. `futureos` starts only the graphical
 Desktop; its former `--headless` option has been removed. Replace old commands
 such as `futureos --headless --no-qr` with `futureos-headless --no-qr`.
+The graphical entry point does accept `--re-pair`, which prints the new
+invitation — QR code and link — on the terminal that ran it, and `--no-qr` with
+it to print the link only.
 Both executables share the backend, data and phone protocol; this is not a second
 implementation.
 
@@ -243,7 +246,7 @@ hang.
 | Symptom | Action |
 |---|---|
 | `libwebkit2gtk-4.1.so.0` missing | This is the GUI binary; build and run `futureos-headless` instead |
-| `--headless` option removed or unknown | Use `futureos-headless` without that flag; `--no-qr` and `--re-pair` belong to the standalone entrypoint |
+| `--headless` option removed or unknown | Use `futureos-headless` without that flag; `--re-pair` (and `--no-qr` with it) exists on both entry points, while the other options belong to `futureos-headless` |
 | Agent unavailable/incompatible or instance lock occupied | Read the reported owner/version, check the same user/data root, and upgrade or exit the external owner; never delete the lock or bypass it. Explicit endpoints and external mode are attach-only |
 | Built-in skills were not installed | Check the `[skills]` lines on stderr: `future init` needs the CLI beside `futureos-headless` or on PATH, and a network route to the skill catalogue. The phone can still install skills itself |
 | Interactive terminal required | Complete initial login/pairing in a real terminal, without pipes, redirection or non-interactive service startup |

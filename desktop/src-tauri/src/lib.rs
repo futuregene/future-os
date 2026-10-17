@@ -893,12 +893,12 @@ mod gui {
                 // through the channel that reaches us — its `argv` — and name a
                 // file to be answered in. Without that file the invitation only
                 // reaches the window below.
-                if let Some(crate::launch::Forwarded::RePair { reply }) =
+                if let Some(crate::launch::Forwarded::RePair { reply, no_qr }) =
                     crate::launch::forwarded_request(&args)
                 {
                     spawn_remote_re_pair(match reply {
                         Some(path) => RePairDelivery::Reply(path),
-                        None => RePairDelivery::Terminal,
+                        None => RePairDelivery::Terminal { qr: !no_qr },
                     });
                 }
             }))
@@ -1298,7 +1298,7 @@ mod gui {
         // running the auto-connect pass as well would race two starts for the same
         // pairing (the loser's invitation is then revoked by the winner's).
         if launch.re_pair {
-            spawn_remote_re_pair(RePairDelivery::Terminal);
+            spawn_remote_re_pair(RePairDelivery::Terminal { qr: !launch.no_qr });
         } else {
             spawn_remote_auto_connect();
         }
@@ -1337,8 +1337,8 @@ mod gui {
     /// Where a finished re-pair reports its outcome.
     enum RePairDelivery {
         /// This process is the Desktop and the command was typed at its terminal,
-        /// so the invitation goes there.
-        Terminal,
+        /// so the invitation goes there. `qr` is the user's `--no-qr` choice.
+        Terminal { qr: bool },
         /// Another process asked and is waiting on this file: it owns the terminal
         /// this Desktop was not started from, and it is the one that can print.
         Reply(std::path::PathBuf),
@@ -1356,10 +1356,10 @@ mod gui {
                 Err(error) => crate::launch::Reply::of_error(error.to_string()),
             };
             match delivery {
-                RePairDelivery::Terminal => {
+                RePairDelivery::Terminal { qr } => {
                     use std::io::Write;
                     let _ = std::io::stdout()
-                        .write_all(crate::launch::invitation_notice(&reply).as_bytes());
+                        .write_all(crate::launch::invitation_notice(&reply, qr).as_bytes());
                     let _ = std::io::stdout().flush();
                 }
                 RePairDelivery::Reply(path) => {

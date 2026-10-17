@@ -35,11 +35,12 @@ fn main() -> std::process::ExitCode {
                     // Another Desktop holds the pairing, so this process cannot
                     // perform the re-pair — but it can be the one that stays and
                     // prints, which is the whole point of asking from a shell.
-                    return match launch::forward_re_pair() {
+                    return match launch::forward_re_pair(options.no_qr) {
                         Ok(reply) => {
                             use std::io::Write;
-                            let _ = std::io::stdout()
-                                .write_all(launch::invitation_notice(&reply).as_bytes());
+                            let _ = std::io::stdout().write_all(
+                                launch::invitation_notice(&reply, !options.no_qr).as_bytes(),
+                            );
                             let _ = std::io::stdout().flush();
                             std::process::ExitCode::SUCCESS
                         }
