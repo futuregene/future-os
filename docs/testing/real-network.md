@@ -180,22 +180,54 @@ SYNC_MEASURE_WINDOW_MS=5000 cargo test --lib \
   -- --ignored --exact --test-threads=1 --nocapture
 ```
 
-* **(a) FAILS**: `panicked at coalesce.rs:1007: coalescing must not grow the
-  lane`. With the stub's chunks ~100 ms apart the production window merged
-  nothing, and the coalesced lane was larger than today's per-event lane.
-  **This is a real observation**, recorded rather than worked around: the
-  measurement's assertion is doing its job, and the ticket is not authorised to
-  change the coalescer. Its cause is the envelope the merged body carries
-  (`coalescedCount`) on events that merge with nothing; a production provider
-  that streams many tokens per 100 ms is the common case, but a slow provider or
-  a sparse run is not excluded. Owner decision: treat as a product finding.
-* **(b) PASSES**, and shows the intended effect when fragments do merge:
+* **(a) the production window: PASSES, and the lane is byte-identical.**
+  This line originally recorded a *failure* here — "the coalesced lane was
+  larger than today's per-event lane". That reading was wrong and is corrected
+  here; it survived because the driver printed its numbers *after* its
+  assertions, so the failing run reported none. The lane is exactly equal, not
+  larger: nothing merged, and nothing was added. This journal's `text_chunk`s
+  are **100.9–110 ms apart** against the 100 ms window, so nothing *may* merge,
+  and `Coalescer::flush` hands a lone fragment back unchanged (`merged == 0`) —
+  a merged envelope cannot land on a single event. The defect was the
+  measurement's strict `coalesced < today`, unsatisfiable for a journal that
+  cannot merge; it is fixed in `module-tauri-remote.md` §9, which keeps strict
+  shrinkage wherever a merge happens and now requires byte-identity wherever
+  none does. **No production behaviour changed** (`COALESCE_WINDOW` is still
+  100 ms; the only non-test addition is a `#[cfg(test)]` predicate).
+* **(b) a window that can merge this pacing: PASSES**, 1.94× fewer bytes — the
+  merge path itself is correct, as the first pass said.
+* **(c) the production window on a burst-paced journal: PASSES**, 2.30×. This
+  is the case the finding was really about: the journal above is a stub's
+  *floor* (one token per ~100 ms), while a real provider streams faster. A
+  second journal from the same stack, stub-paced at 20 ms, has 63 `text_chunk`s
+  **8–30 ms** apart with `tool_start`/`tool_delta`/`tool_end` between them, and
+  the unchanged 100 ms window merges it with every invariant holding: 69
+  parties accounted for, no character lost, the newest index still published.
+
+All three, re-measured 2026-10-17 on the current tree:
 
 ```
-LIVE_LANE {"events":19,"todayBytes":9234,"todayDataBytes":2206,
-  "coalescedBytes":4762,"coalescedDataBytes":2074,"published":7,
-  "parties":19,"windowMs":5000,"ratio":1.939}
+(a) LIVE_LANE {"events":19,"todayBytes":9196,"todayDataBytes":2206,
+      "coalescedBytes":9196,"coalescedDataBytes":2206,"published":19,
+      "parties":19,"windowMs":100,"ratio":1.0}
+(b) LIVE_LANE {"events":19,"todayBytes":9196,"todayDataBytes":2206,
+      "coalescedBytes":4748,"coalescedDataBytes":2074,"published":7,
+      "parties":19,"windowMs":5000,"ratio":1.9368}
+(c) LIVE_LANE {"events":69,"todayBytes":31375,"todayDataBytes":6147,
+      "coalescedBytes":13666,"coalescedDataBytes":5619,"published":21,
+      "parties":69,"windowMs":100,"ratio":2.2958}
 ```
+
+*Number provenance.* This document's first pass used a session id one character
+longer than the stored one, and every published body carries it twice
+(`sessionId` and `eventId`), so each total was high by its body count: `9234`,
+`4762` and `4459` (§3.1, §3.3b, §3.4) are the +1-id values for this same
+journal. Re-running with the stored id gives `9196`, `4748` and `4442`, and
+re-running with the id plus one character reproduces `9234`, `4762` and `4459`
+digit for digit — measured, not inferred. §3.3 and §3.4 now quote the stored-id
+values; §3.1's markers are left as measured, because its wire bytes vary per run
+anyway (the pair id is minted per run) and only its `plaintextBytes` carries the
+offset.
 
 ### 3.4 Lean trimming over the real journal
 
@@ -207,9 +239,9 @@ cargo test --lib remote::publisher::coalesce::tests::measure_real_journal_lean \
 **PASS**:
 
 ```
-LEAN_LANE {"events":19,"delivered":17,"fullBytes":9234,"leanBytes":4459,
-  "leanDataBytes":8021,"published":17,"windowMs":100,
-  "reduction":0.5171,"publishedByType":{...equals leanByType...}}
+LEAN_LANE {"events":19,"delivered":17,"fullBytes":9196,"leanBytes":4442,
+  "leanDataBytes":7987,"published":17,"windowMs":100,
+  "reduction":0.5170,"publishedByType":{...equals leanByType...}}
 ```
 
 i.e. 51.7 % fewer bytes on the real event mix, every delivered event accounted
@@ -373,12 +405,15 @@ stopped at the end; their pids were recorded in `/tmp/realnet/*.pid`.
 
 ## 8. Findings worth acting on
 
-1. **Coalescing can grow the lane when nothing merges** (§3.3a): with the
-   production 100 ms window and a provider emitting ~100 ms-spaced chunks, the
-   published bodies were larger than the per-event lane; the assertion is
-   `coalescing must not grow the lane`. Decide whether the merged envelope
-   should be omitted for single events, or the assertion relaxed with a
-   documented envelope allowance — do not silently change the measurement.
+1. ~~**Coalescing can grow the lane when nothing merges**~~ — **withdrawn
+   2026-10-17: the finding was wrong.** §3.3a's failure was a *byte-identical*
+   lane (`9196 == 9196`, `published 19/19`), not growth: the fragments were
+   100.9–110 ms apart against the 100 ms window, so nothing could merge, and
+   `flush` already hands a lone fragment back unchanged. What was wrong was the
+   measurement's strict `coalesced < today`; it now asserts "never larger",
+   keeps strict shrinkage wherever a merge happens, and requires byte-identity
+   wherever none does (`module-tauri-remote.md` §9). On burst-paced traffic the
+   unchanged production window still merges 2.30× (§3.3c). No product change.
 2. **A 12 s broker outage fails an in-flight pull at the client's 10 s budget**
    (§5.2), but the same pull succeeds later against a fresh registration; the
    host bridge recovered and answered `list_sessions` again. This is the
