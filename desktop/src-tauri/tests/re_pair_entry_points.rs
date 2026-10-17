@@ -170,7 +170,8 @@ fn run_on_a_pty(root: &Path, args: &[&str]) -> std::process::Output {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let mut line = bin().to_string_lossy().into_owned();
+        // `bin()` is `&'static str`, not a Path: it is `env!("CARGO_BIN_EXE_futureos")`.
+        let mut line = bin().to_string();
         for a in args {
             line.push(' ');
             line.push_str(a);
