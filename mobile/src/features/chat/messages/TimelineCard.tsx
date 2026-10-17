@@ -13,7 +13,8 @@ import type { TimelineCardProps } from "./types";
 import { RunIndicator, formatDuration } from "./messageUtils";
 import { useCopyState } from "./useCopyState";
 import { AttachmentChip } from "./AttachmentChip";
-import { collapsedPromptHeight, isLongPrompt } from "./promptCollapse";
+import { collapsedPromptHeight, isLongPrompt, promptPreview } from "./promptCollapse";
+import { PromptReader } from "../components/PromptReader";
 import { StatusDivider } from "./MessageStatus";
 import { buildReplyBlocks, replyTailBlock, SegmentBlock, StepRunBlock } from "./ReplyBlocks";
 
@@ -36,10 +37,10 @@ function TimelineCardView({
   // The reader's own window: a collapsed prompt's cap is bounded by it (see
   // `promptCollapse`), and a rotation has to recompute that bound.
   const { height: windowHeight } = useWindowDimensions();
-  // One bubble per row, and only a user's own prompt is ever collapsible; the
-  // state lives here rather than in a wrapper component so the row keeps its
-  // memoized identity.
-  const [promptExpanded, setPromptExpanded] = useState(false);
+  // One bubble per row, and only a user's own prompt is ever readable in full;
+  // the state lives here rather than in a wrapper component so the row keeps
+  // its memoized identity.
+  const [promptOpen, setPromptOpen] = useState(false);
   /**
    * Where this reply's tail anchor sits **inside its own row**: the block
    * list's own offset below the bubble's top, plus the anchor block's offset
@@ -228,16 +229,17 @@ function TimelineCardView({
       );
     }
     // A prompt of goal-sized prose (a multi-kilobyte envelope, a pasted log) is
-    // taller than the phone's viewport, which buries the reply under it and —
-    // measured on a reporting device — leaves the inverted transcript's layout
-    // drawing an empty bubble over the neighbouring rows. The bubble therefore
-    // starts collapsed to a fixed budget of wrapped lines and is expanded in
-    // place, the way a long code block and a long table already are. Nothing is
-    // dropped: the clipped remainder still renders, so long selection and a
-    // screen reader still reach the whole prompt.
+    // taller than the phone's viewport, and a row that tall is not drawable in
+    // this transcript: measured on a reporting device, such a bubble painted its
+    // accent fill and none of its text, at any scroll position, and re-opening
+    // the app recomputed the same blank row. The failure follows the row's
+    // height rather than the words — the same prompt renders when it is clipped
+    // — so the transcript keeps a short preview and the control below opens the
+    // whole prompt in a reader of its own (see `promptCollapse` and
+    // `PromptReader`). Expanding in place cannot be offered: that is the shape
+    // that fails.
     const longPrompt = isLongPrompt(item.text);
-    const promptCollapsed = longPrompt && !promptExpanded;
-    const promptToggle = t(promptCollapsed ? "chat.expandPrompt" : "chat.collapsePrompt");
+    const preview = longPrompt ? promptPreview(item.text) : { head: item.text, truncated: false };
     return (
       <View style={styles.userBlock}>
         {item.text.trim().length > 0 && (
@@ -247,27 +249,26 @@ function TimelineCardView({
           <View style={[
             styles.message,
             styles.userMessage,
-            promptCollapsed
+            longPrompt
               ? [styles.promptCollapsed, { maxHeight: collapsedPromptHeight(chat.lineHeight, windowHeight) }]
               : null,
           ]}>
             <MarkdownText
               onOpenFile={onOpenFile}
               onOpenSession={onOpenSession}
-              text={item.text}
+              text={preview.head}
               tone="onAccent"
             />
           </View>
         )}
         {longPrompt && item.text.trim().length > 0 && (
           <Pressable
-            accessibilityLabel={promptToggle}
+            accessibilityLabel={t("chat.expandPrompt")}
             accessibilityRole="button"
-            accessibilityState={{ expanded: promptExpanded }}
-            onPress={() => setPromptExpanded(value => !value)}
+            onPress={() => setPromptOpen(true)}
             style={styles.promptToggle}
           >
-            <Text style={styles.promptToggleLabel}>{promptToggle}</Text>
+            <Text style={styles.promptToggleLabel}>{t("chat.expandPrompt")}</Text>
           </Pressable>
         )}
         {item.attachments && item.attachments.length > 0 && (
@@ -280,6 +281,13 @@ function TimelineCardView({
               />
             ))}
           </View>
+        )}
+        {longPrompt && (
+          <PromptReader
+            onClose={() => setPromptOpen(false)}
+            text={item.text}
+            visible={promptOpen}
+          />
         )}
       </View>
     );
