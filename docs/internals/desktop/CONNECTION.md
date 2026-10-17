@@ -170,10 +170,12 @@ the full `futureos://remote/pair` link for the app to scan or paste — not a
 short numeric code. The graphical `futureos` entrypoint no longer accepts
 `--headless`; the standalone binary is built without GUI dependencies.
 
-**The graphical entry point accepts one flag of its own.** `futureos --re-pair`
-revokes the saved pairing and issues a fresh invitation, which is then printed to
-the terminal that asked: the code is never printed by the window, because a
-window has no terminal to print it to.
+**The graphical entry point accepts `--re-pair`, plus `--no-qr` for it.**
+`futureos --re-pair` revokes the saved pairing and issues a fresh invitation,
+which is then printed to the terminal that asked — a QR code plus the complete
+link, drawn by the same renderer the headless entry point uses (`--no-qr`, with
+`--re-pair`, prints the link only). The code is never printed by the window,
+because a window has no terminal to print it to.
 
 The flag is refused without an interactive terminal: it cuts off the connected
 device the moment it runs (pairing replaces, see §2.2), and a script is where such

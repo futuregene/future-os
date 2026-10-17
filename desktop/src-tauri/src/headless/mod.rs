@@ -454,15 +454,26 @@ where
 }
 
 fn print_invitation(label: &str, link: &str, options: &Options) -> Result<(), AppError> {
-    let columns = terminal_size::terminal_size().map(|(width, _)| usize::from(width.0));
-    let output = invitation_text(label, link, !options.no_qr, columns);
+    let output = invitation_text(label, link, !options.no_qr, terminal_columns());
     let mut stdout = std::io::stdout().lock();
     stdout.write_all(output.as_bytes())?;
     stdout.flush()?;
     Ok(())
 }
 
-fn invitation_text(label: &str, link: &str, qr: bool, columns: Option<usize>) -> String {
+/// Width of the terminal doing the printing, when it can be measured.
+pub(crate) fn terminal_columns() -> Option<usize> {
+    terminal_size::terminal_size().map(|(width, _)| usize::from(width.0))
+}
+
+/// The invitation block both terminal entry points print: label, link, and
+/// optionally the same link as a QR code.
+///
+/// Shared rather than reimplemented for `futureos --re-pair`: the graphical
+/// entry point prints the invitation on the terminal that launched it, so the two
+/// must look and degrade the same way (a narrow terminal keeps the link and says
+/// why the QR is missing).
+pub(crate) fn invitation_text(label: &str, link: &str, qr: bool, columns: Option<usize>) -> String {
     let mut output = format!("\n{label}\n{link}\n");
     if qr {
         match qrcode::QrCode::new(link.as_bytes()) {

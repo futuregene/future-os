@@ -15,24 +15,29 @@
 //! written), so a `--re-pair` started from an SSH session needs an explicit place
 //! for the running Desktop to put the invitation it just issued.
 //!
-//! This is deliberately not the headless entry point's parser: `--no-qr` exists
-//! because a terminal has to print the invitation, and a window does not.
+//! This is deliberately not the headless entry point's parser, but it shares the
+//! two flags that describe what to print: `--re-pair` asks for an invitation and
+//! `--no-qr` keeps it to the link, because both entry points print to a terminal
+//! and a QR drawn with block characters needs the width (and the terminal) a
+//! link does not.
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-pub const HELP: &str = "Usage: futureos [--re-pair] [--help]
+pub const HELP: &str = "Usage: futureos [--re-pair [--no-qr]] [--help]
 
 Start the graphical Desktop.
 
   --re-pair   Revoke the saved pairing and issue a fresh invitation, whatever
-              state the previous connection is in. The new code is printed on
-              this terminal: by this process when it starts Desktop, or by the
-              running Desktop answering through this process. Pairing a new
-              device replaces the one that was connected, so that device is cut
-              off as soon as this runs — whether or not the new code is ever
-              scanned.
+              state the previous connection is in. The invitation is printed on
+              this terminal — a QR code and the complete link — by this process
+              when it starts Desktop, or by the running Desktop answering through
+              this process. Pairing a new device replaces the one that was
+              connected, so that device is cut off as soon as this runs — whether
+              or not the new code is ever scanned.
+  --no-qr     With --re-pair, print the invitation link without drawing a QR
+              code. Use it on a narrow or redirected terminal.
   --help      Show this help without starting Desktop.
 
 To disconnect a paired device without pairing another one, use the Remote page's
@@ -61,6 +66,8 @@ const REPLY_POLL: Duration = Duration::from_millis(100);
 pub struct LaunchOptions {
     /// `--re-pair`: replace the saved pairing with a freshly issued invitation.
     pub re_pair: bool,
+    /// `--no-qr`: print that invitation as a link only, skipping the QR code.
+    pub no_qr: bool,
 }
 
 /// The parsed command line. `Help` is not a mode of running: it means the process
@@ -78,6 +85,7 @@ pub enum Launch {
     /// to, which is its own `argv`.
     ForwardRePair {
         reply: PathBuf,
+        no_qr: bool,
     },
 }
 
@@ -96,6 +104,10 @@ impl Launch {
             match args[index].as_str() {
                 "--help" | "-h" => help = true,
                 "--re-pair" => options.re_pair = true,
+                // Same flag and same meaning as the headless entry point; only
+                // its combination differs (there is nothing else this launch
+                // would print).
+                "--no-qr" => options.no_qr = true,
                 REPLY_FLAG => {
                     index += 1;
                     let value = args
@@ -112,13 +124,6 @@ impl Launch {
                             .into(),
                     );
                 }
-                "--no-qr" => {
-                    return Err(
-                        "Use futureos-headless --no-qr instead: the graphical Desktop shows the \
-                         invitation in its own window and prints nothing."
-                            .into(),
-                    );
-                }
                 // macOS Finder can pass its process serial number at launch, and
                 // only ever as the entire command line — so it is not accepted
                 // alongside a flag, which would let a real mistake hide behind it.
@@ -130,10 +135,25 @@ impl Launch {
         if help {
             return Ok(Launch::Help);
         }
+        // `--no-qr` describes how an invitation is printed, and only `--re-pair`
+        // prints one on this entry point. Accepting it alone would be a flag with
+        // no effect, which reads as "the QR was suppressed" when nothing was ever
+        // going to be drawn.
+        if options.no_qr && !options.re_pair {
+            return Err(
+                "The --no-qr option only applies to --re-pair: a plain launch prints no \
+                 invitation. Add --re-pair to replace the saved pairing, or run \
+                 futureos-headless --no-qr to print a link there."
+                    .into(),
+            );
+        }
         // Asking for help revokes nothing, whatever else was typed; a reply path
         // means the caller is the launcher and is waiting for an answer.
         if let Some(reply) = reply {
-            return Ok(Launch::ForwardRePair { reply });
+            return Ok(Launch::ForwardRePair {
+                reply,
+                no_qr: options.no_qr,
+            });
         }
         Ok(Launch::Gui(options))
     }
@@ -143,7 +163,11 @@ impl Launch {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Forwarded {
     /// A `--re-pair`, with the path to answer on when the launcher could name one.
-    RePair { reply: Option<PathBuf> },
+    ///
+    /// `no_qr` matters only for the answer this Desktop prints itself, which is
+    /// the case with no reply path: with one, the launcher owns the terminal and
+    /// its own flag decides.
+    RePair { reply: Option<PathBuf>, no_qr: bool },
 }
 
 /// Read a re-pair request out of the `argv` the single-instance plugin delivers.
@@ -157,12 +181,18 @@ pub enum Forwarded {
 pub fn forwarded_request(argv: &[String]) -> Option<Forwarded> {
     let flags = argv.get(1..).unwrap_or_default();
     match Launch::parse(flags) {
-        Ok(Launch::ForwardRePair { reply }) => Some(Forwarded::RePair { reply: Some(reply) }),
+        Ok(Launch::ForwardRePair { reply, no_qr }) => Some(Forwarded::RePair {
+            reply: Some(reply),
+            no_qr,
+        }),
         // A launch that typed `--re-pair` itself still means the same thing here:
         // it only reaches a forwarded `argv` if the ownership check in the
         // launcher failed to notice this Desktop, and the user's intent is the
         // same either way.
-        Ok(Launch::Gui(options)) if options.re_pair => Some(Forwarded::RePair { reply: None }),
+        Ok(Launch::Gui(options)) if options.re_pair => Some(Forwarded::RePair {
+            reply: None,
+            no_qr: options.no_qr,
+        }),
         _ => None,
     }
 }
@@ -292,16 +322,26 @@ pub fn read_reply(path: &Path) -> Option<Reply> {
 }
 
 /// The text a launcher prints once the request has been answered.
-pub fn invitation_notice(reply: &Reply) -> String {
+///
+/// `qr` is the user's choice (`--no-qr`), and the QR itself is drawn by the
+/// headless entry point's own renderer: the two entry points print the same
+/// invitation, so they must not grow two ideas of how it looks.
+pub fn invitation_notice(reply: &Reply, qr: bool) -> String {
     match (reply.link.as_deref(), reply.error.as_deref()) {
         (Some(link), _) => {
             let expiry = match reply.expires_at {
                 Some(expiry) => format!("It expires at Unix time {expiry}"),
                 None => "It expires shortly".to_string(),
             };
+            let invitation = crate::headless::invitation_text(
+                "PAIRING INVITATION - open the FutureOS app and scan or paste this complete \
+                 link",
+                link,
+                qr,
+                crate::headless::terminal_columns(),
+            );
             format!(
-                "\nPAIRING INVITATION - open the FutureOS app and scan or paste this complete \
-                 link\n{link}\nSingle-use. {expiry}, and pairing a new device replaces the one \
+                "{invitation}Single-use. {expiry}, and pairing a new device replaces the one \
                  that was connected, so that device is already being cut off. Do not share this \
                  link.\n"
             )
@@ -323,18 +363,18 @@ pub fn invitation_notice(reply: &Reply) -> String {
 /// what the single-instance channel forwards, and that process dies as soon as the
 /// hand-off is done. `stdin` is nulled because nothing on that path reads it — the
 /// operator's terminal belongs to the process that stays and prints.
-pub fn notifier_command(exe: &Path, reply: &Path) -> std::process::Command {
+pub fn notifier_command(exe: &Path, reply: &Path, no_qr: bool) -> std::process::Command {
     let mut command = std::process::Command::new(exe);
-    command
-        .arg("--re-pair")
-        .arg(REPLY_FLAG)
-        .arg(reply)
-        .stdin(std::process::Stdio::null());
+    command.arg("--re-pair").arg(REPLY_FLAG).arg(reply);
+    if no_qr {
+        command.arg("--no-qr");
+    }
+    command.stdin(std::process::Stdio::null());
     command
 }
 
 /// Hand the request over and wait for the answer.
-pub fn forward_re_pair() -> Result<Reply, String> {
+pub fn forward_re_pair(no_qr: bool) -> Result<Reply, String> {
     prepare_host_environment()?;
     let exe = std::env::current_exe().map_err(|error| {
         format!("Cannot locate this executable to hand the request over: {error}")
@@ -347,7 +387,7 @@ pub fn forward_re_pair() -> Result<Reply, String> {
         .suffix(".json")
         .tempfile()
         .map_err(|error| format!("Cannot create the answer file: {error}"))?;
-    let mut notifier = notifier_command(&exe, file.path())
+    let mut notifier = notifier_command(&exe, file.path(), no_qr)
         .spawn()
         .map_err(|error| format!("Cannot start the hand-off process: {error}"))?;
     await_reply(file.path(), &mut notifier)
@@ -425,35 +465,56 @@ mod tests {
     fn re_pair_is_accepted_and_help_still_wins() {
         assert_eq!(
             parse(&["--re-pair"]),
-            Ok(Launch::Gui(LaunchOptions { re_pair: true }))
+            Ok(Launch::Gui(LaunchOptions {
+                re_pair: true,
+                no_qr: false
+            }))
+        );
+        // Same flag as the headless entry point, same meaning: link only.
+        assert_eq!(
+            parse(&["--re-pair", "--no-qr"]),
+            Ok(Launch::Gui(LaunchOptions {
+                re_pair: true,
+                no_qr: true
+            }))
         );
         // Asking for help revokes nothing, whatever else was typed.
         assert_eq!(parse(&["--re-pair", "--help"]), Ok(Launch::Help));
+        assert_eq!(parse(&["--re-pair", "--no-qr", "--help"]), Ok(Launch::Help));
     }
 
     #[test]
     fn help_alone_prints_without_starting() {
         assert_eq!(parse(&["--help"]), Ok(Launch::Help));
         assert_eq!(parse(&["-h"]), Ok(Launch::Help));
-        assert!(HELP.contains("Usage: futureos [--re-pair] [--help]"));
+        assert!(HELP.contains("Usage: futureos [--re-pair [--no-qr]] [--help]"));
+        assert!(HELP.contains("--no-qr"));
         assert!(HELP.contains("futureos-headless"));
     }
 
-    /// The two headless flags must keep pointing at the other binary, and must do
-    /// so even next to `--help` (the launch that would otherwise print help and
-    /// exit successfully, hiding the mistake).
+    /// `--headless` belongs to the other binary and must keep saying so, even next
+    /// to `--help` (the launch that would otherwise print help and exit
+    /// successfully, hiding the mistake).
     #[test]
-    fn headless_flags_are_refused_and_named() {
+    fn the_headless_flag_is_refused_and_named() {
         for args in [
             vec!["--headless"],
-            vec!["--no-qr"],
             vec!["--help", "--headless"],
-            vec!["--help", "--no-qr"],
+            vec!["--re-pair", "--headless"],
         ] {
             let error = parse(&args).expect_err("not this entry point");
             assert!(error.contains("futureos-headless"), "{args:?}: {error}");
         }
         assert!(parse(&["--repair"]).is_err());
+    }
+
+    /// `--no-qr` only describes how `--re-pair` prints; alone it would be a flag
+    /// with no effect, which reads as "the QR was suppressed".
+    #[test]
+    fn no_qr_requires_re_pair_and_says_so() {
+        let error = parse(&["--no-qr"]).expect_err("nothing would be printed");
+        assert!(error.contains("--no-qr"), "{error}");
+        assert!(error.contains("--re-pair"), "{error}");
     }
 
     #[test]
@@ -470,11 +531,20 @@ mod tests {
     /// would leave the launcher waiting for an answer nobody can write.
     #[test]
     fn the_reply_flag_carries_a_path() {
-        let parsed = parse(&["--re-pair", REPLY_FLAG, "/tmp/answer.json"]);
         assert_eq!(
-            parsed,
+            parse(&["--re-pair", REPLY_FLAG, "/tmp/answer.json"]),
             Ok(Launch::ForwardRePair {
-                reply: PathBuf::from("/tmp/answer.json")
+                reply: PathBuf::from("/tmp/answer.json"),
+                no_qr: false
+            })
+        );
+        // The launch whose terminal asked for a link only hands that choice over
+        // too, so a running Desktop printing by itself honours it.
+        assert_eq!(
+            parse(&["--re-pair", "--no-qr", REPLY_FLAG, "/tmp/answer.json"]),
+            Ok(Launch::ForwardRePair {
+                reply: PathBuf::from("/tmp/answer.json"),
+                no_qr: true
             })
         );
         let error = parse(&["--re-pair", REPLY_FLAG]).expect_err("a path is required");
@@ -498,7 +568,7 @@ mod tests {
     /// locally and answer nobody).
     #[test]
     fn the_notifier_command_line_round_trips() {
-        let command = notifier_command(Path::new("/opt/futureos"), Path::new("/tmp/a.json"));
+        let command = notifier_command(Path::new("/opt/futureos"), Path::new("/tmp/a.json"), false);
         let args: Vec<String> = command
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -507,7 +577,8 @@ mod tests {
         assert_eq!(
             Launch::parse(&args),
             Ok(Launch::ForwardRePair {
-                reply: PathBuf::from("/tmp/a.json")
+                reply: PathBuf::from("/tmp/a.json"),
+                no_qr: false
             })
         );
         // What the plugin forwards is the whole `argv`, program name included.
@@ -517,7 +588,36 @@ mod tests {
         assert_eq!(
             forwarded_request(&forwarded),
             Some(Forwarded::RePair {
-                reply: Some(PathBuf::from("/tmp/a.json"))
+                reply: Some(PathBuf::from("/tmp/a.json")),
+                no_qr: false
+            })
+        );
+    }
+
+    /// The hand-off child carries the user's `--no-qr` as well as the request, so
+    /// a Desktop that ends up printing the answer itself honours it.
+    #[test]
+    fn the_notifier_forwards_no_qr() {
+        let command = notifier_command(Path::new("/opt/futureos"), Path::new("/tmp/a.json"), true);
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            Launch::parse(&args),
+            Ok(Launch::ForwardRePair {
+                reply: PathBuf::from("/tmp/a.json"),
+                no_qr: true
+            })
+        );
+        let forwarded = std::iter::once("/opt/futureos".to_string())
+            .chain(args)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            forwarded_request(&forwarded),
+            Some(Forwarded::RePair {
+                reply: Some(PathBuf::from("/tmp/a.json")),
+                no_qr: true
             })
         );
     }
@@ -529,7 +629,19 @@ mod tests {
     fn a_forwarded_re_pair_without_a_reply_path_is_still_a_request() {
         assert_eq!(
             forwarded_request(&argv(&["/opt/futureos", "--re-pair"])),
-            Some(Forwarded::RePair { reply: None })
+            Some(Forwarded::RePair {
+                reply: None,
+                no_qr: false
+            })
+        );
+        // `--no-qr` belongs to the same request, and the Desktop that prints the
+        // answer itself must honour it.
+        assert_eq!(
+            forwarded_request(&argv(&["/opt/futureos", "--re-pair", "--no-qr"])),
+            Some(Forwarded::RePair {
+                reply: None,
+                no_qr: true
+            })
         );
         // The program name is not a flag, and nothing else is a request.
         assert_eq!(forwarded_request(&argv(&["/opt/futureos"])), None);
@@ -600,7 +712,7 @@ mod tests {
         assert_eq!(reply.link.as_deref(), Some(code.as_str()), "{reply:?}");
         assert_eq!(reply.expires_at, Some(expires_at));
         assert_eq!(reply.error, None);
-        assert!(invitation_notice(&reply).contains(&code));
+        assert!(invitation_notice(&reply, true).contains(&code));
 
         // The invitation rule still refuses a code that cannot be scanned — this
         // is about the readiness probe, not about printing expired invitations.
@@ -610,11 +722,14 @@ mod tests {
 
     #[test]
     fn the_notice_never_reports_success_without_an_invitation() {
-        let issued = invitation_notice(&Reply {
-            link: Some("futureos://remote/pair?v=2&code=x".into()),
-            expires_at: Some(1_700_000_000),
-            error: None,
-        });
+        let issued = invitation_notice(
+            &Reply {
+                link: Some("futureos://remote/pair?v=2&code=x".into()),
+                expires_at: Some(1_700_000_000),
+                error: None,
+            },
+            false,
+        );
         assert!(
             issued.contains("futureos://remote/pair?v=2&code=x"),
             "{issued}"
@@ -622,7 +737,7 @@ mod tests {
         assert!(issued.contains("1700000000"), "{issued}");
         assert!(issued.contains("Do not share"), "{issued}");
 
-        let refused = invitation_notice(&Reply::of_error("the remote start ended in Failed"));
+        let refused = invitation_notice(&Reply::of_error("the remote start ended in Failed"), true);
         assert!(
             refused.contains("No pairing invitation was issued"),
             "{refused}"
@@ -634,8 +749,35 @@ mod tests {
         assert!(!refused.contains("futureos://"), "{refused}");
 
         // Neither half present: still an explicit "nothing was issued".
-        let empty = invitation_notice(&Reply::default());
+        let empty = invitation_notice(&Reply::default(), true);
         assert!(empty.contains("No pairing invitation"), "{empty}");
+    }
+
+    /// The QR code is what the flag is for: the default prints it, `--no-qr` does
+    /// not, and both keep the complete link — the link is the fallback when a QR
+    /// cannot be drawn (narrow terminal, or any QR failure).
+    #[test]
+    fn the_notice_draws_the_qr_unless_no_qr_was_asked_for() {
+        let reply = Reply {
+            link: Some(
+                "futureos://remote/pair?v=2&code=abc&desktopId=desktop_test&desktopKey=UTEST&\
+                 secureKey=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&secret=\
+                 BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+                    .into(),
+            ),
+            expires_at: Some(1_700_000_000),
+            error: None,
+        };
+        let with_qr = invitation_notice(&reply, true);
+        assert!(with_qr.contains('\u{2588}'), "{with_qr}");
+        assert!(with_qr.contains("\x1b[30;47m"), "{with_qr}");
+        assert!(with_qr.contains("futureos://remote/pair"));
+
+        let link_only = invitation_notice(&reply, false);
+        assert!(!link_only.contains('\u{2588}'), "{link_only}");
+        assert!(!link_only.contains("\x1b[30;47m"), "{link_only}");
+        assert!(link_only.contains("futureos://remote/pair"));
+        assert!(link_only.contains("Do not share"));
     }
 
     #[test]
