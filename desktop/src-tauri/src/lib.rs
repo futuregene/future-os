@@ -2113,7 +2113,12 @@ mod gui {
             // `store`/`runtime`/`tasks` entirely). A process-unique identifier gives
             // this test its own socket, which is why it no longer depends on what else
             // is running on the host.
-            context.config_mut().identifier = format!("com.futureos.test.{}", std::process::id());
+            // The pid element is prefixed with a letter on purpose: D-Bus (which the
+            // single-instance plugin uses on LINUX) rejects a name element that
+            // starts with a digit, so `com.futureos.test.7995` is an invalid
+            // well-known name there and the plugin panics on `unwrap()`. Prefixing
+            // keeps the uniqueness this needs while staying a legal D-Bus name.
+            context.config_mut().identifier = format!("com.futureos.test.p{}", std::process::id());
             // The app is built against `tauri.conf.json`, which carries the updater's
             // plugin section; a mock context has none, and the updater refuses to
             // initialize without one. Only the section's presence matters here.
@@ -2247,6 +2252,7 @@ mod gui {
 
         /// A store that cannot be opened is reported, not swallowed: both `Err` arms
         /// of the post-readiness reconciliation run, and the removal arm must *not*.
+        #[cfg(unix)]
         #[test]
         fn a_broken_store_makes_the_startup_reconciliation_report_its_failures() {
             const CHILD_MARKER: &str = "FUTUREOS_RECONCILE_BROKEN_CHILD";
@@ -2303,6 +2309,7 @@ mod gui {
 
         /// The third arm: an empty conversation — a thread the Agent has never been
         /// asked to fill — is dropped by the same pass, and the count is reported.
+        #[cfg(unix)]
         #[test]
         fn an_empty_conversation_is_removed_by_the_startup_reconciliation() {
             const CHILD_MARKER: &str = "FUTUREOS_RECONCILE_EMPTY_CHILD";
@@ -2787,6 +2794,13 @@ mod gui {
         /// `request_quit`), which publishes a stop named `quit`. The panic is not the subject:
         /// it is how a probe leaves Tauri's loop after `prevent_exit` (the loop would otherwise
         /// keep running), and it is caught.
+        // macOS only, measured: the arm runs on both platforms (the probe panic proves
+        // `dispatch_run_event` was reached), but on the headless Linux runner
+        // `agent_supervisor::on_close_requested()` takes the CONFIRM path - there is no
+        // desktop session to show the dialog in - so the Proceed branch that publishes
+        // the stop never executes and `snapshot()` stays None. Exercising Proceed there
+        // needs a session, not a different assertion.
+        #[cfg(target_os = "macos")]
         #[test]
         fn an_exit_requested_from_the_mock_loop_takes_the_guarded_quit_arm() {
             let _home = crate::auth_store::test_support::HomeGuard::new("run-event-exit-requested");
