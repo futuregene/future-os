@@ -57,7 +57,12 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 mod drive {
-    include!("gui_main_thread_drive_body.rs");
+    // The body lives in a SUBDIRECTORY on purpose: Cargo turns every `.rs` directly
+    // under `tests/` into its own test target, so a sibling file named
+    // `gui_main_thread_drive_body.rs` was compiled as a second binary (which then
+    // failed to find `futureos_lib::run_with`, because that target was not built
+    // with the gui feature). A subdirectory is not auto-discovered.
+    include!("gui_main_thread_drive/body.rs");
 }
 
 #[cfg(target_os = "macos")]
