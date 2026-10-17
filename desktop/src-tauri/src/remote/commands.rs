@@ -879,6 +879,11 @@ async fn handle_pair_handshake_confirm(
         .await;
         return;
     }
+    // Whether this is the pairing's *first* confirmation. Only that one takes
+    // control: a client that replays its pairing handshake on a reconnect is
+    // reconnecting, not asking for the machine — and if a replay could claim,
+    // the two devices would evict each other forever.
+    let first_confirmation = !state.confirmed.load(Ordering::Acquire);
     let confirm = || -> Result<(), crate::AppError> {
         if !state.confirmed.load(Ordering::Acquire) {
             crate::remote::pairing::save_creds(&state.creds)?;
@@ -905,9 +910,11 @@ async fn handle_pair_handshake_confirm(
     // user is most obviously asking for: they just scanned a code, or just
     // pressed "add a device" on the machine they are sitting at. The previous
     // controller is told to stand by on its own channel.
-    let moved = super::SUPERVISOR.claim_control(&state.creds.pair_id);
-    if let Some(previous) = &moved {
-        super::publish_standby(previous);
+    if first_confirmation {
+        let moved = super::SUPERVISOR.claim_control(&state.creds.pair_id);
+        if let Some(previous) = &moved {
+            super::publish_standby(previous);
+        }
     }
     reply(
         client,
@@ -921,10 +928,14 @@ async fn handle_pair_handshake_confirm(
             "deviceId": cmd.device_id,
             "desktopNonce": cmd.desktop_nonce,
             "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1", "workspace_pinning_v1", "workspace_create_v1", "desktop_settings_v1", "skill_management_v1", "compaction_v1", "provider_management_v1", "fork_v1", "tasks_v1", "task_deps_v1"],
-            "presence": super::build_presence_payload(
-                &state.creds.pair_id,
-                &state.bridge_instance_id,
-            ),
+            // A device that is not in control gets its own liveness and nothing
+            // else: the conversation list belongs to the machine, and this reply
+            // is also what a replayed handshake receives.
+            "presence": if super::SUPERVISOR.in_control(&state.creds.pair_id) {
+                super::build_presence_payload(&state.creds.pair_id, &state.bridge_instance_id)
+            } else {
+                super::light_presence_payload(&state.creds.pair_id, &state.bridge_instance_id)
+            },
         }),
         None,
     )
@@ -2247,6 +2258,51 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(true), "got: {reply}");
         assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
+
+        // A replayed confirmation is a reconnect, not a request for the
+        // machine: with another device in control it must stay there, or the
+        // two would evict each other every time either one reconnects.
+        // A real second device: the pointer must name one this machine has, or
+        // it is stale by definition and ignored.
+        let other = "pair_elsewhere";
+        let mut other_creds = bridge_creds();
+        other_creds.pair_id = other.to_string();
+        super::super::pairing::save_creds(&other_creds).expect("seed the other device");
+        super::super::pairing::set_active(other).expect("persist the other device's control");
+        SUPERVISOR.restore_active(Some(other.to_string()));
+        let reply = bridge.call(handshake_cmd(&creds, &client_key)).await;
+        let desktop_nonce = reply["data"]["desktopNonce"].as_str().unwrap().to_string();
+        let transcript = handshake_transcript(&HandshakeTranscript {
+            pair_id: &creds.pair_id,
+            desktop_id: &creds.desktop_id,
+            desktop_public_key: &crate::remote::pairing::public_key(&creds).unwrap(),
+            bridge_instance_id: &bridge.handshake.bridge_instance_id,
+            device_id: "dev_test",
+            client_public_key: &client_key.public_key(),
+            client_nonce: "nonce-0123456789abcdef",
+            desktop_nonce: &desktop_nonce,
+        });
+        let signature = client_key.sign(transcript.as_bytes()).unwrap();
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"),
+                "type": "pair_handshake_confirm",
+                "deviceId": "dev_test",
+                "desktopNonce": desktop_nonce,
+                "clientSignature": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature),
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(
+            SUPERVISOR.active_pair().as_deref(),
+            Some(other),
+            "a replayed confirmation must not take control"
+        );
+        // …and the reply must not hand it the conversation list either.
+        assert_eq!(reply["data"]["presence"]["sessions"], Value::Null);
+
+        SUPERVISOR.restore_active(None);
+        let _ = super::super::pairing::remove_slot(other);
         bridge.stop().await;
     }
 
