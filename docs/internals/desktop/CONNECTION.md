@@ -341,12 +341,41 @@ one-slot book and the file is left in place: an older build still finds a
 pairing there instead of minting a new invitation (which would revoke the one
 the book holds). An explicit unpair removes both files.
 
-**What is still single.** The runtime is one slot: one bridge, one presence,
-one command loop. The per-slot runtimes, the takeover rule (a confirmed
-handshake becomes the one in control and the previous one is told
-`superseded`, and a superseded client stops reconnecting until its user asks
-for control back) and the device list in the Remote page land next. Until that
-ships, the book holds at most the one device this build pairs.
+**One runtime per slot.** The supervisor keeps a `pair_id → runtime` map, and
+each device gets its own NATS connection, presence heartbeat, credential
+refresh, command loop and event queue. A device losing its link or its JWT is
+that device's problem; the others keep serving. A dead slot is rebuilt on its
+own (`restart_slot`), never by restarting the whole machine.
+
+**Who controls, and how it moves.** One `pair_id` is in control, persisted in
+the book so a restart cannot hand the machine to someone else. It moves in
+exactly three places, and nowhere else:
+
+- the **first** secure handshake of a pairing — the device has just been
+  scanned or added, so it is the one in front of the machine. Later handshakes
+  are reconnects and leave control alone: reclaiming on reconnect would make
+  two devices evict each other forever;
+- an explicit `takeover` command from a paired device;
+- `remote_takeover` from the desktop's own UI.
+
+The previous controller is told on its own `p.{pair}.state.control` packet and
+sees `control: "standby"` in presence; its client stops reconnecting until its
+user asks for control back. A machine with exactly one device claims it at
+start — there is no arbitration to do.
+
+**What a standby device may not do.** Its business commands are refused in
+this process with `superseded`, before any handler runs, so nothing already in
+flight survives the moment control moves. It also receives no agent events and
+no catalog snapshots; its presence packet says why. `takeover`, `get_presence`
+and `unpair` are the only commands it may speak. The payload it gets back from
+`get_presence` is the light one: the conversation list is the machine's, not
+every paired device's.
+
+**Still next.** The Remote page's device list UI (add a device, unpair one,
+"let this one control"), and the client halves of standby (mobile and the
+desktop client role). The runtime already exposes all of it: `RemoteStatus`
+carries `devices[]` with `control`, and `remote_add_device`,
+`remote_unpair_device`, `remote_takeover` exist as commands.
 
 ### 2.2.1 Mobile multi-Desktop pairing (2026-09-12)
 

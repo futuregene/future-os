@@ -16,6 +16,7 @@
 //! `upsert_provider`, ...) are only scripted by tests that hold the
 //! `TEST_HOME_LOCK` (via `HomeGuard`), which serializes them.
 
+use super::SingleSlotMap;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
@@ -1682,10 +1683,14 @@ impl Drop for InstalledFakeState {
         super::SUPERVISOR
             .suspended
             .store(false, std::sync::atomic::Ordering::Release);
-        *super::SUPERVISOR
+        super::SUPERVISOR
             .bridge_shared
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner()) = None;
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clear();
+        // Control is process-global like the runtime it names: a test that
+        // leaves a device in control would make the next one a standby.
+        super::SUPERVISOR.restore_active(None);
         if let Some(broker) = self.broker.take() {
             broker.kill();
         }
@@ -1720,16 +1725,22 @@ pub(crate) async fn install_fake_state(tag: &str) -> InstalledFakeState {
     let broker = FakeNats::start().await;
     let state = fake_state(&broker, &unique(tag)).await;
     {
-        let mut slot = super::SUPERVISOR
+        let mut slots = super::SUPERVISOR
             .state
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         assert!(
-            slot.is_none(),
+            slots.is_empty(),
             "a previous test leaked SUPERVISOR.state; fix that test instead of \
              inheriting its bridge"
         );
-        *slot = Some(state);
+        let pair_id = state.pair_id.clone();
+        slots.insert(pair_id.clone(), state);
+        drop(slots);
+        // One device, so it is the controller — the same rule the runtime
+        // applies. Without this the installed bridge would be a standby and
+        // publish nothing, which looks exactly like a broken fixture.
+        super::SUPERVISOR.restore_active(Some(pair_id));
     }
     InstalledFakeState {
         broker: Some(broker),
@@ -2441,7 +2452,7 @@ mod tests {
     async fn install_fake_state_installs_a_live_bridge_and_drives_the_deferred_arm() {
         let _home = HomeGuard::new("remote-install-fake-state");
         init_store();
-        assert!(crate::remote::SUPERVISOR.state.lock().unwrap().is_none());
+        assert!(crate::remote::SUPERVISOR.state.lock().unwrap().is_empty());
 
         let installed = install_fake_state("shell-deferred").await;
         {
@@ -2479,7 +2490,7 @@ mod tests {
 
         drop(installed);
         assert!(
-            crate::remote::SUPERVISOR.state.lock().unwrap().is_none(),
+            crate::remote::SUPERVISOR.state.lock().unwrap().is_empty(),
             "the guard must clear the bridge it installed"
         );
         assert!(!crate::remote::SUPERVISOR
@@ -2509,7 +2520,7 @@ mod tests {
             "a local, uncategorized fault must reach the failed arm, got {outcome:?}"
         );
         drop(installed);
-        assert!(crate::remote::SUPERVISOR.state.lock().unwrap().is_none());
+        assert!(crate::remote::SUPERVISOR.state.lock().unwrap().is_empty());
     }
 
     /// The restore must happen while a test unwinds, not only on the happy
@@ -2533,7 +2544,7 @@ mod tests {
 
         assert!(outcome.is_err(), "the closure above panics by construction");
         assert!(
-            crate::remote::SUPERVISOR.state.lock().unwrap().is_none(),
+            crate::remote::SUPERVISOR.state.lock().unwrap().is_empty(),
             "a panicking test leaked the bridge into every later test"
         );
     }

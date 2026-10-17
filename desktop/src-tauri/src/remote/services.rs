@@ -14,10 +14,20 @@ use super::protocol::PairingCreds;
 type HostResult<T> = Result<T, crate::AppError>;
 pub(crate) type Invitation = (PairingCreds, String, Option<i64>);
 pub(crate) trait PairingHost: Send + Sync {
+    /// The device in control, else the first one paired.
     fn load(&self) -> Option<PairingCreds>;
+    /// Every device this machine has paired, in pairing order.
+    fn load_slots(&self) -> Vec<PairingCreds>;
+    /// Which device drives this machine as persisted; `None` if none does.
+    fn active_slot(&self) -> Option<String>;
+    fn set_active(&self, pair_id: &str) -> HostResult<()>;
+    /// Forget one device, leaving the rest paired.
+    fn remove_slot(&self, pair_id: &str) -> HostResult<()>;
     fn save(&self, creds: &PairingCreds) -> HostResult<()>;
     fn clear(&self) -> HostResult<()>;
-    fn invite(&self) -> BoxFuture<'_, HostResult<Invitation>>;
+    /// `keep_existing` decides whether the platform adds a device beside the
+    /// existing ones or replaces them all; this side only forwards it.
+    fn invite(&self, keep_existing: bool) -> BoxFuture<'_, HostResult<Invitation>>;
     fn refresh(&self, creds: PairingCreds) -> BoxFuture<'_, HostResult<PairingCreds>>;
     fn queue_revoke(&self, creds: &PairingCreds) -> HostResult<()>;
     fn retry_revokes(&self) -> BoxFuture<'_, HostResult<()>>;

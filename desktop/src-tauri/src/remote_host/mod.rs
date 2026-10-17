@@ -61,14 +61,28 @@ impl PairingHost for DesktopHost {
     fn load(&self) -> Option<PairingCreds> {
         pairing::load_creds()
     }
+    fn load_slots(&self) -> Vec<PairingCreds> {
+        pairing::load_book()
+            .map(|book| book.slots().to_vec())
+            .unwrap_or_default()
+    }
+    fn active_slot(&self) -> Option<String> {
+        pairing::load_book().and_then(|book| book.active().map(str::to_string))
+    }
+    fn set_active(&self, pair_id: &str) -> Result<(), crate::AppError> {
+        pairing::set_active(pair_id).map(|_| ())
+    }
+    fn remove_slot(&self, pair_id: &str) -> Result<(), crate::AppError> {
+        pairing::remove_slot(pair_id)
+    }
     fn save(&self, c: &PairingCreds) -> Result<(), crate::AppError> {
         pairing::save_creds(c)
     }
     fn clear(&self) -> Result<(), crate::AppError> {
         pairing::clear_creds()
     }
-    fn invite(&self) -> BoxFuture<'_, Result<Invitation, crate::AppError>> {
-        Box::pin(pairing::create_pairing())
+    fn invite(&self, keep_existing: bool) -> BoxFuture<'_, Result<Invitation, crate::AppError>> {
+        Box::pin(pairing::create_pairing(keep_existing))
     }
     fn refresh(&self, c: PairingCreds) -> BoxFuture<'_, Result<PairingCreds, crate::AppError>> {
         Box::pin(pairing::refresh_bridge_jwt(c))

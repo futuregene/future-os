@@ -334,7 +334,22 @@ pub(super) async fn command_loop_with_ready(
                             .handshake(&msg.payload, &handshake.bridge_instance_id);
                         if let Ok(data) = &result {
                             if data.get("confirmation").is_some() {
-                                handshake.confirmed.store(true, Ordering::Release);
+                                // A pairing that has *ever* completed a secure
+                                // handshake is the moment its device joins this
+                                // machine, and the moment it takes control: the
+                                // user has just scanned a code or pressed
+                                // "add a device" on the machine in front of
+                                // them. Only the first such handshake counts —
+                                // a reconnect must leave control where it is,
+                                // or two devices would evict each other forever.
+                                if !handshake.confirmed.swap(true, Ordering::AcqRel) {
+                                    let moved =
+                                        super::SUPERVISOR.claim_control(&handshake.creds.pair_id);
+                                    if let Some(previous) = moved {
+                                        super::publish_standby(&previous);
+                                    }
+                                    super::publish_control(&handshake.creds.pair_id, "active");
+                                }
                             }
                         }
                         result
@@ -533,12 +548,60 @@ async fn handle_command(
         .await;
         return;
     }
+
+    // Control arbitration happens here, on the machine the two devices are
+    // fighting over — not on the platform, which has no downlink and could only
+    // be asked about the decision after the fact. A standby device's business
+    // commands stop before they reach any handler, which is what makes the
+    // moment of takeover clean: nothing already in flight can still execute.
+    //
+    // The exceptions are the commands a standby device legitimately speaks:
+    // asking to take over, reading its own state, unpairing itself, and the
+    // pairing handshakes that establish who it even is.
+    if !handshake_command
+        && !matches!(
+            cmd.cmd_type.as_str(),
+            "takeover" | "get_presence" | "unpair"
+        )
+        && !super::SUPERVISOR.in_control(&handshake.creds.pair_id)
+    {
+        reply(client, &msg, false, Value::Null, Some("superseded")).await;
+        return;
+    }
     match cmd.cmd_type.as_str() {
         "pair_handshake" => {
             handle_pair_handshake(client, &msg, &cmd, &handshake).await;
         }
         "pair_handshake_confirm" => {
             handle_pair_handshake_confirm(client, &msg, &cmd, &handshake).await;
+        }
+        // A device asking for the machine back.
+        //
+        // This is the only path by which a *connected* device takes control
+        // from another, and it exists because the alternative — reclaiming on
+        // reconnect — makes two devices evict each other forever. The previous
+        // controller is told `standby` on its own channel below, and its client
+        // stops reconnecting until its user asks again.
+        "takeover" => {
+            let moved = super::SUPERVISOR.claim_control(&handshake.creds.pair_id);
+            reply(
+                client,
+                &msg,
+                true,
+                json!({
+                    "control": "active",
+                    // Whether this call changed anything. A device that was
+                    // already in control gets `false` and must not read it as
+                    // a refusal.
+                    "changed": moved.is_some(),
+                    "previous": moved,
+                }),
+                None,
+            )
+            .await;
+            if let Some(previous) = moved {
+                super::publish_standby(&previous);
+            }
         }
         // Presence is normally pushed on every heartbeat. A client that
         // subscribes after the latest heartbeat would otherwise look offline
@@ -550,26 +613,32 @@ async fn handle_command(
                 .strip_prefix("p.")
                 .and_then(|subject| subject.split('.').next())
                 .unwrap_or_default();
-            reply(
-                client,
-                &msg,
-                true,
-                super::build_presence_payload(pair_id, &handshake.bridge_instance_id),
-                None,
-            )
-            .await;
+            // A standby device gets its own liveness and nothing else. The
+            // catalogue is this machine's conversations, and handing the list
+            // to every paired device would make "only one controls" a
+            // statement about commands alone.
+            let payload = if super::SUPERVISOR.in_control(pair_id) {
+                super::build_presence_payload(pair_id, &handshake.bridge_instance_id)
+            } else {
+                super::light_presence_payload(pair_id, &handshake.bridge_instance_id)
+            };
+            reply(client, &msg, true, payload, None).await;
         }
         // A phone-initiated unpair first reaches the desktop over the existing
         // authenticated command channel. Acknowledge before stopping the
         // bridge, then perform the destructive work in a separate task so the
         // requester can clear itself without waiting for token expiry.
+        //
+        // It unpairs *this* device only: with several devices sharing a machine,
+        // one of them asking to leave is not a request to unpair the others.
         "unpair" => {
+            let pair_id = handshake.creds.pair_id.clone();
             reply(client, &msg, true, json!({}), None).await;
             crate::runtime::spawn(async move {
                 if !handshake.access_current() {
                     return;
                 }
-                if let Err(error) = super::unpair().await {
+                if let Err(error) = super::unpair_slot(&pair_id).await {
                     eprintln!("remote: phone-initiated unpair failed: {error}");
                 }
             });
@@ -803,6 +872,16 @@ async fn handle_pair_handshake_confirm(
             return;
         }
         Some(Ok(())) => {}
+    }
+    // Pairing this device is the act that puts it in front of the machine.
+    //
+    // It is the *second* claim path besides `takeover`, and it is the one the
+    // user is most obviously asking for: they just scanned a code, or just
+    // pressed "add a device" on the machine they are sitting at. The previous
+    // controller is told to stand by on its own channel.
+    let moved = super::SUPERVISOR.claim_control(&state.creds.pair_id);
+    if let Some(previous) = &moved {
+        super::publish_standby(previous);
     }
     reply(
         client,
@@ -1746,6 +1825,10 @@ mod bridge_tests {
             ));
             nats.wait_for_sub(&format!("p.{pair_id}.cmd.>"), Duration::from_secs(5))
                 .await;
+            // The fixture is the device driving this machine; the control gate
+            // is real, so a fixture that did not say so would be a standby and
+            // see every command refused.
+            SUPERVISOR.restore_active(Some(pair_id.clone()));
             (
                 Bridge {
                     client,
@@ -1782,6 +1865,7 @@ mod bridge_tests {
 
         async fn stop(self) {
             self.loop_handle.abort();
+            SUPERVISOR.release_control(&self.pair_id);
             // Tests redirect process-global HOME while they exercise the
             // SQLite-backed bridge. Do not release that fixture until the
             // cancelled command loop has stopped running on every Tokio worker.
@@ -5059,6 +5143,78 @@ mod bridge_tests {
         bridge.stop().await;
     }
 
+    /// The gate the whole feature rests on: a standby device's business command
+    /// is refused *here*, in this process, before any handler runs — so the
+    /// instant control moves, nothing already in flight can still execute. The
+    /// one command it may speak is `takeover`, which is exactly what hands the
+    /// machine over.
+    #[tokio::test]
+    async fn a_standby_device_is_refused_and_a_takeover_moves_control() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-standby").await;
+        // Another *paired* device holds the machine. It has to be real: a
+        // pointer naming a device this desktop does not have is stale and is
+        // ignored, which is a different rule (and a different test).
+        let other = "pair_other_controller".to_string();
+        crate::remote::pairing::save_creds(&super::super::pairing::PairingCreds {
+            handshake_version: 2,
+            secure: None,
+            pair_id: other.clone(),
+            desktop_id: "desktop_other".to_string(),
+            nkey_seed: nkeys::KeyPair::new_user().seed().unwrap().to_string(),
+            user_jwt: String::new(),
+            nats_url: "nats://127.0.0.1:1".to_string(),
+            nats_ws_url: "ws://127.0.0.1:1".to_string(),
+            jwt_expires_at: 0,
+        })
+        .expect("seed the other device");
+        super::super::pairing::set_active(&other).expect("persist the other device's control");
+        SUPERVISOR.restore_active(Some(other.clone()));
+        assert!(!SUPERVISOR.in_control(&bridge.pair_id));
+
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "list_sessions" }))
+            .await;
+        assert_eq!(reply["success"], json!(false), "got: {reply}");
+        assert_eq!(reply["error"], json!("superseded"));
+
+        // The one command a standby device may speak.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "takeover" }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["control"], json!("active"));
+        assert_eq!(reply["data"]["previous"], json!(other));
+        assert!(SUPERVISOR.in_control(&bridge.pair_id));
+
+        // …and business commands work again, from the same connection.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "get_presence" }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+
+        SUPERVISOR.restore_active(None);
+        super::super::pairing::remove_slot(&other).expect("drop the other device");
+        bridge.stop().await;
+    }
+
+    /// A device that is already in control does not "take over" again: the
+    /// answer says nothing changed, so a client cannot report a handoff that
+    /// never happened.
+    #[tokio::test]
+    async fn a_takeover_by_the_controller_changes_nothing() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-takeover-self").await;
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "takeover" }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["control"], json!("active"));
+        assert_eq!(reply["data"]["changed"], json!(false));
+        assert_eq!(reply["data"]["previous"], Value::Null);
+        bridge.stop().await;
+    }
+
     /// A replay whose snapshot has already moved past the watermark the phone
     /// is filling is refused instead of answered with a page it cannot place:
     /// the phone would otherwise stitch events from two different projections
@@ -5929,9 +6085,14 @@ mod bridge_tests {
         for (label, stale) in [("live", false), ("revoked", true)] {
             let nats = FakeNats::start().await;
             let client = nats_connect(&nats).await;
-            crate::remote::pairing::save_creds(&secure_bridge_creds()).expect("seed a pairing");
+            // The device that asks to be unpaired must be the one on disk: an
+            // unpair is "remove me", so a fixture whose two halves name
+            // different pairings would be asking to remove a device that was
+            // never saved.
+            let creds = secure_bridge_creds();
+            crate::remote::pairing::save_creds(&creds).expect("seed a pairing");
             let handshake = HandshakeState::new(
-                bridge_creds(),
+                creds,
                 Arc::new(AtomicBool::new(false)),
                 format!("bridge_{}", unique("cmd")),
             )

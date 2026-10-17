@@ -376,34 +376,40 @@ pub(super) async fn install_host_with_creds(
     let mut tasks = build_transport(&bridge_client, &pair_id, &handshake, new_reply_slots())
         .await
         .expect("host bridge transport");
-    let previous = SUPERVISOR.state.lock().unwrap().replace(RemoteState {
-        security: handshake.secure.clone(),
-        generation_id: 1,
-        client: bridge_client,
-        nats_health: Arc::new(NatsHealth::default()),
-        nats_url: broker.url().to_string(),
-        pair_id: pair_id.clone(),
-        desktop_id: creds.desktop_id.clone(),
-        desktop_public_key: "REALNETHOSTPUBKEY".to_string(),
-        bridge_instance_id,
-        event_tx: tasks.event_tx,
-        drop_counters: Arc::new(DropCounters::new()),
-        event_task: tasks.event_task,
-        cmd_task: tasks.cmd_task,
-        transfer_task: tasks.transfer_task,
-        heartbeat_task: tasks.heartbeat_task,
-        refresh_task: tokio::spawn(std::future::pending()),
-        web_task: None,
-        web_url: None,
-        web_lan_url: None,
-        pairing_code: None,
-        pairing_code_expires_at: None,
-        pairing_confirmed: Arc::new(AtomicBool::new(true)),
-    });
+    let previous = SUPERVISOR.state.lock().unwrap().insert(
+        pair_id.clone(),
+        RemoteState {
+            security: handshake.secure.clone(),
+            generation_id: 1,
+            client: bridge_client,
+            nats_health: Arc::new(NatsHealth::default()),
+            nats_url: broker.url().to_string(),
+            pair_id: pair_id.clone(),
+            desktop_id: creds.desktop_id.clone(),
+            desktop_public_key: "REALNETHOSTPUBKEY".to_string(),
+            bridge_instance_id,
+            event_tx: tasks.event_tx,
+            drop_counters: Arc::new(DropCounters::new()),
+            event_task: tasks.event_task,
+            cmd_task: tasks.cmd_task,
+            transfer_task: tasks.transfer_task,
+            heartbeat_task: tasks.heartbeat_task,
+            refresh_task: tokio::spawn(std::future::pending()),
+            web_task: None,
+            web_url: None,
+            web_lan_url: None,
+            pairing_code: None,
+            pairing_code_expires_at: None,
+            pairing_confirmed: Arc::new(AtomicBool::new(true)),
+        },
+    );
     assert!(
         previous.is_none(),
         "a previous fixture leaked SUPERVISOR.state"
     );
+    // The fixture is the machine's only device, so it is the controller; the
+    // command gate is real and would otherwise refuse every command.
+    SUPERVISOR.restore_active(Some(pair_id.clone()));
     tasks.candidate_tasks.installed();
     // The bridge publishes what the Agent stream observer hands it; without
     // this sink the phone would see commands answered and no events at all.
@@ -482,34 +488,38 @@ impl E2e {
         let mut tasks = build_transport(&bridge_client, &pair_id, &handshake, new_reply_slots())
             .await
             .expect("bridge transport");
-        let previous = SUPERVISOR.state.lock().unwrap().replace(RemoteState {
-            security: handshake.secure.clone(),
-            generation_id: 1,
-            client: bridge_client,
-            nats_health: Arc::new(NatsHealth::default()),
-            nats_url: broker.url().to_string(),
-            pair_id: pair_id.clone(),
-            desktop_id: creds.desktop_id.clone(),
-            desktop_public_key: "UTESTPUBKEY".to_string(),
-            bridge_instance_id,
-            event_tx: tasks.event_tx,
-            drop_counters: Arc::new(DropCounters::new()),
-            event_task: tasks.event_task,
-            cmd_task: tasks.cmd_task,
-            transfer_task: tasks.transfer_task,
-            heartbeat_task: tasks.heartbeat_task,
-            refresh_task: tokio::spawn(std::future::pending()),
-            web_task: None,
-            web_url: None,
-            web_lan_url: None,
-            pairing_code: None,
-            pairing_code_expires_at: None,
-            pairing_confirmed: Arc::new(AtomicBool::new(true)),
-        });
+        let previous = SUPERVISOR.state.lock().unwrap().insert(
+            pair_id.clone(),
+            RemoteState {
+                security: handshake.secure.clone(),
+                generation_id: 1,
+                client: bridge_client,
+                nats_health: Arc::new(NatsHealth::default()),
+                nats_url: broker.url().to_string(),
+                pair_id: pair_id.clone(),
+                desktop_id: creds.desktop_id.clone(),
+                desktop_public_key: "UTESTPUBKEY".to_string(),
+                bridge_instance_id,
+                event_tx: tasks.event_tx,
+                drop_counters: Arc::new(DropCounters::new()),
+                event_task: tasks.event_task,
+                cmd_task: tasks.cmd_task,
+                transfer_task: tasks.transfer_task,
+                heartbeat_task: tasks.heartbeat_task,
+                refresh_task: tokio::spawn(std::future::pending()),
+                web_task: None,
+                web_url: None,
+                web_lan_url: None,
+                pairing_code: None,
+                pairing_code_expires_at: None,
+                pairing_confirmed: Arc::new(AtomicBool::new(true)),
+            },
+        );
         assert!(
             previous.is_none(),
             "a previous test leaked SUPERVISOR.state"
         );
+        SUPERVISOR.restore_active(Some(pair_id.clone()));
         // The readiness candidates are now the serving tasks; without this the
         // `CandidateTasks` drop would abort every one of them (that is exactly
         // what it is for during a failed readiness).
@@ -1326,6 +1336,9 @@ async fn measure_catalog_writes(
             &[]
         },
     );
+    // The publisher serves the device in control; this measurement is that
+    // device's lane.
+    SUPERVISOR.restore_active(Some(pair.clone()));
     let handle = spawn_presence_heartbeat(client.clone(), pair.clone(), format!("bridge_{label}"));
     let mut tap = nats.tap();
     let sessions_subject = format!("p.{pair}.state.sessions");
