@@ -194,9 +194,12 @@ test("the picker can be dismissed without choosing a desktop", () => {
 test("each picker row commits its own choice and closes the sheet", () => {
   const picker = () => tree.root.findByType(DesktopPicker);
   const pickerModal = () => picker().findAllByType(Modal)[0]!;
+  // The rows carry RADIO semantics (`accessibilityState.checked`), which is what a
+  // single-choice list should expose; `selected` is the tab/toggle idiom and matches
+  // nothing here.
   const rows = () => tree.root.findAll(node =>
     typeof node.props.onPress === "function" &&
-    node.props.accessibilityState?.selected !== undefined);
+    node.props.accessibilityState?.checked !== undefined);
   const labelOf = (row: ReactTestInstance) =>
     row.findAllByType(Text).flatMap(text => text.props.children as string[]).join("");
   const openPicker = () => act(() => button("desktops.pickerLabel").props.onPress());

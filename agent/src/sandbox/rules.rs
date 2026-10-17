@@ -1474,6 +1474,9 @@ mod tests {
             1,
             "the refused rule must be reported to the snapshot"
         );
+        // macOS only: the seatbelt profile is how THIS platform fails closed. The
+        // refusal above and the file_request check below are the portable half.
+        #[cfg(target_os = "macos")]
         assert_eq!(
             crate::sandbox::seatbelt::build_profile(&degraded),
             "(version 1)\n(deny default)\n",

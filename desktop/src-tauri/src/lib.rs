@@ -184,7 +184,7 @@ pub use gui::{run, run_with};
 // `cfg(test)` is false for an integration build, so a `#[cfg(test)]` re-export would be
 // invisible exactly where the main-thread target needs it. Re-exported, not made
 // `pub mod` — the module stays private and the item's own visibility is unchanged.
-#[cfg(feature = "gui")]
+#[cfg(all(feature = "gui", target_os = "macos"))]
 #[doc(hidden)]
 pub use menu::build_macos_menu;
 #[cfg(not(feature = "gui"))]
