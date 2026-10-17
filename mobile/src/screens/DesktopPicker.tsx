@@ -58,11 +58,18 @@ export function DesktopPicker({
         onPress={() => setOpen(true)}
         style={({ pressed }) => [styles.trigger, pressed && styles.pressed]}
       >
+        {/* One icon, not two: a chosen desktop brings its own glyph, and the
+            generic monitor beside it read as a second, unexplained one (the
+            same machine was drawn twice — blue monitor and 🖥️). The glyph sits
+            in the column the sheet's rows use, and the monitor stays for the
+            merged list, which has no machine of its own to show. */}
         <View style={styles.triggerIcon}>
-          <Monitor color={colors.accent} size={20} />
+          {selected
+            ? <Text style={styles.triggerGlyph}>{iconGlyph(selected.icon)}</Text>
+            : <Monitor color={colors.accent} size={20} />}
         </View>
         <Text numberOfLines={1} style={styles.triggerLabel}>
-          {selected ? `${iconGlyph(selected.icon)} ${label(selected)}` : t("desktops.filterAll")}
+          {selected ? label(selected) : t("desktops.filterAll")}
         </Text>
         <ChevronDown color={colors.inkSoft} size={16} />
       </Pressable>
@@ -172,6 +179,8 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     paddingHorizontal: spacing.sm,
   },
   triggerIcon: { width: 24, alignItems: "center" },
+  // The same glyph column as the sheet's rows, at the trigger's icon size.
+  triggerGlyph: { fontSize: theme.font(17) },
   triggerLabel: { flex: 1, minWidth: 0, color: theme.colors.inkStrong, fontSize: theme.font(15), fontWeight: "600" },
   pressed: { opacity: 0.7 },
   header: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
