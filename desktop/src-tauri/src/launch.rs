@@ -373,6 +373,112 @@ pub fn notifier_command(exe: &Path, reply: &Path, no_qr: bool) -> std::process::
     command
 }
 
+/// Print invitation text on the terminal that asked for it.
+///
+/// Not `println!`: the graphical entry point is one binary, and on Windows it is
+/// a process that detached itself from the console it was started from (see
+/// `run_with`'s `FreeConsole`) so a launch from Explorer leaves no console
+/// window. That detach also drops the standard handles, so writing the
+/// invitation through `std::io::stdout()` afterwards put it nowhere — the
+/// terminal that ran `--re-pair` stayed silent while the window showed the code.
+/// This reattaches to the launching terminal for exactly this text.
+pub fn print_to_terminal(text: &str) {
+    #[cfg(windows)]
+    if print_via_console(text) {
+        return;
+    }
+    use std::io::Write;
+    let mut stdout = std::io::stdout();
+    let _ = stdout.write_all(text.as_bytes());
+    let _ = stdout.flush();
+}
+
+/// Write to the process's console, reattaching first when there is none.
+///
+/// Returns whether the text was written. A `true` from a **newly allocated**
+/// console keeps it attached: closing it would take the invitation with it
+/// before it could be read. A console this call reattached to is detached again
+/// afterwards — the text is already in that terminal's buffer, and a
+/// long-running Desktop must not die with the shell that asked one question.
+#[cfg(windows)]
+fn print_via_console(text: &str) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Console::{
+        AllocConsole, AttachConsole, FreeConsole, GetConsoleMode, GetConsoleWindow, SetConsoleMode,
+        SetConsoleOutputCP, ATTACH_PARENT_PROCESS, CONSOLE_MODE, ENABLE_PROCESSED_OUTPUT,
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+    };
+    let mut attached = false;
+    if unsafe { GetConsoleWindow() }.0.is_null() {
+        if unsafe { AttachConsole(ATTACH_PARENT_PROCESS) }.is_ok() {
+            attached = true;
+        } else if unsafe { AllocConsole() }.is_err() {
+            return false;
+        }
+    }
+    let Ok(mut console) = std::fs::OpenOptions::new().write(true).open("CONOUT$") else {
+        return false;
+    };
+    // The QR is drawn with UTF-8 block characters and separated from the text by
+    // ANSI escapes: say so, and when the console refuses (an old host, or output
+    // redirected to a file) write the code without the escapes instead of
+    // surrounding a QR code with literals nobody can scan past.
+    unsafe {
+        let _ = SetConsoleOutputCP(65001);
+    }
+    let handle = HANDLE(console.as_raw_handle() as _);
+    let mut mode = CONSOLE_MODE::default();
+    // `ENABLE_PROCESSED_OUTPUT` is what makes the console interpret escape
+    // sequences at all; `ENABLE_VIRTUAL_TERMINAL_PROCESSING` is what makes them
+    // ANSI. A handle without the first cannot honour the second.
+    let vt = unsafe { GetConsoleMode(handle, &mut mode) }.is_ok()
+        && unsafe {
+            SetConsoleMode(
+                handle,
+                mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+            )
+        }
+        .is_ok();
+    let text = if vt {
+        std::borrow::Cow::Borrowed(text)
+    } else {
+        std::borrow::Cow::Owned(strip_ansi(text))
+    };
+    use std::io::Write;
+    let written = console.write_all(text.as_bytes()).is_ok() && console.flush().is_ok();
+    drop(console);
+    if attached {
+        unsafe {
+            let _ = FreeConsole();
+        }
+    }
+    written
+}
+
+/// Drop SGR escape sequences, for a console that cannot interpret them.
+///
+/// Windows-only in effect; kept buildable everywhere so its behaviour is testable
+/// on the machines that run this suite.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("\x1b[") {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start + 2..];
+        match tail.find('m') {
+            Some(end) => rest = &tail[end + 1..],
+            None => {
+                out.push_str(&rest[start..]);
+                return out;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Hand the request over and wait for the answer.
 pub fn forward_re_pair(no_qr: bool) -> Result<Reply, String> {
     prepare_host_environment()?;
@@ -778,6 +884,19 @@ mod tests {
         assert!(!link_only.contains("\x1b[30;47m"), "{link_only}");
         assert!(link_only.contains("futureos://remote/pair"));
         assert!(link_only.contains("Do not share"));
+    }
+
+    #[test]
+    fn an_uninterpretable_console_gets_the_qr_without_escapes() {
+        // `headless::invitation_text` wraps every QR line in the black-on-white
+        // SGR pair; a console that cannot switch to virtual-terminal processing
+        // would print those bytes as text around the code.
+        let rendered = "\x1b[30;47m\u{2588}\u{2588}\x1b[0m\n";
+        assert_eq!(strip_ansi(rendered), "\u{2588}\u{2588}\n");
+        // Text without escapes is untouched, and a truncated sequence does not
+        // swallow the rest of the invitation.
+        assert_eq!(strip_ansi("plain\n"), "plain\n");
+        assert_eq!(strip_ansi("a\x1b[3"), "a\x1b[3");
     }
 
     #[test]

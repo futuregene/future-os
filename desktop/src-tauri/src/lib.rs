@@ -1357,10 +1357,7 @@ mod gui {
             };
             match delivery {
                 RePairDelivery::Terminal { qr } => {
-                    use std::io::Write;
-                    let _ = std::io::stdout()
-                        .write_all(crate::launch::invitation_notice(&reply, qr).as_bytes());
-                    let _ = std::io::stdout().flush();
+                    crate::launch::print_to_terminal(&crate::launch::invitation_notice(&reply, qr));
                 }
                 RePairDelivery::Reply(path) => {
                     if let Err(error) = crate::launch::write_reply(&path, &reply) {

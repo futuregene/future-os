@@ -177,6 +177,19 @@ link, drawn by the same renderer the headless entry point uses (`--no-qr`, with
 `--re-pair`, prints the link only). The code is never printed by the window,
 because a window has no terminal to print it to.
 
+That printing has to survive the process's own console handling. On Windows the
+graphical entry point deliberately detaches from the console it was started from
+(`FreeConsole` in `run_with`) so a launch from Explorer leaves no console window;
+that also drops the standard handles, and the invitation is printed later, from
+the event loop. The invitation therefore goes through
+`launch::print_to_terminal`, which reattaches to the launching terminal
+(`AttachConsole(ATTACH_PARENT_PROCESS)`), switches the console to UTF-8 and
+virtual-terminal processing for the QR block, and detaches again once the text is
+in that terminal's buffer — so a long-running Desktop is never tied to the
+lifetime of the shell that asked it one question. When there is no parent
+console at all it allocates one and leaves it open, because the invitation would
+totherwise disappear with it.
+
 The flag is refused without an interactive terminal: it cuts off the connected
 device the moment it runs (pairing replaces, see §2.2), and a script is where such
 a command would end up unattended. Where the invitation comes from depends on who
