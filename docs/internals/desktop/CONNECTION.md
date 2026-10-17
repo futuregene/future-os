@@ -192,6 +192,19 @@ owns the pairing:
   invitation, or why there was none — to that path, and the waiting process prints
   it. The `--re-pair-reply` flag is internal to that pair of processes.
 
+Re-pair behaves the same whatever the previous state was — no pairing at all, a
+stale or server-revoked one, or a device currently connected: the saved credential
+is cleared first and the replacement invitation is minted afterwards. Two details
+make that order hold in practice. The terminal answer is the invitation itself,
+judged only by whether it can still be scanned; it does not wait for the Agent
+availability probe, which starts with the bridge and cannot have answered when a
+launch re-pairs, so a valid code is never withheld as "no invitation was issued".
+And because the platform gives a desktop it already knows the *same* `pair_id` for
+the replacement invitation, the old binding's revoke is delivered before the new
+code is minted (not left to the 30-second compensation loop), and a successful
+invitation retires any queued revoke for its own pair id — otherwise that loop
+would cancel the code the user had just been handed.
+
 The hand-off exists because the plugin's channel is one-way: the launching process
 is terminated as soon as its `argv` is delivered, so it cannot be the one that
 prints unless it waits for an explicit answer. A running *headless* instance does

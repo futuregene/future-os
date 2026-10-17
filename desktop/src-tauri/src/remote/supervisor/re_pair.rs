@@ -14,5 +14,15 @@ use super::*;
 /// Revoke the saved pairing, then start a fresh one.
 pub async fn re_pair() -> Result<RemoteStatus, crate::AppError> {
     unpair().await?;
+    // `unpair` only queues the revoke: it is also the Remote page's button and
+    // must not wait on HTTP. Here the queue cannot be left for the compensation
+    // loop, because the platform gives a desktop it already knows the *same*
+    // `pair_id` for the replacement invitation — a revoke delivered after it
+    // would cancel the very code this command is about to print. Deliver it now.
+    // A failure here is not fatal: creating the invitation replaces the old
+    // binding anyway, and `create_pairing` retires whatever revoke is left.
+    if let Err(error) = pairing::retry_pending_revokes().await {
+        eprintln!("remote: re-pair could not settle the saved pairing's revoke: {error}");
+    }
     start(RemoteStartInput {}).await
 }

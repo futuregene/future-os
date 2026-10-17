@@ -26,12 +26,13 @@ pub const HELP: &str = "Usage: futureos [--re-pair] [--help]
 
 Start the graphical Desktop.
 
-  --re-pair   Revoke the saved pairing and issue a fresh invitation. If this
-              Desktop is already running, it performs the re-pair and the new
-              code is printed here; otherwise the code is printed by the window
-              this command starts. Pairing a new device replaces the one that was
-              connected, so that device is cut off as soon as this runs — whether
-              or not the new code is ever scanned.
+  --re-pair   Revoke the saved pairing and issue a fresh invitation, whatever
+              state the previous connection is in. The new code is printed on
+              this terminal: by this process when it starts Desktop, or by the
+              running Desktop answering through this process. Pairing a new
+              device replaces the one that was connected, so that device is cut
+              off as soon as this runs — whether or not the new code is ever
+              scanned.
   --help      Show this help without starting Desktop.
 
 To disconnect a paired device without pairing another one, use the Remote page's
@@ -237,12 +238,18 @@ pub struct Reply {
 impl Reply {
     /// The answer for a re-pair that ended in this status.
     ///
-    /// The invitation is extracted by the headless entry point's own rule
-    /// (`headless::pairing_link`), not a second opinion: a link the headless
-    /// terminal would refuse to print is not one this entry point should hand to a
-    /// user either.
+    /// The invitation is extracted by the invitation rule the headless entry point
+    /// applies to the code itself (`headless::invitation_link`), not a second
+    /// opinion: a link that rule refuses (expired, or not a v2 invitation) is not
+    /// one this entry point should hand a user either.
+    ///
+    /// Deliberately not `headless::pairing_link`: that also requires the Agent
+    /// availability probe, which starts with the bridge and cannot have answered
+    /// yet when a launch re-pairs. A freshly minted code is valid and visible in
+    /// the window regardless, so gating the printed answer on the probe reported
+    /// "no pairing invitation" for an invitation the user could already scan.
     pub fn of_status(status: &crate::remote::RemoteStatus) -> Self {
-        match crate::headless::pairing_link(status) {
+        match crate::headless::invitation_link(status) {
             Some(link) => Self {
                 link: Some(link),
                 expires_at: status.pairing_code_expires_at,
@@ -554,6 +561,51 @@ mod tests {
         write_reply(&path, &reply).expect("write");
         assert_eq!(read_reply(&path), Some(reply));
         drop(home);
+    }
+
+    /// A re-pair reports the status the start just returned, before the Agent
+    /// availability probe (which starts with the bridge) can have answered. That
+    /// must not turn a freshly issued invitation into "nothing was issued": the
+    /// code is printable the moment it is minted, and the window shows the same
+    /// one.
+    #[test]
+    fn a_re_pair_reports_the_invitation_before_the_agent_is_probed() {
+        let code = format!(
+            "futureos://remote/pair?v=2&code=abc&desktopId=desktop_test&desktopKey=UTEST&secureKey={}&secret={}",
+            "A".repeat(43),
+            "B".repeat(43)
+        );
+        let expires_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 300;
+        let mut status = crate::remote::RemoteStatus {
+            client: None,
+            phase: crate::remote::RemotePhase::Ready,
+            reason: None,
+            recovery: None,
+            nats_url: "nats://127.0.0.1:4222".into(),
+            pair_id: "pair_new".into(),
+            pairing_code: Some(code.clone()),
+            pairing_code_expires_at: Some(expires_at),
+            desktop_id: "desktop_test".into(),
+            desktop_public_key: "UTEST".into(),
+            web_url: None,
+            web_lan_url: None,
+            warning_code: None,
+            agent_available: false,
+        };
+        let reply = Reply::of_status(&status);
+        assert_eq!(reply.link.as_deref(), Some(code.as_str()), "{reply:?}");
+        assert_eq!(reply.expires_at, Some(expires_at));
+        assert_eq!(reply.error, None);
+        assert!(invitation_notice(&reply).contains(&code));
+
+        // The invitation rule still refuses a code that cannot be scanned — this
+        // is about the readiness probe, not about printing expired invitations.
+        status.pairing_code_expires_at = Some(expires_at - 1_000);
+        assert!(Reply::of_status(&status).error.is_some());
     }
 
     #[test]

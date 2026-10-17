@@ -499,13 +499,27 @@ fn prepare_terminal() {
 /// The invitation a client can pair against, or `None` when there is not one to
 /// show.
 ///
-/// Shared with the graphical entry point's `--re-pair` report: a link this
-/// terminal refuses to print is not one that entry point should hand a user
-/// either, so both ask the same question of the same status.
+/// The Agent readiness gate belongs to this terminal: it prints the invitation
+/// only for a bridge that can actually serve the phone. The graphical entry
+/// point's `--re-pair` answer uses [`invitation_link`] instead, because the code
+/// itself is valid the moment it is minted and the probe has not run yet.
 pub fn pairing_link(status: &remote::RemoteStatus) -> Option<String> {
     if status.phase != remote::RemotePhase::Ready || !status.agent_available {
         return None;
     }
+    invitation_link(status)
+}
+
+/// The invitation in a status, judged only by whether it can still be scanned.
+///
+/// Separate from [`pairing_link`] on purpose: `agent_available` is a probe that
+/// starts with the bridge and answers on its own schedule. A `--re-pair` on the
+/// graphical entry point reads the status right after the start returns — before
+/// that probe can have answered — so gating the printed code on it reported "no
+/// pairing invitation" for a code the window was showing and the phone could
+/// scan. Whether the Agent is ready changes what a paired device can do, not
+/// whether the invitation works.
+pub fn invitation_link(status: &remote::RemoteStatus) -> Option<String> {
     let code = status.pairing_code.as_ref()?;
     if status
         .pairing_code_expires_at
@@ -865,7 +879,15 @@ mod tests {
         status.phase = remote::RemotePhase::Reconnecting;
         assert!(pairing_link(&status).is_none());
         status.phase = remote::RemotePhase::Ready;
+        // The readiness probe gates what this terminal prints for a bridge, not
+        // whether the code is an invitation: `--re-pair` answers from a status
+        // taken before the probe has run.
+        status.agent_available = false;
+        assert!(pairing_link(&status).is_none());
+        assert_eq!(invitation_link(&status).as_deref(), Some(link.as_str()));
+        status.agent_available = true;
         status.pairing_code_expires_at = Some(unix_seconds() - 1);
         assert!(pairing_link(&status).is_none());
+        assert!(invitation_link(&status).is_none());
     }
 }
