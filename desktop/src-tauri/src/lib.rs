@@ -2415,6 +2415,7 @@ mod gui {
         /// not-running status rather than an `Err`. The arm's own report is asserted —
         /// and the *other* arm is asserted absent, so an input that slipped into the
         /// failure path fails this test instead of passing it.
+        #[cfg(unix)]
         #[test]
         fn an_auto_connect_whose_platform_is_unreachable_is_reported_as_deferred() {
             const CHILD_MARKER: &str = "FUTUREOS_AUTO_CONNECT_DEFERRED_CHILD";
@@ -2468,6 +2469,7 @@ mod gui {
         /// reports it as a failure. The two arms are separated by exactly this — a
         /// categorized remote answer versus an uncategorized local one — so this
         /// fixture asserts the failure text and the *absence* of the deferred one.
+        #[cfg(unix)]
         #[test]
         fn an_auto_connect_with_an_unreadable_pairing_key_is_reported_as_failed() {
             const CHILD_MARKER: &str = "FUTUREOS_AUTO_CONNECT_FAILED_CHILD";
