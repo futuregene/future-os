@@ -74,7 +74,7 @@ fn seed(root: &str, cwd: &str) {
 /// Replace the file at `path` with a stub that ignores its arguments and sleeps.
 /// Returns `(old inode, new inode)` — different inodes are what prove the running
 /// image survived the replacement.
-fn stall_in_place(path: &Path) -> (u64, u64) {
+fn stall_in_place(path: &Path) -> (u64, u64, bool) {
     let before = std::fs::metadata(path).map(|m| m.ino()).unwrap_or(0);
     std::fs::remove_file(path).unwrap();
     let mut stub = std::fs::File::create(path).unwrap();
@@ -82,7 +82,14 @@ fn stall_in_place(path: &Path) -> (u64, u64) {
     drop(stub);
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     let after = std::fs::metadata(path).map(|m| m.ino()).unwrap_or(0);
-    (before, after)
+    // The inode is not sufficient evidence: tmpfs (Linux CI's /tmp) reuses inode
+    // numbers aggressively, so a completed swap can read the same number back and
+    // the fixture would report "no swap landed" while the file really was
+    // replaced. The content is the honest signal; the inode stays as a bonus.
+    let replaced = std::fs::read_to_string(path)
+        .map(|body| body.contains("exec sleep 30") && body.starts_with("#!"))
+        .unwrap_or(false);
+    (before, after, replaced)
 }
 
 /// One drive: start `register`, swap the binary at the copy path after
@@ -123,7 +130,7 @@ fn drive_after_swap(delay_ms: u64) -> (bool, Duration, String, bool) {
         .expect("spawn the binary copy");
 
     std::thread::sleep(Duration::from_millis(delay_ms));
-    let (before, after) = stall_in_place(&copy);
+    let (before, after, replaced) = stall_in_place(&copy);
 
     let started = Instant::now();
     let output = child.wait_with_output().unwrap();
@@ -143,7 +150,7 @@ fn drive_after_swap(delay_ms: u64) -> (bool, Duration, String, bool) {
             .take(160)
             .collect::<String>()
     );
-    (fired, elapsed, text, before != after)
+    (fired, elapsed, text, replaced || before != after)
 }
 
 /// The deadline arm is reachable: a binary whose file is replaced by a staller

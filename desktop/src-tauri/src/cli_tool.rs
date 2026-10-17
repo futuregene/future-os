@@ -655,8 +655,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_silent_cli_is_killed_and_reported_as_a_timeout() {
+        // `read` is a shell BUILTIN and `/dev/zero` never yields a newline, so the
+        // script blocks without needing PATH, which
+        // other tests in this binary legitimately narrow (skills_bootstrap sets it
+        // to a temp dir and to ""). With `sleep` the probe died of `sh: sleep: not
+        // found` (exit 127) whenever those ran concurrently.
+        let _lock = path_lock();
         let root = tempfile::tempdir().unwrap();
-        let cli = script_cli(&root.path().join("bin"), "sleep 30");
+        let cli = script_cli(&root.path().join("bin"), "read _ < /dev/zero");
         let started = std::time::Instant::now();
         let error = probe(&cli, "path").unwrap_err();
         assert!(error.contains("timed out"), "{error}");
@@ -674,10 +680,12 @@ mod tests {
     fn a_flooding_cli_is_killed_at_the_output_limit() {
         // The limit, not the clock, is what this test is about.
         let _deadline = ProbeDeadlineGuard::set(None);
+        // `printf` is a builtin, so the flood does not depend on PATH either.
+        let _lock = path_lock();
         let root = tempfile::tempdir().unwrap();
         let cli = script_cli(
             &root.path().join("bin"),
-            "dd if=/dev/zero bs=1024 count=200 2>/dev/null",
+            "i=0; while [ $i -lt 200 ]; do printf '%01024d' 0; i=$((i+1)); done",
         );
         let error = probe(&cli, "path").unwrap_err();
         assert!(error.contains("output limit"), "{error}");
@@ -726,6 +734,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_reply_that_arrives_after_the_deadline_is_captured_only_without_one() {
+        let _lock = path_lock();
         let root = tempfile::tempdir().unwrap();
         let cli = script_cli(
             &root.path().join("bin"),

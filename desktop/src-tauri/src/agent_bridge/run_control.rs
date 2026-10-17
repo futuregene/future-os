@@ -1130,13 +1130,16 @@ mod tests {
         let mock = mock_agent();
         let workspace = seed_workspace(home.path(), "ws");
         enable_title_generation("en");
-        let thread = seed_thread(&workspace.id, Some("sess-deleted-mid-flight"));
+        // Must be TITLEABLE: `seed_thread` leaves `title_seed` unset, which since
+        // upstream's settled-thread work means "arrived with a name of its own and
+        // is never auto-titled" - the pass then bails before the model call and the
+        // window this test needs cannot open.
+        let thread = seed_titleable_thread(&workspace.id, "sess-deleted-mid-flight");
         let run = seed_run(&thread.id);
         mock.push_state_for_session(
             "sess-deleted-mid-flight",
             Reply::TypedData(get_state_payload("sess-deleted-mid-flight", false)),
         );
-        mock.push_typed_data("get_session_entries", first_pair());
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         mock.push(
@@ -1179,19 +1182,21 @@ mod tests {
         let mock = mock_agent();
         let workspace = seed_workspace(home.path(), "ws");
         enable_title_generation("en");
-        let thread = seed_thread(&workspace.id, Some("sess-second-turn"));
+        let thread = seed_titleable_thread(&workspace.id, "sess-second-turn");
         let original_title = thread.title.clone();
         let run = seed_run(&thread.id);
         mock.push_state_for_session(
             "sess-second-turn",
             Reply::TypedData(get_state_payload("sess-second-turn", false)),
         );
-        // Hold the history read open so the other turn can land in the window
-        // between the pass's first run-count check and its second one.
+        // Hold the MODEL CALL open: since the settled-thread rewrite the pass
+        // re-checks `has_active_run` after the suggestion comes back (the history
+        // read this fixture used to block is no longer part of the path), so the
+        // second turn has to land while the title is in flight.
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         mock.push(
-            "get_session_entries",
+            "generate_session_title",
             Reply::Deferred {
                 entered: entered_tx,
                 data: reply_rx,
@@ -1206,8 +1211,8 @@ mod tests {
         // The conversation is no longer a single-turn one.
         seed_run(&thread.id);
         reply_tx
-            .send(first_pair())
-            .expect("release the history read");
+            .send(serde_json::json!({"title": "Stale title"}))
+            .expect("release the model call");
         task.await
             .expect("a grown conversation must not fail the run");
 
@@ -1220,8 +1225,8 @@ mod tests {
             "the pending title is not applied to a conversation with a second turn"
         );
         assert!(
-            mock.requests_of("generate_session_title").is_empty(),
-            "no generation once the row stopped being the first turn"
+            mock.requests_of("set_session_name").is_empty(),
+            "the suggestion must not be pushed to the Agent once a turn is owed"
         );
     }
 
