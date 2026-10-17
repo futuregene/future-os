@@ -59,6 +59,7 @@ fn adopt(root: &Path) {
 /// `instance::gui_identifier` computes the plugin's identifier: the base id, plus
 /// `.home<first 16 hex of the data root>` whenever `FUTURE_HOME` is overridden. `/tmp` and the
 /// `_si.sock` suffix are `tauri-plugin-single-instance`'s own layout.
+#[cfg(target_os = "macos")]
 fn socket_for(root: &Path) -> Option<PathBuf> {
     const BASE: &str = "com.futureos.desktop";
     std::env::set_var("FUTURE_HOME", root.join("future"));
@@ -70,6 +71,7 @@ fn socket_for(root: &Path) -> Option<PathBuf> {
     )))
 }
 
+#[cfg(target_os = "macos")]
 fn accepts(socket: &Path) -> bool {
     std::os::unix::net::UnixStream::connect(socket).is_ok()
 }
@@ -79,6 +81,7 @@ fn accepts(socket: &Path) -> bool {
 /// The bind is done by the single-instance plugin inside `Builder::build`, i.e. before
 /// `RunEvent::Ready`; on this host it was measured anywhere from ~2 s to ~25 s under load,
 /// which is why the budget is generous and the wait is a poll rather than a sleep.
+#[cfg(target_os = "macos")]
 fn wait_for_listener(socket: &Path, budget: Duration) -> bool {
     let deadline = Instant::now() + budget;
     while Instant::now() < deadline {
