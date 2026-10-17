@@ -49,7 +49,7 @@ pub use self::status::status;
 /// The device is told on its own channel, and the previous controller is told
 /// to stand by, exactly as when the device asks for itself.
 pub async fn takeover(pair_id: &str) -> Result<RemoteStatus, crate::AppError> {
-    let previous = SUPERVISOR.claim_control(pair_id);
+    let previous = SUPERVISOR.claim_control_soon(pair_id);
     if let Some(previous) = previous {
         super::publish_standby(&previous);
     }

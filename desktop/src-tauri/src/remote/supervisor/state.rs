@@ -248,22 +248,49 @@ impl Supervisor {
 
     /// Move control to `pair_id`. Returns the device that lost it, if any.
     ///
-    /// The persisted pointer is written first: an in-memory control that a
-    /// restart could not reproduce would hand the machine to a different
-    /// device after a crash, which is exactly the decision the user made and
-    /// must not be lost.
+    /// The persisted pointer is written before returning: a control that a
+    /// restart could not reproduce would hand the machine to a different device
+    /// after a crash, which is exactly the decision the user made and must not
+    /// be lost. Callers on a reply path use [`Supervisor::claim_control_soon`].
     pub(in crate::remote) fn claim_control(&self, pair_id: &str) -> Option<String> {
-        let previous = {
-            let mut active = self.active.lock().unwrap();
-            if active.as_deref() == Some(pair_id) {
-                return None;
+        let (changed, previous) = self.move_control(pair_id);
+        if changed {
+            if let Err(error) = pairing::set_active(pair_id) {
+                eprintln!("remote: could not persist the controlling device: {error}");
             }
-            active.replace(pair_id.to_string())
-        };
-        if let Err(error) = pairing::set_active(pair_id) {
-            eprintln!("remote: could not persist the controlling device: {error}");
         }
         previous
+    }
+
+    /// Move control now, write it down on a thread of its own.
+    ///
+    /// For the handshake and takeover paths: a reply must never wait on the
+    /// filesystem, and a claim issued from a handshake handler must never block
+    /// a single-threaded executor. The in-memory pointer is what every command
+    /// and every publisher reads, and it moves immediately.
+    pub(in crate::remote) fn claim_control_soon(&self, pair_id: &str) -> Option<String> {
+        let (changed, previous) = self.move_control(pair_id);
+        if changed {
+            let persisted = pair_id.to_string();
+            std::thread::spawn(move || {
+                if let Err(error) = pairing::set_active(&persisted) {
+                    eprintln!("remote: could not persist the controlling device: {error}");
+                }
+            });
+        }
+        previous
+    }
+
+    /// The in-memory half: `(did it move, who held it before)`.
+    ///
+    /// A move from "nobody" counts: that is the case a machine with one device
+    /// hits at start, and the one that must still be written down.
+    fn move_control(&self, pair_id: &str) -> (bool, Option<String>) {
+        let mut active = self.active.lock().unwrap();
+        if active.as_deref() == Some(pair_id) {
+            return (false, None);
+        }
+        (true, active.replace(pair_id.to_string()))
     }
 
     /// Forget the pointer, e.g. when the controlling device is unpaired.

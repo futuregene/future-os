@@ -368,13 +368,7 @@ pub(super) async fn command_loop_with_ready(
                         },
                         None => process(),
                     };
-                    if first_handshake && result.is_ok() {
-                        let moved = super::SUPERVISOR.claim_control(&handshake.creds.pair_id);
-                        if let Some(previous) = moved {
-                            super::publish_standby(&previous);
-                        }
-                        super::publish_control(&handshake.creds.pair_id, "active");
-                    }
+
                     // A refused handshake is the one pairing failure that used to
                     // leave no trace anywhere: the phone only reports that the
                     // desktop would not authenticate, and the reason never left
@@ -385,6 +379,7 @@ pub(super) async fn command_loop_with_ready(
                             eprintln!("{line}");
                         }
                     }
+                    let accepted = result.is_ok();
                     if let Some(reply) = msg.reply {
                         let body = match result {
                             Ok(data) => json!({ "success": true, "data": data }),
@@ -393,6 +388,18 @@ pub(super) async fn command_loop_with_ready(
                         let _ = client
                             .publish(reply, serde_json::to_vec(&body).expect("JSON value").into())
                             .await;
+                    }
+                    // Control moves *after* the answer, never before it: the
+                    // claim persists to disk, and a handshake reply must not
+                    // wait on a file write. The device is already authenticated
+                    // by this point, so the few milliseconds in between belong
+                    // to nobody's authority.
+                    if first_handshake && accepted {
+                        let moved = super::SUPERVISOR.claim_control_soon(&handshake.creds.pair_id);
+                        if let Some(previous) = moved {
+                            super::publish_standby(&previous);
+                        }
+                        super::publish_control(&handshake.creds.pair_id, "active");
                     }
                 }
                 #[cfg(test)]
@@ -609,7 +616,7 @@ async fn handle_command_inner(
         // controller is told `standby` on its own channel below, and its client
         // stops reconnecting until its user asks again.
         "takeover" => {
-            let moved = super::SUPERVISOR.claim_control(&handshake.creds.pair_id);
+            let moved = super::SUPERVISOR.claim_control_soon(&handshake.creds.pair_id);
             reply(
                 client,
                 &msg,
@@ -910,12 +917,6 @@ async fn handle_pair_handshake_confirm(
     // user is most obviously asking for: they just scanned a code, or just
     // pressed "add a device" on the machine they are sitting at. The previous
     // controller is told to stand by on its own channel.
-    if first_confirmation {
-        let moved = super::SUPERVISOR.claim_control(&state.creds.pair_id);
-        if let Some(previous) = &moved {
-            super::publish_standby(previous);
-        }
-    }
     reply(
         client,
         msg,
@@ -940,6 +941,14 @@ async fn handle_pair_handshake_confirm(
         None,
     )
     .await;
+    // After the answer, for the same reason as the secure handshake: a claim
+    // writes to disk, and no reply may wait on that.
+    if first_confirmation {
+        let moved = super::SUPERVISOR.claim_control_soon(&state.creds.pair_id);
+        if let Some(previous) = moved {
+            super::publish_standby(&previous);
+        }
+    }
 }
 
 /// Send a unified request-reply response (in `RpcResponse` shape), and flush to ensure timely delivery.
