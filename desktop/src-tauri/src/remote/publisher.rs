@@ -108,15 +108,24 @@ pub fn publish_event(
     run_sequence: i64,
 ) {
     let Some((tx, pair_id, connected, drop_counters)) = ({
-        let guard = SUPERVISOR.state.lock().unwrap();
-        guard.as_ref().map(|s| {
-            (
-                s.event_tx.clone(),
-                s.pair_id.clone(),
-                s.client.connection_state() == async_nats::connection::State::Connected,
-                s.drop_counters.clone(),
-            )
-        })
+        // Events go to the device in control, and nowhere else. A standby
+        // device is still paired and still connected — that is what lets it
+        // take back over instantly — but it is not watching this machine's
+        // conversations. Publishing to every slot would make "superseded" look
+        // like a label rather than a fact.
+        let target = SUPERVISOR.controlling_pair();
+        let mut guard = SUPERVISOR.state.lock().unwrap();
+        target
+            .as_ref()
+            .and_then(|pair_id| guard.get_mut(pair_id))
+            .map(|s| {
+                (
+                    s.event_tx.clone(),
+                    s.pair_id.clone(),
+                    s.client.connection_state() == async_nats::connection::State::Connected,
+                    s.drop_counters.clone(),
+                )
+            })
     }) else {
         return;
     };
@@ -138,7 +147,9 @@ pub fn publish_event(
     // Lean feed: reasoning and streamed tool arguments never reach the lane.
     // Dropping here (rather than later in the drain) keeps the queue and the
     // coalescer from ever holding them.
-    let lean = crate::remote_host::lean::enabled();
+    // The controlling connection's declaration. Events go to that device only,
+    // so its own declaration is the one that decides the trimming.
+    let lean = SUPERVISOR.lean_events(&pair_id).load(Ordering::Acquire);
     let data = if lean {
         match crate::remote_host::lean::lean_event_data(event_type, data) {
             Some(data) => data,
@@ -510,6 +521,17 @@ pub(super) fn spawn_catalog_publisher(
         let mut last_workspaces_sig = String::new();
         loop {
             interval.tick().await;
+            // A standby device is served liveness only (its presence packet says
+            // so). Clearing the recorded signatures is what makes the first tick
+            // after it regains control publish a whole snapshot instead of an
+            // empty diff against a catalogue it never received.
+            if !SUPERVISOR.in_control(&pair_id) {
+                last_sessions_sig.clear();
+                last_structural_sig.clear();
+                last_workspaces_sig.clear();
+                delivered_activity.clear();
+                continue;
+            }
             // Read once per tick: the declaration belongs to the connection, and
             // a client that never made it is served the whole snapshot on every
             // change exactly as before.

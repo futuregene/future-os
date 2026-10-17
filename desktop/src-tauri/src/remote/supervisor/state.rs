@@ -50,8 +50,22 @@ pub(in crate::remote) struct RemoteState {
 /// recovery budgets and background scheduling. UI only reads its projection.
 pub(in crate::remote) struct Supervisor {
     pub(in crate::remote) access: lifecycle::AccessEpoch,
-    pub(in crate::remote) state: Mutex<Option<RemoteState>>,
-    pub(in crate::remote) bridge_shared: Mutex<Option<BridgeRuntimeShared>>,
+    /// One runtime per paired device, keyed by `pair_id`.
+    ///
+    /// Every slot keeps its own NATS connection, presence, credential refresh
+    /// and command loop, so a device losing its link — or losing its JWT — is
+    /// that device's problem and never the other one's. What the slots do *not*
+    /// share is the right to drive this machine; see [`Supervisor::active`].
+    pub(in crate::remote) state: Mutex<HashMap<String, RemoteState>>,
+    pub(in crate::remote) bridge_shared: Mutex<HashMap<String, BridgeRuntimeShared>>,
+    /// The one device allowed to drive this machine.
+    ///
+    /// Mirrored from the pairing book, and only ever moved by an explicit claim
+    /// — a confirmed pairing handshake or a `takeover` request. It is
+    /// deliberately *not* moved by a reconnect: a device that was superseded
+    /// must come back as a standby, or the two devices would take turns
+    /// evicting each other for as long as either one keeps reconnecting.
+    pub(in crate::remote) active: Mutex<Option<String>>,
     pub(in crate::remote) last_error_code: Mutex<Option<String>>,
     pub(in crate::remote) start_lock: tokio::sync::Mutex<()>,
     pub(in crate::remote) start_requested: AtomicBool,
@@ -62,7 +76,6 @@ pub(in crate::remote) struct Supervisor {
     pub(in crate::remote) start_retry_since: AtomicU64,
     pub(in crate::remote) start_retry_next_at: AtomicU64,
     pub(in crate::remote) credential_refreshing: AtomicBool,
-    pub(in crate::remote) runtime_reconnect_running: AtomicBool,
     pub(in crate::remote) runtime_reconnect_attempts: AtomicU8,
     pub(in crate::remote) runtime_failure_window_started: AtomicU64,
     pub(in crate::remote) web_reconnect_running: AtomicBool,
@@ -71,8 +84,9 @@ pub(in crate::remote) struct Supervisor {
 }
 pub(in crate::remote) static SUPERVISOR: LazyLock<Supervisor> = LazyLock::new(|| Supervisor {
     access: lifecycle::AccessEpoch::new(),
-    state: Mutex::new(None),
-    bridge_shared: Mutex::new(None),
+    state: Mutex::new(HashMap::new()),
+    bridge_shared: Mutex::new(HashMap::new()),
+    active: Mutex::new(None),
     last_error_code: Mutex::new(None),
     start_lock: tokio::sync::Mutex::const_new(()),
     start_requested: AtomicBool::new(false),
@@ -83,7 +97,6 @@ pub(in crate::remote) static SUPERVISOR: LazyLock<Supervisor> = LazyLock::new(||
     start_retry_since: AtomicU64::new(0),
     start_retry_next_at: AtomicU64::new(0),
     credential_refreshing: AtomicBool::new(false),
-    runtime_reconnect_running: AtomicBool::new(false),
     runtime_reconnect_attempts: AtomicU8::new(0),
     runtime_failure_window_started: AtomicU64::new(0),
     web_reconnect_running: AtomicBool::new(false),
@@ -120,35 +133,145 @@ impl Supervisor {
         self.bridge_shared
             .lock()
             .unwrap()
-            .as_ref()
-            .filter(|shared| shared.pair_id == pair_id)
+            .get(pair_id)
             .map(|shared| shared.client_identity.clone())
     }
 
-    /// The live-lane capabilities declared for `pair_id`. An unknown pairing
-    /// gets a fresh, off flag: capability is always per connection, never
-    /// inherited from whoever connected before.
+    /// The live-lane capabilities declared for `pair_id`. Always off for a
+    /// connection that has not declared them: capability is never inherited
+    /// from whoever connected before.
     pub(in crate::remote) fn coalesce_events(&self, pair_id: &str) -> Arc<AtomicBool> {
-        self.bridge_shared
-            .lock()
-            .unwrap()
-            .as_ref()
-            .filter(|shared| shared.pair_id == pair_id)
-            .map(|shared| shared.coalesce_events.clone())
-            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)))
+        self.shared_or_insert(pair_id).coalesce_events
     }
 
     /// Whether the client on `pair_id` asked for the catalog's recency packets
     /// instead of a whole session list per second of streaming. Same per-pairing
     /// rule as [`Supervisor::coalesce_events`].
     pub(in crate::remote) fn catalog_activity(&self, pair_id: &str) -> Arc<AtomicBool> {
-        self.bridge_shared
-            .lock()
-            .unwrap()
-            .as_ref()
-            .filter(|shared| shared.pair_id == pair_id)
-            .map(|shared| shared.catalog_activity.clone())
-            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)))
+        self.shared_or_insert(pair_id).catalog_activity
+    }
+
+    /// Whether the connection on `pair_id` declared the lean feed.
+    pub(in crate::remote) fn lean_events(&self, pair_id: &str) -> Arc<AtomicBool> {
+        self.shared_or_insert(pair_id).lean_events
+    }
+
+    /// The capability state of `pair_id`, creating an empty one if this pairing
+    /// has no runtime entry yet.
+    ///
+    /// A capability is recorded on a declaration and read on every request, and
+    /// a declaration can arrive before the runtime is installed (the command
+    /// loop subscribes first). Answering with a throwaway flag there would look
+    /// like a declaration that silently did nothing.
+    fn shared_or_insert(&self, pair_id: &str) -> BridgeRuntimeShared {
+        let mut guard = self.bridge_shared.lock().unwrap();
+        guard
+            .entry(pair_id.to_string())
+            .or_insert_with(|| BridgeRuntimeShared {
+                reply_slots: commands::new_reply_slots(),
+                pairing_confirmed: Arc::new(AtomicBool::new(false)),
+                bridge_instance_id: format!("bridge_{}", nkeys::KeyPair::new_user().public_key()),
+                drop_counters: Arc::new(DropCounters::new()),
+                coalesce_events: Arc::new(AtomicBool::new(false)),
+                catalog_activity: Arc::new(AtomicBool::new(false)),
+                lean_events: Arc::new(AtomicBool::new(false)),
+                client_identity: Arc::new(Mutex::new(None)),
+                next_generation_id: Arc::new(AtomicU64::new(1)),
+                handshake: Arc::new(Mutex::new(None)),
+                invitation: None,
+            })
+            .clone()
+    }
+
+    /// Whether `pair_id` is the device driving this machine.
+    ///
+    /// Read on every command and every published packet, so it is a plain lock
+    /// acquisition over a short critical section rather than anything clever.
+    ///
+    /// "Nothing claimed" answers yes: that is a machine with no paired device
+    /// (so nothing to arbitrate) or a fresh process before the pointer is read
+    /// from disk. A pointer that names a device this process does not have is
+    /// treated the same way — see [`Supervisor::device_is_known`].
+    pub(in crate::remote) fn in_control(&self, pair_id: &str) -> bool {
+        match self.active_pair() {
+            Some(active) if active == pair_id => true,
+            Some(active) => {
+                // A pointer naming a device this machine neither runs nor has
+                // a credential for is stale — it cannot be in front of the
+                // machine. Honouring it would lock every real device out of
+                // its own desktop.
+                !self.device_is_known(&active)
+            }
+            // Nothing has claimed the machine. On a machine with no paired
+            // device that is the whole truth and there is nothing to protect;
+            // on one that *does* have devices it means nobody was given the
+            // machine, and nobody may act as if they were.
+            None => pairing::load_slots().is_empty(),
+        }
+    }
+
+    /// Whether `pair_id` is a device this process actually has: a live runtime
+    /// or a persisted credential.
+    fn device_is_known(&self, pair_id: &str) -> bool {
+        self.state.lock().unwrap().contains_key(pair_id)
+            || pairing::load_slots()
+                .iter()
+                .any(|slot| slot.pair_id == pair_id)
+    }
+
+    /// The device in control, if one claimed it.
+    pub(in crate::remote) fn active_pair(&self) -> Option<String> {
+        self.active.lock().unwrap().clone()
+    }
+
+    /// The device that actually drives the machine right now.
+    ///
+    /// Same rule as [`Supervisor::in_control`], in the shape a publisher needs:
+    /// the claimed pointer, else the only connected device. `None` when several
+    /// are connected and none has been given the machine — in which case there
+    /// is nobody to publish to, which is the honest answer.
+    pub(in crate::remote) fn controlling_pair(&self) -> Option<String> {
+        if let Some(active) = self.active_pair() {
+            return Some(active);
+        }
+        let states = self.state.lock().unwrap();
+        if states.len() == 1 {
+            return states.keys().next().cloned();
+        }
+        None
+    }
+
+    /// Adopt the persisted pointer without claiming anything.
+    pub(in crate::remote) fn restore_active(&self, pair_id: Option<String>) {
+        *self.active.lock().unwrap() = pair_id;
+    }
+
+    /// Move control to `pair_id`. Returns the device that lost it, if any.
+    ///
+    /// The persisted pointer is written first: an in-memory control that a
+    /// restart could not reproduce would hand the machine to a different
+    /// device after a crash, which is exactly the decision the user made and
+    /// must not be lost.
+    pub(in crate::remote) fn claim_control(&self, pair_id: &str) -> Option<String> {
+        let previous = {
+            let mut active = self.active.lock().unwrap();
+            if active.as_deref() == Some(pair_id) {
+                return None;
+            }
+            active.replace(pair_id.to_string())
+        };
+        if let Err(error) = pairing::set_active(pair_id) {
+            eprintln!("remote: could not persist the controlling device: {error}");
+        }
+        previous
+    }
+
+    /// Forget the pointer, e.g. when the controlling device is unpaired.
+    pub(in crate::remote) fn release_control(&self, pair_id: &str) {
+        let mut active = self.active.lock().unwrap();
+        if active.as_deref() == Some(pair_id) {
+            *active = None;
+        }
     }
 
     pub(in crate::remote) fn cancel_tasks(&self) {
@@ -157,8 +280,6 @@ impl Supervisor {
         }
         self.resume_recovery_running.store(false, Ordering::Release);
         self.start_retry_running.store(false, Ordering::Release);
-        self.runtime_reconnect_running
-            .store(false, Ordering::Release);
         self.web_reconnect_running.store(false, Ordering::Release);
     }
 }
@@ -169,7 +290,6 @@ impl Supervisor {
 /// phone can be forced through an unnecessary claim flow.
 #[derive(Clone)]
 pub(in crate::remote) struct BridgeRuntimeShared {
-    pub(in crate::remote) pair_id: String,
     pub(in crate::remote) reply_slots: commands::ReplySlots,
     pub(in crate::remote) pairing_confirmed: Arc<AtomicBool>,
     pub(in crate::remote) coalesce_events: Arc<AtomicBool>,
@@ -178,6 +298,10 @@ pub(in crate::remote) struct BridgeRuntimeShared {
     /// with the other capability flags and for the same reason: a client that
     /// cannot apply a packet must keep receiving whole snapshots.
     pub(in crate::remote) catalog_activity: Arc<AtomicBool>,
+    /// Whether this connection declared the lean feed. Per pairing like the
+    /// others: trimming one device's history to fields another device asked to
+    /// skip would be a silent narrowing of what it receives.
+    pub(in crate::remote) lean_events: Arc<AtomicBool>,
     /// What the connected client said it was, until a new pairing replaces it.
     ///
     /// Spans generations like the fields above, and for the same reason: a
@@ -238,13 +362,15 @@ pub(in crate::remote) fn shared_runtime(
     // meant to survive a credential generation swap; they must not survive a
     // new invitation, whose identity nothing on screen or on the phone agrees
     // with.
-    let reusable = guard.as_ref().is_some_and(|shared| {
-        shared.pair_id == pair_id
-            && invitation.is_some()
-            && shared.invitation.as_ref() == invitation.as_ref()
+    //
+    // Keyed by `pair_id`, so two devices never share any of it: their reply
+    // single-flight caches, capability flags and client identities are separate
+    // by construction rather than by remembering to compare ids.
+    let reusable = guard.get(pair_id).is_some_and(|shared| {
+        invitation.is_some() && shared.invitation.as_ref() == invitation.as_ref()
     });
     if reusable {
-        let shared = guard.as_mut().expect("checked above");
+        let shared = guard.get_mut(pair_id).expect("checked above");
         if rotate_epoch {
             shared.bridge_instance_id =
                 format!("bridge_{}", nkeys::KeyPair::new_user().public_key());
@@ -255,19 +381,19 @@ pub(in crate::remote) fn shared_runtime(
         return shared.clone();
     }
     let shared = BridgeRuntimeShared {
-        pair_id: pair_id.to_string(),
         reply_slots: commands::new_reply_slots(),
         pairing_confirmed: Arc::new(AtomicBool::new(pairing_confirmed)),
         bridge_instance_id: format!("bridge_{}", nkeys::KeyPair::new_user().public_key()),
         drop_counters: Arc::new(DropCounters::new()),
         coalesce_events: Arc::new(AtomicBool::new(false)),
         catalog_activity: Arc::new(AtomicBool::new(false)),
+        lean_events: Arc::new(AtomicBool::new(false)),
         client_identity: Arc::new(Mutex::new(None)),
         next_generation_id: Arc::new(AtomicU64::new(1)),
         handshake: Arc::new(Mutex::new(None)),
         invitation,
     };
-    *guard = Some(shared.clone());
+    guard.insert(pair_id.to_string(), shared.clone());
     shared
 }
 
@@ -280,6 +406,50 @@ pub(in crate::remote) const RUNTIME_FAILURE_WINDOW_MS: u64 = 10 * 60 * 1_000;
 pub(in crate::remote) const RUNTIME_HEALTHY_RESET_SECS: u8 = 60;
 pub(in crate::remote) const MAX_WEB_RECONNECT_ATTEMPTS: u8 = 3;
 
+/// Single-slot view of the runtime map, for tests.
+///
+/// Production code addresses one device at a time by `pair_id`, because that is
+/// the whole point of the map. The bridge tests predate multi-device and each
+/// drives exactly one pairing, so they keep their `Option`-shaped vocabulary
+/// through this adapter instead of every assertion learning about the map —
+/// which would obscure what they are asserting about a single connection.
+#[cfg(test)]
+pub(in crate::remote) trait SingleSlotMap {
+    fn as_ref(&self) -> Option<&RemoteState>;
+    fn as_mut(&mut self) -> Option<&mut RemoteState>;
+    fn is_none(&self) -> bool;
+    fn is_some(&self) -> bool;
+    fn replace(&mut self, state: RemoteState) -> Option<RemoteState>;
+    fn take(&mut self) -> Option<RemoteState>;
+}
+
+#[cfg(test)]
+impl SingleSlotMap for HashMap<String, RemoteState> {
+    fn as_ref(&self) -> Option<&RemoteState> {
+        self.values().next()
+    }
+    fn as_mut(&mut self) -> Option<&mut RemoteState> {
+        self.values_mut().next()
+    }
+    fn is_none(&self) -> bool {
+        self.is_empty()
+    }
+    fn is_some(&self) -> bool {
+        !self.is_empty()
+    }
+    fn replace(&mut self, state: RemoteState) -> Option<RemoteState> {
+        assert!(
+            !self.contains_key(&state.pair_id),
+            "a single-slot fixture replaced an existing runtime; use insert by pair_id"
+        );
+        self.insert(state.pair_id.clone(), state)
+    }
+    fn take(&mut self) -> Option<RemoteState> {
+        let pair_id = self.keys().next().cloned()?;
+        self.remove(&pair_id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,8 +460,9 @@ mod tests {
     fn stopped_supervisor() -> Supervisor {
         Supervisor {
             access: lifecycle::AccessEpoch::new(),
-            state: std::sync::Mutex::new(None),
-            bridge_shared: std::sync::Mutex::new(None),
+            state: std::sync::Mutex::new(std::collections::HashMap::new()),
+            bridge_shared: std::sync::Mutex::new(std::collections::HashMap::new()),
+            active: std::sync::Mutex::new(None),
             last_error_code: std::sync::Mutex::new(None),
             start_lock: tokio::sync::Mutex::const_new(()),
             start_requested: AtomicBool::new(false),
@@ -302,7 +473,6 @@ mod tests {
             start_retry_since: AtomicU64::new(0),
             start_retry_next_at: AtomicU64::new(0),
             credential_refreshing: AtomicBool::new(false),
-            runtime_reconnect_running: AtomicBool::new(false),
             runtime_reconnect_attempts: AtomicU8::new(0),
             runtime_failure_window_started: AtomicU64::new(0),
             web_reconnect_running: AtomicBool::new(false),
@@ -368,7 +538,7 @@ mod tests {
     #[test]
     fn a_confirmed_pairing_latches_onto_the_reused_runtime() {
         let _home = HomeGuard::new("remote-runtime-latch");
-        *SUPERVISOR.bridge_shared.lock().unwrap() = None;
+        SUPERVISOR.bridge_shared.lock().unwrap().clear();
         let key_pair = nkeys::KeyPair::new_user();
         let creds = creds("pair_latch", key_pair.seed().unwrap().to_string());
 
@@ -391,7 +561,7 @@ mod tests {
             first.bridge_instance_id, second.bridge_instance_id,
             "and the bridge id must still rotate with the generation"
         );
-        *SUPERVISOR.bridge_shared.lock().unwrap() = None;
+        SUPERVISOR.bridge_shared.lock().unwrap().clear();
     }
 
     /// Credentials whose NKey seed cannot be read describe no invitation, so
@@ -401,7 +571,7 @@ mod tests {
     #[test]
     fn an_unreadable_nkey_seed_never_reuses_a_cached_runtime() {
         let _home = HomeGuard::new("remote-unreadable-seed");
-        *SUPERVISOR.bridge_shared.lock().unwrap() = None;
+        SUPERVISOR.bridge_shared.lock().unwrap().clear();
         let unreadable = creds("pair_unreadable", "not-an-nkey-seed".to_string());
 
         let first = shared_runtime(&unreadable, false, false);
@@ -414,6 +584,6 @@ mod tests {
             !std::sync::Arc::ptr_eq(&first.pairing_confirmed, &second.pairing_confirmed),
             "a previous pairing's confirmation must not carry over"
         );
-        *SUPERVISOR.bridge_shared.lock().unwrap() = None;
+        SUPERVISOR.bridge_shared.lock().unwrap().clear();
     }
 }

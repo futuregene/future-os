@@ -280,6 +280,12 @@ mod runtime_tests {
         ));
     }
 
+    /// Credentials for one device, for tests that only need it paired (no
+    /// bridge behind it).
+    pub(super) fn test_creds_for_multi_device(pair_id: &str) -> pairing::PairingCreds {
+        test_creds(pair_id, "nats://127.0.0.1:1", 3600)
+    }
+
     fn test_creds(pair_id: &str, nats_url: &str, expires_in: i64) -> pairing::PairingCreds {
         let key_pair = nkeys::KeyPair::new_user();
         pairing::PairingCreds {
@@ -299,12 +305,15 @@ mod runtime_tests {
     /// serialized test starts clean. Poison-tolerant: one test's failure must
     /// not cascade into every later lock.
     fn install_state(state: RemoteState) {
+        let pair_id = state.pair_id.clone();
         let previous = SUPERVISOR
             .state
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .replace(state);
         assert!(previous.is_none(), "previous test leaked SUPERVISOR.state");
+        // The fixture is a machine with one device, so it is the controller.
+        SUPERVISOR.restore_active(Some(pair_id));
     }
 
     #[test]
@@ -710,7 +719,11 @@ mod runtime_tests {
         install_state(fake_state(&nats, "pair_lean").await);
         let mut tap = nats.tap();
 
-        crate::remote_host::lean::set_enabled(true);
+        // The declaration belongs to this connection; the publisher reads it
+        // from the pairing that is in control.
+        SUPERVISOR
+            .lean_events("pair_lean")
+            .store(true, Ordering::Release);
         publish_event(
             "sess-lean",
             "thinking_delta",
@@ -772,7 +785,9 @@ mod runtime_tests {
             -1,
             0,
         );
-        crate::remote_host::lean::set_enabled(false);
+        SUPERVISOR
+            .lean_events("pair_lean")
+            .store(false, Ordering::Release);
 
         // The first thing on the lane is the tool start, not the reasoning that
         // was published before it.
@@ -1138,7 +1153,7 @@ mod runtime_tests {
             .unwrap();
         assert!(!matches!(stopped.phase, RemotePhase::Ready));
         assert!(SUPERVISOR.state.lock().unwrap().is_none());
-        assert!(SUPERVISOR.bridge_shared.lock().unwrap().is_none());
+        assert!(SUPERVISOR.bridge_shared.lock().unwrap().is_empty());
         assert!(
             release_tx.send(()).is_err(),
             "cancel must drop the readiness future"
@@ -1614,7 +1629,10 @@ mod runtime_tests {
             500,
             json!({ "message": "busy" }),
         );
-        let error = establish().await.unwrap_err();
+        let error = match super::supervisor::establish_slots().await {
+            Ok(_) => panic!("a transient refresh failure must reach the caller"),
+            Err(error) => error,
+        };
         assert!(
             matches!(error, crate::AppError::Remote { status: 500, .. }),
             "expected a transient remote failure, got: {error}"
@@ -1730,7 +1748,7 @@ mod runtime_tests {
     #[test]
     fn bridge_shared_state_survives_generation_swaps_but_rotates_epoch() {
         let _home = HomeGuard::new("remote-shared-generation");
-        *SUPERVISOR.bridge_shared.lock().unwrap() = None;
+        SUPERVISOR.bridge_shared.lock().unwrap().clear();
         let creds = test_creds("pair_shared", "nats://127.0.0.1:4222", 3600);
         let first = shared_runtime(&creds, true, false);
         let same_credential_epoch = shared_runtime(&creds, true, false);
@@ -1770,7 +1788,7 @@ mod runtime_tests {
         ));
         assert!(!reissued.pairing_confirmed.load(Ordering::Acquire));
         assert_ne!(first.bridge_instance_id, reissued.bridge_instance_id);
-        *SUPERVISOR.bridge_shared.lock().unwrap() = None;
+        SUPERVISOR.bridge_shared.lock().unwrap().clear();
     }
 
     #[test]
@@ -2129,6 +2147,8 @@ mod runtime_tests {
         let nats = FakeNats::start().await;
         let client = nats_connect_once(&nats).await;
         let pair = unique("pairhb");
+        // The publisher serves the device in control; this fixture is it.
+        SUPERVISOR.restore_active(Some(pair.clone()));
 
         // A thread (with a live run → streaming) and a user workspace.
         let session = unique("sesshb");
@@ -2244,6 +2264,8 @@ mod runtime_tests {
         let nats = FakeNats::start().await;
         let client = nats_connect_once(&nats).await;
         let pair = unique("pairactivity");
+        // The publisher serves the device in control; this fixture is it.
+        SUPERVISOR.restore_active(Some(pair.clone()));
         // A directory with more than the one row that moves: the ratio this test
         // asserts is the whole point of the lane, and a single-conversation
         // fixture cannot show it (the packet has a fixed envelope either way).
@@ -2382,6 +2404,8 @@ mod runtime_tests {
         let nats = FakeNats::start().await;
         let client = nats_connect_once(&nats).await;
         let pair = unique("pairlegacy");
+        // The publisher serves the device in control; this fixture is it.
+        SUPERVISOR.restore_active(Some(pair.clone()));
         let thread = crate::store::create_thread(crate::store::CreateThreadInput {
             mode: "chat".to_string(),
             title: Some("Streaming".to_string()),
@@ -2433,6 +2457,8 @@ mod runtime_tests {
         let nats = FakeNats::start().await;
         let client = nats_connect_once(&nats).await;
         let pair = unique("pairidle");
+        // The publisher serves the device in control; this fixture is it.
+        SUPERVISOR.restore_active(Some(pair.clone()));
         let session = unique("sessidle");
         // Exactly one thread and no runs: the snapshot signature is stable, so
         // any republication below is the timer this test exists to forbid.
@@ -2547,6 +2573,7 @@ mod runtime_tests {
         // oversized workspace name inflates the workspaces payload, so every
         // heartbeat publish fails deterministically — no broker kill timing.
         let pair = "p".repeat(9 * 1024 * 1024);
+        SUPERVISOR.restore_active(Some(pair.clone()));
         let workspace_dir = std::env::temp_dir().join(unique("futureos-ws-hbf"));
         std::fs::create_dir_all(&workspace_dir).unwrap();
         crate::store::create_workspace(crate::store::CreateWorkspaceInput {
@@ -2994,7 +3021,7 @@ mod runtime_tests {
         stop();
         SUPERVISOR.start_requested.store(false, Ordering::Release);
         handle_system_resume();
-        *SUPERVISOR.bridge_shared.lock().unwrap() = None;
+        SUPERVISOR.bridge_shared.lock().unwrap().clear();
         *SUPERVISOR.last_error_code.lock().unwrap() = None;
     }
 
@@ -3151,6 +3178,8 @@ mod runtime_tests {
         let nats = FakeNats::start().await;
         let client = nats_connect_once(&nats).await;
         let pair = unique("pairhbs");
+        // The publisher serves the device in control; this fixture is it.
+        SUPERVISOR.restore_active(Some(pair.clone()));
         // A thread title that alone exceeds the broker payload cap: presence
         // publishes (small pair id), then the sessions snapshot fails.
         crate::store::create_thread(crate::store::CreateThreadInput {
@@ -3177,6 +3206,8 @@ mod runtime_tests {
         let nats = FakeNats::start().await;
         let client = nats_connect_once(&nats).await;
         let pair = unique("pairhbw");
+        // The publisher serves the device in control; this fixture is it.
+        SUPERVISOR.restore_active(Some(pair.clone()));
         // A workspace name that alone exceeds the broker payload cap: presence
         // and the (empty) sessions snapshot publish, then workspaces fails.
         let workspace_dir = std::env::temp_dir().join(unique("futureos-ws-hbw"));
@@ -3243,6 +3274,7 @@ mod runtime_tests {
         // generation connects but its readiness publish fails, so the loop
         // aborts the half-built generation and retries.
         let pair = "p".repeat(9 * 1024 * 1024);
+        SUPERVISOR.restore_active(Some(pair.clone()));
         let creds = test_creds(&pair, nats.url(), 30);
         pairing::save_creds(&creds).unwrap();
         platform.respond_refresh(nats2.url());
@@ -3339,28 +3371,22 @@ mod runtime_tests {
     }
 
     /// `spawn_runtime_reconnect` is the recovery for a subscription task that
-    /// died. In the test build it is deliberately a no-op: it must not arm the
-    /// singleton flag or record a failure attempt, because the tests that drive
-    /// the supervisor own that state themselves.
+    /// died. In the test build it is deliberately a no-op: it must not record a
+    /// failure attempt, because the tests that drive the supervisor own that
+    /// state themselves.
     #[tokio::test]
     async fn spawning_a_runtime_reconnect_is_a_noop_under_test() {
         let _home = HomeGuard::new("remote-runtime-reconnect-noop");
         SUPERVISOR
-            .runtime_reconnect_running
-            .store(false, Ordering::Release);
-        SUPERVISOR
             .runtime_reconnect_attempts
             .store(0, Ordering::Release);
-        spawn_runtime_reconnect();
-        assert!(
-            !SUPERVISOR.runtime_reconnect_running.load(Ordering::Acquire),
-            "the test build must not arm the real reconnect worker"
-        );
+        spawn_runtime_reconnect("pair_test".to_string());
         assert_eq!(
             SUPERVISOR
                 .runtime_reconnect_attempts
                 .load(Ordering::Acquire),
-            0
+            0,
+            "the test build must not arm the real reconnect worker"
         );
     }
 
@@ -3381,5 +3407,127 @@ mod runtime_tests {
             )
             .await;
         assert_eq!(sink.error_text(), "remote_read_expired");
+    }
+}
+use super::SingleSlotMap;
+
+/// Multi-device control: who drives the machine, and what a device that does
+/// not may still do. These are the rules the product is built on, so they are
+/// pinned here rather than inferred from the UI.
+mod multi_device_tests {
+    use super::runtime_tests::test_creds_for_multi_device as test_creds;
+    use super::*;
+    use crate::remote::types::DeviceControl;
+
+    /// Save two devices and make `first` the controller — the shape of a
+    /// machine that was driven by one of them and then paired a second.
+    fn two_devices(first: &str, second: &str) -> (pairing::PairingCreds, pairing::PairingCreds) {
+        let a = test_creds(first);
+        let b = test_creds(second);
+        pairing::save_creds(&a).unwrap();
+        pairing::save_creds(&b).unwrap();
+        pairing::set_active(&a.pair_id).unwrap();
+        SUPERVISOR.restore_active(Some(a.pair_id.clone()));
+        (a, b)
+    }
+
+    /// Taking control moves the pointer, and persists it: a restart must not
+    /// hand the machine back to whoever held it before.
+    #[test]
+    fn takeover_moves_and_persists_control() {
+        let _home = test_support::HomeGuard::new("remote-multi-takeover");
+        let (controller, standby) = two_devices("pair_ctrl2", "pair_standby2");
+
+        let previous = SUPERVISOR.claim_control(&standby.pair_id);
+        assert_eq!(previous.as_deref(), Some(controller.pair_id.as_str()));
+        assert!(SUPERVISOR.in_control(&standby.pair_id));
+        assert!(!SUPERVISOR.in_control(&controller.pair_id));
+        assert_eq!(
+            pairing::active_slot().as_deref(),
+            Some(standby.pair_id.as_str()),
+            "the controlling device must survive a restart"
+        );
+    }
+
+    /// A device that reconnects is not a device that asked for the machine.
+    /// This is the anti-ping-pong rule: if a reconnect reclaimed control, two
+    /// devices would evict each other for as long as both keep retrying.
+    #[test]
+    fn reconnecting_restores_the_persisted_controller_and_nothing_else() {
+        let _home = test_support::HomeGuard::new("remote-multi-reconnect");
+        let (controller, standby) = two_devices("pair_ctrl3", "pair_standby3");
+
+        SUPERVISOR.restore_active(None);
+        SUPERVISOR.restore_active(pairing::active_slot());
+
+        assert!(
+            SUPERVISOR.in_control(&controller.pair_id),
+            "the persisted controller keeps the machine across a restart"
+        );
+        assert!(!SUPERVISOR.in_control(&standby.pair_id));
+    }
+
+    /// Unpairing the controlling device must clear the pointer it named — and
+    /// when that leaves a single device, that one controls, because a machine
+    /// with one device has no arbitration to do.
+    #[tokio::test]
+    async fn unpairing_the_controller_clears_its_pointer() {
+        let _home = test_support::HomeGuard::new("remote-multi-unpair");
+        let (controller, standby) = two_devices("pair_ctrl4", "pair_standby4");
+        SUPERVISOR.restore_active(Some(controller.pair_id.clone()));
+
+        super::unpair_slot(&controller.pair_id).await.unwrap();
+
+        assert!(pairing::load_slots()
+            .iter()
+            .all(|slot| slot.pair_id != controller.pair_id));
+        assert_eq!(
+            pairing::active_slot().as_deref(),
+            Some(standby.pair_id.as_str()),
+            "the only device left is the machine's controller"
+        );
+        assert!(SUPERVISOR.in_control(&standby.pair_id));
+    }
+
+    /// The same removal with two devices left is *not* a promotion: nobody was
+    /// given the machine, so nobody may act as if they were.
+    #[tokio::test]
+    async fn unpairing_the_controller_of_three_leaves_nobody_in_control() {
+        let _home = test_support::HomeGuard::new("remote-multi-unpair-three");
+        let (controller, second) = two_devices("pair_ctrl5", "pair_second5");
+        let third = test_creds("pair_third5");
+        pairing::save_creds(&third).unwrap();
+        SUPERVISOR.restore_active(Some(controller.pair_id.clone()));
+
+        super::unpair_slot(&controller.pair_id).await.unwrap();
+
+        assert_eq!(pairing::active_slot(), None);
+        assert!(!SUPERVISOR.in_control(&second.pair_id));
+        assert!(!SUPERVISOR.in_control(&third.pair_id));
+    }
+
+    /// The device list is what the Remote page shows, so it must describe every
+    /// device — including the ones that are not running — and say which one is
+    /// in control.
+    #[test]
+    fn the_device_list_names_every_paired_device_and_its_control() {
+        let _home = test_support::HomeGuard::new("remote-multi-list");
+        let (controller, standby) = two_devices("pair_ctrl6", "pair_standby6");
+        *SUPERVISOR.last_error_code.lock().unwrap() = None;
+
+        let current = status();
+        assert_eq!(current.pair_id, controller.pair_id, "the controller leads");
+        assert_eq!(current.devices.len(), 2);
+        assert_eq!(
+            current.devices[0].pair_id, controller.pair_id,
+            "the controlling device is listed first"
+        );
+        assert_eq!(current.devices[0].control, DeviceControl::Active);
+        assert_eq!(current.devices[1].pair_id, standby.pair_id);
+        assert_eq!(current.devices[1].control, DeviceControl::Standby);
+        assert!(
+            current.devices.iter().all(|device| !device.connected),
+            "nothing is running, so nothing may claim to be connected"
+        );
     }
 }

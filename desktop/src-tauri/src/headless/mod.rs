@@ -859,6 +859,7 @@ mod tests {
     #[test]
     fn invitation_contains_all_mobile_identity_fields_and_is_ready_only() {
         let mut status = remote::RemoteStatus {
+            devices: Vec::new(),
             client: None,
             phase: remote::RemotePhase::Ready,
             reason: None,
@@ -1188,6 +1189,7 @@ mod tests {
     #[test]
     fn pairing_link_rejects_codes_that_are_not_v2_invitations() {
         let mut status = remote::RemoteStatus {
+            devices: Vec::new(),
             client: None,
             phase: remote::RemotePhase::Ready,
             reason: None,

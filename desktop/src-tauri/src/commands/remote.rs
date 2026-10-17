@@ -39,6 +39,31 @@ pub async fn remote_unpair() -> Result<remote::RemoteStatus, crate::AppError> {
     remote::unpair().await
 }
 
+/// Unpair one device and leave the others paired.
+#[tauri::command]
+pub async fn remote_unpair_device(
+    pair_id: String,
+) -> Result<remote::RemoteStatus, crate::AppError> {
+    remote::unpair_slot(&pair_id).await
+}
+
+/// Add a device beside the ones already paired and return the invitation to
+/// display. The bridge for the new device is started immediately so the code
+/// works the moment it is shown.
+#[tauri::command]
+pub async fn remote_add_device() -> Result<remote::RemoteStatus, crate::AppError> {
+    remote::add_device().await
+}
+
+/// Make `pair_id` the device that drives this machine.
+///
+/// The desktop-side twin of the client's `takeover` command, for when the user
+/// is sitting at the machine and would rather click than reach for the phone.
+#[tauri::command]
+pub async fn remote_takeover(pair_id: String) -> Result<remote::RemoteStatus, crate::AppError> {
+    remote::takeover(&pair_id).await
+}
+
 /// Whether a pairing is persisted (for the UI's paired/unpaired indicator).
 /// Never returns the token.
 #[derive(Debug, Clone, Serialize)]
@@ -50,6 +75,9 @@ pub struct RemotePairingStatus {
 
 #[tauri::command]
 pub fn remote_pairing_status() -> Result<RemotePairingStatus, crate::AppError> {
+    // The controlling device, or the first one when nothing has claimed
+    // control: the same slot the single-device fields in `RemoteStatus`
+    // project, so the two never disagree.
     Ok(match remote::pairing::load_creds() {
         Some(c) => RemotePairingStatus {
             paired: true,

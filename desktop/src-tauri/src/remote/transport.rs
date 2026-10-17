@@ -42,7 +42,10 @@ pub(super) async fn build_transport(
     // detection and would fail to parse a compressed reply, so the permission
     // must not outlive the connection that asked for it.
     handshake.gzip_replies.store(false, Ordering::Release);
-    crate::remote_host::lean::set_enabled(false);
+    handshake.lean_events.store(false, Ordering::Release);
+    SUPERVISOR
+        .lean_events(pair_id)
+        .store(false, Ordering::Release);
     let event_task =
         spawn_secure_event_publisher(client.clone(), event_rx, handshake.secure.clone(), coalesce);
     candidate_tasks.track(&event_task);
@@ -162,16 +165,12 @@ pub(super) fn spawn_credential_refresh(
                 if !wait.is_zero() {
                     tokio::time::sleep(wait).await;
                 }
-                let generation_active =
-                    SUPERVISOR
-                        .state
-                        .lock()
-                        .unwrap()
-                        .as_ref()
-                        .is_some_and(|state| {
-                            state.pair_id == pair_id
-                                && Arc::ptr_eq(&state.pairing_confirmed, &pairing_confirmed)
-                        });
+                let generation_active = SUPERVISOR
+                    .state
+                    .lock()
+                    .unwrap()
+                    .get(&pair_id)
+                    .is_some_and(|state| Arc::ptr_eq(&state.pairing_confirmed, &pairing_confirmed));
                 if !generation_active {
                     return;
                 }
@@ -179,7 +178,7 @@ pub(super) fn spawn_credential_refresh(
                     .state
                     .lock()
                     .unwrap()
-                    .as_ref()
+                    .get(&pair_id)
                     .is_some_and(|state| state.nats_health.is_terminal())
                 {
                     // A deterministic authorization/configuration failure does
@@ -210,16 +209,14 @@ pub(super) fn spawn_credential_refresh(
                     // shows "running": drop the dead credential, record why,
                     // and stop the bridge. `stop()` aborts this very task, but
                     // abort only lands at the next await and we return here.
-                    let generation_active =
-                        SUPERVISOR
-                            .state
-                            .lock()
-                            .unwrap()
-                            .as_ref()
-                            .is_some_and(|state| {
-                                state.pair_id == pair_id
-                                    && Arc::ptr_eq(&state.pairing_confirmed, &pairing_confirmed)
-                            });
+                    let generation_active = SUPERVISOR
+                        .state
+                        .lock()
+                        .unwrap()
+                        .get(&pair_id)
+                        .is_some_and(|state| {
+                            Arc::ptr_eq(&state.pairing_confirmed, &pairing_confirmed)
+                        });
                     if !generation_active {
                         return;
                     }
@@ -237,9 +234,16 @@ pub(super) fn spawn_credential_refresh(
                         .credential_refreshing
                         .store(false, Ordering::Release);
                     if revoked {
-                        let _ = pairing::clear_creds();
+                        // Only this device's credential is dead. The others on
+                        // this machine keep serving, and the control pointer is
+                        // cleared if it named the device that just died.
+                        let _ = forget_slot(&pair_id);
+                    } else {
+                        // Account-level authorization is not a device fact: the
+                        // whole machine cannot authenticate, so every bridge
+                        // stops.
+                        let _ = stop();
                     }
-                    let _ = stop();
                     return;
                 }
                 Err(error) => {
@@ -257,7 +261,7 @@ pub(super) fn spawn_credential_refresh(
                 Ok(connection) => connection,
                 Err(crate::AppError::RemoteAuthorization(error)) => {
                     eprintln!("remote: refreshed NATS credential rejected [AU001]: {error}");
-                    if let Some(state) = SUPERVISOR.state.lock().unwrap().as_ref() {
+                    if let Some(state) = SUPERVISOR.state.lock().unwrap().get(&pair_id) {
                         state
                             .nats_health
                             .service_config_error
@@ -320,10 +324,10 @@ pub(super) fn spawn_credential_refresh(
             // save: saving outside the lock raced `unpair()` (stop → clear
             // creds) and could resurrect a just-revoked credential file.
             let mut guard = SUPERVISOR.state.lock().unwrap();
-            let Some(state) = guard.as_mut().filter(|state| {
-                state.pair_id == pair_id
-                    && Arc::ptr_eq(&state.pairing_confirmed, &pairing_confirmed)
-            }) else {
+            let Some(state) = guard
+                .get_mut(&pair_id)
+                .filter(|state| Arc::ptr_eq(&state.pairing_confirmed, &pairing_confirmed))
+            else {
                 new_event.abort();
                 new_cmd.abort();
                 new_transfer.abort();

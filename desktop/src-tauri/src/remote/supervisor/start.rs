@@ -56,29 +56,217 @@ pub(in crate::remote) async fn start_generation(
     }
     *SUPERVISOR.last_error_code.lock().unwrap() = Some("connecting".to_string());
 
+    // The persisted pointer is the authority when the process starts; an
+    // in-memory pointer that disagrees can only be older than the file, because
+    // every claim writes through. Never clear it here: `None` in the book means
+    // no device has claimed control, not that the current one lost it.
+    SUPERVISOR.restore_active(pairing::active_slot());
+
     // A remote/server failure here (offline, revoked, HTTP error) is not a
     // program fault — surface it as a localized, not-running status instead of
     // throwing a raw transport string at the UI. Local failures (NKey, disk)
     // keep propagating as `Err`.
-    let (creds, pairing_code, pairing_code_expires_at) = match establish().await {
-        Ok(value) => value,
-        Err(error) => {
-            return start_failure(error);
-        }
+    let plans = match establish_slots().await {
+        Ok(plans) => plans,
+        Err(error) => return start_failure(error),
     };
     if !SUPERVISOR.start_requested.load(Ordering::Acquire) {
         return Ok(empty());
     }
+
+    // One device needs no arbitration: it is the machine's controller by
+    // definition, and asking its user to "take over" from nobody would be
+    // theatre. Several devices do — then only an explicit claim moves the
+    // pointer, and a reconnect never does.
+    if SUPERVISOR.active_pair().is_none() && plans.len() == 1 && plans[0].pairing_code.is_none() {
+        SUPERVISOR.claim_control(&plans[0].creds.pair_id);
+    }
+
+    // One device failing to come up must not take the others down: each slot
+    // has its own connection and its own credential. The start only reports a
+    // failure when *no* device could be started, which is the case a user can
+    // act on.
+    let mut started = 0usize;
+    let mut failure = None;
+    for (index, plan) in plans.into_iter().enumerate() {
+        // The local browser validation surface is one listener for the whole
+        // process, so exactly one slot owns it.
+        match start_slot(plan, epoch, replace_existing, index == 0).await {
+            Ok(()) => started += 1,
+            Err(error) => failure = Some(error),
+        }
+        if !SUPERVISOR.start_requested.load(Ordering::Acquire) {
+            return Ok(empty());
+        }
+    }
+    match (started, failure) {
+        (0, Some(error)) => start_failure(error),
+        (0, None) => Ok(empty()),
+        _ => {
+            // The bind result is a fact of this start, not something a later
+            // poll can reconstruct: the first status must carry it so the page
+            // can say why the browser surface is missing. Later polls report
+            // only what the retry budget has settled into.
+            let web_bind_failed = web_client_enabled()
+                && !SUPERVISOR
+                    .state
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .any(|state| state.web_task.is_some());
+            SUPERVISOR
+                .access
+                .commit(epoch, || {
+                    *SUPERVISOR.last_error_code.lock().unwrap() = None;
+                    if let Some(line) = START_EPISODE.recovered() {
+                        eprintln!("{line}");
+                    }
+                    SUPERVISOR.start_retry_attempts.store(0, Ordering::Release);
+                    SUPERVISOR.start_retry_since.store(0, Ordering::Release);
+                    SUPERVISOR.start_retry_next_at.store(0, Ordering::Release);
+                })
+                .unwrap_or(());
+            let mut status = status();
+            if web_bind_failed {
+                status.warning_code = Some("web_bind".to_string());
+            }
+            Ok(status)
+        }
+    }
+}
+
+/// One device's plan for this start: its credentials, plus the invitation the
+/// user still has to scan when this device has not been claimed yet.
+pub(in crate::remote) struct SlotPlan {
+    pub(in crate::remote) creds: pairing::PairingCreds,
+    pub(in crate::remote) pairing_code: Option<String>,
+    pub(in crate::remote) pairing_code_expires_at: Option<i64>,
+}
+
+/// Pair one more device, then connect it so the code on screen works at once.
+///
+/// Only the new slot is started: the devices already serving are not touched,
+/// because pairing a device has nothing to do with their connections. The
+/// platform owns the cap, so `pairing_limit_reached` arrives here as an error
+/// and is surfaced unchanged.
+pub async fn add_device() -> Result<RemoteStatus, crate::AppError> {
+    spawn_revoke_cleanup();
+    let (creds, code, expires_at) = pairing::create_pairing(true).await?;
+    let plan = SlotPlan {
+        creds,
+        pairing_code: Some(code),
+        pairing_code_expires_at: expires_at,
+    };
+    if !SUPERVISOR.start_requested.load(Ordering::Acquire) {
+        SUPERVISOR.start_requested.store(true, Ordering::Release);
+    }
+    let epoch = SUPERVISOR.access.current();
+    let _start_guard = SUPERVISOR.start_lock.lock().await;
+    start_slot(plan, epoch, true, false).await?;
+    Ok(status())
+}
+
+/// Resolve every paired device into a plan, dropping the ones the platform has
+/// retired and minting an invitation when the machine has no device left.
+pub(in crate::remote) async fn establish_slots() -> Result<Vec<SlotPlan>, crate::AppError> {
+    let mut plans = Vec::new();
+    for creds in pairing::load_slots() {
+        let pair_id = creds.pair_id.clone();
+        if creds.handshake_version != 2 || creds.secure.is_none() {
+            // Credentials created before the signed mutual handshake have no
+            // QR-bound peer identity. They cannot be upgraded safely in place.
+            eprintln!("remote: replacing legacy pairing [PA003]");
+            forget_slot(&pair_id)?;
+            continue;
+        }
+        match pairing::refresh_bridge_jwt(creds).await {
+            Ok(creds) => plans.push(SlotPlan {
+                creds,
+                pairing_code: None,
+                pairing_code_expires_at: None,
+            }),
+            Err(error) if pairing::is_invalid_or_revoked_error(&error) => {
+                // The platform no longer honours this device's credential —
+                // someone revoked it. It is not this machine's device any more,
+                // and leaving it on disk would make every start retry a
+                // credential that can never succeed.
+                eprintln!("remote: a pairing was revoked [PA001]; forgetting that device");
+                forget_slot(&pair_id)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    if plans.is_empty() {
+        // Nothing left to serve: mint one invitation, exactly as a
+        // single-device install always did. Replacing is right here because
+        // there is nothing to keep.
+        let (creds, code, exp) = pairing::create_pairing(false).await?;
+        plans.push(SlotPlan {
+            creds,
+            pairing_code: Some(code),
+            pairing_code_expires_at: exp,
+        });
+    }
+    Ok(plans)
+}
+
+/// Drop a device the platform no longer honours, from disk and from memory.
+pub(in crate::remote) fn forget_slot(pair_id: &str) -> Result<(), crate::AppError> {
+    // Local disk faults propagate: a credential that cannot be forgotten will
+    // be retried on every start, and hiding that behind a log line turns a
+    // read-only home directory into a machine that silently never recovers.
+    pairing::remove_slot(pair_id)?;
+    // The pointer must not keep naming a device this machine no longer has, or
+    // the UI would report "in control" for a credential that cannot connect.
+    SUPERVISOR.release_control(pair_id);
+    promote_a_lone_device();
+    stop_slot(pair_id);
+    Ok(())
+}
+
+/// After a removal: if exactly one device is left, it controls.
+///
+/// Not a promotion rule for several devices — that stays the user's call — but
+/// the single-device case can only have one answer, and leaving it unclaimed
+/// would ask the remaining device to take over from itself.
+pub(in crate::remote) fn promote_a_lone_device() {
+    if SUPERVISOR.active_pair().is_some() {
+        return;
+    }
+    let slots = pairing::load_slots();
+    if let [only] = slots.as_slice() {
+        SUPERVISOR.claim_control(&only.pair_id);
+    }
+}
+
+/// Start (or replace) one device's bridge.
+///
+/// `owns_local_web` marks the slot that binds the process-wide browser
+/// validation listener; every other slot must not try, because the port is
+/// singular and a second bind would fail and be reported as a bridge warning.
+pub(in crate::remote) async fn start_slot(
+    plan: SlotPlan,
+    epoch: u64,
+    replace_existing: bool,
+    owns_local_web: bool,
+) -> Result<(), crate::AppError> {
+    let SlotPlan {
+        creds,
+        pairing_code,
+        pairing_code_expires_at,
+    } = plan;
+    let pair_id = creds.pair_id.clone();
+    if !replace_existing && SUPERVISOR.state.lock().unwrap().contains_key(&pair_id) {
+        return Ok(());
+    }
     let connected_nats = match connect_nats(&creds, true).await {
         Ok(connection) => connection,
-        Err(error) => {
-            return start_failure(error);
-        }
+        Err(error) => return Err(error),
     };
     let client = connected_nats.client;
     let nats_health = connected_nats.health;
     if !SUPERVISOR.start_requested.load(Ordering::Acquire) {
-        return Ok(empty());
+        return Ok(());
     }
     let Some(shared) = SUPERVISOR
         .access
@@ -90,14 +278,13 @@ pub(in crate::remote) async fn start_generation(
             Ok(shared)
         })
     else {
-        return Ok(empty());
+        return Ok(());
     };
     let shared = shared?;
     let pairing_confirmed = shared.pairing_confirmed.clone();
     let desktop_public_key = pairing::public_key(&creds)?;
     let bridge_instance_id = shared.bridge_instance_id.clone();
     let generation_id = shared.next_generation_id.fetch_add(1, Ordering::AcqRel);
-    let pair_id = creds.pair_id.clone();
 
     // Command-id dedup cache lives OUTSIDE the command loop: credential
     // refresh swaps the loop every JWT TTL, and a cache tied to the loop would
@@ -121,7 +308,7 @@ pub(in crate::remote) async fn start_generation(
     let transport =
         match build_transport(&client, &pair_id, &handshake_state, reply_slots.clone()).await {
             Ok(transport) => transport,
-            Err(error) => return start_failure(error),
+            Err(error) => return Err(error),
         };
     let TransportTasks {
         event_tx,
@@ -141,7 +328,7 @@ pub(in crate::remote) async fn start_generation(
     // The browser client is a test-environment-only validation surface. Keep
     // the NATS/mobile bridge available in every environment, but never expose
     // the unauthenticated local HTTP listener in production or custom envs.
-    let web_enabled = web_client_enabled();
+    let web_enabled = web_client_enabled() && owns_local_web;
     let (web_task, web_url, web_lan_url) = if web_enabled {
         match bind_web_listener().await {
             Ok(listener) => (
@@ -164,77 +351,50 @@ pub(in crate::remote) async fn start_generation(
         candidate_tasks.track(task);
     }
 
-    let status = RemoteStatus {
-        // A fresh start has been told nothing yet: the client declares itself on
-        // `secure_ready`, which happens after this.
-        client: None,
-        phase: RemotePhase::Ready,
-        reason: None,
-        recovery: None,
-        nats_url: creds.nats_url.clone(),
-        pair_id: pair_id.clone(),
-        pairing_code: pairing_code.clone(),
-        pairing_code_expires_at,
-        desktop_id: creds.desktop_id.clone(),
-        desktop_public_key: desktop_public_key.clone(),
-        web_url: web_url.clone(),
-        web_lan_url: web_lan_url.clone(),
-        agent_available: host().agent_available(),
-        warning_code: web_bind_failed.then(|| "web_bind".to_string()),
-    };
     // Keep the previous generation serving until every readiness prerequisite
-    // above is complete. Replacing the pointer is the hand-off point; only
-    // after it do we cancel the old generation.
+    // above is complete. Replacing the map entry is the hand-off point; only
+    // after it do we cancel the old generation for *this* device.
     let previous = SUPERVISOR.access.commit(epoch, || {
-        SUPERVISOR.state.lock().unwrap().replace(RemoteState {
-            security: handshake_state.secure.clone(),
-            generation_id,
-            client,
-            nats_health,
-            nats_url: creds.nats_url,
-            pair_id,
-            desktop_id: creds.desktop_id,
-            desktop_public_key,
-            bridge_instance_id: bridge_instance_id.clone(),
-            event_tx,
-            drop_counters: shared.drop_counters.clone(),
-            event_task,
-            cmd_task,
-            transfer_task,
-            heartbeat_task,
-            refresh_task,
-            web_task,
-            web_url,
-            web_lan_url,
-            pairing_code,
-            pairing_code_expires_at,
-            pairing_confirmed,
-        })
+        SUPERVISOR.state.lock().unwrap().insert(
+            pair_id.clone(),
+            RemoteState {
+                security: handshake_state.secure.clone(),
+                generation_id,
+                client,
+                nats_health,
+                nats_url: creds.nats_url,
+                pair_id: pair_id.clone(),
+                desktop_id: creds.desktop_id,
+                desktop_public_key,
+                bridge_instance_id: bridge_instance_id.clone(),
+                event_tx,
+                drop_counters: shared.drop_counters.clone(),
+                event_task,
+                cmd_task,
+                transfer_task,
+                heartbeat_task,
+                refresh_task,
+                web_task,
+                web_url,
+                web_lan_url,
+                pairing_code,
+                pairing_code_expires_at,
+                pairing_confirmed,
+            },
+        )
     });
     let Some(previous) = previous else {
-        return Ok(empty());
+        return Ok(());
     };
     candidate_tasks.installed();
     if let Some(previous) = previous {
         abort_generation(previous);
     }
-    SUPERVISOR
-        .access
-        .commit(epoch, || {
-            *SUPERVISOR.last_error_code.lock().unwrap() = None;
-            if let Some(line) = START_EPISODE.recovered() {
-                eprintln!("{line}");
-            }
-            SUPERVISOR.start_retry_attempts.store(0, Ordering::Release);
-            SUPERVISOR.start_retry_since.store(0, Ordering::Release);
-            SUPERVISOR.start_retry_next_at.store(0, Ordering::Release);
-            spawn_runtime_supervisor(bridge_instance_id, generation_id);
-            if web_bind_failed {
-                spawn_web_reconnect(status.pair_id.clone());
-            }
-            Ok(status)
-        })
-        .unwrap_or_else(|| Ok(empty()))
+    spawn_runtime_supervisor(pair_id.clone(), generation_id);
+    if web_bind_failed {
+        spawn_web_reconnect(pair_id);
+    }
+    Ok(())
 }
 
 /// Keep retrying a categorized startup failure on Tauri's process-lifetime
@@ -299,42 +459,78 @@ pub(in crate::remote) fn spawn_start_retry() {
     }
 }
 
-/// Rebuild the whole bridge generation when a subscription task itself dies.
+/// Rebuild one device's bridge generation when a subscription task itself dies.
 /// Ordinary NATS disconnects are handled inside the task; reaching this path
 /// means the task exited or panicked and cannot resubscribe on its own.
+///
+/// Scoped to one `pair_id` on purpose: the other devices on this machine have
+/// their own healthy connections, and rebuilding them would blink every client
+/// because one of them stumbled.
 #[cfg_attr(test, allow(dead_code))]
-pub(in crate::remote) fn spawn_runtime_reconnect() {
+pub(in crate::remote) fn spawn_runtime_reconnect(pair_id: String) {
     #[cfg(test)]
-    return;
+    {
+        let _ = pair_id;
+    }
 
     #[cfg(not(test))]
     {
-        if SUPERVISOR
-            .runtime_reconnect_running
-            .swap(true, Ordering::AcqRel)
-        {
-            return;
-        }
         let attempt = record_runtime_failure(unix_millis());
         eprintln!(
             "remote: critical task stopped [RT001]; rebuilding generation ({attempt}/{MAX_RUNTIME_RECONNECT_ATTEMPTS})"
         );
+        if attempt > MAX_RUNTIME_RECONNECT_ATTEMPTS {
+            *SUPERVISOR.last_error_code.lock().unwrap() = Some("reconnect_required".to_string());
+            return;
+        }
         SUPERVISOR.spawn(async move {
-            let result = start_once(true).await;
-            match &result {
-                Ok(status) if retryable_start_status(status) => spawn_start_retry(),
+            let _start_guard = SUPERVISOR.start_lock.lock().await;
+            match restart_slot(&pair_id).await {
+                Ok(()) => {}
                 Err(error) => {
                     eprintln!("remote: automatic bridge reconnect failed [RT001]: {error}");
-                    *SUPERVISOR.last_error_code.lock().unwrap() =
-                        Some("reconnect_required".to_string());
+                    if pairing::error_code(&error).is_some_and(|code| code == "network") {
+                        spawn_start_retry();
+                    } else {
+                        *SUPERVISOR.last_error_code.lock().unwrap() =
+                            Some("reconnect_required".to_string());
+                    }
                 }
-                _ => {}
             }
-            SUPERVISOR
-                .runtime_reconnect_running
-                .store(false, Ordering::Release);
         });
     }
+}
+
+/// Refresh and reinstall one device's runtime, without touching the others.
+#[cfg(not(test))]
+async fn restart_slot(pair_id: &str) -> Result<(), crate::AppError> {
+    let Some(creds) = pairing::load_slots()
+        .into_iter()
+        .find(|slot| slot.pair_id == pair_id)
+    else {
+        // The device is gone; the runtime must not outlive its credential.
+        stop_slot(pair_id);
+        return Ok(());
+    };
+    if creds.handshake_version != 2 || creds.secure.is_none() {
+        forget_slot(pair_id)?;
+        return Ok(());
+    }
+    let creds = match pairing::refresh_bridge_jwt(creds).await {
+        Ok(creds) => creds,
+        Err(error) if pairing::is_invalid_or_revoked_error(&error) => {
+            forget_slot(pair_id)?;
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+    let plan = SlotPlan {
+        creds,
+        pairing_code: None,
+        pairing_code_expires_at: None,
+    };
+    let epoch = SUPERVISOR.access.current();
+    start_slot(plan, epoch, true, false).await
 }
 
 pub(in crate::remote) fn record_runtime_failure(now: u64) -> u8 {
@@ -355,19 +551,19 @@ pub(in crate::remote) fn record_runtime_failure(now: u64) -> u8 {
         + 1
 }
 
-/// Watch the active bridge from the process runtime, independently of any UI
+/// Watch one device's bridge from the process runtime, independently of any UI
 /// status polling. This is essential for Remote clients: a phone must recover
 /// even when the desktop window is hidden or no frontend has mounted yet.
 #[cfg(not(test))]
 pub(in crate::remote) struct GenerationWatch {
-    bridge_instance_id: String,
+    pair_id: String,
     generation_id: u64,
 }
 
 #[cfg(not(test))]
 impl GenerationWatch {
     async fn run(self) {
-        let bridge_instance_id = self.bridge_instance_id;
+        let pair_id = self.pair_id;
         let generation_id = self.generation_id;
         let mut healthy_secs = 0u8;
         loop {
@@ -377,10 +573,10 @@ impl GenerationWatch {
             }
             let unhealthy = {
                 let guard = SUPERVISOR.state.lock().unwrap();
-                let Some(state) = guard.as_ref().filter(|state| {
-                    state.bridge_instance_id == bridge_instance_id
-                        && state.generation_id == generation_id
-                }) else {
+                let Some(state) = guard
+                    .get(&pair_id)
+                    .filter(|state| state.generation_id == generation_id)
+                else {
                     return;
                 };
                 if state.nats_health.is_terminal() {
@@ -405,9 +601,6 @@ impl GenerationWatch {
                 }
                 continue;
             }
-            if SUPERVISOR.runtime_reconnect_running.load(Ordering::Acquire) {
-                continue;
-            }
             if SUPERVISOR
                 .runtime_reconnect_attempts
                 .load(Ordering::Acquire)
@@ -417,22 +610,22 @@ impl GenerationWatch {
                     Some("reconnect_required".to_string());
                 return;
             }
-            spawn_runtime_reconnect();
+            spawn_runtime_reconnect(pair_id.clone());
             return;
         }
     }
 }
 
-pub(in crate::remote) fn spawn_runtime_supervisor(bridge_instance_id: String, generation_id: u64) {
+pub(in crate::remote) fn spawn_runtime_supervisor(pair_id: String, generation_id: u64) {
     #[cfg(test)]
     {
-        let _ = (bridge_instance_id, generation_id);
+        let _ = (pair_id, generation_id);
     }
 
     #[cfg(not(test))]
     SUPERVISOR.spawn(
         GenerationWatch {
-            bridge_instance_id,
+            pair_id,
             generation_id,
         }
         .run(),
@@ -470,7 +663,7 @@ pub(in crate::remote) fn spawn_web_reconnect(pair_id: String) {
                     let web_lan_url = lan_ip().map(|ip| format!("http://{ip}:{WEB_PORT}"));
                     let web_task = spawn_web_server(listener);
                     let mut guard = SUPERVISOR.state.lock().unwrap();
-                    if let Some(state) = guard.as_mut().filter(|state| state.pair_id == pair_id) {
+                    if let Some(state) = guard.get_mut(&pair_id) {
                         if let Some(previous) = state.web_task.replace(web_task) {
                             previous.abort();
                         }
@@ -492,41 +685,6 @@ pub(in crate::remote) fn spawn_web_reconnect(pair_id: String) {
                 .web_reconnect_running
                 .store(false, Ordering::Release);
         });
-    }
-}
-
-/// Resolve a usable credential: refresh the persisted pairing, or — if it was
-/// revoked server-side — drop it and mint a fresh pairing code. Pure control
-/// plane; the NATS connect happens in [`start`] so its failure can be reported
-/// the same way.
-pub(in crate::remote) async fn establish(
-) -> Result<(pairing::PairingCreds, Option<String>, Option<i64>), crate::AppError> {
-    match pairing::load_creds() {
-        Some(creds) if creds.handshake_version != 2 || creds.secure.is_none() => {
-            // Credentials created before the signed mutual handshake have no
-            // QR-bound peer identity. They cannot be upgraded safely in place.
-            eprintln!("remote: replacing legacy pairing [PA003]");
-            pairing::clear_creds()?;
-            let (creds, code, exp) = pairing::create_pairing().await?;
-            Ok((creds, Some(code), exp))
-        }
-        Some(creds) => match pairing::refresh_bridge_jwt(creds).await {
-            Ok(creds) => Ok((creds, None, None)),
-            Err(error) if pairing::is_invalid_or_revoked_error(&error) => {
-                // A web client can revoke this pairing. Forget its unusable
-                // local credential and immediately issue a replacement code
-                // instead of leaving the GUI permanently stuck on startup.
-                eprintln!("remote: persisted pairing was revoked [PA001]; creating a new pairing");
-                pairing::clear_creds()?;
-                let (creds, code, exp) = pairing::create_pairing().await?;
-                Ok((creds, Some(code), exp))
-            }
-            Err(error) => Err(error),
-        },
-        None => {
-            let (creds, code, exp) = pairing::create_pairing().await?;
-            Ok((creds, Some(code), exp))
-        }
     }
 }
 
