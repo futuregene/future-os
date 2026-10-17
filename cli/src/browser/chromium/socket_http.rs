@@ -217,7 +217,7 @@ mod imp {
         /// and then closing. The path is returned so the test can unlink it.
         #[cfg(unix)]
         async fn serve_and_close(reply: &'static [u8]) -> (SocketSpec, std::path::PathBuf) {
-            use tokio::io::AsyncWriteExt;
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock")
@@ -235,6 +235,17 @@ mod imp {
                 if !reply.is_empty() {
                     let _ = stream.write_all(reply).await;
                 }
+                // Drain the request before closing. Closing a socket that still
+                // holds unread bytes sends RST on Linux, so the caller would see
+                // ECONNRESET(104) instead of the EOF this fixture exists to
+                // produce - the assertion would then depend on the platform's
+                // close semantics rather than on the client under test.
+                let mut sink = [0u8; 1024];
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_millis(200),
+                    stream.read(&mut sink),
+                )
+                .await;
                 // Closing without a full response is the failure the caller has
                 // to tell apart from a timeout.
                 let _ = stream.shutdown().await;

@@ -104,7 +104,11 @@ fn watcher_command_line(copy: &Path, goal: &str) -> String {
         matches.next().is_none(),
         "exactly one watcher process is expected for {goal}:\n{listing}"
     );
-    line.split_once(char::is_whitespace)
+    // `ps -eo pid=,args=` pads the pid column, so the line starts with a space.
+    // Splitting the untrimmed line cut at that space and left the pid inside the
+    // arguments, which broke `starts_with(copy)` on Linux.
+    line.trim()
+        .split_once(char::is_whitespace)
         .map(|(_, args)| args.to_string())
         .unwrap_or_default()
 }

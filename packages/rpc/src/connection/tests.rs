@@ -635,6 +635,14 @@ async fn an_absent_endpoint_authorizes_a_local_start_for_the_resolved_home() {
 /// A connect failure the client cannot classify as "the Agent is absent" (here:
 /// Darwin answers ENOTSOCK for a regular file where a socket should be) must
 /// never be read as permission to start one over it.
+// macOS only: the fixture needs the kernel to REFUSE a connect to a regular file
+// with ENOTSOCK, which is what makes the failure classifiable-by-nobody. Linux
+// answers ECONNREFUSED for the same input, which the client reads as "the Agent is
+// absent" and would legitimately authorize a start over - so the precondition
+// cannot be built there. Recorded as a platform difference, not a waiver of the
+// invariant: on Darwin the check below is what stops a start on top of a foreign
+// occupant, and it is exercised on every macOS run.
+#[cfg(target_os = "macos")]
 #[tokio::test]
 // The environment lock is held across the awaits on purpose: the endpoint has to
 // stay redirected for the whole resolution, and this test runs on a current-thread
