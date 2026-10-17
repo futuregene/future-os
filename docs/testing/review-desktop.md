@@ -80,7 +80,25 @@ campaign worktree:
 
 ## 1. Falls (rework for the owning unit)
 
-### D25 `src/features/filepreview/ImagePreview.tsx:200,201,205,206` — **FELL**
+### D25 `src/features/filepreview/ImagePreview.tsx:200,201,205,206` — **FELL, then RESOLVED BY
+DELETION (2026-10-17, user decision A)**
+
+> **RESOLUTION (read this before the analysis below).** The user chose option **A** — delete the dead
+> state rather than implement a space-drag gesture. PR **#1170** (`a82f35ce8`) removed it and is merged
+> into `main`. Verified on `main` rather than taken from the report: `grep -c spacePressedRef` = **0**,
+> `hold space` = **0**, `event.code === "Space"` = **0**, and line 37's doc comment now reads
+> "When zoomed in, drag to pan; panning is clamped to the image bounds so the picture cannot be lost."
+> 23 lines deleted; wheel zoom, double-click toggle, the buttons and the clamp logic are untouched.
+>
+> **These 4 lines leave the OPEN table by DISAPPEARING, not by becoming unreachable.** The denominator
+> shrinks by exactly the code removed: files with uncovered lines **35 -> 34**, uncovered lines
+> **61 -> 57**, measured lines **12,800 -> 12,796**, line coverage **99.5234% -> 99.5545%**
+> (12,739 / 12,796). Nothing was waived and no category was invented for them — which is the whole
+> point of choosing A: a line that no longer exists needs no justification.
+>
+> The analysis below is kept as written because its finding is what made A the right choice: the tag
+> answered a question the ledger does not ask (see "What is actually claimed, versus the ledger's
+> rule").
 
 **Mechanism as claimed** (§5): "the window `keydown`/`keyup` listeners that maintain
 `spacePressedRef`. The ref is **written and never read** … No *consumer* exists, so
@@ -491,7 +509,7 @@ and is a property of call-site order, not of the guard's shape.
 | D15 | `useRemoteTimeline.ts:380` | grep (1 await) + call-site/grep of both writers + executing race probe + control | SURVIVED |
 | D20 | `ActivityRail.tsx:838,843,1117,1118,1124` | grep for every write of `featureItems` | SURVIVED (5 lines) |
 | D21 | `ActivityRail.tsx:1182` | grep (1 call site, filtered to `"active"`) | SURVIVED |
-| **D25** | `ImagePreview.tsx:200,201,205,206` | executing probe: one Space `keydown` + `keyup` | **FELL (4 lines)** |
+| **D25** | `ImagePreview.tsx:200,201,205,206` | executing probe: one Space `keydown` + `keyup` | **FELL (4 lines) -> RESOLVED BY DELETION** (PR #1170, user chose A; the lines no longer exist) |
 | D35 | `useQuestionNav.ts:202` | call-site enumeration + synchronous-block read | SURVIVED |
 | D36 | `useQuestionNav.ts:280` | call-site enumeration + `rows()` purity read | SURVIVED |
 | **D41** | `useFutureLoginFlow.ts:104` | executing probe (no `act()`, controlled interval, window asserted open) | **FELL (1 line)** |
@@ -506,6 +524,11 @@ and is a property of call-site order, not of the guard's shape.
 
 **Reviewed: 17 tags / 24 lines. Falls: 2 tags / 5 lines (`D25` ×4, `D41` ×1).**
 Survives: 15 tags / 19 lines.
+
+**Of the falls, `D25`'s 4 lines are GONE rather than open**: the user chose to delete the dead
+state (PR #1170), so they leave the ledger by deletion, not by waiver. `D41`'s 1 line
+(`useFutureLoginFlow.ts:104`) remains the one disputed fall whose disposition is the module
+owner's.
 
 ## 4. What I could not check (37 lines — the rest of the set)
 

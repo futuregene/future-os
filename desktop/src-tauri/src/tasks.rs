@@ -2146,4 +2146,87 @@ mod tests {
             id: future_tasks::new_run_id(),
         };
     }
+
+    /// Break one table of an open store from a peer connection: the same
+    /// surface a partially migrated or externally damaged database presents,
+    /// and the only way to drive the executor's `?` returns without a seam in
+    /// the store itself.
+    fn drop_table(path: std::path::PathBuf, table: &str) {
+        let peer = rusqlite::Connection::open(path).expect("peer connection");
+        // FK enforcement is per connection (and the bundled SQLite defaults it
+        // on), so the peer has to turn it off before removing a parent table.
+        peer.execute_batch(&format!("PRAGMA foreign_keys = OFF;\nDROP TABLE {table};"))
+            .expect("drop table");
+    }
+
+    /// `run_inner` reports a refused task binding instead of pretending the run
+    /// started: the conversation exists, but the task row cannot record it.
+    #[tokio::test]
+    async fn run_inner_reports_a_task_row_it_cannot_bind_the_conversation_to() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-bind-failure");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let mut t = task("bind");
+        t.session_policy = SessionPolicy::Existing;
+        store.insert_task(&t).unwrap();
+        let mut run = claim(&store, &t, ClaimReason::Explicit).unwrap();
+        script_agent_setup(&mock, "sess_bind_failure");
+
+        drop_table(future_tasks::store::store_path(dir.path()), "tasks");
+
+        let (_store, outcome) = run_inner(store, &t, &mut run).await;
+        let error = outcome.expect_err("binding the conversation must fail");
+        assert!(error.contains("tasks"), "{error}");
+    }
+
+    /// `run_inner` reports a run row it cannot update (the session was
+    /// created, so the failure is the write, not the conversation).
+    #[tokio::test]
+    async fn run_inner_reports_a_run_row_it_cannot_update() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-run-write-failure");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let t = task("update-run");
+        store.insert_task(&t).unwrap();
+        let mut run = claim(&store, &t, ClaimReason::Explicit).unwrap();
+        script_agent_setup(&mock, "sess_run_write_failure");
+
+        drop_table(future_tasks::store::store_path(dir.path()), "task_runs");
+
+        let (_store, outcome) = run_inner(store, &t, &mut run).await;
+        let error = outcome.expect_err("the run row update must fail");
+        assert!(error.contains("task_runs"), "{error}");
+    }
+
+    /// `run_inner` reports a prompt it cannot prepare (the desktop store
+    /// cannot record the prompt's own run row) and never reaches the Agent.
+    #[tokio::test]
+    async fn run_inner_reports_a_prompt_it_cannot_prepare() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-prepare-failure");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let t = task("prepare");
+        store.insert_task(&t).unwrap();
+        let mut run = claim(&store, &t, ClaimReason::Explicit).unwrap();
+        script_agent_setup(&mock, "sess_prepare_failure");
+
+        // `prepare_prompt` records the prompt's run row before the Agent is
+        // asked anything; with that table gone it cannot, and the executor must
+        // surface the store error instead of prompting without a ledger row.
+        drop_table(
+            future_app_settings::app_db_path().expect("app db path"),
+            "runs",
+        );
+
+        let (_store, outcome) = run_inner(store, &t, &mut run).await;
+        let error = outcome.expect_err("preparing the prompt must fail");
+        assert!(error.contains("runs"), "{error}");
+        assert!(
+            mock.requests_of("prompt").is_empty(),
+            "nothing is sent to the Agent for an unrecordable prompt"
+        );
+    }
 }

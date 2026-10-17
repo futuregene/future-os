@@ -1,6 +1,6 @@
 import type { DesktopFilter } from "../remote/mergeSessions";
 import type { PairedDesktop } from "../remote/types";
-import { Check, ChevronDown, Layers, X } from "lucide-react-native";
+import { Check, ChevronDown, Layers, Monitor, X } from "lucide-react-native";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -8,19 +8,6 @@ import { DialogSurface } from "../components/DialogSurface";
 import { iconGlyph } from "../remote/peerIcons";
 import { layout, radius, spacing } from "../theme/tokens";
 import { createThemedStyles, useTheme } from "../theme/ThemeContext";
-
-/**
- * The icon for "all desktops" — every machine's rows merged into one list.
- *
- * Shared by the trigger and the sheet's first row because it answers the same
- * question in both places. Drawn separately, the two drifted: the trigger showed
- * a monitor, the sheet a stack of layers, so the option in force looked like two
- * different ones depending on where the user looked. Neither is a machine's own
- * glyph — this is not a machine.
- */
-function AllDesktopsIcon({ color, size }: { color: string; size: number }) {
-  return <Layers color={color} size={size} />;
-}
 
 /**
  * The desktop picker above the session list.
@@ -71,18 +58,11 @@ export function DesktopPicker({
         onPress={() => setOpen(true)}
         style={({ pressed }) => [styles.trigger, pressed && styles.pressed]}
       >
-        {/* One icon, not two: a chosen desktop brings its own glyph, and a
-            generic machine icon beside it read as a second, unexplained one
-            (the same machine was drawn twice). The glyph sits in the column
-            the sheet's rows use, and the merged list — which has no machine of
-            its own — draws the same icon its row in the sheet draws. */}
         <View style={styles.triggerIcon}>
-          {selected
-            ? <Text style={styles.triggerGlyph}>{iconGlyph(selected.icon)}</Text>
-            : <AllDesktopsIcon color={colors.accent} size={20} />}
+          <Monitor color={colors.accent} size={20} />
         </View>
         <Text numberOfLines={1} style={styles.triggerLabel}>
-          {selected ? label(selected) : t("desktops.filterAll")}
+          {selected ? `${iconGlyph(selected.icon)} ${label(selected)}` : t("desktops.filterAll")}
         </Text>
         <ChevronDown color={colors.inkSoft} size={16} />
       </Pressable>
@@ -124,7 +104,7 @@ export function DesktopPicker({
               ]}
             >
               <View style={styles.optionIcon}>
-                <AllDesktopsIcon color={colors.inkSoft} size={18} />
+                <Layers color={colors.inkSoft} size={18} />
               </View>
               <Text style={[styles.optionLabel, filter.kind === "all" && styles.optionLabelSelected]}>
                 {t("desktops.filterAll")}
@@ -192,8 +172,6 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     paddingHorizontal: spacing.sm,
   },
   triggerIcon: { width: 24, alignItems: "center" },
-  // The same glyph column as the sheet's rows, at the trigger's icon size.
-  triggerGlyph: { fontSize: theme.font(17) },
   triggerLabel: { flex: 1, minWidth: 0, color: theme.colors.inkStrong, fontSize: theme.font(15), fontWeight: "600" },
   pressed: { opacity: 0.7 },
   header: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
