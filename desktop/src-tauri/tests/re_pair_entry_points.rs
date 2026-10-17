@@ -97,8 +97,10 @@ fn wait_for_listener(socket: &Path, budget: Duration) -> bool {
 ///
 /// `SIGTERM` rather than `SIGKILL` on purpose: a killed process cannot run the app's own
 /// cleanup, and the previous segment paid for that with leaked isolated roots.
+#[cfg(target_os = "macos")]
 struct Desktop(Child);
 
+#[cfg(target_os = "macos")]
 impl Desktop {
     fn start(root: &Path) -> Self {
         let child = Command::new(bin())
