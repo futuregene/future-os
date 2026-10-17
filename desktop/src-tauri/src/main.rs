@@ -37,11 +37,10 @@ fn main() -> std::process::ExitCode {
                     // prints, which is the whole point of asking from a shell.
                     return match launch::forward_re_pair(options.no_qr) {
                         Ok(reply) => {
-                            use std::io::Write;
-                            let _ = std::io::stdout().write_all(
-                                launch::invitation_notice(&reply, !options.no_qr).as_bytes(),
-                            );
-                            let _ = std::io::stdout().flush();
+                            launch::print_to_terminal(&launch::invitation_notice(
+                                &reply,
+                                !options.no_qr,
+                            ));
                             std::process::ExitCode::SUCCESS
                         }
                         Err(message) => {

@@ -143,6 +143,11 @@ intentionally replace a pairing, not to troubleshoot an ordinary network outage.
 Narrow terminals automatically fall back to text links; copy the link, or widen
 the terminal and restart.
 
+The graphical `futureos` entry point takes `--re-pair` and `--no-qr` with the same
+meaning and prints on the terminal that ran it. On Windows, run it from the
+terminal you want the code in: a graphical launch detaches from the console it
+started from, and `--re-pair` reattaches to that launching terminal to print.
+
 ## 4. Ctrl+C, SSH disconnects and restarting
 
 Ctrl+C works while waiting for login, pairing, connection startup and normal
