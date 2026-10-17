@@ -28,6 +28,7 @@
 //! assuming one particular delay always wins — the same "at least one hit in N
 //! biased attempts, tally printed" shape this campaign uses for race fixtures.
 
+#![cfg(target_os = "macos")]
 #![cfg(unix)]
 
 use std::io::Write;
@@ -171,7 +172,6 @@ fn drive_after_swap(delay_ms: u64) -> (bool, Duration, String, bool) {
 // and the drive reports 0/5: not a product difference, but this route to the
 // deadline does not exist there. Gated rather than widened to a number nobody
 // measured; the deadline arm stays exercised on every macOS run.
-#[cfg(target_os = "macos")]
 #[test]
 fn a_watchdog_that_stalls_before_its_lock_hits_the_readiness_deadline() {
     let mut fired = 0usize;
