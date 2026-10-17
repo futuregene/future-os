@@ -98,8 +98,13 @@ def main():
                     dynamic = run(f"{name}-cli-linkage", ["readelf", "-d", directory / "future"])
                     require("NEEDED" not in dynamic, f"{name} CLI is dynamically linked")
                     if name != "cli":
+                        # Assert the stable part of the usage line, not the exact flag list:
+                        # the flags grow (--no-qr arrived in #1162) and this check exists to
+                        # prove the *entrypoint* works, not to freeze its options. Same shape
+                        # as the headless probe below. The exact text is asserted by the
+                        # crate's own tests (desktop/src-tauri/src/launch.rs).
                         probe(f"{name}-desktop-help", directory / "futureos", ["--help"],
-                              "Usage: futureos [--re-pair] [--help]", home)
+                              "Usage: futureos [--re-pair", home)
                         probe(f"{name}-headless-help", directory / "futureos-headless", ["--help"],
                               "Usage: futureos-headless", home)
                         run(f"{name}-headless-old-glibc", ["bash", "scripts/ci/check-headless-linux.sh",
@@ -121,7 +126,7 @@ def main():
                 for name, directory in [("nsis", nsis_root), ("portable", portable_root)]:
                     for binary_name, flags, expected in [
                         ("future.exe", ["--version"], version),
-                        ("futureos.exe", ["--help"], "Usage: futureos [--re-pair] [--help]"),
+                        ("futureos.exe", ["--help"], "Usage: futureos [--re-pair"),
                     ]:
                         matches = [p for p in directory.rglob("*")
                                    if p.is_file() and p.name.lower() == binary_name]
