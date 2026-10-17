@@ -22,7 +22,7 @@
 #![cfg(feature = "gui")]
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// The graphical bin, built by `cargo test` for this package.
@@ -93,47 +93,57 @@ fn wait_for_listener(socket: &Path, budget: Duration) -> bool {
     false
 }
 
-/// Spawn the Desktop and own its lifetime: `Drop` sends `SIGTERM` and reaps it.
-///
-/// `SIGTERM` rather than `SIGKILL` on purpose: a killed process cannot run the app's own
-/// cleanup, and the previous segment paid for that with leaked isolated roots.
+/// The Desktop fixture, macOS only: it spawns the real `futureos`, which cannot start on a
+/// headless Linux runner (tao: "Failed to initialize GTK"). One gate for the struct, both
+/// impls and the `Drop` - gating them individually surfaced one error per CI round.
 #[cfg(target_os = "macos")]
-struct Desktop(Child);
+mod desktop_fixture {
+    use super::*;
+    use std::process::Child;
 
-#[cfg(target_os = "macos")]
-impl Desktop {
-    fn start(root: &Path) -> Self {
-        let child = Command::new(bin())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .env("HOME", root)
-            .env("FUTURE_HOME", root.join("future"))
-            .env_remove("FUTURE_AGENT_SOCKET")
-            .spawn()
-            .expect("spawn the Desktop");
-        Desktop(child)
-    }
-}
+    /// Spawn the Desktop and own its lifetime: `Drop` sends `SIGTERM` and reaps it.
+    ///
+    /// `SIGTERM` rather than `SIGKILL` on purpose: a killed process cannot run the app's own
+    /// cleanup, and the previous segment paid for that with leaked isolated roots.
+    pub(super) struct Desktop(pub(super) Child);
 
-impl Drop for Desktop {
-    fn drop(&mut self) {
-        // SAFETY: a plain `kill(2)` on a pid this struct owns.
-        unsafe {
-            libc::kill(self.0.id() as i32, libc::SIGTERM);
+    impl Desktop {
+        pub(super) fn start(root: &Path) -> Self {
+            let child = Command::new(bin())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .env("HOME", root)
+                .env("FUTURE_HOME", root.join("future"))
+                .env_remove("FUTURE_AGENT_SOCKET")
+                .spawn()
+                .expect("spawn the Desktop");
+            Desktop(child)
         }
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while Instant::now() < deadline {
-            if matches!(self.0.try_wait(), Ok(Some(_))) {
-                return;
+    }
+
+    impl Drop for Desktop {
+        fn drop(&mut self) {
+            // SAFETY: a plain `kill(2)` on a pid this struct owns.
+            unsafe {
+                libc::kill(self.0.id() as i32, libc::SIGTERM);
             }
-            std::thread::sleep(Duration::from_millis(100));
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while Instant::now() < deadline {
+                if matches!(self.0.try_wait(), Ok(Some(_))) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            // A Desktop that ignored SIGTERM is still not ours to leave running.
+            let _ = self.0.kill();
+            let _ = self.0.wait();
         }
-        // A Desktop that ignored SIGTERM is still not ours to leave running.
-        let _ = self.0.kill();
-        let _ = self.0.wait();
     }
 }
+
+#[cfg(target_os = "macos")]
+use desktop_fixture::Desktop;
 
 /// Hold the Desktop's own data-directory lock, exactly as a running Desktop does.
 ///
