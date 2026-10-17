@@ -169,6 +169,21 @@ test("the picker offers every paired desktop plus the merged option", () => {
     .toEqual({ kind: "desktop", desktopId: "desktop_2" });
 });
 
+test("the trigger draws one icon: the chosen desktop's own, or the monitor for the merged list", () => {
+  const trigger = () => button("desktops.pickerLabel");
+  // Host nodes only: the mock is a string type, the real component a function.
+  const monitors = () => trigger()
+    .findAll(node => (node.type as string) === "Monitor").length;
+  // The merged list names no machine, so it keeps the generic monitor.
+  expect(monitors()).toBe(1);
+  act(() => tree.root.findByType(DesktopPicker).props.onChange({ kind: "desktop", desktopId: "desktop_1" }));
+  // A chosen desktop used to be drawn twice — the generic monitor beside its
+  // own glyph — which read as two unexplained icons in front of the name.
+  expect(monitors()).toBe(0);
+  const texts = trigger().findAllByType(Text).flatMap(text => text.props.children as string[]);
+  expect(texts).toEqual(["🖥️", "A very long desktop name"]);
+});
+
 test("the picker can be dismissed without choosing a desktop", () => {
   const pickerModal = () => tree.root.findByType(DesktopPicker).findAllByType(Modal)[0]!;
   // Nothing to dismiss while the list is shut, so the close button the user
