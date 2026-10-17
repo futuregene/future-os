@@ -55,9 +55,10 @@ brew install protobuf                                             # optional —
 Build:
 
 ```bash
-make install        # GUI + unified `future` CLI + skills (agent/tui/channel/goal are embedded) → /opt/homebrew/bin
+make install        # GUI + headless Desktop + unified `future` CLI + skills (agent/tui/channel/goal are embedded) → /opt/homebrew/bin
 make install-cli    # unified `future` CLI only
 make install-desktop    # desktop app + matching CLI
+make install-desktop-headless   # GUI-free `futureos-headless` server + matching CLI
 make install-skills # built-in skills + the /future-goal skill
 make package-desktop    # desktop bundle → .app + .dmg in target/release/bundle/
 scripts/build/build-desktop-macos.sh  # local DMG; auto-signs when a Developer ID certificate is available
@@ -118,9 +119,10 @@ Build and install:
 ```bash
 scripts/build/build-desktop-linux.sh --out-dir ./dist   # → ./dist/FutureOS_<version>_amd64.deb + FutureOS-portable-linux.tar.gz
 scripts/dev/start-desktop-linux.sh                    # local Linux Desktop + agent development session
-make install        # or install straight from source: GUI + unified `future` CLI + skills → /usr/local/bin (sudo)
+make install        # or install straight from source: GUI + headless Desktop + unified `future` CLI + skills → /usr/local/bin (sudo)
 make install-cli    # unified `future` CLI only
 make install-desktop    # desktop app + matching CLI
+make install-desktop-headless   # GUI-free `futureos-headless` server + matching CLI
 make install-skills # built-in skills + the /future-goal skill
 make package-desktop    # desktop bundle → .deb in target/release/bundle/
 ```
@@ -178,6 +180,17 @@ $bin = "$env:USERPROFILE\.future\bin"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
 Copy-Item target\release\future.exe $bin
 Copy-Item target\release\futureos.exe "$bin\future-desktop.exe"
+```
+
+**Headless desktop** — equivalent to `make install-desktop-headless`. The same CLI
+plus the GUI-free server, beside it in `%USERPROFILE%\.future\bin`:
+
+```powershell
+cargo build --release -p future-cli -p futureos --no-default-features `
+  --features futureos/headless --bin future --bin futureos-headless
+$bin = "$env:USERPROFILE\.future\bin"
+Copy-Item target\release\future.exe $bin
+Copy-Item target\release\futureos-headless.exe $bin
 ```
 
 **Installer package** — equivalent to `make package-desktop`:

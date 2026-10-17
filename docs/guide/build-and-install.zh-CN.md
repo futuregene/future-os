@@ -47,9 +47,10 @@ brew install protobuf                                             # 可选 —�
 构建：
 
 ```bash
-make install        # GUI + 统一 `future` CLI + 技能（agent/tui/channel/goal 已内嵌）→ /opt/homebrew/bin
+make install        # GUI + 无头桌面端 + 统一 `future` CLI + 技能（agent/tui/channel/goal 已内嵌）→ /opt/homebrew/bin
 make install-cli    # 仅统一 `future` CLI
 make install-desktop    # 仅桌面应用（自带 agent/CLI sidecar）
+make install-desktop-headless   # 无 GUI 的 `futureos-headless` 服务端 + 配套 CLI
 make install-skills # 内置技能 + /future-goal 技能
 make package-desktop    # 桌面打包 → .app + .dmg 位于 target/release/bundle/
 scripts/build/build-desktop-macos.sh  # 本地 DMG；有 Developer ID 证书时自动签名
@@ -103,9 +104,10 @@ sudo apt install -y protobuf-compiler                             # 可选 —�
 ```bash
 scripts/build/build-desktop-linux.sh --out-dir ./dist   # → ./dist/FutureOS_<version>_amd64.deb + FutureOS-portable-linux.tar.gz
 scripts/dev/start-desktop-linux.sh                    # 本地 Linux Desktop + agent 开发会话
-make install        # 或直接从源码安装：GUI + 统一 `future` CLI + 技能（agent/tui/channel/goal 已内嵌）→ /usr/local/bin（sudo）
+make install        # 或直接从源码安装：GUI + 无头桌面端 + 统一 `future` CLI + 技能 → /usr/local/bin（sudo）
 make install-cli    # 仅统一 `future` CLI
 make install-desktop    # 仅桌面应用（自带 agent/CLI sidecar）
+make install-desktop-headless   # 无 GUI 的 `futureos-headless` 服务端 + 配套 CLI
 make install-skills # 内置技能 + /future-goal 技能
 make package-desktop    # 桌面打包 → .deb 位于 target/release/bundle/
 ```
@@ -156,6 +158,17 @@ $bin = "$env:USERPROFILE\.future\bin"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
 Copy-Item target\release\future.exe $bin
 Copy-Item target\release\futureos.exe "$bin\future-desktop.exe"
+```
+
+**无头桌面端** —— 等价于 `make install-desktop-headless`。同一个 CLI 加无 GUI 服务端，
+一起装到 `%USERPROFILE%\.future\bin`：
+
+```powershell
+cargo build --release -p future-cli -p futureos --no-default-features `
+  --features futureos/headless --bin future --bin futureos-headless
+$bin = "$env:USERPROFILE\.future\bin"
+Copy-Item target\release\future.exe $bin
+Copy-Item target\release\futureos-headless.exe $bin
 ```
 
 **安装包** —— 等价于 `make package-desktop`：
