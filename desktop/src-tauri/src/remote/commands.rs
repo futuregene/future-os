@@ -397,9 +397,9 @@ pub(super) async fn command_loop_with_ready(
                     if first_handshake && accepted {
                         let moved = super::SUPERVISOR.claim_control_soon(&handshake.creds.pair_id);
                         if let Some(previous) = moved {
-                            super::publish_standby(&previous);
+                            super::publish_standby(&previous).await;
                         }
-                        super::publish_control(&handshake.creds.pair_id, "active");
+                        super::publish_control(&handshake.creds.pair_id, "active").await;
                     }
                 }
                 #[cfg(test)]
@@ -633,7 +633,7 @@ async fn handle_command_inner(
             )
             .await;
             if let Some(previous) = moved {
-                super::publish_standby(&previous);
+                super::publish_standby(&previous).await;
             }
         }
         // Presence is normally pushed on every heartbeat. A client that
@@ -946,7 +946,7 @@ async fn handle_pair_handshake_confirm(
     if first_confirmation {
         let moved = super::SUPERVISOR.claim_control_soon(&state.creds.pair_id);
         if let Some(previous) = moved {
-            super::publish_standby(&previous);
+            super::publish_standby(&previous).await;
         }
     }
 }
