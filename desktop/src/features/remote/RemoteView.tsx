@@ -1,4 +1,5 @@
-import type { RemoteStatus } from "./remoteClient";
+import type { TFunction } from "i18next";
+import type { RemoteDevice, RemoteStatus } from "./remoteClient";
 import { QRCodeSVG } from "qrcode.react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -10,10 +11,13 @@ import { openExternalUrl } from "../../integrations/storage/files";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { usePolling } from "../../lib/usePolling";
 import {
+  addRemoteDevice,
   remoteConnectionPresentation,
   startRemote,
   stopRemote,
+  takeoverRemote,
   unpairRemote,
+  unpairRemoteDevice,
 } from "./remoteClient";
 
 /**
@@ -54,6 +58,29 @@ function formatPairId(pairId: string | null | undefined): string {
   return (pairId.startsWith("pair_") ? pairId.slice(5) : pairId).toUpperCase();
 }
 
+/**
+ * The platform's cap is a count over rows it owns, so the only honest place to
+ * learn that a device cannot be added is the refusal itself.
+ */
+function isLimitError(err: unknown): boolean {
+  const text = err instanceof Error ? err.message : String(err);
+  return text.includes("pairing_limit_reached");
+}
+
+/** What to call a device: what it said it was, else what we can see. */
+function deviceLabel(
+  device: Pick<RemoteDevice, "client" | "connected">,
+  t: TFunction<"remote">,
+): string {
+  if (device.client) {
+    return t(`clientKind.${device.client.kind}`, {
+      defaultValue: t("clientKind.other"),
+      name: device.client.name,
+    });
+  }
+  return device.connected ? t("clientUnknown") : t("devicePaired");
+}
+
 export function RemoteHostSection({
   autoConnect,
   onRefreshRemote,
@@ -65,6 +92,8 @@ export function RemoteHostSection({
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  /** The device whose unpair is being confirmed, if any. */
+  const [confirmUnpair, setConfirmUnpair] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // --- derived from the shared app-level status (same source as the sidebar indicator) ---
@@ -92,15 +121,28 @@ export function RemoteHostSection({
     : error;
   const showError = Boolean(failure || error);
 
-  const pairingCode = remoteStatus?.pairingCode ?? null;
+  // Every paired device, when the backend knows about them. An older backend
+  // sends none, and the single-device flow below is what that machine uses.
+  const devices = useMemo(() => remoteStatus?.devices ?? [], [remoteStatus?.devices]);
+  const multi = devices.length > 0;
+  // The invitation belongs to whichever device has not been claimed yet; the
+  // top-level field is the controller's projection and is only a fallback.
+  const pendingDevice = devices.find(device => device.pairingCode != null) ?? null;
+  const pairingCode = pendingDevice?.pairingCode ?? remoteStatus?.pairingCode ?? null;
   const [now, setNow] = useState(() => Date.now());
   usePolling(() => setNow(Date.now()), 1000, { enabled: pairingCode != null });
   const remainingSeconds = useMemo(() => {
-    const expiresAt = remoteStatus?.pairingCodeExpiresAt;
+    const expiresAt = pendingDevice
+      ? pendingDevice.pairingCodeExpiresAt
+      : remoteStatus?.pairingCodeExpiresAt;
     if (!pairingCode || expiresAt == null)
       return null;
     return Math.max(0, expiresAt - Math.floor(now / 1000));
-  }, [pairingCode, remoteStatus?.pairingCodeExpiresAt, now]);
+  }, [pairingCode, pendingDevice, remoteStatus?.pairingCodeExpiresAt, now]);
+  const confirmUnpairName = useMemo(() => {
+    const device = devices.find(item => item.pairId === confirmUnpair);
+    return device ? deviceLabel(device, t) : formatPairId(confirmUnpair);
+  }, [confirmUnpair, devices, t]);
   const pairingQrValue = useMemo(
     () =>
       pairingCode?.startsWith("futureos://remote/pair?") ? pairingCode : null,
@@ -158,6 +200,54 @@ export function RemoteHostSection({
     }
   }
 
+  async function handleAddDevice() {
+    setBusy(true);
+    setError(null);
+    try {
+      await addRemoteDevice();
+    }
+    catch (err) {
+      console.error("remote add device failed:", err);
+      setError(isLimitError(err) ? t("error.limitReached") : t("error.generic"));
+    }
+    finally {
+      setBusy(false);
+      await onRefreshRemote();
+    }
+  }
+
+  async function handleTakeover(pairId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await takeoverRemote(pairId);
+    }
+    catch (err) {
+      console.error("remote takeover failed:", err);
+      setError(t("error.generic"));
+    }
+    finally {
+      setBusy(false);
+      await onRefreshRemote();
+    }
+  }
+
+  async function handleUnpairDevice(pairId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await unpairRemoteDevice(pairId);
+    }
+    catch (err) {
+      console.error("remote unpair device failed:", err);
+      setError(t("error.generic"));
+    }
+    finally {
+      setBusy(false);
+      await onRefreshRemote();
+    }
+  }
+
   async function copyCode() {
     if (!pairingQrValue)
       return;
@@ -174,7 +264,77 @@ export function RemoteHostSection({
   return (
     <>
       <div className="space-y-4">
-        {isPaired && !pairingCode
+        {multi
+          ? (
+              <div className="rounded-lg border border-line-soft bg-surface-subtle">
+                <ul className="divide-y divide-line-soft">
+                  {devices.map(device => (
+                    <li
+                      className="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2"
+                      key={device.pairId}
+                    >
+                      <Badge
+                        tone={device.control === "active"
+                          ? "accent"
+                          : device.pairingCode != null
+                            ? "info"
+                            : device.connected
+                              ? "warning"
+                              : "neutral"}
+                      >
+                        {device.control === "active"
+                          ? t("deviceActive")
+                          : device.pairingCode != null
+                            ? t("deviceWaiting")
+                            : device.connected
+                              ? t("deviceStandby")
+                              : t("deviceOffline")}
+                      </Badge>
+                      <span className="min-w-0 truncate text-sm text-ink">{deviceLabel(device, t)}</span>
+                      <span className="min-w-0 truncate text-xs text-ink-muted">{formatPairId(device.pairId)}</span>
+                      <div className="ml-auto flex shrink-0 items-center gap-2">
+                        {/* A standby device can be given the machine from here, which
+                            is the desktop-side twin of the device's own "take over". */}
+                        {device.control === "standby" && device.pairingCode == null
+                          ? (
+                              <Button
+                                disabled={busy}
+                                onClick={() => void handleTakeover(device.pairId)}
+                                size="sm"
+                                variant="secondary"
+                              >
+                                {t("takeover")}
+                              </Button>
+                            )
+                          : null}
+                        <Button
+                          disabled={busy}
+                          onClick={() => setConfirmUnpair(device.pairId)}
+                          size="sm"
+                          variant="secondary"
+                        >
+                          {t("unpair")}
+                        </Button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line-soft px-4 py-2">
+                  <span className="min-w-0 flex-1 text-xs text-ink-muted">{t("addDeviceHint")}</span>
+                  <Button
+                    disabled={busy}
+                    onClick={() => void handleAddDevice()}
+                    size="sm"
+                    variant="secondary"
+                  >
+                    {t("addDevice")}
+                  </Button>
+                </div>
+              </div>
+            )
+          : null}
+
+        {!multi && isPaired && !pairingCode
           ? (
               <div className="rounded-lg border border-line-soft bg-surface-subtle p-4">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -348,6 +508,22 @@ export function RemoteHostSection({
         </p>
       </div>
 
+      <ConfirmDeleteDialog
+        description={t("unpairDeviceConfirmDesc", { name: confirmUnpairName })}
+        error={null}
+        onClose={() => setConfirmUnpair(null)}
+        onConfirm={() => {
+          const pairId = confirmUnpair;
+          setConfirmUnpair(null);
+          if (pairId)
+            void handleUnpairDevice(pairId);
+        }}
+        open={confirmUnpair != null}
+        submitting={false}
+        title={t("unpairDeviceConfirmTitle")}
+      >
+        <p className="text-sm text-ink-soft">{formatPairId(confirmUnpair)}</p>
+      </ConfirmDeleteDialog>
       <ConfirmDeleteDialog
         description={t("unpairConfirmDesc")}
         error={null}
