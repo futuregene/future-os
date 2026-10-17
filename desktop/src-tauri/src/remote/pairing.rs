@@ -65,16 +65,38 @@ pub fn error_code(error: &crate::AppError) -> Option<&'static str> {
         _ => None,
     }
 }
+/// How long before expiry the bridge credential is renewed.
+///
+/// The relay issues a ~15 minute bridge JWT. Renewing inside its last minute —
+/// the previous 60-second margin — left no room for what a renewal actually
+/// does: an HTTPS round trip to the platform, a fresh TLS connection, and a
+/// transport rebuild with its own readiness deadline. A renewal that lost that
+/// race let the old credential expire in flight, and an expired credential is
+/// rejected outright (`User Authentication Expired`, then `-ERR 'Authorization
+/// Violation'` on every retry): the bridge cannot publish and drops events
+/// until the next rotation lands, which is what the phone sees as the desktop
+/// going offline. Four minutes gives the work room to fail once and still
+/// finish inside the credential's lifetime.
+pub(crate) const REFRESH_LEAD: std::time::Duration = std::time::Duration::from_secs(240);
+
+/// Time until the credential should be renewed; zero once it is due.
 pub fn refresh_delay(creds: &PairingCreds) -> std::time::Duration {
-    let now = SystemTime::now()
+    std::time::Duration::from_secs(seconds_until_renewal(creds).max(0) as u64)
+}
+
+/// Signed seconds until renewal is due; negative once it is overdue.
+pub fn seconds_until_renewal(creds: &PairingCreds) -> i64 {
+    seconds_until_expiry(creds) - REFRESH_LEAD.as_secs() as i64
+}
+
+/// Signed seconds until the credential expires; negative once it has.
+pub fn seconds_until_expiry(creds: &PairingCreds) -> i64 {
+    creds.jwt_expires_at.saturating_sub(unix_seconds())
+}
+
+fn unix_seconds() -> i64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
-        .unwrap_or_default();
-    std::time::Duration::from_secs(
-        creds
-            .jwt_expires_at
-            .saturating_sub(now)
-            .saturating_sub(60)
-            .max(5) as u64,
-    )
+        .unwrap_or_default()
 }

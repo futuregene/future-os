@@ -36,6 +36,7 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 │   ├── app.db                 # SQLite 数据库（会话线程、run、审批等）
 │   ├── images/                # 每线程图片树（thumb/ + origin/）
 │   ├── review/                # 每个 workspace 的影子 git 评审仓库
+│   ├── relay-root-certs.pem   # 中转 TLS 客户端使用的平台信任根快照
 │   ├── remote-previews/       # 从已配对主机取回用于预览的文件（按时间与数量清理）
 │   └── run_events/            # 每个 run 的事件日志（JSONL）
 ├── workspaces/
@@ -171,6 +172,9 @@ agent 解析 `auth.json` 时会先读 `~/.future/agent/auth.json`，只有该文
 - `review/` — 评审功能使用的影子 git 仓库，每个 workspace 的 run 共享一个
   `<workspace_id>` 子目录。
 - `run_events/` — 每个 run 的事件日志（JSONL），派生自 agent 的 JSONL 会话。
+- `relay-root-certs.pem` — 平台信任根的 PEM 快照，仅作为远程桥连接中转的 TLS 信任库。
+  每次连接都会重写，可以安全删除：下次连接会重建。见
+  [桌面 NATS 内部说明](../internals/desktop-nats.zh-CN.md)。
 
 桌面远程桥把配对身份（`nkey_seed` + `user_jwt` + NATS 地址）保存在
 `~/.future/remote_pairing.json`（位于 `~/.future` 根，而非 `app/` 下）。

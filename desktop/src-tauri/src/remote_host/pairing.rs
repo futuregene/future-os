@@ -6,7 +6,9 @@
 //! copy because the server credential is bound to that exact identity.
 
 #[cfg(test)]
-use crate::remote::pairing::{error_code, is_invalid_or_revoked_error, public_key, refresh_delay};
+use crate::remote::pairing::{
+    error_code, is_invalid_or_revoked_error, public_key, refresh_delay, REFRESH_LEAD,
+};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -707,14 +709,22 @@ mod http_tests {
     }
 
     #[test]
-    fn refresh_delay_clamps_between_floor_and_expiry() {
+    fn refresh_delay_is_the_time_until_the_lead_before_expiry() {
         let mut creds = fixture_creds();
+        // Renewal starts REFRESH_LEAD before expiry (minutes, not the previous
+        // 60 seconds): the HTTPS round trip, TLS connect and transport rebuild
+        // have to fit inside the old credential's lifetime.
         creds.jwt_expires_at = now_secs() + 3600;
-        let delay = refresh_delay(&creds);
-        assert!(delay.as_secs() > 3500 && delay.as_secs() <= 3540);
-        // Already expired → the 5s floor.
+        let delay = refresh_delay(&creds).as_secs();
+        let expected = 3600 - REFRESH_LEAD.as_secs();
+        assert!(
+            delay <= expected && delay + 5 >= expected,
+            "delay was {delay}"
+        );
+        // Already expired → due now, so the renewal loop retries at its fast
+        // cadence instead of idling out a tick with the bridge unable to publish.
         creds.jwt_expires_at = now_secs() - 10;
-        assert_eq!(refresh_delay(&creds).as_secs(), 5);
+        assert_eq!(refresh_delay(&creds), std::time::Duration::ZERO);
     }
 
     #[test]

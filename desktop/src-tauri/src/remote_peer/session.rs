@@ -662,6 +662,12 @@ pub(crate) async fn connect(creds: &PeerCreds) -> Result<Connected, crate::AppEr
         async move { signer.sign(&nonce).map_err(async_nats::AuthError::new) }
     })
     .custom_inbox_prefix(format!("p.{}.rep.{}", creds.pair_id, creds.device_id));
+    // Same platform-store read as the bridge's own connection (`remote::trust`):
+    // the intermittent failure is in reading the store, not in the handshake.
+    let options = match crate::remote::trust::root_bundle() {
+        Some(bundle) => options.add_root_certificates(bundle),
+        None => options,
+    };
     // Unit tests use an in-process, plaintext fake broker. There is no runtime
     // switch that permits a production TLS downgrade.
     #[cfg(not(test))]

@@ -102,6 +102,10 @@ image = { version = "0.25", default-features = false, features = [
 # this provider during application startup before constructing any HTTP client.
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# Read the platform trust store ourselves, once per connect, instead of letting
+# async-nats read it per connection and fail the connection when that read
+# errors (see `remote::trust`). Same version async-nats already links.
+rustls-native-certs = "0.8"
 sha2 = "0.10"
 tempfile = "3"
 chrono = "0.4"
