@@ -13,9 +13,11 @@ It does not daemonize or install a system service.
 ## 1. Before you start
 
 - Linux `.deb` and portable releases include `futureos-headless` and the matching
-  `future` CLI; you can also build them from source (section 5). The standalone
-  entrypoint needs no GTK/WebKit and starts headless by default. The CLI-only
-  archive still contains only `future`, not the Desktop backend entrypoint.
+  `future` CLI; you can also build them from source (section 5). A source install
+  (`make install`) puts `futureos-headless` in the same `bin` directory as
+  `future-desktop`. The standalone entrypoint needs no GTK/WebKit and starts headless
+  by default. The CLI-only archive still contains only `future`, not the Desktop
+  backend entrypoint.
 - The complete Agent runs inside headless Desktop when no external service owns
   the default endpoint/data directory. Keep the matching CLI beside the executable
   or on PATH for skills and maintenance. You can also run `future agent` separately;
@@ -170,6 +172,16 @@ To build both binaries from the repository root without npm/Tauri packaging:
 ```bash
 make build-desktop-headless
 ```
+
+To install them into the same `PREFIX` as `make install` (`/opt/homebrew/bin` on
+macOS, `/usr/local/bin` on Linux, `%USERPROFILE%\.future\bin` on Windows):
+
+```bash
+make install-desktop-headless
+```
+
+`make install` already includes this step, so a full source install needs no extra
+command.
 
 Or build explicitly:
 

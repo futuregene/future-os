@@ -7,7 +7,7 @@
 	run-agent run-tui run-cli run-desktop run-mobile-android run-mobile-ios run-channels run-goal \
 	profile-agent-build profile-agent profile-quick profile-heap \
 	generate-models generate-proto \
-	install install-cli install-desktop install-skills update-skills uninstall package-desktop clean setup
+	install install-cli install-desktop install-desktop-headless install-skills update-skills uninstall package-desktop clean setup
 
 # ─── Version ────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (scripts/version.mjs); exported
@@ -49,8 +49,11 @@ CARGO_PINNED := rustup run $(RUST_TOOLCHAIN) cargo
 # The unified `future` CLI embeds agent/tui/channel/goal; the desktop bundles
 # it for CLI tools and maintenance; Desktop hosts Agent in process by default.
 # Standalone future-agent/-tui/-channel/-goal
-# binaries are dev-only (cargo run -p <crate>) — install puts exactly two files
-# in PREFIX: `future` and `future-desktop`.
+# binaries are dev-only (cargo run -p <crate>) — install puts three files in
+# PREFIX: `future`, `future-desktop`, and the GUI-free `futureos-headless`.
+# The headless server keeps its release-package name (Linux .deb and portable
+# tarball install `futureos-headless` too), and its own help text names it
+# that way; it finds `future` beside it for skill initialisation.
 
 # One-time developer bootstrap for a fresh clone. Installs the workspace JS
 # deps (shared packages, desktop, mobile) and the skills submodule,
@@ -61,7 +64,7 @@ setup:
 	$(call npm-install-if-needed,desktop)
 	$(call npm-install-if-needed,mobile)
 
-install: install-desktop install-skills
+install: install-desktop install-desktop-headless install-skills
 
 install-cli: build-cli
 ifeq ($(OS),windows)
@@ -84,12 +87,25 @@ else
 	$(SUDO) install -m 755 target/release/futureos "$(PREFIX)/future-desktop"
 endif
 
+# GUI-free server, plus the matching CLI it looks for beside itself. The server
+# keeps its release-package name (the Linux .deb and portable tarball install
+# `futureos-headless` too), and its own help text names it that way.
+install-desktop-headless: build-desktop-headless
+ifeq ($(OS),windows)
+	@if not exist "$(USERPROFILE)\.future\bin" mkdir "$(USERPROFILE)\.future\bin"
+	$(COPY_CMD) target\release\future$(EXE_SUFFIX) "$(PREFIX)\future$(EXE_SUFFIX)"
+	$(COPY_CMD) target\release\futureos-headless$(EXE_SUFFIX) "$(PREFIX)\futureos-headless$(EXE_SUFFIX)"
+else
+	$(SUDO) install -m 755 target/release/future "$(PREFIX)/future"
+	$(SUDO) install -m 755 target/release/futureos-headless "$(PREFIX)/futureos-headless"
+endif
+
 # Also removes pre-unification installs (future-agent/-tui/-channel).
 uninstall:
 ifeq ($(OS),windows)
-	-cmd /c del /q "$(PREFIX)\future$(EXE_SUFFIX)" "$(PREFIX)\future-desktop$(EXE_SUFFIX)" "$(PREFIX)\future-agent$(EXE_SUFFIX)" "$(PREFIX)\future-tui$(EXE_SUFFIX)" "$(PREFIX)\future-channel$(EXE_SUFFIX)" 2>NUL
+	-cmd /c del /q "$(PREFIX)\future$(EXE_SUFFIX)" "$(PREFIX)\future-desktop$(EXE_SUFFIX)" "$(PREFIX)\futureos-headless$(EXE_SUFFIX)" "$(PREFIX)\future-agent$(EXE_SUFFIX)" "$(PREFIX)\future-tui$(EXE_SUFFIX)" "$(PREFIX)\future-channel$(EXE_SUFFIX)" 2>NUL
 else
-	$(SUDO) rm -f $(addprefix $(PREFIX)/,future future-desktop future-agent future-tui future-channel)
+	$(SUDO) rm -f $(addprefix $(PREFIX)/,future future-desktop futureos-headless future-agent future-tui future-channel)
 endif
 	@echo "Removed installed binaries from $(PREFIX)"
 
@@ -427,7 +443,7 @@ help:
 	@echo "  profile-agent / profile-quick / profile-heap  CPU/heap profiling (PROFILE_SECS=30)"
 	@echo "  generate-models                     Fetch model data, regenerate Rust catalog + wiki docs"
 	@echo "  generate-proto                      Regenerate wire code (packages/rpc future.proto + channels feishu_ws)"
-	@echo "  install / install-cli / install-desktop / install-skills   Install to $(PREFIX)"
+	@echo "  install / install-cli / install-desktop / install-desktop-headless / install-skills   Install to $(PREFIX)"
 	@echo "  update-skills                       Pull the skills submodule's remote, then install skills"
 	@echo "  setup                               Bootstrap a fresh clone (JS deps + skills + sidecar)"
 	@echo "  uninstall                           Remove installed binaries from $(PREFIX)"
