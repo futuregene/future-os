@@ -23,12 +23,16 @@ development and distribution maintenance.
   desktop conversations.
 - Streams replies, thinking, and tool execution; supports approval, stop,
   model, thinking level, and rename.
-- A prompt taller than the phone opens collapsed. More than 16 lines (or more
-  than 10 000 characters, which one line can reach) is folded to 16 wrapped
-  lines with an expand/collapse control under the bubble — the same budget and
-  threshold a code block uses — so a goal-sized prompt cannot bury its own
-  answer. Only the drawing is cut: the whole prompt stays mounted, so long
-  selection and a screen reader still reach every word.
+- A prompt taller than the phone is previewed, never drawn whole. More than
+  16 lines (or more than 10 000 characters, which one line can reach) draws a
+  bounded head in the bubble — the same budget and threshold a code block uses —
+  and a control under it opens the whole prompt in a reader of its own, where a
+  copy button takes it away. The reason is measured, not aesthetic: on a
+  reporting device a prompt bubble several viewports tall painted its accent fill
+  and **none** of its text, at every scroll position and after every restart,
+  while the same prompt rendered once clipped — the failure follows the row's
+  height, so the transcript must not grow one and expanding in place cannot be
+  offered.
 - Sessions support pin, rename, single delete, and multi-select batch delete;
   workspaces can be deleted wholesale (including their sessions; files inside
   the desktop's workspace directory are not deleted), and workspace

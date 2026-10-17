@@ -12,6 +12,9 @@ import type { HistoryAttachment, TimelineItem, TimelineSegment } from "../../rem
 import i18n from "../../i18n";
 
 jest.mock("../MarkdownText", () => ({ MarkdownText: "MarkdownText" }));
+// The reader is its own surface with its own suite; here it is a host element,
+// so this file can assert which prompt (and whether) the row hands it.
+jest.mock("../../features/chat/components/PromptReader", () => ({ PromptReader: "PromptReader" }));
 /** The sheet the rendered components use, in the default (light) theme. */
 const messageStyles = useStyles.forTheme(lightTheme);
 jest.mock("lucide-react-native", () => Object.fromEntries(
@@ -138,7 +141,7 @@ describe("a user message is the user's own markdown, plus their attachments", ()
   });
 });
 
-describe("a prompt taller than the phone starts collapsed", () => {
+describe("a prompt taller than the phone is read in a reader, never drawn whole", () => {
   /** A prompt of the size the phone reported: goal-sized prose that wraps to far
    * more lines than a viewport holds. */
   const giantPrompt = Array.from({ length: 40 }, (_, index) =>
@@ -152,13 +155,11 @@ describe("a prompt taller than the phone starts collapsed", () => {
   const toggles = () => tree.root.findAll(node =>
     typeof node.props.onPress === "function"
     && node.props.accessibilityLabel === "Show full prompt");
-  const collapseToggles = () => tree.root.findAll(node =>
-    typeof node.props.onPress === "function"
-    && node.props.accessibilityLabel === "Collapse prompt");
   /** The markdown rows this row rendered (a host stub in this suite). */
   const markdownNodes = () => tree.root.findAll(node => String(node.type) === "MarkdownText");
+  const readers = () => tree.root.findAll(node => String(node.type) === "PromptReader");
 
-  test("the bubble is capped at the shared wrapped-line budget, with a control under it", () => {
+  test("the bubble draws only a preview, capped at the shared wrapped-line budget", () => {
     render(message({ role: "user", text: giantPrompt }));
     // The cap is a real height, derived from the reader's own line height and
     // window rather than a hard-coded dp: it has to grow with the text size and
@@ -170,14 +171,15 @@ describe("a prompt taller than the phone starts collapsed", () => {
     expect(bubbleStyle()).toMatchObject({ maxHeight: expectedCap, overflow: "hidden" });
     expect(expectedCap).toBeGreaterThan(lightTheme.chat.lineHeight * (PROMPT_COLLAPSE_LINES - 1));
     expect(expectedCap).toBeLessThanOrEqual(Dimensions.get("window").height / 2);
-    expect(toggles()).toHaveLength(1);
-    expect(collapseToggles()).toHaveLength(0);
-    // The whole prompt is still mounted: a collapse hides the tail, it never
-    // drops the reader's own words from selection or from a screen reader.
-    expect(markdownNodes()[0]!.props.text).toBe(giantPrompt);
+    // The bubble renders a head of the source, not the whole of it: what made
+    // the row blank was its height, so the row must not carry the tail at all.
+    const drawn = markdownNodes()[0]!.props.text as string;
+    expect(drawn.length).toBeLessThan(giantPrompt.length);
+    expect(giantPrompt.startsWith(drawn)).toBe(true);
+    expect(drawn.length).toBeLessThanOrEqual(800);
   });
 
-  test("the control sits after the bubble, and expands and collapses it in place", () => {
+  test("the control sits after the bubble and opens the whole prompt in a reader", () => {
     render(message({ role: "user", text: giantPrompt }));
     // Structure, not presence: a control painted above the bubble would be a
     // different screen even though both strings are on it. The DFS order of the
@@ -189,17 +191,18 @@ describe("a prompt taller than the phone starts collapsed", () => {
     expect(bubbleAt).toBeGreaterThanOrEqual(0);
     expect(controlAt).toBeGreaterThan(bubbleAt);
 
+    // Closed by default: opening a modal has to be the reader's choice, and the
+    // bubble never grows into the shape that fails to draw.
+    expect(readers()[0]!.props).toMatchObject({ text: giantPrompt, visible: false });
     press("Show full prompt");
-    expect(bubbleStyle()?.maxHeight).toBeUndefined();
-    expect(bubbleStyle()?.overflow).toBeUndefined();
-    expect(collapseToggles()).toHaveLength(1);
-    expect(toggles()).toHaveLength(0);
-
-    press("Collapse prompt");
+    expect(readers()[0]!.props.visible).toBe(true);
     expect(bubbleStyle()?.maxHeight).toBe(collapsedPromptHeight(
       lightTheme.chat.lineHeight,
       Dimensions.get("window").height,
     ));
+    // The reader closes itself, and the bubble is left exactly as it was.
+    act(() => readers()[0]!.props.onClose());
+    expect(readers()[0]!.props.visible).toBe(false);
   });
 
   test("a prompt within the budget keeps its bubble and offers no control", () => {
@@ -208,6 +211,8 @@ describe("a prompt taller than the phone starts collapsed", () => {
     render(message({ role: "user", text: atBudget }));
     expect(bubbleStyle()?.maxHeight).toBeUndefined();
     expect(toggles()).toHaveLength(0);
+    expect(readers()).toHaveLength(0);
+    expect(markdownNodes()[0]!.props.text).toBe(atBudget);
   });
 
   test("a reply is never capped, however long it is", () => {
@@ -218,6 +223,7 @@ describe("a prompt taller than the phone starts collapsed", () => {
       typeof node.type === "string"
       && StyleSheet.flatten(node.props.style)?.maxHeight !== undefined)).toHaveLength(0);
     expect(toggles()).toHaveLength(0);
+    expect(readers()).toHaveLength(0);
   });
 });
 
