@@ -1,6 +1,6 @@
 import type { DesktopFilter } from "../remote/mergeSessions";
 import type { PairedDesktop } from "../remote/types";
-import { Check, ChevronDown, Monitor, X } from "lucide-react-native";
+import { Check, ChevronDown, Layers, Monitor, X } from "lucide-react-native";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -89,13 +89,24 @@ export function DesktopPicker({
             </Pressable>
           </View>
           <ScrollView style={styles.list}>
+            {/* Every row carries the same leading icon column, and the chosen
+                one is tinted behind the check: without them "all desktops" sits
+                flush with the sheet title and reads as a heading for the
+                machines below rather than as one of the answers. */}
             <Pressable
-              accessibilityRole="button"
-              accessibilityState={{ selected: filter.kind === "all" }}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: filter.kind === "all" }}
               onPress={() => choose({ kind: "all" })}
-              style={styles.option}
+              style={({ pressed }) => [
+                styles.option,
+                filter.kind === "all" && styles.optionSelected,
+                pressed && styles.pressed,
+              ]}
             >
-              <Text style={[styles.optionLabel, filter.kind === "all" && styles.optionSelected]}>
+              <View style={styles.optionIcon}>
+                <Layers color={colors.inkSoft} size={18} />
+              </View>
+              <Text style={[styles.optionLabel, filter.kind === "all" && styles.optionLabelSelected]}>
                 {t("desktops.filterAll")}
               </Text>
               {filter.kind === "all" ? <Check color={colors.accent} size={16} /> : null}
@@ -104,27 +115,38 @@ export function DesktopPicker({
               const isSelected = filter.kind === "desktop" && filter.desktopId === desktop.desktopId;
               return (
                 <Pressable
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: isSelected }}
+                  accessibilityRole="radio"
+                  accessibilityState={{ checked: isSelected }}
                   key={desktop.desktopId}
                   onPress={() => choose({ kind: "desktop", desktopId: desktop.desktopId })}
-                  style={styles.option}
+                  style={({ pressed }) => [
+                    styles.option,
+                    isSelected && styles.optionSelected,
+                    pressed && styles.pressed,
+                  ]}
                 >
-                  <Text style={[styles.optionLabel, isSelected && styles.optionSelected]}>
-                    {iconGlyph(desktop.icon)} {label(desktop)}
+                  <View style={styles.optionIcon}>
+                    <Text style={styles.optionGlyph}>{iconGlyph(desktop.icon)}</Text>
+                  </View>
+                  <Text style={[styles.optionLabel, isSelected && styles.optionLabelSelected]}>
+                    {label(desktop)}
                   </Text>
                   {isSelected ? <Check color={colors.accent} size={16} /> : null}
                 </Pressable>
               );
             })}
+            <View style={styles.separator} />
             <Pressable
               accessibilityRole="button"
               onPress={() => {
                 setOpen(false);
                 onManage();
               }}
-              style={styles.option}
+              style={({ pressed }) => [styles.option, pressed && styles.pressed]}
             >
+              {/* An action, not a choice — the rule above separates it from the
+                  answers, and the empty column keeps its text on their edge. */}
+              <View style={styles.optionIcon} />
               <Text style={styles.manage}>{t("desktops.manage")}</Text>
             </Pressable>
           </ScrollView>
@@ -163,12 +185,24 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   },
   list: { maxHeight: 420 },
   option: {
+    minHeight: 48,
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.sm,
-    paddingVertical: spacing.md,
+    gap: spacing.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.md,
   },
+  // Same tint the other single-choice sheets use for the answer in force.
+  optionSelected: { backgroundColor: theme.colors.accentSoft },
+  optionIcon: { width: 24, alignItems: "center", justifyContent: "center" },
+  optionGlyph: { fontSize: theme.font(16) },
   optionLabel: { flex: 1, minWidth: 0, color: theme.colors.ink, fontSize: theme.font(15) },
-  optionSelected: { color: theme.colors.accent, fontWeight: "600" },
+  optionLabelSelected: { color: theme.colors.accent, fontWeight: "600" },
+  separator: {
+    height: StyleSheet.hairlineWidth,
+    marginVertical: spacing.xs,
+    backgroundColor: theme.colors.lineSoft,
+  },
   manage: { flex: 1, color: theme.colors.accent, fontSize: theme.font(15) },
 }));

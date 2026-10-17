@@ -95,7 +95,7 @@ jest.mock("../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }
 jest.mock("../../update/prompt", () => ({ promptUpgrade: jest.fn() }));
 jest.mock("../../update/update", () => ({ checkForUpdate: jest.fn() }));
 jest.mock("lucide-react-native", () => Object.fromEntries(
-  ["ArrowLeft", "ChevronLeft", "ChevronRight", "ChevronDown", "Check", "Folder", "LogOut", "MessageCircle", "Monitor", "Plus", "Pin", "Pencil", "Trash2", "Settings", "Unplug", "X"].map(name => [name, name]),
+  ["ArrowLeft", "ChevronLeft", "ChevronRight", "ChevronDown", "Check", "Folder", "Layers", "LogOut", "MessageCircle", "Monitor", "Plus", "Pin", "Pencil", "Trash2", "Settings", "Unplug", "X"].map(name => [name, name]),
 ));
 jest.mock("react-native-safe-area-context", () => ({
   SafeAreaView: "SafeAreaView",
@@ -189,12 +189,15 @@ test("the picker can be dismissed without choosing a desktop", () => {
 test("a picker row is the desktop's name and nothing else", () => {
   act(() => button("desktops.pickerLabel").props.onPress());
   // Host nodes only: a composite and its host both carry the row's props.
+  // Rows are radios — one of them is the answer in force, which is not a
+  // navigation the way the trigger above the list is.
   const rows = tree.root.findAll(node =>
     typeof node.type === "string" &&
-    node.props.accessibilityRole === "button" &&
-    node.props.accessibilityState?.selected !== undefined);
+    node.props.accessibilityRole === "radio" &&
+    node.props.accessibilityState?.checked !== undefined);
+  // The glyph sits in its own column, so the row's copy is the texts joined.
   const labels = rows.map(row =>
-    row.findAllByType(Text).flatMap(text => text.props.children as string[]).join(""));
+    row.findAllByType(Text).flatMap(text => text.props.children as string[]).join(" "));
   // `desktop_1` is the one this phone is paired with, and the header's status dot
   // already says whether the phone is connected to it — a "Connected" label on
   // that one row repeats the dot and makes the spare row look second-class.
