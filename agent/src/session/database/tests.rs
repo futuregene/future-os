@@ -281,3 +281,66 @@ fn entry_identity_is_unique_within_a_session_not_globally() {
     })
     .unwrap();
 }
+
+/// A job that panics takes the worker thread with it. Callers are then told the
+/// worker is *unavailable* — a distinct, retryable condition — instead of
+/// waiting on a reply that can never come, and the shutdown path still reports
+/// the panic rather than claiming a clean close of a connection that was never
+/// closed.
+///
+/// There are two moments here and the test names both: while the worker is still
+/// unwinding, a queued job is accepted and then dropped (the caller sees
+/// "interrupted"); once the receiver is gone, the same call is refused up front
+/// ("unavailable"). The assertion is therefore a bounded liveness wait — it can
+/// only fail if the product never reaches the refused state — not a sleep that
+/// hopes a race goes one way.
+#[test]
+fn a_panicking_job_leaves_later_callers_with_a_disconnected_worker() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::open(&dir.path().join("agent.db")).unwrap();
+
+    // A well-behaved call first, so the worker is provably alive.
+    let ok: i64 = db
+        .call(|connection| Ok(connection.query_row("SELECT 1", [], |r| r.get(0))?))
+        .unwrap();
+    assert_eq!(ok, 1);
+
+    // The worker unwinds inside this job; its receiver leaves with the thread.
+    let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = db.call(|_| -> Result<()> { panic!("injected worker panic") });
+    }));
+    assert!(first.is_ok(), "the panic happens on the worker thread");
+
+    let probe = |db: &Database| {
+        db.call(|connection| Ok(connection.query_row("SELECT 1", [], |r| r.get::<_, i64>(0))?))
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut refusal = None;
+    let mut interrupted = 0u32;
+    while std::time::Instant::now() < deadline {
+        match probe(&db) {
+            Ok(_) => break,
+            Err(error) if error.to_string().contains("SQLite worker is unavailable") => {
+                refusal = Some(error.to_string());
+                break;
+            }
+            Err(_) => {
+                // Still unwinding: the job was accepted and then dropped. Bounded
+                // by the deadline, so this cannot loop forever.
+                interrupted += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
+    assert!(
+        refusal.is_some(),
+        "a dead worker must eventually refuse work up front          (observed {interrupted} interrupted probe(s) and no refusal)"
+    );
+
+    // The shutdown path must report the panic rather than claim a clean close.
+    let closed = db.shutdown();
+    assert!(
+        closed.is_err(),
+        "shutdown after a worker panic must report it, not report success"
+    );
+}

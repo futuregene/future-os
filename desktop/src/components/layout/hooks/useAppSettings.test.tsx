@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import type { AppSettings } from "../../../integrations/storage/appSettings";
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { setLanguage } from "../../../i18n";
@@ -105,6 +105,65 @@ it("downgrades a saved automatic preference on logout without restoring it on la
     await act(async () => settings!.changeSettings({ approvalTier: "auto" }));
     expect(stored.approvalTier).toBe("auto");
     await render("invalid");
+    expect(stored.approvalTier).toBe("sandbox");
+  }
+  finally { await act(async () => root.unmount()); }
+});
+
+it("downgrades an explicit pick of automatic approval on a signed-out session", async () => {
+  // The tier the account cannot honour must not reach the host as an edit: the
+  // patch leaves the window already downgraded, whether the user picked it in
+  // Settings or the fallback effect asked for it.
+  let stored: AppSettings = { ...DEFAULT_APP_SETTINGS, approvalTier: "manual" };
+  vi.mocked(getAppSettings).mockImplementation(async () => ({ ...stored }));
+  vi.mocked(updateAppSettings).mockImplementation(async (patch) => {
+    stored = { ...stored, ...patch };
+    return { ...stored };
+  });
+  vi.mocked(updateAppSettings).mockClear();
+
+  let settings: ReturnType<typeof useAppSettings>;
+  function Host() {
+    settings = useAppSettings("signed_out");
+    return null;
+  }
+  const root = createRoot(document.createElement("div"));
+  try {
+    await act(async () => root.render(<Host />));
+    await act(async () => settings!.changeSettings({ approvalTier: "auto" }));
+
+    expect(vi.mocked(updateAppSettings).mock.calls.map(([patch]) => patch.approvalTier).filter(tier => tier !== undefined))
+      .toEqual(["sandbox"]);
+    expect(stored.approvalTier).toBe("sandbox");
+    expect(settings!.appSettings.approvalTier).toBe("sandbox");
+  }
+  finally { await act(async () => root.unmount()); }
+});
+
+it("writes the automatic-approval downgrade once under StrictMode", async () => {
+  // The app renders under StrictMode (main.tsx), which runs every effect setup
+  // twice in development. The downgrade must be written once, and what keeps the
+  // replay from writing again is the optimistic update inside `changeSettings`:
+  // the second pass reads the latest render, where the tier is already
+  // "sandbox" and there is nothing left to fall back from.
+  let stored: AppSettings = { ...DEFAULT_APP_SETTINGS, approvalTier: "auto" };
+  vi.mocked(getAppSettings).mockImplementation(async () => ({ ...stored }));
+  vi.mocked(updateAppSettings).mockImplementation(async (patch) => {
+    stored = { ...stored, ...patch };
+    return { ...stored };
+  });
+  vi.mocked(updateAppSettings).mockClear();
+
+  function Host() {
+    useAppSettings("signed_out");
+    return null;
+  }
+  const root = createRoot(document.createElement("div"));
+  try {
+    await act(async () => root.render(<StrictMode><Host /></StrictMode>));
+
+    const approvalWrites = vi.mocked(updateAppSettings).mock.calls.map(([patch]) => patch.approvalTier).filter(tier => tier !== undefined);
+    expect(approvalWrites).toEqual(["sandbox"]);
     expect(stored.approvalTier).toBe("sandbox");
   }
   finally { await act(async () => root.unmount()); }

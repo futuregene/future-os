@@ -171,6 +171,48 @@ mod tests {
         }
     }
 
+    /// The re-acquire loop's *failure* half, and the non-contended lock error.
+    ///
+    /// `at()` maps two different `flock` failures through one `map_err`: taking a
+    /// lock that someone else holds (covered by the tests above) and a lock that
+    /// cannot be taken for any other reason. The second must not be reported as a
+    /// running Desktop — the user would go hunting for a process that does not
+    /// exist. A FIFO is how this host produces that failure: `open(O_RDWR)` on one
+    /// succeeds, while `flock` on it returns ENOTSUP (probed: `/dev/null` *accepts*
+    /// the lock, so it cannot be used). Gated to macOS because the errno is a
+    /// property of the platform, not of this code.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_lock_failure_that_is_not_contention_is_not_reported_as_another_instance() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock_path = directory.path().join("desktop.lock");
+        let fifo = std::ffi::CString::new(lock_path.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: mkfifo only reads the path built above; a failure is asserted.
+        let created = unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) };
+        // Hoisted out of the assertion: `assert_eq!` only evaluates its format
+        // arguments on failure, so a passing run would never execute them.
+        let mkfifo_error = format!(
+            "mkfifo {}: {}",
+            lock_path.display(),
+            std::io::Error::last_os_error()
+        );
+        assert_eq!(created, 0, "{mkfifo_error}");
+
+        let error = InstanceGuard::at(directory.path())
+            .err()
+            .expect("this lock cannot be taken")
+            .to_string();
+        assert!(!error.contains("already running"), "{error}");
+        assert!(
+            error.contains("Could not lock Desktop data directory"),
+            "{error}"
+        );
+        assert!(
+            error.contains(&directory.path().display().to_string()),
+            "the message must still name the directory: {error}"
+        );
+    }
+
     #[test]
     fn directory_errors_are_not_reported_as_another_instance() {
         let file = tempfile::NamedTempFile::new().unwrap();

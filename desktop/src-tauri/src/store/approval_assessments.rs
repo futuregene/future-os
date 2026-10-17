@@ -123,4 +123,88 @@ mod tests {
         record_approval_assessment("missing-run", &value).unwrap_err();
         assert!(list_approval_assessments("missing-run").unwrap().is_empty());
     }
+
+    /// The status set is closed and the reviewer must be the model: anything
+    /// else is refused *before* a transaction opens, so nothing is written.
+    /// `cancelled`/`stale_request` are the two statuses the queue renders as a
+    /// cancellation rather than a rejection.
+    #[test]
+    fn only_the_closed_status_set_from_the_model_is_accepted() {
+        let (_home, conn) = guarded_conn("auto_assessments_status");
+        conn.execute_batch("INSERT INTO workspaces(id,name,kind,path,created_at,updated_at) VALUES('w','W','temporary','fixture',1,1); INSERT INTO threads(id,workspace_id,mode,title,created_at,updated_at) VALUES('t','w','chat','T',1,1); INSERT INTO runs(id,thread_id,status,created_at,updated_at) VALUES('r','t','running',1,1);").unwrap();
+        let base = json!({
+            "approval_request_id": "req",
+            "tool_call_id": "tool",
+            "reviewer": "model",
+            "effective": {"risk": "low"},
+        });
+
+        // A status outside the set is refused, and the refusal writes nothing.
+        let mut value = base.clone();
+        value["assessment_id"] = json!("a");
+        value["status"] = json!("invented-status");
+        let error = record_approval_assessment("r", &value).unwrap_err();
+        assert!(error.to_string().contains("Invalid automatic assessment"));
+        // A non-model reviewer is refused by the same guard.
+        value["status"] = json!("approved");
+        value["reviewer"] = json!("human");
+        assert!(record_approval_assessment("r", &value)
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid automatic assessment"));
+        assert!(
+            super::super::list_pending_approval_requests()
+                .unwrap()
+                .is_empty(),
+            "a refused assessment must not create a pending request"
+        );
+
+        // Both cancellation statuses are accepted, and both render as cancelled.
+        for (index, status) in ["cancelled", "stale_request"].iter().enumerate() {
+            value["assessment_id"] = json!(format!("c{index}"));
+            value["approval_request_id"] = json!(format!("req{index}"));
+            value["reviewer"] = json!("model");
+            value["status"] = json!(status);
+            record_approval_assessment("r", &value).unwrap_or_else(|error| {
+                panic!("{status} must be a valid automatic assessment: {error}")
+            });
+            assert_eq!(
+                super::super::get_approval_request(&format!("req{index}"))
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                "cancelled",
+                "{status} is a cancellation, not a rejection"
+            );
+        }
+    }
+
+    /// The projection is keyed by request id *and* owner: a request owned by a
+    /// different run (or a human reviewer) must be refused rather than adopted,
+    /// or a replayed assessment could rewrite another run's approval.
+    #[test]
+    fn an_assessment_cannot_adopt_another_runs_request() {
+        let (_home, conn) = guarded_conn("auto_assessments_owner");
+        conn.execute_batch("INSERT INTO workspaces(id,name,kind,path,created_at,updated_at) VALUES('w','W','temporary','fixture',1,1); INSERT INTO threads(id,workspace_id,mode,title,created_at,updated_at) VALUES('t','w','chat','T',1,1); INSERT INTO runs(id,thread_id,status,created_at,updated_at) VALUES('r','t','running',1,1); INSERT INTO runs(id,thread_id,status,created_at,updated_at) VALUES('other','t','running',1,1);").unwrap();
+        conn.execute(
+            "INSERT INTO approval_requests (id,thread_id,run_id,tool_call_id,kind,status,title,reviewer,created_at,updated_at) VALUES ('req','t','other','tool','automatic','pending','T','model',1,1)",
+            [],
+        )
+        .unwrap();
+
+        let value = json!({
+            "assessment_id": "a",
+            "approval_request_id": "req",
+            "tool_call_id": "tool",
+            "status": "approved",
+            "reviewer": "model",
+            "effective": {"risk": "low"},
+        });
+        let error = record_approval_assessment("r", &value).unwrap_err();
+        assert!(
+            error.to_string().contains("ownership mismatch"),
+            "a foreign request must be refused: {error}"
+        );
+        assert!(list_approval_assessments("r").unwrap().is_empty());
+    }
 }

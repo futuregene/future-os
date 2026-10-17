@@ -499,4 +499,36 @@ mod tests {
         assert!(b.run_snapshot("r").is_err());
         assert!(b.run_snapshot("").is_err());
     }
+
+    /// Events the strip cannot read are passed through untouched: an unreadable
+    /// `tool_start` is not evidence of duplicated arguments, a start without a
+    /// tool identity names no stream to de-duplicate, and an unreadable
+    /// fragment must never contribute to reconstructing one.
+    #[test]
+    fn unreadable_events_survive_and_never_count_as_duplicates() {
+        let mut events = tool_call_events("a", "{\"path\":\"/tmp\"}", 100);
+        let mut unreadable_start = event("tool_start", 500, json!({}));
+        unreadable_start.data = "{not json".to_string();
+        let mut unreadable_delta = event("tool_delta", 501, json!({}));
+        unreadable_delta.data = "{not json".to_string();
+        events.push(unreadable_start);
+        events.push(event("tool_start", 502, json!({"tool_name": "shell"})));
+        events.push(unreadable_delta);
+
+        let stripped = strip_repeated_tool_arguments(events.clone());
+
+        let unreadable = stripped
+            .iter()
+            .filter(|event| event.data == "{not json")
+            .count();
+        assert_eq!(unreadable, 2, "unreadable events are preserved verbatim");
+        let deltas = stripped
+            .iter()
+            .filter(|event| event.event_type == "tool_delta")
+            .count();
+        assert_eq!(
+            deltas, 1,
+            "only the unreadable fragment remains: the readable duplicates were removed"
+        );
+    }
 }

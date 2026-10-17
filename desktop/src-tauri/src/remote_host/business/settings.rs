@@ -376,10 +376,15 @@ mod tests {
             ensure_mock_agent, mock_agent_lock, HomeGuard, RecordingSink,
         };
 
+        // Order matters, and this is the order: `mock_agent_lock()` before the
+        // HOME guard. Both locks are process-global, and the reverse order is a
+        // deadlock against every test that takes them the other way round
+        // (`commands::bridge_tests::active_bridge` does) - see
+        // `remote::test_support::tests::no_body_takes_the_home_guard_before_the_mock_lock`.
+        let _lock = mock_agent_lock();
         // A fresh HOME with no store: every `crate::store::` read fails, which
         // is the state the phone can reach before the desktop's store is ready.
         let _home = HomeGuard::new("business-settings-unreadable");
-        let _lock = mock_agent_lock();
         ensure_mock_agent();
 
         for cmd_type in ["skill_reco_today", "list_models"] {
@@ -413,9 +418,10 @@ mod tests {
         use crate::remote::test_support::{
             ensure_mock_agent, init_store, mock_agent_lock, HomeGuard, RecordingSink,
         };
+        // MOCK before HOME, as above and for the same reason.
+        let _lock = mock_agent_lock();
         let _home = HomeGuard::new("business-settings-no-models");
         init_store();
-        let _lock = mock_agent_lock();
         let agent = ensure_mock_agent();
         agent.clear_scripts();
         agent.script("list_models", true, json!({ "builtinProviders": {} }), "");

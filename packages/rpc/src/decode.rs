@@ -1066,6 +1066,53 @@ mod tests {
         })
     }
 
+    /// A fragmented page must survive the whole typed path: JSON → typed
+    /// `payload` (encode) → typed decode, plus the legacy JSON view every
+    /// unported consumer still reads. A dropped fragment silently truncates an
+    /// oversized entry, so each of its six fields is pinned individually.
+    #[test]
+    fn a_fragmented_session_entries_page_round_trips_through_the_typed_wire_form() {
+        let page = json!({
+            "entries": [{"id": "large", "kind": "message", "role": "user", "createdAtMs": 1, "blocks": []}],
+            "hasMore": true,
+            "nextOffset": 7,
+            "fragment": {
+                "entryId": "large",
+                "ordinal": 0,
+                "offset": 3,
+                "totalBytes": 40,
+                "json": "{\"id\":\"large\"}",
+                "sha256": "ab"
+            }
+        });
+        let payload =
+            encode::response_payload("get_session_entries", &page).expect("typed payload");
+        let resp = resp_with_payload(payload.kind.expect("kind"));
+
+        let decoded = decode_session_entries_page(&resp).expect("typed decode");
+        let fragment = decoded.fragment.expect("the fragment must survive");
+        assert_eq!(fragment.entry_id, "large");
+        assert_eq!(fragment.ordinal, 0);
+        assert_eq!(fragment.offset, 3);
+        assert_eq!(fragment.total_bytes, 40);
+        assert_eq!(fragment.json, "{\"id\":\"large\"}");
+        assert_eq!(fragment.sha256, "ab");
+        assert!(decoded.has_more);
+        assert_eq!(decoded.next_offset, 7);
+        assert_eq!(decoded.entries.len(), 1);
+        assert_eq!(decoded.entries[0].id, "large");
+
+        let value = response_data(&resp);
+        assert_eq!(value["fragment"]["entryId"], json!("large"));
+        assert_eq!(value["fragment"]["ordinal"], json!(0));
+        assert_eq!(value["fragment"]["offset"], json!(3));
+        assert_eq!(value["fragment"]["totalBytes"], json!(40));
+        assert_eq!(value["fragment"]["json"], json!("{\"id\":\"large\"}"));
+        assert_eq!(value["fragment"]["sha256"], json!("ab"));
+        assert_eq!(value["hasMore"], json!(true));
+        assert_eq!(value["nextOffset"], json!(7));
+    }
+
     #[test]
     fn response_data_str_serializes_non_null_payloads() {
         let resp = resp_with_data(r#"{"a":1}"#);

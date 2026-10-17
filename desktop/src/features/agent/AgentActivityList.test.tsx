@@ -387,6 +387,50 @@ it("offers no reveal for a call it cannot address", async () => {
   expect(container.textContent).toBe("Ran a command");
 });
 
+/**
+ * A command that arrives after the burst's own set of calls changed is dropped.
+ *
+ * The effect is keyed by the *set* of calls this page did not carry, and that set
+ * can change while an answer is still out — a burst that grew, or a
+ * re-projection that added a call. The superseded answer must not land: it
+ * replaces the whole map, so writing it would put a command on a row the current
+ * set no longer asks about (and drop whatever the current ask had already
+ * resolved).
+ */
+it("drops a burst's command that arrives after its set of calls changed", async () => {
+  const pending: Array<(value: string | null) => void> = [];
+  const resolveTarget = () => new Promise<string | null>((resolve) => {
+    pending.push(resolve);
+  });
+  const child = (id: string) => item({ id, kind: "shell", runId: "r1", toolCallId: id });
+  const burst = (children: AgentActivityItem[], count: number) =>
+    item({ children, count, id: "g1", kind: "shell", status: "completed" });
+
+  render(<AgentActivityLine item={burst([child("c1")], 1)} resolveTarget={resolveTarget} runId="r1" />);
+  await clickButton();
+  expect(pending).toHaveLength(1);
+
+  // The burst grows while that first answer is still in flight.
+  render(<AgentActivityLine item={burst([child("c1"), child("c2")], 2)} resolveTarget={resolveTarget} runId="r1" />);
+  expect(pending).toHaveLength(3);
+
+  // The superseded answer lands first: it must not reach either row.
+  await act(async () => {
+    pending[0]!("stale-command");
+    await Promise.resolve();
+  });
+  expect(container.textContent).not.toContain("stale-command");
+
+  // The current ask still lands.
+  await act(async () => {
+    pending[1]!("npm test");
+    pending[2]!("Rscript x.R");
+    await Promise.resolve();
+  });
+  expect(container.textContent).toContain("npm test");
+  expect(container.textContent).toContain("Rscript x.R");
+});
+
 /** An expanded burst reads the commands it stands for, all at once. */
 it("reads an expanded burst's commands in one go", async () => {
   const asked: { runId: string; toolCallId: string }[] = [];

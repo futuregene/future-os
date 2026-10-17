@@ -278,6 +278,22 @@ fn agent_default_ipc_shuts_down_gracefully_and_releases_its_endpoint() {
     // returned after the drain.
     assert!(log.contains("Profile timer expired"), "{log}");
     assert!(log.contains("Profile timer completed"), "{log}");
+    // `--profile-seconds 0` only stays deterministic because startup admits the
+    // listener (and logs the bind) before the timer is spawned. Pin that order
+    // rather than relying on which line won a race: if a future change arms the
+    // timer before the listener is ready, the timer can shut the process down
+    // with no bind line and this test would otherwise fail intermittently with a
+    // "must be local IPC" panic that reads like a transport regression.
+    let bind_at = log
+        .find("gRPC server listening on local IPC")
+        .expect("the bind line is present");
+    let timer_at = log
+        .find("Profile timer expired")
+        .expect("the timer-expired line is present");
+    assert!(
+        bind_at < timer_at,
+        "the listener must be admitted before the profile timer starts:\n{log}"
+    );
     // A graceful exit runs the drop guards: the advisory metadata file is gone,
     // so no later instance is told a dead process still owns the lock.
     assert!(
@@ -342,12 +358,29 @@ fn agent_starts_serves_and_shuts_down_via_profile_timer() {
         .env("USERPROFILE", home.path())
         .output()
         .expect("spawn future-agent");
-    assert!(
-        output.status.success(),
-        "agent exited with {:?}\nstdout: {}\nstderr: {}",
-        output.status.code(),
+    let log = format!(
+        "{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.status.success(),
+        "agent exited with {:?}\n{log}",
+        output.status.code()
+    );
+    // Same ordering contract as the default-IPC test: `--profile-seconds 0` is
+    // only safe because the listener is admitted (and logged) before the timer
+    // is spawned. `Some(1)` with a completed shutdown sequence was this test's
+    // recorded failure signature when the timer could still win.
+    let bind_at = log
+        .find("gRPC server listening on 127.0.0.1:")
+        .unwrap_or_else(|| panic!("the TCP bind line is present:\n{log}"));
+    let timer_at = log
+        .find("Profile timer expired")
+        .unwrap_or_else(|| panic!("the timer-expired line is present:\n{log}"));
+    assert!(
+        bind_at < timer_at,
+        "the listener must be admitted before the profile timer starts:\n{log}"
     );
     // The flamegraph was written on shutdown. Windows has no built-in CPU
     // profiling (the agent logs that and still exits 0), so the file is only

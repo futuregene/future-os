@@ -825,3 +825,160 @@ pub fn reconcile_thread_workspace(session_id: &str, new_cwd: &str) -> Result<(),
         _ => Ok(()),
     }
 }
+
+#[cfg(test)]
+mod settled_run_tests {
+    use super::super::test_support::{
+        break_home, mock_agent, restore_home, seed_run, seed_thread, seed_workspace, Reply,
+        TestHome,
+    };
+    use super::*;
+    use crate::store;
+
+    /// Seed a thread with an Agent session and one run the desktop settled in an
+    /// unverified shape — the only rows the repair pass considers.
+    fn settled_failure(tag: &str, session: &str) -> (TestHome, crate::store::ThreadRecord, String) {
+        let home = TestHome::new(tag);
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some(session));
+        let run = seed_run(&thread.id);
+        let targeted = store::update_run_status_if_active(store::UpdateRunStatusInput {
+            run_id: run.id.clone(),
+            status: "failed".to_string(),
+            error_message: Some("stream ended before the answer".to_string()),
+            error_type: None,
+        })
+        .expect("settle the row");
+        assert!(
+            targeted,
+            "the seeded run must be running before it is settled"
+        );
+        (home, thread, run.id)
+    }
+
+    /// A store that cannot be opened is not a repair: the pass returns at once
+    /// (its candidate query is the first thing it asks for) so the startup path
+    /// never fails over the watchdog.
+    #[tokio::test]
+    async fn the_watchdog_returns_when_its_candidate_query_fails() {
+        let _home = TestHome::new("reconcile-settled-broken-home");
+        let _mock = mock_agent();
+        let previous = break_home();
+        let mut verified = HashSet::new();
+        reconcile_settled_runs(store::now_millis(), &mut verified).await;
+        restore_home(previous);
+        assert!(
+            verified.is_empty(),
+            "nothing may be memoized from a query that never ran"
+        );
+    }
+
+    /// The Agent answering `success = false` means its ledger says nothing about
+    /// the row: the pass reports `Unknown`, leaves the row alone, and does *not*
+    /// memoize it as verified — the next tick asks again.
+    #[tokio::test]
+    async fn an_unanswerable_ledger_read_leaves_the_row_for_the_next_tick() {
+        let (_home, _thread, run_id) = settled_failure("reconcile-settled-unknown", "sess-unknown");
+        let mock = mock_agent();
+        // A *reply-level* failure (`success = false`), which is the shape the
+        // Agent uses when it cannot resolve the session — not a data payload
+        // carrying a `success` key, which arrives as a successful reply.
+        mock.push(
+            &format!("get_state#{run_id}"),
+            Reply::Reject("session is not mine".into()),
+        );
+
+        let mut verified = HashSet::new();
+        reconcile_settled_runs(store::now_millis(), &mut verified).await;
+
+        assert!(
+            verified.is_empty(),
+            "a non-answer must not be memoized: {verified:?}"
+        );
+        assert_eq!(
+            store::get_run(&run_id).expect("get").expect("some").status,
+            "failed",
+            "the row is untouched by a ledger read that failed"
+        );
+    }
+
+    /// Two writers can move a row between the ledger read and the repair write.
+    /// Both CAS writes then match nothing, and the pass records the row as
+    /// `Verified` (its state was someone else's to settle) rather than erroring.
+    #[tokio::test]
+    async fn a_row_moved_by_another_writer_is_read_as_verified() {
+        let home = TestHome::new("reconcile-settled-moved");
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-moved"));
+        let run = seed_run(&thread.id);
+        // The row is a live run: it is not in an unverified shape, so neither CAS
+        // can touch it — exactly the state a concurrent pipeline settle leaves.
+        let candidate = crate::store::UnverifiedRun {
+            run_id: run.id.clone(),
+            thread_id: thread.id.clone(),
+            session_id: "sess-moved".to_string(),
+            started_at: run.started_at,
+        };
+        let mock = mock_agent();
+
+        // The Agent says the run is alive, so the revive path is the one taken.
+        mock.push_run_state(&run.id, serde_json::json!({"activeRun": {"runId": run.id}}));
+        let outcome = reconcile_settled_run_once(&candidate, &run.id)
+            .await
+            .expect("a moved row is not an error");
+        assert!(
+            matches!(outcome, SettledRunOutcome::Verified),
+            "an unrevivable row is verified, not repaired"
+        );
+        assert_eq!(
+            store::get_run(&run.id).expect("get").expect("some").status,
+            "running",
+            "the other writer's state stands"
+        );
+
+        // The Agent says it completed: the settle CAS also matches nothing.
+        mock.push_run_state(
+            &run.id,
+            serde_json::json!({"requestedRun": {"runId": run.id, "status": "completed",
+                "durationMs": 1500}}),
+        );
+        let outcome = reconcile_settled_run_once(&candidate, &run.id)
+            .await
+            .expect("a moved row is not an error");
+        assert!(
+            matches!(outcome, SettledRunOutcome::Verified),
+            "a settle that changed no row is verified, not repaired"
+        );
+        assert_eq!(
+            store::get_run(&run.id).expect("get").expect("some").status,
+            "running",
+            "a row another writer owns is never rewritten from this pass"
+        );
+    }
+
+    /// The repair side of the same pass, for contrast: a row that *is* still
+    /// unverified is settled from the Agent's ledger, with the Agent's duration
+    /// anchored on the row's own start time.
+    #[tokio::test]
+    async fn an_unverified_row_is_settled_from_the_agents_ledger() {
+        let (_home, _thread, run_id) = settled_failure("reconcile-settled-repair", "sess-repair");
+        let mock = mock_agent();
+        mock.push_run_state(
+            &run_id,
+            serde_json::json!({"requestedRun": {"runId": run_id, "status": "completed",
+                "durationMs": 1500}}),
+        );
+
+        let mut verified = HashSet::new();
+        reconcile_settled_runs(store::now_millis(), &mut verified).await;
+
+        let row = store::get_run(&run_id).expect("get").expect("some");
+        assert_eq!(row.status, "completed", "{row:?}");
+        let started = row.started_at.expect("the seeded row has a start");
+        assert_eq!(
+            row.ended_at,
+            Some(started + 1500),
+            "the ledger's duration is anchored on the row's start"
+        );
+    }
+}

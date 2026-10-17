@@ -89,3 +89,39 @@ it("bounds the initial request with the compaction timeout", async () => {
     hook.unmount();
   }
 });
+
+/**
+ * An acknowledgement that lands after the request was cancelled is discarded.
+ *
+ * The host can accept the compaction after the view went away (the reader
+ * switched conversations, which unmounts this hook and cancels through
+ * `cancelRef`). The `.then` must not adopt that result: the throw keeps the
+ * outcome an `AbortError`, so nothing is toasted at a view that is gone and no
+ * timer is left behind.
+ *
+ * Note on what this pins: `cancel()` rejects `interrupted` synchronously, so the
+ * race has already settled by the time the late acknowledgement arrives — the
+ * fence's own removal is therefore not separately observable, and the assertions
+ * below are about the ordering (cancelled-then-acknowledged is discarded, not
+ * toasted) rather than about the fence line alone.
+ */
+it("discards an acknowledgement that arrives after the request was cancelled", async () => {
+  let acknowledge!: (result: CompactContextResult) => void;
+  compact.mockReturnValue(new Promise((resolve) => {
+    acknowledge = resolve;
+  }));
+  const toast = vi.fn();
+  const off = onFutureEvent("toast", toast);
+  const hook = renderHook(() => useThreadCompaction(thread));
+  try {
+    const pending = hook.current();
+    hook.unmount();
+    acknowledge({ operationId: "op1", accepted: true });
+    await pending;
+    expect(toast).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  }
+  finally {
+    off();
+  }
+});

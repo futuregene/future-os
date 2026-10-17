@@ -1417,6 +1417,34 @@ mod tests {
             ),
             "failed"
         );
+
+        // An agent that ships the projected `shell_result` fact wins over every
+        // textual fallback: the structured verdict is the authoritative one, in
+        // both directions.
+        let shell_result = |is_error: bool| {
+            serde_json::json!({
+                "shell_result": {
+                    "command": "cargo test",
+                    "cwd": "/ws",
+                    "duration_ms": 12,
+                    "status": "exited",
+                    "exit_code": 1,
+                    "is_soft_fail": false,
+                    "is_error": is_error,
+                    "attempts": [],
+                    "approval": null,
+                    "note": null
+                },
+                // A contradictory footer must not override the structured fact.
+                "text": "done\n[exit: 0]"
+            })
+            .to_string()
+        };
+        assert_eq!(tool_end_status(Some(&shell_result(true)), None), "failed");
+        assert_eq!(
+            tool_end_status(Some(&shell_result(false)), None),
+            "completed"
+        );
     }
 
     /// Seed the process-global event buffer directly (no disk writes) with

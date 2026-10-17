@@ -292,3 +292,31 @@ fn delete_without_run_data_is_ok() {
     manager.delete("del").unwrap();
     assert!(!manager.contains("del").unwrap());
 }
+
+/// Opening storage for the first time is the slow path on shared network
+/// storage, so it announces the database it is opening. The progress line is
+/// only evaluated when a subscriber has the level enabled, which is what the
+/// CLI and the desktop app do.
+#[test]
+fn opening_storage_reports_the_database_path() {
+    let _sink = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_writer(std::io::sink)
+            .with_ansi(false)
+            .finish(),
+    );
+    let dir = std::env::temp_dir().join(format!(
+        "future_test_storage_open_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let manager = Manager::new(dir.clone());
+    assert!(!manager.database_path().exists());
+    let _store = manager.storage().unwrap();
+    assert!(
+        manager.database_path().exists(),
+        "the first read must have opened the database"
+    );
+}

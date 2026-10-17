@@ -87,6 +87,13 @@ fn event_batch_writer_refuses_appends_when_unhealthy_or_when_its_worker_is_gone(
         health.error().is_some(),
         "losing the worker must mark the journal unhealthy"
     );
+
+    // Retirement is idempotent: a shutdown *after* the worker is already gone
+    // succeeds, rather than reporting a failure the caller cannot act on. This
+    // is the path a recovered or already-retired writer takes at drain time.
+    writer
+        .shutdown()
+        .expect("shutting down a writer whose worker is gone must be a no-op");
 }
 
 /// Once a batch commit has failed, the worker itself must refuse later
@@ -163,6 +170,66 @@ fn event_batch_writer_refuses_durable_writes_after_a_failed_batch() {
 /// with an empty batch, and parked in `recv_timeout` with a batch still
 /// pending. The second must drop that batch instead of committing it late,
 /// and both must leave the writer failing closed rather than hanging.
+/// The narrowest window in the batch writer, and the only one that needs a
+/// hand-made channel: the append was **accepted** (`send` returned), the caller
+/// is blocked waiting for its acknowledgement, and the receiving end goes away
+/// before that acknowledgement can be sent. Nothing in the queue is lost — the
+/// queued `Append` carries the reply sender, so dropping the queue drops it.
+///
+/// Why the receiving end must be held by the test: with a live worker, both of
+/// the ways it can stop — the `Shutdown` handshake and `Drop` — flush pending
+/// events and answer them first, so a reply is never abandoned, and every
+/// remaining append path fails at the *send* (the arm covered by
+/// `event_batch_writer_refuses_appends_when_unhealthy_or_when_its_worker_is_gone`).
+/// Reaching this arm therefore needs a worker that dies with an accepted command
+/// in hand, which is exactly what holding and dropping the queue models.
+#[test]
+fn an_accepted_durable_append_reports_unavailable_when_the_worker_dies_before_answering() {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(4);
+    let health = std::sync::Arc::new(EventJournalHealth::default());
+    let writer = std::sync::Arc::new(EventBatchWriter {
+        sender,
+        thread: None,
+        health: health.clone(),
+        commits: Default::default(),
+    });
+
+    let copy = writer.clone();
+    let (done, completed) = std::sync::mpsc::channel();
+    let appender = std::thread::spawn(move || {
+        let _ = done.send(copy.append(serde_json::json!({"n": 1}), true));
+    });
+
+    // Receiving the command proves the append was accepted: the caller has passed
+    // the `send` and is now waiting on the reply channel. Dropping the command and
+    // the queue is what a worker dying with it in hand does — the reply sender
+    // lives inside the command, so its acknowledgement can never be sent.
+    let accepted = receiver.recv().expect("the append must be accepted");
+    assert!(
+        matches!(accepted, EventWriteCommand::Append { .. }),
+        "a durable append queues an Append command"
+    );
+    drop(accepted);
+    drop(receiver);
+
+    let outcome = completed
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("the appender must not block forever");
+    appender.join().unwrap();
+    assert!(
+        matches!(
+            outcome,
+            Err(AppendFailure::Unavailable(ref message))
+                if message.contains("event persistence worker is unavailable")
+        ),
+        "an accepted append whose worker died must be reported as unavailable: {outcome:?}"
+    );
+    assert!(
+        health.error().is_none(),
+        "losing the reply is not a storage failure, so it must not mark the journal unhealthy"
+    );
+}
+
 #[test]
 fn event_batch_worker_exits_when_its_last_sender_disappears() {
     let event = serde_json::to_value(SseEvent::new("agent_end", serde_json::json!({}))).unwrap();
@@ -295,4 +362,79 @@ fn asynchronous_delta_failure_interrupts_the_run() {
     }
     assert!(b.persistence_error().is_some());
     assert!(interrupt.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+/// The batch-retry loop's two remaining arms, driven by one carefully shaped
+/// batch: a first event this journal *refuses* (so the whole batch fails as a
+/// refusal and the writer retries event by event), and later events whose single
+/// append hits a **storage** problem instead.
+///
+/// Dropping `storage_meta` is what makes that split possible: the refusal is
+/// decided from the event's own shape before any storage is touched, while the
+/// insert needs `storage_meta` for its sequence. So the batch fails as a refusal
+/// (first event), and the retry of the *valid* events fails as storage — which is
+/// the distinction the writer must keep, because one is permanent for that event
+/// and the other is not.
+#[test]
+fn a_refused_batch_retries_singly_and_separates_refusal_from_storage_failure() {
+    let directory = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(directory.path().to_path_buf());
+    let store = manager.storage().unwrap().clone();
+    store.bind_events("session-mixed-batch").unwrap();
+    let health = std::sync::Arc::new(EventJournalHealth::default());
+    let writer = EventBatchWriter::new(
+        store.clone(),
+        "session-mixed-batch".to_string(),
+        health.clone(),
+    )
+    .unwrap();
+
+    // An event the journal refuses on its own shape: no epoch to key it by.
+    let refused = serde_json::json!({
+        "event_type": "agent_end", "run_id": "run-1", "idx": 0, "session_id": "session-mixed-batch",
+    });
+    let valid_a = serde_json::json!({
+        "event_type": "agent_end", "run_id": "run-1", "epoch": 0, "idx": 1,
+        "session_id": "session-mixed-batch",
+    });
+    let valid_b = serde_json::json!({
+        "event_type": "agent_end", "run_id": "run-1", "epoch": 0, "idx": 2,
+        "session_id": "session-mixed-batch",
+    });
+
+    // The insert cannot run: the sequence source is gone. The refusal above is
+    // decided before this table is consulted, which is what splits the two.
+    manager.test_execute("DROP TABLE storage_meta");
+
+    // Queue the refused event and one valid event without a reply, then make the
+    // next append durable so the batch is committed (and fails) right away.
+    writer.append(refused, false).unwrap();
+    writer.append(valid_b, false).unwrap();
+    let error = writer
+        .append(valid_a.clone(), true)
+        .expect_err("the batch cannot be committed");
+    // The durable caller is told the storage problem, not the refusal: its own
+    // event was fine.
+    assert!(
+        matches!(error, AppendFailure::Unavailable(_)),
+        "a durable append whose own event is valid must hear the storage failure: {error:?}"
+    );
+    assert!(
+        error.to_string().contains("event batch commit failed"),
+        "{error}"
+    );
+    assert!(
+        health
+            .error()
+            .is_some_and(|error| error.contains("event batch commit failed")),
+        "the journal is now unhealthy, with the refusing batch's error: {:?}",
+        health.error()
+    );
+    // Nothing landed, and the batch is still pending behind the failure.
+    assert_eq!(store.event_cursors("session-mixed-batch").unwrap().1, 0);
+
+    // The event with no reply is quietly requeued for the next attempt rather
+    // than dropped, so a later healthy commit can still deliver it.
+    let error = writer.append(valid_a, true).expect_err("still unavailable");
+    assert!(matches!(error, AppendFailure::Unavailable(_)), "{error:?}");
 }

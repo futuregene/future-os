@@ -3395,6 +3395,46 @@ mod tests {
         arrived.then_some(seen)
     }
 
+    /// A subscription that dies before the awaited event (`probe`'s
+    /// precondition): the drain must answer `None` rather than wait out its
+    /// timeout, and the events it *did* carry stay visible to the caller.
+    #[tokio::test]
+    async fn recv_until_within_reports_a_channel_that_closed_first() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<AgentEvent>();
+        tx.send(AgentEvent {
+            r#type: "ping".to_string(),
+            ..Default::default()
+        })
+        .expect("the receiver is still open");
+        drop(tx);
+        assert!(
+            recv_until_within(&mut rx, "pong", Duration::from_millis(200))
+                .await
+                .is_none(),
+            "a closed channel answers None, not the events it happened to carry"
+        );
+    }
+
+    /// [`recv_until`] fails loudly when the event never arrives instead of
+    /// hanging the suite (a closed channel ends the drain at once, so the ten
+    /// second budget is never waited out).
+    #[test]
+    fn recv_until_fails_loudly_for_an_event_that_never_arrives() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel::<AgentEvent>();
+        drop(tx);
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runtime.block_on(recv_until(&mut rx, "pong"))
+        }));
+        assert!(
+            panicked.is_err(),
+            "an event that never arrives must fail the test that waited for it"
+        );
+    }
+
     /// How long one attach probe may take before it counts as lost. The probe
     /// is an in-process gRPC round trip (milliseconds), so this is generous
     /// headroom for an instrumented, fully parallel test run.
@@ -3733,6 +3773,61 @@ mod tests {
         client.disconnect();
     }
 
+    /// The reconnect poll with the agent gone for good: every probe that finds
+    /// nothing grows the backoff, so a dead agent is not hammered with
+    /// connections, and `disconnect` stops the poll where it stands.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_reconnect_poll_grows_the_backoff_while_the_agent_stays_down() {
+        let source = EventSource::default();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let incoming = TcpIncoming::from_listener(listener, true, None).unwrap();
+        let server = tokio::spawn(
+            Server::builder()
+                .add_service(FutureAgentServer::new(EventfulMock {
+                    source: source.clone(),
+                }))
+                .serve_with_incoming(incoming),
+        );
+        let addr = format!("127.0.0.1:{}", addr.port());
+
+        let (client, mut events, mut conn) = GrpcClient::new(&addr);
+        attach(&client, &source, &mut events).await;
+        wait_connected(&mut conn).await;
+        let base = client.inner.backoff_ms.load(Ordering::SeqCst);
+
+        // The agent dies while the subscription is live: the stream ends, the
+        // client goes down, and the poll starts probing an address nothing
+        // listens on any more. Losing the stream grows the backoff once; the
+        // poll's *own* growth (a probe that finds no agent) is the second one.
+        server.abort();
+        let first = wait_for_backoff_above(&client, base).await;
+        assert!(
+            first.is_some(),
+            "losing the stream must grow the backoff past {base} ms"
+        );
+        let second = wait_for_backoff_above(&client, first.unwrap()).await;
+        assert!(
+            second.is_some(),
+            "a probe that finds no agent must grow the backoff again"
+        );
+        assert!(!client.is_connected(), "the agent is gone");
+        // Stopping the poll is the flag check it performs between attempts.
+        client.disconnect();
+    }
+
+    /// Wait (bounded) for the reconnect backoff to grow past `above`.
+    async fn wait_for_backoff_above(client: &GrpcClient, above: u64) -> Option<u64> {
+        for _ in 0..40 {
+            let current = client.inner.backoff_ms.load(Ordering::SeqCst);
+            if current > above {
+                return Some(current);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        None
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn subscribe_failure_modes() {
         // Bad endpoint (unparseable addr).
@@ -3842,6 +3937,28 @@ mod tests {
         let blackhole = format!("127.0.0.1:{}", blackhole_addr.port());
         assert!(matches!(
             probe_agent(&blackhole).await,
+            AgentReachability::Uncertain
+        ));
+
+        // Uncertain again, from the other direction: a peer that accepts and
+        // then hangs up. The transport error carries a kind that is neither
+        // "not found" nor "connection refused", so it must not be classified
+        // as gone — that is what would tear down a working stream over a
+        // transient reset.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let reset_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (sock, _) = listener
+                    .accept()
+                    .await
+                    .expect("the listener outlives the test runtime");
+                drop(sock);
+            }
+        });
+        let reset = format!("127.0.0.1:{}", reset_addr.port());
+        assert!(matches!(
+            probe_agent(&reset).await,
             AgentReachability::Uncertain
         ));
     }
@@ -4114,6 +4231,122 @@ mod tests {
         assert_eq!(
             last_request(&requests, "suggest_skill").suggest_query,
             "中文 query"
+        );
+    }
+
+    /// `probe_agent`'s `_ => Uncertain` arm: a `Transport` failure the transport
+    /// layer cannot classify as "definitively gone". The two categories must
+    /// stay distinct — `Gone` tears a live subscription down, `Uncertain` keeps
+    /// polling — so an address a user can hand the TUI via `--grpc-addr` and
+    /// that no adapter can resolve must not read as "the agent died".
+    ///
+    /// The two asserted inputs do not depend on the host's resolver or routing:
+    /// an address that cannot even be parsed into a URI (`ConnectError.kind` is
+    /// `None`, because the failure never reaches an `io::Error`) and a closed
+    /// loopback port (`ConnectionRefused`). The same arm is what an unresolvable
+    /// name (`future-rev-probe.invalid:9`, 28 ms here) and a non-routable IPv6
+    /// address (`[2001:db8::1]:9`) take; both are resolver/routing dependent, so
+    /// they are documented rather than asserted.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn probe_agent_reports_an_unclassifiable_transport_failure_as_uncertain() {
+        let unparseable_address = probe_agent("bad addr with spaces").await;
+        assert!(
+            matches!(unparseable_address, AgentReachability::Uncertain),
+            "an address that cannot be parsed is not a definitively dead agent"
+        );
+        let closed_port = probe_agent("127.0.0.1:1").await;
+        assert!(
+            matches!(closed_port, AgentReachability::Gone),
+            "a refused loopback connection is a definitively dead agent"
+        );
+    }
+
+    /// The reconnect poll's loop-top stop check — the arm `disconnect()`'s
+    /// notification normally hides. `disconnect()` stores the flag **and** calls
+    /// `stop_notify.notify_waiters()`, and `notify_waiters` retains no permit for
+    /// a task that is not registered as a waiter, so the only way to observe this
+    /// check is a stop that sends no notification at all: the poll finds the flag
+    /// by coming round to its own loop top. (`subscribe_loop_top_stop_check` uses
+    /// the same construction for the subscribe loop.)
+    ///
+    /// Observable: the backoff freezes. A poll that kept probing would fail
+    /// against the aborted server at once and double the backoff again inside the
+    /// window below, since each iteration sleeps the *current* backoff (1 s, then
+    /// 2 s, then 4 s …) and the probe itself is instant.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_reconnect_poll_stops_at_its_loop_top_when_the_flag_is_set_alone() {
+        let source = EventSource::default();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bound = listener.local_addr().unwrap();
+        let incoming = TcpIncoming::from_listener(listener, true, None).unwrap();
+        let server = tokio::spawn(
+            Server::builder()
+                .add_service(FutureAgentServer::new(EventfulMock {
+                    source: source.clone(),
+                }))
+                .serve_with_incoming(incoming),
+        );
+        let addr = format!("127.0.0.1:{}", bound.port());
+        let (client, mut events, mut conn) = GrpcClient::new(&addr);
+        attach(&client, &source, &mut events).await;
+        wait_connected(&mut conn).await;
+        let base = client.inner.backoff_ms.load(Ordering::SeqCst);
+
+        // The agent dies while the subscription is live: the stream is lost, the
+        // backoff grows once, and the poll settles into its first backoff sleep.
+        server.abort();
+        let first = wait_for_backoff_above(&client, base).await;
+        assert!(
+            first.is_some(),
+            "losing the stream must grow the backoff past {base} ms"
+        );
+        let grown = first.unwrap();
+
+        // No notification: nothing wakes the poll, so only its loop top can see
+        // this stop.
+        client.inner.stop.store(true, Ordering::SeqCst);
+
+        // One delay later the poll is back at the loop top, one more it would
+        // have probed and grown again — so the value must be frozen from here on.
+        tokio::time::sleep(Duration::from_millis(grown + 1_000)).await;
+        let settled = client.inner.backoff_ms.load(Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(settled * 2 + 1_000)).await;
+        assert_eq!(
+            client.inner.backoff_ms.load(Ordering::SeqCst),
+            settled,
+            "the poll must have returned at its loop top instead of probing again"
+        );
+        assert!(!client.is_connected(), "the agent is gone");
+    }
+
+    /// `attach`'s own failure arm: with nothing serving the address, the helper
+    /// must exhaust its bounded attempts and fail the test rather than return
+    /// silently — a silent return would make a test that never attached look
+    /// green.
+    #[tokio::test(flavor = "multi_thread")]
+    #[should_panic(expected = "client never attached to a live event stream")]
+    async fn attach_fails_loudly_when_no_stream_ever_serves_it() {
+        let source = EventSource::default();
+        let (client, mut events, _conn) = GrpcClient::new("127.0.0.1:1");
+        attach(&client, &source, &mut events).await;
+    }
+
+    /// [`wait_for_backoff_above`]'s `None` arm: "the backoff never grew" is the
+    /// failure half of a helper added for the reconnect test, and a *caller* can
+    /// assert that contract — a threshold the backoff cannot reach returns `None`
+    /// after walking its whole bound.
+    #[tokio::test]
+    async fn wait_for_backoff_above_gives_up_at_a_bound_the_backoff_cannot_reach() {
+        let (client, _events, _conn) = GrpcClient::new("127.0.0.1:1");
+        let started = std::time::Instant::now();
+        assert!(
+            wait_for_backoff_above(&client, u64::MAX).await.is_none(),
+            "a threshold the backoff cannot reach must return None"
+        );
+        assert!(
+            started.elapsed() >= Duration::from_secs(3),
+            "the bound must have been walked, not skipped early: {:?}",
+            started.elapsed()
         );
     }
 }

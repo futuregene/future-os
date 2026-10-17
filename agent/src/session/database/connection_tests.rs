@@ -104,6 +104,44 @@ fn a_locked_writer_is_retried_on_the_same_connection_until_it_is_free() {
     assert_eq!(ids, ["waiter"]);
 }
 
+/// Falsification attempt for the idle-reclamation error arm, kept as the record
+/// of *why* that arm is unreachable here. `reclaim_space_when_idle` runs on the
+/// worker's own connection, so reaching its `Err` arm needs a live connection
+/// whose pragmas fail; damaging the file underneath it does not do that, because
+/// SQLite serves the cached page 1 to an already-open connection — `SELECT 1`
+/// never touches the file at all, and `freelist_count` on a truncated file still
+/// answers from the cache. Two damage routes were tried (truncate, and truncate
+/// with the WAL removed first); both leave the connection answering normally.
+#[test]
+fn a_replaced_database_file_is_invisible_to_an_already_open_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agent.db");
+    let db = Database::open(&path).unwrap();
+    db.call::<()>(|connection| {
+        connection.execute_batch("CREATE TABLE filler(id INTEGER PRIMARY KEY, body BLOB);")?;
+        connection.execute(
+            "INSERT INTO filler(id, body) VALUES (1, zeroblob(8192))",
+            [],
+        )?;
+        connection.execute("DELETE FROM filler", [])?;
+        Ok(())
+    })
+    .unwrap();
+
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    std::fs::write(&path, b"this is not a database").unwrap();
+
+    // The live connection still answers both, from its own cache.
+    let free: i64 = db
+        .call(|connection| {
+            Ok(connection.pragma_query_value(None, "freelist_count", |row| row.get(0))?)
+        })
+        .unwrap();
+    assert!(free >= 0, "the cached header still answers: {free}");
+    assert!(db.shutdown().is_ok(), "the worker still closes cleanly");
+}
+
 #[test]
 fn reclaim_returns_freed_pages_and_honours_both_budgets() {
     let dir = tempfile::tempdir().unwrap();

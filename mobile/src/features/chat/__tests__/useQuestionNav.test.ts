@@ -410,9 +410,6 @@ describe("useQuestionNav", () => {
   });
 
   test("a paged ↑ lands on the oldest turn the page prepended", async () => {
-    // A two-row page in conversation order, question then answer. Its *first*
-    // id is the oldest row: the host reverses its own descending scan before
-    // replying, so the page the reader gets is chronological.
     const olderItems = [
       { id: "older-q", kind: "message", role: "user", text: "…" },
       { id: "older-a", kind: "message", role: "assistant", text: "…" },
@@ -441,5 +438,84 @@ describe("useQuestionNav", () => {
       viewOffset: JUMP_VIEW_OFFSET,
       animated: false,
     });
+  });
+
+  test("a page that fails releases the reader's ↑ instead of wedging it", async () => {
+    const loadOlder = jest.fn(async (): Promise<false | string[]> => {
+      throw new Error("history_unavailable");
+    });
+    act(() => {
+      renderer!.update(createElement(Harness, { hasOlderHistory: true, loadOlder }));
+      result.current.onScroll(scrollEvent(600));
+    });
+    reportRows(3);
+
+    act(() => result.current.goToPrevious());
+    await act(async () => {});
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+
+    // The pull is not left in flight: the next press asks again rather than
+    // being swallowed by a flag nobody clears.
+    act(() => result.current.goToPrevious());
+    expect(loadOlder).toHaveBeenCalledTimes(2);
+  });
+
+  test("a landing outside the measured window is estimated, then re-issued while it settles", () => {
+    jest.useFakeTimers();
+    try {
+      act(() => result.current.onScroll(scrollEvent(600)));
+      reportRows(3);
+      act(() => result.current.goToNext());
+      const target = list.scrollToIndex.mock.calls.at(-1)![0] as { index: number };
+      expect(list.scrollToIndex).toHaveBeenCalledTimes(1);
+
+      // The list cannot scroll to a row it has not laid out, so it says so and
+      // the hook moves to where the average row height puts the target.
+      act(() => result.current.onScrollToIndexFailed({
+        index: target.index, averageItemLength: 120,
+      }));
+      expect(list.scrollToOffset).toHaveBeenCalledWith({ offset: 120 * target.index, animated: false });
+      // The row is still unmeasured, so the window in which its measurement is
+      // taken up restarts: one more landing pass, then no more.
+      act(() => { jest.advanceTimersByTime(320); });
+      const settleCalls = list.scrollToIndex.mock.calls.length;
+      expect(settleCalls).toBeGreaterThan(1);
+
+      // A failure for a row that is not the jump's target is not this jump's
+      // business: nothing moves and nothing is re-armed.
+      act(() => result.current.onScrollToIndexFailed({
+        index: target.index + 1, averageItemLength: 120,
+      }));
+      expect(list.scrollToIndex).toHaveBeenCalledTimes(settleCalls);
+      expect(list.scrollToOffset).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("an endless run of failed scrolls stops asking for more landings", () => {
+    jest.useFakeTimers();
+    try {
+      act(() => result.current.onScroll(scrollEvent(600)));
+      reportRows(3);
+      act(() => result.current.goToNext());
+      const target = list.scrollToIndex.mock.calls.at(-1)![0] as { index: number };
+
+      // A row that never measures (a very long reply) would otherwise re-issue
+      // forever; the attempts are capped and the walk gives up.
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        act(() => result.current.onScrollToIndexFailed({
+          index: target.index, averageItemLength: 120,
+        }));
+        act(() => { jest.advanceTimersByTime(320); });
+      }
+      const settled = list.scrollToIndex.mock.calls.length;
+      act(() => result.current.onScrollToIndexFailed({
+        index: target.index, averageItemLength: 120,
+      }));
+      expect(list.scrollToIndex).toHaveBeenCalledTimes(settled);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

@@ -166,6 +166,48 @@ mod tests {
         );
     }
 
+    /// The read-only projection the run detail view uses. It is a sync command
+    /// with a single `run_id` argument, so the only thing to prove is that it
+    /// forwards to the store and returns the recorded rows in order.
+    #[test]
+    fn list_approval_assessments_command_projects_the_recorded_rows() {
+        let (_home, thread) = seeded("cmd_approval_assessments");
+        with_approval(&thread, "run_assessed");
+
+        assert!(
+            list_approval_assessments("run_assessed".to_string())
+                .expect("empty projection")
+                .is_empty(),
+            "no assessment recorded yet"
+        );
+
+        crate::store::record_approval_assessment(
+            "run_assessed",
+            &serde_json::json!({
+                "assessment_id": "assessment_1",
+                "approval_request_id": "auto_run_assessed",
+                "tool_call_id": "tool_1",
+                "status": "approved",
+                "reviewer": "model",
+                "effective": { "risk": "low" },
+            }),
+        )
+        .expect("record the automatic review");
+
+        let rows = list_approval_assessments("run_assessed".to_string()).expect("projection");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "assessment_1");
+        assert_eq!(rows[0].run_id, "run_assessed");
+        assert_eq!(rows[0].tool_call_id, "tool_1");
+        assert_eq!(rows[0].status, "approved");
+        assert_eq!(rows[0].payload["effective"]["risk"], "low");
+
+        // Another run's assessments are not mixed in.
+        assert!(list_approval_assessments("run_someone_else".to_string())
+            .expect("projection")
+            .is_empty());
+    }
+
     #[test]
     fn list_approval_requests_returns_the_threads_pending_approval() {
         let (_home, thread) = seeded("cmd_approvals");

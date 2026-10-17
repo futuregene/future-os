@@ -17,6 +17,8 @@ vi.mock("../../integrations/tauri/invoke", () => ({
 
 const {
   abortRemoteRun,
+  connectRemotePeer,
+  disconnectRemotePeer,
   compactRemoteConversation,
   connectAllRemotePeers,
   continueRemoteRun,
@@ -33,7 +35,10 @@ const {
   listRemoteAvailableSkills,
   listRemoteInstalledSkills,
   listRemoteModels,
+  getRemotePromptReceipt,
   listRemotePeers,
+  pairRemotePeer,
+  previewRemoteFile,
   listRemoteSessionFiles,
   listRemoteWorkspaces,
   localizedSkill,
@@ -44,8 +49,10 @@ const {
   renameRemoteConversation,
   setRemoteConversationModel,
   setRemoteConversationThinkingLevel,
+  setRemotePeerLabel,
   setRemoteWorkspacePinned,
   uninstallRemoteSkill,
+  unpairRemotePeer,
   uploadRemoteFile,
 } = await import("./remotePeerClient");
 
@@ -1038,5 +1045,100 @@ describe("the connect-all pass", () => {
   it("reads an unanswered command as no hosts", async () => {
     invokeMock.mockResolvedValue(null);
     await expect(connectAllRemotePeers()).resolves.toEqual([]);
+  });
+});
+
+/**
+ * The pairing lifecycle: commands the user reaches from the machines screen
+ * rather than from a conversation.
+ *
+ * Each is a one-line passthrough, and that is exactly why the assertion is the
+ * command *name*: the backend dispatches on it, so a typo here is a button that
+ * silently does nothing (the invoke rejects, and the caller's catch shows a
+ * message about a command that does not exist). The id each one addresses is the
+ * second half: a machine is addressed by its `desktopId`, never by a name or a
+ * pair id.
+ */
+describe("remote machine commands", () => {
+  it("pairs from an invitation string", async () => {
+    await pairRemotePeer("invitation-blob");
+
+    const { args, command } = lastCall();
+    expect(command).toBe("remote_peer_pair");
+    expect(args).toEqual({ invitation: "invitation-blob" });
+  });
+
+  it("connects and disconnects by desktop id", async () => {
+    await connectRemotePeer("desktop_a");
+    expect(lastCall()).toEqual({ args: { desktopId: "desktop_a" }, command: "remote_peer_connect" });
+
+    await disconnectRemotePeer("desktop_a");
+    expect(lastCall()).toEqual({ args: { desktopId: "desktop_a" }, command: "remote_peer_disconnect" });
+  });
+
+  it("unpairs by desktop id and reports the host's own answer", async () => {
+    // The host answers with a message of its own (why it could not forget the
+    // machine, or nothing), so the helper forwards it rather than swallowing it.
+    invokeMock.mockResolvedValue("bridge still running");
+    await expect(unpairRemotePeer("desktop_a")).resolves.toBe("bridge still running");
+
+    expect(lastCall()).toEqual({ args: { desktopId: "desktop_a" }, command: "remote_peer_unpair" });
+  });
+
+  it("renames a machine, sending only the fields the caller set", async () => {
+    // A label patch is partial on purpose: sending `icon: undefined` would ask
+    // the host to clear it, which is not what "rename it" means.
+    await setRemotePeerLabel("desktop_a", { name: "Studio" });
+    expect(lastCall()).toEqual({
+      args: { desktopId: "desktop_a", name: "Studio" },
+      command: "remote_peer_set_label",
+    });
+
+    await setRemotePeerLabel("desktop_a", { icon: "laptop" });
+    expect(lastCall()).toEqual({
+      args: { desktopId: "desktop_a", icon: "laptop" },
+      command: "remote_peer_set_label",
+    });
+  });
+
+  it("fetches a preview into this app's own cache", async () => {
+    invokeMock.mockResolvedValue({ name: "shot.png", path: "/cache/shot.png" });
+    await expect(previewRemoteFile({
+      desktopId: "desktop_a",
+      name: "shot.png",
+      path: "/home/u/shot.png",
+      sessionId: "sess_1",
+    })).resolves.toEqual({ name: "shot.png", path: "/cache/shot.png" });
+
+    const { args, command } = lastCall();
+    expect(command).toBe("remote_peer_preview_file");
+    expect(args).toEqual({
+      desktopId: "desktop_a",
+      name: "shot.png",
+      path: "/home/u/shot.png",
+      sessionId: "sess_1",
+    });
+  });
+
+  /**
+   * A receipt is only usable when it names the conversation *and* the run.
+   *
+   * The caller uses it to decide "the host already accepted this, do not send it
+   * again". A receipt without a run id cannot say that — the prompt may have been
+   * accepted and the run already finished — so it is reported as no receipt, and
+   * a `threadId` the host omitted becomes the empty string rather than undefined,
+   * which is what the caller's own record shape expects.
+   */
+  it("reads a receipt only when it names a session and a run", async () => {
+    invokeMock.mockResolvedValue({ sessionId: "sess_1", runId: "run_1" });
+    await expect(getRemotePromptReceipt("desktop_a", "cmd_1")).resolves.toEqual({
+      sessionId: "sess_1",
+      runId: "run_1",
+      threadId: "",
+    });
+    expect(lastCall()).toEqual({
+      args: { desktopId: "desktop_a", command: { type: "get_prompt_receipt", promptId: "cmd_1" }, lane: "list" },
+      command: "remote_peer_request",
+    });
   });
 });

@@ -676,3 +676,74 @@ pub(crate) fn usable_chunk_size_for_test(chunk_bytes: u64) -> Result<usize, crat
 pub(crate) fn cancel_command_for_test(kind: TransferKind) -> &'static str {
     kind.cancel_command()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{retrying, CHUNK_ATTEMPTS};
+
+    /// A transport failure is exactly what the retry exists for.
+    ///
+    /// The step is a closure, so the decision can be driven without a broker:
+    /// one lost chunk costs one more attempt and the transfer still completes.
+    #[tokio::test]
+    async fn a_transport_failure_costs_one_retry_and_the_transfer_completes() {
+        let mut attempts = 0_usize;
+        let result = retrying(|| {
+            attempts += 1;
+            let attempt = attempts;
+            async move {
+                if attempt == 1 {
+                    // What a dropped NATS Core publish looks like: the chunk
+                    // never reached the host, so nothing was done and re-sending
+                    // it is idempotent.
+                    Err(crate::AppError::RemoteTransport(
+                        "chunk lost in flight".into(),
+                    ))
+                } else {
+                    Ok(attempt)
+                }
+            }
+        })
+        .await;
+
+        assert_eq!(result.expect("the second attempt succeeds"), 2);
+        assert_eq!(
+            attempts, 2,
+            "a retryable failure must cost exactly one retry"
+        );
+    }
+
+    /// A chunk the host never acknowledges fails the transfer, and it reports
+    /// the **first** error.
+    ///
+    /// A dropped connection makes every later attempt report "not connected",
+    /// and reporting that symptom instead of the timeout that caused it is what
+    /// sends a support session looking at pairing instead of the network — so
+    /// the first recorded error is the one that leaves the function, and the
+    /// loop's last line can never be reached without one.
+    #[tokio::test]
+    async fn a_chunk_that_never_lands_reports_its_first_failure() {
+        let mut attempts = 0_usize;
+        let error = retrying(|| {
+            attempts += 1;
+            let attempt = attempts;
+            async move {
+                Err::<(), _>(crate::AppError::RemoteTransport(format!(
+                    "attempt {attempt} timed out"
+                )))
+            }
+        })
+        .await
+        .expect_err("every attempt failed, so the chunk fails");
+
+        assert_eq!(
+            error.to_string(),
+            "attempt 1 timed out",
+            "the first error is the report"
+        );
+        assert_eq!(
+            attempts, CHUNK_ATTEMPTS,
+            "the whole attempt budget must be spent before the transfer gives up"
+        );
+    }
+}

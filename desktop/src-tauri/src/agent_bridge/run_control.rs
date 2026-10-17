@@ -944,6 +944,49 @@ mod tests {
         assert!(mock.requests_of("compact").is_empty());
     }
 
+    /// The guards of the auto-title pass, called directly: each one is a
+    /// precondition that must silently skip the *model call*, not fail the run.
+    #[tokio::test]
+    async fn title_first_turn_guards_skip_the_model_call() {
+        let home = TestHome::new("rc-title-guards");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+
+        // (1) The setting is off for this installation.
+        store::update_app_settings(store::UpdateAppSettingsInput {
+            auto_title_first_turn: Some(false),
+            ..Default::default()
+        })
+        .expect("opt out");
+        super::title_settled_thread_if_enabled("no-such-run")
+            .await
+            .expect("an opted-out installation does nothing");
+
+        // (2) The Run id is unknown (deleted between completion and this pass).
+        enable_title_generation("en");
+        super::title_settled_thread_if_enabled("no-such-run")
+            .await
+            .expect("an unknown run is a no-op");
+
+        // (3) The conversation has no Agent session bound yet.
+        let unbound = seed_thread(&workspace.id, None);
+        let unbound_run = seed_run(&unbound.id);
+        super::title_settled_thread_if_enabled(&unbound_run.id)
+            .await
+            .expect("an unbound conversation is a no-op");
+        assert!(
+            mock.requests_of("generate_session_title").is_empty(),
+            "no session means no model call"
+        );
+
+        // NOTE: two guards after this point are not exercised here, and cannot
+        // be: `super::get_session_entries` always builds `{ "entries": … }`
+        // itself, so the `entries` None-guard (189-190) defends against a shape
+        // its own helper cannot produce; and the missing-conversation guard
+        // (178-179) needs a Run row whose thread row is gone, which the
+        // `runs → threads` foreign key refuses to create.
+    }
+
     #[tokio::test]
     async fn a_conversation_that_arrived_with_a_name_is_not_titled() {
         let home = TestHome::new("rc-imported-name");
@@ -1075,6 +1118,144 @@ mod tests {
         }
         assert!(mock.requests_of("set_session_name").is_empty());
         assert!(mock.requests_of("compact").is_empty());
+    }
+
+    /// The last thing that can happen while the model works: the conversation
+    /// itself is deleted (or its row re-pointed at another Agent session). Then
+    /// the pending title must be dropped, not written onto a thread that no
+    /// longer exists — and the pass must not fail the completed run over it.
+    #[tokio::test]
+    async fn a_conversation_deleted_while_titling_drops_the_pending_title() {
+        let home = TestHome::new("rc-title-deleted-mid-flight");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        enable_title_generation("en");
+        // Must be TITLEABLE: `seed_thread` leaves `title_seed` unset, which since
+        // upstream's settled-thread work means "arrived with a name of its own and
+        // is never auto-titled" - the pass then bails before the model call and the
+        // window this test needs cannot open.
+        let thread = seed_titleable_thread(&workspace.id, "sess-deleted-mid-flight");
+        let run = seed_run(&thread.id);
+        mock.push_state_for_session(
+            "sess-deleted-mid-flight",
+            Reply::TypedData(get_state_payload("sess-deleted-mid-flight", false)),
+        );
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        mock.push(
+            "generate_session_title",
+            Reply::Deferred {
+                entered: entered_tx,
+                data: reply_rx,
+            },
+        );
+
+        let task = mark_run_completed_if_active(Some(&run.id)).expect("background task");
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        // The model is mid-flight: delete the conversation out from under it.
+        store::delete_thread(&thread.id).expect("delete the conversation");
+        reply_tx
+            .send(serde_json::json!({"title":"Stale title"}))
+            .unwrap();
+        task.await
+            .expect("a deleted conversation must not fail the run");
+
+        assert!(
+            store::get_thread(&thread.id).expect("get").is_none(),
+            "the deleted conversation stays deleted"
+        );
+        assert!(
+            mock.requests_of("set_session_name").is_empty(),
+            "no title may be pushed to the Agent for a conversation that is gone"
+        );
+    }
+
+    /// A second turn landing while the pass is between its two run-count reads
+    /// makes the row stop being "the first turn": the pending title must be
+    /// dropped rather than written onto a conversation that has moved on.
+    #[tokio::test]
+    async fn a_second_turn_during_the_history_read_drops_the_pending_title() {
+        let home = TestHome::new("rc-title-second-turn");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        enable_title_generation("en");
+        let thread = seed_titleable_thread(&workspace.id, "sess-second-turn");
+        let original_title = thread.title.clone();
+        let run = seed_run(&thread.id);
+        mock.push_state_for_session(
+            "sess-second-turn",
+            Reply::TypedData(get_state_payload("sess-second-turn", false)),
+        );
+        // Hold the MODEL CALL open: since the settled-thread rewrite the pass
+        // re-checks `has_active_run` after the suggestion comes back (the history
+        // read this fixture used to block is no longer part of the path), so the
+        // second turn has to land while the title is in flight.
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        mock.push(
+            "generate_session_title",
+            Reply::Deferred {
+                entered: entered_tx,
+                data: reply_rx,
+            },
+        );
+
+        let task = mark_run_completed_if_active(Some(&run.id)).expect("background task");
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        // The conversation is no longer a single-turn one.
+        seed_run(&thread.id);
+        reply_tx
+            .send(serde_json::json!({"title": "Stale title"}))
+            .expect("release the model call");
+        task.await
+            .expect("a grown conversation must not fail the run");
+
+        assert_eq!(
+            store::get_thread(&thread.id)
+                .expect("get")
+                .expect("thread")
+                .title,
+            original_title,
+            "the pending title is not applied to a conversation with a second turn"
+        );
+        assert!(
+            mock.requests_of("set_session_name").is_empty(),
+            "the suggestion must not be pushed to the Agent once a turn is owed"
+        );
+    }
+
+    /// A session that never stops streaming exhausts the wait budget: the
+    /// budget is ~5 s (25 polls at 200 ms), which is why this test is the slowest
+    /// in the module — and why the assertion checks that it *waited*, not just
+    /// that it gave up.
+    #[tokio::test]
+    async fn wait_for_agent_idle_gives_up_when_the_agent_never_settles() {
+        let _home = TestHome::new("rc-idle-exhausted");
+        let mock = mock_agent();
+        for _ in 0..25 {
+            mock.push_state_for_session("busy", Reply::TypedData(get_state_payload("busy", true)));
+        }
+
+        let started = std::time::Instant::now();
+        assert!(
+            !wait_for_agent_idle("busy").await,
+            "a session that never settles must not read as idle"
+        );
+        assert_eq!(
+            mock.requests_of("get_state").len(),
+            25,
+            "the whole retry budget is spent before giving up"
+        );
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(200),
+            "it must have waited between polls, not given up immediately"
+        );
     }
 
     #[tokio::test]

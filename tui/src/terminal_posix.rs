@@ -331,7 +331,29 @@ impl Backend {
 
 /// Unbuffered stdout write (used by `write_str`), retried on EINTR. On POSIX
 /// stdout is always fd 1.
+///
+/// fd 1 is deliberately left as-is, but the *process-global* stdout lock is
+/// taken for the duration of the write: another test in this suite points fd 1
+/// at a full pipe for ~0.5 s (`write_stdout_retries_on_eintr`), and a write that the
+/// kernel resolves while that pipe is installed queues inside it — and is then
+/// broken by the `dup2` that hands fd 1 back (`EPIPE`, which makes the harness
+/// abort the whole binary and lose the run's lcov). This path is the TUI's
+/// render write (`terminal::write_str`), so without the lock a *render* from a
+/// test that takes no lock of its own is one more writer inside that window.
+///
+/// The lock is the one every Rust-stdout writer already takes per write
+/// (`write!`/`flush` on `io::stdout()`, so the test harness is included), which
+/// is exactly what makes it the right rendezvous: the fd-1 tests hold it from
+/// before they install their pipe until after they restore fd 1, so a write here
+/// is either before or after the window, never inside it. It is a *reentrant*
+/// lock, so the one caller that writes to fd 1 while already holding it — the
+/// fd-1 test's own `write_stdout(payload)` — proceeds instead of self-blocking,
+/// and it is a pure lock (dropping the guard does not flush anything). Ordering
+/// against the per-terminal `write_lock` is consistent everywhere (`write_lock`
+/// then this one), so the two cannot deadlock. Windows needs none of this: it
+/// has no fd-1 hijack, the console handle being per-process and never replaced.
 pub(crate) fn write_stdout(data: &[u8]) -> io::Result<usize> {
+    let _stdout_lock = io::stdout().lock();
     let mut written = 0usize;
     while written < data.len() {
         let n = unsafe {
@@ -724,6 +746,12 @@ mod tests {
 
     #[test]
     fn write_stdout_writes_all_bytes() {
+        // Writes to the process-global fd 1 through the production
+        // `write_stdout`, so it takes the same lock as every other fd-1 test:
+        // without it this write can be queued in another fd-1 test's full pipe
+        // and broken at that test's restore (`EPIPE`), making *this* test red for
+        // a reason that has nothing to do with `write_stdout`.
+        let _g = posix_test_lock();
         write_stdout(b"").unwrap();
         write_stdout(b"posix probe\n").unwrap();
     }
@@ -731,7 +759,15 @@ mod tests {
     #[test]
     fn write_stdout_reports_errors() {
         let _g = posix_test_lock();
-        // fd 1 pointed at a directory → write fails (not EINTR).
+        // fd 1 pointed at a directory → write fails (not EINTR). fd 1 is
+        // process-global, so the window holds the same process-global stdout
+        // lock the other fd-1 tests hold: without it a foreign write (the
+        // harness reporting another test, a render through `write_stdout`) that
+        // the kernel resolves inside this window fails too, and a failed write
+        // from the harness aborts the whole run. Safe here — this test's own
+        // `write_stdout` is the only writer of ours, and it nests the lock
+        // reentrantly.
+        let stdout_lock = io::stdout().lock();
         let dir = unsafe { libc::open(c"/tmp".as_ptr(), libc::O_RDONLY) };
         assert!(dir >= 0);
         unsafe {
@@ -743,11 +779,38 @@ mod tests {
             libc::close(dir);
             assert!(result.is_err());
         }
+        drop(stdout_lock);
     }
 
     #[test]
     fn write_stdout_retries_on_eintr() {
         let _g = posix_test_lock();
+        // fd 1 is process-global and for the ~0.5 s below it is a **full** pipe
+        // this test owns, so every other writer in the process *queues* inside
+        // it — including the harness's own console writer. On a loaded host such
+        // a queued write is still inside the pipe when `dup2(saved, 1)` hands
+        // fd 1 back, and that `dup2` breaks it: a thread asleep in
+        // `write(fd, ...)` on a full pipe gets `EPIPE` exactly when `dup2`
+        // replaces **the fd number it is writing to** (probe `/tmp/probe-v2.c`: a
+        // writer on fd 1 dies with `errno=32`, while a writer holding the *same*
+        // pipe through fd 5 and sleeping at the same instant survives — so
+        // keeping an extra reference to the pipe does not help), and `EPIPE`
+        // from the harness's own stdout makes libtest abort the binary
+        // (`io error when listing tests: Os { code: 32, kind: BrokenPipe }`),
+        // losing the run and its lcov. Draining the pipe first only makes the
+        // queued writer *runnable*; a trace of 12 green runs shows the harness
+        // write releasing 107 µs before the restore, i.e. a scheduling race.
+        //
+        // Rust's stdout lock is the process-global lock that every Rust-stdout
+        // writer takes per write (`write!`/`flush` on `io::stdout()`), so holding
+        // it keeps all of them out of fd 1 for the whole window: a write that
+        // never enters the pipe cannot be queued and cannot be broken by the
+        // restore. `write_stdout` itself takes the same lock now, so this test's
+        // own payload write nests it (reentrant, same thread) instead of
+        // self-blocking, and the guard is dropped immediately after the restore.
+        // With both, no writer in the process can be inside fd 1 while it is this
+        // pipe: the harness, `println!`-style writers and renders are all out.
+        let stdout_lock = io::stdout().lock();
         // A full pipe blocks the write; a non-RESTART signal interrupts it
         // (EINTR), the loop retries, and a drainer lets it finish.
         let (read_fd, write_fd) = create_pipe().unwrap();
@@ -783,7 +846,6 @@ mod tests {
             assert_eq!(libc::sigaction(libc::SIGUSR1, &sa, std::ptr::null_mut()), 0);
 
             let payload = vec![b'x'; 200_000];
-            let expected = filled + payload.len();
             // Target the writer thread with pthread_kill — a process-wide
             // raise() could land on any thread and never interrupt the write.
             // The storm runs long enough that some signal lands while the
@@ -795,35 +857,110 @@ mod tests {
                     libc::pthread_kill(writer, libc::SIGUSR1);
                 }
             });
-            // Drain exactly filler + payload bytes so the writer finishes;
-            // starts late enough that the signal storm hits the blocked write.
+            // fd 1 is process-global: for the ~0.5 s below it is this pipe, so
+            // the *harness* prints its own progress lines into it (a failing
+            // run's log is missing exactly those lines) and so does the unlocked
+            // test `write_stdout_writes_all_bytes`. Two properties keep those
+            // writers out of trouble (the restore ordering below is the one that
+            // is measured to kill a run today; these two close the neighbouring
+            // routes):
+            //
+            //   1. The drainer reads through a *second* reference parked at
+            //      fd >= 100 (`F_DUPFD`). Every other test in this 2 200-test
+            //      process opens and closes low fd numbers constantly (an
+            //      interposer trace of this window shows foreign `close()` calls
+            //      on single-digit fds), so a stale close of a recycled low
+            //      number can kill `read_fd`'s slot. If that slot were the pipe's
+            //      only reader, the pipe would go readerless while fd 1 still
+            //      pointed at it, and the next write to fd 1 — libtest's own —
+            //      fails with `EPIPE` (code 32): libtest then aborts the whole
+            //      binary (`io error when listing tests: Os { code: 32, kind:
+            //      BrokenPipe }`), which is why two instrumented runs produced
+            //      *no lcov at all*. The parked reference is out of the
+            //      low-fd recycling path, so the pipe always has a reader.
+            //
+            //   2. The drainer is not stopped by a flag: it runs until **EOF**.
+            //      A writer blocked inside `write` still holds a reference to the
+            //      pipe's write end, so EOF arrives only once every queued writer
+            //      has been drained, and closing the read end afterwards cannot
+            //      orphan one. (A flag-driven stop did not have that property:
+            //      on macOS a blocked pipe writer is *not* woken when the read
+            //      end closes — measured — so it stays blocked forever and the
+            //      suite hangs; or a fresh write to the still-installed fd 1 hit
+            //      EPIPE.)
+            let flags = libc::fcntl(read_fd, libc::F_GETFL);
+            libc::fcntl(read_fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+            let drain_fd = libc::fcntl(read_fd, libc::F_DUPFD, 100);
+            assert!(
+                drain_fd >= 100,
+                "the pipe needs a reader slot at fd >= 100, out of the low-fd recycling path"
+            );
+            // Counts "the drainer looked and the pipe was empty"; the main thread
+            // waits for a *fresh* one before it hands fd 1 back (below).
             let drainer = std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(500));
                 let mut sink = vec![0u8; 65536];
-                let mut got = 0usize;
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-                while got < expected && std::time::Instant::now() < deadline {
-                    let n = libc::read(read_fd, sink.as_mut_ptr() as *mut libc::c_void, sink.len());
-                    if n > 0 {
-                        got += n as usize;
-                    } else {
-                        std::thread::sleep(std::time::Duration::from_millis(5));
+                loop {
+                    let mut poll_fd = [libc::pollfd {
+                        fd: drain_fd,
+                        events: libc::POLLIN,
+                        revents: 0,
+                    }];
+                    // An empty pipe whose write end is still open must not spin.
+                    libc::poll(poll_fd.as_mut_ptr(), 1, -1);
+                    let n =
+                        libc::read(drain_fd, sink.as_mut_ptr() as *mut libc::c_void, sink.len());
+                    if n == 0 {
+                        // EOF: every write end is gone, so no writer is pending.
+                        break;
                     }
                 }
-                got
             });
             let result = write_stdout(&payload);
+            // fd 1 has been a *full* blocking pipe for the whole payload write.
+            // Give the harness its stdout back — but only once the pipe has been
+            // **drained empty**, and that ordering is the load-bearing part:
+            //
+            //   * a write that is still *asleep* inside the pipe (blocked because
+            //     the pipe was full, which is what the harness's own progress line
+            //     does while fd 1 is this pipe) is broken by the `dup2` that hands
+            //     fd 1 back: replacing the descriptor wakes it and it fails with
+            //     `EPIPE` (`SIGPIPE` in a program that does not ignore it), even
+            //     though the read end is open. Measured with two standalone
+            //     probes of this exact sequence — `/tmp/restore-breaks-queued-writer.c`
+            //     (full pipe, restore: the writer dies) and
+            //     `/tmp/drain-then-restore.c` (drain to empty, then restore: the
+            //     same writer completes, `n=80 errno=0`).
+            //   * in the suite that is the whole failure: libtest's queued progress
+            //     line, woken by the restore, fails — `io error when listing
+            //     tests: Os { code: 32, kind: BrokenPipe }` — and libtest aborts
+            //     the binary, so the run and its lcov are gone.
+            //
+            // Reading until `EAGAIN` on the (non-blocking) read end is what makes
+            // the pipe empty: it also *wakes* a sleeping writer, which then copies
+            // and returns instead of being broken by the replacement.
+            let mut sink = [0u8; 65536];
+            while libc::read(read_fd, sink.as_mut_ptr() as *mut libc::c_void, sink.len()) > 0 {}
+            libc::dup2(saved, 1);
+            // fd 1 is the log file again, so the writers the lock above held in
+            // userspace can resume; they no longer have a pipe to queue in.
+            drop(stdout_lock);
             // Join the raiser BEFORE restoring the default disposition —
             // a late SIGUSR1 with SIG_DFL would terminate the process.
             raiser.join().unwrap();
-            drainer.join().unwrap();
-            libc::dup2(saved, 1);
             libc::close(saved);
+            // Our own write end: with it closed, the drainer reaches EOF as soon
+            // as every *queued* writer has been drained.
+            libc::close(write_fd);
+            drainer.join().unwrap();
+            // Safe now: EOF proved that no writer exists, so nothing can be
+            // orphaned or broken by these closes.
+            libc::close(read_fd);
+            libc::close(drain_fd);
             let mut sa: libc::sigaction = std::mem::zeroed();
             sa.sa_sigaction = libc::SIG_DFL;
             libc::sigemptyset(&mut sa.sa_mask);
             libc::sigaction(libc::SIGUSR1, &sa, std::ptr::null_mut());
-            libc::close(read_fd);
             assert_eq!(result.unwrap(), 200_000);
         }
     }
@@ -865,6 +1002,13 @@ mod tests {
     /// coverage profile flushes normally.
     #[test]
     fn create_pipe_error_paths() {
+        // The child below inherits this process's stdio, including fd 1. Serialize
+        // with the tests that point fd 1 at a pipe on purpose (`write_stdout`
+        // retries on EINTR): a child that inherited that pipe finds its own test
+        // summary write broken (`io error when listing tests: BrokenPipe`) and
+        // fails the parent's `status.success()`. That is what took out a whole
+        // `cargo llvm-cov` run under instrumentation.
+        let _g = posix_test_lock();
         if std::env::var_os("TUI_POSIX_FD_EXHAUST_CHILD").is_some() {
             // Child: set up a PTY stdin first (fd exhaustion must not
             // prevent opening it), then exhaust fds.

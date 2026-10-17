@@ -17,6 +17,29 @@ import { useRemoteSkillRecommend } from "./useRemoteSkillRecommend";
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock("../../integrations/tauri/invoke", () => ({ invokeCommand: invoke }));
 
+/**
+ * The host's own push lane, mocked so the invalidation path can be driven: both
+ * hooks here re-read on the host's word, and without this the real `listen` rejects
+ * in jsdom and the invalidator never fires — which is exactly how these lines went
+ * unexercised.
+ */
+let listeners: Array<(event: { payload: unknown }) => void> = [];
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: async (_name: string, handler: (event: { payload: unknown }) => void) => {
+    listeners.push(handler);
+    return () => {
+      listeners = listeners.filter(item => item !== handler);
+    };
+  },
+}));
+
+/** A push from the host, in the shape the bridge forwards. */
+function push(type: string, desktopId = "desktop_a"): void {
+  act(() => {
+    listeners.forEach(listener => listener({ payload: { desktopId, kind: "event", payload: { type } } }));
+  });
+}
+
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 async function render<T>(use: () => T) {
@@ -50,6 +73,7 @@ async function settle(): Promise<void> {
 
 beforeEach(() => {
   document.body.innerHTML = "";
+  listeners = [];
   invoke.mockReset();
   // Both reads are cached per host for as long as this window is open
   // (`remoteHostCatalog`), so one test's answer would otherwise be the next
@@ -194,12 +218,73 @@ it("reads an unavailable toggle as off", async () => {
   expect(absent.current).toBe(false);
   await absent.unmount();
 
+  // The host itself cannot be reached. The catalogue cache has to be dropped
+  // first, or this render would be answered by the *previous* render's resolved
+  // read and the failed-read path would never run — the test would still pass
+  // (both outcomes are `false`), which is exactly how this case was passing
+  // before the assertion on the call count was added.
+  forgetHostCatalogue("desktop_a");
+  invoke.mockReset();
   invoke.mockRejectedValue(new Error("peer_not_connected"));
   const failed = await render(() => useRemoteSkillRecommend("desktop_a"));
+  expect(invoke).toHaveBeenCalledWith("remote_peer_request", expect.objectContaining({
+    command: { type: "get_desktop_settings" },
+  }));
   expect(failed.current).toBe(false);
   await failed.unmount();
 
   const none = await render(() => useRemoteSkillRecommend(""));
   expect(none.current).toBe(false);
   await none.unmount();
+});
+
+/**
+ * The host says its own settings moved, so the answer has to be read again.
+ *
+ * The setting belongs to the machine being written to, and a user who changed
+ * recommendation *there* — or had the host's cached read dropped — must not keep
+ * being offered cards on the strength of the stale answer. The domain is what the
+ * callback filters on, so the sibling domain that lands on the same host must do
+ * nothing: a model-visibility change is not a reason to re-ask about skill
+ * suggestions.
+ */
+it("re-reads the toggle when the host says its settings changed, and only then", async () => {
+  invoke.mockResolvedValue({ skillRecommend: true });
+  const probe = await render(() => useRemoteSkillRecommend("desktop_a"));
+  expect(invoke).toHaveBeenCalledTimes(1);
+
+  // A change to another domain on the same host is not this hook's business.
+  invoke.mockClear();
+  push("model_visibility_changed");
+  await settle();
+  expect(invoke).not.toHaveBeenCalled();
+
+  // The settings domain is: the cached read was dropped, so this re-reads.
+  push("app_settings_changed");
+  await settle();
+  expect(invoke).toHaveBeenCalledWith("remote_peer_request", expect.objectContaining({
+    command: { type: "get_desktop_settings" },
+  }));
+
+  await probe.unmount();
+});
+
+/**
+ * The same rule for the catalogue behind the `/` menu: a skills change on the host
+ * re-reads it, and the other domains leave it alone.
+ */
+it("re-reads the skill catalogue when the host says its skills changed", async () => {
+  invoke.mockResolvedValue([]);
+  const probe = await render(() => useRemoteSkillCatalog("desktop_a", true));
+  const readsBefore = invoke.mock.calls.length;
+
+  push("model_visibility_changed");
+  await settle();
+  expect(invoke.mock.calls.length).toBe(readsBefore);
+
+  push("skills_changed");
+  await settle();
+  expect(invoke.mock.calls.length).toBeGreaterThan(readsBefore);
+
+  await probe.unmount();
 });

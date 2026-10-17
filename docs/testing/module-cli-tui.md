@@ -1,5 +1,19 @@
 # future-cli + future-tui — coverage, waivers and test-quality record
 
+> **Record form: prose-only, declared 2026-10-16 (user gate `todo_6a850a842666`, answered
+> "prose-only, and say so in the final report").** This is a **round-1 record** from the previous
+> coverage campaign. It carries **no machine-readable per-line ledger**: `353` table rows, **0**
+> `path:LINE` citations in the whole document, and **0** rows whose first cell is a claim shape.
+> So `reconcile.py`'s MISSING half reports it as mostly-missing and its STALE half has nothing to read —
+> a property of this record's **form**, not a defect, and deliberately not repaired: measured, adding
+> claim-shaped rows here would **invent** claims rather than recover them
+> (`.future/cov100/LEDGER-REWORK.md`, `blindrework.py`).
+>
+> **This round's per-line guarantee for the same subtrees lives in:** module-cli.md (cli), module-cli-mcp.md (cli-mcp) and module-tui.md (tui).
+> The final report classifies every module as *machine-checkable* or *prose-only*; this one is
+> **prose-only**, and its historical numbers are kept as history rather than re-verified this round.
+
+
 Goal `cov-100-multidim` · modules **future-cli** (`cli/`) and **future-tui** (`tui/`) ·
 branch `test/cov100` (worktree `.worktrees/cov100`) · host **Windows x86_64**, rustc
 1.97.0 pinned by `rust-toolchain.toml` · measured 2026-09-26 · session
@@ -324,3 +338,30 @@ body) that is counted because it ships in the same translation unit.
    55 open-gap rows. `tui/src/terminal.rs` (388) needs either an injectable
    stdout/raw-mode seam (design work) or the console-attached/POSIX measurement that
    the waiver above depends on.
+
+## 11. Round 2 (`cov100-r2`): the packages / tasks share of this unit moved to `module-goal.md`
+
+The round-2 coverage unit for `packages/{rpc,remote-crypto,app-settings,app-workspaces}`
+and `orchestration/{tasks,goal}` — the `future` CLI's settings, workspace and task
+surfaces — records its measurement, its tests and its per-line residuals in
+`module-goal.md` §11, which already owns `future-rpc`. Nothing in §1-§10 above
+changes: those remain the round-1 Windows record for `future-cli` / `future-tui`.
+
+Counts those three crates stand at after that segment (macOS, six-crate
+`cargo llvm-cov` with a private fresh `HOME`, `DA:0` per line; the final run is
+`/tmp/p1b-lcov.info`, 104 test targets, no failure — **0 unwaived lines left in the
+whole unit**):
+
+| crate | uncovered lines | category of every residual |
+|---|---|---|
+| `future-app-settings` | 10 | `attribution-artifact` (10) |
+| `future-app-workspaces` | 9 | `attribution-artifact` (7), `unreachable-by-construction` (2) |
+| `future-tasks` | 3 | `attribution-artifact` (3) |
+
+`future-remote-crypto` measured **0** uncovered lines, and the `future-rpc` files the
+CLI depends on (`decode`, `encode`, `history`, `payloads`, `message`, `shell_result`,
+`home`) are at **0** as well; `packages/rpc/src/transport.rs` (10), `connection.rs`
+(5) and `transport/unix_endpoint.rs` (5) are the only rpc residuals and all 20 are
+waived in `module-goal.md` §11.5 with their mechanisms (three of them
+`platform-unmeasured`: Windows-only lock/sharing arms and a kernel that answers
+`ECONNREFUSED` for a non-socket local endpoint).

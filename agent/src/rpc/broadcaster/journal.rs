@@ -87,7 +87,13 @@ impl SseBroadcaster {
     /// compactor publishes a snapshot and retires a run's raw rows, and an
     /// event for that run still sitting in the batch would then be refused.
     pub(crate) fn flush_journal(&self) -> anyhow::Result<()> {
-        let journal = self.journal.lock();
+        let mut journal = self.journal.lock();
+        // Single-line injection check: `cfg!(test)` short-circuits before the
+        // swap in production, so there is no `cfg(not(test))` half to leave
+        // uncovered and no `mut` that production alone does not need.
+        if cfg!(test) && std::mem::take(&mut journal.fail_flush) {
+            return Err(anyhow::anyhow!("injected event journal drain failure"));
+        }
         match journal.writer.as_ref() {
             Some(writer) => writer.flush(),
             None => Ok(()),
@@ -143,6 +149,20 @@ impl SseBroadcaster {
     #[cfg(test)]
     pub(crate) fn fail_next_append(&self) {
         self.journal.lock().fail_at = Some(JournalFailPoint::Append);
+    }
+
+    /// Arm the next completion-time drain to fail **without** marking the journal
+    /// unhealthy, so `prompt_internal`'s drain guard sees a healthy journal and
+    /// still finds the drain failing.
+    ///
+    /// The error a live drain reports is reachable in production — a worker that
+    /// died before answering a durable append, or a store that can no longer
+    /// commit the batch — but both make an *append* fail first, which marks the
+    /// journal unhealthy and takes the guard's other branch. That is why this
+    /// stage needs the error injected rather than provoked.
+    #[cfg(test)]
+    pub(crate) fn fail_next_flush(&self) {
+        self.journal.lock().fail_flush = true;
     }
 
     #[cfg(test)]

@@ -514,3 +514,44 @@ fn argument_write_preview_unrepairable_string_returns_none() {
     // A string argument that is neither valid JSON nor repairable.
     assert!(argument_write_preview(&serde_json::json!("{not json at all")).is_none());
 }
+
+/// The denial-path extractor's own fallbacks: an unterminated quote cannot be
+/// scanned as a quoted target (the scan gives up on that line), and `$HOME`
+/// shortens to `~` for the card, including the home directory itself.
+#[test]
+fn denial_paths_survive_an_unterminated_quote_and_shorten_home() {
+    let _home_guard = crate::test_support::home_env_lock();
+    use super::super::escalation::{extract_denial_paths, shorten_home};
+
+    // A quote that is never closed: the quoted scan cannot pair it, so the line
+    // falls through. With a *relative* target (which is not a usable path
+    // anyway) nothing is reported at all.
+    assert!(
+        extract_denial_paths("cp: cannot create 'note.txt: Permission denied", true).is_empty(),
+        "an unpaired quote around a relative target reports no path"
+    );
+    // With an absolute target the same unpaired quote runs to the end of the
+    // line, so the reported "path" carries the trailing error text: cosmetic
+    // only (this string is display/suggestion input and never resolved), and
+    // recorded as §0.4 F-2 rather than silently accepted.
+    assert_eq!(
+        extract_denial_paths("cp: cannot create '/outside/note: Permission denied", true),
+        vec!["/outside/note: Permission denied".to_string()]
+    );
+    // The closed form on the same line shape resolves exactly.
+    assert_eq!(
+        extract_denial_paths("cp: cannot create '/outside/note': Permission denied", true),
+        vec!["/outside/note".to_string()]
+    );
+
+    // Display shortening: the home directory itself is `~`, a child keeps its
+    // tail, and a path outside the home is left alone.
+    let home = dirs::home_dir().unwrap();
+    assert_eq!(shorten_home(&home.to_string_lossy()), "~");
+    assert!(
+        shorten_home(&home.join("Desktop/note.txt").to_string_lossy()).starts_with("~/"),
+        "a home-relative path is shortened"
+    );
+    let outside = "/definitely/not/the/home/dir/note.txt";
+    assert_eq!(shorten_home(outside), outside);
+}

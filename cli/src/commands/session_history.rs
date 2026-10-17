@@ -638,4 +638,50 @@ mod tests {
         assert!(stdout.contains("More matches exist"), "{stdout}");
         assert!(!stdout.trim_start().starts_with('{'), "not JSON: {stdout}");
     }
+
+    /// `--all` names the session each match came from — the entry id alone is
+    /// only unique inside one session — and carries the same continuation hint
+    /// as the single-session table, so the two never disagree about paging.
+    #[test]
+    fn the_all_sessions_table_names_its_session_and_hints_continuations() {
+        let value = serde_json::json!({
+            "scannedSessions": 3,
+            "truncated": true,
+            "hasMore": true,
+            "matches": [
+                {"sessionId":"s1","sessionName":"Alpha","entryId":"e1","blockIndex":0,
+                 "kind":"text","byteOffset":0,"snippet":"first"},
+                {"sessionId":"s2","entryId":"e2","blockIndex":2,
+                 "kind":"tool_result","byteOffset":9,"snippet":"second"},
+            ],
+        });
+        let text = format_all_result(&value);
+        assert!(
+            text.starts_with(
+                "Scanned 3 session(s) (more exist older than --sessions; raise it to widen the scan).\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("session=s1 name=Alpha entry=e1 block=0 kind=text offset=0\nfirst"),
+            "{text}"
+        );
+        assert!(
+            text.contains("session=s2 entry=e2 block=2 kind=tool_result offset=9\nsecond"),
+            "an unnamed session is not spelled `name=`: {text}"
+        );
+        assert!(
+            text.contains("More matches exist; refine the query or increase --limit (max 20)."),
+            "{text}"
+        );
+
+        // An untruncated scan says nothing about widening it, and no matches is
+        // its own sentence rather than an empty table.
+        let none = format_all_result(&serde_json::json!({
+            "scannedSessions": 1, "truncated": false, "hasMore": false, "matches": [],
+        }));
+        assert!(none.starts_with("Scanned 1 session(s).\n"), "{none}");
+        assert!(none.contains("No matching history records."), "{none}");
+        assert!(!none.contains("More matches exist"), "{none}");
+    }
 }

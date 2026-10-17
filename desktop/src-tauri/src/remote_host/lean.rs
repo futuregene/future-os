@@ -1245,8 +1245,14 @@ mod tests {
     #[ignore = "fixture generation: needs LEAN_RENDER_FIXTURES"]
     fn generate_render_fixtures() {
         let dir = std::env::var("LEAN_RENDER_FIXTURES").expect("LEAN_RENDER_FIXTURES");
-        let dir = std::path::Path::new(&dir);
+        derive_render_fixtures(std::path::Path::new(&dir));
+    }
 
+    /// The derivation itself, split from the env gate above so it also runs in
+    /// the ordinary suite (against a fixture a test owns) — the mjs script that
+    /// drives the generation supplies the real full-feed files, but the code
+    /// that derives the lean ones is the shipping trim either way.
+    fn derive_render_fixtures(dir: &std::path::Path) {
         for (input, output) in [
             (
                 "render-full-lane-events.json",
@@ -1409,9 +1415,26 @@ mod tests {
         let path = std::env::var("LEAN_HISTORY_ENTRIES").expect("LEAN_HISTORY_ENTRIES");
         let raw = std::fs::read_to_string(path).expect("entries readable");
         let mut entries: Value = serde_json::from_str(&raw).expect("entries json");
+        let report = measure_entries(&mut entries);
 
+        // When asked, keep the trimmed page so the trim can be audited on real
+        // data (which keys a shell row kept, which it lost) instead of only
+        // trusted as a size.
+        if let Ok(path) = std::env::var("LEAN_HISTORY_OUT") {
+            std::fs::write(path, serde_json::to_vec(&entries).expect("serializes"))
+                .expect("trimmed entries writable");
+        }
+
+        println!("LEAN_HISTORY {report}");
+    }
+
+    /// The measurement body, split from the env gate above so the ordinary
+    /// suite can run it against a fixture a test owns: it reports where the
+    /// page's bytes were (per block kind) as well as how many went away, which
+    /// is what lets a reader see the trim rather than only its total.
+    fn measure_entries(entries: &mut Value) -> Value {
         let sized = |value: &Value| serde_json::to_vec(value).expect("serializes").len();
-        let before = sized(&entries);
+        let before = sized(entries);
 
         // Per-kind byte totals, so the report says where the bytes were rather
         // than only how many went away.
@@ -1429,28 +1452,219 @@ mod tests {
             }
         }
 
-        lean_entries(&mut entries);
-        let after = sized(&entries);
+        lean_entries(entries);
+        let after = sized(entries);
 
-        // When asked, keep the trimmed page so the trim can be audited on real
-        // data (which keys a shell row kept, which it lost) instead of only
-        // trusted as a size.
-        if let Ok(path) = std::env::var("LEAN_HISTORY_OUT") {
-            std::fs::write(path, serde_json::to_vec(&entries).expect("serializes"))
-                .expect("trimmed entries writable");
-        }
+        serde_json::json!({
+            "entries": entries.as_array().map(Vec::len).unwrap_or(0),
+            "beforeBytes": before,
+            "afterBytes": after,
+            "saved": 1.0 - (after as f64 / before.max(1) as f64),
+            "blockCounts": block_counts,
+            "blockBytes": by_kind,
+        })
+    }
 
-        println!(
-            "LEAN_HISTORY {}",
-            serde_json::json!({
-                "entries": entries.as_array().map(Vec::len).unwrap_or(0),
-                "beforeBytes": before,
-                "afterBytes": after,
-                "saved": 1.0 - (after as f64 / before.max(1) as f64),
-                "blockCounts": block_counts,
-                "blockBytes": by_kind,
-            })
+    /// The derivation the generation run performs, on a fixture this test owns.
+    /// The ignored test above is the env-gated driver (it rewrites the mobile
+    /// render fixtures); this is the same code with the gates taken out, so the
+    /// ordinary suite proves the four properties the generation asserts: the
+    /// streamed event goes, the lean envelope carries only the keys a subscriber
+    /// reads, the legacy shell outcome (the `[exit: N]` footer) survives, and a
+    /// shell row's command is gone from the page while its result stays.
+    #[test]
+    fn the_render_fixture_derivation_trims_through_the_shipping_code() {
+        let dir = tempfile::tempdir().expect("fixture dir");
+        let lane = json!([
+            {
+                "type": "thinking_delta",
+                "data": json!({"text": "private reasoning"}).to_string(),
+                "idx": 1,
+                "runId": "r1",
+                // Envelope keys the phone never reads: dropped by the trim.
+                "timestamp": "2026-01-01T00:00:00Z",
+                "session_idx": 4,
+            },
+            // A call whose arguments carry a body: the trim rewrites the payload
+            // (an owned string), which is the other half of the lane's trim.
+            {
+                "type": "tool_start",
+                "data": json!({
+                    "tool_id": "c9", "tool_name": "write",
+                    "tool_args": {"file_path": "/tmp/a", "content": "a whole file"},
+                })
+                .to_string(),
+                "idx": 2,
+                "runId": "r1",
+            },
+            {
+                "type": "tool_end",
+                "data": json!({"tool_name": "shell", "text": "pip output\n[exit: 3]"})
+                    .to_string(),
+                "idx": 3,
+                "runId": "r1",
+            },
+        ]);
+        std::fs::write(
+            dir.path().join("render-full-lane-events.json"),
+            serde_json::to_string(&lane).expect("serializes"),
+        )
+        .expect("full lane events writable");
+        std::fs::write(
+            dir.path().join("render-full-lane-mid-events.json"),
+            serde_json::to_string(&lane).expect("serializes"),
+        )
+        .expect("mid lane events writable");
+        let history = json!([{
+            "id": "a1", "kind": "assistant", "role": "assistant",
+            "blocks": [
+                {"kind": "reasoning", "text": "private reasoning body"},
+                {"kind": "text", "text": "visible answer"},
+                {"kind": "tool_result", "toolCallId": "c1", "text": "output body",
+                 "isError": true},
+                // A result that carries no verdict at all: the render fixtures
+                // must keep such a row as it is (nothing says `isError: false`
+                // since #849), so the check has to walk it rather than skip it.
+                {"kind": "tool_result", "toolCallId": "c2", "text": "older output"},
+                // A file-kind call: it keeps exactly the keys a target can come
+                // from, which the derivation's own self-check re-asserts.
+                {"kind": "tool_call", "name": "read", "toolCallId": "c3",
+                 "arguments": {"path": "/tmp/b", "offset": 5, "content": "file body"}},
+                {"kind": "tool_call", "name": "shell", "toolCallId": "c1",
+                 "arguments": {"command": "ls -la /tmp"}},
+            ],
+        }]);
+        std::fs::write(
+            dir.path().join("render-full-history-entries.json"),
+            serde_json::to_string(&history).expect("serializes"),
+        )
+        .expect("full history entries writable");
+
+        derive_render_fixtures(dir.path());
+
+        let lean: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("render-lean-lane-events.json"))
+                .expect("the lean lane file is written"),
+        )
+        .expect("lean lane json");
+        let events = lean.as_array().expect("events array");
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event["type"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["tool_start", "tool_end"],
+            "the streamed reasoning event is the one thing dropped"
         );
+        for key in events[0]
+            .as_object()
+            .expect("envelope")
+            .keys()
+            .map(String::as_str)
+        {
+            assert!(
+                EVENT_BODY_KEYS.contains(&key),
+                "the lean envelope must not carry {key}"
+            );
+        }
+        assert!(
+            events[1]["data"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("[exit: 3]"),
+            "the legacy shell outcome is the only signal such a row has"
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(events[0]["data"].as_str().unwrap())
+                .expect("the rewritten payload is JSON")["tool_args"],
+            json!({"file_path": "/tmp/a"}),
+            "a write keeps the path its row shows and loses the body it never renders"
+        );
+
+        let lean_history: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("render-lean-history-entries.json"))
+                .expect("the lean history file is written"),
+        )
+        .expect("lean history json");
+        let blocks = lean_history[0]["blocks"].as_array().expect("blocks");
+        assert!(
+            blocks[0].get("text").is_none(),
+            "a reasoning body is dropped"
+        );
+        assert_eq!(
+            blocks[1]["text"],
+            json!("visible answer"),
+            "text a row renders stays"
+        );
+        assert!(
+            blocks[2].get("text").is_none(),
+            "a tool-result body is dropped"
+        );
+        assert_eq!(blocks[2]["isError"], json!(true), "the outcome stays");
+        assert!(
+            blocks[3].get("text").is_none(),
+            "a result with no verdict keeps only its identity"
+        );
+        assert!(
+            blocks[3].get("isError").is_none(),
+            "no verdict is invented for it"
+        );
+        assert_eq!(
+            blocks[4]["arguments"],
+            json!({"path": "/tmp/b"}),
+            "a file row keeps exactly the keys its target is read from"
+        );
+        assert!(
+            blocks[5].get("arguments").is_none(),
+            "a shell row's command is fetched on open, not carried in the page"
+        );
+    }
+
+    /// The measurement body, on a fixture this test owns: it reports the page's
+    /// bytes per block kind before and after the trim, and the trimmed page it
+    /// measures is the shipping trim's output — the same code the ignored run
+    /// measures on real history.
+    #[test]
+    fn the_trim_measurement_reports_where_the_bytes_went() {
+        let mut entries = json!([
+            {
+                "id": "a1", "kind": "assistant", "role": "assistant",
+                "blocks": [
+                    {"kind": "reasoning", "text": "r".repeat(400)},
+                    {"kind": "tool_result", "toolCallId": "c1", "text": "o".repeat(400)},
+                    {"kind": "tool_call", "name": "shell", "toolCallId": "c1",
+                     "arguments": {"command": "c".repeat(400)}},
+                ],
+            },
+            {
+                "id": "u2", "kind": "user", "role": "user",
+                "blocks": [{"kind": "text", "text": "question"}],
+            },
+        ]);
+        let report = measure_entries(&mut entries);
+
+        assert_eq!(report["entries"], json!(2), "the trim keeps every entry");
+        assert!(
+            report["beforeBytes"].as_u64().unwrap() > report["afterBytes"].as_u64().unwrap(),
+            "the trimmed page is smaller: {report}"
+        );
+        assert_eq!(report["blockCounts"]["reasoning"], json!(1));
+        assert_eq!(report["blockCounts"]["tool_result"], json!(1));
+        assert_eq!(report["blockCounts"]["tool_call"], json!(1));
+        assert_eq!(report["blockCounts"]["text"], json!(1));
+        assert!(
+            report["blockBytes"]["reasoning"].as_u64().unwrap() > 0,
+            "per-kind bytes name where the cost was: {report}"
+        );
+        let saved = report["saved"].as_f64().expect("a saving ratio");
+        assert!(
+            (0.0..1.0).contains(&saved),
+            "the saving is a fraction of the page: {report}"
+        );
+        // The measured page really is the trimmed one: the shell command is gone
+        // and the reasoning body is blanked.
+        assert!(entries[0]["blocks"][0].get("text").is_none());
+        assert!(entries[0]["blocks"][2].get("arguments").is_none());
     }
 
     /// Every guard on the trim path fails *open*: an event the projection cannot
@@ -1551,5 +1765,67 @@ mod shell_attempts_tests {
         lean_entries(&mut entries);
         assert_eq!(entries[0]["metadata"]["shell_result"], facts);
         assert_eq!(entries[0]["blocks"][0]["isError"], true);
+    }
+}
+
+#[cfg(test)]
+mod guard_arms_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The trims' own guard arms, each of which is a shape the agent has
+    /// produced: a payload that does not parse, a body-bearing call with no
+    /// `tool_args`, a stringified argument list that is not an object, a number
+    /// where the arguments should be, a `usage` that does not parse, an entry
+    /// with no `blocks`, and a file-kind call with no `arguments` at all. Every
+    /// one of them is forwarded or left alone rather than dropped: the trim only
+    /// ever removes what it can identify.
+    #[test]
+    fn unparsable_or_missing_bodies_are_forwarded_untouched() {
+        // Not JSON at all: the execution phase of a call whose payload is
+        // unreadable is forwarded byte-for-byte.
+        let raw = "not json at all";
+        assert_eq!(lean_event_data("tool_start", raw).unwrap(), raw);
+        assert_eq!(lean_event_data("usage", raw).unwrap(), raw);
+
+        // A body-bearing tool with nothing to drop.
+        let write_without_args = json!({"tool_id": "t", "tool_name": "write"}).to_string();
+        assert_eq!(
+            lean_event_data("tool_start", &write_without_args).unwrap(),
+            write_without_args
+        );
+
+        // `tool_args` as a stringified *non-object*, and as a number: neither is
+        // an argument list this trim may rewrite.
+        for args in [json!("42"), json!(7), json!(["path"])] {
+            let data = json!({"tool_id": "t", "tool_name": "edit", "tool_args": args}).to_string();
+            assert_eq!(
+                lean_event_data("tool_start", &data).unwrap(),
+                data,
+                "an argument list that is not an object keeps its shape"
+            );
+        }
+
+        // A history entry with no `blocks` array keeps every other field, and a
+        // file-kind call with no `arguments` key is left as it is.
+        let mut entries = json!([
+            {"id": "e", "kind": "user", "role": "user", "metadata": {"m": 1}},
+            {"id": "a", "kind": "assistant", "role": "assistant", "blocks": [
+                {"kind": "text", "text": "kept"},
+                {"kind": "tool_call", "name": "read", "toolCallId": "c1"},
+            ]},
+        ]);
+        let before = entries.clone();
+        lean_entries(&mut entries);
+        assert_eq!(
+            entries[0], before[0],
+            "an entry the trim cannot walk is untouched"
+        );
+        assert_eq!(entries[1]["blocks"][0]["text"], json!("kept"));
+        assert_eq!(entries[1]["blocks"][1], before[1]["blocks"][1]);
+        assert!(
+            entries[1]["blocks"][1].get("arguments").is_none(),
+            "there was never an argument list to drop"
+        );
     }
 }

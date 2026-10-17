@@ -204,12 +204,9 @@ pub fn start<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     spawn_fixed_interval(&APP_UPDATE_JOB, move || {
         let app = update_app.clone();
         async move {
-            match crate::commands::perform_app_update_check(app.clone()).await {
-                Ok(status) => {
-                    let _ = app.emit(APP_UPDATE_EVENT, status);
-                }
-                Err(error) => eprintln!("FutureOS scheduled app update check failed: {error}"),
-            }
+            let endpoint = crate::commands::manifest_url(crate::build_info::channel());
+            let result = crate::commands::perform_app_update_check(app.clone(), endpoint).await;
+            emit_app_update_result(app, result).await;
         }
     });
 
@@ -217,15 +214,8 @@ pub fn start<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     spawn_fixed_interval(&FUTURE_BALANCE_JOB, move || {
         let app = balance_app.clone();
         async move {
-            match balance_pass(future_signed_in(), crate::future_login::fetch_balance).await {
-                BalancePass::Balance(balance) => {
-                    let _ = app.emit(FUTURE_BALANCE_EVENT, balance);
-                }
-                BalancePass::AccountChanged => {
-                    let _ = app.emit(FUTURE_AUTH_CHANGED_EVENT, ());
-                }
-                BalancePass::Silent => {}
-            }
+            let pass = balance_pass(future_signed_in(), crate::future_login::fetch_balance).await;
+            emit_balance_pass(app, pass).await;
         }
     });
 
@@ -235,15 +225,58 @@ pub fn start<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
             if !future_signed_in() {
                 return;
             }
-            match crate::agent_bridge::sync_future_models().await {
-                Ok(result) if result.synced => {
-                    let _ = app.emit(FUTURE_MODELS_EVENT, result);
-                }
-                Ok(_) => {}
-                Err(error) => eprintln!("FutureOS scheduled model refresh failed: {error}"),
-            }
+            let result = crate::agent_bridge::sync_future_models().await;
+            emit_models_result(app, result).await;
         }
     });
+}
+
+/// Report one automatic update check to the window. Split out of the job
+/// closure so both outcomes are reachable from a `tauri::test::mock_app()`
+/// handle: the check itself needs a network, this projection does not.
+#[cfg(feature = "gui")]
+async fn emit_app_update_result<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    result: Result<UpdateStatus, AppError>,
+) {
+    match result {
+        Ok(status) => {
+            let _ = app.emit(APP_UPDATE_EVENT, status);
+        }
+        Err(error) => eprintln!("FutureOS scheduled app update check failed: {error}"),
+    }
+}
+
+/// Report one account pass to the window. Split out of the job closure for the
+/// same reason as [`emit_app_update_result`]: the three answers are a pure
+/// projection of [`BalancePass`], so they need neither an account nor a network.
+#[cfg(feature = "gui")]
+async fn emit_balance_pass<R: tauri::Runtime>(app: tauri::AppHandle<R>, pass: BalancePass) {
+    match pass {
+        BalancePass::Balance(balance) => {
+            let _ = app.emit(FUTURE_BALANCE_EVENT, balance);
+        }
+        BalancePass::AccountChanged => {
+            let _ = app.emit(FUTURE_AUTH_CHANGED_EVENT, ());
+        }
+        BalancePass::Silent => {}
+    }
+}
+
+/// Report one catalogue sync to the window: only a real sync is an event, and a
+/// failure is only a log line. Split out of the job closure as above.
+#[cfg(feature = "gui")]
+async fn emit_models_result<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    result: Result<SyncFutureModelsResult, AppError>,
+) {
+    match result {
+        Ok(result) if result.synced => {
+            let _ = app.emit(FUTURE_MODELS_EVENT, result);
+        }
+        Ok(_) => {}
+        Err(error) => eprintln!("FutureOS scheduled model refresh failed: {error}"),
+    }
 }
 
 /// The headless entry point's maintenance loop: the same Future-catalogue job
@@ -282,9 +315,10 @@ async fn refresh_future_catalogue_if_signed_in() {
 #[cfg(feature = "gui")]
 pub async fn check_app_update_now<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
+    endpoint_url: &str,
 ) -> Result<UpdateStatus, AppError> {
     run_explicit(&APP_UPDATE_JOB, || {
-        crate::commands::perform_app_update_check(app)
+        crate::commands::perform_app_update_check(app, endpoint_url)
     })
     .await
 }
@@ -669,6 +703,123 @@ mod tests {
         assert!(
             FUTURE_MODELS_JOB.next_due() >= before + Duration::from_secs(3600),
             "a manual refresh must reset the automatic deadline whatever the Agent says"
+        );
+    }
+
+    /// The three job bodies project their outcome onto the window. Driven from a
+    /// mock app because the projection, not the check, is what the loop does
+    /// after the network — and the loop itself cannot be awaited.
+    #[cfg(feature = "gui")]
+    #[tokio::test]
+    async fn the_job_bodies_report_their_outcomes_to_the_window() {
+        let app = tauri::test::mock_app();
+        emit_app_update_result(
+            app.handle().clone(),
+            Ok(UpdateStatus {
+                current_version: "0.0.2-abcdef+local".into(),
+                latest_version: "0.0.2-121+nightly".into(),
+                has_update: true,
+                platform_supported: true,
+                can_install_in_app: false,
+                download_url: Some("https://dl.future-os.cn/nightly/x".into()),
+            }),
+        )
+        .await;
+        emit_app_update_result(app.handle().clone(), Err("check failed".into())).await;
+
+        emit_balance_pass(
+            app.handle().clone(),
+            BalancePass::Balance(FutureBalance { credits: 12.5 }),
+        )
+        .await;
+        emit_balance_pass(app.handle().clone(), BalancePass::AccountChanged).await;
+        emit_balance_pass(app.handle().clone(), BalancePass::Silent).await;
+
+        emit_models_result(
+            app.handle().clone(),
+            Ok(SyncFutureModelsResult {
+                synced: true,
+                model_count: 3,
+                revision: 7,
+            }),
+        )
+        .await;
+        emit_models_result(
+            app.handle().clone(),
+            Ok(SyncFutureModelsResult {
+                synced: false,
+                model_count: 0,
+                revision: 0,
+            }),
+        )
+        .await;
+        emit_models_result(app.handle().clone(), Err("sync failed".into())).await;
+    }
+
+    /// The headless catalogue body's signed-in arm. The sync itself is the
+    /// Agent's answer (a scripted double or an unreachable endpoint, both
+    /// ordinary), so only the account state is arranged here.
+    #[tokio::test]
+    async fn the_catalogue_body_runs_the_sync_when_signed_in() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("scheduler-catalogue");
+        crate::auth_store::set_future_login("key", "https://example.invalid").expect("sign in");
+        refresh_future_catalogue_if_signed_in().await;
+    }
+
+    /// Both successful catalogue outcomes: a real sync is logged, a no-op is not.
+    /// Scripted through the Agent double so the body's two `Ok` arms need no
+    /// network and no signed-in platform.
+    #[tokio::test]
+    async fn the_catalogue_body_reports_a_sync_and_a_no_op() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("scheduler-catalogue-arms");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        mock.push_data(
+            "sync_future_models",
+            serde_json::json!({"synced": true, "modelCount": 3, "revision": 7}),
+        );
+        mock.push_data(
+            "sync_future_models",
+            serde_json::json!({"synced": false, "modelCount": 0, "revision": 0}),
+        );
+        crate::auth_store::set_future_login("key", "https://example.invalid").expect("sign in");
+
+        refresh_future_catalogue_if_signed_in().await;
+        refresh_future_catalogue_if_signed_in().await;
+    }
+
+    /// An explicit update check takes the endpoint its caller resolved; here it
+    /// is a dead loopback port, so the check fails without a network and
+    /// without ever reaching the production CDN.
+    ///
+    /// macOS only, and the reason is a product rule rather than a platform gap:
+    /// `commands::update::check_app_update_impl` returns early with
+    /// `Ok(UpdateStatus { platform_supported: false, .. })` when
+    /// `platform_allows_updates()` is false, and that predicate is
+    /// `is_debian_deb_install()` on Linux and `bundle_type() == Some(Nsis)` on
+    /// Windows - both false in a `cargo test` build. So on those targets the
+    /// function correctly never looks at the endpoint this test supplies, and
+    /// `is_err()` cannot hold. The macOS run is where the endpoint is actually
+    /// consumed.
+    #[cfg(all(feature = "gui", target_os = "macos"))]
+    #[tokio::test]
+    async fn an_explicit_update_check_uses_the_endpoint_it_is_given() {
+        crate::install_rustls_provider();
+        // Register the updater plugin with no endpoints of its own: the signed
+        // path then fails as an ordinary error instead of a missing-plugin
+        // panic, while the manual path uses the endpoint passed in below.
+        let mut context = tauri::test::mock_context(tauri::test::noop_assets());
+        context.config_mut().plugins.0.insert(
+            "updater".to_string(),
+            serde_json::json!({ "endpoints": [], "pubkey": "dummy" }),
+        );
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .build(context)
+            .expect("mock app with updater");
+        let result = check_app_update_now(app.handle().clone(), "http://127.0.0.1:1/").await;
+        assert!(
+            result.is_err(),
+            "a dead endpoint must surface as an error, not a silent success"
         );
     }
 }

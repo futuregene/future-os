@@ -28,7 +28,13 @@ const invoke = vi.hoisted(() => vi.fn());
 vi.mock("../../integrations/tauri/invoke", () => ({ invokeCommand: invoke }));
 // The icon picker and the skills panel are their own concerns; both are covered
 // where they live.
-vi.mock("./PeerIconPicker", () => ({ PeerIconPicker: () => <div data-testid="icon-picker" /> }));
+vi.mock("./PeerIconPicker", () => ({
+  PeerIconPicker: (props: { onChange: (icon: string) => void; value: string }) => (
+    <div data-icon={props.value} data-testid="icon-picker">
+      <button onClick={() => props.onChange("phone")} type="button">pick-phone</button>
+    </div>
+  ),
+}));
 vi.mock("./RemoteModelsPanel", () => ({
   RemoteModelsPanel: (props: { hidden: string[]; onChangeHidden: (next: string[]) => void }) => (
     <div data-hidden={props.hidden.join(",")} data-testid="models-panel">
@@ -579,5 +585,70 @@ it("opens the workspaces page", async () => {
 
   expect(view.text()).toContain("Workspaces");
   expect(view.switchFor("Auto-upgrade skills")).toBeNull();
+  await view.unmount();
+});
+
+/**
+ * The two remaining automation switches write their own key, by name.
+ *
+ * Each is a separate `update_desktop_settings` call carrying one key, so what
+ * these assert is the *key* — a switch wired to the wrong setting, or one that
+ * wrote the whole object back, would look identical on screen while changing
+ * something the user did not touch.
+ */
+it("writes the skill-suggestion switch's own key", async () => {
+  const view = await mount();
+  const toggle = view.switchFor("Skill suggestions")!;
+  expect(toggle).not.toBeUndefined();
+
+  await act(async () => toggle.click());
+  await settle();
+
+  const calls = request.mock.calls;
+  const settings = (calls[calls.length - 1]![1] as { settings: Record<string, unknown> }).settings;
+  expect(Object.keys(settings)).toEqual(["skillRecommend"]);
+  await view.unmount();
+});
+
+it("writes the auto-connect switch's own key", async () => {
+  const view = await mount();
+  const toggle = view.switchFor("Auto-connect on launch")!;
+  expect(toggle).not.toBeUndefined();
+
+  await act(async () => toggle.click());
+  await settle();
+
+  const calls = request.mock.calls;
+  const settings = (calls[calls.length - 1]![1] as { settings: Record<string, unknown> }).settings;
+  expect(Object.keys(settings)).toEqual(["autoConnectRemote"]);
+  await view.unmount();
+});
+
+/**
+ * The machine's icon is written back as a *label* update, by icon id.
+ *
+ * The id is what the list draws (the glyph is derived from it), so sending the
+ * glyph — or the whole peer — would leave the stored value something no other
+ * surface understands.
+ */
+it("writes the picked icon back as an icon label", async () => {
+  const view = await mount();
+  const picker = view.container.querySelector<HTMLElement>("[data-testid='icon-picker']")!;
+  expect(picker.getAttribute("data-icon")).toBe("laptop");
+
+  const pick = [...view.container.querySelectorAll<HTMLButtonElement>("button")]
+    .find(node => node.textContent === "pick-phone")!;
+  await act(async () => pick.click());
+  await settle();
+
+  // The label patch, which is the caller's own command: the id is what the list
+  // stores, and the glyph is derived from it.
+  expect(view.onUpdateLabel).toHaveBeenCalledWith({ icon: "phone" });
+  // It is a *local* label write, so nothing went to the host for it.
+  expect(request).not.toHaveBeenCalledWith(
+    "desktop_a",
+    expect.objectContaining({ icon: "phone" }),
+    expect.anything(),
+  );
   await view.unmount();
 });

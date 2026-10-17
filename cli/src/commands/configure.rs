@@ -1480,6 +1480,158 @@ mod tests {
         );
     }
 
+    /// Editing a provider whose protocol the wizard knows offers it **by
+    /// number**, and one it does not know offers it **verbatim** — editing must
+    /// never silently rewrite a protocol the CLI has no opinion about.
+    #[tokio::test]
+    async fn an_existing_protocol_is_offered_by_number_or_verbatim_and_kept() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let provider = |name: &str, api: &str| {
+            serde_json::json!({
+                "name": name,
+                "api": api,
+                "baseUrl": "https://api.acme.test/v1",
+                "models": [{
+                    "id": "m1", "name": "M1", "modalities": ["text"],
+                    "contextWindow": 128000, "maxTokens": 16384, "reasoning": false
+                }]
+            })
+        };
+        write_models_json(serde_json::json!({
+            "providers": {
+                "resp": provider("Responses", "openai-responses"),
+                "anth": provider("Anthropic", "anthropic"),
+                "odd": provider("Odd", "my-proto-v9"),
+            }
+        }))
+        .await;
+
+        // A protocol the wizard knows is offered by number, and pressing Enter
+        // keeps it: the edit round-trips through the agent's validator.
+        for (id, label, api) in [
+            ("resp", "2", "openai-responses"),
+            ("anth", "3", "anthropic"),
+        ] {
+            let mut prompt = FakePrompter::new(&[
+                "2", id,  // custom provider, edit the existing one
+                "",  // name keeps
+                "",  // protocol keeps the offered default
+                "",  // base URL keeps
+                "",  // key blank leaves the stored credential alone
+                "",  // keep the model
+                "n", // add no more models
+            ]);
+            let (out, captured) = Output::memory();
+            configure_with(&mut prompt, &out).await.unwrap();
+            let stdout = output_text(&captured.out);
+            assert!(
+                stdout.contains(&format!("Select protocol [{label}]: ")),
+                "{id}: {stdout}"
+            );
+
+            let models = read_models_json().await;
+            assert_eq!(
+                models["providers"][id]["api"],
+                serde_json::json!(api),
+                "{id} kept its protocol: {models}"
+            );
+        }
+
+        // A protocol the wizard does *not* know is offered verbatim, so editing
+        // a provider never silently rewrites it to a built-in one. The same run
+        // then fails the CLI's own validation (the agent accepts three
+        // protocols), which is the honest outcome: the value is not rewritten
+        // behind the user's back, and nothing is written.
+        let mut prompt = FakePrompter::new(&[
+            "odd", // provider id
+            "",    // name keeps
+            "",    // protocol keeps the offered default — the stored value
+            "",    // base URL keeps
+            "",    // key blank
+            "",    // keep the model
+            "n",   // add no more models
+        ]);
+        let (out, captured) = Output::memory();
+        let error = collect_custom_provider(&mut prompt, &out).unwrap_err();
+        assert_eq!(error, "unsupported provider API type");
+        let stdout = output_text(&captured.out);
+        assert!(
+            stdout.contains("Select protocol [my-proto-v9]: "),
+            "the unrecognised value is offered as itself: {stdout}"
+        );
+        assert!(
+            !stdout.contains("Select protocol [1]"),
+            "it must not be replaced by the wizard's own default: {stdout}"
+        );
+        let models = read_models_json().await;
+        assert_eq!(
+            models["providers"]["odd"]["api"], "my-proto-v9",
+            "a refused edit leaves the stored document alone: {models}"
+        );
+    }
+
+    /// The disposition prompt owns its own refusal: an answer that is none of
+    /// keep/edit/delete is rejected and asked again, rather than deleting a
+    /// model or silently keeping one.
+    #[tokio::test]
+    async fn an_unrecognised_model_disposition_is_refused_and_asked_again() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        write_models_json(seeded_provider()).await;
+
+        let mut prompt = FakePrompter::new(&[
+            "2", "acme", // custom provider, edit the existing one
+            "", "", "", "",  // name / protocol / base URL / key keep
+            "x", // not a disposition
+            "",  // keep reasoner-v1
+            "",  // keep fast-v1
+            "n", // add no more models
+        ]);
+        let (out, captured) = Output::memory();
+        configure_with(&mut prompt, &out).await.unwrap();
+
+        let stdout = output_text(&captured.out);
+        assert!(
+            output_text(&captured.err)
+                .contains("Please enter k to keep, e to edit, or d to delete."),
+            "the refusal goes to stderr: {stdout}"
+        );
+        let models = read_models_json().await;
+        let entries = models["providers"]["acme"]["models"].as_array().unwrap();
+        assert_eq!(entries.len(), 2, "nothing was deleted by a typo: {models}");
+        assert_eq!(entries[0]["id"], "reasoner-v1");
+        assert_eq!(entries[1]["id"], "fast-v1");
+    }
+
+    /// A prompt that cannot be read at the disposition stage aborts the wizard
+    /// (the `?` on that prompt is the abort), rather than treating a failed read
+    /// as "keep".
+    #[tokio::test]
+    async fn a_prompter_failure_at_the_model_disposition_propagates() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        write_models_json(seeded_provider()).await;
+
+        // Everything up to the first disposition prompt, then nothing left.
+        let mut prompt = FakePrompter::new(&["2", "acme", "", "", "", ""]);
+        let (out, _captured) = Output::memory();
+        let error = configure_with(&mut prompt, &out)
+            .await
+            .expect_err("an unreadable prompt is not a model decision");
+        assert_eq!(error, "test input exhausted");
+
+        let models = read_models_json().await;
+        assert_eq!(
+            models["providers"]["acme"]["models"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2,
+            "a wizard that could not finish wrote nothing: {models}"
+        );
+    }
+
     /// Editing one model only changes that model: its siblings are untouched
     /// and the edited one keeps the values that were not re-entered.
     #[tokio::test]
@@ -1711,6 +1863,141 @@ mod tests {
         assert_eq!(
             tokio::fs::read_to_string(&path).await.expect("read"),
             seeded
+        );
+    }
+
+    /// A model with the fields the wizard always sets; the numbers are what the
+    /// tests below vary.
+    fn model(id: &str, context_window: i32, max_tokens: i32) -> ModelInput {
+        ModelInput {
+            id: id.to_string(),
+            name: id.to_string(),
+            supports_images: false,
+            reasoning: true,
+            context_window,
+            max_tokens,
+            cost: ModelCostInput::default(),
+        }
+    }
+
+    /// A persisted model whose limits are missing or inconsistent is repaired on
+    /// load, so re-writing it always passes the agent's validator: both limits
+    /// must be positive, and the output limit must not exceed the window.
+    #[test]
+    fn a_persisted_model_is_repaired_before_it_reaches_the_validator() {
+        let mut missing = model("m", 0, 0);
+        assert_eq!(missing.context_window, 0, "the fixture starts unset");
+        missing.normalize();
+        assert_eq!(missing.context_window, DEFAULT_CONTEXT_WINDOW);
+        assert_eq!(missing.max_tokens, DEFAULT_MAX_TOKENS);
+
+        let mut inverted = model("m", 100, 4096);
+        inverted.normalize();
+        assert_eq!(inverted.max_tokens, 100, "output cannot exceed the window");
+        assert_eq!(inverted.context_window, 100, "the window is what it was");
+
+        // Numbers that are already consistent are left exactly as they are.
+        let mut valid = model("m", 1_000, 200);
+        valid.normalize();
+        assert_eq!((valid.context_window, valid.max_tokens), (1_000, 200));
+    }
+
+    /// An existing entry is read from either limit shape — the flat keys this
+    /// wizard writes and the nested `limit` object the agent's catalog uses —
+    /// and an entry with no usable id is not a model at all.
+    #[test]
+    fn a_persisted_model_is_read_from_either_limit_shape() {
+        let flat = parse_existing_model(&serde_json::json!({
+            "id": "m-flat",
+            "name": "Flat",
+            "modalities": ["text", "image"],
+            "reasoning": false,
+            "contextWindow": 128000,
+            "maxTokens": 4096,
+        }))
+        .expect("flat keys");
+        assert_eq!(flat.id, "m-flat");
+        assert_eq!(flat.name, "Flat");
+        assert!(flat.supports_images);
+        assert!(!flat.reasoning);
+        assert_eq!(flat.context_window, 128_000);
+        assert_eq!(flat.max_tokens, 4_096);
+
+        let nested = parse_existing_model(&serde_json::json!({
+            "id": "m-nested",
+            "limit": {"context": 200000, "output": 8192},
+        }))
+        .expect("limit object");
+        assert_eq!(
+            nested.name, "m-nested",
+            "the id stands in for a missing name"
+        );
+        assert_eq!(nested.context_window, 200_000);
+        assert_eq!(nested.max_tokens, 8_192);
+        assert!(!nested.supports_images, "no modalities means text only");
+        assert!(
+            nested.reasoning,
+            "reasoning defaults on, matching the loader"
+        );
+
+        assert!(parse_existing_model(&serde_json::json!({"id": ""})).is_none());
+        assert!(parse_existing_model(&serde_json::json!({"name": "no id"})).is_none());
+    }
+
+    /// Every "that answer is not usable" arm re-prompts instead of failing, and
+    /// the value the caller finally gives is the one that is written: a blank
+    /// base URL, and a non-positive window and price, are each refused once and
+    /// then accepted.
+    #[tokio::test]
+    async fn unusable_answers_are_refused_and_the_next_one_is_taken() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let mut prompt = FakePrompter::new(&[
+            "2",                        // custom provider
+            "acme-reprompt",            // id
+            "Acme Reprompt",            // display name
+            "2",                        // protocol: OpenAI Responses
+            "",                         // base URL — refused
+            "https://api.acme.test/v1", // ...and then accepted
+            "secret-key",               // API key (read_secret)
+            "",                         // add a model
+            "m1",                       // model id
+            "M1",                       // model name
+            "0",                        // context window — refused
+            "128000",                   // ...and then accepted
+            "8192",                     // max output
+            "yes",                      // supports images
+            "-1",                       // input price — refused
+            "1",                        // ...and then accepted
+            "4",                        // output price
+            "0",                        // cache read
+            "",                         // cache write stays unset
+            "",                         // no more models
+        ]);
+        let (out, captured) = Output::memory();
+        configure_with(&mut prompt, &out).await.expect("configure");
+
+        let printed = output_text(&captured.err);
+        assert!(printed.contains("Base URL is required."), "{printed}");
+        assert!(
+            printed.contains("Please enter a positive whole number."),
+            "{printed}"
+        );
+        assert!(
+            printed.contains("Please enter a non-negative number."),
+            "{printed}"
+        );
+        assert_eq!(prompt.secret_reads, 1);
+
+        let models = read_models_json().await;
+        let entry = &models["providers"]["acme-reprompt"]["models"][0];
+        assert_eq!(entry["contextWindow"], serde_json::json!(128_000));
+        assert_eq!(entry["maxTokens"], serde_json::json!(8_192));
+        assert_eq!(entry["modalities"], serde_json::json!(["text", "image"]));
+        assert_eq!(
+            entry["cost"],
+            serde_json::json!({"input": 1.0, "output": 4.0, "cache_read": 0.0, "cache_write": 0.0}),
+            "a priced model writes all four fields, zeroed where unset"
         );
     }
 }

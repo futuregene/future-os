@@ -773,4 +773,79 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("not pending"), "{error}");
     }
+
+    /// The usage text names the action it belongs to, and a flag-shaped value is
+    /// a missing value rather than a value — `--run --json` is a typo, not a run
+    /// id called `--json`.
+    #[test]
+    fn usage_and_missing_values_are_reported_per_action() {
+        assert_eq!(usage(Action::Abort), "future session abort <session-id>");
+        assert_eq!(
+            usage(Action::Cancel),
+            "future session cancel <session-id> --run <run-id>"
+        );
+        assert_eq!(
+            usage(Action::Approvals),
+            "future session approvals <session-id>"
+        );
+        assert_eq!(
+            usage(Action::Approve),
+            "future session approve <session-id> <request-id>"
+        );
+        assert_eq!(
+            usage(Action::Reject),
+            "future session reject <session-id> <request-id>"
+        );
+        assert!(
+            parse(Action::Approvals, &args(&[])).is_err(),
+            "no session id"
+        );
+        assert_eq!(
+            parse(Action::Cancel, &args(&["s1", "--run", "--json"])).unwrap_err(),
+            "missing value for --run"
+        );
+        assert_eq!(
+            parse(Action::Approve, &args(&["s1", "ap-1", "--note", ""])).unwrap_err(),
+            "missing value for --note"
+        );
+    }
+
+    /// `--json` asks the agent's own acknowledgement to be passed through, for
+    /// both actions that have a plain-text one.
+    #[tokio::test]
+    async fn abort_and_cancel_report_json_when_asked() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = MockAgent::default();
+        agent.responses.insert(
+            "abort_session".into(),
+            "{\"active_run_id\":\"r-1\",\"queued_cancelled\":2}".into(),
+        );
+        agent.responses.insert(
+            "cancel_queued_run".into(),
+            "{\"cancelled\":true,\"run_id\":\"r-2\"}".into(),
+        );
+        let (agent, _env) = spawn(agent).await;
+
+        let (out, cap) = Output::memory();
+        run(Action::Abort, &args(&["s1", "--json"]), &out)
+            .await
+            .expect("abort");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let report: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(report["active_run_id"], "r-1");
+        assert_eq!(report["queued_cancelled"], 2);
+
+        let (out, cap) = Output::memory();
+        run(
+            Action::Cancel,
+            &args(&["s1", "--run", "r-2", "--json"]),
+            &out,
+        )
+        .await
+        .expect("cancel");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let report: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(report["run_id"], "r-2");
+        assert_eq!(agent.seen_of("cancel_queued_run").len(), 1);
+    }
 }

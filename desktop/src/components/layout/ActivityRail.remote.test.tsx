@@ -768,3 +768,109 @@ it("reveals a heading's controls with that heading, not with the list it sits in
   expect(content.querySelectorAll("[class*='group-hover:']")).toHaveLength(0);
   view.unmount();
 });
+
+describe("the rail's remote row controls", () => {
+  /**
+   * A forked remote conversation folds and unfolds like a local one.
+   *
+   * The fold state is the rail's own (a set of row keys), so the second click is
+   * what proves the toggle is a toggle: the first expands, the second has to
+   * remove the key again — a control that only ever adds leaves the reader unable
+   * to close what they opened.
+   */
+  it("folds a remote fork open and closed", async () => {
+    const view = await mountRail({
+      deviceFilter: { kind: "all" },
+      remoteCatalogs: [{
+        desktopId: "desktop_a",
+        sessions: [
+          { lastMessageAt: 5_000, sessionId: "sess_parent", threadId: "parent_thread", title: "Parent conversation" },
+          { lastMessageAt: 4_000, parentSessionId: "sess_parent", sessionId: "sess_child", threadId: "child_thread", title: "Child conversation" },
+        ],
+      } as never],
+      remotePeers: [peer],
+    });
+
+    // The child is hidden until the parent is expanded.
+    expect(view.text()).toContain("Parent conversation");
+    expect(view.text()).not.toContain("Child conversation");
+
+    const expand = () => view.container.querySelector<HTMLButtonElement>(
+      "button[aria-label='Expand child conversations of Parent conversation']",
+    );
+    act(() => expand()!.click());
+    expect(view.text()).toContain("Child conversation");
+
+    const collapse = () => view.container.querySelector<HTMLButtonElement>(
+      "button[aria-label='Collapse child conversations of Parent conversation']",
+    );
+    act(() => collapse()!.click());
+    expect(view.text()).not.toContain("Child conversation");
+    // And it offers the way back in, rather than leaving the fork shut for good.
+    expect(expand()).not.toBeNull();
+    view.unmount();
+  });
+
+  /**
+   * Renaming a workspace on another machine is the shell's dialog, so the rail's
+   * job is to name *which* workspace — the machine and the workspace id the host
+   * addresses it by, plus the name the dialog opens with. Handing over only the
+   * id would leave the dialog blank; handing over the name alone would leave the
+   * host unaddressable.
+   */
+  it("hands the shell the host, the id and the current name when a remote workspace is renamed", async () => {
+    const onRenameRemoteWorkspace = vi.fn();
+    const view = await mountRail({
+      deviceFilter: { kind: "all" },
+      onRenameRemoteWorkspace,
+      remoteCatalogs: [catalogRow("sess_ws", {
+        mode: "workspace",
+        sessionId: "sess_ws",
+        threadId: "ws_thread",
+        title: "A conversation in the workspace",
+        workspaceId: "ws_remote",
+        workspaceName: "Docs",
+      })],
+      remotePeers: [peer],
+    });
+
+    act(() => view.container
+      .querySelector<HTMLButtonElement>("button[aria-label='Workspace actions for Docs']")!
+      .click());
+    const rename = [...view.container.querySelectorAll<HTMLButtonElement>("[role='menuitem']")]
+      .find(node => node.textContent === "Rename");
+    expect(rename).not.toBeUndefined();
+    act(() => rename!.click());
+
+    expect(onRenameRemoteWorkspace).toHaveBeenCalledTimes(1);
+    expect(onRenameRemoteWorkspace.mock.calls[0]![0]).toEqual({
+      desktopId: "desktop_a",
+      name: "Docs",
+      workspaceId: "ws_remote",
+    });
+    view.unmount();
+  });
+
+  /** The device picker's own way out to the machines screen is the rail's to wire. */
+  it("opens the desktops screen from the device picker", async () => {
+    const onManageDesktops = vi.fn();
+    const view = await mountRail({
+      deviceFilter: { kind: "all" },
+      onChangeDeviceFilter: vi.fn(),
+      onManageDesktops,
+      remoteCatalogs: [catalogRow("sess_1")],
+      remotePeers: [peer],
+    });
+
+    act(() => view.container
+      .querySelector<HTMLButtonElement>("button[aria-haspopup='listbox']")!
+      .dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    const manage = [...view.container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(node => node.textContent === "Manage desktops…");
+    expect(manage).not.toBeUndefined();
+    act(() => manage!.click());
+
+    expect(onManageDesktops).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
+});

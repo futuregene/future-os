@@ -201,6 +201,21 @@ mod tests {
                 .trim_end()
                 .to_string()
         }
+
+        /// Assert the handler answered (rather than rejecting) and hand back the
+        /// answer's text.
+        ///
+        /// The rejection is read **eagerly**, into a local the assertion then
+        /// quotes. An `assert!` message argument is evaluated only when the
+        /// assertion fails, so an expression left inside the message is a line
+        /// llvm-cov reports as uncovered however green the suite is — the
+        /// measurement would carry a phantom gap on every assertion that names
+        /// the value it checked.
+        fn answered(&self) -> String {
+            let rejection = self.result.as_ref().err().map(ToString::to_string);
+            assert!(rejection.is_none(), "the handler rejected: {rejection:?}");
+            self.text()
+        }
     }
 
     /// One raw request against a fresh `handle` on a real loopback socket.
@@ -241,6 +256,60 @@ mod tests {
         RoundTrip { raw, result }
     }
 
+    /// The same exchange, but the request arrives in two writes with a pause
+    /// between them: the header block first, then the body. A browser does this
+    /// whenever a body crosses a packet boundary, and the handler has to keep
+    /// reading to the declared length instead of treating the first short read
+    /// as the whole body.
+    async fn round_trip_split_body(
+        root: &std::path::Path,
+        samples: Vec<Sample>,
+        headers: &str,
+        body: &str,
+    ) -> RoundTrip {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind loopback");
+        let port = listener.local_addr().expect("bound addr").port();
+        let origin = format!("http://127.0.0.1:{port}");
+        let root = root.to_path_buf();
+        let samples = Arc::new(samples);
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("accept");
+            handle(socket, origin, samples, root).await
+        });
+
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("connect");
+        let head = format!(
+            "{}\r\ncontent-length: {}\r\n\r\n",
+            headers.replace("{PORT}", &port.to_string()),
+            body.len()
+        );
+        client
+            .write_all(head.as_bytes())
+            .await
+            .expect("write the header block");
+        client.flush().await.expect("flush");
+        // Long enough that the handler is parked in its body read when the rest
+        // of the body arrives.
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        client
+            .write_all(body.as_bytes())
+            .await
+            .expect("write the body");
+        client.shutdown().await.expect("half-close");
+
+        let mut raw = Vec::new();
+        client.read_to_end(&mut raw).await.expect("read response");
+        let result = tokio::time::timeout(Duration::from_secs(10), server)
+            .await
+            .expect("the handler must not hang")
+            .expect("join handle");
+        RoundTrip { raw, result }
+    }
+
     fn sample(label: &str, session: &str, run: &str) -> Sample {
         Sample {
             label: label.to_string(),
@@ -266,12 +335,11 @@ mod tests {
             "GET /samples HTTP/1.1\r\nhost: 127.0.0.1:{PORT}\r\n\r\n",
         )
         .await;
-        assert!(list.result.is_ok(), "rejection: {}", list.rejection());
+        let listing = list.answered();
         assert_eq!(list.status_line(), "HTTP/1.1 200 OK");
         assert!(
-            list.text().contains("application/json"),
-            "the sample list is JSON: {}",
-            list.text()
+            listing.contains("application/json"),
+            "the sample list is JSON: {listing}"
         );
         let body = list
             .text()
@@ -293,13 +361,8 @@ mod tests {
                 &format!("GET {path} HTTP/1.1\r\nhost: 127.0.0.1:{{PORT}}\r\n\r\n"),
             )
             .await;
-            assert!(
-                response.result.is_ok(),
-                "rejection: {}",
-                response.rejection()
-            );
+            let text = response.answered();
             assert_eq!(response.status_line(), "HTTP/1.1 200 OK");
-            let text = response.text();
             assert!(text.contains(mime), "{path} is served as {mime}: {text}");
             assert!(text.ends_with(expected), "{path} body: {text}");
             // The probe page is a local measurement surface: no caching, and
@@ -320,20 +383,11 @@ mod tests {
             "GET /../secrets HTTP/1.1\r\nhost: 127.0.0.1:{PORT}\r\n\r\n",
         )
         .await;
+        let text = response.answered();
+        assert!(text.ends_with("not found"), "{text}");
         assert!(
-            response.result.is_ok(),
-            "rejection: {}",
-            response.rejection()
-        );
-        assert!(
-            response.text().ends_with("not found"),
-            "{}",
-            response.text()
-        );
-        assert!(
-            response.text().contains("text/plain"),
-            "the fallback is plain text: {}",
-            response.text()
+            text.contains("text/plain"),
+            "the fallback is plain text: {text}"
         );
     }
 
@@ -487,16 +541,8 @@ mod tests {
             ),
         )
         .await;
-        assert!(
-            response.result.is_ok(),
-            "rejection: {}",
-            response.rejection()
-        );
-        assert!(
-            response.text().ends_with("{\"stored\":true}"),
-            "{}",
-            response.text()
-        );
+        let text = response.answered();
+        assert!(text.ends_with("{\"stored\":true}"), "{text}");
         let stored = std::fs::read_to_string(root.path().join("results.json")).expect("stored");
         assert_eq!(
             stored, body,
@@ -614,6 +660,160 @@ mod tests {
         assert_eq!(recorded["success"], false);
         assert!(recorded["data"].is_null());
         assert_eq!(recorded["error"], "boom");
+    }
+
+    /// A body that arrives in two writes is reassembled: the declared length,
+    /// not the first short read, is what ends it. (A single-read handler would
+    /// store a truncated document — the measurement's own results — and the
+    /// operator would read a JSON file that stops mid-object.)
+    #[tokio::test]
+    async fn a_body_split_across_two_writes_is_reassembled() {
+        let root = tempfile::tempdir().expect("web root");
+        let body = r#"{"results":[{"label":"cold","events":3}]}"#;
+        let response = round_trip_split_body(
+            root.path(),
+            Vec::new(),
+            "POST /result HTTP/1.1\r\nhost: 127.0.0.1:{PORT}\r\n\
+             origin: http://127.0.0.1:{PORT}\r\nx-sync-measurement: 1",
+            body,
+        )
+        .await;
+        response.answered();
+        let stored = std::fs::read_to_string(root.path().join("results.json")).expect("stored");
+        assert_eq!(
+            stored, body,
+            "the whole body is stored, not just its first packet"
+        );
+    }
+
+    /// The RPC route needs the same-origin probe header too: an in-scope read
+    /// command from a foreign origin is refused before it reaches the app.
+    #[tokio::test]
+    async fn an_rpc_request_without_the_probe_header_is_rejected() {
+        let root = tempfile::tempdir().expect("web root");
+        let body = r#"{"type":"get_state","sessionId":"sess-1"}"#;
+        let response = round_trip(
+            root.path(),
+            vec![sample("cold", "sess-1", "run-1")],
+            &format!(
+                "POST /rpc HTTP/1.1\r\nhost: 127.0.0.1:{{PORT}}\r\n\
+                 origin: https://evil.example\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len()
+            ),
+        )
+        .await;
+        assert_eq!(
+            response.rejection(),
+            "same-origin probe header required",
+            "the read route is gated on the same header as the write route"
+        );
+    }
+
+    /// The per-request gzip declaration, and the whole-run env override behind
+    /// it, both reach the production reply encoder — which is the only place
+    /// the measured byte count and the shipping encoding can disagree. A page
+    /// past the encoder's threshold is asked for twice, once per request flag
+    /// and once through the env var, and the wire really does carry a gzip
+    /// stream for the declared request.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // mock_agent_lock serializes this family
+    async fn the_gzip_declaration_is_honoured_on_the_measurement_lane() {
+        use crate::remote::test_support::{ensure_mock_agent, init_store, mock_agent_lock};
+        use flate2::read::GzDecoder;
+        use std::io::Read;
+
+        const RPC_BODY: &str = r#"{"id":"m1","type":"get_session_entries","sessionId":"sess-1"}"#;
+        let request = |extra: &str| {
+            format!(
+                "POST /rpc HTTP/1.1\r\nhost: 127.0.0.1:{{PORT}}\r\n\
+                 origin: http://127.0.0.1:{{PORT}}\r\nx-sync-measurement: 1\r\n{extra}\
+                 content-length: {}\r\n\r\n{RPC_BODY}",
+                RPC_BODY.len()
+            )
+        };
+
+        let _lock = mock_agent_lock();
+        let _home = crate::remote::test_support::HomeGuard::new("sync-measure-gzip");
+        let root = tempfile::tempdir().expect("web root");
+        init_store();
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        // Past `REMOTE_JSON_GZIP_THRESHOLD_BYTES` (32 KiB), which is where the
+        // encoder's choice starts to be visible on the wire.
+        let entries: Vec<Value> = (0..120)
+            .map(|index| {
+                json!({
+                    "id": format!("e{index}"), "kind": "assistant", "role": "assistant",
+                    "createdAtMs": 1_000 + index, "runId": "run-1",
+                    "blocks": [{"kind": "text", "text": "measured page body ".repeat(20)}],
+                })
+            })
+            .collect();
+        agent.set_session_entries("sess-1", json!({ "entries": entries }));
+
+        let plain = round_trip(
+            root.path(),
+            vec![sample("cold", "sess-1", "run-1")],
+            &request(""),
+        )
+        .await;
+        assert!(plain.result.is_ok(), "rejection: {}", plain.rejection());
+        assert!(
+            !plain.raw.windows(2).any(|pair| pair == [0x1f, 0x8b]),
+            "without the declaration the reply rides plain"
+        );
+        let plain_json = plain
+            .text()
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body.to_string())
+            .expect("a body follows the headers");
+        let described = plain_json[..plain_json.len().min(200)].to_string();
+        assert!(
+            plain_json.contains("entries"),
+            "the page is the reply the measurement reads: {described}"
+        );
+
+        // Per-request declaration: the same page, gzipped on the wire.
+        let gzipped = round_trip(
+            root.path(),
+            vec![sample("cold", "sess-1", "run-1")],
+            &request("x-sync-measure-gzip: 1\r\n"),
+        )
+        .await;
+        gzipped.answered();
+        let gz_body = gzipped
+            .raw
+            .windows(2)
+            .position(|pair| pair == [0x1f, 0x8b])
+            .map(|at| gzipped.raw[at..].to_vec())
+            .expect("the declared request carries a gzip stream");
+        let mut decoded = Vec::new();
+        GzDecoder::new(gz_body.as_slice())
+            .read_to_end(&mut decoded)
+            .expect("the stream decompresses");
+        assert_eq!(
+            String::from_utf8_lossy(&decoded),
+            plain_json,
+            "gzip is an encoding, not a different answer"
+        );
+
+        // …and the whole-run override does the same for a request that does not
+        // ask: the operator sweeps a run with one env var.
+        std::env::set_var("SYNC_MEASURE_GZIP", "true");
+        let from_env = round_trip(
+            root.path(),
+            vec![sample("cold", "sess-1", "run-1")],
+            &request(""),
+        )
+        .await;
+        std::env::remove_var("SYNC_MEASURE_GZIP");
+        from_env.answered();
+        assert!(
+            from_env.raw.windows(2).any(|pair| pair == [0x1f, 0x8b]),
+            "the env override reaches the encoder too"
+        );
+
+        agent.clear_scripts();
     }
 }
 

@@ -440,3 +440,44 @@ it("survives a skill catalogue that cannot be read", async () => {
   type("/paper");
   expect([...container.querySelectorAll("[data-menu-index]")].map(row => row.textContent)).toEqual(["/future-paperWrite a paper"]);
 });
+
+it("sends nothing when the attachment that justified the send was removed while the recommender was asked", async () => {
+  // The draft the user submitted is "this one attachment"; the recommender is
+  // asked about it and the user takes the chip off before the answer arrives.
+  // The answer says "no skill needed, send it" — but there is nothing left to
+  // send: an empty editor with no attachments is a submit the composer refuses
+  // everywhere else, and sending it would post a blank turn to the agent.
+  let release!: (card: null) => void;
+  const evaluation = new Promise<null>((resolve) => {
+    release = resolve;
+  });
+  const onSend = render({
+    skillRecommendation: {
+      card: null,
+      onDismiss: vi.fn(),
+      onEvaluate: () => evaluation,
+      onInstall: vi.fn(async () => true),
+    },
+  });
+  await flush();
+
+  await drag({ paths: ["/tmp/a.ts"], type: "drop" });
+  await flush();
+  expect(chips()).toHaveLength(1);
+  expect(editor().textContent).toBe("");
+
+  // Submit with no text: legal while an attachment is pending.
+  await act(async () => {
+    container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+  expect(onSend).not.toHaveBeenCalled();
+
+  // The attachment goes away while the answer is in flight.
+  act(() => chips()[0]!.click());
+  expect(chips()).toHaveLength(0);
+
+  await act(async () => release(null));
+  await flush();
+
+  expect(onSend).not.toHaveBeenCalled();
+});

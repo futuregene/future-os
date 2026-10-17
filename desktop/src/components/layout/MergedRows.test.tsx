@@ -76,6 +76,8 @@ async function render(props: {
   onNewChat?: () => void;
   onNewChatInWorkspace?: (desktopId: string, workspaceId: string | null) => void;
   onNewWorkspace?: () => void;
+  onOpenRemote?: (row: MergedConversation) => void;
+  onRenameRemoteWorkspace?: (target: { desktopId: string; workspaceId: string; name: string }) => void;
   onSelectChats?: () => void;
   onSelectWorkspaceChats?: (groupKey: string) => void;
   onToggleChatSection?: () => void;
@@ -115,8 +117,9 @@ async function render(props: {
         onNewChat={props.onNewChat}
         onNewChatInWorkspace={props.onNewChatInWorkspace}
         onNewWorkspace={props.onNewWorkspace}
-        onOpenRemote={vi.fn()}
+        onOpenRemote={props.onOpenRemote ?? vi.fn()}
         onRenameRemote={vi.fn()}
+        onRenameRemoteWorkspace={props.onRenameRemoteWorkspace}
         onSelectChats={props.onSelectChats}
         onSelectWorkspaceChats={props.onSelectWorkspaceChats}
         onToggleChatSection={props.onToggleChatSection ?? vi.fn()}
@@ -1077,5 +1080,89 @@ it("acts directly when no other machine is paired", async () => {
 
   await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='New chat']")!.click());
   expect(onNewChat).toHaveBeenCalledTimes(1);
+  await view.unmount();
+});
+
+/**
+ * In selection mode a click on a host's *row* ticks it instead of opening it.
+ *
+ * The checkbox is one way to tick a row; activating the row itself is the other,
+ * and it is the local list's rule from the same state. Without this a click in
+ * selection mode opened a conversation — leaving the batch the user was building
+ * and opening something on another machine instead.
+ */
+it("ticks a host's row when the row itself is activated in selection mode", async () => {
+  const toggle = vi.fn();
+  const onOpenRemote = vi.fn();
+  const conversationRow = conversation({ desktopId: "desktop_a", id: "chat_a", key: "desktop_a::chat_a", title: "a chat" });
+  const view = await render({
+    onOpenRemote,
+    peers: [peer("desktop_a", "Studio iMac")],
+    remoteSelection: { selectable: () => true, selected: () => false, toggle },
+    renderLocalRow: vi.fn(() => null),
+    rows: [conversationRow],
+    selectionMode: true,
+    threadById: new Map(),
+  });
+
+  // The row's own activation surface: `RailRow` is a button whose `title` is
+  // "conversation · machine", and the row is what the user clicks.
+  const row = view.container.querySelector<HTMLElement>("button[title^='a chat']")!;
+  await act(async () => row.click());
+
+  expect(toggle).toHaveBeenCalledWith(conversationRow);
+  expect(onOpenRemote).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+/** An empty chat section says so rather than drawing an unexplained gap. */
+it("says the chat section is empty when it holds no rows", async () => {
+  const view = await render({
+    renderLocalRow: vi.fn(() => null),
+    rows: [],
+    threadById: new Map(),
+  });
+
+  expect(view.container.textContent).toContain("No chats");
+  await view.unmount();
+});
+
+/**
+ * Renaming a workspace on another machine opens the shell's dialog, so the rail
+ * hands it the machine, the workspace id the host addresses it by, and the name
+ * the dialog opens with.
+ *
+ * The name comes from the *heading*, which is the current one: a dialog seeded
+ * from anything else would open showing a stale name and then rename to it.
+ */
+it("hands the machine, the id and the current name to the rename hand-off", async () => {
+  const onRenameRemoteWorkspace = vi.fn();
+  const view = await render({
+    onRenameRemoteWorkspace,
+    peers: [peer("desktop_a", "Studio iMac")],
+    renderLocalRow: vi.fn(() => null),
+    rows: [conversation({
+      desktopId: "desktop_a",
+      id: "ws_thread",
+      key: "desktop_a::ws_thread",
+      mode: "workspace",
+      title: "a chat in the workspace",
+      workspaceId: "ws_remote",
+      workspaceName: "Docs",
+    })],
+    threadById: new Map(),
+  });
+
+  const menu = view.container.querySelector<HTMLButtonElement>("button[aria-label='Workspace actions for Docs']")!;
+  await act(async () => menu.click());
+  const rename = [...view.container.querySelectorAll<HTMLButtonElement>("[role='menuitem']")]
+    .find(node => node.textContent === "Rename")!;
+  await act(async () => rename.click());
+
+  expect(onRenameRemoteWorkspace).toHaveBeenCalledWith({
+    desktopId: "desktop_a",
+    name: "Docs",
+    workspaceId: "ws_remote",
+  });
   await view.unmount();
 });

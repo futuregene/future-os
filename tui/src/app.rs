@@ -154,22 +154,51 @@ mod terminal_io_delegation_tests {
 
     /// The app reaches a terminal *only* through `TerminalIo`, so these
     /// delegations are the app's entire terminal surface — and until they are
-    /// exercised against a real console, "the app can drive a terminal" is
-    /// untested. Without a console the test skips (`terminal_or_skip`); inside
-    /// the `console_harness` child it runs for real: raw mode on a real console,
-    /// a reader thread polling it, the size read from its screen buffer, and a
-    /// stop that restores the console and joins the reader.
+    /// exercised against a real terminal, "the app can drive a terminal" is
+    /// untested.
+    ///
+    /// POSIX drives them against a real PTY installed as stdin (a `cargo test`
+    /// harness inherits no tty of its own) and types a multi-byte character
+    /// through it, so the reader's incremental UTF-8 decoding is asserted
+    /// rather than assumed. Windows needs a real console object and runs the
+    /// same probe inside the `console_harness` child; elsewhere
+    /// `terminal_or_skip` skips.
     #[test]
     fn every_terminal_io_delegation_reaches_a_real_terminal() {
-        let Some(mut terminal) = crate::terminal::terminal_or_skip() else {
-            return;
-        };
-        let io: &mut dyn TerminalIo = &mut terminal;
+        #[cfg(unix)]
+        {
+            let _guard = crate::test_env::lock();
+            crate::terminal::with_pty_stdin(|pty| {
+                let mut terminal = crate::terminal::Terminal::new()
+                    .expect("POSIX terminal construction is infallible");
+                probe(&mut terminal, Some((pty, "é")));
+            });
+            // The same delegations with nothing typed — the `type_keys`-absent
+            // arm the Windows probe takes. Exercised here too, so the shape of
+            // the probe is not a platform blind spot.
+            crate::terminal::with_pty_stdin(|_pty| {
+                let mut terminal = crate::terminal::Terminal::new()
+                    .expect("POSIX terminal construction is infallible");
+                probe(&mut terminal, None);
+            });
+        }
+        #[cfg(windows)]
+        {
+            let Some(mut terminal) = crate::terminal::terminal_or_skip() else {
+                return;
+            };
+            probe(&mut terminal, None);
+        }
+    }
 
+    /// Every `TerminalIo` method, exercised against a live terminal. When
+    /// `type_keys` is given, that text is typed through the terminal under test
+    /// and must reach the app's own input callback whole.
+    fn probe(io: &mut dyn TerminalIo, type_keys: Option<(&crate::terminal::TestPty, &str)>) {
         io.hide_cursor();
         io.show_cursor();
         let (cols, rows) = (io.columns(), io.rows());
-        assert!(cols > 0 && rows > 0, "console size {cols}x{rows}");
+        assert!(cols > 0 && rows > 0, "terminal size {cols}x{rows}");
         io.write("terminal-io probe\r\n");
         io.drain_input(5, 1);
         // Installed, replaced and cleared: the app wires SIGINT through this and
@@ -179,44 +208,48 @@ mod terminal_io_delegation_tests {
         io.set_exit_signal_callback(Some(Box::new(|| {})));
         io.set_exit_signal_callback(None);
 
-        let typed = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-        let seen = Arc::clone(&typed);
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let received = Arc::clone(&seen);
         let resizes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let resized = Arc::clone(&resizes);
         io.start(
-            Box::new(move |text| seen.lock().unwrap().push(text)),
+            Box::new(move |text| received.lock().unwrap().push(text)),
             Box::new(move || {
                 resized.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }),
         )
-        .expect("a real console starts the reader");
+        .expect("a live terminal starts the reader");
+        if let Some((pty, keys)) = type_keys {
+            pty.write(keys);
+            // …and a terminal emulator resizing the window: the reader reports
+            // it (SIGWINCH through the self-pipe) to the app's resize callback.
+            pty.resize(90, 30);
+        }
         // Let the reader reach its wait/timer path (the kitty query fallback
-        // fires at 150 ms), then stop: the console is restored and the reader
+        // fires at 150 ms), then stop: the terminal is restored and the reader
         // thread is joined.
         //
-        // Deliberately no programmatic `SetConsoleWindowInfo` here: resizing the
-        // harness console makes the reader spin on repeated size-changed events
-        // and the child never finishes (measured: the harness ran for over 60 s
-        // and had to be killed). The `on_resize` callback therefore stays
-        // uncovered and is waived as unreachable-in-this-environment in
-        // `docs/testing/module-tui.md`.
+        // Deliberately no programmatic resize here. On a Windows console,
+        // resizing the harness console makes the reader spin on repeated
+        // size-changed events and the child never finishes (measured: the
+        // harness ran for over 60 s and had to be killed), which is why
+        // `on_resize` stays unasserted there; the PTY counterpart above covers
+        // the resize path in `terminal::tests`.
         std::thread::sleep(Duration::from_millis(300));
         assert_eq!(
             (io.columns(), io.rows()),
             (cols, rows),
-            "the reader keeps the console's own size"
+            "the reader keeps the terminal's own size"
         );
         io.stop();
-        // The console feeds the reader thread for real: `start()` enables focus
-        // reporting (`\x1b[?1004h`), so a hidden window still delivers events.
         // What may arrive is not fixed — a real console can also hand over a
         // stray key from the window lifecycle (a run of this test observed a
         // bare "g") — so the assertion is the *invariant* the pipeline must
-        // hold no matter what the console sends: every chunk is forwarded whole,
-        // and the incremental UTF-8 decoding never splits a character (a split
-        // would surface here as U+FFFD).
-        let typed = typed.lock().unwrap().clone();
-        for text in &typed {
+        // hold no matter what the terminal sends: every chunk is forwarded
+        // whole, and the incremental UTF-8 decoding never splits a character (a
+        // split would surface here as U+FFFD).
+        let chunks = seen.lock().unwrap().clone();
+        for text in &chunks {
             assert!(
                 !text.is_empty(),
                 "the pipeline must not forward an empty chunk"
@@ -227,7 +260,18 @@ mod terminal_io_delegation_tests {
                  multi-byte character across reads: {text:?}"
             );
         }
-        // The console survived: it can still be sized and drawn on.
+        if let Some((_, keys)) = type_keys {
+            assert!(
+                resizes.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+                "a resized terminal must reach the app's resize callback"
+            );
+            let delivered = chunks.join("");
+            assert!(
+                delivered.contains(keys),
+                "characters typed through the terminal never reached the app: {chunks:?}"
+            );
+        }
+        // The terminal survived: it can still be sized and drawn on.
         assert!(io.columns() > 0);
         io.write("\r\n");
     }
@@ -2333,6 +2377,18 @@ impl<T: TerminalIo> App<T> {
     /// Public state accessors (used by the loop / tests).
     pub fn is_running(&self) -> bool {
         self.running
+    }
+
+    /// Apply the startup update notice, when the manifest check found one.
+    ///
+    /// The interactive loop's notice arm always runs once (with `None` on any
+    /// build that has no published channel, which is every test build), so the
+    /// "a notice arrived" half lives here where a test can drive it without a
+    /// manifest fetch.
+    pub(crate) fn apply_update_notice(&mut self, notice: Option<String>) {
+        if let Some(notice) = notice {
+            self.handle_cmd(UiCmd::UpdateAvailable(notice));
+        }
     }
 
     pub fn get_full_redraw_count(&self) -> usize {
@@ -10141,6 +10197,32 @@ mod tests {
         assert!(commands.try_recv().is_err());
     }
 
+    /// The interactive loop's own entry point for the manifest answer: a notice
+    /// arrives as a system message, a `None` (no published channel, or
+    /// `--offline`) adds nothing at all.
+    #[tokio::test]
+    async fn applying_the_loops_update_answer_adds_a_message_only_when_present() {
+        let (mut app, _) = make_app(100, 30);
+        let before = app
+            .chat
+            .last_message()
+            .map(|message| message.content.clone());
+        app.apply_update_notice(None);
+        assert_eq!(
+            app.chat
+                .last_message()
+                .map(|message| message.content.clone()),
+            before,
+            "None must add nothing"
+        );
+
+        let notice = "New FutureOS version available: v1.2.3 → v1.2.4.";
+        app.apply_update_notice(Some(notice.to_string()));
+        let message = app.chat.last_message().unwrap();
+        assert_eq!(message.role, ChatRole::System);
+        assert_eq!(message.content, notice);
+    }
+
     #[tokio::test]
     async fn update_notice_waits_for_stream_to_finish_and_shows_once() {
         let (mut app, _) = make_app(100, 30);
@@ -11985,11 +12067,11 @@ mod tests {
     fn location(path: &str) -> String {
         let slashed = path.replace('\\', "/");
         let stripped = slashed.strip_prefix("//?/").unwrap_or(slashed.as_str());
-        if cfg!(windows) {
-            stripped.to_ascii_lowercase()
-        } else {
-            stripped.to_string()
-        }
+        #[cfg(windows)]
+        let normalized = stripped.to_ascii_lowercase();
+        #[cfg(not(windows))]
+        let normalized = stripped.to_string();
+        normalized
     }
 
     /// Pump until *every* needle is present, then return — the same bounded
@@ -15030,6 +15112,23 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    #[should_panic(expected = "never settled")]
+    async fn startup_reports_the_transcript_when_the_retry_loop_cannot_settle() {
+        // An agent that never becomes ready, so the retry loop (correctly) keeps
+        // retrying and only the deadlock backstop can end the wait - which it must
+        // do loudly, with the transcript on stderr, rather than hang the suite.
+        let mock = AppMockAgent {
+            not_ready: Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            ))),
+            ..Default::default()
+        };
+        let (addr_str, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, _rx) = make_app_at(&addr_str, &CliOptions::default());
+        let _ = start_with_backstop(&mut app, Duration::from_millis(300)).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn tui_defaults_applied_at_startup() {
         let (addr, seen) = spawn_app_mock().await;
         let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
@@ -15512,6 +15611,48 @@ mod tests {
 
     // ─── Final app coverage push ──────────────────────────────────────
 
+    /// Deadlock backstop for the retry fixture: `App::start` retries until the
+    /// agent answers, so a *progressing* startup is bounded by how many attempts
+    /// the host needs, not by a fixed number of seconds. One attempt costs the
+    /// client's connect budget (`TRY_CONNECT_TIMEOUT_SEC`, 3 s) plus the loop's
+    /// 1 s cadence, and the tail is real: a single stalled attempt measured
+    /// **6075 ms** on this host against **1067 ms** in the other 7 of 8 runs
+    /// (single-test loop, 8 runs). A fixed 10 s bound is therefore the
+    /// *assertion* over a slow-but-progressing startup — it turns "this host
+    /// stalled once" into a red test. 60 s is fifteen worst-case attempts: it can
+    /// only fire when the loop cannot settle at all. The contract stays the
+    /// *condition* asserted in the test body (the retry line, the connected line,
+    /// `is_running`).
+    const STARTUP_BACKSTOP: Duration = Duration::from_secs(60);
+
+    /// Run a startup until it settles, reporting what the retry loop had managed
+    /// if the deadlock backstop expires.
+    ///
+    /// The report goes to **stderr** on purpose: a failing test's panic text is
+    /// part of the harness's *stdout* section, and fd 1 is process-global in this
+    /// suite (one test points it at a full pipe, others at a PTY), so stdout text
+    /// can be swallowed by a drainer — the recorded failure of
+    /// `wait_for_agent_retries_until_agent_appears` is a `FAILED` line with **no**
+    /// `panicked` line anywhere in its log (`/tmp/tui-cov-crateB-1.log`), so the
+    /// next occurrence must leave its evidence on fd 2.
+    async fn start_with_backstop(
+        app: &mut App<FakeTerminal>,
+        backstop: Duration,
+    ) -> std::io::Result<()> {
+        match tokio::time::timeout(backstop, app.start(mpsc::unbounded_channel().0)).await {
+            Ok(result) => result,
+            Err(_) => {
+                eprintln!(
+                    "startup did not settle within {backstop:?} (a deadlock backstop, not the \
+                     test's contract: the loop retries every 1 s and one attempt can cost \
+                     TRY_CONNECT_TIMEOUT_SEC = 3 s); transcript so far: {:?}",
+                    system_messages(app)
+                );
+                panic!("startup never settled: the retry loop cannot reach the agent");
+            }
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn wait_for_agent_retries_until_agent_appears() {
         // Flip readiness only after the mock rejects a real probe. A fixed
@@ -15530,13 +15671,9 @@ mod tests {
             ready.store(true, std::sync::atomic::Ordering::SeqCst);
         });
         let (mut app, mut rx) = make_app_at(&addr_str, &CliOptions::default());
-        tokio::time::timeout(
-            Duration::from_secs(10),
-            app.start(mpsc::unbounded_channel().0),
-        )
-        .await
-        .expect("retrying startup should complete after readiness recovers")
-        .unwrap();
+        start_with_backstop(&mut app, STARTUP_BACKSTOP)
+            .await
+            .unwrap();
         assert!(app.is_running());
         let joined = system_messages(&app).join("\n");
         assert!(joined.contains("retrying every 1s"), "{joined}");
@@ -16068,8 +16205,16 @@ mod tests {
         app.input.handle_key("a"); // onChange (insert fires it)
         pump(&mut app, &mut rx).await;
 
-        // TerminalIo wrapper used by run_interactive; a host with no console to
-        // build one from (redirected Windows runners) simply has none to wrap.
+        // TerminalIo wrapper used by run_interactive. POSIX construction needs no
+        // console, so it always runs; a Windows runner with no console to build
+        // one from simply has none to wrap.
+        #[cfg(unix)]
+        {
+            let mut real = crate::terminal::Terminal::new()
+                .expect("POSIX terminal construction is infallible");
+            crate::app::TerminalIo::set_exit_signal_callback(&mut real, None);
+        }
+        #[cfg(windows)]
         if let Some(mut real) = crate::terminal::terminal_or_skip() {
             crate::app::TerminalIo::set_exit_signal_callback(&mut real, None);
         }
@@ -18719,12 +18864,15 @@ mod tests {
     /// The editor `$EDITOR` names when a test needs one that exists on this
     /// host: `/editor` really spawns the process (only `edit_draft_with`'s
     /// launch is injectable), and Windows has no `true`.
+    #[cfg(windows)]
     fn noop_editor() -> &'static str {
-        if cfg!(windows) {
-            "cmd /c rem"
-        } else {
-            "true"
-        }
+        "cmd /c rem"
+    }
+
+    /// See the Windows twin above.
+    #[cfg(unix)]
+    fn noop_editor() -> &'static str {
+        "true"
     }
 
     #[tokio::test]
@@ -22999,10 +23147,38 @@ mod tests {
         }
     }
 
+    /// An absolute path to `git`, resolved **without trusting the current
+    /// `PATH` being sane**.
+    ///
+    /// `PATH` is process-global and this binary's tests are not all careful with
+    /// it: `components/autocomplete.rs`'s `with_stubbed_path` points it at a
+    /// directory holding only its own stubs (holding `test_env::lock`, but this
+    /// test does not take that lock and a `git`-spawning test is the one that
+    /// cannot), so a long test that spawns `git` can be handed
+    /// `Err(Os { code: 2, kind: NotFound })` out of nowhere. Measured: poisoning
+    /// `PATH` mid-flow reproduces exactly the failure this test used to report
+    /// without a message (`called `Result::unwrap()` on an `Err` value: Os { code:
+    /// 2, kind: NotFound }`, and the 120 s `pump_until_msg` timeout when the
+    /// `/worktree new` task cannot spawn `git` at all) — see
+    /// `docs/testing/flaky-tui.md` §11.
+    ///
+    /// So this test resolves `git` once, from the standard locations first, and
+    /// then drives *both* its own commands and the app's `GitCli` with that
+    /// path. The production default (`GitCli::new`, i.e. bare `git` on `PATH`) is
+    /// untouched: this is the test declining to depend on hijackable global
+    /// state, not the product changing.
+    fn absolute_git() -> std::path::PathBuf {
+        // One implementation of the convention: see `test_env::absolute_tool`
+        // (`docs/testing/flaky-tui.md` §13). `git` is resolved from the standard
+        // locations, never from the process-global `PATH`, which a sibling test in
+        // this binary swaps while it runs.
+        crate::test_env::absolute_tool("git")
+    }
+
     /// One `git` command for the fixture. Test *setup* only: the module under
     /// test can never build anything but list / status / rev-parse / add.
     fn git_setup(dir: &std::path::Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
+        let out = std::process::Command::new(absolute_git())
             .arg("-C")
             .arg(dir)
             .args(args)
@@ -23032,7 +23208,10 @@ mod tests {
         let repo = TempGitRepo::new();
         let (mut app, mut rx, requests) =
             app_with_live_agent(std::collections::HashMap::new()).await;
-        app.git_cli = Arc::new(GitCli::new());
+        // Pinned to an absolute `git`: see `absolute_git` — the app's worktree
+        // command must not depend on the process-global `PATH` another test in
+        // this binary swaps.
+        app.git_cli = Arc::new(GitCli::with_program(absolute_git()));
         app.state.cwd = repo.root.display().to_string();
 
         app.handle_submit("/worktree new feat/demo");
@@ -23044,7 +23223,7 @@ mod tests {
         .await;
         let path = repo.root.join(".worktrees").join("demo");
         assert!(path.is_dir(), "git created the worktree directory");
-        let out = std::process::Command::new("git")
+        let out = std::process::Command::new(absolute_git())
             .arg("-C")
             .arg(&path)
             .args(["rev-parse", "--abbrev-ref", "HEAD"])
@@ -24838,6 +25017,35 @@ mod tests {
             "the session autocomplete fetch must not open the picker either"
         );
 
+        // 1c. The `#` reference menu opens its own fetch (a different trigger
+        //     from the slash-args above): the rows it builds come from that
+        //     answer, and it must not open the picker either.
+        let refs_before = agent_command_count(&requests, "list_sessions");
+        app.cached_session_refs.clear();
+        app.client.set_current_session_id("");
+        app.input.set_value("#", None);
+        app.trigger_autocomplete();
+        pump_until_agent_commands(
+            &mut app,
+            &mut rx,
+            &requests,
+            "list_sessions",
+            refs_before + 1,
+        )
+        .await;
+        assert!(
+            app.overlay_stack.is_empty(),
+            "the `#` fetch must not open the picker either"
+        );
+        assert_eq!(
+            app.cached_session_refs
+                .iter()
+                .map(|reference| (reference.label.as_str(), reference.description.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("main", "/tmp"), ("older", "/tmp")],
+            "the `#` menu's rows come from that fetch"
+        );
+
         // 2. The recommendation request: the task completes, its answer comes
         //    back through the command channel, and (the mock declining) the held
         //    draft is released and sent unchanged.
@@ -24938,6 +25146,21 @@ mod tests {
                 description: "/tmp".to_string(),
             }],
             "the `#` menu's rows come from the same fetch"
+        );
+
+        // A session with no recorded cwd has no workspace row at all (the
+        // description is what the `#` menu groups conversations by).
+        app.handle_cmd(UiCmd::SessionsLoaded {
+            result: Ok(vec![
+                sample_session("s1", "first", "/tmp", None),
+                sample_session("s2", "second", "", None),
+            ]),
+            purpose: SessionsPurpose::Autocomplete,
+        });
+        assert_eq!(app.cached_session_refs.len(), 2);
+        assert_eq!(
+            app.cached_session_refs[1].description, "",
+            "a session whose cwd is unknown must not render a workspace"
         );
 
         // Browse: the picker opens.
@@ -25280,6 +25503,40 @@ mod tests {
         assert!(
             all.iter().any(|s| s.contains("b.rs")),
             "an object argument is serialized: {all:?}"
+        );
+    }
+
+    /// [`pump_until_history_settled`]'s budget is documented as "120 s at
+    /// 25 ms" — 4 800 *tokio* sleeps — and this crate already depends on tokio's
+    /// `test-util`, so a paused clock walks the whole budget in milliseconds.
+    /// The arm that reports a page which never settled is therefore a reachable,
+    /// asserted outcome rather than a wait no test can afford.
+    #[tokio::test(start_paused = true)]
+    #[should_panic(expected = "the history page never settled")]
+    async fn the_history_settle_budget_reports_a_page_that_never_answers() {
+        let (mut app, mut op_rx) = make_app(100, 30);
+        // A request that never answers: nothing clears `loading`, so the helper
+        // walks its whole budget instead of returning at the settle branch.
+        app.history_paging.loading = true;
+        pump_until_history_settled(&mut app, &mut op_rx).await;
+    }
+
+    /// [`wait_for_set_cwd`]'s trailing `None`: the helper's doc comment
+    /// documents the timeout as its outcome and leaves the diagnostic to the
+    /// caller, so a caller that delivers nothing is the honest way to assert it.
+    /// The 20 s is the helper's own bound, and the lower bound below is what
+    /// distinguishes "the deadline was walked" from an early return.
+    #[tokio::test]
+    async fn wait_for_set_cwd_reports_nothing_delivered_by_its_deadline() {
+        let (mut app, mut rx) = make_app(100, 30);
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let started = Instant::now();
+        let sent = wait_for_set_cwd(&mut app, &mut rx, &requests, 1).await;
+        assert!(sent.is_none(), "no `/cwd` was ever submitted: {sent:?}");
+        assert!(
+            started.elapsed() >= Duration::from_secs(19),
+            "the deadline must have been walked, not skipped: {:?}",
+            started.elapsed()
         );
     }
 }

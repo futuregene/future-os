@@ -670,6 +670,29 @@ describe("a tool row whose target the lean page omitted", () => {
     expect(rowButtons("chat.runCompleted")).toHaveLength(0);
   });
 
+  test("a burst child whose own command cannot be fetched stays the label it was", async () => {
+    const resolveToolTarget = jest.fn(async () => {
+      throw new Error("Unsupported command: get_tool_call_args");
+    });
+    render(
+      reply({ segments: [shellBurst([
+        child({ toolCallId: "call_a", runId: "run_1" }),
+        child({ toolCallId: "call_b", runId: "run_1" }),
+      ])] }),
+      { onResolveToolTarget: resolveToolTarget },
+    );
+    act(() => rowButton("chat.stepRun 2×").props.onPress());
+    const rows = rowButtons("chat.runCompleted");
+    expect(rows).toHaveLength(2);
+    await act(async () => { rows[0]!.props.onPress(); });
+    // The command is a convenience, so a failed fetch leaves the affordance
+    // exactly as it was — and never surfaces an unhandled rejection for a tap
+    // the user cannot do anything about.
+    expect(resolveToolTarget).toHaveBeenCalledWith("call_a", "run_1");
+    expect(rowButtons("chat.runCompleted")).toHaveLength(2);
+    expect(hasText("cmd from call_a")).toBe(false);
+  });
+
   test("a burst child that already carries its command is a plain line", () => {
     const resolveToolTarget = jest.fn(async () => "never");
     render(

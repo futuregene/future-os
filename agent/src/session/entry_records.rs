@@ -265,6 +265,29 @@ mod tests {
     }
 
     #[test]
+    fn session_info_entries_persist_their_metadata_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            super::super::sqlite_store::SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+        store
+            .replace(
+                "s",
+                vec![json!({"id":"u","type":"user","role":"user","timestamp":"2026-01-01T00:00:00Z","content":"question"})],
+            )
+            .unwrap();
+        // A session_info row is not a message: its content is the session's
+        // metadata snapshot, so it must round-trip as content rather than as a
+        // block list.
+        let info = json!({"id":"i","type":"session_info","timestamp":"2026-01-01T00:00:01Z","content":{"cwd":"/tmp","model":"provider-a/m"}});
+        store.append("s", vec![info]).unwrap();
+        let entries = store.entries("s").unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1]["type"], "session_info");
+        assert_eq!(entries[1]["content"]["cwd"], "/tmp");
+        assert_eq!(entries[1]["content"]["model"], "provider-a/m");
+    }
+
+    #[test]
     fn relational_blocks_preserve_order_and_provider_extensions() {
         let dir = tempfile::tempdir().unwrap();
         let store =

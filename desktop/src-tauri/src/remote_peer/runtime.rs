@@ -239,6 +239,23 @@ pub(crate) async fn supervisor_count() -> usize {
     runtime().lock().await.supervisors.len()
 }
 
+/// Abort every retry loop and forget them.
+///
+/// `teardown()` calls this: a supervisor started by a *failed connect* (or by a
+/// dropped connection) is not tied to any test's lifetime, and the test build's
+/// retry schedule runs on `delay_unit()` = **1 ms** — so a loop left behind is a
+/// CPU burner that hammers the in-process broker for every test that runs after
+/// it. Measured: without this, one starved run's red count rose from 9 to 18 when
+/// connect failures began scheduling retries (`docs/testing/flaky-tauri.md`
+/// §13.8.4), i.e. the fix's own leak was louder than the defect it fixed.
+#[cfg(test)]
+pub(crate) async fn abort_supervisors_for_test() {
+    let mut live = runtime().lock().await;
+    for (_, supervisor) in live.supervisors.drain() {
+        supervisor.abort();
+    }
+}
+
 /// Stop a host's stream task while leaving the connection in place.
 ///
 /// The state a wedged or dead reader leaves behind: commands still work (the
@@ -540,10 +557,27 @@ pub(crate) async fn connect_with_emitter(
     let connected = match session::connect(&creds).await {
         Ok(connected) => connected,
         Err(error) => {
-            runtime()
-                .lock()
-                .await
-                .errors
+            let mut live = runtime().lock().await;
+            // A connect that failed for a *transient* reason — a socket that
+            // timed out, a refused connection, DNS — leaves the pairing intact,
+            // so the host is merely unreachable right now, and nothing but a user
+            // action used to clear it. That is the connect-leg half of the shape
+            // §13.7 fixed for requests (`docs/testing/flaky-tauri.md` §13.8).
+            //
+            // The caller still gets the error: a user who pressed Connect sees it.
+            // What changes is that a *bounded* retry is also scheduled, so the
+            // host comes back on its own instead of waiting for someone to press
+            // the button again.
+            let schedule_retry = should_retry_connect(
+                &error,
+                live.stopped.contains(desktop_id),
+                live.supervisors.contains_key(desktop_id),
+            );
+            if schedule_retry {
+                let supervisor = spawn_supervisor(desktop_id.to_string(), emitter.clone());
+                live.supervisors.insert(desktop_id.to_string(), supervisor);
+            }
+            live.errors
                 .insert(desktop_id.to_string(), error.to_string());
             return Err(error);
         }
@@ -704,6 +738,28 @@ pub(crate) fn spawn_supervisor(
             }
         }
     })
+}
+
+/// Whether a failed connect should schedule a bounded retry.
+///
+/// Three conditions, all necessary, and each has a distinct reason:
+///
+/// * **Transient** (`AppError::RemoteTransport`) — the network is the problem and
+///   a retry can help. An `AppError::RemoteAuthorization` is a rejected
+///   credential: retrying it forever repairs nothing (that variant's own doc
+///   says so), and it would also hide a re-pair the user has to do.
+/// * **Not user-stopped** — a host the user disconnected must stay disconnected.
+///   The stop is only cleared by a successful connect, so if a retry were allowed
+///   to run here it would resurrect the link the user just closed.
+/// * **Not already retrying** — the loop's own `resume` comes back through
+///   `connect_with_emitter`, so without this a failing retry would spawn a second
+///   loop per attempt.
+pub(crate) fn should_retry_connect(
+    error: &crate::AppError,
+    user_stopped: bool,
+    already_retrying: bool,
+) -> bool {
+    matches!(error, crate::AppError::RemoteTransport(_)) && !user_stopped && !already_retrying
 }
 
 /// Refresh credentials when needed, then reconnect and re-subscribe.
@@ -1711,10 +1767,57 @@ fn page_shape_error() -> crate::AppError {
 /// Shared by the session-keyed command lane and the transfer lane: both talk to
 /// the same socket, so both have to leave the same state behind when it dies. A
 /// second copy is a second place for the recovery to drift.
+/// Whether an error is a *command or handshake request* timing out, rather than
+/// the transport underneath it dying.
+///
+/// Matched on the phrase both request-level paths produce (`session::exchange`'s
+/// own budget: `"Remote request timed out"`, and `async-nats`'s inner one:
+/// `"Remote request failed: request timed out: deadline has elapsed"`).
+/// Deliberately **not** "timed out" alone: `"Failed to connect to NATS: timed
+/// out"` is the socket-connect leg, where there is no session and nothing to
+/// probe.
+///
+/// The `handshake` exclusion is load-bearing and was added after measuring it:
+/// the Noise leg's *inner* timeout reads `"Remote handshake failed: request timed
+/// out: deadline has elapsed"`, which **contains** the request phrase — so a
+/// plain substring match answers "yes" for a handshake. It is inert today (the
+/// only caller, `on_transport_failure`, never sees a handshake error: those come
+/// out of `connect_with_emitter`, not from a live connection's request path), and
+/// that is exactly why it deserves closing here rather than waiting for someone
+/// to widen a caller.
+pub(crate) fn is_request_timeout(error: &crate::AppError) -> bool {
+    match error {
+        crate::AppError::RemoteTransport(message) => {
+            message.contains("request timed out") && !message.contains("handshake")
+        }
+        _ => false,
+    }
+}
+
 fn on_transport_failure(live: &mut Runtime, desktop_id: &str, error: &crate::AppError) {
     // Only a transport fault means the socket is gone. A host that answered and
     // refused is still connected.
     if !matches!(error, crate::AppError::RemoteTransport(_)) {
+        return;
+    }
+    // A *request* that timed out is not evidence that the connection died: a slow
+    // host and a dead one are indistinguishable from the caller's seat, and
+    // inferring death from one slow round trip is how a busy host became
+    // `peer_not_connected` — the shape CI reports (`docs/testing/flaky-tauri.md`
+    // §13.6.6, the `#1094` log). So ask the only component that knows: the NATS
+    // client's own state, which its PING/PONG bookkeeping maintains.
+    //
+    // Measured, both arms: a socket closed under the connection yields a timeout
+    // *and* `is_connected() == false` (so it is still dropped here, and the
+    // retry loop still starts), while a starved but live peer yields a timeout
+    // over a `Connected` client (so the connection — and its subscriptions — is
+    // kept, and the failure stays the command's own).
+    if is_request_timeout(error)
+        && live
+            .live
+            .get(desktop_id)
+            .is_some_and(session::PeerSession::is_connected)
+    {
         return;
     }
     // A dead socket must not keep looking connected on the next poll.
@@ -1744,6 +1847,31 @@ pub(crate) async fn put_chunk(
     index: u64,
     bytes: &[u8],
 ) -> Result<(), crate::AppError> {
+    put_chunk_within(
+        desktop_id,
+        upload_id,
+        index,
+        bytes,
+        session::COMMAND_TIMEOUT,
+    )
+    .await
+}
+
+/// [`put_chunk`], with the budget for the chunk write as an argument.
+///
+/// The budget is a parameter for the same reason [`pull_chunk_within`]'s is: the
+/// one test that *wants* the give-up arm (a socket that is already closed) should
+/// not have to wait out the budget production gives a real host — and under
+/// `cfg(test)` that budget is the fixture's tolerance (see
+/// `session::COMMAND_TIMEOUT`), which would make "it failed" and "it took a
+/// minute" the same test.
+pub(crate) async fn put_chunk_within(
+    desktop_id: &str,
+    upload_id: &str,
+    index: u64,
+    bytes: &[u8],
+    budget: Duration,
+) -> Result<(), crate::AppError> {
     let mut live = runtime().lock().await;
     let Some(session) = live.live.get_mut(desktop_id) else {
         return Err(crate::AppError::Message("peer_not_connected".into()));
@@ -1752,9 +1880,7 @@ pub(crate) async fn put_chunk(
     // The session budget, not a transfer one: the host writes this chunk to disk
     // before it answers, so a short budget here would report a slow disk as a
     // dead socket.
-    let result = session
-        .request_bytes(&subject, bytes, session::COMMAND_TIMEOUT)
-        .await;
+    let result = session.request_bytes(&subject, bytes, budget).await;
     if let Err(error) = &result {
         on_transport_failure(&mut live, desktop_id, error);
     }
@@ -1797,15 +1923,35 @@ pub(crate) async fn forget_chunk(desktop_id: &str, transfer_id: &str, index: u64
         .remove(&(desktop_id.to_string(), transfer_id.to_string(), index));
 }
 
-/// The bytes of one chunk: ask, and join the two halves of the answer.///
-/// The bytes arrive as a publish on a different subject from the pull's
-/// acknowledgement, so this is the only place the two are brought together —
-/// which is also why the waiter is registered *before* the request: the host
-/// publishes the chunk first, and a waiter added afterwards would miss it.
+/// The bytes of one chunk: ask, and join the two halves of the answer.
 pub(crate) async fn pull_chunk(
     desktop_id: &str,
     transfer_id: &str,
     index: u64,
+) -> Result<Vec<u8>, crate::AppError> {
+    pull_chunk_within(desktop_id, transfer_id, index, chunk_pull_timeout()).await
+}
+
+/// [`pull_chunk`], with the wait for the bytes as an argument.
+///
+/// The bytes arrive as a publish on a different subject from the pull's
+/// acknowledgement, so this is the only place the two are brought together —
+/// which is also why the waiter is registered *before* the request: the host
+/// publishes the chunk first, and a waiter added afterwards would miss it.
+///
+/// The budget is a parameter so that the one test which wants to observe the
+/// give-up arm can pass its own, instead of the whole suite running on a
+/// shortened one: production and the suite share [`chunk_pull_timeout`], and
+/// that wait is the only wall clock on this path. A test-only 500 ms budget was
+/// measured reporting a *lost* publish for a chunk a loaded host had served
+/// (FLAKES.md item 8) — the arm below cannot tell "never published" from "not
+/// yet published", so a budget that only exists under `cfg(test)` decides the
+/// test's outcome by host scheduling.
+pub(crate) async fn pull_chunk_within(
+    desktop_id: &str,
+    transfer_id: &str,
+    index: u64,
+    budget: Duration,
 ) -> Result<Vec<u8>, crate::AppError> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     register_chunk(desktop_id, transfer_id, index, sender).await;
@@ -1816,19 +1962,20 @@ pub(crate) async fn pull_chunk(
             return Err(error);
         }
     };
-    // The *request* keeps a real budget, and it is not the one above. It makes
-    // the host read the chunk off disk, publish it and flush — so a short budget
-    // here fails the command, which the transport layer reads as a dead socket:
-    // the connection is dropped and the retry reports `peer_not_connected`, i.e.
-    // a slow disk on a busy machine looks exactly like a network fault. The
-    // shortened test budget applies only to waiting for the bytes, which the
-    // host has already published by the time it acknowledges.
+    // The *request* keeps its own budget, which is separate from `budget` above
+    // and is the one that pays for the work: it makes the host read the chunk
+    // off disk, publish it and flush. A short budget here fails the command,
+    // which the transport layer reads as a dead socket: the connection is
+    // dropped and the retry reports `peer_not_connected`, i.e. a slow disk on a
+    // busy machine looks exactly like a network fault. `budget` above is only
+    // the wait for the bytes, which the host has already published by the time
+    // it acknowledges this request.
     if let Err(error) = request_at(desktop_id, json!({}), &subject, session::COMMAND_TIMEOUT).await
     {
         forget_chunk(desktop_id, transfer_id, index).await;
         return Err(error);
     }
-    match tokio::time::timeout(chunk_pull_timeout(), receiver).await {
+    match tokio::time::timeout(budget, receiver).await {
         Ok(Ok(bytes)) => Ok(bytes),
         // Nothing arrived: either the sender was dropped (the connection went
         // away, or the runtime was cleared) or the host acknowledged a publish
@@ -1846,13 +1993,16 @@ pub(crate) async fn pull_chunk(
 
 /// The timeout for one chunk pull, matching the phone's own.
 ///
-/// Milliseconds under test, so the suite does not spend 15 s per attempt waiting
-/// out an arm that exists to catch a host which acknowledged a publish that
-/// never arrived. The *shape* being exercised is the real one either way.
+/// One value for the app and for the suite. It used to be two (500 ms under
+/// `cfg(test)`), to keep the suite from spending 15 s on the arm that catches a
+/// host which acknowledged a publish that never arrived — but that made the
+/// suite's *passing* tests depend on the host scheduling a delivery inside
+/// 500 ms, which is a budget no test can assert and a loaded machine can miss
+/// (FLAKES.md item 8: CI reported `peer_not_connected` after a recovered 2.4 s
+/// failure, and this host's full-suite runs have single tests at 20 s). The one
+/// test that needs the give-up arm passes its budget to
+/// [`pull_chunk_within`].
 fn chunk_pull_timeout() -> Duration {
-    #[cfg(test)]
-    const TIMEOUT: Duration = Duration::from_millis(500);
-    #[cfg(not(test))]
     const TIMEOUT: Duration = Duration::from_secs(15);
     TIMEOUT
 }
@@ -2173,6 +2323,33 @@ mod tests {
         assert!(
             !runtime().lock().await.supervisors.contains_key("desktop_a"),
             "the supervisor must not outlive an explicit disconnect"
+        );
+    }
+
+    /// The reset between tests must take a retry loop with it.
+    ///
+    /// `spawn_supervisor` is tied to no test's lifetime — a failed connect leaves
+    /// one behind — and the test build's schedule ticks at 1 ms, so a loop the
+    /// reset skipped would hammer the in-process broker for every test that runs
+    /// after it. `flaky-tauri.md` §13.8.4 records the measured cost (one starved
+    /// run's red count rose from 9 to 18). The fixture relies on this at setup,
+    /// so it is asserted here rather than assumed.
+    #[tokio::test]
+    async fn reset_for_test_aborts_a_resident_supervisor() {
+        let _home = crate::remote::test_support::HomeGuard::new("peer-reset-supervisor");
+        reset_for_test(&_home).await;
+        install_supervisor_for_test("desktop_reset").await;
+        assert_eq!(
+            supervisor_count().await,
+            1,
+            "the loop under test must be resident"
+        );
+
+        reset_for_test(&_home).await;
+        assert_eq!(
+            supervisor_count().await,
+            0,
+            "a reset that leaves a retry loop behind burns every later test's CPU"
         );
     }
 

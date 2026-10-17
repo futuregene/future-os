@@ -1393,6 +1393,46 @@ mod tests {
         assert_eq!(pending, 0);
     }
 
+    /// An install that cannot publish its staged directory drops the pending
+    /// operation instead of leaving a row that a later recovery would try to
+    /// replay against a directory that was never created.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_publish_drops_the_pending_operation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let url = server("{}", package("future-x", "1.0.0"), 1);
+        let manager = manager(root.path(), url);
+
+        // The install root exists but cannot be written, so the final publish
+        // rename fails while everything before it succeeds.
+        let app = manager.app_dir();
+        std::fs::create_dir_all(&app).unwrap();
+        let mut permissions = std::fs::metadata(&app).unwrap().permissions();
+        permissions.set_mode(0o555);
+        std::fs::set_permissions(&app, permissions).unwrap();
+
+        let error = manager.install("future-x", "1.0.0").unwrap_err();
+        assert!(
+            format!("{error:#}").contains("publish staged skill"),
+            "the publish failure must surface: {error:#}"
+        );
+
+        let mut permissions = std::fs::metadata(&app).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&app, permissions).unwrap();
+
+        assert!(manager.list_installed().unwrap().is_empty());
+        let db = registry::open_registry(&manager.db_path()).unwrap();
+        let pending: i64 = db
+            .query_row("SELECT count(*) FROM skill_operations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(pending, 0, "the refused install must leave nothing pending");
+    }
+
     /// An uninstall removes the directory *and* reports that it did, which is
     /// what the CLI prints; a tombstone is kept so a sync cannot resurrect it.
     #[test]

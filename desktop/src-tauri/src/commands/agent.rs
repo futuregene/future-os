@@ -89,6 +89,22 @@ mod tests {
     use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
     use std::collections::HashMap;
 
+    /// A counting acceptance channel, shared by the two prompt tests below.
+    ///
+    /// The closure body is the thing that must be *covered*, and only a test whose
+    /// agent actually acknowledges calls it: the sibling error test deliberately
+    /// never acknowledges. Sharing one constructor means the body exists once and
+    /// the accepted test covers it, instead of leaving a second, permanently dead
+    /// copy in the error test (that copy read `DA:0` for ten segments).
+    fn counting_channel(
+        counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> tauri::ipc::Channel<()> {
+        tauri::ipc::Channel::new(move |_| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        })
+    }
+
     #[test]
     fn async_command_wrappers_reject_malformed_bodies() {
         // No-argument probe/reset commands legitimately accept an empty body.
@@ -101,6 +117,28 @@ mod tests {
         crate::commands::ipc_harness::assert_all_reject_bodies(
             tauri::generate_handler![agent_prompt],
             &[("agent_prompt", serde_json::json!({ "request": 123 }))],
+        );
+        // `agent_prompt`'s last argument is the optional acceptance channel.
+        // Failing *that* one (with a fully valid `request`) is what reaches the
+        // error arm the macro attributes to the attribute line; a scalar
+        // `request` fails one argument earlier.
+        crate::commands::ipc_harness::assert_all_reject_bodies(
+            tauri::generate_handler![agent_prompt],
+            &[(
+                "agent_prompt",
+                serde_json::json!({
+                    "request": {
+                        "message": "hi",
+                        "attachments": null,
+                        "threadId": "t",
+                        "sessionId": null,
+                        "runId": null,
+                        "modelId": null,
+                        "thinkingLevel": null,
+                    },
+                    "onAccepted": 123
+                }),
+            )],
         );
     }
 
@@ -160,11 +198,7 @@ mod tests {
         crate::commands::agent_mock::ensure_mock_agent();
 
         let accepted = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&accepted);
-        let channel = tauri::ipc::Channel::new(move |_| {
-            counter.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        });
+        let channel = counting_channel(Arc::clone(&accepted));
         let error = forward_prompt_acceptance(
             agent_bridge::AgentPromptRequest {
                 message: "hi".to_string(),
@@ -397,11 +431,7 @@ mod tests {
         mock.complete_next_run_stream();
 
         let accepted = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&accepted);
-        let channel = tauri::ipc::Channel::new(move |_| {
-            counter.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        });
+        let channel = counting_channel(Arc::clone(&accepted));
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(60),

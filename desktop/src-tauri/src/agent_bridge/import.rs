@@ -1226,20 +1226,67 @@ mod tests {
         assert_eq!(updated.title, "first message for sess-cn");
     }
 
+    /// One `list_sessions` row in the Agent's full shape. `SessionSummaryPayload`
+    /// requires `updatedAtMs`, `queryCount` and `isStreaming`, so a minimal body
+    /// does not decode: the typed payload fails, the `data` fallback is empty,
+    /// and `list_agent_sessions` returns nothing — which makes an import test
+    /// vacuous while still passing.
+    fn session_row(id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "sessionName": null,
+            "cwd": "",
+            "model": "future/k3",
+            "updatedAtMs": 20692000,
+            "parentSessionId": null,
+            "firstMessage": "hello",
+            "queryCount": 1,
+            "isStreaming": false
+        })
+    }
+
     #[tokio::test]
     async fn import_missing_sessions_logs_an_import_failure() {
         let _home = super::super::test_support::TestHome::new("import-missing-err");
         let mock = super::super::test_support::mock_agent();
-        mock.push_data(
-            "list_sessions",
-            serde_json::json!({"sessions": [{"id": "sess-e1", "cwd": "", "model": "future/k3"}]}),
+        let page = serde_json::json!({"sessions": [session_row("sess-e1")]});
+        mock.push_typed_data("list_sessions", page.clone());
+        assert_eq!(
+            list_agent_sessions().await.len(),
+            1,
+            "the fixture must reach the importer, not an empty list"
         );
+        mock.push_typed_data("list_sessions", page);
         // Break the store AFTER list_agent_sessions (which only touches the
         // agent) so import_one fails on its first store call → the Ok(Err)
         // arm logs and the pass still returns Ok.
         let prev = super::super::test_support::break_home();
         import_missing_sessions().await;
         super::super::test_support::restore_home(prev);
+    }
+
+    /// One session whose history cannot be read is reported and skipped; the
+    /// pass still returns, and no thread row is left behind for it.
+    #[tokio::test]
+    async fn import_missing_sessions_reports_a_rejected_history() {
+        let _home = super::super::test_support::TestHome::new("import-missing-rejected");
+        let mock = super::super::test_support::mock_agent();
+        mock.push_typed_data(
+            "list_sessions",
+            serde_json::json!({"sessions": [session_row("sess-rejected")]}),
+        );
+        mock.push(
+            "get_session_entries",
+            super::super::test_support::Reply::Reject("journal unavailable".into()),
+        );
+        import_missing_sessions().await;
+        settle_spawns().await;
+        assert!(
+            crate::store::find_thread_by_agent_session("sess-rejected")
+                .expect("find")
+                .is_none(),
+            "a session whose history could not be read must not be mirrored"
+        );
     }
 
     #[tokio::test]
@@ -1318,32 +1365,55 @@ mod tests {
     async fn import_one_spawns_cwd_write_back_and_logs_its_failure() {
         let _home = super::super::test_support::TestHome::new("import-cwd-fail");
         let mock = super::super::test_support::mock_agent();
-        mock.push_data("get_session_entries", serde_json::json!({"entries": []}));
-        // The spawned cwd write-back calls `new_session`; reject it so the
-        // `if let Err` branch logs the failure.
-        mock.push(
-            "new_session",
-            super::super::test_support::Reply::Reject("no cwd".into()),
+        // The page must carry a message: an empty one returns from
+        // `import_one`'s `has_message` guard two statements *before* the
+        // write-back is spawned, which is how this test passed for a whole
+        // segment while the arm it is named for read `DA:0`.
+        mock.push_typed_data(
+            "get_session_entries",
+            serde_json::json!({"entries": [
+                {"id":"u1","role":"user","kind":"user","runId":"history-sess-cwd-fail","blocks":[{"kind":"text","text":"hi"}],"createdAtMs":1000}
+            ]}),
         );
+        // The spawned cwd write-back calls `new_session`; reject it so the
+        // `if let Err` branch logs the failure. The rejection is *sticky*: a
+        // one-shot reply can be taken by a lingering spawn from an earlier
+        // test, which is the second way this arm stayed uncovered.
+        mock.reject_default("new_session", "no cwd");
         let s = summary("sess-cwd-fail", "");
         let runs = import_one(&s).await.expect("import");
-        assert_eq!(runs, 0);
+        assert_eq!(runs, 1, "the history is imported before the write-back");
         settle_spawns().await;
+        // The spawned write-back is what must fail here — assert on the request
+        // it made, since the log line inside the arm is not observable.
+        let attempts = mock.requests_of("new_session");
+        assert!(
+            attempts.iter().any(|cmd| cmd.session_id == "sess-cwd-fail"),
+            "the write-back must have been attempted: {attempts:?}"
+        );
+        mock.clear_reject_defaults();
     }
 
     #[tokio::test]
     async fn import_missing_sessions_logs_a_panicking_import() {
         let _home = super::super::test_support::TestHome::new("import-missing-panic");
         let mock = super::super::test_support::mock_agent();
-        mock.push_data(
-            "list_sessions",
-            serde_json::json!({"sessions": [
-                {"id": "cov-test-import-panic", "cwd": "", "model": "future/k3"}
-            ]}),
+        let page = serde_json::json!({"sessions": [session_row("cov-test-import-panic")]});
+        mock.push_typed_data("list_sessions", page.clone());
+        assert_eq!(
+            list_agent_sessions().await.len(),
+            1,
+            "the fixture must reach the importer, not an empty list"
         );
+        mock.push_typed_data("list_sessions", page);
         // The panicking import is caught and logged; the pass still returns Ok.
         import_missing_sessions().await;
         settle_spawns().await;
+        assert_eq!(
+            mock.requests_of("list_sessions").len(),
+            2,
+            "the pass listed sessions, so the import loop really ran"
+        );
     }
 
     // ── import_missing_sessions / import_missing ─────────
@@ -1434,6 +1504,87 @@ mod tests {
             .expect("some");
         assert_eq!(thread.mode, "chat");
         assert_eq!(crate::store::list_runs(&thread.id).expect("runs").len(), 1);
+    }
+
+    /// The import's own create can still lose: the thread may appear between the
+    /// lookup at the top of `import_one` and the create itself — another client,
+    /// the TUI, or a second import. The row that comes back then belongs to the
+    /// winner, and the import must report "nothing imported" rather than counting
+    /// a thread it did not create.
+    ///
+    /// The ordering is *forced*, not raced: a second connection stages the winner
+    /// and holds the write lock, so `find_thread_by_agent_session` cannot see it
+    /// (a WAL reader ignores uncommitted rows), while the import's own insert waits
+    /// on that lock (`busy_timeout` 5000 ms) and then hits the unique index on the
+    /// session id.
+    ///
+    /// The winner is staged with a stale title while the summary carries a `name`,
+    /// so a run that took the *early* "a thread already exists" path would rename
+    /// it. Asserting the title is untouched is what proves the late arm was taken —
+    /// without it this test could pass by never reaching the `!created` return.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn import_one_returns_zero_when_the_thread_appears_after_the_lookup() {
+        let _home = super::super::test_support::TestHome::new("import-create-race");
+        let mock = super::super::test_support::mock_agent();
+        mock.push_typed_data(
+            "get_session_entries",
+            serde_json::json!({"entries": [
+                {"id":"a1","role":"assistant","kind":"assistant","runId":"sess-race","blocks":[{"kind":"text","text":"a1"}],"createdAtMs":1000},
+                {"id":"a2","role":"assistant","kind":"assistant","runId":"sess-race","blocks":[{"kind":"text","text":"a2"}],"createdAtMs":1000}
+            ]}),
+        );
+
+        let dir = std::env::temp_dir().join(format!("futureos-import-race-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("workspace dir");
+        let workspace = crate::store::create_workspace(crate::store::CreateWorkspaceInput {
+            name: Some("import-race".into()),
+            path: dir.display().to_string(),
+            description: None,
+            create_directory: Some(false),
+        })
+        .expect("workspace");
+
+        // The competing writer: holds the write lock with the winning row staged.
+        let path = future_app_settings::app_db_path().expect("db path");
+        let mut other = rusqlite::Connection::open(&path).expect("second connection");
+        let tx = other
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .expect("write lock");
+        tx.execute(
+            "INSERT INTO threads (id, workspace_id, mode, title, status, pinned, readonly,
+                                 agent_session_id, asset_root_id, last_opened_at, created_at, updated_at)
+             VALUES ('thread-winner', ?1, 'chat', 'Stale Title', 'active', 0, 0, 'sess-race',
+                     'thread-winner', 1, 1, 1)",
+            rusqlite::params![workspace.id],
+        )
+        .expect("stage the winner");
+
+        let mut summary = summary("sess-race", "");
+        summary.name = Some("Renamed By The Early Path".into());
+        let import = tokio::spawn(async move { import_one(&summary).await });
+        // Let the import get past its lookup (and wait on the write lock).
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        tx.commit()
+            .expect("release the lock with the winner committed");
+
+        let runs = import
+            .await
+            .expect("join")
+            .expect("a lost race is not an error");
+        settle_spawns().await;
+        assert_eq!(
+            runs, 0,
+            "the thread already existed, so nothing was imported"
+        );
+        let thread = crate::store::find_thread_by_agent_session("sess-race")
+            .expect("find")
+            .expect("some");
+        assert_eq!(thread.id, "thread-winner");
+        assert_eq!(
+            thread.title, "Stale Title",
+            "the early `already exists` path would have renamed this, so reaching the \
+             `!created` return required the winner to be invisible to the lookup"
+        );
     }
 
     /// A run the Agent has not terminated must not be imported as a finished
@@ -1626,6 +1777,24 @@ mod tests {
             .await
             .expect_err("reject");
         assert!(err.to_string().contains("get_state"), "{err}");
+
+        // A page the Agent answers with that is not a decodable page is a failed
+        // read, not "no messages": mirroring nothing is safe, but the caller
+        // must hear about it so a broken Agent cannot look like an empty
+        // session (the same session is otherwise removed as empty).
+        mock.push(
+            "get_session_entries",
+            super::super::test_support::Reply::Data(String::new()),
+        );
+        let error = import_discovered_session("sess-undecodable")
+            .await
+            .expect_err("an undecodable page is an error");
+        assert!(
+            error
+                .to_string()
+                .contains("typed page is missing or invalid"),
+            "{error}"
+        );
 
         // Announcement of a session that still has no message → nothing mirrored,
         // and no get_state is even asked for.

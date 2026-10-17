@@ -1,4 +1,4 @@
-import { createElement, type ReactElement } from "react";
+import { Children, createElement, type ComponentProps, type ReactElement, type ReactNode } from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import {
   ActivityIndicator,
@@ -218,6 +218,102 @@ test("the picker can be dismissed without choosing a desktop", () => {
   expect(pickerModal().props.visible).toBe(false);
   // Backing out is not a choice: the list still shows every desktop.
   expect(tree.root.findByType(DesktopPicker).props.filter).toEqual({ kind: "all" });
+});
+
+/**
+ * The picker's rows are the interaction. Each one commits a choice and closes
+ * the sheet; driving `onChange` directly is what the screen does with a choice,
+ * not what a user does to make one.
+ */
+test("each picker row commits its own choice and closes the sheet", () => {
+  const picker = () => tree.root.findByType(DesktopPicker);
+  const pickerModal = () => picker().findAllByType(Modal)[0]!;
+  // The rows carry RADIO semantics (`accessibilityState.checked`), which is what a
+  // single-choice list should expose; `selected` is the tab/toggle idiom and matches
+  // nothing here.
+  const rows = () => tree.root.findAll(node =>
+    typeof node.props.onPress === "function" &&
+    node.props.accessibilityState?.checked !== undefined);
+  const labelOf = (row: ReactTestInstance) =>
+    row.findAllByType(Text).flatMap(text => text.props.children as string[]).join("");
+  const openPicker = () => act(() => button("desktops.pickerLabel").props.onPress());
+
+  // The merged option is a row like any other, and picking it is what closes the
+  // sheet — the sheet is not a mode the user has to leave separately.
+  openPicker();
+  const all = rows().find(row => labelOf(row) === "desktops.filterAll")!;
+  act(() => all.props.onPress());
+  expect(picker().props.filter).toEqual({ kind: "all" });
+  expect(pickerModal().props.visible).toBe(false);
+
+  // A machine's row names that machine, and it is the choice that closes the
+  // sheet.
+  openPicker();
+  const peer = rows().find(row => labelOf(row).includes("desktop_2"))!;
+  act(() => peer.props.onPress());
+  expect(tree.root.findByType(DesktopPicker).props.filter)
+    .toEqual({ kind: "desktop", desktopId: "desktop_2" });
+  expect(pickerModal().props.visible).toBe(false);
+
+  // The system's own dismissal is the sheet's request-close, not a choice.
+  openPicker();
+  act(() => pickerModal().props.onRequestClose());
+  expect(pickerModal().props.visible).toBe(false);
+  expect(tree.root.findByType(DesktopPicker).props.filter)
+    .toEqual({ kind: "desktop", desktopId: "desktop_2" });
+
+  // Managing pairings is the sheet's last row: it closes the sheet and leaves
+  // the screen, and it is a row rather than a tap outside the list.
+  openPicker();
+  const manage = tree.root.findAll(node =>
+    typeof node.props.onPress === "function").find(node => {
+    const texts = node.findAllByType(Text);
+    return texts.length > 0 && texts.flatMap(text => text.props.children as string[])
+      .join("") === "desktops.manage";
+  })!;
+  act(() => manage.props.onPress());
+  expect(onManageDesktops).toHaveBeenCalledTimes(1);
+  expect(pickerModal().props.visible).toBe(false);
+});
+
+/**
+ * An empty list under a broken link still offers the one action that can fix it.
+ *
+ * The retry lives in the empty state the screen hands the list, and it is built
+ * from the phone's own connection rather than the list's: a machine that is
+ * answering keeps the list on screen, so this is the state a reader sees when
+ * their own link is down while another machine still answers.
+ */
+test("the list's disconnected empty state carries a retry that reaches the connection", () => {
+  const connected = mockRemote.connectionPresentation;
+  const machines = mockCatalogs.machines;
+  mockRemote.connectionPresentation = {
+    level: "disconnected",
+    titleKey: "connection.disconnected",
+    hintKey: "connection.offlineHint",
+  };
+  // Another machine still answers, so the list stays on screen; the machine the
+  // list is reading is the phone's own, and that one is down.
+  mockCatalogs.machines = [{ desktopId: "desktop_2", label: "Office", active: false, status: "connected" }];
+  try {
+    act(() => { tree.update(createElement(SessionsScreen, { onManageDesktops })); });
+    act(() => tree.root.findByType(DesktopPicker).props.onChange({
+      kind: "desktop", desktopId: "desktop_1",
+    }));
+
+    // `findByType` types `props` loosely, so name both real types: the empty
+    // slot is a rendered node (`SessionList`'s `empty: ReactNode`), and the
+    // children drawn inside it are elements, the retry among them a `Button`.
+    const empty = tree.root.findByType(SessionList).props.empty as ReactElement<{ children?: ReactNode }>;
+    const children = Children.toArray(empty.props.children) as ReactElement<ComponentProps<typeof Button>>[];
+    const retry = children.find((child) => child.props.label === "connection.retry")!;
+    expect(retry.type).toBe(Button);
+    act(() => retry.props.onPress());
+    expect(mockRemote.reconnect).toHaveBeenCalled();
+  } finally {
+    mockRemote.connectionPresentation = connected;
+    mockCatalogs.machines = machines;
+  }
 });
 
 test("a picker row is the desktop's name and nothing else", () => {
@@ -943,6 +1039,30 @@ describe("creating on the machine the user picks", () => {
     expect(mockRemote.newConversationOn).toHaveBeenCalledWith("desktop_2", "workspace", "pw1");
   });
 
+  test("a workspace step on the machine the phone is on reads that machine's own list", async () => {
+    mockRemote.workspaces = [{ id: "w1", name: "Connected project" }];
+    openDialog("workspace");
+    await act(async () => { deviceRow("A very long desktop name").props.onPress(); });
+    // Nothing was read down another connection: this machine's workspaces are
+    // already in hand, and re-reading them would be a round trip for a list the
+    // phone is holding.
+    expect(mockCatalogs.readWorkspaces).not.toHaveBeenCalled();
+    expect(modalText()).toContain("Connected project");
+    expect(modalText()).not.toContain("Peer project");
+  });
+
+  test("a machine whose workspaces cannot be read reports it instead of waiting on it", async () => {
+    jest.mocked(mockCatalogs.readWorkspaces).mockRejectedValueOnce(new Error("offline"));
+    openDialog("workspace");
+    await act(async () => { deviceRow("Office").props.onPress(); });
+    await act(async () => { await Promise.resolve(); });
+    // The step cannot exist without that machine's workspaces, so the read's
+    // failure is the reader's answer rather than an empty step that looks like
+    // the machine has no projects.
+    expect(modalText()).toContain("common.error");
+    expect(mockRemote.newConversation).not.toHaveBeenCalled();
+  });
+
   test("a machine that cannot take the conversation is listed, with why", () => {
     mockCatalogs.machines = [
       creatablePeer,
@@ -1346,3 +1466,4 @@ describe("several desktops, only some answering", () => {
     expect(mockRemote.newConversation).not.toHaveBeenCalled();
   });
 });
+

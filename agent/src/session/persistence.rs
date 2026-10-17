@@ -77,6 +77,11 @@ struct PersistenceInner {
     fail_next_rewrite: std::sync::atomic::AtomicBool,
     fail_next_commit: std::sync::atomic::AtomicBool,
     fail_next_close: std::sync::atomic::AtomicBool,
+    /// Fails the next session-info metadata write. The three above are consumed
+    /// by whole-command boundaries (a snapshot rewrite, a run commit, a close);
+    /// this one exists because a *field* update is the only write that happens
+    /// between a committed checkpoint and the event that reports it.
+    fail_next_info: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     panic_next_commit: std::sync::atomic::AtomicBool,
     #[cfg(test)]
@@ -126,6 +131,7 @@ impl SessionPersistence {
                 fail_next_rewrite: std::sync::atomic::AtomicBool::new(false),
                 fail_next_commit: std::sync::atomic::AtomicBool::new(false),
                 fail_next_close: std::sync::atomic::AtomicBool::new(false),
+                fail_next_info: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 panic_next_commit: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
@@ -312,6 +318,11 @@ impl SessionPersistence {
     #[cfg(test)]
     pub(crate) fn fail_next_commit(&self) {
         self.inner.fail_next_commit.store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_info(&self) {
+        self.inner.fail_next_info.store(true, Ordering::Release);
     }
 
     #[cfg(test)]
@@ -616,10 +627,17 @@ fn execute(state: &PersistenceInner, command: PersistenceCommand) {
             record_result(state, &result, false);
         }
         PersistenceCommand::UpdateInfo { fields, ack } => {
-            let result = state
-                .manager
-                .update_session_info_fields(&state.session_id, fields)
-                .map_err(|error| error.to_string());
+            // Single-line injection check, as at the boundaries above: `cfg!(test)`
+            // short-circuits before the swap in production.
+            let injected_failure = cfg!(test) && state.fail_next_info.swap(false, Ordering::AcqRel);
+            let result = if injected_failure {
+                Err("injected session info failure".to_string())
+            } else {
+                state
+                    .manager
+                    .update_session_info_fields(&state.session_id, fields)
+                    .map_err(|error| error.to_string())
+            };
             // A successful metadata update does not supersede a failed history
             // append, so keep any earlier error observable by barrier/finalize.
             record_result(state, &result, false);
@@ -897,6 +915,61 @@ mod tests {
         );
         manager.save(&session).unwrap();
         (dir, manager, session)
+    }
+
+    #[test]
+    fn a_run_snapshot_for_a_session_nothing_is_stored_for_skips_the_merge() {
+        // `rewrite_run_snapshot` first reads the *latest on-disk* session info so a
+        // configuration change made during the run is not overwritten by the
+        // run-start snapshot. When the store holds nothing for the id — a session
+        // whose first snapshot is also its first write — there is nothing to merge
+        // and the snapshot is written as it stands. That early return is the arm
+        // under test, and the fixture makes the "nothing stored" precondition
+        // explicit rather than incidental.
+        let dir = std::env::temp_dir().join(format!(
+            "future-session-writer-empty-{}",
+            crate::utils::generate_id()
+        ));
+        let manager = Arc::new(Manager::new(dir.clone()));
+        assert!(
+            manager.load("never-stored").is_err(),
+            "the arm needs a store with no entries for this id"
+        );
+        let persistence = SessionPersistence::new(manager.clone(), "never-stored".into());
+
+        let snapshot = Session::snapshot(
+            "never-stored".to_string(),
+            "/new".to_string(),
+            "new-model".to_string(),
+            "fresh name".to_string(),
+            String::new(),
+            vec![SessionEntry::session_info(
+                serde_json::json!({
+                    "cwd": "/new",
+                    "model": "new-model",
+                    "thinking_level": "high",
+                    "session_name": "fresh name",
+                    "auto_compaction": false,
+                }),
+                "new-model".to_string(),
+                "high".to_string(),
+            )],
+        );
+        persistence.rewrite_run_snapshot(snapshot).unwrap();
+
+        // Written as-is: with nothing on disk, no field of the snapshot could have
+        // been replaced by a stored value.
+        let stored = manager.load("never-stored").unwrap();
+        let info = stored
+            .entries
+            .iter()
+            .find(|entry| entry.entry_type == ENTRY_TYPE_SESSION_INFO)
+            .and_then(|entry| entry.content.as_ref())
+            .expect("the snapshot's session info");
+        assert_eq!(info["model"], serde_json::json!("new-model"));
+        assert_eq!(info["session_name"], serde_json::json!("fresh name"));
+        assert_eq!(info["auto_compaction"], serde_json::json!(false));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1600,6 +1673,12 @@ mod tests {
                 serde_json::json!("hi"),
             )])
             .unwrap();
+        // Arm the handoff BEFORE the worker can observe an idle timeout. The
+        // worker re-enters recv_timeout(20 ms) as soon as the barrier ack is
+        // sent; arming after `barrier()` races that timeout, and a starved test
+        // thread loses the race: the worker retires with an empty handoff and
+        // the drained append never happens.
+        persistence.drain_on_timeout_for_test();
         persistence.barrier().unwrap();
         // The next idle timeout finds the injected append in the drain window,
         // executes it, and only then retires. Wait for that state, not a fixed

@@ -573,3 +573,514 @@ event this environment cannot produce safely. §7 reconciles that against the
 measurement.
 
 
+
+---
+
+## 9. Round 2 (`cov100-r2`, macOS) — the per-line measurement and the current ledger
+
+**This section supersedes §§1–8 for the current tree.** Those sections record the
+2026-08 Windows segment (`test/cov100` worktree, entry-based gate metric, 291
+per-line residuals, all waived). Round 2 measures the same crate on macOS with the
+campaign's per-line tool, and the tree has moved 739 commits since. Section
+numbers above are unchanged (production comments cite them by number); where a
+row above no longer matches the code it is called out in §9.5.
+
+### 9.1 Run identity
+
+| | |
+|---|---|
+| worktree | `/Users/geilige/future-os/.worktrees/cov100-r2` (branch `test/cov100-r2`) |
+| revision | `8449acf6` (campaign baseline) + this unit's working-tree changes (snapshotted by the supervisor, e.g. `e2872123`) |
+| host | macOS arm64 (26.x), rustc 1.97.0 (pinned by `rust-toolchain.toml`), load average 15–40 (eight campaign workers share the host) |
+| command | `cargo llvm-cov -p future-tui --no-fail-fast --lcov --output-path /tmp/tui-r2-crate.info -j 4` |
+| env | `CARGO_TARGET_DIR=target/cov-tui` (private), `HOME=$PWD/target/test-home` (isolated), `ulimit -n 10240`, rustup (not Homebrew) toolchain on `PATH` |
+| metric | per-line LCOV `DA:<line>,0` — `python3 .future/cov100/covlines.py {files,detail,total} <lcov> --under .worktrees/cov100-r2/tui/src` (this worktree's `SF:` paths are worktree-relative, so `--under tui/src` matches nothing here) |
+| suite state | green: `--lib` 2193 passed / 0 failed, `agent_sidecar_launch` 1, `agent_sidecar_readiness` 2, `bughunt_regressions` 8, `cli_smoke` 5, `sandbox_panel_real_platform` 1, `src/main.rs` 0 |
+| artefact | `/tmp/tui-r2-crate.info` — sha256 `99c6a2b61b395d7c…` (see §9.8 if a later edit moved the counters) |
+
+**The candidates this measurement could resolve (why the number is a host
+statement, not just a code statement).** The launch loop of
+`agent_supervisor::ensure_agent_running` is reached by tests that spawn a real
+process, so which arm runs depends on what is resolvable as a candidate — a
+private target dir and `PATH` are both host state:
+
+* for the **test binaries** (this crate's integration targets, e.g.
+  `agent_sidecar_launch.rs`, `agent_sidecar_readiness.rs`) the sibling
+  candidates are `<CARGO_TARGET_DIR>/llvm-cov-target/debug/deps/future` and
+  `…/future-agent`. Cargo never creates an unhashed `deps/future` (it produces
+  `deps/future-<hash>` and the uplifted `debug/future`), so in a crate-scoped run
+  these are absent — verified in the measured tree, and
+  `agent_sidecar_readiness.rs` asserts the absence as a precondition;
+* for the **`future-tui` binary** that `cli_smoke.rs` runs, the siblings are
+  `…/debug/future` and `…/debug/future-agent` (absent in a crate-scoped run,
+  **present in a `--workspace` run**) and then `PATH`: this host has
+  `/opt/homebrew/bin/future` — `v0.0.2-8449acf6+local` — which the client rejects
+  on version, and `future-agent` (checked with `which -a`).
+
+Before this rework that host state decided a coverage line: `cli_smoke`'s
+print-mode test launched whatever it found, so the workspace form counted
+`agent_supervisor.rs:121` covered and the crate-scoped form did not (§9.7(a)).
+It no longer launches anything (see §9.8, hazard 2), and the launch loop's arms
+are now covered by in-tree integration fixtures in **every** form, so the two
+forms no longer disagree about this file.
+
+**The second flavour was attempted, not measured.** The plan was to re-run the
+exact command with a same-tree sibling planted in the instrumented target dir
+(`cp target/debug/future …/llvm-cov-target/debug/future`) — the artefact the
+review named — and to show the tui number does not move. All four attempts were
+lost to the §9.7(e) flake (`io error when listing tests: BrokenPipe`, a failed
+target, no lcov), so this section reports the crate-scoped number only, plus the
+argument: the only test that could resolve that sibling was `cli_smoke`'s
+print-mode test (it drove the `future-tui` *binary*, whose siblings are
+`…/debug/future*`), and that test no longer launches anything. The planted file
+has been removed again; a reviewer who wants the number can run the two commands
+in §9.8's repro block (expect the §9.7(e) flake roughly one attempt in three
+today, on this loaded host).
+
+### 9.2 Result
+
+| | uncovered lines (`DA:0`) | measured | line % |
+|---|---|---|---|
+| round-2 baseline (this worktree, before this unit) | **268** | 59 849 | 99.5489 % |
+| after the first pass of this unit | **24** | 60 157 | 99.9601 % |
+| **after the review rework (§9.8)** | **13** | 60 249 | **99.9784 %** |
+
+The campaign's own baseline for `tui/src` is 270, not 268; the two-line gap is a
+measurement-scope difference, accounted for line by line in §9.7(a). All three
+numbers are `DA:0` counts of the same measurement form; the rework's eleven lines
+are the ones the adversarial review falsified (§9.8), and the 13 that remain are
+listed in §9.4 — with no row left in a falsified category.
+
+Per file, worst first, after the rework (`covlines.py files` on `tui-r2-crate.info`):
+
+```
+    6 /  1165  tui/src/terminal.rs
+    4 /   162  tui/src/agent_supervisor.rs
+    1 / 17226  tui/src/app.rs
+    1 /  3035  tui/src/components/chat_area.rs
+    1 /   172  tui/src/update.rs
+```
+
+The 244 lines that closed did so because of two *harness* defects, not because
+tests were deleted:
+
+1. **Every console/PTY test in this crate silently skipped.** `terminal_or_skip`
+   and `backend_or_skip` (POSIX arms) returned `None` unless the *ambient* stdin
+   was a tty — which a `cargo test`/`cargo llvm-cov` harness never is. Six tests
+   in `tui/src/terminal.rs` and one in `tui/src/app.rs` therefore early-returned,
+   taking ~150 uncovered lines with them; `tui/src/app.rs`'s `TerminalIo`
+   delegation test never ran at all. The POSIX arms are **gone**: every unix
+   terminal test now builds a `Terminal` directly (`terminal_for_methods`,
+   `backend_for_methods`) or runs against a PTY of its own
+   (`crate::terminal::with_pty_stdin`, `TestPty` — fd 0 on a fresh
+   `posix_openpt` pair). No unix test can skip any more; Windows keeps
+   `terminal_or_skip` for the `console_harness` child.
+2. **Two fd-1 deadlock traps in the existing tests** (§9.3).
+
+### 9.3 What landed
+
+`tui/src/terminal.rs`
+
+* `terminal_or_skip`/`backend_or_skip` reduced to the Windows-only helpers they
+  always were; new unix constructors `terminal_for_methods`, `backend_for_methods`.
+* `PtyStdin` (the pre-existing PTY fixture) moved to file scope and exposed as
+  `with_pty_stdin`/`TestPty`, with a new `TestPty::resize` (ioctl `TIOCSWINSZ` +
+  `SIGWINCH`) so the *resize* callback is exercised for real.
+* Six tests now run instead of skipping: `terminal_default_simple_methods_and_progress`,
+  `write_log_gated_by_env`, `default_constructs_a_terminal_from_a_real_console`,
+  `drain_input_with_and_without_protocols`, `restore_terminal_for_exit_writes_teardown`,
+  and a zero-read test split into per-platform arms (`wait_outcomes_stay_handled`
+  holds the shared poll assertions).
+* **`drain_pty_master`** (new): the two tests that point fd 1 at a PTY slave
+  (`refresh_size_picks_up_pty_dimensions`, `reader_resize_updates_cached_size`)
+  now drain the master for the duration of the test. A slave whose master nobody
+  reads is a ~1 KB buffer, and fd 1 is process-global: the *harness* filling it
+  (or a test's own panic path) blocks the writer, and the restore never runs —
+  measured: a `cargo llvm-cov` run hung 20+ minutes with fd 0 **and** fd 1 still
+  pointing at the slave.
+
+`tui/src/terminal_posix.rs`
+
+* `write_stdout_retries_on_eintr` restores fd 1 **immediately after** the payload
+  write (before any join/assertion), and its drainer no longer stops after a byte
+  count — the pipe also carries whatever the harness wrote to fd 1 while the test
+  had it, so counting bytes let the drainer stop early and leave the payload write
+  blocked forever.
+* `create_pipe_error_paths` now holds the shared test lock: its child is spawned
+  with inherited stdio, so a child launched while another test had fd 1 on a full
+  pipe found its own summary write broken (`io error when listing tests:
+  BrokenPipe`) and failed the parent's `status.success()`. **Both of these were
+  the cause of two aborted measurement runs; with them the instrumented suite is
+  green.**
+
+`tui/src/app.rs`
+
+* `terminal_io_delegation_tests` drives every `TerminalIo` method against a real
+  PTY from unix (typing a multi-byte character *and* resizing the window, which
+  asserts both the UTF-8 pipeline invariant and the `on_resize` callback), plus a
+  second run with nothing typed so the Windows arm's shape is measured here too.
+* `App::apply_update_notice` (new, `pub(crate)`): the interactive loop's
+  "a manifest notice arrived" half moved behind a method, so the
+  `UiCmd::UpdateAvailable` path is covered without a real manifest fetch.
+* `a_session_answer_is_routed_by_its_purpose` gained a session with **no** cwd
+  (the empty-description arm) and `a_live_agent_settles_the_spawned_task_commands`
+  gained the `#`-token fetch (the reference menu's own trigger).
+* `final_small_paths` builds a real `Terminal` on unix; the `noop_editor` /
+  `location` test helpers became `#[cfg]`-split instead of `cfg!`-branched (a
+  compile-time-dead branch is not a coverage gap, it is dead code).
+
+`tui/src/index.rs`
+
+* `run_without_flags_...` was a "decline to run" test; it is now
+  `run_without_flags_drives_the_interactive_loop_and_exits_cleanly` — a PTY, a
+  mock agent behind `--grpc-addr`, and ctrl+c typed by a driver thread, asserting
+  exit 0. Three new tests cover `run()`'s reachable error tails (a mock that
+  answers an unparseable model list, print mode with no message, a mock that
+  cannot mint a session), and the flag matrix gained the guarded `-p` case
+  (its `else` branch had never executed).
+* `interactive_polls_the_update_check_when_not_offline`: the loop's update arm
+  runs for real (guarded by an assertion that this build has no published
+  channel, so the check fetches nothing).
+
+`tui/src/components/autocomplete.rs`
+
+* `SessionReferenceProvider::default()`/`name()` asserted (the empty provider the
+  app builds); the `~/x` fallback test now also resolves the same token against a
+  home that exists, so the item-shape check runs on a real listing instead of a
+  vacuous loop; the `find`-fallback path is covered by a stub script that prints
+  `pwd -P`, proving `command.current_dir(cwd)`; the `fd` test's skip arm is
+  Windows-only now (every POSIX system has `echo`).
+
+`tui/src/rpc/grpc_client.rs`
+
+* `the_reconnect_poll_grows_the_backoff_while_the_agent_stays_down`: a live
+  subscription whose server is then aborted must grow the reconnect backoff twice
+  (stream loss, then a probe that finds nothing) — this is the `grow_backoff` in
+  the poll, previously uncovered.
+* `recv_until_within_reports_a_channel_that_closed_first` and
+  `recv_until_fails_loudly_for_an_event_that_never_arrives` cover the bounded
+  drain's `false` tail and the helper's failure arm; the `probe_agent` test gained
+  a peer that accepts and hangs up.
+
+`tui/tests/agent_sidecar_launch.rs` (new)
+
+* The sidecar *launch* path is invisible to unit tests (`cfg!(test)` refuses to
+  launch), so an integration test drives it: `PATH` holds a stub `future` that
+  exits 3, `FUTURE_HOME` is a scratch dir, and the assertion is on the aggregated
+  error text (`future exited with exit status: 3`, the next candidate tried, `no
+  sidecar could be started`). Nothing real is started.
+
+`tui/src/agent_supervisor.rs`, `tui/src/clipboard.rs`, `tui/src/components/footer.rs`,
+`tui/src/worktree.rs`, `tui/src/update.rs`
+
+* `a_root_executable_path_leaves_only_the_path_candidates` covers the
+  `parent()`-is-`None` branch of `launch_candidates`; the test-side `cfg!`-branched
+  platform literals became `#[cfg]` consts/arms; the clipboard test's skip is
+  Linux-only (every other host probes a native program, and now asserts it);
+  `update.rs` uses a `#[cfg]` installer-name const.
+
+### 9.4 Residual ledger — every `DA:0` line, with its mechanism
+
+Re-measured after every edit; the line numbers below are `tui-r2-crate.info`, the
+run recorded in §9.1, and each row quotes the code it points at so a line shift
+is visible.
+
+| path:line | category | mechanism | how it is proven |
+|---|---|---|---|
+| `tui/src/terminal.rs:1219` | unreachable-by-construction | `the_injected_terminal_failure_is_reported_once`'s `Ok(_) => panic!` — the test sets `FORCE_NEW_FAILURE` immediately before, so the `Err` arm is the only reachable one; the arm fires only if the seam fails, i.e. if the test's premise is false. The seam is a process-global one-shot, so the discipline that keeps other tests out of its two-instruction window is `terminal_test_lock()` — recorded at the test and in §9.8 (hazard 3). | the same test's `Err` arm and the one-shot assertion (1229 is covered-adjacent) |
+| `tui/src/terminal.rs:1229`, `1230` | unreachable-in-this-environment | the *second* construction's `Err` arm: POSIX `Backend::new()` is infallible **and** the one-shot seam was spent by the preceding call in the same test — either fact alone would not be enough. Windows is the OS that can fail here (non-console handles). | `columns_rows_read_cached_size` builds a `Terminal` with no console and cannot fail |
+| `tui/src/terminal.rs:1289`, `1290`, `1293` | platform-unmeasured | `wait_outcomes_stay_handled`'s `ReadWait::Resize` arm. Verified in the source, not assumed: `terminal_posix.rs:250-301` can only return `Timeout`, `Input` or `Signal(_)`; `Resize` is the Windows console event. The reader loop's resize path is asserted on POSIX via `Signal(SIGWINCH)` (`reader_resize_updates_cached_size`, `TestPty::resize`). | `wait_reports_signal_input_and_timeout` (POSIX) covers the sibling arms |
+| `tui/src/app.rs:3610` | attribution-artifact | the closing brace of `wait_for_agent`'s `if first_attempt` block. The assignment on 3609 demonstrably ran: its only reader is `if !first_attempt`, whose true side is what appends the "✅ Connected to agent" message asserted by `wait_for_agent_retries_until_agent_appears`. | that test asserts both messages (`retrying every 1s`, `Connected to agent`); re-checked against the new report (3601-3609 `DA=1`, **3610 `DA=0`**, 3611 `DA=1`) |
+| `tui/src/components/chat_area.rs:2651` | unreachable-by-construction | the second `width.max(3)` is the *format argument of an `assert!` message*: evaluated only when the assertion is about to fail, i.e. only by a test that must fail. | the sweep spans several widths incl. the `max(3)` floor |
+| `tui/src/agent_supervisor.rs:141`, `142`, `143` | unreachable-by-construction | `Child::try_wait()` returning `Err`. **Reason corrected (review §4.2):** nothing about *this host* prevents it — the construction does. The wait status of a child this process spawned and still owns is not something the OS refuses to report (no `waitpid` failure path, no external reaper). | the `Ok(Some(status))` arm is asserted verbatim by `a_sidecar_candidate_that_exits_…`, and the `Ok(None)` sibling by the readiness fixture |
+| `tui/src/agent_supervisor.rs:267` | unreachable-by-construction | `ensure_agent_running_refuses_an_unavailable_explicit_endpoint`'s `Ok(_) => panic!`. **Reason sharpened (review §4.5):** the first gate is `select_agent`'s "no local fallback" for an explicit non-local endpoint — the `panic!` arm would need a *reachable, matching-version* agent on port 1, which needs root to bind. (`cfg!(test)` refusing the launch path is secondary, not the premise.) | that test asserts the refusal text |
+| `tui/src/update.rs:104` | unreachable-in-this-environment | `check_manifest(&current, url, CHECK_TIMEOUT)` inside `check(current)`. `check` is entered only with a *published-channel* version: a real release/nightly build fetches `https://dl.future-os.cn/...`, while this harness build's version is a commit-hash build, for which `manifest_url` returns `None` at the line above. The body itself is covered directly by `http_check_only_notifies_for_a_valid_newer_manifest` / `http_timeout_and_oversized_manifest_are_silent` against a local server; only the const-URL plumbing differs. **Second reason (review §4.4):** covering it needs a build whose display version is a published label, and that same configuration fails the guard assertion in `index.rs` (`this build has no published channel`) — so the change is not free. **Pre-empting the obvious counterexample** ("parameterise the URL"): the two manifest URLs are production data chosen by `is_release`/`is_numbered_build`, and a test could only reach this line by (a) an *unasserted* call — forbidden by PLAN §4 — or (b) changing a production signature/inventing an env knob for one plumbing line, which is the metric-driven production edit the plan's fixed build version makes unnecessary. | those two tests + the guard assertion in `interactive_polls_the_update_check_when_not_offline` |
+
+Category totals: `unreachable-by-construction` 6, `unreachable-in-this-environment`
+3, `platform-unmeasured` 3, `attribution-artifact` 1 — **13 of 13 lines
+accounted for, 0 unwaived, and no row left in a falsified category** (§9.8 lists
+the ten lines the review falsified and what now covers each).
+
+### 9.5 Corrections to §§1–8 (stale rows only)
+
+* §1.x/§2.x/§5.x/§8 reference the Windows run, the entry-based gate metric and
+  the old line numbers; the *outcomes* they describe have been re-measured here.
+  In particular §8's "further work" item 3 (the `app.rs` `on_resize` callback) is
+  **closed**: `TestPty::resize` reaches it on macOS (§9.3).
+* §5.1/§5.2 rows for `terminal.rs` (`terminal_or_skip`'s `Ok` arms), `update.rs`
+  (`cfg!` installer arms), `components/footer.rs`, `worktree.rs` and
+  `components/autocomplete.rs` (the `[skip]` arms) describing them as
+  environment waivers are superseded: those lines either execute now or are
+  compile-time-dead branches removed from the measured source (§9.3).
+* §5.2's `tui/src/index.rs` rows (`run()`'s error tails, the console skip) are
+  superseded by §9.3/§9.4: the tails are now covered by mock-agent tests.
+* §5.3's `agent_supervisor` row remains correct in substance (the launch loop is
+  behind `cfg!(test)`) and is now *partly covered* by the integration test.
+
+### 9.6 Reproducing
+
+```bash
+cd /Users/geilige/future-os/.worktrees/cov100-r2
+ulimit -n 10240
+export PATH=/Users/geilige/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin:$PATH
+export CARGO_HOME=/Users/geilige/.cargo RUSTUP_HOME=/Users/geilige/.rustup
+export HOME=$PWD/target/test-home CARGO_TARGET_DIR=target/cov-tui
+mkdir -p "$HOME"
+cargo llvm-cov -p future-tui --no-fail-fast --lcov --output-path /tmp/tui-lcov.info -j 4
+python3 .future/cov100/covlines.py total  /tmp/tui-lcov.info --under .worktrees/cov100-r2/tui/src
+python3 .future/cov100/covlines.py detail /tmp/tui-lcov.info --under .worktrees/cov100-r2/tui/src
+
+# the acceptance suite for this unit (instrumented or not, both green)
+cargo test -p future-tui            # lib 2186 + agent_sidecar_launch 1 + bughunt 8 + cli_smoke 5
+
+# if a test target fails, cargo-llvm-cov writes no report; the profraw is still
+# on disk, so render it separately (and expect the last 10 % of the suite to be
+# missing from the numbers — fix the failure rather than reporting that file)
+cargo llvm-cov report --lcov --output-path /tmp/tui-lcov-from-profraw.info
+```
+
+* The measurement is **not** stable against a *hang*: if `write_stdout_retries_on_eintr`
+  or `create_pipe_error_paths` ever regress to spawning/writing while another test
+owns fd 1, the run dies with `BrokenPipe`/no report. Both carry the lock and the
+early fd-1 restore for that reason (§9.3) — check them first.
+* Delete `target/cov-tui` when handing this unit over (`rm -rf target/cov-tui`);
+  the shared disk is the campaign's scarce resource.
+
+### 9.7 Measurement form, stability, and the flake question
+
+Three questions a reviewer must be able to answer about a number, answered here
+with the tooling rather than by assertion.
+
+**(a) The campaign baseline says 270, this unit's re-measurement of the same
+untouched tree says 268.** Not a flake: an exact, line-level scope difference.
+`python3 .future/cov100/covlines.py detail` on both reports of revision `8449acf6`
+(my crate-scoped run has no `SF:` record for any test target, so it *is* the
+untouched tree, not a contaminated one):
+
+| line | this unit's form (`-p future-tui`) | campaign baseline (`--workspace`, `ws-dirty`) |
+|---|---|---|
+| `agent_supervisor.rs` 107-109 (spawn-failure `failures.push` + `continue`) | `DA=2` **covered** | `DA=0` |
+| `agent_supervisor.rs` 126-129 (connect-error `kill`/`wait`/`return Err`) | `DA=1` **covered** | `DA=0` |
+| `agent_supervisor.rs` 121 (`Ok(_) => return Ok(Some(OwnedAgent { child }))`) | `DA=0` uncovered | `DA=1` **covered** |
+| `index.rs` 1130-1133 (`--print` usage line and exit) | `DA=0` uncovered | **covered** |
+
+`270 = 268 − 5 + 7` exactly. Both files are also compiled into the `future` CLI
+crate and into the **non-test** `future-tui` binary, so which lines a report
+attributes as covered depends on which targets that run executed and what was on
+`PATH`: this crate's own `tests/cli_smoke.rs` drives the real binary (covering the
+spawn-failure arms, `DA=2` = both candidates), while the workspace run had some
+test that really launched and connected to an agent (covering 121). Consequence for
+this ledger, stated rather than hidden: **`agent_supervisor.rs:121` is covered in
+the campaign's workspace-wide form and uncovered in this crate-scoped form** — a
++1/−1 in the other direction, and §9.4 records it as such instead of claiming it.
+
+**(b) Stability inside this form.** `tui-lcov-final5.info` and
+`tui-lcov-final6.info` are two independent instrumented runs of the same code
+(only `cargo fmt` between them): both `uncovered=24`, and
+`covlines.py detail` output is identical line for line. The runs before those were
+different code, not repeats: baseline 268 → after the terminal/PTY work 47 → after
+index/clipboard/update 26 → 24. No line in this crate was observed to oscillate
+between the two same-code runs.
+
+**(c) Flakes.** None of `FLAKES.md` §5 / §5b items 13–17 is in `tui` (they are
+`agent`, `cli`, `channels`, `packages/rpc`, `desktop`), so no documented flake can
+have moved this unit's number. What *did* move the numbers were three hazards this
+unit found in its own test files — each reproduced, diagnosed and fixed here, and
+each a mechanism `GOTCHAS.md` does **not** document (a `grep -i` for
+fd/pipe/pty/deadlock finds only an unrelated Windows item), so they are candidates
+for the flake inventory with these reproductions:
+
+1. **A test that leaves fd 1 on a full pipe deadlocks the harness, not just
+   itself.** `write_stdout_retries_on_eintr` pointed fd 1 at a *filled* blocking
+   pipe and had its drainer stop after `filled + payload.len()` bytes; the harness
+   writes its own progress to fd 1, so the count was unreachable and the drainer
+   stopped early, leaving the payload write blocked forever. Observed: a
+   measurement run alive >20 min, main thread blocked in `write` from libtest's
+   test-name formatter. Fix: restore fd 1 immediately after the payload write, and
+   drain until a stop flag instead of until a byte count (§9.3).
+2. **A test that leaves fd 1 (and fd 0) on a PTY slave has no reader.** fd 0/fd 1
+   are process-global: the two size tests pointed fd 1 at a pty slave whose master
+   nobody drained, so the ~1 KB slave buffer could fill and block *any* writer —
+   including a sibling test's panic path, which then never reached its restore.
+   Observed: the same >20 min hang with fd 0 and fd 1 both on the slave. Fix:
+   `terminal::tests::drain_pty_master`, draining the master for the test's duration
+   (`O_NONBLOCK`, joined before the fds are closed).
+3. **A child spawned with inherited stdio while another test owns fd 1.**
+   `create_pipe_error_paths` spawns `current_exe()`; if a sibling test has fd 1 on
+   a full/half-closed pipe, the child's own libtest summary write fails and the
+   parent's `status.success()` sees it. Observed twice: `error: io error when
+   listing tests: Os { code: 32, kind: BrokenPipe, message: "Broken pipe" }` then
+   `error: 1 target failed: -p future-tui --lib` (exit 101) — and because
+   cargo-llvm-cov writes no report when a target fails, **two measurement runs
+   produced no lcov at all**. Fix: the test holds `crate::test_env::lock()`
+   (§9.3).
+
+After those fixes: 4 consecutive green instrumented runs and 3 green plain
+`cargo test -p future-tui` runs, all at `-j 4` on a host whose load average was
+15–25 during the campaign. That is a rate, stated with its load, in the same shape
+as `FLAKES.md` item 17's negative data point.
+
+**(d) The rendering gate.** No production rendering code was touched by this unit
+(the diff is tests, `App::apply_update_notice`, `#[cfg]` consts and the
+`terminal_or_skip` split), and the byte-exact golden gate confirms it:
+`./tui/tests/tmux-diff.sh` → **57 passed, 0 failed, 0 assertion failures**, exit 0,
+with `cleanup: nothing left on 'grpc-addr 127.0.0.1:57635'`.
+
+**(e) The suite-killing fd 1 flake (found while re-measuring; pre-existing).**
+On this host today, **5 of 8 instrumented attempts** and **2 of 7 plain
+`cargo test -p future-tui` runs** died with `error: io error when listing tests:
+Os { code: 32, kind: BrokenPipe }` — libtest aborting because its **own** stdout
+write failed — and because cargo-llvm-cov writes no report when a target fails,
+each of those attempts produced **no lcov at all**. It is *not* caused by this
+unit's tests: it reproduces with all seven new tests skipped (`--skip a_signal_arriving_mid_poll
+…`, 1 of 3 runs) and disappears when `write_stdout_retries_on_eintr` is skipped
+(0 of 15 runs of the terminal subset), so it is enabled by that test's ~0.5 s
+window with **fd 1 pointing at a full pipe** while libtest prints the results of
+the tests finishing next to it. Diagnosis recorded rather than solved: an fd-1
+state watcher (`fstat` + `poll` + a 1-byte probe every 2 ms) in the same process
+never saw fd 1 closed, un-writable or `POLLERR`/`POLLHUP` during a failing run,
+while the harness's output for that period is *lost* (17 of 54 results missing
+from one run's output) — so the write that earns the `EPIPE` is not one a watcher
+in that process can see. Every symptom the unit already documented in §9.7(c) is
+in this family (fd 0/fd 1 are process-global while the harness writes test names
+to fd 1). **Handed to the flake units** with the reproduction above; the
+measurement command needs a retry, and the retry needs the whole instrumented
+build/run again.
+
+One further pre-existing flake was seen in the same four attempts: `app::tests::
+wait_for_agent_retries_until_agent_appears` failed once (a live-agent timing
+test whose budget is wall-clock, §9.7(c)), unrelated to this unit's changes.
+
+### 9.8 Round-2 rework — the adversarial review (`REV-TUI`) and what closed
+
+Review: `docs/testing/review-tui.md` (unit `REV-TUI`). It confirmed the headline
+figure and the 24 line numbers, and falsified **two of the four categories**: 11
+of the 24 rows were reachable by a test that stays green. All 11 are covered now
+(10 by new tests, one — `agent_supervisor.rs:121` — by a launch fixture), the
+remaining 13 are re-registered with corrected reasons (§9.4), and the category
+arithmetic is `unreachable-by-construction` 6 · `unreachable-in-this-environment`
+3 · `platform-unmeasured` 3 · `attribution-artifact` 1.
+
+**Per falling row, and what covers it now.**
+
+| row (old → new) | what closed it |
+|---|---|
+| `agent_supervisor.rs:121` → `:121` (covered) | `tui/tests/agent_sidecar_readiness.rs::a_candidate_that_answers_readiness_is_returned_as_an_owned_child`: `PATH` holds one stub candidate and an in-process readiness mock serves the instance's own `$FUTURE_HOME/run/agent.sock` — **late**, only after the stub has touched its sentinel, so the handshake cannot win the race against the shell the loop just spawned. Asserts `Ok(Some(_))` (not `Ok(None)`), the sentinel, and ≥1 handshake. The review's alternative (“a same-tree sibling `future`”) is what the *workspace* form does for free; that is host state, see §9.1. |
+| `agent_supervisor.rs:126-129` (hard error) → covered | same file, `an_incompatible_agent_stops_the_launch_loop_and_is_reported`: the mock answers readiness with `9.9.9`, so the loop must kill the child, stop, and report `Incompatible Future Agent … 9.9.9`. Previously covered only by whatever `future` the host's `PATH` happened to hold (`/opt/homebrew/bin/future`); now deterministic. |
+| `app.rs:11995` → `:11995` (covered) | `the_history_settle_budget_reports_a_page_that_never_answers` — `#[tokio::test(start_paused = true)]` + a page that never settles: the 4 800 `tokio::time::sleep` calls of `PUMP_BUDGET_ITERS` are walked in milliseconds of wall time, and the test asserts the panic text. |
+| `app.rs:25296` → `:25296` (covered) | `wait_for_set_cwd_reports_nothing_delivered_by_its_deadline` — nothing is submitted, the helper's own 20 s bound is walked, and the test asserts `None` **and** that ≥19 s elapsed (so an early return would fail). |
+| `app.rs:7220-7222` → covered | `tui/tests/sandbox_panel_real_platform.rs::the_sandbox_panel_opens_through_the_real_platform_twin`: an integration target links the lib *without* `cfg(test)`, so the real `host_sandbox_platform()` is in the target; typing `/sandbox` through the public `App::handle_input`/`handle_cmd` reaches it with no PTY and no agent. Asserted on the emitted `UiCmd::Submit("/sandbox")` and on `App::next_deadline()` gaining a value. |
+| `grpc_client.rs:1239` → covered | `probe_agent_reports_an_unclassifiable_transport_failure_as_uncertain`: an address that cannot be parsed into a URI (`ConnectError.kind` is `None`) must classify as `Uncertain`, and a refused loopback port as `Gone`. The resolver/routing-dependent addresses the review used are documented in the test rather than asserted. |
+| `grpc_client.rs:1344` → covered | `the_reconnect_poll_stops_at_its_loop_top_when_the_flag_is_set_alone`: after the stream is lost and the backoff has grown once, the flag is stored **with no notification** (the construction `subscribe_loop_top_stop_check` already used for the subscribe loop), and the test asserts the backoff freezes across two windows rather than probing again. |
+| `grpc_client.rs:3483` → covered | `attach_fails_loudly_when_no_stream_ever_serves_it` — nothing serves the address, the bounded 20-attempt loop is exhausted, and `#[should_panic(expected = "client never attached to a live event stream")]` asserts the arm. |
+| `grpc_client.rs:3828` → covered | `wait_for_backoff_above_gives_up_at_a_bound_the_backoff_cannot_reach` — a *caller* asserts the helper's documented `None` (threshold `u64::MAX`), plus that its bound was walked. |
+| `terminal.rs:1283` → covered | `a_signal_arriving_mid_poll_reaches_the_failure_arm` — the polling test raises `SIGWINCH` itself (the lock serialises *other* tests, it does not forbid this one), `wait(0)` returns `Signal(28)`, and `catch_unwind` asserts the helper's panic text. `catch_unwind` rather than `#[should_panic]` so the signal handlers and the self-pipe are restored before the assertion. |
+
+**The two review items that matter beyond the ledger.**
+
+* **Hazard 2 (the invisible `cli_smoke` path) — fixed.**
+  `print_mode_without_message_exits_one` used to exit 1 from *either* the print
+  branch or the failed agent launch, so the test passed whether or not a sidecar
+  started (the difference lived only in coverage counters). It now runs against a
+  readiness mock on an explicit `--grpc-addr`, so no launch can happen, and it
+  asserts the stderr text (`No prompt provided`) — the path is pinned rather than
+  inferred. That also removes the accidental launch that made the crate-scoped
+  and workspace forms disagree about `agent_supervisor.rs` (§9.1).
+* **Hazard 1 (host state behind the number) — recorded.** §9.1 now names every
+  candidate the measurement could resolve (private target dir, `PATH`, the
+  Homebrew `future`/`future-agent`) and the launch fixture asserts its own
+  precondition (no unhashed `deps/future`), so the assumption fails loudly
+  instead of silently changing which agent answered.
+* **Hazard 3 (`FORCE_NEW_FAILURE` is a process-global one-shot) — recorded, and
+  the discipline left intact.** The risk the review named is a *future* test that
+  constructs a `Terminal` inside the store→consume window; the seam's comment at
+  `the_injected_terminal_failure_is_reported_once` now says so explicitly (all
+  eleven `Terminal`-constructing tests hold `terminal_test_lock()`, which is what
+  makes the window unreachable) and points at the reverse symptom already
+  documented at `columns_rows_read_cached_size`. No locking change.
+* Hazards 4 (`stop_notify` is `notify_waiters`, so `grpc_client.rs:1344` used to
+  oscillate) and 5 (`SIGNAL_PIPE_WRITE` has one unlocked writer) are unchanged
+  and stay with the flake units; hazard 4's oscillation is now *observed*
+  (the line is covered by a deterministic test, so a future `DA=0` there is a
+  real signal).
+
+**Reproducing this section.**
+
+```bash
+cd /Users/geilige/future-os/.worktrees/cov100-r2
+ulimit -n 10240
+export PATH=/Users/geilige/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin:$PATH
+export CARGO_HOME=/Users/geilige/.cargo RUSTUP_HOME=/Users/geilige/.rustup
+export HOME=$PWD/target/test-home CARGO_TARGET_DIR=target/cov-tui
+cargo llvm-cov -p future-tui --no-fail-fast --lcov --output-path /tmp/tui-r2-crate.info -j 4
+# retry on the §9.7(e) flake: it aborts the binary and cargo-llvm-cov then writes
+# no report at all
+python3 .future/cov100/covlines.py total  /tmp/tui-r2-crate.info --under .worktrees/cov100-r2/tui/src
+python3 .future/cov100/covlines.py detail /tmp/tui-r2-crate.info --under .worktrees/cov100-r2/tui/src
+python3 .future/cov100/reconcile.py --report /tmp/tui-r2-crate.info --scope tui/src \
+    --doc docs/testing/module-tui.md --section "Round 2" --label tui
+# the same number with a same-tree sibling planted (the review's "workspace form"
+# artefact) — the tui side must not move:
+cp target/debug/future target/cov-tui/llvm-cov-target/debug/future
+cargo llvm-cov -p future-tui --no-fail-fast --lcov --output-path /tmp/tui-r2-sibling.info -j 4
+python3 .future/cov100/covlines.py detail /tmp/tui-r2-sibling.info --under .worktrees/cov100-r2/tui/src
+rm -f target/cov-tui/llvm-cov-target/debug/future
+```
+
+### 9.9 The §9.7(e) suite-killing flake — measured, instrumented, and still open
+
+§9.7(e) diagnosed this flake but left it open, and it kept its price: it is the
+reason §9.1's second flavour has no number ("all four attempts were lost"), and
+in this unit's own re-measurement **2 of 8 plain full-suite runs** died the same
+way. The workstream record is **`docs/testing/flaky-tui.md`**; the parts that
+belong in this module's ledger:
+
+* **Invocation and rate, before:** `.future/cov100/flake-rate.sh --label tui-fd1
+  --runs 8 --timeout 300 -- timeout -k 5 280 cargo test -p future-tui --lib -j 4`
+  → `runs=8 failures=1 timeouts=0`, the failure being
+  `error: io error when listing tests: Os { code: 32, kind: BrokenPipe, … }` with
+  **no named test** (`flake-rate.sh` has no category for a harness that dies) and
+  **no lcov** under `cargo llvm-cov`. `timeout -k 5` is required: this suite
+  catches `SIGTERM`, so a stalled run survives a plain `timeout` (measured: 26
+  minutes and still alive).
+* **After this unit's fix** (same command, same 8 runs): **1 failure in 8 runs** —
+  i.e. **the rate did not move and this flake is NOT fixed**, even though the
+  route the probes prove (a write asleep inside the pipe is broken by the `dup2`
+  that hands fd 1 back) is real and removed. The residual is written up in
+  `flaky-tui.md` §1.3–§1.5, including exactly which explanations the instruments
+  *ruled out* for a failing run.
+* **Mechanism** (measured, `flaky-tui.md` §1.3): fd 1 is process-global; this
+  test points it at a **full** blocking pipe for ~0.5 s, so libtest's own
+  progress writes — and the *unlocked* `write_stdout_writes_all_bytes` — queue
+  inside that pipe. Two measured kernel facts make that lethal: a write to a
+  *readerless* pipe returns `EPIPE` (`POLLHUP`, never `POLLERR`, on `poll`) and is
+  *not* woken when the read end closes, and — the one the failing trace points at
+  — a write that is **asleep** in a full pipe is broken (`EPIPE`/`SIGPIPE`, read
+  end still open) by the `dup2` that hands fd 1 back, which is the test's own
+  restore step. Either way the run is lost: libtest aborts the binary, or the
+  suite hangs and `timeout` cannot end it (the suite catches `SIGTERM`).
+* **Fix:** (1) the restore is deferred until the pipe has been **drained empty**,
+  which wakes a sleeping writer so it copies and returns instead of being broken
+  by the replacement (probe pair: without the drain the same writer dies, with it
+  `n=80 errno=0`); (2) the drainer reads through an `F_DUPFD` reference parked at
+  fd ≥ 100 and runs until **EOF**, which is only reported once every write end —
+  including one held by a blocked writer — is gone, so the read end is closed only
+  when no writer exists and a stale close of a recycled low fd can no longer make
+  the pipe readerless. No retry, no `--skip`, no sleep, no weakened assertion, and
+  the 500 ms blocked-write window the test exists for is unchanged.
+* **Still open:** the rate did not move (1/8 → 1/8), so the route the probes prove
+  is either not the dominant one in a full run or is reached in a way the drain
+  does not cover; the failing run's fd-1 state and what was *ruled out*
+  (readerless pipe, stale close of the read end, early teardown) are in
+  `flaky-tui.md` §1.3–§1.5 with the next check to run. Also **not** identified:
+  any call closing the read end during the window (the trace shows none).
+* **Second, smaller item in the same handoff:** `app::tests::wait_for_agent_retries_until_agent_appears`
+  was red in 1 of 8 instrumented attempts (`/tmp/tui-cov-crateB-1.log`,
+  `2192 passed; 1 failed`). It bounds real startup with a **10 s wall-clock
+  budget** (`tokio::time::timeout(…, app.start(…))` + `.expect(…)`) around a retry
+  cadence of **1 s** and a readiness flip that depends on another tokio task being
+  scheduled, so under load the budget can expire for reasons outside the code
+  under test — the same class as `FLAKES.md` items 6 and 8. Rates: 1/8
+  instrumented; **0/16** full-suite runs during this unit's own before/after
+  measurements. Registered with its mechanism and rate, not "fixed" (`FLAKES.md`
+  §4: a flake that cannot be reproduced is recorded, not quietly patched).

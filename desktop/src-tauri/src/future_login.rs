@@ -755,6 +755,44 @@ mod tests {
         assert!(std::env::var("FUTURE_AGENT_GRPC_ADDR").is_err());
     }
 
+    /// The override is a *borrow* of the endpoint, not a claim on it: a value that
+    /// was already there (another fixture's mock agent) must come back unchanged,
+    /// or this helper would silently point every later test at the broken endpoint.
+    #[tokio::test]
+    async fn broken_agent_endpoint_restores_a_previous_value() {
+        const HELD: &str = "http://127.0.0.1:1";
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", HELD);
+        let value = with_broken_agent_endpoint(|| async { 7 }).await;
+        assert_eq!(value, 7);
+        assert_eq!(std::env::var("FUTURE_AGENT_GRPC_ADDR").as_deref(), Ok(HELD));
+        std::env::remove_var("FUTURE_AGENT_GRPC_ADDR");
+    }
+
+    /// A credential file that exists but cannot be read is a *recoverable* account
+    /// state, not a sign-out: answering "signed out" would tell the user to
+    /// authenticate again because of a filesystem fault, and would hide the fault
+    /// from the diagnostics the state carries.
+    #[tokio::test]
+    async fn auth_state_is_unavailable_when_the_credential_cannot_be_read() {
+        let home = crate::auth_store::test_support::HomeGuard::new("fl-auth-unreadable");
+        let agent_dir = std::path::Path::new(&std::env::var("HOME").unwrap())
+            .join(".future")
+            .join("agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        // A directory where the credential file belongs: reading it fails with an
+        // I/O error, which is neither "not signed in" nor a message.
+        std::fs::create_dir_all(agent_dir.join("auth.json")).unwrap();
+
+        let state = check_auth_state().await;
+        assert!(
+            matches!(state.status, FutureAuthStatus::Unavailable),
+            "{:?}",
+            state.status
+        );
+        assert!(state.profile.is_none());
+        drop(home);
+    }
+
     // ─── async OAuth + account calls against a mock HTTP server ───────────
 
     fn mock_http_server(responses: Vec<(u16, &'static str, Vec<u8>)>) -> String {
@@ -1120,6 +1158,22 @@ mod tests {
         let url = mock_http_server(vec![(200, "application/json", b"not json".to_vec())]);
         point_auth(&url);
         assert_eq!(poll("dc").await.unwrap().status, "malformed");
+    }
+
+    /// An *error* status whose body is not JSON at all is still diagnosable: the
+    /// reply keeps the HTTP status the user needs instead of reporting a malformed
+    /// success or swallowing the failure as a retry.
+    #[tokio::test]
+    async fn poll_undecodable_error_body_names_the_http_status() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-poll-undecodable");
+        // 400 is not a retryable status, so the body itself is what has to be
+        // classified here.
+        let url = mock_http_server(vec![(400, "text/plain", b"<html>gateway</html>".to_vec())]);
+        point_auth(&url);
+        let out = poll("dc").await.unwrap();
+        assert_eq!(out.status, "error");
+        let message = out.message.expect("the failure carries a message");
+        assert!(message.contains("HTTP 400"), "{message}");
     }
 
     #[tokio::test]

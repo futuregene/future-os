@@ -127,3 +127,83 @@ it("says why each machine is not in the list", async () => {
   expect(found.desktop_c).toBe("Offline");
   expect(found.desktop_d).toBe("Stopped");
 });
+
+/** Open the picker on a mutable view, so each case can click an entry. */
+async function openPicker(peers: RemotePeer[] = [peer]) {
+  const onManage = vi.fn();
+  const onChange = vi.fn();
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(
+      <DeviceSelector filter={{ kind: "all" }} onChange={onChange} onManage={onManage} peers={peers} />,
+    );
+  });
+  const trigger = container.querySelector<HTMLButtonElement>("button[aria-haspopup='listbox']")!;
+  await act(async () => {
+    trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  const option = (label: string) =>
+    [...container.querySelectorAll<HTMLElement>("[role='option']")]
+      .find(node => node.getAttribute("aria-label") === label)!;
+  return { container, onChange, onManage, option, root, trigger };
+}
+
+it("applies the filter each entry stands for, and closes the picker", async () => {
+  const view = await openPicker();
+  try {
+    const options = [...view.container.querySelectorAll<HTMLElement>("[role='option']")];
+    // Every machine on screen, this one included — plus the "all" entry.
+    expect(options.map(node => node.getAttribute("aria-label")))
+      .toEqual(["All devices", "This computer", "Studio iMac"]);
+
+    await act(async () => view.option("All devices").click());
+    expect(view.onChange).toHaveBeenLastCalledWith({ kind: "all" });
+    expect(view.container.querySelector("[role='listbox']")).toBeNull();
+    expect(view.trigger.getAttribute("aria-expanded")).toBe("false");
+
+    // Re-open for the next entry: the picker is a choice, not a toggle left on.
+    await act(async () => view.trigger.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => view.option("This computer").click());
+    expect(view.onChange).toHaveBeenLastCalledWith({ kind: "device", desktopId: null });
+
+    await act(async () => view.trigger.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => view.option("Studio iMac").click());
+    expect(view.onChange).toHaveBeenLastCalledWith({ kind: "device", desktopId: "desktop_a" });
+    expect(view.container.querySelector("[role='listbox']")).toBeNull();
+  }
+  finally {
+    await act(async () => view.root.unmount());
+  }
+});
+
+it("hands off to the manage screen and closes the picker behind it", async () => {
+  const view = await openPicker();
+  try {
+    const manage = [...view.container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent === "Manage desktops…")!;
+    await act(async () => manage.click());
+
+    expect(view.onManage).toHaveBeenCalledTimes(1);
+    expect(view.container.querySelector("[role='listbox']")).toBeNull();
+  }
+  finally {
+    await act(async () => view.root.unmount());
+  }
+});
+
+it("closes the picker when the click lands outside it", async () => {
+  const view = await openPicker();
+  try {
+    expect(view.container.querySelector("[role='listbox']")).not.toBeNull();
+    await act(async () => {
+      document.body.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    });
+    expect(view.container.querySelector("[role='listbox']")).toBeNull();
+    expect(view.trigger.getAttribute("aria-expanded")).toBe("false");
+  }
+  finally {
+    await act(async () => view.root.unmount());
+  }
+});

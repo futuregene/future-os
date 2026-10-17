@@ -458,6 +458,82 @@ fn the_preview_shows_the_first_and_last_retained_entries() {
 }
 
 #[test]
+fn the_preview_summarizes_every_block_kind_a_provider_can_send() {
+    // A plain string body (not a block array) is the shape legacy records use.
+    let string_content = entry(json!({
+        "id": "s1", "type": "user", "role": "user", "timestamp": "2026-01-01T00:00:00Z",
+        "content": "plain   string body",
+    }));
+    assert_eq!(preview_of(&string_content).text, "plain string body");
+
+    let call = tool_call_assistant("c1", "r1", "call-1");
+    assert_eq!(preview_of(&call).text, "shell {\"command\":\"ls\"}");
+
+    let result = tool_result("t1", "call-1");
+    assert_eq!(preview_of(&result).text, "file listing");
+
+    let reasoning_only = entry(json!({
+        "id": "t2", "type": "assistant", "role": "assistant", "timestamp": "2026-01-01T00:00:01Z",
+        "content": [{"type": "reasoning", "text": "deep thought"}],
+    }));
+    assert_eq!(preview_of(&reasoning_only).text, "[reasoning]");
+
+    let image_only = entry(json!({
+        "id": "t3", "type": "user", "role": "user", "timestamp": "2026-01-01T00:00:02Z",
+        "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}],
+    }));
+    assert_eq!(preview_of(&image_only).text, "[image]");
+
+    // A block kind the preview does not know falls back to the entry kind.
+    let unknown_block = entry(json!({
+        "id": "t4", "type": "user", "role": "user", "timestamp": "2026-01-01T00:00:03Z",
+        "content": [{"type": "audio", "data": "zz"}],
+    }));
+    assert_eq!(preview_of(&unknown_block).text, "(user entry)");
+
+    // Long bodies are whitespace-normalized, clipped and marked with an ellipsis.
+    let long = entry(json!({
+        "id": "t5", "type": "user", "role": "user", "timestamp": "2026-01-01T00:00:04Z",
+        "content": [{"type": "text", "text": "word ".repeat(PREVIEW_CHARS)}],
+    }));
+    let preview = preview_of(&long).text;
+    assert_eq!(preview.chars().count(), PREVIEW_CHARS + 1);
+    assert!(preview.ends_with('…'), "{preview}");
+}
+
+#[test]
+fn repeated_drops_of_one_kind_are_accumulated_into_a_single_effect() {
+    // Two tool entries dropped by the same selector must be reported as one
+    // effect carrying both counts, not as two competing rows.
+    let entries = vec![
+        user("u1", "r1", "run something"),
+        assistant("a1", "r1", "ok"),
+        tool_result("t1", "call-1"),
+        tool_result("t2", "call-2"),
+        session_info("named"),
+    ];
+    let result = plan_reset(
+        &entries,
+        &ResetSelectors {
+            drop: vec![DropKind::ToolResults],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let effects: Vec<(&str, u64, u64)> = result
+        .plan
+        .drop_effects
+        .iter()
+        .map(|effect| (effect.kind.as_str(), effect.entries, effect.blocks))
+        .collect();
+    assert_eq!(
+        effects,
+        vec![(DropKind::ToolResults.name(), 2, 2)],
+        "one row, both entries and both blocks"
+    );
+}
+
+#[test]
 fn a_drop_only_reset_leaves_the_turn_structure_alone() {
     let entries = four_turns();
     let result = plan_reset(
@@ -475,5 +551,65 @@ fn a_drop_only_reset_leaves_the_turn_structure_alone() {
     assert_eq!(
         ids(&result.retained),
         vec!["u1", "info-1", "a1", "u2", "a2", "u3", "a3", "u4", "a4"]
+    );
+}
+
+/// The refusal path of an applied reset: the digest the caller planned against
+/// no longer matches the history the rewrite transaction reads. The hook makes
+/// the concurrent write deterministic, so the invariant ("never rewrite history
+/// that moved under you") is tested instead of hoped for.
+#[test]
+fn a_reset_refuses_when_the_history_moved_between_plan_and_rewrite() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(dir.path().join("agent.db"));
+    let entries = four_turns();
+    manager
+        .storage()
+        .unwrap()
+        .replace(
+            "race-s",
+            entries
+                .iter()
+                .map(|e| serde_json::to_value(e).unwrap())
+                .collect(),
+        )
+        .unwrap();
+
+    crate::session::reset::set_reset_race_hook(
+        "race-s",
+        Box::new(|manager: &crate::session::Manager| {
+            // A concurrent writer appends one more turn after the plan was
+            // digested: the rewrite must refuse rather than drop it.
+            manager
+                .storage()
+                .unwrap()
+                .append(
+                    "race-s",
+                    vec![serde_json::to_value(user("u5", "r5", "fifth question")).unwrap()],
+                )
+                .unwrap();
+        }),
+    );
+
+    let error = manager
+        .reset_history(
+            "race-s",
+            &ResetSelectors {
+                keep_last: Some(1),
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains(crate::session::reset::HISTORY_CHANGED),
+        "{error:#}"
+    );
+    assert_eq!(
+        manager.storage().unwrap().entries("race-s").unwrap().len(),
+        entries.len() + 1,
+        "a refused rewrite leaves the concurrent entry in place"
     );
 }

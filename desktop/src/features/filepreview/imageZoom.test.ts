@@ -44,6 +44,10 @@ describe("imageZoom", () => {
     it("falls back to MIN_SCALE for non-finite values", () => {
       expect(clampScale(Number.NaN)).toBe(MIN_SCALE);
       expect(clampScale(Number.POSITIVE_INFINITY)).toBe(MAX_SCALE);
+      // -Infinity is the scale a collapsed container layout can produce; it
+      // must land on the floor rather than being handed to Math.max (whose
+      // answer for it is an implementation detail of the clamp order).
+      expect(clampScale(Number.NEGATIVE_INFINITY)).toBe(MIN_SCALE);
     });
   });
 

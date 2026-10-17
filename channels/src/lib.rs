@@ -471,6 +471,25 @@ mod tests {
         (started, root)
     }
 
+    /// Whether a published state means "this channel is up".
+    ///
+    /// `Starting` before the provider's first report, `Running` once it has
+    /// one. A framework channel reaches `Running` only through its own
+    /// platform handshake, so the full start test observes `Starting` while
+    /// `up_state_is_claimed_by_both_live_states` below pins the other half.
+    fn is_up(state: &Option<ChannelState>) -> bool {
+        *state == Some(ChannelState::Starting) || *state == Some(ChannelState::Running)
+    }
+
+    #[test]
+    fn up_state_is_claimed_by_both_live_states() {
+        assert!(is_up(&Some(ChannelState::Starting)));
+        assert!(is_up(&Some(ChannelState::Running)));
+        assert!(!is_up(&Some(ChannelState::Error)));
+        assert!(!is_up(&Some(ChannelState::Disabled)));
+        assert!(!is_up(&None));
+    }
+
     #[tokio::test]
     async fn starting_publishes_a_state_for_every_channel() {
         let config = config_with(&[("cli", true), ("telegram", true), ("slack", false)]);
@@ -510,12 +529,11 @@ mod tests {
                 }
                 // Enabled and implemented: a supervisor is running it.
                 _ => {
-                    let running = entry.state == Some(ChannelState::Starting)
-                        || entry.state == Some(ChannelState::Running);
                     assert!(
-                        running,
+                        is_up(&entry.state),
                         "{} should be running, got {:?}",
-                        row.id, entry.state
+                        row.id,
+                        entry.state
                     );
                 }
             }
@@ -755,6 +773,44 @@ mod tests {
         started.stop().await;
     }
 
+    /// The *other* ending of a supervisor: `Started::stop` aborts the task, but
+    /// a channel whose `run` returns on the shutdown branch finishes first.
+    /// Awaiting the handles instead of aborting them is what reaches the Ok path
+    /// of the spawn closures (and the two `inspect_err` tails with it) — and it
+    /// asserts the property that matters: a started bridge's tasks really
+    /// terminate on Ctrl-C rather than being left behind.
+    #[tokio::test]
+    async fn the_native_supervisors_finish_on_their_own_after_shutdown() {
+        let mut config = config::ChannelConfig::default();
+        config.feishu = Some(config::FeishuChannelConfig {
+            enabled: true,
+            app_id: "app".into(),
+            app_secret: "secret".into(),
+            ..Default::default()
+        });
+        config.dingtalk = Some(config::DingtalkChannelConfig {
+            enabled: true,
+            client_id: "id".into(),
+            client_secret: "secret".into(),
+            ..Default::default()
+        });
+        let (started, _root) = start(config, "lib-supervisors-finish").await;
+        let Started {
+            handles, shutdown, ..
+        } = started;
+        assert_eq!(handles.len(), 2, "one supervisor per self-bridged channel");
+        // Let both reach their first await (the Agent-connect retry), then fire
+        // the signal the way Ctrl-C does.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        shutdown.trigger();
+        for handle in handles {
+            tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+                .await
+                .expect("shutdown must end the supervisor task")
+                .expect("the supervisor task must not panic");
+        }
+    }
+
     #[tokio::test]
     async fn a_native_bridge_without_credentials_refuses_to_start() {
         let mut config = config::ChannelConfig::default();
@@ -806,6 +862,9 @@ mod tests {
         // effect without sleeping for the interval.
         status.flush().unwrap();
         assert!(root.join("status.json").exists());
+        // …and then let one timer tick go through with a *writable* path, which
+        // is the arm a healthy bridge is on for its whole life.
+        tokio::time::sleep(Duration::from_millis(2_500)).await;
         // `notify_one` stores a permit, so the signal survives the flusher
         // being between waits; `notify_waiters` would be lost.
         shutdown.trigger();

@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { beforeEach, expect, it, vi } from "vitest";
 import { RemoteComposer } from "./RemoteComposer";
 import { clearRemoteComposerDraft } from "./remoteComposerDraft";
-import { resetRemoteOutbox } from "./remotePromptOutbox";
+import { getRemoteOutbox, resetRemoteOutbox } from "./remotePromptOutbox";
 
 /**
  * The composer's contract is about *which machine* a prompt or a stop goes to,
@@ -977,4 +977,103 @@ it("waits for a run in flight, then takes the caret when it settles", async () =
   await view.rerender({ streaming: false });
   expect(document.activeElement).toBe(view.input);
   await view.unmount();
+});
+
+/**
+ * A recoverable failure is not a lost message: the prompt goes to the durable
+ * outbox, and the composer says so.
+ *
+ * "Recoverable" is the runtime's own verdict (`peer_not_connected`,
+ * `transport`, `timeout`, …) and it means the host never saw the command — so
+ * the outbox keeps it and recovery re-sends it when the link is back. The user
+ * has to be told *which* of the two things happened: a prompt that reached the
+ * host and failed is their text to fix, while one that is queued is already on
+ * its way. Reporting it as a failure (or silently) invites them to send it
+ * twice.
+ */
+it("queues a prompt whose link was down, and says it is queued", async () => {
+  prompt.mockRejectedValue(new Error("peer_not_connected"));
+  const view = await mount();
+  await view.type("send this when the host is back");
+  await act(async () => view.button("Send")!.click());
+  await settle();
+
+  // Queued, not failed: the composer says where it is rather than showing the
+  // wire's error, and the draft is still in the box so nothing is lost either
+  // way (the text can be edited and re-sent, or left for the recovery pass).
+  expect(view.text()).toContain("queued");
+  expect(view.text()).not.toContain("peer_not_connected");
+  expect(view.input.value).toBe("send this when the host is back");
+  expect(view.onSent).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+it("stays silent about a prompt that is not recoverable", async () => {
+  // The other half of the same rule: `agent_unavailable` is the host answering
+  // "no", so there is nothing to queue and the reason is what the user needs.
+  prompt.mockRejectedValue(new Error("agent_unavailable"));
+  const view = await mount();
+  await view.type("this one the host refused");
+  await act(async () => view.button("Send")!.click());
+  await settle();
+
+  expect(view.text()).toContain("agent_unavailable");
+  expect(view.text()).not.toContain("Queued");
+  await view.unmount();
+});
+
+/**
+ * The outbox's recovery pass belongs to a *connected* host.
+ *
+ * It exists to re-deliver what a dropped link swallowed, so asking a host that is
+ * not connected (or was stopped by the user) would open a connection as a side
+ * effect of drawing a composer — exactly what the peer list refuses to do with
+ * its background poll.
+ */
+it("does not run the outbox recovery against a host that is not connected", async () => {
+  const view = await mount({ peer: { ...peer, connected: false } });
+  await settle();
+  // The composer still draws: it is a usable draft box, not a dead one.
+  expect(view.input).not.toBeNull();
+  await view.unmount();
+});
+
+/**
+ * And a recovery whose dynamic import lands after the composer is gone is
+ * abandoned.
+ *
+ * The module is imported lazily (`import("./remotePromptOutbox")`), so the
+ * continuation can run after an unmount. The window is one microtask wide, so
+ * this test drives the render and the unmount *without* a flush in between: the
+ * usual `mount()` helper awaits a flush, by which time the import has already
+ * landed and the abandoned branch cannot be reached at all.
+ */
+it("abandons a recovery whose module import lands after unmount", async () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  // Sync `act`: effects run (and initiate the import), no microtasks are drained.
+  act(() => {
+    root.render(
+      <RemoteComposer
+        canCompact={false}
+        desktopId="desktop_a"
+        onCreated={vi.fn()}
+        onSent={vi.fn()}
+        peer={peer}
+        sessionId="sess_1"
+        workspaceId={null}
+      />,
+    );
+  });
+  act(() => root.unmount());
+  container.remove();
+
+  // The import lands here, with the composer gone.
+  await settle();
+
+  // Nothing was queued or reported: the abandoned continuation returned before
+  // touching state (a state update after unmount is the React warning this
+  // branch exists to avoid).
+  expect(getRemoteOutbox("desktop_a", "sess_1").prompt).toBeNull();
 });

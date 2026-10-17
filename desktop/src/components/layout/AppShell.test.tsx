@@ -1063,6 +1063,98 @@ describe("app shell workspace handlers", () => {
     view.unmount();
   });
 
+  /**
+   * A batch can hold a *local* row beside the host's — the rail's selection is
+   * one selection over both machines' rows — and a local row has no host to
+   * address. It must be skipped rather than sent anywhere: sending its id to a
+   * host would delete whatever that host happens to call by the same name.
+   */
+  it("sends nothing for a local row that shares a selection with a host's", async () => {
+    const commands: Array<Record<string, unknown>> = [];
+    mocks.invoke.mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "remote_peer_request")
+        commands.push((args as { command?: Record<string, unknown> })?.command ?? {});
+      return undefined;
+    });
+    const view = mount(<AppShell />);
+    await act(async () => {
+      await rail().onDeleteRemoteConversations([
+        {
+          desktopId: null,
+          id: "local_1",
+          key: "local::local_1",
+          lastMessageAt: 1,
+          mode: "chat",
+          pinned: false,
+          streaming: false,
+          threadId: "local_1",
+          title: "a local chat",
+          workspaceId: null,
+        },
+        {
+          desktopId: "desktop_a",
+          id: "sess_1",
+          key: "desktop_a::sess_1",
+          lastMessageAt: 1,
+          mode: "chat",
+          pinned: false,
+          streaming: false,
+          threadId: "thread_1",
+          title: "a chat on the host",
+          workspaceId: null,
+        },
+      ] as never);
+    });
+
+    // Exactly one delete command, for the host's own row.
+    const deletes = commands.filter(command => command.type === "delete_session");
+    expect(deletes).toEqual([expect.objectContaining({ threadId: "thread_1" })]);
+    expect(mocks.emit).not.toHaveBeenCalledWith("toast", expect.objectContaining({ tone: "error" }));
+    view.unmount();
+  });
+
+  /**
+   * A host that refuses one row of a batch does not stop the others, and the
+   * user is told which ones failed.
+   *
+   * A silent partial delete is the worst outcome: the rows the host refused are
+   * still there, and the list looks unchanged for reasons the reader cannot see.
+   * The message names the conversation, because "delete failed" alone does not
+   * say which of a batch of ten needs another try.
+   */
+  it("reports which conversations a host refused to delete, and keeps deleting the rest", async () => {
+    const attempted: string[] = [];
+    mocks.invoke.mockImplementation(async (command: string, args?: unknown) => {
+      if (command !== "remote_peer_request")
+        return undefined;
+      const body = (args as { command?: { threadId?: string } })?.command ?? {};
+      attempted.push(body.threadId ?? "");
+      if (body.threadId === "thread_bad")
+        throw new Error("no such thread");
+      return undefined;
+    });
+    const view = mount(<AppShell />);
+    await act(async () => {
+      await rail().onDeleteRemoteConversations([
+        { desktopId: "desktop_a", id: "sess_bad", key: "desktop_a::sess_bad", lastMessageAt: 1, mode: "chat", pinned: false, streaming: false, threadId: "thread_bad", title: "the doomed one", workspaceId: null },
+        { desktopId: "desktop_a", id: "sess_ok", key: "desktop_a::sess_ok", lastMessageAt: 1, mode: "chat", pinned: false, streaming: false, threadId: "thread_ok", title: "the fine one", workspaceId: null },
+      ] as never);
+    });
+
+    // Both were attempted: one refusal must not abandon the rest of the batch.
+    expect(attempted).toEqual(["thread_bad", "thread_ok"]);
+    expect(mocks.emit).toHaveBeenCalledWith("toast", expect.objectContaining({
+      message: expect.stringContaining("the doomed one"),
+      tone: "error",
+    }));
+    expect(mocks.emit).toHaveBeenCalledWith("toast", expect.objectContaining({
+      message: expect.stringContaining("no such thread"),
+    }));
+    // And the list is re-read either way, so what the host still holds is current.
+    expect(mocks.hooks.refreshRemotePeers).toHaveBeenCalled();
+    view.unmount();
+  });
+
   it("restores an archived thread onto its section", async () => {
     (mocks.hooks.restoreThread as ReturnType<typeof vi.fn>).mockResolvedValue(thread("t3", { mode: "workspace" }));
     const view = mount(<AppShell />);
@@ -1658,6 +1750,48 @@ describe("app shell collapsed-panel affordances", () => {
 
       expect(children.remoteConversationView).not.toBeNull();
       expect(composer().sessionId).toBe("sess_1");
+      view.unmount();
+    });
+
+    /**
+     * The open conversation is titled from the *host's* catalogue, not from the
+     * row the user clicked.
+     *
+     * Two things make that the right source: a row can be opened from a place
+     * that knows only ids (a task run, a notification), where there is no row to
+     * carry a title at all; and the host's own title is what the conversation is
+     * called on the machine that owns it, so a rename there is what the reader
+     * should see here. The row's title is only a fallback for the moment before
+     * the catalogue has caught up.
+     */
+    it("titles an open conversation from the host's catalogue", () => {
+      mocks.remotePeers = {
+        catalogs: [{
+          desktopId: "desktop_a",
+          sessions: [{ lastMessageAt: 1, sessionId: "sess_1", title: "Renamed on the host" }],
+        }],
+        peers: [{ desktopId: "desktop_a", name: "Studio iMac" }],
+      };
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation({ title: "a stale row title" })));
+
+      expect((children.remoteConversationView as { title?: string }).title).toBe("Renamed on the host");
+      view.unmount();
+    });
+
+    /**
+     * And it falls back to the session id, not to a blank header.
+     *
+     * A conversation the catalogue has not caught up with yet is still *open*: a
+     * blank title reads as a broken view, while the id says which conversation
+     * this is and that the picture is still being read.
+     */
+    it("falls back to the session id when the catalogue has not caught up", () => {
+      mocks.remotePeers = { catalogs: [], peers: [{ desktopId: "desktop_a", name: "Studio iMac" }] };
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+
+      expect((children.remoteConversationView as { title?: string }).title).toBe("sess_1");
       view.unmount();
     });
 

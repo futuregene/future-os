@@ -23,20 +23,43 @@ const DEFAULT_TIMEOUT_SECS: u64 = 1800;
 pub(crate) const UPSTREAM_DISCONNECTED: &str = "[UPSTREAM_DISCONNECTED]";
 const MODEL_RESPONSE_ERROR: &str = "[MODEL_RESPONSE_ERROR]";
 
-fn reqwest_stream_error_kind(error: &reqwest::Error) -> &'static str {
-    if error.is_timeout() {
+/// The classifier's decision table, in priority order.
+///
+/// Pure so the fallback and the ordering can be exercised with *constructed*
+/// inputs: [`reqwest::Error`] has no public constructor, and the kinds outside
+/// these five predicates (`Builder`, `Redirect`, `Status`) are produced only
+/// inside reqwest. Getting one of those from a real exchange needs a live
+/// handshake, which is exactly the construction that races under load.
+fn transport_kind_from_predicates(
+    is_timeout: bool,
+    is_connect: bool,
+    is_body: bool,
+    is_decode: bool,
+    is_request: bool,
+) -> &'static str {
+    if is_timeout {
         "timeout"
-    } else if error.is_connect() {
+    } else if is_connect {
         "connect"
-    } else if error.is_body() {
+    } else if is_body {
         "body"
-    } else if error.is_decode() {
+    } else if is_decode {
         "decode"
-    } else if error.is_request() {
+    } else if is_request {
         "request"
     } else {
         "unknown"
     }
+}
+
+fn reqwest_stream_error_kind(error: &reqwest::Error) -> &'static str {
+    transport_kind_from_predicates(
+        error.is_timeout(),
+        error.is_connect(),
+        error.is_body(),
+        error.is_decode(),
+        error.is_request(),
+    )
 }
 
 fn error_source_chain(error: &(dyn std::error::Error + 'static)) -> String {
@@ -915,10 +938,21 @@ mod tests {
 
     // ─── transport error classification and the image projection ─────────────
 
-    /// Every arm of `reqwest_stream_error_kind` is reachable from a real socket,
-    /// and the classification is what an operator reads to tell "the network went
-    /// away" from "the provider sent garbage". Each expectation is paired with the
-    /// independent `reqwest` predicate so the test fails if either side drifts.
+    /// Each arm of `reqwest_stream_error_kind` that a response *body* can reach is
+    /// exercised from a real socket, and the classification is what an operator
+    /// reads to tell "the network went away" from "the provider sent garbage".
+    /// Each expectation is paired with the independent `reqwest` predicate so the
+    /// test fails if either side drifts.
+    ///
+    /// `is_body` and `is_request` are **not** reachable through this function, and
+    /// that is a property of the pinned upstream crate rather than of this test: the
+    /// pump reads the response through `reqwest::Response::bytes_stream`, which wraps
+    /// every body error with `crate::error::decode` (reqwest 0.12.28,
+    /// `src/async_impl/response.rs`). `Kind::Body` and `Kind::Request` are produced on
+    /// the *request* side (`error::body` in the request-body path, `error::request`
+    /// while sending), which never reaches a stream error. The three framing
+    /// fixtures below — declared-length short body, invalid chunk header, and a body
+    /// truncated mid-transfer — all confirm the decode mapping.
     #[tokio::test]
     async fn a_transport_error_is_classified_by_the_kind_that_caused_it() {
         use std::io::{Read, Write};
@@ -989,6 +1023,53 @@ mod tests {
         assert!(!chunked.is_body());
         assert_eq!(reqwest_stream_error_kind(&chunked), "decode");
 
+        // A transfer truncated *mid-body* — one complete chunk, then the peer
+        // closes without the terminating chunk — is the same story. This is the
+        // fixture that looked like it should surface as `is_body`, and it does not:
+        // this crate streams through `reqwest::Response::bytes_stream`, which wraps
+        // **every** body error with `crate::error::decode` (reqwest 0.12.28,
+        // `src/async_impl/response.rs`, the `utf8`-independent
+        // `BodyDataStream::new(self.res.into_body().map_err(crate::error::decode))`),
+        // so no framing failure can arrive here as `is_body` or `is_request`.
+        // Pinned as a measurement, not an assumption.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+            // One well-formed chunk, then FIN instead of `0\r\n\r\n`.
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n");
+            let _ = stream.flush();
+        });
+        let mut truncated_stream = reqwest::Client::new()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .unwrap()
+            .bytes_stream();
+        let mut items = Vec::new();
+        while let Some(item) = truncated_stream.next().await {
+            items.push(item);
+        }
+        // The complete chunk is delivered first; the error is what the pump reads on
+        // the poll after it — i.e. exactly the shape the byte pump turns into a
+        // disconnect diagnostic. (`expect`, not a `panic!` arm: the arm where no error
+        // arrives is a real assertion, and it runs.)
+        let delivered = items.iter().filter(|item| item.is_ok()).count();
+        let truncated = items
+            .into_iter()
+            .find_map(Result::err)
+            .expect("a truncated transfer must surface an error, not a clean EOF");
+        assert_eq!(delivered, 1, "the complete chunk precedes the failure");
+        assert!(
+            truncated.is_decode(),
+            "a body truncated mid-transfer reaches the pump as a decode error: {truncated:?}"
+        );
+        assert_eq!(reqwest_stream_error_kind(&truncated), "decode");
+        assert!(!truncated.is_body() && !truncated.is_request());
+
         // A URL the client cannot build a request from is a `Builder` error, which
         // is *outside* every named transport kind — so the catch-all must take it
         // too, and the kind must stay the classifier's own fallback rather than a
@@ -1025,51 +1106,45 @@ mod tests {
             assert_eq!(reqwest_stream_error_kind(candidate), expected);
         }
 
-        // An error the classifier does not know must not be mislabelled as a
-        // transport kind it is not: an unhandled redirect takes the catch-all.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            use std::io::BufRead;
-            let (mut stream, _) = listener.accept().unwrap();
-            // Drain the headers before closing, and explicitly forbid reuse.
-            // Otherwise a reset can race reqwest's next redirect request and
-            // test a transport failure instead of the intended redirect error.
-            {
-                let mut reader = std::io::BufReader::new(&mut stream);
-                loop {
-                    let mut line = String::new();
-                    assert_ne!(reader.read_line(&mut line).unwrap(), 0);
-                    if line == "\r\n" {
-                        break;
-                    }
-                }
-            }
-            write!(stream, "HTTP/1.1 302 Found\r\nLocation: http://{addr}/again\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
-            stream.flush().unwrap();
-        });
-        let error = reqwest::Client::builder()
-            .no_proxy()
-            .timeout(std::time::Duration::from_secs(2))
-            .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                attempt.error(std::io::Error::other("fixture redirect rejection"))
-            }))
-            .build()
-            .unwrap()
-            .get(format!("http://{addr}/"))
-            .send()
-            .await
-            .unwrap_err();
-        assert!(error.is_redirect(), "expected a redirect error: {error:?}");
-        server.join().unwrap();
-        assert!(
-            !error.is_timeout()
-                && !error.is_connect()
-                && !error.is_body()
-                && !error.is_decode()
-                && !error.is_request(),
-            "the catch-all arm needs an error outside every named kind: {error:?}"
+        // The table is total and ordered, and its fallback is pinned with a
+        // *constructed* input instead of an error a live handshake happens to
+        // produce. This block used to build the out-of-kind error from a
+        // loopback socket answering `302`; under load that handshake could be
+        // reset, the error arrived as `is_request()`, and the expectation below
+        // flipped to "request" (the documented CI flake). `reqwest::Error` has
+        // no public constructor and its `Builder`/`Redirect`/`Status` kinds are
+        // produced only inside reqwest, so the five predicates are the seam:
+        // every row, including the all-false catch-all, is checked directly.
+        assert_eq!(
+            transport_kind_from_predicates(false, false, false, false, false),
+            "unknown",
+            "an error outside every named kind must take the catch-all"
         );
+        assert_eq!(
+            transport_kind_from_predicates(true, true, true, true, true),
+            "timeout",
+            "the first matching predicate wins"
+        );
+        for ((timeout, connect, body, decode, request), expected) in [
+            ((true, false, false, false, false), "timeout"),
+            ((false, true, false, false, false), "connect"),
+            ((false, false, true, false, false), "body"),
+            ((false, false, false, true, false), "decode"),
+            ((false, false, false, false, true), "request"),
+            ((false, true, true, true, true), "connect"),
+            ((false, false, true, true, true), "body"),
+            ((false, false, false, true, true), "decode"),
+            ((false, false, false, false, false), "unknown"),
+        ] {
+            assert_eq!(
+                transport_kind_from_predicates(timeout, connect, body, decode, request),
+                expected,
+                "flags timeout={timeout} connect={connect} body={body} decode={decode} request={request}"
+            );
+        }
+        // And the real-error route agrees without any socket: an unbuildable
+        // URL is a `Builder` error, outside every named kind.
+        assert!(error.is_builder(), "expected a builder error: {error:?}");
         assert_eq!(reqwest_stream_error_kind(&error), "unknown");
     }
 

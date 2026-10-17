@@ -359,3 +359,28 @@ impl AgentHost {
         self.0.changed.notify_all();
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    /// A host that owns nothing reports no activity: the GUI's quit decision
+    /// falls back to *its own* submitted runs instead of asking an external
+    /// Agent for work it does not own.
+    #[test]
+    fn a_fresh_host_is_idle_unowned_and_reports_no_activity() {
+        let host = AgentHost::default();
+        assert_eq!(host.phase(), Phase::Idle);
+        assert!(!host.owns_agent());
+        assert!(
+            host.activity().unwrap().is_none(),
+            "an unowned host must not claim an Agent's activity"
+        );
+        // A stop request against an idle host is a no-op: it must not panic,
+        // claim ownership or move the phase.
+        host.request_stop();
+        assert_eq!(host.phase(), Phase::Idle);
+        assert!(!host.owns_agent());
+        assert!(host.activity().unwrap().is_none());
+    }
+}

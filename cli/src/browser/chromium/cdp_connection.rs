@@ -1027,4 +1027,55 @@ mod tests {
             .expect("dispatch loop hung")
             .expect("dispatch loop panicked");
     }
+
+    /// A socket endpoint is dialled through the socket transport, not TCP: the
+    /// `webSocketDebuggerUrl` is a **path** on that socket, and a command sent
+    /// over it comes back. Without this, `Some(spec)` would be a branch nobody
+    /// ever took — i.e. every socket-attached session would be broken and no
+    /// test would say so.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn connect_over_a_socket_endpoint_round_trips_a_command() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::accept_async;
+        use tokio_tungstenite::tungstenite::protocol::Message;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("chrome.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            // The handshake parses the HTTP upgrade itself, which is what
+            // proves the request was built from the path alone.
+            let mut ws = accept_async(stream).await.expect("handshake");
+            while let Some(frame) = ws.next().await {
+                let Ok(Message::Text(text)) = frame else {
+                    break;
+                };
+                let value: Value = serde_json::from_str(&text).expect("cdp frame");
+                let id = value["id"].as_u64().expect("a request id");
+                assert_eq!(value["method"], "Browser.getVersion");
+                let _ = ws
+                    .send(Message::Text(
+                        json!({"id": id, "result": {"protocolVersion": "socket"}}).to_string(),
+                    ))
+                    .await;
+            }
+        });
+
+        let spec = SocketSpec::Path(socket_path.display().to_string());
+        let conn =
+            CdpConnection::connect_with_socket("/devtools/browser/abc-123", Some(&spec), 5_000)
+                .await
+                .expect("connect over the socket");
+        assert!(conn.is_connected());
+        let result = conn
+            .send("Browser.getVersion", None, None)
+            .await
+            .expect("the answer arrives over the socket");
+        assert_eq!(result["protocolVersion"], json!("socket"));
+
+        conn.disconnect().await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), server).await;
+    }
 }

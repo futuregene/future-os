@@ -207,6 +207,121 @@ fn run_titles_the_fresh_session_it_falls_back_to() {
     assert_eq!(state.renamed, vec!["Mocked title"]);
 }
 
+/// A generated title with no text in it is a failed suggestion, not a name: an
+/// empty (or whitespace-only) answer must leave the session's existing name
+/// alone instead of renaming it to nothing.
+#[test]
+fn run_ignores_an_empty_suggested_title() {
+    let (cr, _home) = isolated_root();
+    let goal = init_goal(&cr, "empty title");
+    let mut mock = first_turn_mock();
+    mock.title = Some("   ".to_string());
+    let (_rt, shared) = mock_env(mock);
+    cli_ok(&["run", "--goal", &goal, "--anonymous", "--max-turns", "3"]);
+
+    let state = shared.lock().unwrap();
+    assert_eq!(
+        state.title_languages,
+        vec!["en"],
+        "the title call was made, and asked for a language"
+    );
+    assert!(
+        state.renamed.is_empty(),
+        "an empty suggestion must not be applied: the session keeps its name"
+    );
+    assert_eq!(
+        state.new_session_names.len(),
+        1,
+        "the minted session kept its objective-derived name"
+    );
+}
+
+/// The title's language comes from the desktop app's own settings store
+/// (`~/.future/app/app.db`, `titleLanguage`) — the same source
+/// `future session title` reads — so a goal-plane-minted session is named in the
+/// language the user chose rather than a hard-coded one.
+///
+/// Three states of that store are exercised because each is a different answer:
+/// present but never migrated (no settings table), the default language, and a
+/// request for Chinese. All three must still leave the run successful — a title
+/// is best-effort work after the turn is already closed.
+///
+/// `HOME` is already redirected to the scratch dir by [`HomeGuard`], and
+/// `FUTURE_HOME` is cleared because an absolute override wins over `HOME` and
+/// would point this at the developer's real store.
+fn migrate_app_settings_store(language: Option<&str>) {
+    std::env::remove_var("FUTURE_HOME");
+    let conn = future_app_settings::connect().expect("the app's own store");
+    if let Some(language) = language {
+        future_app_settings::apply(
+            &conn,
+            &future_app_settings::UpdateAppSettingsInput {
+                title_language: Some(language.to_string()),
+                ..Default::default()
+            },
+            1,
+        )
+        .expect("write titleLanguage");
+    }
+}
+
+/// An `app.db` that exists but was never migrated: a zero-byte file IS a valid,
+/// empty SQLite database, so the reader finds no settings table rather than no
+/// database.
+fn touch_an_unmigrated_app_db() {
+    let home = std::env::var("HOME").expect("HomeGuard redirects HOME");
+    let dir = std::path::Path::new(&home).join(".future").join("app");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("app.db"), b"").unwrap();
+}
+
+/// One run of a goal whose session is freshly minted, returning the language
+/// every title request asked for.
+fn one_run_title_languages(cr: &common::CliRoot, objective: &str) -> Vec<String> {
+    let goal = init_goal(cr, objective);
+    let (_rt, shared) = mock_env(first_turn_mock());
+    cli_ok(&["run", "--goal", &goal, "--anonymous", "--max-turns", "3"]);
+    let state = shared.lock().unwrap();
+    assert_eq!(
+        state.renamed,
+        vec!["Mocked title"],
+        "the title must still be applied to the minted session"
+    );
+    state.title_languages.clone()
+}
+
+#[test]
+fn an_unmigrated_app_settings_store_falls_back_to_english_without_failing_the_run() {
+    let (cr, _home) = isolated_root();
+    touch_an_unmigrated_app_db();
+    assert_eq!(
+        one_run_title_languages(&cr, "unmigrated app store"),
+        vec!["en"],
+        "a settings store with no table must degrade to the default, not fail the run"
+    );
+}
+
+#[test]
+fn the_default_language_is_used_when_the_app_settings_store_says_en() {
+    let (cr, _home) = isolated_root();
+    migrate_app_settings_store(Some("en"));
+    assert_eq!(
+        one_run_title_languages(&cr, "app store says en"),
+        vec!["en"]
+    );
+}
+
+#[test]
+fn a_chinese_app_setting_titles_the_session_in_chinese() {
+    let (cr, _home) = isolated_root();
+    migrate_app_settings_store(Some("zh"));
+    assert_eq!(
+        one_run_title_languages(&cr, "app store says zh"),
+        vec!["zh"],
+        "the app's titleLanguage must reach the agent, not a hard-coded default"
+    );
+}
+
 /// A title failure (no title provider) must not fail the run: the turn's
 /// ledger is intact and the exit status is still success.
 #[test]

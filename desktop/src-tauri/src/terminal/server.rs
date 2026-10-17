@@ -2237,7 +2237,8 @@ mod end_to_end {
 mod tests {
     use super::*;
     use crate::terminal::test_support;
-    #[cfg(windows)]
+    // The DSR-aware pump tests are Windows-only, but the unix pump test below
+    // waits on a deadline too, so the import is unconditional.
     use std::time::Instant;
 
     #[test]
@@ -2410,11 +2411,66 @@ mod tests {
 
     const OP_TEXT: u8 = 0x1;
     const OP_BINARY: u8 = 0x2;
-    #[cfg(windows)]
     const OP_CLOSE: u8 = 0x8;
     const OP_PING: u8 = 0x9;
-    #[cfg(windows)]
     const OP_PONG: u8 = 0xA;
+
+    /// The frame builder's three length forms (RFC 6455 §5.2): 7-bit, 16-bit and
+    /// 64-bit. The client conversation tests only ever send short payloads, so
+    /// the two extended forms are pinned here — a wrong length prefix is exactly
+    /// the kind of bug that would otherwise make a *test* hang instead of fail.
+    #[test]
+    fn client_frames_carry_every_length_form() {
+        /// Split a masked client frame into (header, unmasked payload).
+        fn parts(frame: &[u8]) -> (Vec<u8>, Vec<u8>) {
+            let marker = frame[1] & 0x7f;
+            let header = match marker {
+                126 => 8,
+                127 => 14,
+                _ => 6,
+            };
+            let mask = [
+                frame[header - 4],
+                frame[header - 3],
+                frame[header - 2],
+                frame[header - 1],
+            ];
+            let payload = frame[header..]
+                .iter()
+                .enumerate()
+                .map(|(i, byte)| byte ^ mask[i % 4])
+                .collect();
+            (frame[..header].to_vec(), payload)
+        }
+
+        let short = client_frame(OP_TEXT, &[b'a'; 125]);
+        assert_eq!(short[1], 0x80 | 125, "the 7-bit form covers 0..=125");
+        assert_eq!(parts(&short).1.len(), 125);
+
+        let medium = client_frame(OP_TEXT, &[b'b'; 126]);
+        assert_eq!(medium[1], 0x80 | 126);
+        assert_eq!(u16::from_be_bytes([medium[2], medium[3]]), 126);
+        assert_eq!(parts(&medium).1, vec![b'b'; 126]);
+
+        let long = client_frame(OP_BINARY, &[b'c'; u16::MAX as usize + 1]);
+        assert_eq!(long[1], 0x80 | 127);
+        assert_eq!(
+            u64::from_be_bytes(long[2..10].try_into().unwrap()),
+            u16::MAX as u64 + 1
+        );
+        assert_eq!(parts(&long).1, vec![b'c'; u16::MAX as usize + 1]);
+    }
+
+    /// A `FakeSocket`'s writer half reports a clean shutdown: the pump's
+    /// `sink.flush()`/shutdown path must not manufacture an error for a client
+    /// that is simply done.
+    #[tokio::test]
+    async fn the_fake_socket_shuts_its_writer_half_down_cleanly() {
+        use tokio::io::AsyncWriteExt;
+        let socket = FakeSocket::new();
+        socket.clone().shutdown().await.expect("a clean shutdown");
+        assert!(socket.sent().is_empty(), "shutdown writes nothing");
+    }
 
     #[derive(Default)]
     struct SocketState {
@@ -2747,6 +2803,68 @@ mod tests {
             .await
             .expect("a Close frame must end the pump")
             .expect("pump task");
+    }
+
+    /// The same client conversation on unix, where the shell does **not** ask for
+    /// the cursor position.
+    ///
+    /// The Windows test above cannot run here: it waits for a DSR query only a
+    /// ConPTY shell emits, and its `Close` frame is behind `#[cfg(windows)]`. Both
+    /// of the pump's client-input arms and its close arm are therefore pinned
+    /// here against a real PTY: `cat` echoes back exactly what the terminal
+    /// delivered, so the markers prove each frame reached the child's stdin, and
+    /// the close frame must end the tunnel while leaving the shell running.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pump_carries_binary_input_and_ends_on_close() {
+        let server = Arc::new(isolated_server());
+        let id = isolated_session(&server, "thread-frames-unix", test_support::shell_command());
+        let socket = FakeSocket::new();
+
+        let pump = {
+            let server = Arc::clone(&server);
+            let socket = socket.clone();
+            let id = id.clone();
+            tokio::spawn(async move { server.pump(pump_socket(socket).await, id, Some(-1)).await })
+        };
+        await_first_write(&socket).await;
+
+        // A `Binary` frame carries input in the terminal's own protocol; a `Text`
+        // frame carries it verbatim. `cat` in canonical mode needs the carriage
+        // return, and echoes both lines back to the client.
+        socket.push_frame(OP_BINARY, b"frame-binary\r");
+        socket.push_frame(OP_TEXT, b"frame-text\r");
+        // An unsolicited `Pong` is not input and not a keepalive request: the
+        // pump must ignore it rather than treat it as text to type.
+        socket.push_frame(OP_PONG, b"unsolicited");
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut seen = String::new();
+        while Instant::now() < deadline {
+            seen = test_support::visible_text(&socket.sent());
+            if seen.contains("frame-binary") && seen.contains("frame-text") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            seen.contains("frame-binary") && seen.contains("frame-text"),
+            "both client input frames must reach the shell's stdin: {seen:?}"
+        );
+        assert!(
+            !seen.contains("unsolicited"),
+            "an unsolicited Pong must be ignored, not typed into the shell: {seen:?}"
+        );
+
+        socket.push_frame(OP_CLOSE, &[]);
+        tokio::time::timeout(Duration::from_secs(20), pump)
+            .await
+            .expect("a Close frame must end the tunnel")
+            .expect("pump task");
+        assert!(
+            server.manager.get(&id).is_ok(),
+            "closing one viewer must leave the shell running for the next tab"
+        );
     }
 
     /// A client that sends bytes that are not a WebSocket frame at all.

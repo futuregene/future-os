@@ -404,10 +404,12 @@ describe("onboarding gate initialization", () => {
     });
     expect(start.disabled).toBe(true);
 
-    // A second activation must be rejected by the in-flight guard itself, not
-    // only by the disabled attribute: React suppresses click delivery to
-    // disabled form controls, so the attribute is removed here to reach the
-    // handler the way a lost/overridden disabled state would.
+    // A second activation must not apply twice. React suppresses the click on a
+    // `disabled` *prop* (removing the DOM attribute does not re-arm it: the
+    // handler is not called at all, verified with a probe against this
+    // react-dom), so what this pins is that the in-flight state keeps the
+    // control prop-disabled until the apply settles — the `if (starting)`
+    // guard inside `handleStart` is unreachable (see module-desktop.md §5, D2).
     await act(async () => {
       start.removeAttribute("disabled");
       start.dispatchEvent(new MouseEvent("click", { bubbles: true }));

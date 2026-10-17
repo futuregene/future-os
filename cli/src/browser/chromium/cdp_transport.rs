@@ -242,6 +242,11 @@ mod tests {
                 .expect("connect over socket");
 
         let mut events = transport.subscribe();
+        // A frame that is neither a close nor `ping` is skipped: the mock
+        // ignores it and waits for the next frame. Sending it first makes the
+        // reply below identify *which* frame was answered — a mock that replied
+        // to anything would hand back that reply as the first event.
+        transport.send("not-a-ping");
         transport.send("ping");
         let reply = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {

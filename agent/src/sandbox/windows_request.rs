@@ -600,4 +600,57 @@ mod tests {
             .to_string()
             .contains("file scope requires an existing regular file"));
     }
+
+    /// The public wrapper must actually evaluate the rule layer (not merely
+    /// pass a closure through), and an already-allowed target must produce no
+    /// approval and no carveout complaint.
+    #[test]
+    fn prepare_evaluates_the_layer_and_accepts_an_allowed_target() {
+        let workspace = temp_dir("prepare-wrapper");
+        let target = workspace.join("release");
+        std::fs::create_dir_all(&target).unwrap();
+        let sandbox = ResolvedSandbox::disabled(&workspace.to_string_lossy());
+        let prepared = prepare(
+            &sandbox,
+            "cargo build",
+            &AdditionalPermissions {
+                write: vec![subtree(&target, "publish the artefact")],
+            },
+        )
+        .unwrap();
+        assert!(!prepared.needs_approval());
+        assert_eq!(prepared.targets.len(), 1);
+        assert_eq!(prepared.targets[0].decision, Decision::Allow);
+        assert_eq!(
+            prepared.targets[0].normalized_path,
+            crate::sandbox::paths::canonicalize_lenient(&target)
+        );
+    }
+
+    /// The capability receipt is what the restricted runner consumes: an
+    /// approval that produced no targets yields none (so the call fails
+    /// closed), and one that did carries the exact frozen target list.
+    #[test]
+    fn a_receipt_is_issued_only_for_an_approvable_target_list() {
+        let workspace = temp_dir("receipt-workspace");
+        let target = temp_dir("receipt-target");
+        let permissions = AdditionalPermissions {
+            write: vec![subtree(&target, "publish")],
+        };
+        let prepared =
+            prepare_with(&workspace, "cmd", &permissions, |_| Decision::Ask, None).unwrap();
+        assert!(prepared.needs_approval());
+        let receipt = prepared.approved_receipt("request-1".into()).unwrap();
+        assert_eq!(receipt.request_id, "request-1");
+        assert_eq!(receipt.command_hash, prepared.command_hash);
+        assert_eq!(
+            receipt.targets,
+            prepared.approval.as_ref().unwrap().targets,
+            "the receipt must name exactly the approved targets"
+        );
+
+        let allowed =
+            prepare_with(&workspace, "cmd", &permissions, |_| Decision::Allow, None).unwrap();
+        assert!(allowed.approved_receipt("request-2".into()).is_none());
+    }
 }

@@ -154,7 +154,7 @@ fn manual_download_url(_manifest: &Value) -> Option<String> {
     None
 }
 
-fn manifest_url(channel: BuildChannel) -> &'static str {
+pub(crate) fn manifest_url(channel: BuildChannel) -> &'static str {
     match channel {
         BuildChannel::Release => RELEASE_MANIFEST_URL,
         BuildChannel::Test | BuildChannel::Nightly | BuildChannel::Dev | BuildChannel::Local => {
@@ -305,11 +305,16 @@ fn resolve_update_status(
     }
 }
 
+/// The manual (Dev/Local) check, against the manifest endpoint its caller
+/// selected. The endpoint stays a parameter instead of `manifest_url(channel)`
+/// here so the production constant is resolved once, at the outermost caller,
+/// and so a test can aim the same code at a local manifest server.
 async fn check_manual_update(
     channel: BuildChannel,
     current_version: String,
+    endpoint_url: &str,
 ) -> Result<UpdateStatus, AppError> {
-    check_manual_update_from_url(channel, current_version, manifest_url(channel)).await
+    check_manual_update_from_url(channel, current_version, endpoint_url).await
 }
 
 async fn check_manual_update_from_url(
@@ -359,14 +364,17 @@ async fn check_manual_update_from_url(
 pub async fn check_app_update<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<UpdateStatus, AppError> {
-    crate::scheduler::check_app_update_now(app).await
+    // The production endpoint is resolved here, at the boundary that owns the
+    // build channel, so every layer below it takes the URL as a parameter.
+    crate::scheduler::check_app_update_now(app, manifest_url(build_info::channel())).await
 }
 
 pub(crate) async fn perform_app_update_check<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
+    endpoint_url: &str,
 ) -> Result<UpdateStatus, AppError> {
     let current_version = build_info::VERSION.to_string();
-    check_app_update_impl(app, build_info::channel(), current_version).await
+    check_app_update_impl(app, build_info::channel(), current_version, endpoint_url).await
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -374,6 +382,7 @@ async fn check_app_update_impl<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     channel: BuildChannel,
     current_version: String,
+    endpoint_url: &str,
 ) -> Result<UpdateStatus, AppError> {
     if !platform_allows_updates() {
         return Ok(UpdateStatus {
@@ -386,10 +395,10 @@ async fn check_app_update_impl<R: tauri::Runtime>(
         });
     }
     if matches!(channel, BuildChannel::Dev | BuildChannel::Local) {
-        return check_manual_update(channel, current_version).await;
+        return check_manual_update(channel, current_version, endpoint_url).await;
     }
 
-    check_signed_update(app, channel, current_version, manifest_url(channel)).await
+    check_signed_update(app, channel, current_version, endpoint_url).await
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -429,6 +438,7 @@ async fn check_app_update_impl<R: tauri::Runtime>(
     _app: tauri::AppHandle<R>,
     _channel: BuildChannel,
     current_version: String,
+    _endpoint_url: &str,
 ) -> Result<UpdateStatus, AppError> {
     Ok(UpdateStatus {
         latest_version: current_version.clone(),
@@ -445,6 +455,60 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// The maintenance status reports the CLI it can actually use. `discover`
+    /// runs `<cli> version --json` and validates the declared Agent contract
+    /// against this build's, so the fixture is a real executable that answers
+    /// that one command — and the borrowed `PATH` is restored by
+    /// `cli_tool::EnvGuard` even if an assertion panics (a leaked `PATH` is
+    /// FLAKES item 27: 25 later tests failed spawning `git`).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn app_maintenance_status_reports_the_cli_it_discovered() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-update-maintenance");
+        crate::store::initialize_app_store().expect("init store");
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let bin = root.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin dir");
+        let cli = bin.join("future");
+        // `CliCapabilities::default()` is a valid contract for this build (the
+        // CLI's own discovery tests use it the same way).
+        let reply = json!({
+            "version": "test-cli-1.0",
+            "desktopCapabilities": future_rpc::cli_capabilities::CliCapabilities::default(),
+        });
+        std::fs::write(&cli, format!("#!/bin/sh\nprintf '%s' '{}'\n", reply))
+            .expect("write the fixture CLI");
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        // Prepended, not replaced: this test only adds a candidate, it never
+        // takes `git` or `sh` away from anything else in the process.
+        let existing = std::env::var_os("PATH").unwrap_or_default();
+        let path = std::env::join_paths(
+            std::iter::once(bin.clone()).chain(std::env::split_paths(&existing)),
+        )
+        .expect("join PATH");
+        let _path = crate::cli_tool::EnvGuard::set("PATH", &path);
+
+        let status = app_maintenance_status().await.expect("maintenance status");
+        assert_eq!(
+            status["cli"]["tool"]["version"], "test-cli-1.0",
+            "the discovered CLI is reported by version: {status}"
+        );
+        assert_eq!(
+            status["cli"]["tool"]["source"], "path",
+            "it was found on PATH, not beside the binary: {status}"
+        );
+        assert!(
+            status["cli"]["tool"]["path"]
+                .as_str()
+                .is_some_and(|reported| reported.starts_with(&*bin.display().to_string())),
+            "the reported path is the fixture's: {status}"
+        );
+    }
 
     #[test]
     fn windows_resume_arguments_preserve_empty_quotes_slashes_and_option_like_values() {
@@ -487,6 +551,24 @@ mod tests {
         let message = result.unwrap_err().to_string();
         assert!(message.starts_with("Update installation failed after cleanup:"));
         assert!(message.contains("Restart FutureOS"));
+    }
+
+    /// Hold the process-wide install flag so the "already in progress" arms are
+    /// reachable, and release it even if the test panics — the flag is shared by
+    /// every later test in this process.
+    struct InstallActiveGuard;
+
+    impl InstallActiveGuard {
+        fn hold() -> Self {
+            INSTALL_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
+            Self
+        }
+    }
+
+    impl Drop for InstallActiveGuard {
+        fn drop(&mut self) {
+            INSTALL_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+        }
     }
 
     /// A one-shot HTTP server answering a single request with a fixed body.
@@ -1006,6 +1088,172 @@ mod tests {
         let _mock = crate::agent_bridge::test_support::mock_agent();
         let app = tauri::test::mock_app();
         restart_after_app_update_with(app.handle().clone(), |_| Ok(())).expect("restart");
+    }
+
+    /// A manual (Dev/Local) check goes through the endpoint it is given, not the
+    /// production CDN constant: that parameter is the whole seam — the code
+    /// below it is the already-covered `check_manual_update_from_url`.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[tokio::test]
+    async fn a_manual_build_check_uses_the_endpoint_it_is_given() {
+        let manifest_url = serve_once(
+            "200 OK",
+            "application/json",
+            json!({
+                "version": "0.0.2-121+nightly",
+                "assets": {
+                    (PLATFORM_ASSET_KEY): { "url": "https://dl.future-os.cn/nightly/x" }
+                }
+            })
+            .to_string()
+            .into_bytes(),
+        );
+        let app = tauri::test::mock_app();
+        let status = check_app_update_impl(
+            app.handle().clone(),
+            BuildChannel::Local,
+            "0.0.2-abcdef+local".to_string(),
+            &manifest_url,
+        )
+        .await
+        .expect("manual check through the impl");
+        assert!(status.has_update, "the newer nightly is offered");
+        assert!(status.download_url.is_some(), "ships a link");
+        assert!(!status.can_install_in_app);
+    }
+
+    /// The signed channel takes the same endpoint parameter through to the
+    /// updater plugin, so the mock manifest server stands in for the CDN.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[tokio::test]
+    async fn a_signed_build_check_uses_the_endpoint_it_is_given() {
+        let manifest_url = serve_once(
+            "200 OK",
+            "application/json",
+            manifest_json("1.2.0", "http://127.0.0.1:1/not-fetched"),
+        );
+        let app = mock_app_with_updater(&[&manifest_url]);
+        let status = check_app_update_impl(
+            app.handle().clone(),
+            BuildChannel::Release,
+            "1.0.0".to_string(),
+            &manifest_url,
+        )
+        .await
+        .expect("signed check through the impl");
+        assert!(status.has_update);
+        assert!(status.can_install_in_app);
+    }
+
+    /// The body the scheduler calls resolves the channel and version from the
+    /// build and passes the endpoint straight through.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[tokio::test]
+    async fn the_scheduled_check_body_passes_its_endpoint_through() {
+        let manifest_url = serve_once(
+            "200 OK",
+            "application/json",
+            manifest_json("9.9.9", "http://127.0.0.1:1/not-fetched"),
+        );
+        let app = mock_app_with_updater(&[&manifest_url]);
+        let status = perform_app_update_check(app.handle().clone(), &manifest_url)
+            .await
+            .expect("scheduled check body");
+        assert_eq!(status.current_version, build_info::VERSION);
+    }
+
+    /// The maintenance status command is callable without an app handle: it
+    /// reports the CLI tool and whatever the journal holds.
+    #[tokio::test]
+    async fn app_maintenance_status_reports_the_cli_and_the_latest_record() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-maintenance-status");
+        let value = app_maintenance_status().await.expect("maintenance status");
+        assert!(value.get("cli").is_some());
+        assert!(value.get("update").is_some());
+    }
+
+    /// The install body's own guard: a build that may not install in place is
+    /// refused before it builds an updater, whatever the caller passed.
+    #[tokio::test]
+    async fn the_install_body_refuses_a_build_that_cannot_install_in_app() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-inner-guard");
+        let app = tauri::test::mock_app();
+        let operation = journal::Operation::begin("0.0.2-abcdef+local").expect("journal record");
+        let error = install_app_update_inner(
+            app.handle().clone(),
+            BuildChannel::Local,
+            false,
+            "http://127.0.0.1:1/",
+            "0.0.2-abcdef+local",
+            InstallGuard,
+            operation,
+        )
+        .await
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("not available for this build or platform"));
+    }
+
+    /// A record that does not permit restart is refused before the relaunch
+    /// (the injected closure panics, so reaching it would fail this test) and
+    /// before the shutdown barrier is touched.
+    #[test]
+    fn a_restart_is_refused_without_a_safe_record() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-restart-unsafe");
+        let app = tauri::test::mock_app();
+        let operation = journal::Operation::begin("0.0.2-abcdef+local").expect("journal record");
+        operation
+            .finish(
+                "repair-required",
+                Some("installer launch denied".into()),
+                false,
+            )
+            .expect("persist result");
+        let error = restart_after_app_update_with(app.handle().clone(), |_| {
+            panic!("an unsafe record must not relaunch")
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("does not permit restart"));
+    }
+
+    /// The restart entry point refuses while an install holds the process-wide
+    /// flag, so a restart can never interleave with an in-flight installation.
+    #[test]
+    fn a_restart_is_refused_while_maintenance_is_in_progress() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-restart-busy");
+        let app = tauri::test::mock_app();
+        let _holding = InstallActiveGuard::hold();
+
+        let error = restart_after_app_update_with(app.handle().clone(), |_| {
+            panic!("a restart must not run while maintenance is in progress")
+        })
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Update maintenance is in progress"));
+    }
+
+    /// A `failed-restored` record is restart-safe, but only after the saved
+    /// program fingerprint is re-verified — and here nothing was saved, so the
+    /// restart stops instead of relaunching.
+    #[test]
+    fn a_failed_restored_record_reverifies_the_saved_program_files() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-restart-restored");
+        let app = tauri::test::mock_app();
+        let operation = journal::Operation::begin("0.0.2-abcdef+local").expect("journal record");
+        operation
+            .finish(
+                "failed-restored",
+                Some("installer launch denied".into()),
+                true,
+            )
+            .expect("persist result");
+        let error = restart_after_app_update_with(app.handle().clone(), |_| {
+            panic!("an unverified record must not relaunch")
+        })
+        .unwrap_err();
+        assert!(!error.to_string().is_empty());
     }
 }
 

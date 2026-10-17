@@ -4,7 +4,7 @@ import { prepareTaskNotifications } from "../../notifications/taskNotifications"
 import { DesktopScope, RemoteProvider, useRemote, useRemoteControls, type RemoteControls } from "../RemoteContext";
 import { claimPairingCode } from "../pairing";
 import { loadCredentials, loadPairedDesktops } from "../storage";
-import type { Presence, RemoteCredentials, RemoteSession } from "../types";
+import type { DownloadInfo, HistoryAttachment, Presence, RemoteCredentials, RemoteSession } from "../types";
 
 /**
  * The app's remote surface over several paired desktops.
@@ -782,6 +782,189 @@ describe("RemoteProvider over several desktops", () => {
     // `timeline` is deliberately absent from the controls: a streamed delta must
     // not re-render every control on the screen.
     expect((controls as unknown as { timeline?: unknown }).timeline).toBeUndefined();
+  });
+
+  /**
+   * A phone with nothing paired still answers every verb.
+   *
+   * This surface is what a device page for a machine whose runtime has not
+   * reported yet reads, and what the app reads before storage has been read —
+   * so each verb has to answer its own empty value, and each write has to
+   * refuse, rather than reaching the machine the phone happens to be on.
+   */
+  test("a machine with no runtime answers every verb itself", async () => {
+    jest.mocked(loadPairedDesktops).mockResolvedValue([]);
+    await mount();
+    await settle();
+    expect(remote.phase).toBe("unpaired");
+
+    // A capture with no conversation to own can never be valid: the predicate
+    // it hands back says so rather than letting a caller assume ownership.
+    const capture = remote.captureConversationOperation();
+    expect(capture()).toBe(false);
+
+    await expect(remote.selectSession("a-1")).resolves.toBeUndefined();
+    expect(remote.reloadTimeline()).toBeUndefined();
+    expect(remote.closeConversation()).toBeUndefined();
+    await expect(remote.loadOlderTimeline()).resolves.toBe(false);
+    await expect(remote.awaitCompactionOutcome("a-1", "op")).resolves.toEqual({ status: "timeout" });
+    await expect(remote.listSkills()).resolves.toEqual([]);
+    await expect(remote.resolveToolCallTarget("call", "run")).resolves.toBeNull();
+    expect(remote.cachedAttachment({} as HistoryAttachment)).toBeNull();
+
+    // The writes refuse instead of pretending: a caller that reported success
+    // here would tell the user the conversation was compacted when nothing ran.
+    await expect(remote.compactContext()).rejects.toThrow("not_connected");
+    await expect(remote.listSessionFiles()).rejects.toThrow("not_connected");
+    await expect(remote.prepareAttachment({} as HistoryAttachment)).rejects.toThrow("not_connected");
+    await expect(remote.downloadAttachment({} as DownloadInfo)).rejects.toThrow("not_connected");
+    await expect(remote.generateTitle("a-1", "en")).rejects.toThrow("not_connected");
+    await expect(remote.createWorkspace("/tmp/w", "w")).rejects.toThrow("not_connected");
+  });
+
+  test("unpairing tells the open machine and drops the pairing", async () => {
+    await mount();
+    await settle();
+    const studio = clientFor("desktop_1");
+    studio.requests.length = 0;
+    // The stored pairing is what unpair removes; the mock stands in for the
+    // store, so it has to stop answering with the desktops that were dropped.
+    jest.mocked(loadPairedDesktops).mockResolvedValue([]);
+
+    await act(async () => { await remote.unpair(); });
+    await settle();
+
+    // The machine is told first, best effort, on its own connection…
+    expect(studio.requests.map((record) => record.command.type)).toContain("unpair");
+    // …and the local removal is what leaves the app with nothing paired.
+    expect(remote.desktops).toEqual([]);
+    expect(remote.catalogs.machines).toEqual([]);
+  });
+
+  test("the merged list refreshes and reaches every machine on its own connection", async () => {
+    await mount();
+    await settle();
+    const studio = clientFor("desktop_1");
+    const office = clientFor("desktop_2");
+    studio.requests.length = 0;
+    office.requests.length = 0;
+
+    await act(async () => { await remote.catalogs.refresh(); });
+    // A refresh is one read per machine, each on its own runtime.
+    expect(commandsFor("desktop_1")).toContain("list_sessions");
+    expect(commandsFor("desktop_2")).toContain("list_sessions");
+
+    // One machine gave up while the other is live: reaching them again is two
+    // different answers, and neither may cost the healthy machine its socket.
+    act(() => { office.callbacks.onConnectionState?.("failed" as never); });
+    await settle();
+    studio.requests.length = 0;
+    act(() => { remote.catalogs.reconnect(); });
+    await settle();
+    expect(studio.recoverNow).toHaveBeenCalledWith("request-failure");
+    expect(studio.close).not.toHaveBeenCalled();
+    expect(clientsFor("desktop_2")).toHaveLength(2);
+  });
+
+  test("a named machine runs each of its commands on its own connection", async () => {
+    await mount();
+    await settle();
+    const studio = clientFor("desktop_1");
+    const office = clientFor("desktop_2");
+    studio.requests.length = 0;
+    office.requests.length = 0;
+
+    const commands = remote.catalogs.commandsFor("desktop_2");
+    expect(commands).not.toBeNull();
+    await act(async () => { await commands!.setSessionPinned("b-1", "t-b-1", true); });
+    await act(async () => { await commands!.deleteSession("b-1", "t-b-1"); });
+    await act(async () => { await commands!.renameWorkspace("w1", "  Renamed  "); });
+    await act(async () => { await commands!.setWorkspacePinned("w1", true); });
+    await act(async () => { await commands!.deleteWorkspace("w1"); });
+
+    const sent = office.requests.map((record) => record.command);
+    expect(sent).toEqual(expect.arrayContaining([
+      { type: "set_session_pinned", sessionId: "b-1", threadId: "t-b-1", pinned: true },
+      { type: "delete_session", sessionId: "b-1", threadId: "t-b-1" },
+      // The name is trimmed here: the host applies its own rules to the rest.
+      { type: "rename_workspace", workspaceId: "w1", name: "Renamed" },
+      { type: "set_workspace_pinned", workspaceId: "w1", pinned: true },
+      { type: "delete_workspace", workspaceId: "w1" },
+    ]));
+    // The workspace verbs address the machine's list, not one of its sessions.
+    expect(office.requests.filter((r) => r.command.type === "set_workspace_pinned")[0]!.sessionId)
+      .toBe("list");
+    expect(commandsFor("desktop_1")).not.toContain("delete_session");
+    // Every accepted command is followed by the machine's own catalogue being
+    // re-read: a push can be lost, and the row has to show what the host took.
+    expect(office.requests.filter((r) => r.command.type === "list_sessions").length)
+      .toBeGreaterThanOrEqual(5);
+  });
+
+  test("a generated title is read out of the machine's answer, and a missing one is a refusal", async () => {
+    await mount();
+    await settle();
+    const office = clientFor("desktop_2");
+    const commands = remote.catalogs.commandsFor("desktop_2");
+    expect(commands).not.toBeNull();
+
+    office.request.mockImplementation(async (command: { type: string }) =>
+      command.type === "generate_session_title"
+        ? { success: true, data: { title: "  Release notes  " } }
+        : { success: true, data: mockReplyFor("desktop_2", command) });
+    await expect(commands!.generateTitle("b-1", "en")).resolves.toBe("Release notes");
+
+    // A machine that answers without a title refused; inventing one is not the
+    // phone's to do, so the caller gets the failure it can report.
+    office.request.mockImplementation(async (command: { type: string }) =>
+      command.type === "generate_session_title"
+        ? { success: true, data: {} }
+        : { success: true, data: mockReplyFor("desktop_2", command) });
+    await expect(commands!.generateTitle("b-1", "en")).rejects
+      .toThrow("title_generation_failed");
+  });
+
+  /**
+   * The process-wide lifecycle is applied to *every* machine.
+   *
+   * One listener serves all of them — a per-desktop copy would be N sockets
+   * left open behind the app — so the two callbacks it drives have to reach
+   * each runtime, the machine nobody is reading included.
+   */
+  test("going to the background and back holds and recovers every machine", async () => {
+    jest.useFakeTimers();
+    try {
+      await mount();
+      await settle();
+      const studio = clientFor("desktop_1");
+      const office = clientFor("desktop_2");
+      const { AppState } = jest.requireMock("react-native") as {
+        AppState: { addEventListener: jest.Mock };
+      };
+      const onChange = AppState.addEventListener.mock.calls.at(-1)![1] as (next: string) => void;
+
+      act(() => { onChange("background"); });
+      // The grace period exists for a quick app switch; once it expires every
+      // socket is retired, not just the one the phone is reading.
+      await act(async () => { jest.advanceTimersByTime(10_000); });
+      expect(studio.setAppActive).toHaveBeenCalledWith(false);
+      expect(office.setAppActive).toHaveBeenCalledWith(false);
+
+      studio.setAppActive.mockClear();
+      office.setAppActive.mockClear();
+      studio.recoverNow.mockClear();
+      office.recoverNow.mockClear();
+      act(() => { onChange("active"); });
+      await settle();
+      // Coming back hands every machine its socket again and asks each one to
+      // recover, so a desktop that fell behind while the app slept catches up.
+      expect(studio.setAppActive).toHaveBeenCalledWith(true);
+      expect(office.setAppActive).toHaveBeenCalledWith(true);
+      expect(studio.recoverNow).toHaveBeenCalledWith("foreground");
+      expect(office.recoverNow).toHaveBeenCalledWith("foreground");
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 

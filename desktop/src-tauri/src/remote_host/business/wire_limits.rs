@@ -718,6 +718,14 @@ mod measure_phone_page_tests {
         let path = std::env::var("VERIFY_E2E_PHONE_PAGE").expect("VERIFY_E2E_PHONE_PAGE");
         let raw = std::fs::read_to_string(path).expect("phone page readable");
         let entries: Value = serde_json::from_str(&raw).expect("phone page json");
+        println!("VERIFY_E2E_PHONE_PAGE {}", measure_page(&entries));
+    }
+
+    /// The measurement body, split from the env gate above so the ordinary
+    /// suite runs it too (on a page a test owns). Trim and budget are the
+    /// shipping ones either way; what the fixture changes is only whose entries
+    /// are measured.
+    fn measure_page(entries: &Value) -> Value {
         let sized = |value: &Value| serde_json::to_vec(value).expect("serializes").len();
 
         // The phone is a chunked reader (it reassembles `readChunk`s) and reads
@@ -808,22 +816,82 @@ mod measure_phone_page_tests {
         let saved_gzip =
             (!untrimmed_over).then(|| 1.0 - (trimmed_gzip as f64 / untrimmed_gzip.max(1) as f64));
 
-        println!(
-            "VERIFY_E2E_PHONE_PAGE {}",
-            json!({
-                "sourceEntries": source,
-                "plainBytes": plain_wire,
-                "trimmedBytes": trimmed_wire,
-                "saved": 1.0 - (trimmed_wire as f64 / plain_wire.max(1) as f64),
-                "untrimmedGzip": untrimmed_gzip,
-                "trimmedGzip": trimmed_gzip,
-                "savedGzip": saved_gzip,
-                "leanReplyPlain": lean_plain,
-                "leanReplyGzip": lean_gzip,
-                "undeclared": { "entries": full_entries, "wireBytes": full_wire },
-                "declared": { "entries": lean_count, "wireBytes": lean_wire },
-                "declaredWhole": lean_count == source,
-            })
+        json!({
+            "sourceEntries": source,
+            "plainBytes": plain_wire,
+            "trimmedBytes": trimmed_wire,
+            "saved": 1.0 - (trimmed_wire as f64 / plain_wire.max(1) as f64),
+            "untrimmedGzip": untrimmed_gzip,
+            "trimmedGzip": trimmed_gzip,
+            "savedGzip": saved_gzip,
+            "leanReplyPlain": lean_plain,
+            "leanReplyGzip": lean_gzip,
+            "undeclared": { "entries": full_entries, "wireBytes": full_wire },
+            "declared": { "entries": lean_count, "wireBytes": lean_wire },
+            "declaredWhole": lean_count == source,
+        })
+    }
+
+    /// The phone-page measurement, on a page this test owns. The ignored driver
+    /// above measures a real dumped page; this proves the two invariants that
+    /// measurement exists to check — the trim only ever removes bytes from the
+    /// same entries, and with the byte budget enforced the lean page never
+    /// delivers fewer exchanges than the undeclared one — plus that the report
+    /// describes the page it was handed.
+    #[test]
+    fn the_phone_page_measurement_holds_its_invariants_on_a_fixture_page() {
+        let entries = json!([
+            {
+                "id": "u1", "kind": "user", "role": "user", "runId": "r1",
+                "blocks": [{"kind": "text", "text": "question"}],
+            },
+            {
+                "id": "a1", "kind": "assistant", "role": "assistant", "runId": "r1",
+                "blocks": [
+                    {"kind": "reasoning", "text": "r".repeat(500)},
+                    {"kind": "text", "text": "answer"},
+                    {"kind": "tool_result", "toolCallId": "c1", "text": "o".repeat(500)},
+                    {"kind": "tool_call", "name": "shell", "toolCallId": "c1",
+                     "arguments": {"command": "c".repeat(500)}},
+                ],
+            },
+            {
+                "id": "u2", "kind": "user", "role": "user", "runId": "r1",
+                "blocks": [{"kind": "text", "text": "follow-up"}],
+            },
+        ]);
+        let report = measure_page(&entries);
+
+        assert_eq!(report["sourceEntries"], json!(3));
+        assert!(
+            report["trimmedBytes"].as_u64().unwrap() < report["plainBytes"].as_u64().unwrap(),
+            "the trim removes bytes from the same entries: {report}"
+        );
+        let saved = report["saved"].as_f64().expect("a saving ratio");
+        assert!((0.0..1.0).contains(&saved), "saved is a fraction: {report}");
+        assert!(
+            report["declared"]["entries"].as_u64().unwrap()
+                >= report["undeclared"]["entries"].as_u64().unwrap(),
+            "the lean page never delivers fewer exchanges than the undeclared one: {report}"
+        );
+        assert_eq!(
+            report["declaredWhole"],
+            json!(true),
+            "a page under the budget is delivered whole: {report}"
+        );
+        // The reply sizes are the encoder's, so they are at least the payload:
+        // a page below the gzip threshold rides plain and the ratio is defined
+        // rather than null, which is what the report prints for it.
+        assert!(
+            report["leanReplyPlain"].as_u64().unwrap()
+                >= report["declared"]["wireBytes"].as_u64().unwrap()
+                    - future_remote_crypto::HEADER_LEN as u64
+                    - future_remote_crypto::TAG_LEN as u64,
+            "the reply carries the measured page: {report}"
+        );
+        assert!(
+            report["savedGzip"].as_f64().is_some(),
+            "a page under the decoded-reply limit has a defined gzip saving: {report}"
         );
     }
 }

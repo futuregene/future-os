@@ -748,6 +748,48 @@ fn new_session_generates_id_and_registers() {
 }
 
 #[test]
+fn new_session_reports_a_model_the_protocol_layer_cannot_build() {
+    // `set_model` validates a *resolvable* model's protocol shape before it
+    // publishes the identity, so a model the registry knows but the protocol
+    // layer cannot build makes it fail — the only way to reach the two "could
+    // not sync … loop model" warnings. Both are non-fatal by design: the session
+    // is still created, which is what the assertions below check.
+    let state = make_app_state();
+    *state.model_registry.write() = crate::models::Registry::from_models_and_auth(
+        vec![crate::models::Model {
+            id: "bad".to_string(),
+            provider: "test".to_string(),
+            api: "no-such-protocol".to_string(),
+            api_key: "sk-test".to_string(),
+            output: vec!["text".into()],
+            context_window: 32_000,
+            max_tokens: 1_000,
+            ..Default::default()
+        }],
+        "{}",
+    );
+    // Precondition: the model resolves, so `set_model` gets far enough to
+    // validate the protocol rather than stopping at "unknown model" (the other
+    // failure arm, which is already covered).
+    assert!(state.model_registry.read().resolve("test/bad").is_some());
+
+    let mut cmd = make_cmd_for("new_session", "ns-bad-protocol");
+    cmd.model_id = "test/bad".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(
+        resp["success"], true,
+        "an unusable model must not block creation"
+    );
+    assert_eq!(resp["data"]["sessionId"], "ns-bad-protocol");
+    let session = state.get_session("ns-bad-protocol").unwrap();
+    assert_eq!(
+        session.read().model,
+        "test/bad",
+        "the requested identity is recorded even when its client cannot be built"
+    );
+}
+
+#[test]
 fn new_session_honors_explicit_id_cwd_model_level_and_provenance() {
     let state = make_app_state();
     let mut cmd = make_cmd_for("new_session", "ns-explicit");

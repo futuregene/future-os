@@ -955,7 +955,12 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn native_runner_round_trips_through_a_real_program() {
-        native_runner("cat", &[], "hello\nworld").expect("cat must accept the payload");
+        native_runner(
+            crate::test_env::absolute_tool("cat").to_str().unwrap(),
+            &[],
+            "hello\nworld",
+        )
+        .expect("cat must accept the payload");
     }
 
     /// A real non-zero exit with an empty stderr must be reported as a status
@@ -963,7 +968,12 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn native_runner_reports_a_nonzero_exit_without_stderr() {
-        let error = native_runner("false", &[], "hi").expect_err("false must fail");
+        let error = native_runner(
+            crate::test_env::absolute_tool("false").to_str().unwrap(),
+            &[],
+            "hi",
+        )
+        .expect_err("false must fail");
         assert!(error.starts_with("exited with status"), "{error}");
         assert!(!error.starts_with("failed: "), "{error}");
     }
@@ -973,7 +983,12 @@ mod tests {
     #[cfg(unix)]
     fn native_runner_reports_stderr_from_a_failing_program() {
         let args = vec!["-c".to_string(), "printf boom >&2; exit 1".to_string()];
-        let error = native_runner("sh", &args, "hi").expect_err("the command must fail");
+        let error = native_runner(
+            crate::test_env::absolute_tool("sh").to_str().unwrap(),
+            &args,
+            "hi",
+        )
+        .expect_err("the command must fail");
         assert_eq!(error, "failed: boom");
     }
 
@@ -981,7 +996,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn run_native_reports_a_missing_stdin_pipe() {
-        let child = Command::new("cat")
+        let child = Command::new(crate::test_env::absolute_tool("cat"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -996,7 +1011,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn run_native_reports_a_broken_stdin_write() {
-        let child = Command::new("true")
+        let child = Command::new(crate::test_env::absolute_tool("true"))
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1115,14 +1130,21 @@ mod tests {
     fn with_runner_keeps_the_probed_candidates_and_uses_the_injected_runner() {
         let probed = Clipboard::new();
         // This test routes a copy through the injected runner FOR THE CANDIDATES THIS HOST
-        // PROBED FOR, so it needs at least one. A headless CI runner has no clipboard
-        // program and probed none, where `copy` reports `Requested` rather than `Copied`
+        // PROBED FOR, so it needs at least one. A Linux host with no Wayland/X11 session
+        // (headless CI) probes none, where `copy` reports `Requested` rather than `Copied`
         // (CI: `left: Requested, right: Copied`) -- skip there instead of asserting a
-        // host-dependent outcome.
+        // host-dependent outcome. Every other host probes its native program
+        // unconditionally (`pbcopy`, `clip.exe`), so on those the probe must not be empty.
+        #[cfg(target_os = "linux")]
         if probed.candidates().is_empty() {
             eprintln!("[skip] no native clipboard program on this host");
             return;
         }
+        #[cfg(not(target_os = "linux"))]
+        assert!(
+            !probed.candidates().is_empty(),
+            "every non-Linux host has a native clipboard program"
+        );
         let (runner, log) = recording_runner(&[]);
         let clipboard = Clipboard::with_runner(runner);
         assert_eq!(clipboard.candidates(), probed.candidates());

@@ -556,6 +556,49 @@ fn run_turn_second_consecutive_gap_fails_with_original_error() {
 }
 
 #[test]
+fn run_turn_reports_a_failed_reattach_alongside_the_original_gap() {
+    rt().block_on(async {
+        // Attach 1 serves one event and drops with the agent's DataLoss gap, so
+        // the client retries; the retry does not reach the stream at all (the
+        // RPC itself fails, e.g. the agent went away between the two calls).
+        // The turn must fail with the ORIGINAL gap error AND say that the
+        // reconnect also failed - an operator needs to know it was the second
+        // failure, not the first, that ended the turn.
+        let (addr, shared) = spawn_mock(MockState {
+            events: completed_events("mock-run-1"),
+            stream_attach_plan: vec![AttachPlan::GapAfter(1)],
+            stream_error: true,
+            ..Default::default()
+        })
+        .await;
+        let mut client = AgentClient::connect(&addr).await.unwrap();
+        let err = client
+            .run_turn("sess", "mock-run-1", None, None)
+            .await
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("mock gap #1"),
+            "the original gap is kept: {msg}"
+        );
+        assert!(
+            msg.contains("reconnect also failed"),
+            "the second failure must be named: {msg}"
+        );
+        assert!(
+            msg.contains("mock stream attach failure"),
+            "the reconnect's own error is carried too: {msg}"
+        );
+        let shared = shared.lock().unwrap();
+        assert_eq!(
+            shared.attach_after_idx,
+            vec![-1, 0],
+            "one retry, resumed from the observed cursor"
+        );
+    });
+}
+
+#[test]
 fn run_turn_non_gap_stream_error_fails_immediately() {
     rt().block_on(async {
         // A non-DataLoss transport error is NOT the agent's reconnect

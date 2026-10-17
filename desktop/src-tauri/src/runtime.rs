@@ -301,4 +301,51 @@ mod tests {
         task.abort();
         super::cancel_test_tasks();
     }
+
+    /// A native job is a plain thread and cannot be aborted, so a job that outlives
+    /// the cleanup budget must fail the barrier *and* say which work held it —
+    /// "stopped" published over still-running work is the failure this guards.
+    #[test]
+    fn a_native_job_that_outlives_the_budget_fails_the_cleanup_barrier() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("runtime-native-timeout");
+        let (finished, job_done) = std::sync::mpsc::channel();
+        super::spawn_native(move || {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            let _ = finished.send(());
+        });
+
+        let error = super::cancel_all_tasks(std::time::Duration::from_millis(5))
+            .expect_err("an overrunning native job cannot report a clean stop")
+            .to_string();
+        assert!(
+            error.contains("did not stop before cleanup deadline"),
+            "{error}"
+        );
+        // Let the job finish before the registry is reused by a sibling test, and
+        // drop this fixture's injected failure: the shared registry would otherwise
+        // report it at the next test's cleanup barrier.
+        job_done
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .expect("the native job finishes");
+        super::TASKS.lock().unwrap().errors.clear();
+    }
+
+    /// A panicking native job is caught where it runs, but it must still surface:
+    /// the cleanup result carries it, so a maintenance step that died is never
+    /// reported as a successful stop.
+    #[test]
+    fn a_panicking_native_job_is_reported_at_the_barrier() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("runtime-native-panic");
+        super::spawn_native(|| panic!("injected native cleanup panic"));
+
+        let error = super::cancel_all_tasks(std::time::Duration::from_secs(3))
+            .expect_err("a panicked native job cannot report a clean stop")
+            .to_string();
+        assert!(
+            error.contains("Desktop native background job panicked"),
+            "{error}"
+        );
+        // This injected failure belongs to this fixture only.
+        super::TASKS.lock().unwrap().errors.clear();
+    }
 }

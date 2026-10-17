@@ -63,4 +63,20 @@ describe("parseMentionSegments session references", () => {
       { text: "[x](futureos://run/1)", mention: false, key: 0 },
     ]);
   });
+
+  it("emits overlapping hits once, as the outer mention, not twice", () => {
+    // A hand-edited draft can nest one reference inside another: here the path
+    // of the file mention itself contains a session reference. The link regexp
+    // is greedy, so the outer mention wins the whole span and the inner hit
+    // starts *before* the text already emitted. Emitting it as well would both
+    // double the segment and rewind `last`, dropping the tail of the line.
+    const content = "[a](./[b](futureos://session/abc)";
+    const segments = parseMentionSegments(content);
+    expect(segments).toEqual([
+      { text: "a", mention: true, path: "./[b](futureos://session/abc", key: 0 },
+    ]);
+    // The outer match consumed the closing paren too, so the rewind must not
+    // leave a stray text segment behind (and no session pill was emitted).
+    expect(segments.filter(segment => !segment.mention)).toEqual([]);
+  });
 });

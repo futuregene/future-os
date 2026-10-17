@@ -70,10 +70,37 @@ impl Drop for OwnedAgent {
     }
 }
 
+/// How long a freshly spawned candidate's agent is given to answer the readiness
+/// probe before the launch loop kills it and reports failure.
+///
+/// A *product* budget: it is how long a user waits for a cold sidecar before the
+/// TUI says no agent could be started, so it is stated once, here. The loop's
+/// other fixed costs are the per-attempt connect and handshake timeouts below.
+const LAUNCH_PROBE_WINDOW: Duration = Duration::from_millis(5_000);
+
+/// Interval between readiness probes inside [`LAUNCH_PROBE_WINDOW`].
+const LAUNCH_PROBE_INTERVAL: Duration = Duration::from_millis(125);
+
 /// Return `None` when an existing Agent was found, or an owned child when the
 /// TUI had to launch one. The child is terminated when the returned guard is
 /// dropped.
 pub async fn ensure_agent_running(configured: &str) -> Result<Option<OwnedAgent>, String> {
+    ensure_agent_running_within(configured, LAUNCH_PROBE_WINDOW).await
+}
+
+/// [`ensure_agent_running`] with the per-candidate probe window supplied by the
+/// caller.
+///
+/// The window is the product budget above, and a caller that has to fork/exec a
+/// stand-in candidate passes its own instead of asserting how quickly the host
+/// schedules that child: measured on a loaded host, a candidate that takes longer
+/// than the default window to become observable loses the race, and the loop then
+/// reports `no Future Agent was reachable` - which is a statement about the host,
+/// not about the code under test (see `docs/testing/flaky-tui.md` §7.1).
+pub async fn ensure_agent_running_within(
+    configured: &str,
+    probe_window: Duration,
+) -> Result<Option<OwnedAgent>, String> {
     let permit = match future_rpc::connection::select_agent(
         configured,
         future_rpc::connection::EXPECTED_AGENT_VERSION,
@@ -109,7 +136,9 @@ pub async fn ensure_agent_running(configured: &str) -> Result<Option<OwnedAgent>
                 continue;
             }
         };
-        for _ in 0..40 {
+        let attempts =
+            (probe_window.as_millis() / LAUNCH_PROBE_INTERVAL.as_millis()).max(1) as usize;
+        for _ in 0..attempts {
             match future_rpc::connection::connect_verified(
                 configured,
                 future_rpc::connection::EXPECTED_AGENT_VERSION,
@@ -137,7 +166,7 @@ pub async fn ensure_agent_running(configured: &str) -> Result<Option<OwnedAgent>
                     ));
                     break;
                 }
-                Ok(None) => tokio::time::sleep(Duration::from_millis(125)).await,
+                Ok(None) => tokio::time::sleep(LAUNCH_PROBE_INTERVAL).await,
                 Err(error) => {
                     failures.push(format!("{}: {error}", candidate.program.display()));
                     break;
@@ -176,17 +205,33 @@ mod tests {
         assert_eq!(specs[1].args, vec!["--grpc-addr", "auto"]);
     }
 
+    /// An executable at the filesystem root has no sibling directory, so there
+    /// is nothing to look next to it: only the two `PATH` candidates remain.
+    /// This is the `parent()`-is-`None` branch of `launch_candidates`.
+    #[test]
+    fn a_root_executable_path_leaves_only_the_path_candidates() {
+        let specs = launch_candidates(Path::new("/"));
+        assert_eq!(specs.len(), 2, "{specs:?}");
+        assert_eq!(specs[0].program, PathBuf::from("future"));
+        assert_eq!(specs[0].args, vec!["agent", "--grpc-addr", "auto"]);
+        assert_eq!(specs[1].program, PathBuf::from("future-agent"));
+        assert_eq!(specs[1].args, vec!["--grpc-addr", "auto"]);
+    }
+
     /// A long-running child that exits on its own only long after the test.
     fn spawn_sleeper() -> Child {
+        // Pinned to an absolute path (see `test_env::absolute_tool`): this test
+        // does not take the env lock, and a peer test's `PATH` swap must not decide
+        // whether this child starts.
         #[cfg(windows)]
         let mut command = {
-            let mut command = Command::new("cmd");
+            let mut command = Command::new(crate::test_env::absolute_tool("cmd"));
             command.args(["/c", "ping -n 60 127.0.0.1 > nul"]);
             command
         };
         #[cfg(unix)]
         let mut command = {
-            let mut command = Command::new("sleep");
+            let mut command = Command::new(crate::test_env::absolute_tool("sleep"));
             command.arg("60");
             command
         };
@@ -203,7 +248,7 @@ mod tests {
     fn process_is_running(pid: u32) -> bool {
         #[cfg(windows)]
         {
-            let out = Command::new("tasklist")
+            let out = Command::new(crate::test_env::absolute_tool("tasklist"))
                 .args(["/FI", &format!("PID eq {pid}"), "/NH"])
                 .output()
                 .expect("tasklist");
@@ -211,7 +256,7 @@ mod tests {
         }
         #[cfg(unix)]
         {
-            Command::new("ps")
+            Command::new(crate::test_env::absolute_tool("ps"))
                 .args(["-p", &pid.to_string()])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())

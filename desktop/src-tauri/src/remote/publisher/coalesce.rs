@@ -310,6 +310,66 @@ fn merged_payload(
     serde_json::to_vec(&body).ok()
 }
 
+/// The claims a measurement may make about the coalesced lane, as a predicate
+/// rather than as inline assertions so every verdict is reachable from an
+/// ordinary test.
+///
+/// Test-only: its callers are the two `#[ignore]`d measurements and the tests
+/// that drive the verdicts directly, so in a production build it would be dead
+/// code (and `-D warnings` would say so).
+///
+/// The claim depends on whether the window had anything to merge, and the two
+/// cases are *not* one strict inequality:
+///
+/// * **never larger** — the lane's whole point. A merge adds `coalescedCount`
+///   and rebuilds `data`, so if a bug applied that to traffic it could not
+///   merge, the lane would come out bigger than the pre-change one.
+/// * **strictly smaller when it merged** — `published < events` means the
+///   window folded fragments together; a merge that saves no bytes is a
+///   regression in the other direction.
+/// * **byte-identical when it did not** — `flush` hands the source event
+///   straight back when nothing joined it (`merged == 0`), so a journal whose
+///   fragments arrive further apart than the window must publish exactly what
+///   production would have published without the coalescer.
+///
+/// The third case is why this exists: the measurement used to demand strict
+/// shrinkage unconditionally, which is unsatisfiable for a journal that cannot
+/// merge. Found by measurement on a real run
+/// (`docs/testing/real-network.md` §3.3a: fragments ~101 ms apart against a
+/// 100 ms window) where the lane was byte-identical — `9196 == 9196` — and the
+/// assertion reported it as growth.
+#[cfg(test)]
+fn assert_lane_claims(
+    events: usize,
+    today_bytes: usize,
+    coalesced_bytes: usize,
+    sources: &[Vec<u8>],
+    published: &[EventPublish],
+) {
+    assert!(
+        coalesced_bytes <= today_bytes,
+        "coalescing must never grow the lane ({coalesced_bytes} vs {today_bytes})"
+    );
+    if published.len() < events {
+        assert!(
+            coalesced_bytes < today_bytes,
+            "a lane that merged fragments must shrink ({coalesced_bytes} vs {today_bytes})"
+        );
+        return;
+    }
+    assert_eq!(
+        published.len(),
+        sources.len(),
+        "an unmerged lane publishes one event per source"
+    );
+    for (event, source) in published.iter().zip(sources) {
+        assert_eq!(
+            event.payload, *source,
+            "an event that merged nothing must be published byte-identical"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -847,6 +907,99 @@ mod tests {
         assert_eq!(text_of(&out[0]), "{\"a\":1}");
     }
 
+    /// The three verdicts of [`assert_lane_claims`], each driven on its own so
+    /// the measurement's claims are not made only inside an ignored driver.
+    ///
+    /// The two failure cases are the ones the ticket asked about: a lane that
+    /// grew (the bug the assertion exists for) and a lone event that came back
+    /// rewritten (a merged envelope leaking onto traffic that merged nothing —
+    /// the state a reader would see as "coalescing made it bigger").
+    #[test]
+    fn the_lane_claims_hold_shrink_equal_and_reject_the_two_failure_shapes() {
+        let source = |idx: i64| body("text_chunk", serde_json::json!({"text":"x"}), idx);
+        let publish = |payload: Vec<u8>| EventPublish {
+            subject: "p.pair.evt.s".into(),
+            payload,
+            status_subject: None,
+        };
+        let sources: Vec<Vec<u8>> = (0..4).map(source).collect();
+        let today: usize = sources.iter().map(Vec::len).sum();
+
+        // Merged: fewer publishes, fewer bytes.
+        let merged: Vec<EventPublish> = sources[..2]
+            .iter()
+            .map(|half| publish(half.to_vec()))
+            .collect();
+        let merged_bytes: usize = merged.iter().map(|e| e.payload.len()).sum();
+        assert!(merged_bytes < today);
+        assert_lane_claims(4, today, merged_bytes, &sources, &merged);
+
+        // Nothing merged: one publish per source, byte-identical, equal bytes.
+        let untouched: Vec<EventPublish> = sources.iter().cloned().map(publish).collect();
+        assert_lane_claims(4, today, today, &sources, &untouched);
+
+        // A lane one byte larger than today's is the regression.
+        let grown = std::panic::catch_unwind(|| {
+            assert_lane_claims(4, today, today + 1, &sources, &untouched)
+        });
+        assert!(grown.is_err(), "growth must be rejected");
+
+        // Same byte count, but a publish that is not its source: the merged
+        // envelope was applied to an unmerged event.
+        let mut rewritten = untouched.clone();
+        let mut extra: Value = serde_json::from_slice(&rewritten[1].payload).unwrap();
+        extra["coalescedCount"] = Value::from(2);
+        rewritten[1].payload = serde_json::to_vec(&extra).unwrap();
+        rewritten[1].payload.push(b' ');
+        let leaked = std::panic::catch_unwind(|| {
+            assert_lane_claims(4, today + 1, today + 1, &sources, &rewritten)
+        });
+        assert!(
+            leaked.is_err(),
+            "an envelope on a lone event must be rejected"
+        );
+    }
+
+    /// A fragment that never gets company is the source event, unchanged.
+    ///
+    /// This is the other half of "coalescing never grows the lane", and the one
+    /// a real journal can reach: fragments spaced further apart than the window
+    /// merge with nothing, so `flush` must hand back the exact payload that
+    /// production would have published without the coalescer. A merged envelope
+    /// (`coalescedCount`, a rebuilt `data`) on a lone event would make the lane
+    /// larger than the pre-change one and would also give the client a range
+    /// claim it must not act on.
+    ///
+    /// Found by measurement, not by review: the real-network run
+    /// (`docs/testing/real-network.md` §3.3a) produced fragments ~101 ms apart
+    /// against the 100 ms window, and the measurement's old assertion reported
+    /// the case as growth.
+    #[test]
+    fn a_fragment_that_merges_nothing_is_published_byte_identical() {
+        let window = Duration::from_millis(100);
+        for spacing in [window, window * 2, window * 10] {
+            let mut coalescer = Coalescer::with_window(window);
+            let base = Instant::now();
+            let mut out = Vec::new();
+            let first = event("text_chunk", serde_json::json!({"text":"a"}), 1);
+            let second = event("text_chunk", serde_json::json!({"text":"b"}), 2);
+            coalescer.offer(first.clone(), base, &mut out);
+            coalescer.offer(second.clone(), base + spacing, &mut out);
+            coalescer.flush(&mut out);
+            assert_eq!(out.len(), 2, "spacing {spacing:?} merges nothing");
+            assert_eq!(out[0].payload, first.payload, "spacing {spacing:?}");
+            assert_eq!(out[1].payload, second.payload, "spacing {spacing:?}");
+            // And the lone-event flush at the end of a stream: one fragment,
+            // no successor, nothing merged.
+            let mut alone = Coalescer::with_window(window);
+            let mut solo = Vec::new();
+            alone.offer(first.clone(), base, &mut solo);
+            alone.flush(&mut solo);
+            assert_eq!(solo.len(), 1);
+            assert_eq!(solo[0].payload, first.payload);
+        }
+    }
+
     /// Non-fragment and unparsable traffic must pass through byte-identical:
     /// the lane exists for token fragments, not for rewriting the protocol.
     #[test]
@@ -915,6 +1068,9 @@ mod tests {
             .unwrap_or(COALESCE_WINDOW);
         let mut coalescer = Coalescer::with_window(window);
         let mut published = Vec::new();
+        // The source bodies in journal order, so the no-merge case can assert
+        // byte-identity against what production would have published.
+        let mut sources: Vec<Vec<u8>> = Vec::new();
         let mut today_bytes = 0usize;
         let mut today_data_bytes = 0usize;
         let mut events = 0usize;
@@ -942,6 +1098,7 @@ mod tests {
                 raw["run_sequence"].as_i64().unwrap_or(0),
             );
             let bytes = serde_json::to_vec(&payload).expect("body serializes");
+            sources.push(bytes.clone());
             today_bytes += bytes.len();
             // Data versus envelope: the envelope is everything the body carries
             // besides the event's own `data` string (identity, ids, timestamps),
@@ -995,19 +1152,11 @@ mod tests {
             }
             newest_idx = newest_idx.max(body["idx"].as_i64().unwrap_or(0));
         }
-        assert_eq!(parties, events, "every source event must be accounted for");
-        assert_eq!(
-            merged_characters, source_characters,
-            "no character may be lost or duplicated"
-        );
-        assert_eq!(
-            newest_idx, last_idx,
-            "the newest index must still be published"
-        );
-        assert!(
-            coalesced_bytes < today_bytes,
-            "coalescing must not grow the lane"
-        );
+        // Print before asserting. The driver (`scripts/measure/measure-live-lane.py`)
+        // reads these markers, and a measurement that dies without reporting its
+        // numbers cannot be diagnosed from its own output — which is exactly what
+        // happened when this assertion first failed on a real journal. The exit
+        // code, not the presence of the marker, is the proof the whole body ran.
         let _ = first_idx;
         println!(
             "LIVE_LANE {}",
@@ -1023,6 +1172,16 @@ mod tests {
                 "ratio": today_bytes as f64 / coalesced_bytes.max(1) as f64,
             })
         );
+        assert_eq!(parties, events, "every source event must be accounted for");
+        assert_eq!(
+            merged_characters, source_characters,
+            "no character may be lost or duplicated"
+        );
+        assert_eq!(
+            newest_idx, last_idx,
+            "the newest index must still be published"
+        );
+        assert_lane_claims(events, today_bytes, coalesced_bytes, &sources, &published);
     }
 
     /// The same measurement for the lean lane, over the same real journal and
@@ -1225,30 +1384,116 @@ mod tests {
             "coalesce-journal.jsonl",
         ));
         std::fs::write(&path, &journal).unwrap();
-        let names = [
-            "SYNC_MEASURE_JOURNAL",
-            "SYNC_MEASURE_SESSION",
-            "SYNC_MEASURE_RUN",
-            "SYNC_MEASURE_WINDOW_MS",
-        ];
-        let previous: Vec<(&str, Option<String>)> = names
-            .iter()
-            .map(|name| (*name, std::env::var(name).ok()))
-            .collect();
-        std::env::set_var("SYNC_MEASURE_JOURNAL", &path);
-        std::env::set_var("SYNC_MEASURE_SESSION", "session-measure");
-        std::env::set_var("SYNC_MEASURE_RUN", "run-measure");
-        std::env::set_var("SYNC_MEASURE_WINDOW_MS", "60000");
+        // Restored on drop, so the new lane claims failing here cannot leak
+        // `SYNC_MEASURE_*` into the rest of the suite (`FLAKES.md` item 27:
+        // holding a lock is not a restore; the lock only serializes writers).
+        let _lock = measurement_env_lock();
+        let _env = MeasurementEnv::set(&[
+            ("SYNC_MEASURE_JOURNAL", path.display().to_string()),
+            ("SYNC_MEASURE_SESSION", "session-measure".to_string()),
+            ("SYNC_MEASURE_RUN", "run-measure".to_string()),
+            ("SYNC_MEASURE_WINDOW_MS", "60000".to_string()),
+        ]);
 
         measure_real_journal();
         measure_real_journal_lean();
 
+        drop(_env);
+        std::fs::remove_file(&path).ok();
+    }
+
+    static MEASUREMENT_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn measurement_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        MEASUREMENT_ENV
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    /// The measurement's environment inputs, put back on drop.
+    ///
+    /// The driver test has to publish four process-global variables for the
+    /// duration of two measurements. Restoring them on the normal return path
+    /// was not enough once the lane claims became a way for that test to fail:
+    /// a leaked `SYNC_MEASURE_JOURNAL`/`WINDOW_MS` makes a later measurement read
+    /// another test's inputs, which is the shape that once turned one leaked
+    /// global into 27 unrelated failures.
+    struct MeasurementEnv {
+        previous: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl MeasurementEnv {
+        fn set(pairs: &[(&'static str, String)]) -> Self {
+            let previous = pairs
+                .iter()
+                .map(|(name, _)| (*name, std::env::var(name).ok()))
+                .collect();
+            for (name, value) in pairs {
+                std::env::set_var(name, value);
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for MeasurementEnv {
+        fn drop(&mut self) {
+            restore_measurement_env(std::mem::take(&mut self.previous));
+        }
+    }
+
+    /// Put the measurement's env vars back they way they were: a var that was
+    /// set before the run is restored, and one that was not is removed. A test
+    /// that leaves `SYNC_MEASURE_JOURNAL` set would make every later
+    /// measurement read the previous run's dump — the numbers would still look
+    /// plausible, which is what makes it worth pinning.
+    fn restore_measurement_env(previous: Vec<(&str, Option<String>)>) {
         for (name, value) in previous {
             match value {
                 Some(value) => std::env::set_var(name, value),
                 None => std::env::remove_var(name),
             }
         }
-        std::fs::remove_file(&path).ok();
+    }
+
+    /// Both halves of that restore, on a var this test owns so no other test's
+    /// environment is touched: a pre-existing value comes back, an absent one
+    /// stays absent.
+    #[test]
+    fn the_measurement_environment_is_restored_the_way_it_was() {
+        let name = "SYNC_MEASURE_RESTORE_PROBE";
+        std::env::set_var(name, "before");
+        restore_measurement_env(vec![(name, Some("before".to_string()))]);
+        assert_eq!(std::env::var(name).as_deref(), Ok("before"));
+
+        std::env::set_var(name, "poisoned-by-a-run");
+        restore_measurement_env(vec![(name, None)]);
+        assert!(
+            std::env::var(name).is_err(),
+            "a var the run invented must not survive it"
+        );
+    }
+
+    /// And the RAII wrapper does that **while the measurement panics**, which is
+    /// the case the manual restore could not cover: a failing lane claim used to
+    /// leave all four inputs set for whatever ran next.
+    #[test]
+    fn a_panicking_measurement_restores_its_environment() {
+        let _lock = measurement_env_lock();
+        let name = "SYNC_MEASURE_PANIC_PROBE";
+        std::env::remove_var(name);
+        let outcome = std::panic::catch_unwind(|| {
+            let _env = MeasurementEnv::set(&[(name, "from-the-failing-run".to_string())]);
+            assert_eq!(
+                std::env::var(name).as_deref(),
+                Ok("from-the-failing-run"),
+                "the guard publishes the value it will restore"
+            );
+            panic!("the measurement failed");
+        });
+        assert!(outcome.is_err());
+        assert!(
+            std::env::var(name).is_err(),
+            "a variable the failing run invented must not survive it"
+        );
     }
 }

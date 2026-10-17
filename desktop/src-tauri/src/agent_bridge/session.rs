@@ -747,6 +747,52 @@ mod tests {
         assert!(error.to_string().contains("without returning its identity"));
     }
 
+    /// The stored session id is an identity, not a hint: an Agent that answers
+    /// about a *different* conversation must not be adopted, or the thread would
+    /// silently continue someone else's history (and the Agent's own view of the
+    /// session would drift from the row the sidebar shows).
+    #[tokio::test]
+    async fn ensure_refuses_a_foreign_session_identity() {
+        let (mock, mut client) = mock_client().await;
+        mock.push_data(
+            "get_state",
+            serde_json::json!({"sessionId": "sess-other", "cwd": "/tmp/ws"}),
+        );
+
+        let error = ensure_agent_session(&mut client, "sess-1", "/tmp/ws", None, None)
+            .await
+            .expect_err("a foreign session must not be adopted");
+        assert!(error.to_string().contains("while inspecting"), "{error}");
+        assert!(
+            mock.requests_of("new_session").is_empty(),
+            "an identity mismatch is not a reason to mint a replacement"
+        );
+    }
+
+    /// Repairing a drifted workspace is best-effort metadata convergence; when
+    /// the Agent refuses the repair the caller hears about it and the existing
+    /// session is still the binding.
+    #[tokio::test]
+    async fn ensure_reports_a_refused_workspace_repair() {
+        let (mock, mut client) = mock_client().await;
+        mock.push_data(
+            "get_state",
+            serde_json::json!({"sessionId": "sess-1", "cwd": "/elsewhere"}),
+        );
+        mock.push("set_cwd", Reply::Status(tonic::Code::Internal, "read-only"));
+
+        let error = ensure_agent_session(&mut client, "sess-1", "/tmp/ws", None, None)
+            .await
+            .expect_err("a refused repair is reported");
+        assert!(
+            error
+                .to_string()
+                .contains("Unable to restore Future Agent session workspace"),
+            "{error}"
+        );
+        assert!(mock.requests_of("new_session").is_empty());
+    }
+
     #[tokio::test]
     async fn permission_level_and_sandbox_policy_round_trip() {
         let home = TestHome::new("session-setup");
@@ -1156,6 +1202,151 @@ mod tests {
         );
     }
 
+    /// The forked session's model is read from its state. That read failing is
+    /// not a reason to lose the fork: the history is what the user asked for, so
+    /// the thread lands and its runs simply carry no model rather than a guessed
+    /// one.
+    #[tokio::test]
+    async fn fork_survives_a_failed_state_read_without_recording_a_model() {
+        let home = TestHome::new("session-fork-state-error");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+
+        mock.push_data(
+            "fork",
+            serde_json::json!({"sessionId": "sess-fork-nostate"}),
+        );
+        mock.push_typed_data("get_session_entries", entries_payload(forked_entries()));
+        mock.push("get_state", Reply::Status(tonic::Code::Unavailable, "down"));
+        mock.push("set_cwd", Reply::Data("{}".to_string()));
+
+        let new_thread_id = fork_agent_session(&thread.id, "e3", "request-state")
+            .await
+            .expect("the fork itself must land");
+
+        let runs = crate::store::list_runs(&new_thread_id).expect("runs");
+        assert_eq!(runs.len(), 1);
+        assert!(runs[0].model_provider.is_none(), "{runs:?}");
+        assert!(runs[0].model_id.is_none(), "{runs:?}");
+    }
+
+    /// A run identity in the forked history that already belongs to another
+    /// thread is refused outright: reusing it would rewrite that thread's run
+    /// row from a foreign conversation's payload.
+    #[tokio::test]
+    async fn a_fork_refuses_a_history_run_owned_by_another_thread() {
+        let home = TestHome::new("session-fork-foreign-run");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+        let other = seed_thread(&workspace.id, Some("sess-other"));
+        crate::store::create_run(crate::store::CreateRunInput {
+            id: Some("foreign-run-1".to_string()),
+            thread_id: other.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("seed the other thread's run");
+
+        mock.push_data(
+            "fork",
+            serde_json::json!({"sessionId": "sess-fork-foreign"}),
+        );
+        mock.push_typed_data(
+            "get_session_entries",
+            entries_payload(serde_json::json!([
+                {"id":"f1","role":"user","runId":"foreign-run-1","blocks":[]},
+                {"id":"f2","role":"assistant","runId":"foreign-run-1","run":{"status":"completed"},"blocks":[]}
+            ])),
+        );
+        mock.push_state_for_session(
+            "sess-fork-foreign",
+            Reply::TypedData(get_state_payload("sess-fork-foreign", false)),
+        );
+        mock.push("set_cwd", Reply::Data("{}".to_string()));
+
+        let error = fork_agent_session(&thread.id, "e1", "request-foreign")
+            .await
+            .expect_err("a foreign run id must not be adopted");
+        assert!(
+            error.to_string().contains("belongs to another thread"),
+            "{error}"
+        );
+        assert_eq!(
+            crate::store::get_run("foreign-run-1")
+                .expect("get_run")
+                .expect("still there")
+                .thread_id,
+            other.id,
+            "the foreign thread's run is untouched"
+        );
+    }
+
+    /// A forked history carries settled outcomes with it: a run that failed or
+    /// was interrupted comes back as a failed run with its reason, and a
+    /// cancelled one stays cancelled — never silently completed.
+    #[tokio::test]
+    async fn a_fork_inherits_the_settled_outcomes_of_its_history() {
+        let home = TestHome::new("session-fork-outcomes");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+
+        mock.push_data(
+            "fork",
+            serde_json::json!({"sessionId": "sess-fork-outcomes"}),
+        );
+        mock.push_typed_data(
+            "get_session_entries",
+            entries_payload(serde_json::json!([
+                {"id":"f1","role":"user","runId":"fork-run-failed","blocks":[]},
+                {"id":"f2","role":"assistant","runId":"fork-run-failed","run":{"status":"failed"},"blocks":[{"kind":"text","text":"boom"}]},
+                {"id":"f3","role":"user","runId":"fork-run-interrupted","blocks":[]},
+                {"id":"f4","role":"assistant","runId":"fork-run-interrupted","run":{"status":"interrupted"},"blocks":[]},
+                {"id":"f5","role":"user","runId":"fork-run-cancelled","blocks":[]},
+                {"id":"f6","role":"assistant","runId":"fork-run-cancelled","run":{"status":"cancelled"},"blocks":[]}
+            ])),
+        );
+        mock.push_state_for_session(
+            "sess-fork-outcomes",
+            Reply::TypedData(get_state_payload("sess-fork-outcomes", false)),
+        );
+        mock.push("set_cwd", Reply::Data("{}".to_string()));
+
+        let new_thread_id = fork_agent_session(&thread.id, "e1", "request-outcomes")
+            .await
+            .expect("fork");
+        let runs = crate::store::list_runs(&new_thread_id).expect("runs");
+        let run = |id: &str| {
+            runs.iter()
+                .find(|run| run.id == id)
+                .unwrap_or_else(|| panic!("run {id} was projected, got {runs:?}"))
+        };
+
+        let failed = run("fork-run-failed");
+        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.error_type.as_deref(), Some("model_failed"));
+        assert_eq!(
+            failed.error_message.as_deref(),
+            Some("Inherited run failed")
+        );
+
+        let interrupted = run("fork-run-interrupted");
+        assert_eq!(interrupted.status, "failed");
+        assert_eq!(interrupted.error_type.as_deref(), Some("unknown"));
+        assert_eq!(
+            interrupted.error_message.as_deref(),
+            Some("Inherited run was interrupted")
+        );
+
+        let cancelled = run("fork-run-cancelled");
+        assert_eq!(cancelled.status, "cancelled");
+        assert!(cancelled.error_message.is_none());
+        assert!(cancelled.error_type.is_none());
+    }
+
     #[tokio::test]
     async fn fork_uses_agent_session_name_unless_placeholder() {
         let home = TestHome::new("session-fork-name");
@@ -1296,11 +1487,15 @@ mod tests {
             {"role":"tool","blocks":[{"kind":"tool_result","toolCallId":"","text":"no id"}]},
             {"role":"assistant","blocks":[{"kind":"text","text":"no tool calls"}]},
             {"role":"assistant","blocks":[]},
-            {"role":"user","blocks":[{"kind":"text","text":"not an assistant"}]}
+            {"role":"user","blocks":[{"kind":"text","text":"not an assistant"}]},
+            // An assistant entry whose `blocks` are absent altogether (a
+            // truncated or hand-written journal): it contributes no events and
+            // must be skipped rather than panicking on the missing key.
+            {"role":"assistant"}
         ]);
         synthesize_run_events_from_entries(
             &entries.as_array().expect("array").to_vec(),
-            &[vec![0, 1, 2, 3], vec![4, 5, 6]],
+            &[vec![0, 1, 2, 3], vec![4, 5, 6, 7]],
             &[run_a.id.clone(), run_b.id.clone()],
         );
 

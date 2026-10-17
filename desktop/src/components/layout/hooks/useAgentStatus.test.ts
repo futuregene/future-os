@@ -109,4 +109,28 @@ describe("useAgentStatus", () => {
     expect(hook.current.phase).toBe("recovering");
     hook.unmount();
   });
+
+  it("abandons a deferred commit once the hook is gone, and stops polling", async () => {
+    // A ready probe inside the minimum-splash window is committed from a timer
+    // rather than inline, so the commit has to re-check `cancelled` on its own:
+    // the effect cleanup's `clearTimeout` cannot stop a callback the host has
+    // already dequeued (the fault injected here), and a commit that ran anyway
+    // would also schedule the *next* poll — a loop that outlives its view.
+    const clearTimeoutSpy = vi.spyOn(window, "clearTimeout").mockImplementation(() => {});
+    try {
+      const hook = renderHook(useAgentStatus);
+      await flushAsync();
+      expect(vi.mocked(getAgentStatus)).toHaveBeenCalledTimes(1);
+
+      hook.unmount();
+      // The dequeued commit fires, then any poll it scheduled would fire too.
+      act(() => vi.advanceTimersByTime(MINIMUM_AGENT_SPLASH_MS));
+      act(() => vi.advanceTimersByTime(AGENT_WAIT_HINT_DELAY_MS + AGENT_STARTUP_TIMEOUT_MS));
+
+      expect(vi.mocked(getAgentStatus)).toHaveBeenCalledTimes(1);
+    }
+    finally {
+      clearTimeoutSpy.mockRestore();
+    }
+  });
 });

@@ -705,6 +705,77 @@ describe("terminalView teardown", () => {
     expect(disposeCalls).toBe(2);
   });
 
+  /**
+   * A timer the browser has already dequeued is not stopped by the cleanup.
+   *
+   * The teardown above proves the *cancellation* path (unmount clears the
+   * pending timers). This is the other side of the same race: `clearTimeout`
+   * cannot stop a callback the host has already taken off the queue, and both
+   * timer callbacks re-check `disposed` for exactly that reason. Without the
+   * re-check a closed view would still ask the server for a size, or open a
+   * second socket for a terminal nobody is looking at — a leak that only shows
+   * up as a server-side session that outlives its tab.
+   *
+   * The race is injected by making `clearTimeout` a no-op for the duration, which
+   * is the state the browser is in for one turn of the event loop.
+   */
+  it("ignores a resize timer that had already been queued when the view unmounted", async () => {
+    vi.useFakeTimers();
+    await connect();
+    updateTerminal.mockClear();
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout").mockImplementation(() => {});
+    try {
+      // A real resize arms the debounce (the first size goes out immediately).
+      await act(async () => {
+        resizeHandler?.({ cols: 120, rows: 40 });
+      });
+      await act(async () => {
+        root?.unmount();
+      });
+      root = createRoot(host!);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+
+      // The debounced size was dropped: the view is gone, so there is nothing to
+      // resize.
+      expect(updateTerminal).not.toHaveBeenCalled();
+    }
+    finally {
+      clearTimeoutSpy.mockRestore();
+    }
+  });
+
+  it("does not reconnect from a retry timer queued before the view unmounted", async () => {
+    vi.useFakeTimers();
+    const socket = await connect();
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout").mockImplementation(() => {});
+    try {
+      // A drop schedules the backoff retry…
+      await act(async () => {
+        socket.emit("close", { code: 1006 });
+      });
+      // …and the view goes away inside that delay.
+      await act(async () => {
+        root?.unmount();
+      });
+      root = createRoot(host!);
+      const socketsBefore = sockets.length;
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+
+      // No second connection was opened: the retry callback re-checked `disposed`
+      // and returned before dialling.
+      expect(sockets).toHaveLength(socketsBefore);
+    }
+    finally {
+      clearTimeoutSpy.mockRestore();
+    }
+  });
+
   it("cancels a scheduled reconnect when the view unmounts", async () => {
     vi.useFakeTimers();
     const socket = await connect();

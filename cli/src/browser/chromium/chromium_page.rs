@@ -324,9 +324,15 @@ impl ChromiumPageManager {
             .to_string();
 
         // Wait for target discovery.
-        let deadline = crate::utils::time::now_millis() + 5000;
+        //
+        // The budget is a monotonic `Instant`, not `utils::time::now_millis()`:
+        // the test that measures this wait (and reports how long the caller was
+        // made to wait) measures `Instant`, so a wall-clock step inside the loop
+        // — NTP, a host suspend/resume — would end the wait early while the
+        // monotonic clock still reads less than the budget.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut page: Option<ChromiumPage> = None;
-        while crate::utils::time::now_millis() < deadline {
+        while std::time::Instant::now() < deadline {
             page = {
                 let d = self.data.lock().unwrap();
                 d.pages.get(&target_id).cloned()

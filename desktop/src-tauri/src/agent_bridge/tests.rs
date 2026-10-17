@@ -380,6 +380,35 @@ mod bridge_tests {
         mock.push("get_session_entries", Reply::Data(String::new()));
         assert!(get_session_entries("sess-1".to_string()).await.is_err());
 
+        // A page that claims more pages but does not advance the cursor would
+        // make the fetch loop forever: it is an error, not a retry, and one
+        // page is all that is requested.
+        let before = mock.requests_of("get_session_entries").len();
+        mock.push_typed_data(
+            "get_session_entries",
+            serde_json::json!({
+                "entries": [{
+                    "id":"e4","kind":"assistant","role":"assistant","createdAtMs":1000,"blocks":[]
+                }],
+                "hasMore": true,
+                "nextOffset": 0
+            }),
+        );
+        let error = get_session_entries("sess-1".to_string())
+            .await
+            .expect_err("a non-advancing page must be refused");
+        assert!(
+            error
+                .to_string()
+                .contains("non-advancing offset: 0 after 0"),
+            "{error}"
+        );
+        assert_eq!(
+            mock.requests_of("get_session_entries").len() - before,
+            1,
+            "the loop stops at the first page that cannot advance"
+        );
+
         mock.push_data("get_state", serde_json::json!({"isStreaming": true}));
         let value = get_session_state("sess-1".to_string())
             .await
@@ -983,6 +1012,65 @@ mod bridge_tests {
     }
 
     #[tokio::test]
+    async fn delete_outbox_keeps_intent_when_the_agent_is_unreachable_or_unclear() {
+        let home = TestHome::new("bridge-outbox-unclear");
+        let mock = mock_agent();
+
+        // The Agent cannot be attached at all: intent must stay durable rather
+        // than being dropped on the floor.
+        enqueue_delete(&home, "sess-del-unreachable");
+        let previous = std::env::var("FUTURE_AGENT_GRPC_ADDR").ok();
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+        reconcile_delete_outbox().await;
+        match previous {
+            Some(value) => std::env::set_var("FUTURE_AGENT_GRPC_ADDR", value),
+            None => std::env::remove_var("FUTURE_AGENT_GRPC_ADDR"),
+        }
+        assert!(
+            crate::store::is_agent_session_tombstoned("sess-del-unreachable").unwrap(),
+            "an unattachable Agent must not clear the deletion intent"
+        );
+
+        // A reply that is a success but not a decodable deletion page is
+        // ambiguous: keep the tombstone and do not panic on the decode error.
+        enqueue_delete(&home, "sess-del-garbled");
+        mock.push_data(
+            "delete_sessions",
+            serde_json::json!({"results": "not-a-page"}),
+        );
+        reconcile_delete_outbox().await;
+        assert!(crate::store::is_agent_session_tombstoned("sess-del-garbled").unwrap());
+
+        // A refusal with no message still records a reason, so the user is not
+        // shown an empty diagnostic. The reply answers *every* pending session
+        // (the unattachable one from above included) so it is unambiguous and
+        // reaches the per-result projection.
+        enqueue_delete(&home, "sess-del-unnamed");
+        let results = crate::store::pending_agent_session_deletes()
+            .unwrap()
+            .iter()
+            .map(|session_id| {
+                let deleted = session_id != "sess-del-unnamed";
+                serde_json::json!({
+                    "sessionId": session_id,
+                    "deleted": deleted,
+                    "error": "",
+                    "errorCode": if deleted { "" } else { "deleting" },
+                    "errorData": null
+                })
+            })
+            .collect::<Vec<_>>();
+        mock.push_data("delete_sessions", serde_json::json!({"results": results}));
+        reconcile_delete_outbox().await;
+        assert!(
+            crate::store::is_agent_session_tombstoned("sess-del-unnamed").unwrap(),
+            "a refusal without a message still keeps the intent"
+        );
+        let pending = crate::store::pending_agent_session_deletes().unwrap();
+        assert!(pending.contains(&"sess-del-unnamed".to_string()));
+    }
+
+    #[tokio::test]
     async fn delete_outbox_bounds_batches_and_preserves_ambiguous_replies() {
         let home = TestHome::new("bridge-outbox-batches");
         let mock = mock_agent();
@@ -1289,6 +1377,50 @@ mod bridge_tests {
                 .status,
             "completed"
         );
+    }
+
+    #[tokio::test]
+    async fn watchdog_leaves_a_settled_row_the_agent_refuses_to_resolve() {
+        // The Agent answers — successfully, and says no: it cannot resolve this
+        // session, so its ledger says nothing about the row either way. That is
+        // `Unknown`, which must leave the row exactly as it was and must NOT be
+        // memoized as verified (the session may reappear after a restart), so the
+        // row stays a candidate for the next pass.
+        let home = TestHome::new("bridge-settled-unknown");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-unknown"));
+        let run = failed_run(&thread.id);
+        let mut settled = std::collections::HashSet::new();
+        let now = run.updated_at + 30_000;
+
+        // A refused read: `success = false`, so the pass gets an answer rather
+        // than a transport error.
+        mock.push(
+            &format!("get_state#{}", run.id),
+            Reply::Reject("unknown session".into()),
+        );
+        active_run_watchdog_pass(now, &mut settled).await;
+        assert_eq!(ledger_reads(&mock, &run.id), 1, "the ledger was read once");
+        let record = crate::store::get_run(&run.id).expect("run").expect("some");
+        assert_eq!(
+            record.status, "failed",
+            "a non-answer never rewrites the row"
+        );
+        assert_eq!(
+            record.error_message.as_deref(),
+            Some("[RESPONSE_UNCONFIRMED] response did not complete"),
+            "its own message stays"
+        );
+
+        // Not memoized: the next pass asks again (a second read).
+        mock.push(
+            &format!("get_state#{}", run.id),
+            Reply::Reject("unknown session".into()),
+        );
+        active_run_watchdog_pass(now + 30_000, &mut settled).await;
+        assert_eq!(ledger_reads(&mock, &run.id), 2);
+        assert!(settled.is_empty(), "Unknown is not Verified");
     }
 
     #[tokio::test]
@@ -2075,6 +2207,60 @@ mod pipeline_tests {
                 .status,
             "completed",
             "the journal marker settles the row"
+        );
+    }
+
+    /// A queued run whose user entry is *not* in the Agent's page is a failed
+    /// session read, not evidence of a missing entry: the pass leaves the journal
+    /// as the source of truth rather than persisting a stub, and the run stays
+    /// alive for the observer to settle.
+    #[tokio::test]
+    async fn agent_prompt_queued_run_without_its_entry_persists_no_stub() {
+        let fixture = pipeline_fixture("pipe-queued-no-entry", "t");
+        let (message, thread_id, run_id) = prompt_args(&fixture);
+        fixture
+            .mock
+            .push_data("new_session", serde_json::json!({"sessionId": "sess-pqne"}));
+        fixture.mock.push_stream(StreamScript::AttachError(
+            tonic::Code::FailedPrecondition,
+            "run is not the active run",
+        ));
+        fixture.mock.push_run_state(
+            &run_id,
+            serde_json::json!({"queuedRuns": [{"runId": run_id, "queuePosition": 1}]}),
+        );
+        // The page comes back, but without this run's user entry.
+        fixture
+            .mock
+            .push_typed_data("get_session_entries", serde_json::json!({"entries": []}));
+
+        let response = agent_prompt(
+            message,
+            None,
+            thread_id,
+            None,
+            Some(run_id.clone()),
+            None,
+            None,
+        )
+        .await
+        .expect("a queued prompt is not a failure");
+
+        assert_eq!(response.termination_kind.as_deref(), Some("run_queued"));
+        let events = crate::store::list_run_events(&run_id).expect("events");
+        assert!(
+            events
+                .iter()
+                .all(|event| event.event_type != "user_message"),
+            "no stub user entry may be persisted: {events:?}"
+        );
+        assert_eq!(
+            crate::store::get_run(&run_id)
+                .expect("run")
+                .expect("some")
+                .status,
+            "running",
+            "the observer still settles the queued run"
         );
     }
 

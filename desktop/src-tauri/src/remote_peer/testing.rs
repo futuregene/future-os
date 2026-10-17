@@ -200,7 +200,13 @@ pub(crate) async fn fixture(label: &str) -> (HomeGuard, Fixture) {
 
 /// Tear the host bridge down and wait for its port, so the next test can start
 /// one. Called at the end of every test that started a bridge.
+///
+/// It also aborts every retry loop: a loop started by a failed connect (or by a
+/// dropped connection) outlives the call that made it, and the test build's
+/// schedule runs at 1 ms — so leaving one behind turns it into a CPU burner for
+/// every later test in the binary (`runtime::abort_supervisors_for_test`).
 pub(crate) async fn teardown() {
     stop();
+    crate::remote_peer::runtime::abort_supervisors_for_test().await;
     wait_for_web_port_free().await;
 }

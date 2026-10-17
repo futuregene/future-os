@@ -173,6 +173,28 @@ mod tests {
         assert_eq!(projection.latest.unwrap().classification, "run_recorded");
     }
 
+    /// A run file that recorded no classification (an empty `terminal_state`)
+    /// must still be counted, under the default class: silently dropping it
+    /// would under-report the goal's activity.
+    #[test]
+    fn a_run_without_a_classification_is_bucketed_as_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs = dir.path().join("goals").join("g1").join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        std::fs::write(
+            runs.join("unclassified.json"),
+            "{\"timestamp\":\"2026-08-05T12:00:00+00:00\",\"turn\":1,\"terminal_state\":\"\"}",
+        )
+        .unwrap();
+        let now = crate::scheduler::state::parse_epoch("2026-08-05T13:00:00+00:00").unwrap();
+        let projection = build_run_history(dir.path().to_str().unwrap(), "g1", now)
+            .unwrap()
+            .unwrap();
+        assert_eq!(projection.totals.events_24h, 1);
+        assert_eq!(projection.totals.by_class_24h.get("work"), Some(&1u64));
+        assert_eq!(projection.totals.by_class_7d.get("work"), Some(&1u64));
+    }
+
     #[test]
     fn missing_index_is_none() {
         let dir = tempfile::tempdir().unwrap();

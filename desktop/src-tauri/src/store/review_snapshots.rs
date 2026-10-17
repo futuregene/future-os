@@ -746,6 +746,31 @@ mod tests {
         assert_eq!(file_count, 0, "stale file rows were deleted");
     }
 
+    /// The upsert re-reads the row it just committed and turns a missing row into a
+    /// hard error (`loaded`, "Run changeset could not be loaded."). A database that
+    /// drops the row the instant it is written must therefore surface that error
+    /// rather than report a successful upsert with no changeset behind it.
+    #[test]
+    fn a_changeset_that_cannot_be_read_back_is_reported() {
+        let _home = fresh_db("rsnap_vanish");
+        {
+            let conn = connect().expect("connect");
+            seed_graph(&conn, &["r1"]);
+            // No file rows are inserted, so the delete cannot break a foreign key: the
+            // first observable effect of the vanishing row is the read-back.
+            conn.execute_batch(
+                "CREATE TRIGGER hostile_vanish AFTER INSERT ON review_changesets
+                 BEGIN DELETE FROM review_changesets WHERE id = NEW.id; END;",
+            )
+            .expect("plant the hostile trigger");
+        }
+
+        let error = upsert_run_changeset(changeset_input("r1", false))
+            .expect_err("a changeset that cannot be read back must be reported")
+            .to_string();
+        assert!(error.contains("Run changeset"), "{error}");
+    }
+
     #[test]
     fn last_run_changeset_is_the_latest_ended_run() {
         let (_home, conn) = guarded_conn("rsnap_last");

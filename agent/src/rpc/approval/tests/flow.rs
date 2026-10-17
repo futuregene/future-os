@@ -669,3 +669,313 @@ fn additional_permissions_invalid_shape_is_rejected() {
     assert!(result.is_error);
     assert!(result.result.contains("invalid additional_permissions"));
 }
+
+// ─── run-scoped automatic review contexts ──────────────────────────────
+
+/// A gate whose reviewer is the automatic one, plus the two shared switches a
+/// run uses to invalidate it (interrupt flag, context generation).
+/// The annotation map a run shares with its reviewer.
+type ReviewAnnotations =
+    std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<String, serde_json::Value>>>;
+
+fn review_gate() -> (
+    ApprovalGate,
+    std::sync::Arc<std::sync::atomic::AtomicU64>,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ReviewAnnotations,
+) {
+    use std::sync::atomic::{AtomicBool, AtomicU64};
+    use std::sync::Arc;
+
+    let generation = Arc::new(AtomicU64::new(0));
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let annotations = Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
+    let context = crate::approval_review::RunApprovalReviewer::new(
+        "write the report".to_string(),
+        cancelled.clone(),
+        generation.clone(),
+        annotations.clone(),
+    );
+    (
+        ApprovalGate::default().with_model_reviewer(context),
+        generation,
+        cancelled,
+        annotations,
+    )
+}
+
+#[test]
+fn a_run_scoped_gate_reviews_messages_and_snapshots_the_run_context() {
+    use std::sync::atomic::Ordering;
+
+    let (gate, _generation, cancelled, annotations) = review_gate();
+
+    // `for_run` re-bases the reviewer on the run: a fresh generation snapshot
+    // and the run's own interrupt flag and annotation map.
+    let run_gate = gate.for_run(
+        "please rotate the key".to_string(),
+        &[],
+        "entry-7",
+        cancelled.clone(),
+        annotations.clone(),
+    );
+    let run_context = run_gate.review.as_ref().expect("run gate keeps a reviewer");
+    assert!(
+        run_context.invalidated().is_none(),
+        "a fresh run context is valid"
+    );
+
+    // The context snapshots the gate's generation; bumping it is what a session
+    // context change looks like, and the reviewer must report a stale request.
+    let gate_generation = run_gate.generation.clone();
+    gate_generation.fetch_add(1, Ordering::SeqCst);
+    let stale = run_context
+        .invalidated()
+        .expect("generation change invalidates the run context");
+    assert_eq!(
+        stale.status,
+        crate::approval_review::ReviewStatus::StaleRequest
+    );
+    assert_eq!(stale.error_code.as_deref(), Some("context_changed"));
+
+    // The interrupt flag is the other invalidation source: a cancelled run's
+    // reviewer reports a cancelled (not stale) request.
+    let (cancel_gate, _generation, run_flag, cancel_annotations) = review_gate();
+    let cancelled_gate = cancel_gate.for_run(
+        "write the report".to_string(),
+        &[],
+        "entry-8",
+        run_flag.clone(),
+        cancel_annotations,
+    );
+    run_flag.store(true, Ordering::SeqCst);
+    let cancelled_verdict = cancelled_gate
+        .review
+        .as_ref()
+        .expect("run gate keeps a reviewer")
+        .invalidated()
+        .expect("interrupting the run invalidates its context");
+    assert_eq!(
+        cancelled_verdict.status,
+        crate::approval_review::ReviewStatus::Cancelled
+    );
+    assert_eq!(
+        cancelled_verdict.error_code.as_deref(),
+        Some("run_cancelled")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_invalidated_review_context_blocks_the_command_without_asking_the_user() {
+    use std::sync::atomic::Ordering;
+
+    let ws = temp_ws("review-invalidated");
+    let sandbox = enabled(&ws);
+    let broadcaster = SseBroadcaster::new();
+    let (gate, generation, _cancelled, _annotations) = review_gate();
+    generation.fetch_add(1, Ordering::SeqCst);
+
+    let result = gate.request(
+        &broadcaster,
+        "s1",
+        &ws,
+        "shell",
+        "t1",
+        &serde_json::json!({"command": "rm -rf /tmp/some-build-dir"}),
+        &sandbox,
+    );
+    let blocked = result.expect("an invalidated context must stop the command");
+    assert!(blocked.is_error);
+    assert!(
+        blocked.result.contains("approval request ended"),
+        "{}",
+        blocked.result
+    );
+    assert!(
+        gate.pending_for_session("s1").is_empty(),
+        "an invalidated review must not fall back to the human gate"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_invalidated_review_context_cancels_escalation_without_asking_the_user() {
+    use std::sync::atomic::Ordering;
+
+    let ws = temp_ws("review-escalation-invalidated");
+    let sandbox = enabled(&ws);
+    let broadcaster = SseBroadcaster::new();
+    let (gate, generation, _cancelled, _annotations) = review_gate();
+    generation.fetch_add(1, Ordering::SeqCst);
+    let request = crate::sandbox::EscalationRequest {
+        trigger: crate::sandbox::EscalationTrigger::ModelRequest,
+        command: "touch /System/x".to_string(),
+        justification: "the report needs it".to_string(),
+        failure_summary: "operation not permitted".to_string(),
+    };
+    let decision = gate.request_escalation(&broadcaster, "s1", &request, &sandbox);
+    match decision {
+        crate::sandbox::EscalationDecision::ContextInvalidated(note) => {
+            assert!(note.contains("context ended"), "{note}");
+        }
+        other => panic!("expected ContextInvalidated, got {other:?}"),
+    }
+    assert!(
+        gate.pending_for_session("s1").is_empty(),
+        "an invalidated review must not fall back to the human gate"
+    );
+}
+
+/// A sandbox-tier sandbox by hand (the `enabled` helper is the manual tier).
+#[cfg(not(windows))]
+fn sandbox_tier(ws: &str) -> ResolvedSandbox {
+    ResolvedSandbox::resolve(
+        &SandboxPolicy {
+            tier: crate::sandbox::SandboxTier::Sandbox,
+            model_reviewer: false,
+        },
+        ws,
+    )
+}
+
+#[cfg(not(windows))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn file_permissions_cannot_be_combined_with_escalated() {
+    let ws = temp_ws("file-perms-escalated");
+    let target = std::path::PathBuf::from(&ws).join("report.txt");
+    std::fs::write(&target, "old").unwrap();
+    let sandbox = sandbox_tier(&ws);
+    if !sandbox.wraps_shell() {
+        eprintln!("skipping: this host has no OS sandbox backend");
+        return;
+    }
+    let gate = ApprovalGate::default();
+    let broadcaster = SseBroadcaster::new();
+    let result = gate.request(
+        &broadcaster,
+        "s1",
+        &ws,
+        "shell",
+        "t1",
+        &serde_json::json!({
+            "command": "printf new > report.txt",
+            "escalated": true,
+            "additional_permissions": {
+                "write": [{"path": target, "scope": "file", "reason": "save the report"}]
+            }
+        }),
+        &sandbox,
+    );
+    let denied = result.expect("escalated file permissions are rejected");
+    assert!(denied.is_error);
+    assert!(
+        denied.result.contains("cannot be combined with escalated"),
+        "{}",
+        denied.result
+    );
+    assert!(
+        gate.pending_for_session("s1").is_empty(),
+        "the contradiction is reported without asking the user"
+    );
+}
+
+#[cfg(not(windows))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_file_permission_request_never_starts_the_command() {
+    let ws = temp_ws("file-perms-cancelled");
+    let target_dir = std::path::PathBuf::from(&ws).join("out");
+    std::fs::create_dir_all(&target_dir).unwrap();
+    let target = target_dir.join("report.txt");
+    std::fs::write(&target, "old").unwrap();
+    // An "ask" rule makes the write target need approval, the same way a user
+    // rule file does at run start.
+    std::fs::create_dir_all(std::path::PathBuf::from(&ws).join(".future")).unwrap();
+    std::fs::write(
+        std::path::PathBuf::from(&ws).join(".future/approval_rule.json"),
+        serde_json::json!({"rules": [{"path": target_dir, "access": "write", "action": "ask"}]})
+            .to_string(),
+    )
+    .unwrap();
+    let sandbox = sandbox_tier(&ws);
+    if !sandbox.wraps_shell() {
+        eprintln!("skipping: this host has no OS sandbox backend");
+        return;
+    }
+    let gate = ApprovalGate::default();
+    let broadcaster = SseBroadcaster::new();
+    let decider = spawn_decider(
+        &gate,
+        "s1",
+        ApprovalDecision {
+            approved: false,
+            note: String::new(),
+            status: ApprovalDecisionStatus::Cancelled,
+        },
+    );
+    let result = gate.request(
+        &broadcaster,
+        "s1",
+        &ws,
+        "shell",
+        "t1",
+        &serde_json::json!({
+            "command": "printf new > out/report.txt",
+            "additional_permissions": {
+                "write": [{"path": target, "scope": "file", "reason": "save the report"}]
+            }
+        }),
+        &sandbox,
+    );
+    assert!(
+        decider.join().unwrap(),
+        "the file permission request never reached the user"
+    );
+    let cancelled = result.expect("cancellation returns a tool result");
+    assert!(cancelled.is_error);
+    assert!(
+        cancelled
+            .result
+            .contains("File permission approval ended; command was not started"),
+        "{}",
+        cancelled.result
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "old",
+        "a cancelled approval must not let the command run"
+    );
+}
+
+/// A file-permission request whose targets the sandbox already allows needs no
+/// approval at all — the gate must not park a human request for a no-op grant.
+#[cfg(not(windows))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn file_permissions_already_allowed_by_the_sandbox_never_ask_the_user() {
+    let ws = temp_ws("file-perms-allowed");
+    let sandbox = sandbox_tier(&ws);
+    if !sandbox.wraps_shell() {
+        eprintln!("skipping: this host has no OS sandbox backend");
+        return;
+    }
+    let gate = ApprovalGate::default();
+    let broadcaster = SseBroadcaster::new();
+    let result = gate.request(
+        &broadcaster,
+        "s1",
+        &ws,
+        "shell",
+        "t1",
+        &serde_json::json!({
+            "command": "ls",
+            "additional_permissions": {
+                "read": [{"path": ws, "scope": "subtree", "reason": "list the workspace"}]
+            }
+        }),
+        &sandbox,
+    );
+    assert!(
+        result.is_none(),
+        "an already-allowed target needs no approval: {:?}",
+        result.map(|result| result.result)
+    );
+    assert!(gate.pending_for_session("s1").is_empty());
+}

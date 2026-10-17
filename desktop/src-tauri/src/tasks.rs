@@ -1139,6 +1139,382 @@ mod tests {
         assert!(finished.thread_id.is_none(), "no conversation was created");
     }
 
+    /// A **chat** task that still carries a directory works there. The
+    /// conversation itself lives in the chat scratch tree (a chat thread is not
+    /// filed under a path), so `create_new_session` points the Agent session at
+    /// the task's own directory on top of that — the one `set_cwd` the run
+    /// sends, and the reason `cwd` is not simply dropped for chat tasks.
+    #[tokio::test]
+    async fn a_chat_task_with_a_directory_works_there() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-chat-with-cwd");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        let mut t = task("chatty-cwd");
+        t.conversation_mode = ConversationMode::Chat;
+        t.cwd = dir.path().join("chosen").display().to_string();
+        std::fs::create_dir_all(&t.cwd).unwrap();
+        store.insert_task(&t).unwrap();
+        let run = claim(&store, &t, ClaimReason::Explicit).unwrap();
+        script_agent_setup(&mock, "sess_chat_cwd");
+        mock.push_data("set_cwd", serde_json::json!({"cwd": t.cwd.clone()}));
+        mock.push_stream(crate::agent_bridge::test_support::StreamScript::Events(
+            vec![crate::agent_bridge::test_support::stream_event(
+                "@attach",
+                0,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
+            None,
+        ));
+
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        execute(&notify, store, t.clone(), run.clone())
+            .await
+            .expect("execute");
+
+        let store = Store::open(dir.path()).unwrap();
+        let finished = store.get_run(&run.id).unwrap().unwrap();
+        assert_eq!(finished.status, RunStatus::Completed, "{finished:?}");
+        let touched: Vec<String> = mock
+            .requests_of("set_cwd")
+            .iter()
+            .map(|command| command.cwd.clone())
+            .collect();
+        assert_eq!(
+            touched.first(),
+            Some(&t.cwd),
+            "the run's first word on the workspace is the directory the task asked for: {touched:?}"
+        );
+        // NOTE (recorded as a finding, not asserted as a contract): the prompt
+        // path then re-anchors the same session to the conversation's own
+        // workspace (`prompt.rs`'s `ensure_agent_session` compares the Agent's
+        // cwd with `workspace_path_for_thread`, which for a chat thread is the
+        // scratch tree), so an explicit directory on a *chat* task is undone one
+        // step later. Production behaviour is left alone here — which of the two
+        // owners should win is a product decision, not a coverage one.
+        let chat_root = format!(
+            "workspaces{}chat{}",
+            std::path::MAIN_SEPARATOR,
+            std::path::MAIN_SEPARATOR
+        );
+        assert!(
+            touched.len() > 1 && touched[1..].iter().all(|cwd| cwd.contains(&chat_root)),
+            "the conversation's own workspace is what the session ends on: {touched:?}"
+        );
+    }
+
+    /// ...and when the Agent refuses that move, the run fails in words. The
+    /// conversation was created, so a silent success would leave a run whose
+    /// work happened somewhere the user did not ask for.
+    #[tokio::test]
+    async fn a_refused_workspace_move_fails_the_run_with_the_agents_reason() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-chat-cwd-refused");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        let mut t = task("chatty-refused");
+        t.conversation_mode = ConversationMode::Chat;
+        t.cwd = dir.path().join("read-only").display().to_string();
+        std::fs::create_dir_all(&t.cwd).unwrap();
+        store.insert_task(&t).unwrap();
+        let run = claim(&store, &t, ClaimReason::Explicit).unwrap();
+        script_agent_setup(&mock, "sess_cwd_refused");
+        mock.push(
+            "set_cwd",
+            crate::agent_bridge::test_support::Reply::Reject("workspace is read-only".into()),
+        );
+
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        execute(&notify, store, t.clone(), run.clone())
+            .await
+            .expect("execute records the failure instead of returning it");
+
+        let store = Store::open(dir.path()).unwrap();
+        let finished = store.get_run(&run.id).unwrap().unwrap();
+        assert_eq!(finished.status, RunStatus::Failed, "{finished:?}");
+        assert!(
+            finished
+                .error_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Could not set the task workspace: workspace is read-only"),
+            "{finished:?}"
+        );
+    }
+
+    /// A task bound to a conversation that is *gone* is told apart from a task
+    /// that never had one: `session_policy = existing` with no binding opens a
+    /// conversation lazily and records the binding, so the next run continues it
+    /// instead of opening another.
+    #[tokio::test]
+    async fn an_existing_policy_task_without_a_binding_opens_one_and_binds_it() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-lazy-binding");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        let mut t = task("lazy");
+        t.session_policy = SessionPolicy::Existing;
+        t.thread_id = None;
+        t.cwd = dir.path().join("ws").display().to_string();
+        std::fs::create_dir_all(&t.cwd).unwrap();
+        store.insert_task(&t).unwrap();
+        let run = claim(&store, &t, ClaimReason::Explicit).unwrap();
+        script_agent_setup(&mock, "sess_lazy");
+        mock.push_stream(crate::agent_bridge::test_support::StreamScript::Events(
+            vec![crate::agent_bridge::test_support::stream_event(
+                "@attach",
+                0,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
+            None,
+        ));
+
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        execute(&notify, store, t.clone(), run.clone())
+            .await
+            .expect("execute");
+
+        let store = Store::open(dir.path()).unwrap();
+        let finished = store.get_run(&run.id).unwrap().unwrap();
+        assert_eq!(finished.status, RunStatus::Completed, "{finished:?}");
+        assert_eq!(
+            mock.requests_of("new_session").len(),
+            1,
+            "one conversation was opened for the unbound task"
+        );
+        let rebound = store.get_task(&t.id).unwrap().unwrap();
+        assert_eq!(
+            rebound.thread_id, finished.thread_id,
+            "the conversation is recorded on the task so the next run reuses it"
+        );
+    }
+
+    /// The same policy with a directory it cannot use fails *before* touching
+    /// the Agent: a workspace conversation without a directory has nowhere to
+    /// be filed, and the reason reaches the run row.
+    #[tokio::test]
+    async fn an_existing_policy_task_without_a_usable_directory_fails_before_the_agent() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-lazy-no-cwd");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        let mut t = task("lazy-homeless");
+        t.session_policy = SessionPolicy::Existing;
+        t.thread_id = None;
+        t.cwd = "   ".into();
+        store.insert_task(&t).unwrap();
+        let run = claim(&store, &t, ClaimReason::Explicit).unwrap();
+
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        execute(&notify, store, t.clone(), run.clone())
+            .await
+            .expect("execute records the failure instead of returning it");
+
+        let store = Store::open(dir.path()).unwrap();
+        let finished = store.get_run(&run.id).unwrap().unwrap();
+        assert_eq!(finished.status, RunStatus::Failed, "{finished:?}");
+        assert!(
+            finished
+                .error_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("needs a working directory"),
+            "{finished:?}"
+        );
+        assert!(
+            mock.requests_of("new_session").is_empty(),
+            "a refused directory must not open a conversation"
+        );
+    }
+
+    /// A prompt the Agent refuses fails the run **with the Agent's own reason**.
+    /// The conversation was already created, so a run that silently recorded
+    /// "failed" without saying why would leave the user with a row they cannot
+    /// act on.
+    #[tokio::test]
+    async fn a_refused_prompt_fails_the_run_with_the_agents_reason() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-prompt-refused");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        let t = task("refused-prompt");
+        store.insert_task(&t).unwrap();
+        let run = claim(&store, &t, ClaimReason::Explicit).unwrap();
+        script_agent_setup(&mock, "sess_prompt_refused");
+        mock.push(
+            "prompt",
+            crate::agent_bridge::test_support::Reply::Reject("quota exhausted".into()),
+        );
+
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        execute(&notify, store, t.clone(), run.clone())
+            .await
+            .expect("execute records the failure instead of returning it");
+
+        let store = Store::open(dir.path()).unwrap();
+        let finished = store.get_run(&run.id).unwrap().unwrap();
+        assert_eq!(finished.status, RunStatus::Failed, "{finished:?}");
+        assert!(
+            finished
+                .error_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("quota exhausted"),
+            "the Agent's reason reaches the run row: {finished:?}"
+        );
+        // The conversation it opened is still visible: the user can retry in it.
+        assert!(finished.thread_id.is_some(), "{finished:?}");
+    }
+
+    /// The run's answer is read back from the Agent after the prompt settles,
+    /// because the journal (not the stream) is the durable source of truth. A
+    /// refused read fails the run in words: a run row with no answer and no
+    /// reason would be indistinguishable from an empty one.
+    #[tokio::test]
+    async fn a_run_whose_final_read_is_refused_fails_with_the_reason() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-final-read-refused");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        let t = task("refused-read");
+        store.insert_task(&t).unwrap();
+        let run = claim(&store, &t, ClaimReason::Explicit).unwrap();
+
+        // The same setup `script_agent_setup` scripts, except that the final
+        // read is refused — so the refusal is what the run actually gets.
+        mock.push_data(
+            "new_session",
+            serde_json::json!({ "sessionId": "sess_read_refused" }),
+        );
+        mock.push_data("set_permission_level", serde_json::json!({}));
+        mock.push_data(
+            "set_sandbox_policy",
+            serde_json::json!({ "sandboxAvailable": true }),
+        );
+        for _ in 0..4 {
+            mock.push_typed_data(
+                "get_state",
+                crate::agent_bridge::test_support::get_state_payload("sess_read_refused", false),
+            );
+        }
+        mock.push(
+            "get_last_assistant_text",
+            crate::agent_bridge::test_support::Reply::Reject("journal unavailable".into()),
+        );
+        mock.push_stream(crate::agent_bridge::test_support::StreamScript::Events(
+            vec![crate::agent_bridge::test_support::stream_event(
+                "@attach",
+                0,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
+            None,
+        ));
+
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        execute(&notify, store, t.clone(), run.clone())
+            .await
+            .expect("execute records the failure instead of returning it");
+
+        let store = Store::open(dir.path()).unwrap();
+        let finished = store.get_run(&run.id).unwrap().unwrap();
+        assert_eq!(finished.status, RunStatus::Failed, "{finished:?}");
+        assert!(
+            finished
+                .error_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("get_last_assistant_text failed: journal unavailable"),
+            "{finished:?}"
+        );
+        assert!(
+            store.run_output(&run.id).unwrap().is_none(),
+            "a run with no answer stores none"
+        );
+    }
+
+    /// A task bound to a conversation that no longer exists fails in words. It
+    /// must not quietly start a fresh conversation in its place: the user bound
+    /// it to that history on purpose.
+    #[tokio::test]
+    async fn a_run_bound_to_a_missing_conversation_fails_in_words() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-bound-missing");
+        let _mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        let mut t = task("bound");
+        t.session_policy = SessionPolicy::Existing;
+        t.thread_id = Some("thread-that-is-gone".to_string());
+        store.insert_task(&t).unwrap();
+        let run = claim(&store, &t, ClaimReason::Explicit).unwrap();
+
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        execute(&notify, store, t.clone(), run.clone())
+            .await
+            .expect("execute records the failure instead of returning it");
+
+        let store = Store::open(dir.path()).unwrap();
+        let finished = store.get_run(&run.id).unwrap().unwrap();
+        assert_eq!(finished.status, RunStatus::Failed, "{finished:?}");
+        assert!(
+            finished
+                .error_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("bound task thread is missing"),
+            "{finished:?}"
+        );
+        assert!(finished.thread_id.is_none(), "no conversation was created");
+    }
+
+    /// Admission can close *mid-batch*: when the host is stopping, the tick
+    /// stops before claiming the next due task instead of starting a run it
+    /// would immediately have to interrupt. The request stays queued for the
+    /// next start.
+    #[tokio::test]
+    async fn a_stopped_tick_claims_nothing_further() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-tick-stopping");
+        let dir = TempDir::new().unwrap();
+        std::env::set_var("FUTURE_HOME", dir.path());
+        reset_for_test();
+        let store = Store::open(dir.path()).unwrap();
+
+        let mut queued = task("queued");
+        queued.pending_request_at = Some(now_ms());
+        queued.pending_origin = Some(RunOrigin::Cli);
+        store.insert_task(&queued).unwrap();
+
+        stop_admission();
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        tick(&notify).await.expect("tick");
+
+        let store = Store::open(dir.path()).unwrap();
+        assert!(
+            store.list_runs_for_task(&queued.id, 10).unwrap().is_empty(),
+            "a stopping host must not claim the task"
+        );
+        assert!(
+            store
+                .get_task(&queued.id)
+                .unwrap()
+                .unwrap()
+                .pending_request_at
+                .is_some(),
+            "the request stays queued for the next start"
+        );
+        std::env::remove_var("FUTURE_HOME");
+        reset_for_test();
+    }
+
     /// A reused conversation is prompted in place, retaining earlier context.
     #[tokio::test]
     async fn a_reused_conversation_is_prompted_in_place_without_compacting() {
@@ -1350,5 +1726,424 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
+    }
+
+    // ─── the tick loop itself ─────────────────────────────────────────────
+
+    /// `candidates` is the loop's per-tick admission decision: only a task that
+    /// is actually due becomes work, and the reason it is due decides how it is
+    /// claimed (a pending request is "someone asked", a reached schedule is the
+    /// task's own clock).
+    #[test]
+    fn candidates_selects_the_due_tasks_and_names_the_reason() {
+        let (_dir, store) = store();
+
+        let mut requested = task("requested");
+        requested.pending_request_at = Some(1_000);
+        requested.pending_origin = Some(RunOrigin::Cli);
+        store.insert_task(&requested).unwrap();
+
+        let mut due = task("due");
+        due.trigger_kind = TriggerKind::Schedule;
+        due.next_due_at = Some(1_000);
+        store.insert_task(&due).unwrap();
+
+        // Neither a request nor a reached slot: never a candidate, so a task
+        // the user disabled the schedule on cannot be picked up by a tick.
+        let mut idle = task("idle");
+        idle.next_due_at = None;
+        store.insert_task(&idle).unwrap();
+
+        let found = candidates(&store, now_ms()).expect("candidates");
+        let reasons: Vec<(String, ClaimReason)> = found
+            .into_iter()
+            .map(|(task, reason)| (task.id, reason))
+            .collect();
+        assert_eq!(
+            reasons.len(),
+            2,
+            "only the due tasks are candidates: {reasons:?}"
+        );
+        assert!(reasons.contains(&(requested.id, ClaimReason::Explicit)));
+        assert!(reasons.contains(&(due.id, ClaimReason::Schedule)));
+    }
+
+    /// A tick skips a task that already has a live run: two overlapping runs of
+    /// one task would interleave prompts into the same conversation. The next
+    /// tick retries, so nothing is lost — only deferred.
+    #[tokio::test]
+    async fn a_tick_skips_a_task_whose_run_is_still_live() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-tick-overlap");
+        let dir = TempDir::new().unwrap();
+        std::env::set_var("FUTURE_HOME", dir.path());
+        reset_for_test();
+        let store = Store::open(dir.path()).unwrap();
+
+        let mut busy = task("busy");
+        busy.pending_request_at = Some(now_ms());
+        busy.pending_origin = Some(RunOrigin::Cli);
+        store.insert_task(&busy).unwrap();
+        let running = future_tasks::new_run_id();
+        store
+            .insert_run(&future_tasks::TaskRun {
+                id: running.clone(),
+                task_id: busy.id.clone(),
+                kind: RunKind::Manual,
+                origin: RunOrigin::Cli,
+                actor: None,
+                due_at: None,
+                status: RunStatus::Running,
+                thread_id: None,
+                session_id: None,
+                run_id: None,
+                prompt_version: Some(1),
+                result_summary: None,
+                feedback: None,
+                feedback_note: None,
+                started_at: Some(1),
+                finished_at: None,
+                error_message: None,
+                session_deleted: false,
+            })
+            .unwrap();
+
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        tick(&notify).await.expect("tick");
+
+        let store = Store::open(dir.path()).unwrap();
+        let runs = store.list_runs_for_task(&busy.id, 10).unwrap();
+        assert_eq!(runs.len(), 1, "the live run must block a second claim");
+        assert_eq!(runs[0].id, running);
+        assert_eq!(runs[0].status, RunStatus::Running);
+        // The request is still pending, so the next tick can take it.
+        assert!(store
+            .get_task(&busy.id)
+            .unwrap()
+            .unwrap()
+            .pending_request_at
+            .is_some());
+        std::env::remove_var("FUTURE_HOME");
+        reset_for_test();
+    }
+
+    /// The window's tick loop end to end: a queued request is claimed by a tick
+    /// and executed by the spawned run, `wake()` makes that happen without
+    /// waiting for the next interval, and `stop_admission` ends the loop.
+    #[cfg(feature = "gui")]
+    #[tokio::test]
+    async fn the_gui_loop_runs_a_queued_request_it_is_woken_for() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-loop-gui");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        std::env::set_var("FUTURE_HOME", dir.path());
+        // The executor writes the conversation it opens into the *app* store,
+        // which resolves under the same FutureOS home.
+        crate::store::initialize_app_store().expect("app store");
+        reset_for_test();
+        let store = Store::open(dir.path()).unwrap();
+
+        let mut queued = task("queued");
+        queued.prompt = "summarize yesterday".into();
+        queued.cwd = std::env::temp_dir().display().to_string();
+        queued.pending_request_at = Some(now_ms());
+        queued.pending_origin = Some(RunOrigin::Cli);
+        store.insert_task(&queued).unwrap();
+        script_agent_setup(&mock, "sess_loop_gui");
+        mock.push_stream(crate::agent_bridge::test_support::StreamScript::Events(
+            vec![crate::agent_bridge::test_support::stream_event(
+                "@attach",
+                0,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
+            None,
+        ));
+
+        let app = tauri::test::mock_app();
+        start(app.handle().clone());
+        wake();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let settled = loop {
+            let store = Store::open(dir.path()).unwrap();
+            if let Some(run) = store
+                .list_runs_for_task(&queued.id, 5)
+                .unwrap()
+                .into_iter()
+                .find(|run| run.status != RunStatus::Running)
+            {
+                break run;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!("the woken loop never executed the queued request");
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(settled.status, RunStatus::Completed, "{settled:?}");
+
+        // Closing admission ends the loop; the run already settled is untouched.
+        stop_admission();
+        let store = Store::open(dir.path()).unwrap();
+        assert_eq!(
+            store.get_run(&settled.id).unwrap().unwrap().status,
+            RunStatus::Completed
+        );
+        std::env::remove_var("FUTURE_HOME");
+        reset_for_test();
+    }
+
+    /// The server build's loop: the same tick, with the run ledger as the only
+    /// signal (there is no webview to notify).
+    #[tokio::test]
+    async fn the_headless_loop_runs_a_queued_request_it_is_woken_for() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-loop-headless");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        std::env::set_var("FUTURE_HOME", dir.path());
+        crate::store::initialize_app_store().expect("app store");
+        reset_for_test();
+        let store = Store::open(dir.path()).unwrap();
+
+        let mut queued = task("queued-headless");
+        queued.prompt = "summarize yesterday".into();
+        queued.cwd = std::env::temp_dir().display().to_string();
+        queued.pending_request_at = Some(now_ms());
+        queued.pending_origin = Some(RunOrigin::Cli);
+        store.insert_task(&queued).unwrap();
+        script_agent_setup(&mock, "sess_loop_headless");
+        mock.push_stream(crate::agent_bridge::test_support::StreamScript::Events(
+            vec![crate::agent_bridge::test_support::stream_event(
+                "@attach",
+                0,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
+            None,
+        ));
+
+        start_headless();
+        wake();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let settled = loop {
+            let store = Store::open(dir.path()).unwrap();
+            if let Some(run) = store
+                .list_runs_for_task(&queued.id, 5)
+                .unwrap()
+                .into_iter()
+                .find(|run| run.status != RunStatus::Running)
+            {
+                break run;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!("the woken headless loop never executed the queued request");
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(settled.status, RunStatus::Completed, "{settled:?}");
+        stop_admission();
+        std::env::remove_var("FUTURE_HOME");
+        reset_for_test();
+    }
+
+    /// The loop's own exit and error arms: closed admission ends it before it
+    /// waits for a tick, and a tick that cannot reach the task store is
+    /// reported without ending the loop (a store that is briefly unavailable
+    /// must not stop every future task).
+    #[tokio::test]
+    async fn the_loop_survives_a_tick_that_cannot_reach_its_store() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-loop-tick-error");
+        let dir = TempDir::new().unwrap();
+        let unusable = dir.path().join("not-a-directory");
+        std::fs::write(&unusable, b"x").unwrap();
+        std::env::set_var("FUTURE_HOME", &unusable);
+        reset_for_test();
+
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        let handle = tokio::spawn(run_loop(notify));
+        // A woken tick opens the task store, fails, and is reported.
+        wake();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !handle.is_finished(),
+            "a tick that cannot reach the store must not end the loop"
+        );
+
+        // ...and the loop still honours closed admission afterwards.
+        stop_admission();
+        wake();
+        tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("closed admission ends the loop")
+            .expect("the loop task does not panic");
+        std::env::remove_var("FUTURE_HOME");
+        reset_for_test();
+    }
+
+    /// Admission closed *before* the loop's first poll ends it without a tick:
+    /// nothing is claimed, so the queued request is still there for the next
+    /// start rather than being turned into an interrupted run.
+    #[tokio::test]
+    async fn a_loop_that_starts_while_stopping_claims_nothing() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-loop-stopped");
+        let dir = TempDir::new().unwrap();
+        std::env::set_var("FUTURE_HOME", dir.path());
+        reset_for_test();
+        let store = Store::open(dir.path()).unwrap();
+
+        let mut queued = task("never-claimed");
+        queued.pending_request_at = Some(now_ms());
+        queued.pending_origin = Some(RunOrigin::Cli);
+        store.insert_task(&queued).unwrap();
+
+        stop_admission();
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        tokio::time::timeout(Duration::from_secs(10), run_loop(notify))
+            .await
+            .expect("the loop returns once admission is closed");
+
+        let store = Store::open(dir.path()).unwrap();
+        assert!(
+            store.list_runs_for_task(&queued.id, 5).unwrap().is_empty(),
+            "a loop that starts stopped claims nothing"
+        );
+        assert!(
+            store
+                .get_task(&queued.id)
+                .unwrap()
+                .unwrap()
+                .pending_request_at
+                .is_some(),
+            "the request is still queued"
+        );
+        std::env::remove_var("FUTURE_HOME");
+        reset_for_test();
+    }
+
+    /// The startup reconciliation's *failure* branch (`tasks.rs:140-144`): when
+    /// `mark_interrupted_runs` is refused, the loop must report it and carry on
+    /// rather than dying before its first tick.
+    ///
+    /// The refusal is a **value-gated** trigger, not a blanket one: several
+    /// writers update `task_runs`, so a trigger firing on any UPDATE would fail a
+    /// different statement while this branch stayed unexecuted — and the test
+    /// would pass anyway.
+    #[tokio::test]
+    async fn a_reconciliation_the_store_refuses_is_reported_and_the_loop_carries_on() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-reconcile-refused");
+        let dir = TempDir::new().unwrap();
+        std::env::set_var("FUTURE_HOME", dir.path());
+        reset_for_test();
+
+        let store = Store::open(dir.path()).unwrap();
+        let queued = task("reconcile-refused");
+        store.insert_task(&queued).unwrap();
+        store
+            .insert_run(&future_tasks::TaskRun {
+                id: future_tasks::new_run_id(),
+                task_id: queued.id.clone(),
+                kind: RunKind::Manual,
+                origin: RunOrigin::Cli,
+                actor: None,
+                due_at: None,
+                status: RunStatus::Running,
+                thread_id: None,
+                session_id: None,
+                run_id: None,
+                prompt_version: Some(1),
+                result_summary: None,
+                feedback: None,
+                feedback_note: None,
+                started_at: Some(1),
+                finished_at: None,
+                error_message: None,
+                session_deleted: false,
+            })
+            .unwrap();
+        drop(store);
+
+        // Refuse exactly this UPDATE, through a second connection to the same file.
+        let raw = rusqlite::Connection::open(future_tasks::store::store_path(dir.path())).unwrap();
+        raw.execute_batch(
+            "CREATE TRIGGER hostile_interrupt BEFORE UPDATE ON task_runs
+             WHEN NEW.status = 'failed'
+             BEGIN SELECT RAISE(ABORT, 'hostile interrupt'); END;",
+        )
+        .unwrap();
+        drop(raw);
+
+        // Admission closes before the loop starts: the reconciliation runs first,
+        // so this exercises it and the loop then returns deterministically.
+        stop_admission();
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        tokio::time::timeout(Duration::from_secs(10), run_loop(notify))
+            .await
+            .expect("closed admission ends the loop even after a refused reconciliation");
+
+        // The refusal's consequence: the run was not marked interrupted.
+        let store = Store::open(dir.path()).unwrap();
+        let runs = store.list_runs_for_task(&queued.id, 5).unwrap();
+        assert_eq!(runs.len(), 1, "the seeded run is still there");
+        assert_eq!(
+            runs[0].status,
+            RunStatus::Running,
+            "a refused reconciliation must leave the run alone"
+        );
+        std::env::remove_var("FUTURE_HOME");
+        reset_for_test();
+    }
+    /// claimed run "running" forever: dropping it settles the run as failed with
+    /// the reason, and leaves an already-settled run alone.
+    #[test]
+    fn dropping_an_executor_settles_its_claimed_run_as_failed() {
+        let (dir, store) = store();
+        let t = task("interrupted");
+        store.insert_task(&t).unwrap();
+        let run = claim(&store, &t, ClaimReason::Explicit).unwrap();
+
+        {
+            let _interrupted = InterruptedTask {
+                home: dir.path().to_path_buf(),
+                id: run.id.clone(),
+            };
+        }
+
+        let settled = Store::open(dir.path()).unwrap().get_run(&run.id).unwrap();
+        let settled = settled.expect("the run row survives");
+        assert_eq!(settled.status, RunStatus::Failed);
+        assert!(settled.finished_at.is_some(), "the run is timestamped");
+        assert!(
+            settled
+                .error_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Desktop stopped before task completion"),
+            "{settled:?}"
+        );
+
+        // Idempotent: a second drop must not rewrite the settled run.
+        let _interrupted = InterruptedTask {
+            home: dir.path().to_path_buf(),
+            id: run.id.clone(),
+        };
+        let again = Store::open(dir.path()).unwrap().get_run(&run.id).unwrap();
+        let again = again.expect("still there");
+        assert_eq!(again.status, RunStatus::Failed);
+        assert_eq!(again.finished_at, settled.finished_at);
+    }
+
+    /// The reconciliation is best-effort: if the store cannot be opened (a home
+    /// that is not a directory), the drop must log rather than panic — a panic in
+    /// a drop guard during shutdown would abort the process the guard exists to
+    /// clean up after.
+    #[test]
+    fn a_drop_that_cannot_reach_the_store_does_not_panic() {
+        let (dir, _store) = store();
+        let unusable = dir.path().join("not-a-directory");
+        std::fs::write(&unusable, b"x").unwrap();
+        let _interrupted = InterruptedTask {
+            home: unusable,
+            id: future_tasks::new_run_id(),
+        };
     }
 }

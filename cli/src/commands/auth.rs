@@ -987,13 +987,18 @@ mod tests {
         use tokio::io::AsyncWriteExt;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
+            // The head promises 1000 bytes and the body is one byte: the answer
+            // this mock stands in for is a *response that never completes, which
+            // is what the timeout has to cover. The release (not an abort) ends
+            // the task, so its own closing lines execute too.
             socket
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n{")
                 .await
                 .unwrap();
-            std::future::pending::<()>().await;
+            let _ = released.await;
         });
         let response = try_fetch_post(
             &http_client(),
@@ -1004,7 +1009,10 @@ mod tests {
         .unwrap();
         let result =
             tokio::time::timeout(std::time::Duration::from_secs(35), response.bytes()).await;
-        server.abort();
+        release
+            .send(())
+            .expect("the mock is still holding the body");
+        server.await.expect("the mock must run to its own end");
         assert!(result.expect("request timeout must cover body").is_err());
     }
 

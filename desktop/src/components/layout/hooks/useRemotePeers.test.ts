@@ -496,19 +496,44 @@ describe("heartbeat self-heal", () => {
     hook.unmount();
   });
 
-  it("does not re-read when the presence revision matches applied revision", async () => {
+  it("re-reads for a lost snapshot, then again on the next tick (see module-desktop.md §8.6)", async () => {
+    // CHARACTERISATION of the current behaviour, not of the design: the presence
+    // path calls `ensureGate` → `gate.authenticate(epoch)` on *every* tick, and
+    // `authenticate` clears the applied revisions — so the revision comparison
+    // that follows always sees the -1 floor and every tick heals, i.e. a peer
+    // list + catalogue read per heartbeat (the host publishes presence every 3 s;
+    // `remote/publisher.rs::presence_tick`). The `gate.accept(...)` below the
+    // comparison cannot suppress the next tick, which is what its comment claims.
+    // Asserted as-is so the fix (authenticate only when the epoch *changes*) is a
+    // deliberate, visible test change — see module-desktop.md §8.6.
     const hook = renderHook(() => useRemotePeers(true));
     await settle();
     fetchRemoteSessions.mockClear();
 
-    // No snapshot has been applied, so revision is -1 and any positive
-    // presence revision should trigger a heal.
-    pushKind("presence", "desktop_a", {
-      catalogVersion: { epoch: "epoch_1", sessions: 1, workspaces: 0 },
-    });
+    const heartbeat = { catalogVersion: { epoch: "epoch_1", sessions: 5, workspaces: 0 } };
+    pushKind("presence", "desktop_a", heartbeat);
+    await settle();
+    expect(fetchRemoteSessions).toHaveBeenCalledTimes(1);
+
+    pushKind("presence", "desktop_a", heartbeat);
+    await settle();
+    expect(fetchRemoteSessions).toHaveBeenCalledTimes(2);
+    hook.unmount();
+  });
+
+  it("reads nothing for a heartbeat that reports the gate's own floor", async () => {
+    // The comparison is strict, so a presence at the gate's floor (-1, "nothing
+    // applied yet", the value `revision()` falls back to) is not evidence of a
+    // lost snapshot and costs no read. This is the `return false` arm that keeps
+    // a heartbeat from being a read in the one case the gate can observe.
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    fetchRemoteSessions.mockClear();
+
+    pushKind("presence", "desktop_a", { catalogVersion: { epoch: "epoch_1", sessions: -1, workspaces: -1 } });
     await settle();
 
-    expect(fetchRemoteSessions).toHaveBeenCalledTimes(1);
+    expect(fetchRemoteSessions).not.toHaveBeenCalled();
     hook.unmount();
   });
 });
@@ -519,6 +544,380 @@ describe("old host fallback", () => {
     await settle();
     expect(fetchRemoteSessions).toHaveBeenCalled();
     expect(hook.current.catalogs).toHaveLength(1);
+    hook.unmount();
+  });
+});
+
+describe("a failing read", () => {
+  it("drops only the unreachable host's rows, keeping the others'", async () => {
+    // Two paired hosts, one of which does not answer. The list is built from
+    // the catalogues that arrived: blanking everything because one machine is
+    // asleep would take the reachable machine's conversations off screen too.
+    listRemotePeers.mockResolvedValue([peer({ desktopId: "desktop_a" }), peer({ desktopId: "desktop_b" })]);
+    fetchRemoteSessions.mockImplementation(async (desktopId: string) => {
+      if (desktopId === "desktop_b")
+        throw new Error("peer_not_connected");
+      return { desktopId, sessions: [{ sessionId: "sess_a", title: "A", lastMessageAt: 1 }] };
+    });
+
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    expect(hook.current.catalogs.map(catalog => catalog.desktopId)).toEqual(["desktop_a"]);
+    // A per-host failure is not the list's failure: the machine that answered is
+    // still drawn, and the panel shows no error.
+    expect(hook.current.error).toBeNull();
+    expect(hook.current.peers).toHaveLength(2);
+    hook.unmount();
+  });
+
+  it("reports a failed peer-list read and keeps the last known rows", async () => {
+    listRemotePeers.mockRejectedValue(new Error("agent offline"));
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    expect(hook.current.error).toBe("agent offline");
+    expect(hook.current.peers).toEqual([]);
+    expect(hook.current.loading).toBe(false);
+    hook.unmount();
+  });
+
+  it("does not fail the caller and still re-reads the list when reconnect-all fails", async () => {
+    // The re-read happens either way: a reconnected host re-subscribed, and its
+    // rows are exactly the stale ones — so the list must be refreshed even when
+    // the connect call itself failed. The failure is not surfaced as the
+    // panel's error (each host's own row carries its reason from the backend),
+    // and a successful read of the list then clears it anyway.
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    const readsBefore = listRemotePeers.mock.calls.length;
+    connectAllRemotePeers.mockRejectedValue(new Error("bridge unreachable"));
+
+    await act(async () => {
+      await hook.current.reconnectAll();
+    });
+
+    expect(listRemotePeers.mock.calls.length).toBeGreaterThan(readsBefore);
+    expect(hook.current.error).toBeNull();
+    hook.unmount();
+  });
+});
+
+describe("the catalogue backstop", () => {
+  it("re-reads the connected hosts on its own slow cadence", async () => {
+    // Hosts that do not push snapshots are only as fresh as this poll, and it
+    // reads the *hosts'* catalogues rather than the peer list. The list read is
+    // made to fail here so its own 5 s poll cannot contribute the fetch being
+    // counted: what remains is the catalogue cadence alone.
+    vi.useFakeTimers();
+    try {
+      const hook = renderHook(() => useRemotePeers(true));
+      await settle();
+      expect(fetchRemoteSessions).toHaveBeenCalledTimes(1);
+
+      listRemotePeers.mockRejectedValue(new Error("list unavailable"));
+      fetchRemoteSessions.mockResolvedValue({
+        desktopId: "desktop_a",
+        sessions: [{ sessionId: "sess_new", title: "New", streaming: false, lastMessageAt: 2 }],
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      await settle();
+
+      // One read from the backstop — not one per list poll (twelve of those fire
+      // in the same minute, and each of them fails above without reading).
+      expect(fetchRemoteSessions).toHaveBeenCalledTimes(2);
+      expect(hook.current.catalogs[0]!.sessions.map(session => session.sessionId)).toEqual(["sess_new"]);
+      hook.unmount();
+    }
+    finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stays silent when no host is connected", async () => {
+    // Nothing to read: a request to a disconnected host would open a connection
+    // as a side effect, which is not what a background poll may do.
+    vi.useFakeTimers();
+    try {
+      const hook = renderHook(() => useRemotePeers(true));
+      await settle();
+
+      // The host drops; the fast poll is what carries that to `peersRef`.
+      listRemotePeers.mockResolvedValue([peer({ connected: false })]);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      await settle();
+      fetchRemoteSessions.mockClear();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      await settle();
+
+      expect(fetchRemoteSessions).not.toHaveBeenCalled();
+      hook.unmount();
+    }
+    finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the other hosts' rows when one of them fails mid-poll", async () => {
+    // The backstop reads each connected host; one that drops out during the
+    // read must not blank the list it is sharing with a host that answered.
+    vi.useFakeTimers();
+    try {
+      listRemotePeers.mockResolvedValue([peer({ desktopId: "desktop_a" }), peer({ desktopId: "desktop_b" })]);
+      fetchRemoteSessions.mockImplementation(async (desktopId: string) => ({
+        desktopId,
+        sessions: [{ sessionId: `sess_${desktopId}`, title: desktopId, streaming: false, lastMessageAt: 1 }],
+      }));
+      const hook = renderHook(() => useRemotePeers(true));
+      await settle();
+      expect(hook.current.catalogs).toHaveLength(2);
+
+      // desktop_b goes away between polls: the list read stops contributing
+      // fetches, so what fires here is the catalogue cadence alone.
+      listRemotePeers.mockRejectedValue(new Error("list unavailable"));
+      fetchRemoteSessions.mockImplementation(async (desktopId: string) => {
+        if (desktopId === "desktop_b")
+          throw new Error("peer_not_connected");
+        return { desktopId, sessions: [{ sessionId: "sess_a", title: "A", streaming: false, lastMessageAt: 2 }] };
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      await settle();
+
+      expect(hook.current.catalogs.map(catalog => catalog.desktopId)).toEqual(["desktop_a"]);
+      hook.unmount();
+    }
+    finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("abandons the launch pass when the view is gone before the first read answers", async () => {
+    // The launch pass runs *behind* the first peer-list read, so an unmount in
+    // that window would otherwise bring hosts up for a view nobody is looking
+    // at — a connection opened on behalf of a component that no longer exists.
+    let releaseRead!: (peers: RemotePeer[]) => void;
+    listRemotePeers.mockReturnValue(new Promise<RemotePeer[]>((resolve) => {
+      releaseRead = resolve;
+    }));
+
+    const hook = renderHook(() => useRemotePeers(true));
+    await flushAsync();
+    hook.unmount();
+
+    await act(async () => {
+      releaseRead([peer({ connected: false })]);
+    });
+    await settle();
+
+    expect(connectRemotePeer).not.toHaveBeenCalled();
+  });
+
+  it("runs the launch pass once per session, not once per enable", async () => {
+    // The hook is mounted with a fixed `enabled`, but consumers do toggle it;
+    // re-enabling must not re-run the pass (it is the *session's* launch, and
+    // every re-run would re-handshake every host).
+    let enabled = true;
+    listRemotePeers.mockResolvedValue([peer({ connected: false })]);
+    const hook = renderHook(() => useRemotePeers(enabled));
+    await settle();
+    expect(connectRemotePeer).toHaveBeenCalledTimes(1);
+
+    enabled = false;
+    hook.rerender();
+    await settle();
+    enabled = true;
+    hook.rerender();
+    await settle();
+
+    expect(connectRemotePeer).toHaveBeenCalledTimes(1);
+    hook.unmount();
+  });
+
+  it("detaches a subscription that resolves only after unmount", async () => {
+    // `listen` is async: the unlisten handle arrives a microtask later. If the
+    // view is gone by then, the handle has to be released here — nothing else
+    // holds it, and a host push would otherwise reach a dead component.
+    const hook = renderHook(() => useRemotePeers(true));
+    hook.unmount();
+    await settle();
+
+    expect(listeners).toEqual([]);
+  });
+});
+
+describe("a push the hook cannot read", () => {
+  const EPOCH = "epoch_shared";
+  const version = (revision: number) => ({ epoch: EPOCH, revision });
+
+  /**
+   * Host pushes are the untrusted boundary: whatever arrives is parsed by hand,
+   * and a field of the wrong shape has to be dropped rather than dereferenced.
+   * Each case is type-hostile on purpose — `null` where an object is expected,
+   * a string where a list is — so removing the guard throws instead of being
+   * ignored, and the assertion is that the hook survived *and* is still able to
+   * apply the next well-formed push (a wedged listener would silently stop
+   * updating the list, which is the failure the guard exists to prevent).
+   */
+  const cases: Array<[string, string, unknown]> = [
+    ["a presence payload that is not an object", "presence", null],
+    ["a presence whose catalogVersion is not an object", "presence", { catalogVersion: null }],
+    ["a presence whose epoch is not a string", "presence", { catalogVersion: { epoch: 1, sessions: 4 } }],
+    ["a presence that reports no per-domain revision", "presence", { catalogVersion: { epoch: EPOCH } }],
+    ["a catalog payload that is not an object", "catalog", null],
+    ["a catalog for a domain this hook does not model", "catalog", { domain: "settings", version: version(1) }],
+    ["a catalog whose version is not an object", "catalog", { domain: "sessions", version: null, sessions: [] }],
+    ["a catalog whose version lacks a revision", "catalog", { domain: "sessions", version: { epoch: EPOCH }, sessions: [] }],
+    ["a workspaces snapshot (tracked, not rendered)", "catalog", { domain: "workspaces", version: version(1), workspaces: [] }],
+    ["an activity packet whose rows are not a list", "catalog", { domain: "sessions_activity", version: version(1), activity: "nope" }],
+    ["an activity packet of rows that are not objects", "catalog", { domain: "sessions_activity", version: version(1), activity: [null, 7] }],
+    ["an activity packet that names no session", "catalog", { domain: "sessions_activity", version: version(1), activity: [{ lastMessageAt: 5 }] }],
+    ["a sessions snapshot whose sessions are not a list", "catalog", { domain: "sessions", version: version(1), sessions: "nope" }],
+  ];
+
+  it.each(cases)("ignores %s", async (_name, kind, payload) => {
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    const before = hook.current.catalogs;
+
+    pushKind(kind, "desktop_a", payload);
+    await settle();
+
+    // Nothing was applied…
+    expect(hook.current.catalogs).toBe(before);
+
+    // …and the listener still works: the next readable snapshot lands.
+    pushKind("catalog", "desktop_a", {
+      domain: "sessions",
+      version: version(99),
+      sessions: [{ sessionId: "sess_after", title: "After", lastMessageAt: 7 }],
+    });
+    await settle();
+
+    expect(hook.current.catalogs[0]!.sessions.map(session => session.sessionId)).toEqual(["sess_after"]);
+    hook.unmount();
+  });
+
+  it("drops unreadable rows from a sessions snapshot instead of keeping the old list", async () => {
+    // A `sessions` packet is the host's *authoritative* list, so a row the
+    // parser cannot read is dropped rather than dereferenced — and the snapshot
+    // still replaces what we held. The host's next packet restores the row,
+    // which is why dropping it is safe and why the old list must not linger.
+    fetchRemoteSessions.mockResolvedValue({
+      desktopId: "desktop_a",
+      sessions: [{ sessionId: "sess_old", title: "Old", streaming: false, lastMessageAt: 1 }],
+    });
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    expect(hook.current.catalogs[0]!.sessions.map(session => session.sessionId)).toEqual(["sess_old"]);
+
+    pushKind("catalog", "desktop_a", {
+      domain: "sessions",
+      version: version(1),
+      sessions: [null, 7, { title: "no session id" }],
+    });
+    await settle();
+    expect(hook.current.catalogs[0]!.sessions).toEqual([]);
+
+    pushKind("catalog", "desktop_a", {
+      domain: "sessions",
+      version: version(2),
+      sessions: [{ sessionId: "sess_after", title: "After", lastMessageAt: 7 }],
+    });
+    await settle();
+    expect(hook.current.catalogs[0]!.sessions.map(session => session.sessionId)).toEqual(["sess_after"]);
+    hook.unmount();
+  });
+
+  it("applies an activity packet to one host and leaves the sibling's rows alone", async () => {
+    // The packet names rows on *one* host; the map over the catalogues walks the
+    // others, and they must come back untouched.
+    listRemotePeers.mockResolvedValue([peer({ desktopId: "desktop_a" }), peer({ desktopId: "desktop_b" })]);
+    fetchRemoteSessions.mockImplementation(async (desktopId: string) => ({
+      desktopId,
+      sessions: [{ sessionId: "sess_1", title: desktopId, streaming: false, lastMessageAt: 1_000 }],
+    }));
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    pushKind("catalog", "desktop_a", {
+      domain: "sessions_activity",
+      version: version(1),
+      activity: [{ sessionId: "sess_1", lastMessageAt: 4_000 }],
+    });
+    await settle();
+
+    const byId = new Map(hook.current.catalogs.map(catalog => [catalog.desktopId, catalog]));
+    expect(byId.get("desktop_a")!.sessions[0]!.lastMessageAt).toBe(4_000);
+    expect(byId.get("desktop_b")!.sessions[0]!.lastMessageAt).toBe(1_000);
+    hook.unmount();
+  });
+});
+
+describe("a push this hook does not model", () => {
+  it("ignores a kind that is not an event", async () => {
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    const before = hook.current.catalogs;
+
+    pushKind("catalog-ack", "desktop_a", { sessionId: "sess_1", type: "agent_end" });
+    await settle();
+
+    expect(hook.current.catalogs).toBe(before);
+    hook.unmount();
+  });
+
+  it("ignores an event that names no session, or whose payload is not an object", async () => {
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    pushKind("catalog", "desktop_a", {
+      domain: "sessions",
+      version: { epoch: "epoch_1", revision: 1 },
+      sessions: [{ sessionId: "sess_1", title: "One", lastMessageAt: 1_000 }],
+    });
+    await settle();
+
+    pushKind("event", "desktop_a", { runId: "run_1", type: "text_chunk" });
+    pushKind("event", "desktop_a", "a bare string, not a payload");
+    await settle();
+
+    expect(hook.current.catalogs[0]!.sessions[0]!.streaming).toBe(false);
+    hook.unmount();
+  });
+
+  it("leaves another machine's catalogue and an unknown row alone", async () => {
+    // The in-place update is scoped to one host and to rows the catalogue
+    // already holds: an event cannot introduce a row (it would need a title we
+    // do not have), and it cannot touch a sibling host.
+    listRemotePeers.mockResolvedValue([peer({ desktopId: "desktop_a" }), peer({ desktopId: "desktop_b" })]);
+    fetchRemoteSessions.mockImplementation(async (desktopId: string) => ({
+      desktopId,
+      sessions: [{ sessionId: "sess_1", title: desktopId, streaming: false, lastMessageAt: 1_000 }],
+    }));
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    expect(hook.current.catalogs).toHaveLength(2);
+
+    pushKind("event", "desktop_b", { sessionId: "sess_unknown", runId: "run_1", type: "text_chunk" });
+    pushKind("event", "desktop_c", { sessionId: "sess_1", runId: "run_1", type: "text_chunk" });
+    await settle();
+
+    // desktop_b's known row is untouched (the push named no row it holds), the
+    // host with no catalogue at all is skipped, and desktop_a — which does hold
+    // that session id — is not reached by either push.
+    for (const catalog of hook.current.catalogs) {
+      expect(catalog.sessions).toHaveLength(1);
+      expect(catalog.sessions[0]!.streaming).toBe(false);
+      expect(catalog.sessions[0]!.title).toBe(catalog.desktopId);
+    }
     hook.unmount();
   });
 });

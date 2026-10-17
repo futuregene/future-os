@@ -32,10 +32,23 @@ let listeners: Array<(event: { payload: unknown }) => void> = [];
 /** Set to hold the next subscription open, so a test can unmount mid-setup. */
 let holdListen = false;
 let releaseListen: (() => void) | null = null;
+/**
+ * Every held subscription's resolver, not just the last one.
+ *
+ * This hook registers **two** listeners (its own event lane and the catalogue
+ * invalidator), so a single `releaseListen` releases only whichever registered
+ * last and leaves the other's `.then` — the one that would run `unlisten()` on a
+ * dead hook — never reached at all.
+ */
+let releaseListens: Array<() => void> = [];
 vi.mock("@tauri-apps/api/event", () => ({
   listen: async (_name: string, handler: (event: { payload: unknown }) => void) => {
-    if (holdListen)
-      await new Promise<void>((resolve) => { releaseListen = resolve; });
+    if (holdListen) {
+      await new Promise<void>((resolve) => {
+        releaseListen = resolve;
+        releaseListens.push(resolve);
+      });
+    }
     listeners.push(handler);
     return () => {
       listeners = listeners.filter(item => item !== handler);
@@ -96,6 +109,7 @@ beforeEach(() => {
   listeners = [];
   holdListen = false;
   releaseListen = null;
+  releaseListens = [];
   requestMock.mockReset();
   requestMock.mockResolvedValue(undefined);
   // The host's catalogue is cached per host for as long as this window is open
@@ -996,4 +1010,123 @@ it("does nothing without a machine", async () => {
   expect(requestMock).not.toHaveBeenCalled();
   expect(hook.current.model).toBeNull();
   await hook.unmount();
+});
+
+/**
+ * Both of this hook's subscriptions are closed when they arrive after an unmount.
+ *
+ * It registers two listeners — the conversation's own event lane and the catalogue
+ * invalidator that keeps the model picker fresh — and each has its own
+ * `cancelled` re-check. Releasing only the last-held one (as the sibling test does)
+ * leaves the other's continuation unrun, so this drains them all: an unclosed
+ * handle is a leak that outlives the conversation it belonged to.
+ */
+it("closes every subscription that arrives after it unmounted", async () => {
+  holdListen = true;
+  function Probe() {
+    useRemoteConversationSettings("desktop_a", "sess_1", true);
+    return null;
+  }
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  await act(async () => root.render(<Probe />));
+  expect(releaseListens.length).toBeGreaterThanOrEqual(2);
+
+  await act(async () => root.unmount());
+  for (const release of releaseListens)
+    await act(async () => { release(); });
+  await settle();
+
+  expect(listeners).toHaveLength(0);
+  container.remove();
+});
+
+/**
+ * The host's model catalogue moved, so the picker asks again.
+ *
+ * The read behind it was dropped by the invalidator before this callback runs, so
+ * this is a real command rather than the answer the cache would hand back. The
+ * sibling domain on the same host must do nothing: a change to the host's *skill*
+ * catalogue is not a reason to re-read its models, and a conversation whose picker
+ * is closed is not worth a command either.
+ */
+it("re-reads the catalogue when the host's models move, and not for another domain", async () => {
+  answer("list_models", MODELS);
+  const view = await mountHook();
+  const readsBefore = requestMock.mock.calls.filter(([name]) => name === "list_models").length;
+  expect(readsBefore).toBeGreaterThan(0);
+
+  // Another domain on the same host: not this hook's business.
+  act(() => {
+    listeners.forEach(listener => listener({
+      payload: { desktopId: "desktop_a", kind: "event", payload: { type: "skills_changed" } },
+    }));
+  });
+  await settle();
+  expect(requestMock.mock.calls.filter(([name]) => name === "list_models")).toHaveLength(readsBefore);
+
+  // The models domain is.
+  act(() => {
+    listeners.forEach(listener => listener({
+      payload: { desktopId: "desktop_a", kind: "event", payload: { type: "model_visibility_changed" } },
+    }));
+  });
+  await settle();
+  expect(requestMock.mock.calls.filter(([name]) => name === "list_models").length).toBeGreaterThan(readsBefore);
+
+  await view.unmount();
+});
+
+/**
+ * The two pickers close on an outside click, and the "no longer listed" row is
+ * selectable.
+ *
+ * Each `SelectMenu` owns its own open state, so each `onDismiss` is a separate
+ * writer: a picker that ignores a click elsewhere stays up over the transcript and
+ * swallows the next press, which is the failure a user reports as "the app stopped
+ * responding". The extra row is the other half: the host can be using a model its
+ * catalogue does not list, and that row exists to keep the current value on screen
+ * — it has to close the menu when chosen like any other row.
+ */
+it("closes each picker on an outside click", async () => {
+  const view = await mountPicker(state());
+  try {
+    await view.open("Model for this conversation (on that computer)");
+    expect(view.menuItems().length).toBeGreaterThan(0);
+    await act(async () => {
+      document.body.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    });
+    expect(view.menuItems()).toHaveLength(0);
+
+    await view.open("Thinking level (on that computer)");
+    expect(view.menuItems().length).toBeGreaterThan(0);
+    await act(async () => {
+      document.body.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    });
+    expect(view.menuItems()).toHaveLength(0);
+  }
+  finally {
+    await view.unmount();
+  }
+});
+
+it("closes the model menu when the unlisted current model is chosen", async () => {
+  // The conversation runs a model the host's catalogue does not offer.
+  const view = await mountPicker(state({ model: "openai/retired-model" }));
+  try {
+    expect(view.modelLabel()).toContain("openai/retired-model");
+
+    await view.open("Model for this conversation (on that computer)");
+    const row = view.menuItems().find(item => (item.textContent ?? "").includes("openai/retired-model"));
+    expect(row).toBeTruthy();
+    await act(async () => row!.click());
+
+    // Choosing it closes the menu rather than asking the host to set the value it
+    // already has.
+    expect(view.menuItems()).toHaveLength(0);
+  }
+  finally {
+    await view.unmount();
+  }
 });

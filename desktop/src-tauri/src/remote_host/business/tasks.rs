@@ -885,11 +885,8 @@ mod tests {
             cmd.upstream_task_id = upstream.id.clone();
             cmd.on = "failure".into();
             super::execute(&cmd, &sink).await;
-            assert!(
-                sink.error_text().contains("removed"),
-                "{cmd_type}: {}",
-                sink.error_text()
-            );
+            let refusal = sink.error_text();
+            assert!(refusal.contains("removed"), "{cmd_type}: {refusal}");
         }
 
         // The list row still carries `depCount`, always zero, which is what an
@@ -912,6 +909,457 @@ mod tests {
                 .deleted_at
                 .is_some(),
             "the task is gone from the list"
+        );
+    }
+
+    /// The wire budget for a run summary: a longer one is cut and marked, and a
+    /// multi-byte character sitting on the cut is never split — the phone
+    /// renders the bytes it is handed, and half a code point is not text.
+    #[test]
+    fn a_summary_longer_than_the_budget_is_cut_on_a_character_boundary() {
+        assert_eq!(truncate("short", RUN_SUMMARY_CHARS), "short");
+        assert_eq!(
+            truncate(&"a".repeat(RUN_SUMMARY_CHARS), RUN_SUMMARY_CHARS),
+            "a".repeat(RUN_SUMMARY_CHARS),
+            "a summary exactly at the budget is not cut"
+        );
+        assert_eq!(
+            truncate(&"a".repeat(RUN_SUMMARY_CHARS + 1), RUN_SUMMARY_CHARS),
+            format!("{}…", "a".repeat(RUN_SUMMARY_CHARS))
+        );
+        // 301 bytes into a string of 3-byte characters is not a boundary: the
+        // cut has to walk back to 300 rather than slice a character in half.
+        assert_eq!(
+            truncate(&"日".repeat(200), RUN_SUMMARY_CHARS + 1),
+            format!("{}…", "日".repeat(100)),
+            "the cut must not split a multi-byte character"
+        );
+    }
+
+    /// Every conversation/retention/trigger field the phone sends is one of a
+    /// small closed vocabulary, and an unknown or absent value has to land on
+    /// the safe default rather than on whichever variant comes first.
+    #[test]
+    fn the_phone_vocabulary_maps_to_the_kernel_enums() {
+        use future_tasks::{ConversationMode, SessionPolicy, SessionRetention, TriggerKind};
+
+        assert_eq!(
+            parse_conversation_mode(Some("chat")),
+            ConversationMode::Chat
+        );
+        for raw in [Some("workspace"), Some("Chat"), Some(""), None] {
+            assert_eq!(
+                parse_conversation_mode(raw),
+                ConversationMode::Workspace,
+                "{raw:?}"
+            );
+        }
+
+        assert_eq!(
+            parse_session_policy(Some("existing")),
+            SessionPolicy::Existing
+        );
+        for raw in [Some("new"), Some("Existing"), None] {
+            assert_eq!(parse_session_policy(raw), SessionPolicy::New, "{raw:?}");
+        }
+
+        assert_eq!(
+            parse_session_retention(Some("delete"), SessionPolicy::New),
+            SessionRetention::Delete
+        );
+        assert_eq!(
+            parse_session_retention(Some("delete"), SessionPolicy::Existing),
+            SessionRetention::Keep,
+            "a conversation that is reused cannot be deleted with the run"
+        );
+        assert_eq!(
+            parse_session_retention(Some("keep"), SessionPolicy::New),
+            SessionRetention::Keep
+        );
+        assert_eq!(
+            parse_session_retention(None, SessionPolicy::New),
+            SessionRetention::Keep
+        );
+
+        assert_eq!(parse_trigger_kind(Some("schedule")), TriggerKind::Schedule);
+        for raw in [Some("manual"), Some("cron"), None] {
+            assert_eq!(parse_trigger_kind(raw), TriggerKind::Manual, "{raw:?}");
+        }
+    }
+
+    /// The phone's create form asks for a conversation mode and a retention
+    /// rule, and both must survive into the stored record: they decide whether
+    /// a run reuses a conversation and whether its session is deleted with it.
+    #[tokio::test]
+    async fn creating_a_task_keeps_the_conversation_and_retention_the_phone_chose() {
+        let _home = home("business-tasks-create-options");
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("create_task");
+        cmd.task = json!({
+            "name": "nightly",
+            "prompt": "summarise the week",
+            "cwd": "/tmp/repo",
+            "triggerKind": "schedule",
+            "trigger": {"mode": "daily", "time": "09:00"},
+            "conversationMode": "chat",
+            "sessionPolicy": "new",
+            "sessionRetention": "delete",
+        });
+        super::execute(&cmd, &sink).await;
+        let data = sink.ok_data();
+        assert_eq!(data["conversationMode"], "chat");
+        assert_eq!(data["sessionPolicy"], "new");
+        assert_eq!(data["sessionRetention"], "delete");
+        assert_eq!(data["triggerKind"], "schedule");
+        assert_eq!(data["promptVersion"], 1, "a new task starts at v1");
+        assert!(
+            data["nextDueAt"].is_i64(),
+            "a scheduled task gets its next due time: {data}"
+        );
+
+        // A per-run conversation is the only one `delete` applies to: asking for
+        // it beside `existing` is normalized to keep, exactly as the desktop's
+        // own form does.
+        let sink = RecordingSink::default();
+        let mut cmd = command("create_task");
+        cmd.task = json!({
+            "name": "reuses its conversation",
+            "prompt": "summarise the week",
+            "cwd": "/tmp/repo",
+            "conversationMode": "workspace",
+            "sessionPolicy": "existing",
+            "sessionRetention": "delete",
+        });
+        super::execute(&cmd, &sink).await;
+        let data = sink.ok_data();
+        assert_eq!(data["sessionPolicy"], "existing");
+        assert_eq!(data["sessionRetention"], "keep");
+        assert_eq!(data["conversationMode"], "workspace");
+        assert_eq!(data["triggerKind"], "manual", "no trigger stated");
+        assert_eq!(
+            data["nextDueAt"],
+            Value::Null,
+            "nothing schedules a manual task"
+        );
+    }
+
+    /// A settled run's summary crosses the list command cut to the wire budget,
+    /// and the stored one is left whole for the desktop.
+    #[tokio::test]
+    async fn a_long_run_summary_is_cut_on_the_wire() {
+        let _home = home("business-tasks-run-summary");
+        let store = open_store().expect("store");
+        let saved = task("weekly", future_tasks::SessionPolicy::New);
+        store.insert_task(&saved).unwrap();
+        let mut run = completed_run(&saved.id);
+        run.result_summary = Some("x".repeat(RUN_SUMMARY_CHARS + 50));
+        store.insert_run(&run).unwrap();
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("list_task_runs");
+        cmd.task_id = saved.id.clone();
+        super::execute(&cmd, &sink).await;
+        let summary = sink.ok_data()["runs"][0]["resultSummary"]
+            .as_str()
+            .expect("a summary crosses the wire")
+            .to_string();
+        assert_eq!(
+            summary.chars().count(),
+            RUN_SUMMARY_CHARS + 1,
+            "the cut summary plus its mark"
+        );
+        assert!(summary.ends_with('…'));
+        assert_eq!(
+            store.list_runs_for_task(&saved.id, 20).unwrap()[0]
+                .result_summary
+                .as_deref()
+                .map(str::len),
+            Some(RUN_SUMMARY_CHARS + 50),
+            "the stored summary is untouched"
+        );
+    }
+
+    /// Pausing, resuming, running on demand and deleting are the four writes
+    /// the phone's detail screen makes. Each answers the stored record, and
+    /// "run now" leaves the request the tick loop reads — a request the phone
+    /// sees as `queued` rather than as an ignored tap.
+    #[tokio::test]
+    async fn pausing_running_and_deleting_answer_the_stored_record() {
+        let _home = home("business-tasks-writes");
+        let store = open_store().expect("store");
+        let saved = task("weekly", future_tasks::SessionPolicy::New);
+        store.insert_task(&saved).unwrap();
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("set_task_enabled");
+        cmd.task_id = saved.id.clone();
+        cmd.enabled = false;
+        super::execute(&cmd, &sink).await;
+        assert_eq!(sink.ok_data()["enabled"], false);
+        assert!(!store.get_task(&saved.id).unwrap().unwrap().enabled);
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("set_task_enabled");
+        cmd.task_id = saved.id.clone();
+        cmd.enabled = true;
+        super::execute(&cmd, &sink).await;
+        assert_eq!(sink.ok_data()["enabled"], true);
+        assert!(store.get_task(&saved.id).unwrap().unwrap().enabled);
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("run_task");
+        cmd.task_id = saved.id.clone();
+        super::execute(&cmd, &sink).await;
+        assert_eq!(
+            sink.ok_data()["queued"],
+            true,
+            "the row says the request is waiting"
+        );
+        let stored = store.get_task(&saved.id).unwrap().unwrap();
+        assert!(stored.pending_request_at.is_some());
+        assert_eq!(stored.pending_origin, Some(future_tasks::RunOrigin::Ui));
+        assert_eq!(stored.pending_actor.as_deref(), Some("phone"));
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("delete_task");
+        cmd.task_id = saved.id.clone();
+        super::execute(&cmd, &sink).await;
+        sink.ok_data();
+        let stored = store.get_task(&saved.id).unwrap().unwrap();
+        assert!(stored.deleted_at.is_some());
+        assert!(!stored.enabled, "a deleted task is not left enabled");
+        let sink = RecordingSink::default();
+        super::execute(&command("list_tasks"), &sink).await;
+        assert!(
+            sink.ok_data()["tasks"].as_array().unwrap().is_empty(),
+            "a deleted task is hidden from the list"
+        );
+    }
+
+    /// A FutureOS home whose root cannot be created at all — `.future` is a
+    /// plain file, which a damaged install or a stray write leaves behind — is
+    /// not an empty task list. No task command may answer as if the user had no
+    /// tasks, and none may report a write it never made.
+    #[tokio::test]
+    async fn a_home_that_cannot_hold_a_store_is_reported_by_every_task_command() {
+        let _home = home("business-tasks-unopenable-home");
+        let blocked = std::path::PathBuf::from(std::env::var("HOME").unwrap()).join(".future");
+        std::fs::write(&blocked, b"not a directory").expect("block the home root");
+        assert!(
+            open_store().is_err(),
+            "the fixture must make the tasks store unopenable"
+        );
+
+        for cmd_type in [
+            "list_tasks",
+            "get_task",
+            "create_task",
+            "update_task",
+            "delete_task",
+            "set_task_enabled",
+            "run_task",
+            "list_task_runs",
+            "list_task_revisions",
+            "apply_task_revision",
+        ] {
+            let sink = RecordingSink::default();
+            let mut cmd = command(cmd_type);
+            cmd.task_id = "tsk_1".into();
+            cmd.revision_id = "rev_1".into();
+            cmd.task = json!({"name": "n", "prompt": "p", "cwd": "/tmp"});
+            super::execute(&cmd, &sink).await;
+            let (success, _data, error) = sink.last();
+            assert!(
+                !success,
+                "{cmd_type} must not answer without a store it could open"
+            );
+            assert!(
+                !error.unwrap_or_default().is_empty(),
+                "{cmd_type} must carry the store's own reason"
+            );
+        }
+    }
+
+    /// A task id that no longer exists is "task not found" for every command
+    /// that names one — never a silent success the phone would render as done.
+    #[tokio::test]
+    async fn an_unknown_task_is_named_by_every_command_that_takes_one() {
+        let _home = home("business-tasks-unknown-id");
+        for cmd_type in [
+            "get_task",
+            "update_task",
+            "delete_task",
+            "set_task_enabled",
+            "run_task",
+        ] {
+            let sink = RecordingSink::default();
+            let mut cmd = command(cmd_type);
+            cmd.task_id = "tsk_gone".into();
+            cmd.task = json!({"name": "n", "prompt": "p", "cwd": "/tmp"});
+            super::execute(&cmd, &sink).await;
+            let (success, _data, error) = sink.last();
+            assert!(!success, "{cmd_type} must not succeed for a missing task");
+            assert_eq!(error.as_deref(), Some("task not found"), "{cmd_type}");
+        }
+    }
+
+    /// A row the record decoder refuses is a *read failure*, not an empty
+    /// result: the phone must not be told "no tasks" when the truth is "cannot
+    /// read this database", and the same goes for a task's run ledger and its
+    /// prompt history. The rows are written through a direct connection,
+    /// because the store's own write path cannot produce one.
+    #[tokio::test]
+    async fn a_row_that_cannot_be_decoded_is_a_read_failure_not_an_empty_answer() {
+        let _home = home("business-tasks-poisoned-rows");
+        open_store().expect("create the schema");
+        let path = future_tasks::store::store_path(&crate::future_home_root());
+        {
+            let conn = rusqlite::Connection::open(&path).expect("open the tasks database");
+            conn.execute_batch(
+                "INSERT INTO tasks (id, name, enabled, prompt, prompt_version, cwd,
+                                    trigger_kind, trigger_json, session_retention,
+                                    created_at, updated_at)
+                 VALUES ('tsk_ok', 'readable', 1, 'p', 1, '/tmp', 'manual', '{}', 'keep', 1, 1),
+                        -- A BLOB, not a number: TEXT affinity would convert a
+                        -- number to text and the row would decode cleanly.
+                        ('tsk_poison', X'00FF', 1, 'p', 1, '/tmp', 'manual', '{}', 'keep', 1, 1);
+                 INSERT INTO task_runs (id, task_id, kind, origin, status, result_summary)
+                 VALUES ('run_poison', 'tsk_ok', X'00FF', 'ui', 'completed', 'x');
+                 INSERT INTO task_prompt_revisions (id, task_id, version, prompt, source, status, created_at)
+                 VALUES ('rev_poison', 'tsk_ok', 1, X'00FF', 'user', 'active', 1);",
+            )
+            .expect("write rows the decoder refuses");
+        }
+
+        // The list and the detail read the poisoned task row itself.
+        let sink = RecordingSink::default();
+        super::execute(&command("list_tasks"), &sink).await;
+        assert!(
+            !sink.last().0,
+            "an unreadable task list is not an empty task list"
+        );
+        let sink = RecordingSink::default();
+        let mut cmd = command("get_task");
+        cmd.task_id = "tsk_poison".into();
+        super::execute(&cmd, &sink).await;
+        assert!(!sink.last().0, "an unreadable task is not a missing task");
+
+        // The writes read it before they write.
+        for cmd_type in ["update_task", "set_task_enabled", "run_task"] {
+            let sink = RecordingSink::default();
+            let mut cmd = command(cmd_type);
+            cmd.task_id = "tsk_poison".into();
+            cmd.enabled = false;
+            cmd.task = json!({"name": "renamed"});
+            super::execute(&cmd, &sink).await;
+            let (success, _data, error) = sink.last();
+            assert!(
+                !success,
+                "{cmd_type} must not write over a row it cannot read"
+            );
+            assert!(
+                !error.unwrap_or_default().is_empty(),
+                "{cmd_type} must carry the decoder's reason"
+            );
+        }
+
+        // The ledger and the prompt history fail the same way: their own
+        // commands report the fault instead of answering "no runs" / "no
+        // versions", which would render as a task that never ran.
+        let sink = RecordingSink::default();
+        let mut cmd = command("list_task_runs");
+        cmd.task_id = "tsk_ok".into();
+        super::execute(&cmd, &sink).await;
+        assert!(
+            !sink.last().0,
+            "an unreadable run ledger is not an empty ledger"
+        );
+        let sink = RecordingSink::default();
+        let mut cmd = command("list_task_revisions");
+        cmd.task_id = "tsk_ok".into();
+        super::execute(&cmd, &sink).await;
+        assert!(
+            !sink.last().0,
+            "an unreadable prompt history is not an empty history"
+        );
+    }
+
+    /// Applying a revision that does not exist is refused with
+    /// the name the store uses, not silently accepted.
+    #[tokio::test]
+    async fn applying_a_revision_that_does_not_exist_is_refused() {
+        let _home = home("business-tasks-apply-missing-revision");
+        let store = open_store().expect("store");
+        let saved = task("weekly", future_tasks::SessionPolicy::New);
+        store.insert_task(&saved).unwrap();
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("apply_task_revision");
+        cmd.task_id = saved.id.clone();
+        cmd.revision_id = "rev_absent".into();
+        super::execute(&cmd, &sink).await;
+        let (success, _data, error) = sink.last();
+        assert!(!success, "a version that does not exist cannot be applied");
+        assert!(
+            error.is_some_and(|message| !message.is_empty()),
+            "the store's own reason is surfaced"
+        );
+        assert_eq!(
+            sink.last().1,
+            Value::Null,
+            "a refused apply carries no record"
+        );
+    }
+
+    /// A name is unique among live tasks (the store's own index says so), and
+    /// both writes that can hit it surface the store's refusal to the phone
+    /// rather than reporting a task that was never stored: a create of a name
+    /// already in use, and a rename onto one.
+    #[tokio::test]
+    async fn a_task_name_already_in_use_is_refused_by_both_writes() {
+        let _home = home("business-tasks-duplicate-name");
+        let store = open_store().expect("store");
+        let saved = task("weekly", future_tasks::SessionPolicy::New);
+        store.insert_task(&saved).unwrap();
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("create_task");
+        cmd.task = json!({
+            "name": "weekly",
+            "prompt": "another",
+            "cwd": "/tmp/repo",
+        });
+        super::execute(&cmd, &sink).await;
+        let (success, _data, error) = sink.last();
+        assert!(!success, "a duplicate name must not be created");
+        assert!(
+            error.is_some_and(|message| !message.is_empty()),
+            "the store's own reason is surfaced"
+        );
+        assert_eq!(
+            store.list_tasks(false).unwrap().len(),
+            1,
+            "the refused create stored nothing"
+        );
+
+        let other = task("notes", future_tasks::SessionPolicy::New);
+        store.insert_task(&other).unwrap();
+        let sink = RecordingSink::default();
+        let mut cmd = command("update_task");
+        cmd.task_id = other.id.clone();
+        cmd.task = json!({"name": "weekly"});
+        super::execute(&cmd, &sink).await;
+        let (success, _data, error) = sink.last();
+        assert!(!success, "a rename onto a live name must not be stored");
+        assert!(
+            error.is_some_and(|message| !message.is_empty()),
+            "the store's own reason is surfaced"
+        );
+        assert_eq!(
+            store.get_task(&other.id).unwrap().unwrap().name,
+            "notes",
+            "the refused rename left the stored name alone"
         );
     }
 }

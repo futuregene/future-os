@@ -496,4 +496,34 @@ mod tests {
         assert!(error.contains("unknown drop kind"), "{error}");
         assert!(captured.out.lock().unwrap().is_empty());
     }
+
+    /// `--keep-first` is the third selector form, and it is the one whose report
+    /// can legitimately keep more than it started with — a session whose first
+    /// entries were already there reads as "unchanged", not as a negative
+    /// removal count.
+    #[tokio::test]
+    async fn keep_first_is_reported_and_a_report_that_kept_everything_says_unchanged() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent = crate::test_server::MockAgent::respond(
+            "reset_session_history",
+            r#"{"sessionId":"s1","applied":true,"selectors":{"all":false,"keepFirst":5,"keepLast":null,"drop":[]},
+                "entriesBefore":1,"entriesAfter":4,"turnsBefore":9,"turnsKept":9,
+                "estimatedTokensBefore":512,"estimatedTokensAfter":512,
+                "dropEffects":[],"firstKept":null,"lastKept":null,"notes":[],"backup":null,"dryRun":false}"#,
+        );
+        let address = crate::test_server::spawn_mock(agent.clone()).await;
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from(address),
+        )]);
+        let (out, captured) = Output::memory();
+        run(&args(&["s1", "--keep-first", "5", "--yes"]), &out)
+            .await
+            .expect("reset");
+        let prose = String::from_utf8(captured.out.lock().unwrap().clone()).unwrap();
+        assert!(prose.contains("--keep-first 5"), "{prose}");
+        assert!(prose.contains("Entries    1 → 4   (unchanged)"), "{prose}");
+        assert!(!prose.contains("removed"), "{prose}");
+        assert_eq!(agent.seen_of("reset_session_history").len(), 1);
+    }
 }

@@ -48,6 +48,14 @@ struct EventJournalState {
     closed: bool,
     #[cfg(test)]
     fail_at: Option<JournalFailPoint>,
+    /// A drain failure injected where the guard that decides whether to ask for
+    /// compaction cannot see it. Appends report their own failures and mark the
+    /// journal unhealthy, which takes that guard's other branch, so a drain is
+    /// the one stage whose failure has to be armed directly. Deliberately **not**
+    /// `cfg(test)`-gated, so the injection check stays a single line whose
+    /// production half is not an uncoverable `cfg(not(test))` branch (the shape
+    /// `persistence.rs` uses for its injected failures).
+    fail_flush: bool,
     #[cfg(test)]
     read_flush_queued: Option<std::sync::mpsc::Sender<()>>,
 }

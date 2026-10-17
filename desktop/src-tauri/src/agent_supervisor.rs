@@ -253,4 +253,78 @@ mod tests {
             .unwrap();
         ensure_agent_running(app.handle()).unwrap();
     }
+
+    /// The GUI entry point is not a second, weaker path to the same decision:
+    /// it routes through `ensure_agent_running`, so a mock app cannot start a
+    /// real Agent through it either.
+    #[test]
+    fn supervision_through_the_gui_entry_point_is_also_safe_for_a_mock_app() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        start_agent_supervision(app.handle()).unwrap();
+    }
+
+    /// `authorize_exit` is what an already-confirmed quit reads: the close
+    /// handler must proceed *without* reopening the confirmation dialog, and the
+    /// decision must not have to consult the Agent to know that.
+    #[test]
+    fn an_authorized_exit_proceeds_without_a_dialog() {
+        authorize_exit();
+        assert!(exit_authorized());
+        assert_eq!(on_close_requested(), QuitDecision::Proceed);
+    }
+
+    /// The recovery status is the same status: it never replaces a service it
+    /// cannot own, so a poll through it cannot disagree with the plain poll.
+    #[tokio::test]
+    async fn the_recovery_poll_reports_the_same_phase_as_the_plain_poll() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let recovered = agent_status_with_recovery(app.handle().clone()).await;
+        let plain = agent_status().await;
+        assert_eq!(recovered.phase, plain.phase);
+        assert_eq!(recovered.desktop_version, crate::build_info::VERSION);
+        assert_eq!(recovered.agent_version, plain.agent_version);
+        assert_eq!(recovered.error, plain.error);
+    }
+
+    /// The status type is the webview's contract: every field is serialized in
+    /// camelCase and absent optionals are omitted rather than sent as null.
+    #[test]
+    fn the_status_serialization_matches_the_webview_contract() {
+        let status = AgentStatus {
+            phase: "unavailable".into(),
+            desktop_version: "1.2.3".into(),
+            agent_version: None,
+            shutdown: None,
+            error: None,
+        };
+        let value = serde_json::to_value(&status).unwrap();
+        assert_eq!(value["phase"], "unavailable");
+        assert_eq!(value["desktopVersion"], "1.2.3");
+        assert!(
+            value["agentVersion"].is_null(),
+            "the webview reads the field as JSON, so an unknown version is null: {value}"
+        );
+        assert!(
+            value.get("shutdown").is_none(),
+            "an absent shutdown snapshot is omitted, not null: {value}"
+        );
+        assert!(
+            value.get("error").is_none(),
+            "an absent error is omitted, not null: {value}"
+        );
+        let busy = AgentStatus {
+            phase: "incompatible".into(),
+            desktop_version: "1.2.3".into(),
+            agent_version: Some("9.9.9".into()),
+            shutdown: None,
+            error: Some("protocol mismatch".into()),
+        };
+        let value = serde_json::to_value(&busy).unwrap();
+        assert_eq!(value["agentVersion"], "9.9.9");
+        assert_eq!(value["error"], "protocol mismatch");
+    }
 }

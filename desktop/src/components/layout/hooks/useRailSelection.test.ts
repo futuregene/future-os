@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import type { MergedConversation } from "../../../features/remote-peer/mergeConversations";
 import type { StoredThread } from "../../../integrations/storage/threadStore";
 import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -7,6 +8,22 @@ import { useRailSelection } from "./useRailSelection";
 
 function thread(id: string): StoredThread {
   return { id, agentSessionId: id, title: id, mode: "chat", workspaceId: id, status: "active", pinned: false, readonly: false, createdAt: 0, updatedAt: 0 };
+}
+
+function remoteRow(key: string): MergedConversation {
+  const [desktopId, sessionId] = key.split("::");
+  return {
+    key,
+    desktopId: desktopId!,
+    id: sessionId!,
+    threadId: sessionId!,
+    title: sessionId!,
+    pinned: false,
+    streaming: false,
+    lastMessageAt: 0,
+    mode: "chat",
+    workspaceId: null,
+  };
 }
 
 describe("rail selection", () => {
@@ -133,6 +150,70 @@ describe("rail selection", () => {
     act(() => h.current.handleRowSelect(item));
     expect(onSelectThread).toHaveBeenCalledTimes(1);
     expect(h.current.selectedThreadIds.has(item.id)).toBe(true);
+    h.unmount();
+  });
+
+  it("ticks a remote row off again, and batches only the remote rows it ticked", () => {
+    // Remote rows carry their own selection set (they are addressed by row key,
+    // not by a local id), and a second activation on an already-ticked row has
+    // to *untick* it — otherwise a mis-click in a mixed batch is unfixable.
+    const item = thread("item");
+    const remote = remoteRow("desktop_a::s1");
+    const other = remoteRow("desktop_a::s2");
+    const onDeleteRemoteConversations = vi.fn();
+    const onBatchDeleteThreads = vi.fn();
+    const h = renderHook(() => useRailSelection({
+      onBatchDeleteThreads,
+      onDeleteRemoteConversations,
+      onSelectThread: vi.fn(),
+      remoteScopes: new Map([[remote.key, "chat"], [other.key, "chat"]]),
+      threadScopes: new Map([[item.id, "chat"]]),
+      visibleRemoteRows: [remote, other],
+      visibleThreads: [item],
+    }));
+
+    act(() => h.current.enterSelectionMode("chat"));
+    act(() => h.current.toggleRemoteSelection(remote));
+    expect(h.current.isRemoteRowSelectable(remote)).toBe(true);
+    expect([...h.current.selectedRemoteKeys]).toEqual([remote.key]);
+    expect(h.current.selectedCount).toBe(1);
+
+    // Second activation: unticked, and the count follows.
+    act(() => h.current.toggleRemoteSelection(remote));
+    expect(h.current.selectedRemoteKeys.size).toBe(0);
+    expect(h.current.selectedCount).toBe(0);
+
+    // Select all sweeps both machines' rows into one batch, and Delete routes
+    // each kind to the code that owns it.
+    act(() => h.current.selectAll());
+    expect(h.current.selectedCount).toBe(3);
+    act(() => h.current.deselectAll());
+    expect(h.current.selectedCount).toBe(0);
+
+    act(() => h.current.toggleRemoteSelection(other));
+    act(() => h.current.deleteSelected());
+    expect(onDeleteRemoteConversations).toHaveBeenCalledWith([other]);
+    expect(onBatchDeleteThreads).not.toHaveBeenCalled();
+    expect(h.current.selectionMode).toBe(false);
+    h.unmount();
+  });
+
+  it("keeps a pinned host row out of the batch", () => {
+    const pinnedRemote = { ...remoteRow("desktop_a::pinned"), pinned: true };
+    const h = renderHook(() => useRailSelection({
+      onBatchDeleteThreads: vi.fn(),
+      onDeleteRemoteConversations: vi.fn(),
+      onSelectThread: vi.fn(),
+      remoteScopes: new Map([[pinnedRemote.key, "chat"]]),
+      threadScopes: new Map(),
+      visibleRemoteRows: [pinnedRemote],
+      visibleThreads: [],
+    }));
+
+    act(() => h.current.enterSelectionMode("chat"));
+    expect(h.current.isRemoteRowSelectable(pinnedRemote)).toBe(false);
+    act(() => h.current.selectAll());
+    expect(h.current.selectedCount).toBe(0);
     h.unmount();
   });
 });

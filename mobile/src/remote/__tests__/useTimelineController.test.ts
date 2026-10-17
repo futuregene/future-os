@@ -1697,6 +1697,160 @@ describe("useTimelineController", () => {
       }
     });
 
+    /**
+     * Park an older-history page the way a backgrounding does.
+     *
+     * The page is downloaded and queued behind the lane's own replay, and the
+     * app goes dark before the lane can publish it — so the pull is answered
+     * `false` with the page parked for a foreground recommit. The caller gets
+     * the driver for the held replay, and must call `restore()` when done.
+     */
+    async function parkPageForBackgrounding(sessionId = "s1") {
+      const originalActivity = Object.getOwnPropertyDescriptor(AppState, "currentState")!;
+      const setActivity = (value: string) =>
+        Object.defineProperty(AppState, "currentState", { configurable: true, value });
+      // The commit registers its own app-state listener, which is what turns a
+      // backgrounding into "this page can never publish" — so the transition
+      // has to be delivered, not just reflected in `AppState.currentState`.
+      const changeListeners = (): ((state: string) => void)[] =>
+        (AppState.addEventListener as unknown as jest.Mock).mock.calls
+          .filter(([type]) => type === "change")
+          .map(([, fn]) => fn as (state: string) => void);
+      const dispatch = (state: string) => {
+        for (const fn of changeListeners()) fn(state);
+      };
+      setActivity("active");
+      options.selectedSessionId = sessionId;
+      options.selectedRef.current = sessionId;
+      let releaseReplay!: (value: unknown) => void;
+      request
+        .mockResolvedValueOnce({ data: { activeRun: { runId: "run" } } })
+        .mockResolvedValueOnce({
+          data: { entries: [userEntry("latest", "latest")], hasMore: true, nextOffset: 20 },
+        })
+        // The open reconcile's replay, held so the page's commit queues behind it.
+        .mockImplementationOnce(
+          () => new Promise((resolve) => { releaseReplay = resolve; }),
+        )
+        // The page download itself.
+        .mockResolvedValueOnce({
+          data: { entries: [userEntry("older", "older")], hasMore: false, nextOffset: 0 },
+        });
+      request.mockImplementation(async (command: { type: string }) =>
+        command.type === "get_state"
+          ? { data: {} }
+          : { data: { entries: [], hasMore: false, nextOffset: 0 } });
+      render();
+      await establish(sessionId);
+      let page!: ReturnType<Result["loadOlderTimeline"]>;
+      act(() => { page = result.current.loadOlderTimeline(); });
+      await flush();
+      expect(result.current.loadingOlderTimeline).toBe(true);
+      setActivity("background");
+      await act(async () => { dispatch("background"); });
+      await act(async () => { expect(await page).toBe(false); });
+      expect(result.current.olderHistoryFailed).toBe(false);
+      return {
+        setActivity,
+        dispatch,
+        releaseReplay,
+        switchTo: (next: string) => {
+          options.selectedSessionId = next;
+          options.selectedRef.current = next;
+          act(() => { renderer!.update(createElement(Harness)); });
+        },
+        restore: () => Object.defineProperty(AppState, "currentState", originalActivity),
+      };
+    }
+
+    test("a page the lane drops twice is parked again, and is still not a failure", async () => {
+      const park = await parkPageForBackgrounding();
+      try {
+        // The app is still dark and the user pulls again: same pull, same
+        // answer — the page is parked for the next foreground, not failed.
+        expect(await result.current.loadOlderTimeline()).toBe(false);
+        expect(result.current.olderHistoryFailed).toBe(false);
+        expect(result.current.canLoadOlderTimeline).toBe(true);
+        expect(result.current.timeline.items.map((item) => item.id)).not.toContain("m_older");
+        // A third offer settles the same way, and the pull is not left in flight.
+        expect(await result.current.loadOlderTimeline()).toBe(false);
+        expect(result.current.loadingOlderTimeline).toBe(false);
+        expect(result.current.timeline.items.map((item) => item.id)).not.toContain("m_older");
+      } finally {
+        park.restore();
+      }
+    });
+
+    test("a parked page is re-offered by the user's own pull once the app is back", async () => {
+      const park = await parkPageForBackgrounding();
+      try {
+        park.setActivity("active");
+        const before = request.mock.calls.length;
+        let pull!: ReturnType<Result["loadOlderTimeline"]>;
+        act(() => { pull = result.current.loadOlderTimeline(); });
+        await flush();
+        await act(async () => { park.releaseReplay({ data: { events: [], hasMore: false } }); });
+        await flush();
+        // The pull re-offers the download already in hand rather than fetching
+        // it again: the returned ids are the parked page's own rows.
+        expect(await pull).toContain("m_older");
+        const entriesCalls = request.mock.calls.slice(before)
+          .filter(([command]) => (command as { type: string }).type === "get_session_entries");
+        expect(entriesCalls).toHaveLength(0);
+        expect(result.current.timeline.items.map((item) => item.id)).toContain("m_older");
+        expect(result.current.olderHistoryFailed).toBe(false);
+      } finally {
+        park.restore();
+      }
+    });
+
+    test("a page parked for a conversation the user has left is dropped, not committed", async () => {
+      const park = await parkPageForBackgrounding();
+      try {
+        park.setActivity("active");
+        // The user moves to another conversation while the page waits. The lane
+        // is now reading someone else's window, so the page cannot land.
+        park.switchTo("s2");
+        await flush();
+        expect(await result.current.loadOlderTimeline()).toBe(false);
+        await act(async () => { park.releaseReplay({ data: { events: [], hasMore: false } }); });
+        await flush();
+        expect(result.current.timeline.items.map((item) => item.id)).not.toContain("m_older");
+      } finally {
+        park.restore();
+      }
+    });
+
+    test("a recommit the user left behind is reported, not installed", async () => {
+      const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+      const park = await parkPageForBackgrounding();
+      try {
+        park.setActivity("active");
+        let pull!: ReturnType<Result["loadOlderTimeline"]>;
+        act(() => { pull = result.current.loadOlderTimeline(); });
+        await flush();
+        // The user leaves for another conversation, and the app backgrounds
+        // before the queued recommit could publish. The page's window is gone
+        // and the failure is the caller's to report — it must not be parked as
+        // a hidden page, and it must never be installed into the conversation
+        // the user has left.
+        park.switchTo("s2");
+        await flush();
+        park.setActivity("background");
+        await act(async () => { park.dispatch("background"); });
+        await flush();
+        expect(await pull).toBe(false);
+        expect(errorSpy).toHaveBeenCalledWith(
+          "[remote] older history page recommit failed",
+          expect.objectContaining({ sessionId: "s1" }),
+        );
+        expect(result.current.timeline.items.map((item) => item.id)).not.toContain("m_older");
+      } finally {
+        park.restore();
+        errorSpy.mockRestore();
+      }
+    });
+
     test("switching sessions cancels an in-flight page immediately", async () => {
       const errorSpy = jest
         .spyOn(console, "error")

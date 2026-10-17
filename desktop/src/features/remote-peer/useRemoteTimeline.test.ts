@@ -1401,3 +1401,371 @@ it("keeps each conversation's read state to itself", async () => {
   expect(other.current.entries.map(item => item.id)).toEqual(["e9"]);
   other.unmount();
 });
+
+/**
+ * Guards on the paths that only run when something else went wrong.
+ *
+ * Each case below is a *state* the hook can be in that no happy-path test
+ * reaches: no conversation selected, a host that cannot be asked, a frame whose
+ * envelope is incomplete, a component unmounted with a subscription in flight.
+ * What they assert is the observable consequence — a request not made, a reply
+ * not drawn, a reason not reported — because that is what the guard exists to
+ * prevent.
+ */
+describe("useRemoteTimeline guards", () => {
+  /** A promise whose settlement the test chooses, for interleaving two reads. */
+  function createDeferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    // A rejection nothing awaits would otherwise be an unhandled rejection until
+    // the hook's own catch runs; the hook does catch it, so this is only to keep
+    // the runner quiet about the gap in between.
+    promise.catch(() => {});
+    return { promise, reject, resolve };
+  }
+
+  /** One pushed event, in the host's own body shape. */
+  function pushEvent(overrides: Record<string, unknown> = {}): void {
+    push({
+      sessionId: "sess_1",
+      runId: "run_1",
+      idx: 1,
+      eventId: "run_1:1",
+      timestamp: "2026-01-01T00:00:00Z",
+      type: "text_chunk",
+      data: JSON.stringify({ text: "hi" }),
+      ...overrides,
+    });
+  }
+
+  it("asks for nothing when there is no conversation to ask about", async () => {
+    // `refresh` is reachable from a surface that outlives the conversation (the
+    // transcript's Retry button, a settle handler), so it has to be inert rather
+    // than build a request out of `null`.
+    const hook = renderHook(() => useRemoteTimeline(null, null, true));
+    await settle();
+
+    await act(async () => {
+      await hook.current.refresh();
+    });
+
+    expect(requestMock).not.toHaveBeenCalled();
+    expect(hook.current.entries).toEqual([]);
+    hook.unmount();
+  });
+
+  it("takes the host's own answer to whether it is compacting", async () => {
+    // A window that opens onto a host already compacting has no frame to learn it
+    // from — the operation started before this client was listening — so the
+    // state read is the only way it is known, and it gates the composer.
+    stateReply = { isCompacting: true };
+    requestMock.mockResolvedValue(page([]));
+    const compacting = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    expect(compacting.current.compacting).toBe(true);
+    compacting.unmount();
+
+    stateReply = { isCompacting: false };
+    const idle = renderHook(() => useRemoteTimeline("desktop_a", "sess_2", true));
+    await settle();
+    expect(idle.current.compacting).toBe(false);
+    idle.unmount();
+  });
+
+  it("ignores a push with no event type", async () => {
+    // Every branch below the type read keys off it (a run starting, ending, a
+    // compaction), so a frame without one has no meaning to apply — and treating
+    // it as "not terminal" would have left the conversation looking busy.
+    requestMock.mockResolvedValue(page([]));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+
+    pushEvent({ type: undefined });
+    await settle();
+
+    expect(hook.current.streaming).toBe(false);
+    expect(hook.current.liveReplies).toEqual([]);
+    expect(hook.current.entries).toEqual([]);
+    hook.unmount();
+  });
+
+  it("releases a subscription whose unlisten arrives after the component is gone", async () => {
+    // `listen` is asynchronous: the handle comes back a microtask later. Nothing
+    // else holds it, so a component that unmounts in that window has to detach
+    // itself here or the host's pushes reach a dead hook for the life of the app.
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    hook.unmount();
+    await settle();
+
+    expect(listeners).toEqual([]);
+  });
+
+  it("stops asking the host for its state once the host cannot serve a log", async () => {
+    // The two reads are one capability: a host that does not serve
+    // `get_events_since` cannot be asked what is in flight either, because the
+    // answer would only lead to the log read it just refused. `stateReply` is a
+    // proxy so the *read itself* is observable — the state goes through the
+    // module mock, not through `requestMock`.
+    let stateTouches = 0;
+    stateReply = new Proxy({ activeRun: { runId: "run_1" } }, {
+      get(target, key) {
+        stateTouches += 1;
+        return Reflect.get(target, key);
+      },
+    });
+    requestMock.mockImplementation(async (_desktop: string, command: { type?: string }) => {
+      if (command?.type === "get_events_since")
+        throw new Error("Unsupported command: get_events_since");
+      return page([]);
+    });
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    expect(hook.current.replayUnavailable).toBe(true);
+    expect(requestMock.mock.calls.filter(([, command]) =>
+      (command as { type?: string }).type === "get_events_since")).toHaveLength(1);
+
+    // A link that comes back re-reads the transcript — and does not ask the host
+    // about its runs again, so the state is not even read.
+    const touchedBefore = stateTouches;
+    act(() => {
+      listeners.forEach(listener => listener({ payload: { desktopId: "desktop_a", kind: "resumed", payload: {} } }));
+    });
+    await settle();
+
+    expect(stateTouches).toBe(touchedBefore);
+    expect(requestMock.mock.calls.filter(([, command]) =>
+      (command as { type?: string }).type === "get_events_since")).toHaveLength(1);
+    hook.unmount();
+  });
+
+  it("refuses a tail that does not reach the watermark it was pinned to", async () => {
+    // A tail is applied by moving the cursor to the watermark — "I hold
+    // everything through here" — so a short feed applied there is a hole nothing
+    // would ever revisit. Refusing costs one more read; accepting invents a
+    // transcript.
+    stateReply = { activeRun: { runId: "run_1" } };
+    requestMock.mockImplementation(async (_desktop: string, command: { type?: string } & Record<string, unknown>) => {
+      if (command?.type === "get_events_since") {
+        // The whole-run read is honest: the run up to index 1.
+        if (Number(command.sinceIdx) === -1) {
+          return {
+            events: [
+              { type: "agent_start", data: JSON.stringify({}), runId: "run_1", idx: 0 },
+              { type: "text_chunk", data: JSON.stringify({ text: "one" }), runId: "run_1", idx: 1 },
+            ],
+            watermark: 1,
+          };
+        }
+        // The gap read is not: one event where the pinned watermark says two.
+        return {
+          events: [{ type: "text_chunk", data: JSON.stringify({ text: "lost" }), runId: "run_1", idx: 2 }],
+          watermark: 9,
+        };
+      }
+      return page([entry("e1", "user", "hello")]);
+    });
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    expect(hook.current.liveReplies.map(reply => reply.message.content)).toEqual(["one"]);
+
+    // A frame two indices ahead: the feed numbers every event, so one was lost.
+    pushEvent({ idx: 3, eventId: "run_1:3", data: JSON.stringify({ text: "three" }) });
+    await settle();
+
+    const reads = requestMock.mock.calls
+      .map(([, command]) => command as { type?: string; sinceIdx?: number })
+      .filter(command => command.type === "get_events_since");
+    // The gap was read from the cursor, once — and the short answer was refused
+    // rather than folded in, so the reply is still only what the log proved.
+    expect(reads.map(read => read.sinceIdx)).toEqual([-1, 1]);
+    expect(hook.current.liveReplies.map(reply => reply.message.content)).toEqual(["one"]);
+    hook.unmount();
+  });
+
+  /**
+   * A payload the parser cannot read is dropped, not guessed at.
+   *
+   * The envelope is hand-parsed field by field, because a lean host trims it and
+   * an older one spells some fields differently — so every field has a shape the
+   * parser refuses. What matters for each is the same: the frame produces no entry
+   * and no reply, and the *next*, well-formed frame still does (a parser that threw
+   * would take the push lane down with it).
+   */
+  it("drops a frame whose payload or fields are the wrong shape", async () => {
+    requestMock.mockResolvedValue(page([]));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+
+    // Not an object at all: nothing to read a session or a type out of.
+    push("a bare string, not an envelope" as unknown as Record<string, unknown>);
+    // No timestamp and a `data` that decodes to a number: the entry's clock
+    // falls back to the payload's own record, which is not an object either.
+    pushEvent({ timestamp: undefined, eventId: "e_num", data: JSON.stringify(5) });
+    // A timestamp that is present but not a date.
+    pushEvent({ timestamp: "the day before yesterday", eventId: "e_bad_time" });
+    // A `data` that is not JSON at all.
+    pushEvent({ eventId: "e_bad_json", data: "{not json" });
+    await settle();
+
+    expect(hook.current.entries).toEqual([]);
+    expect(hook.current.liveReplies).toEqual([]);
+
+    // And the lane still works: a readable frame lands (the envelope's own id
+    // wins over the record's when both are present).
+    pushEvent({
+      eventId: "e_ok",
+      type: "user_message",
+      data: JSON.stringify({ text: "still here", entry_id: "entry_ok", created_at_ms: 1_700_000_000_000 }),
+    });
+    await settle();
+    expect(hook.current.entries.map(item => item.id)).toEqual(["e_ok"]);
+    hook.unmount();
+  });
+
+  /**
+   * A body the host already decoded is re-encoded, and a body that is absent is
+   * not a body.
+   *
+   * The host is supposed to send `data` as the JSON *string* the projector parses,
+   * so a value that arrives decoded is a host whose shape changed — re-encoding it
+   * is what keeps the reply streaming instead of silently stopping. `null` is the
+   * other end: a frame with no body has nothing to fold, and must not become an
+   * empty reply.
+   */
+  it("re-encodes a decoded body and ignores an absent one", async () => {
+    requestMock.mockResolvedValue(page([]));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+
+    // Already-decoded object instead of a JSON string.
+    pushEvent({ eventId: "e_decoded", data: { text: "decoded" } });
+    await settle();
+    expect(hook.current.liveReplies.map(reply => reply.message.content)).toEqual(["decoded"]);
+
+    // No body at all: the frame carries no text, so there is nothing to draw.
+    pushEvent({ eventId: "e_nobody", data: null, idx: 2 });
+    pushEvent({ eventId: "e_undefined", data: undefined, idx: 3 });
+    await settle();
+    expect(hook.current.liveReplies.map(reply => reply.message.content)).toEqual(["decoded"]);
+    hook.unmount();
+  });
+
+  /**
+   * A reply rebuilt from a run's log steps aside once the record carries that run.
+   *
+   * The rebuilt copy stands in for the record while the record is being written —
+   * the agent writes the last model call as the run ends, so the record trails the
+   * terminal frame. The moment the page it re-read after that frame holds the run's
+   * own entry (with a settled `run.status`), the projection is a second copy of the
+   * same words and has to go; the record is the copy that also carries the run's
+   * failure and its fork point.
+   */
+  it("drops a rebuilt reply once the page carries the run's own record", async () => {
+    let settlePage: ((value: unknown) => void) | null = null;
+    let reads = 0;
+    requestMock.mockImplementation(async (_desktop: string, command: { type?: string } & Record<string, unknown>) => {
+      if (command?.type === "get_events_since") {
+        return {
+          events: [
+            { type: "agent_start", data: JSON.stringify({}), runId: "run_1", idx: 0 },
+            { type: "text_chunk", data: JSON.stringify({ text: "one" }), runId: "run_1", idx: 1 },
+          ],
+          watermark: 1,
+        };
+      }
+      reads += 1;
+      // The first read (the open) is the transcript as it stands; the re-read
+      // after the run ends is held so the bubble can be observed in between.
+      if (reads === 1)
+        return page([entry("e1", "user", "hello")]);
+      return new Promise((resolve) => {
+        settlePage = resolve;
+      });
+    });
+    stateReply = { activeRun: { runId: "run_1" } };
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    expect(hook.current.liveReplies.map(reply => reply.message.content)).toEqual(["one"]);
+
+    // The run ends: the rebuilt reply is kept (the record is not readable yet),
+    // so the reader does not watch the answer blink out.
+    pushEvent({ type: "run_finished", idx: 2, eventId: "run_1:2", data: JSON.stringify({}) });
+    await settle();
+    expect(hook.current.liveReplies.map(reply => reply.message.content)).toEqual(["one"]);
+
+    // The record arrives, carrying the run's own entry with its settled status.
+    await act(async () => {
+      settlePage?.(page([
+        entry("e1", "user", "hello"),
+        entry("e2", "assistant", "one", { runId: "run_1", status: "completed" }),
+      ]));
+    });
+    await settle();
+
+    expect(hook.current.liveReplies).toEqual([]);
+    expect(hook.current.messages.map(message => message.content)).toEqual(["hello", "one"]);
+    hook.unmount();
+  });
+
+  /**
+   * A refusal from a read the page already superseded is not a refusal at all.
+   *
+   * Every read is stamped with the generation it was issued in, and a read that
+   * lands after a newer one has to be dropped silently: an older host's
+   * "unsupported" answer arriving late would otherwise mark a capable host as
+   * incapable and stop the log lane for the rest of the visit — the exact
+   * opposite of what the stale read knew.
+   */
+  it("drops a stale read's failure instead of marking the host unsupported", async () => {
+    const stale = createDeferred<unknown>();
+    const fresh = createDeferred<unknown>();
+    const reads: Array<{ runId?: string }> = [];
+    requestMock.mockImplementation(async (_desktop: string, command: { type?: string; runId?: string }) => {
+      if (command?.type === "get_events_since") {
+        reads.push(command);
+        return reads.length === 1 ? stale.promise : fresh.promise;
+      }
+      return page([entry("e1", "user", "hello")]);
+    });
+    // The run in flight when the window opens: its log read is the one that gets
+    // superseded.
+    stateReply = { activeRun: { runId: "run_1" } };
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    expect(reads.map(read => read.runId)).toEqual(["run_1"]);
+
+    // The host has moved on to another run while the read was in flight, so the
+    // transcript's own re-read (its Retry) asks about that one — a *different*
+    // run, which is why the first read is still in flight rather than deduped.
+    stateReply = { activeRun: { runId: "run_2" } };
+    await act(async () => {
+      const refreshing = hook.current.refresh();
+      await Promise.resolve();
+      fresh.resolve({
+        events: [
+          { type: "agent_start", data: JSON.stringify({}), runId: "run_2", idx: 0 },
+          { type: "text_chunk", data: JSON.stringify({ text: "fresh" }), runId: "run_2", idx: 1 },
+        ],
+        watermark: 1,
+      });
+      await refreshing;
+    });
+    await settle();
+    expect(reads.map(read => read.runId)).toEqual(["run_1", "run_2"]);
+    expect(hook.current.liveReplies.map(reply => reply.message.content)).toEqual(["fresh"]);
+
+    // The superseded read now fails, with the one error that means "this host
+    // cannot serve the command". It belongs to the generation that was replaced.
+    stale.reject(new Error("Unsupported command: get_events_since"));
+    await settle();
+
+    expect(hook.current.replayUnavailable).toBe(false);
+    // The reply the fresh read built stands, unbothered by the late failure.
+    expect(hook.current.liveReplies.map(reply => reply.message.content)).toEqual(["fresh"]);
+    hook.unmount();
+  });
+});

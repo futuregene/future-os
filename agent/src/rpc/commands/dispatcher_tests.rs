@@ -268,3 +268,71 @@ fn get_session_entries_rejects_an_empty_or_unknown_session_id() {
 }
 
 // ── coverage batch 24: per-line residuals ─────────────────────────────
+
+/// `get_tool_call_args` is the third read in the tool-inspection family: the
+/// same scope requirement, and its own arm in the dispatcher's inner match (the
+/// `_` arm is `get_tool_output`, so a mis-typed name must not silently read
+/// output instead of arguments).
+#[test]
+fn tool_call_args_reads_its_own_arm_and_still_requires_the_call_id() {
+    let state = make_app_state();
+
+    // The whole scope is required, exactly like the sibling reads.
+    let mut cmd = make_cmd("get_tool_call_args");
+    cmd.session_id = "default".into();
+    cmd.run_id = "run-1".into();
+    let response = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(response["success"], false, "{response}");
+    assert!(response["error"]
+        .as_str()
+        .unwrap()
+        .contains("toolCallId are required"));
+
+    // A well-formed query on a run that recorded nothing reads its own arm and
+    // answers with no arguments rather than an error.
+    let mut cmd = make_cmd("get_tool_call_args");
+    cmd.session_id = "default".into();
+    cmd.run_id = "run-with-no-tools".into();
+    cmd.tool_call_id = Some("call-none".into());
+    let response = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(response["success"], true, "{response}");
+    assert_eq!(
+        response["data"]["toolCallId"],
+        serde_json::json!("call-none")
+    );
+    assert!(
+        response["data"]["arguments"].is_null(),
+        "the arguments arm answers with `arguments`, not the output arm: {response}"
+    );
+    assert!(
+        response["data"].get("output").is_none(),
+        "a mis-typed name must not fall through to the tool-output arm: {response}"
+    );
+}
+
+/// Dispatch completeness: every command the shared policy registry knows must
+/// reach a real arm. The dispatcher's final `_ => "unknown command"` arm is the
+/// tripwire for a gap between the registry and the match below it, so any
+/// registry entry that produces exactly that error is a missing arm.
+#[test]
+fn every_registered_command_reaches_a_dispatch_arm() {
+    let registry = future_rpc::command_policy::KNOWN_COMMANDS;
+    assert!(
+        registry.len() >= 80,
+        "the registry is the dispatcher's contract: {} entries",
+        registry.len()
+    );
+    for cmd_type in registry {
+        let state = make_app_state();
+        let cmd: RpcCommand = serde_json::from_str(&format!(
+            r#"{{"id":"registry-sweep","type":"{cmd_type}","sessionId":"default"}}"#
+        ))
+        .unwrap();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        let error = resp["error"].as_str().unwrap_or("");
+        assert!(
+            !error.contains(&format!("unknown command: {cmd_type}")),
+            "{cmd_type} is registered but has no dispatch arm: {error}"
+        );
+    }
+}

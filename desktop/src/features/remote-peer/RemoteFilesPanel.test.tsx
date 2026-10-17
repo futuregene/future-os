@@ -29,11 +29,15 @@ vi.mock("./remotePeerClient", () => ({
  */
 const previews: Array<{ kind: string; name: string; path: string }> = [];
 vi.mock("../filepreview/FilePreviewOverlay", () => ({
-  FilePreviewOverlay: (props: { kind: string; name: string; onClose: () => void; path: string }) => {
+  FilePreviewOverlay: (props: { kind: string; name: string; onClose: () => void; onOpenExternal?: () => void; path: string }) => {
     previews.push({ kind: props.kind, name: props.name, path: props.path });
     return (
       <div data-kind={props.kind} data-preview="">
         <button data-close-preview="" onClick={props.onClose} type="button" />
+        {/* The preview's own "open externally" affordance, forwarded rather than
+            dropped: the panel's job for it is to hand the *entry* to the host's
+            download, and a mock that omits it leaves that wiring untested. */}
+        <button data-open-external="" onClick={props.onOpenExternal} type="button" />
       </div>
     );
   },
@@ -412,5 +416,36 @@ it("surfaces a folder that could not be opened", async () => {
     [...view.container.querySelectorAll("button")].find(node => node.textContent === "analysis")!.click();
   });
   expect(view.container.textContent).toContain("permission denied");
+  await view.unmount();
+});
+
+/**
+ * "Open externally" from a remote file's preview goes through the host.
+ *
+ * The preview component is this app's own local one — it draws the bytes this
+ * machine already fetched — so the button that opens the file in the OS has to ask
+ * *the host* for a real copy. Handing it the preview's cached path would open a
+ * temporary cache file whose name the user cannot recognise, or nothing at all on
+ * a machine that never fetched it.
+ */
+it("downloads the file when the preview asks to open it externally", async () => {
+  list.mockResolvedValue(listing([
+    { isDir: false, name: "forest.png", path: "/home/studio/forest.png", size: 4_096 },
+  ]));
+  const view = await mount();
+  const nameButton = [...view.container.querySelectorAll<HTMLButtonElement>("button")]
+    .find(node => node.textContent === "forest.png")!;
+
+  await act(async () => nameButton.click());
+  expect(previews).toHaveLength(1);
+
+  download.mockClear();
+  const openExternal = view.container.querySelector<HTMLButtonElement>("[data-open-external]")!;
+  await act(async () => openExternal.click());
+
+  expect(download).toHaveBeenCalledWith(expect.objectContaining({
+    desktopId: "desktop_a",
+    path: "/home/studio/forest.png",
+  }));
   await view.unmount();
 });

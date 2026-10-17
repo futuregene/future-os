@@ -301,6 +301,38 @@ mod tests {
         assert!(s.retry_enabled());
     }
 
+    /// The three effective-value accessors are what a caller reads when it
+    /// must not restate the serde defaults: absent `retry` must report the
+    /// documented budget (3 retries, 2 s base) and no provider ceiling, and a
+    /// configured block must report its own numbers unchanged.
+    #[test]
+    fn effective_retry_values_follow_the_configured_block() {
+        let absent = Settings {
+            retry: None,
+            ..Default::default()
+        };
+        assert_eq!(absent.retry_max_retries(), 3);
+        assert_eq!(absent.retry_base_delay_ms(), 2000);
+        assert_eq!(absent.provider_max_retry_delay_ms(), None);
+
+        let configured = Settings {
+            retry: Some(Box::new(RetrySettings {
+                enabled: Some(true),
+                max_retries: 7,
+                base_delay_ms: 250,
+                provider: Some(Box::new(ProviderRetrySettings {
+                    timeout_ms: Some(5000),
+                    max_retries: Some(5),
+                    max_retry_delay_ms: Some(30_000),
+                })),
+            })),
+            ..Default::default()
+        };
+        assert_eq!(configured.retry_max_retries(), 7);
+        assert_eq!(configured.retry_base_delay_ms(), 250);
+        assert_eq!(configured.provider_max_retry_delay_ms(), Some(30_000));
+    }
+
     #[test]
     fn provider_retry_settings() {
         let p = ProviderRetrySettings {

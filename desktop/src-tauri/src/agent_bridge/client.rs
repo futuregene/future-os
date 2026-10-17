@@ -1035,6 +1035,48 @@ mod tests {
         assert!(first.starts_with("desktop_"));
     }
 
+    /// A cached connection whose Agent now reports a *different* instance is not
+    /// reused: the entry is dropped and the change is surfaced as
+    /// `AgentIncompatible`, so no command is sent down a stale channel. An
+    /// instance change is not a transport fault, so retrying the cached client
+    /// would be wrong (a foreign data root must never be written to).
+    #[tokio::test]
+    async fn a_cached_connection_that_reports_a_changed_instance_is_dropped() {
+        let mock = mock_agent();
+        // First connect caches a verified client for this endpoint.
+        connect_agent().await.expect("first connect");
+
+        // A restarted/replaced Agent answers the readiness gate with the same
+        // version but a new instance identity.
+        mock.push_typed_data(
+            "get_agent_readiness",
+            serde_json::json!({
+                "version": crate::build_info::VERSION,
+                "agentInstanceId": "agent-after-restart",
+                "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION,
+                "dataRootId": "0".repeat(64),
+                "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION
+            }),
+        );
+        let error = connect_agent()
+            .await
+            .expect_err("a changed instance must not be reused");
+        assert!(
+            matches!(
+                error,
+                crate::AppError::AgentIncompatible {
+                    agent_version: None,
+                    ..
+                }
+            ),
+            "an instance change maps to AgentIncompatible: {error}"
+        );
+        assert!(
+            mock.requests().is_empty(),
+            "no business call may ride a rejected cached channel"
+        );
+    }
+
     /// A half-filled readiness handshake is not readiness. Reporting it as ready
     /// would let login persist a credential for a build this Desktop cannot talk
     /// to, so an empty version — or an empty instance id — must be rejected.

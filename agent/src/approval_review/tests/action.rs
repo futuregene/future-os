@@ -1,6 +1,48 @@
 use super::*;
 
 #[test]
+fn target_access_defaults_follow_the_tool_and_unknown_targets_are_typed() {
+    let boundary = json!({"cwd": "/w", "execution": "outside_sandbox_once"});
+    let targets = |tool: &str, shape: Value| {
+        prepare_review_action(
+            tool,
+            "call",
+            &json!({"command": "pwd"}),
+            &shape,
+            &boundary,
+            "/w",
+        )
+        .facts["targets"]
+            .clone()
+    };
+    // A read tool's default access is read; anything that is not read or shell
+    // (edit, write, multi_edit) defaults to write.
+    assert_eq!(
+        targets("read", json!({"paths": ["/w/a.txt"]})),
+        json!([{"type": "path", "value": "/w/a.txt", "access": "read",
+                "inside_workspace": true, "scope": null}])
+    );
+    assert_eq!(
+        targets("edit", json!({"paths": ["/w/a.txt"]}))[0]["access"],
+        json!("write")
+    );
+    // An explicit per-target access wins over the tool default.
+    assert_eq!(
+        targets(
+            "shell",
+            json!({"targets": [{"path": "/w/a.txt", "access": "write"}]})
+        )[0]["access"],
+        json!("write")
+    );
+    // A target that is neither a path string nor an object with `path` keeps the
+    // unknown shape instead of being dropped from the review.
+    assert_eq!(
+        targets("shell", json!({"targets": [{"kind": "process"}]})),
+        json!([{"type": "unknown", "value": {"kind": "process"}, "access": "unknown"}])
+    );
+}
+
+#[test]
 fn streaming_digest_preserves_the_canonical_binding_format() {
     let action = prepare_review_action(
         "shell",

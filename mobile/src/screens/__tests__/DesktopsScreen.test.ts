@@ -282,3 +282,26 @@ test("a refused removal is reported instead of silently leaving the desktop pair
   expect(tree.root.findAll(node => node.props.accessibilityRole === "alert").length).toBeGreaterThan(0);
   expect(texts()).toContain("desktops.actionFailed");
 });
+
+/**
+ * The device page is a full-screen surface, so the system's own two ways out of
+ * it are the dismissal and a back request. Both have to be routed: a page left
+ * mounted behind a list that thinks it is closed keeps writing to the machine.
+ */
+test("the device page closes on a dismissal, and back leaves it to the page", async () => {
+  const surface = () =>
+    tree.root.findAllByType(Modal).find(node => node.props.presentationStyle === "fullScreen")!;
+  expect(surface().props.visible).toBe(false);
+
+  act(() => pressables("desktops.settings")[1]!.props.onPress());
+  expect(surface().props.visible).toBe(true);
+  expect(devicePage()).toBeDefined();
+
+  // A back request is the page's own stack to answer — it has levels of its own,
+  // and only the surface closes when it runs out of them.
+  act(() => surface().props.onRequestClose());
+
+  act(() => surface().props.onDismiss());
+  expect(surface().props.visible).toBe(false);
+  expect(devicePage()).toBeUndefined();
+});

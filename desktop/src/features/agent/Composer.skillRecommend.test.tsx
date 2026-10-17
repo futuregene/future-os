@@ -90,6 +90,12 @@ function submit(host: HTMLElement) {
   return act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
 }
 
+/** Let a chain of promise continuations run to the end. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 8; i += 1)
+    await act(async () => { await Promise.resolve(); });
+}
+
 function buttonSaying(host: HTMLElement, label: string) {
   return Array.from(host.querySelectorAll("button")).find(b => b.textContent?.includes(label))!;
 }
@@ -312,5 +318,83 @@ it.each(["unmount", "switch", "disabled", "streaming"])("does not send a delayed
     host.remove();
     clearComposerDraft("evaluation-a");
     clearComposerDraft("evaluation-b");
+  }
+});
+
+/**
+ * A superseded install must not touch the conversation the user moved to.
+ *
+ * The install is an `await` on the way to appending `/skill` to the draft and
+ * sending it, so the user can leave the conversation while it runs. The append
+ * and the send belong to the *old* draft key: applying them to the new one would
+ * put a slash command the user never typed into another conversation's message
+ * and send it there.
+ *
+ * The harness owns the card and the install promise, the way the real screens do
+ * (`mountCardOwner`): a card baked into props from the first render is acted on
+ * by the *first* submit, which is a state the app never reaches.
+ */
+it("does not append or send an install that finished after the conversation was left", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const onSend = vi.fn();
+  const card = { name: "future-web", description: "search the web" };
+  let releaseInstall!: (installed: boolean) => void;
+  const onInstall = vi.fn(() => new Promise<boolean>((resolve) => {
+    releaseInstall = resolve;
+  }));
+  const onDismiss = vi.fn();
+  function Harness({ draftKey }: { draftKey: string }) {
+    const [shown, setShown] = useState<SkillRecommendationCard | null>(null);
+    return (
+      <Composer
+        draftKey={draftKey}
+        modelOptions={[]}
+        onSend={onSend}
+        skillRecommendation={{
+          card: shown,
+          onDismiss: () => {
+            onDismiss();
+            setShown(null);
+          },
+          onEvaluate: async () => {
+            setShown(card);
+            return card;
+          },
+          onInstall,
+        }}
+      />
+    );
+  }
+  clearComposerDraft("install-supersede-a");
+  clearComposerDraft("install-supersede-b");
+  try {
+    await act(async () => root.render(<Harness draftKey="install-supersede-a" />));
+    typeInto(host, "please search the web for this");
+    await submit(host);
+    expect(host.textContent).toContain("future-web");
+    expect(onSend).not.toHaveBeenCalled();
+
+    await act(async () => buttonSaying(host, "Install & use").click());
+    expect(onInstall).toHaveBeenCalledTimes(1);
+
+    // The user moves to another conversation while the install is in flight and
+    // starts a draft there.
+    await act(async () => root.render(<Harness draftKey="install-supersede-b" />));
+    typeInto(host, "a different conversation");
+    await act(async () => releaseInstall(true));
+    await settle();
+
+    // Nothing was sent, and the new draft is exactly what the user typed: no
+    // slash command was appended to it.
+    expect(onSend).not.toHaveBeenCalled();
+    expect(host.querySelector<HTMLElement>("[role=textbox]")!.textContent).toBe("a different conversation");
+  }
+  finally {
+    act(() => root.unmount());
+    host.remove();
+    clearComposerDraft("install-supersede-a");
+    clearComposerDraft("install-supersede-b");
   }
 });

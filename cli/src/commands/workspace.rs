@@ -608,4 +608,207 @@ mod tests {
             "{error}"
         );
     }
+
+    /// Three ways of having nothing to list — no store, a store whose schema the
+    /// app has not written yet, and a store with the table but no rows — all read
+    /// as "no workspaces" rather than as a failure, and none of them writes.
+    #[tokio::test]
+    async fn every_empty_store_shape_lists_as_empty_without_writing() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        std::fs::create_dir_all(home.database().parent().expect("app dir")).unwrap();
+
+        // The app creates the database file before it writes any schema.
+        std::fs::write(home.database(), b"").unwrap();
+        let (out, captured) = Output::memory();
+        list(&[], &out).unwrap();
+        let printed = text(captured.out);
+        assert!(printed.contains("No workspaces"), "{printed}");
+        let conn = Connection::open(home.database()).unwrap();
+        assert!(
+            !table_exists(&conn).unwrap(),
+            "listing a schema-less store must not create the schema"
+        );
+        drop(conn);
+
+        // The schema exists, the user has no workspace yet.
+        {
+            let conn = Connection::open(home.database()).unwrap();
+            workspaces::ensure_table(&conn).unwrap();
+        }
+        let (out, captured) = Output::memory();
+        list(&[], &out).unwrap();
+        let printed = text(captured.out);
+        assert!(printed.contains("No workspaces"), "{printed}");
+    }
+
+    /// The filing notes are the only thing a user sees of this code, so each
+    /// case has to say the case it *was*: a store that could not be written has
+    /// nothing to do with a directory that is not there yet, and the advice for
+    /// one would send the reader to fix the wrong thing.
+    #[test]
+    fn a_refused_filing_names_the_store_as_what_could_not_be_written() {
+        let note = SessionFiling::Refused("attempt to write a readonly database".to_string())
+            .note()
+            .expect("a refusal is always said");
+        assert!(
+            note.contains("not filed (attempt to write a readonly database)"),
+            "{note}"
+        );
+        assert!(note.contains("store could not be written"), "{note}");
+        assert!(
+            !note.contains("create the directory"),
+            "a write failure is not a missing directory: {note}"
+        );
+
+        // The missing directory keeps the advice that fits it.
+        let note = SessionFiling::Refused(
+            "Workspace path does not exist or is not a directory: /nope".to_string(),
+        )
+        .note()
+        .expect("a refusal is always said");
+        assert!(
+            note.contains("create the directory, then run `future workspace add <path>`"),
+            "{note}"
+        );
+
+        // The silent cases stay silent; a filing that landed names the
+        // workspace and says whether it was made for this path.
+        assert!(SessionFiling::NoDesktopApp.note().is_none());
+        assert!(SessionFiling::ChatWorkspaceUpdated.note().is_none());
+        assert_eq!(
+            SessionFiling::Filed {
+                name: "demo".to_string(),
+                path: "/p/demo".to_string(),
+                created: true,
+            }
+            .note()
+            .as_deref(),
+            Some("workspace: created \"demo\" for /p/demo")
+        );
+        assert_eq!(
+            SessionFiling::Filed {
+                name: "demo".to_string(),
+                path: "/p/demo".to_string(),
+                created: false,
+            }
+            .note()
+            .as_deref(),
+            Some("workspace: filed under \"demo\" (/p/demo)")
+        );
+        assert!(SessionFiling::NotImported
+            .note()
+            .unwrap()
+            .contains("has not imported"));
+    }
+
+    /// `filed` reads the row back after the filing: an id that resolves to no
+    /// row is a refusal rather than a `Filed` naming a workspace nobody can
+    /// open, and a store that cannot answer at all is a refusal, not a panic.
+    #[tokio::test]
+    async fn filed_reports_a_vanished_workspace_and_an_unreadable_store() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+
+        let (conn, _path) = open_for_write().expect("store");
+        let vanished = filed(&conn, "ws-not-there", true);
+        assert!(
+            matches!(vanished, SessionFiling::Refused(_)),
+            "{vanished:?}"
+        );
+        let note = vanished.note().expect("a refusal is said");
+        assert!(note.contains("disappeared"), "{note}");
+
+        // A connection with no `workspaces` table: the read itself fails.
+        let broken = Connection::open_in_memory().unwrap();
+        let refused = filed(&broken, "ws-1", false);
+        assert!(matches!(refused, SessionFiling::Refused(_)), "{refused:?}");
+        assert!(refused.note().unwrap().contains("could not be written"));
+    }
+
+    /// A cwd that trims away to nothing — including the bare root — is nothing
+    /// to file under: the store answers `Ok(None)`, which the caller reads as
+    /// "no desktop app", not as an error about a change that did happen.
+    #[tokio::test]
+    async fn filing_an_empty_or_root_cwd_says_nothing() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let project = home.dir("project");
+        let (out, _) = Output::memory();
+        // A store with the app's schema, so the read is the *existing* store.
+        add(&args(&[project.to_str().unwrap()]), &out).unwrap();
+
+        for cwd in ["", "   ", "/", "\\"] {
+            let filing = file_session_cwd("sess-1", cwd);
+            assert!(
+                matches!(filing, SessionFiling::NoDesktopApp),
+                "{cwd:?}: {filing:?}"
+            );
+            assert!(filing.note().is_none(), "{cwd:?}");
+        }
+    }
+
+    /// A conversation whose cwd becomes the app's chat scratch directory follows
+    /// it: no workspace row is created for a scratch path, and there is nothing
+    /// to tell the user (the cwd change is the whole story).
+    #[tokio::test]
+    async fn filing_a_chat_conversation_updates_its_scratch_workspace() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let project = home.dir("project");
+        let (out, _) = Output::memory();
+        add(&args(&[project.to_str().unwrap()]), &out).unwrap();
+
+        // The app has imported the session into a thread.
+        let conn = Connection::open(home.database()).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS threads (
+                 id TEXT PRIMARY KEY,
+                 workspace_id TEXT NOT NULL DEFAULT '',
+                 agent_session_id TEXT,
+                 status TEXT NOT NULL DEFAULT 'active',
+                 updated_at INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO threads (id, workspace_id, agent_session_id, status, updated_at)
+             VALUES ('thr-1', 'ws-1', 'sess-1', 'active', 1);",
+        )
+        .expect("the app's threads table");
+        drop(conn);
+
+        let scratch = workspaces::chat_workspaces_root()
+            .expect("chat root")
+            .join("thr-1");
+        let filing = file_session_cwd("sess-1", scratch.to_str().unwrap());
+        assert!(
+            matches!(filing, SessionFiling::ChatWorkspaceUpdated),
+            "{filing:?}"
+        );
+        assert!(filing.note().is_none());
+
+        // No workspace was invented for the scratch path.
+        let conn = Connection::open(home.database()).unwrap();
+        assert_eq!(user_workspaces(&conn).unwrap().len(), 1);
+    }
+
+    /// A store the CLI cannot read is a refusal carrying the store's own reason:
+    /// the cwd change has already been applied by the agent, so this is a note
+    /// rather than a failed command.
+    #[tokio::test]
+    async fn filing_a_cwd_over_an_unreadable_store_is_refused_with_the_reason() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let project = home.dir("project");
+        std::fs::create_dir_all(home.database().parent().expect("app dir")).unwrap();
+        std::fs::write(home.database(), b"this is not a sqlite database").unwrap();
+
+        let filing = file_session_cwd("sess-1", project.to_str().unwrap());
+        assert!(matches!(filing, SessionFiling::Refused(_)), "{filing:?}");
+        // The reason is the store's own, and it is *not* a missing directory:
+        // the note therefore advises about the store, not about creating a
+        // directory that is already there.
+        let note = filing.note().expect("a refusal is always said");
+        assert!(note.contains("not filed"), "{note}");
+        assert!(note.contains("store could not be written"), "{note}");
+        assert!(!note.contains("create the directory"), "{note}");
+    }
 }

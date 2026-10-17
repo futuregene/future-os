@@ -17,6 +17,7 @@ import { DialogSurface } from "../../components/DialogSurface";
 import { RenameModal } from "../../features/chat/components/RenameModal";
 import type { RemoteSession, RemoteWorkspace } from "../../remote/types";
 import { SessionList } from "../SessionList";
+import { currentAppAlert, finishAppAlert } from "../../components/appAlerts";
 import { ActionMenu } from "../../components/ActionMenu";
 import type { DesktopCommands } from "../../remote/desktopCommands";
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView", useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
@@ -1405,6 +1406,50 @@ test("a merged row from another desktop is opened on that desktop", () => {
   act(() => sessionBody("First").props.onPress());
   expect(mockRemote.selectSession).toHaveBeenCalledWith("s1");
   expect(mockRemote.openSessionOnDesktop).toHaveBeenCalledTimes(1);
+});
+
+/**
+ * A machine that cannot be opened onto says so.
+ *
+ * The tap names a machine the phone is not talking to, so the failure is that
+ * machine's to report — swallowed, the row would look like a tap that did
+ * nothing, which is exactly the report that makes the user try it again.
+ */
+test("a row whose machine refuses to open reports the refusal by name", async () => {
+  try {
+    const merged = [
+      {
+        key: "desk-b::s9",
+        desktopId: "desk-b",
+        lastMessageAt: 1,
+        session: { sessionId: "s9", threadId: "t9", title: "Elsewhere", streaming: false },
+      },
+    ];
+    mockRemote.openSessionOnDesktop.mockRejectedValueOnce(new Error("desktop_unavailable"));
+    act(() => tree.update(createElement(SessionList, {
+      tab: "chat",
+      empty: null,
+      onMenu,
+      onTabChange,
+      commandsFor: testCommandsFor,
+      merged,
+      activeDesktopId: "desk-a",
+      icons: new Map([["desk-b", "💻"]]),
+    })));
+
+    await act(async () => { sessionBody("Elsewhere").props.onPress(); await Promise.resolve(); });
+    expect(mockRemote.openSessionOnDesktop).toHaveBeenCalledWith("desk-b", "s9");
+
+    // The machine is named in the report, so the reader knows which one did not
+    // answer rather than only that something did.
+    const report = currentAppAlert()!;
+    expect(report.title).toBe("sessions.openOnDesktopFailed:desk-b");
+    // …and the report is dismissed rather than left sitting over the list.
+    finishAppAlert(report);
+    expect(currentAppAlert()).toBeNull();
+  } finally {
+    while (currentAppAlert()) finishAppAlert(currentAppAlert()!);
+  }
 });
 
 /**

@@ -465,6 +465,32 @@ mod tests {
         assert_eq!(error.phase, "post_command");
     }
 
+    /// The stored association budget counts the matched path **plus the pattern
+    /// text, once per pattern**, so it can trip while the *unique* match count is
+    /// still far below `MAX_MATCHES`. Overlapping recursive patterns are the
+    /// portable form of that: on a 4 KiB-component filesystem (Linux) long
+    /// ordinary paths do it with one pattern; here the same budget is crossed
+    /// with ~40 patterns that all match the same files, which is also what a
+    /// workspace rule set with several overlapping secret globs does.
+    #[test]
+    fn the_snapshot_byte_ceiling_trips_before_the_match_ceiling() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..MAX_MATCHES {
+            std::fs::write(dir.path().join(format!("{i}.pem")), "").unwrap();
+        }
+        let patterns: Vec<String> = (0..40)
+            .map(|i| format!("{}{}/*.pem", dir.path().to_string_lossy(), "/**".repeat(i)))
+            .collect();
+        let error = scan(&patterns, "pre_launch", &|| false).unwrap_err();
+        assert_eq!(error.code, "glob_scan_result_bytes_limit", "{error:?}");
+        assert!(
+            error.matches <= MAX_MATCHES,
+            "the byte ceiling must trip before the match ceiling: {} matches",
+            error.matches
+        );
+        assert!(error.matches > 0, "the walk must have matched something");
+    }
+
     #[test]
     fn match_budget_is_shared_across_patterns() {
         let dir = tempfile::tempdir().unwrap();
@@ -498,6 +524,77 @@ mod tests {
         assert_eq!(
             scan(&patterns, "test", &|| false).unwrap_err().code,
             "glob_scan_pattern_limit"
+        );
+    }
+
+    /// A static root that cannot even be stat'd must fail the scan rather than
+    /// become an empty snapshot: `Path::exists()` would answer `false` for both
+    /// "absent" and "denied", and only the latter is a security signal.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_static_root_fails_closed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let sealed = dir.path().join("sealed");
+        let root = sealed.join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let pattern = root.join(".env.*").to_string_lossy().into_owned();
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let error = scan_with_budget(
+            std::slice::from_ref(&pattern),
+            "pre_launch",
+            &|| false,
+            SCAN_TIME,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "glob_scan_io_error");
+        assert_eq!(error.phase, "pre_launch");
+
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// A directory that cannot be enumerated *during* the walk is an I/O error,
+    /// not a silently skipped branch: the snapshot would otherwise hide a
+    /// protected file that lives exactly where the walk failed.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_directory_during_the_walk_fails_closed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let sealed = dir.path().join("sealed");
+        std::fs::create_dir(&sealed).unwrap();
+        std::fs::write(dir.path().join("readable.pem"), "secret").unwrap();
+        let pattern = dir.path().join("**/*.pem").to_string_lossy().into_owned();
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let error = scan_with_budget(&[pattern], "post_command", &|| false, SCAN_TIME).unwrap_err();
+        assert_eq!(error.code, "glob_scan_io_error");
+        assert!(error.visited > 0, "the walk must have started");
+
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// A static root replaced by a symlink after the rules were compiled is a
+    /// changed trust boundary: the walk must refuse it instead of following it
+    /// out of the approved tree.
+    #[cfg(unix)]
+    #[test]
+    fn a_static_root_that_became_a_symlink_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join(".env.local"), "secret").unwrap();
+        let root = dir.path().join("root");
+        std::os::unix::fs::symlink(&real, &root).unwrap();
+        let pattern = root.join(".env.*").to_string_lossy().into_owned();
+
+        let error = scan_with_budget(&[pattern], "post_command", &|| false, SCAN_TIME).unwrap_err();
+        assert_eq!(error.code, "glob_scan_io_error");
+        assert!(
+            error.detail.contains("became a symlink"),
+            "{}",
+            error.detail
         );
     }
 

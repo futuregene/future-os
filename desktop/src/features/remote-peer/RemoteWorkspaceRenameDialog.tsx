@@ -35,7 +35,11 @@ export function RemoteWorkspaceRenameDialog({
   async function submit() {
     const name = value.trim();
     // The host refuses an empty name too; not sending one is the same answer
-    // without the round trip, and the Save button is closed for it as well.
+    // without the round trip. The Save button is NOT a second guard for this:
+    // the shared shell disables Save on `submitting` alone, so an emptied name
+    // still clicks through — without this check the user would see the host's
+    // error instead of nothing happening
+    // (asserted in RemoteWorkspaceRenameDialog.test.tsx).
     if (!name || busy)
       return;
     setBusy(true);

@@ -3207,4 +3207,360 @@ mod tests {
             "stderr: {stderr}"
         );
     }
+
+    // ── live switches, dispatch, and the fork family's JSON form ────────────
+    // (cov100 round-2 batch)
+
+    /// Each live switch owns its own failure line. A refused switch must land
+    /// in `failed` under its own camelCase label — not disappear, and not drag
+    /// down the ones that succeeded — while the system prompt that *did* apply
+    /// stays in `updated`.
+    #[tokio::test]
+    async fn set_reports_each_live_switch_failure_and_keeps_the_rest() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = crate::test_server::MockAgent::default();
+        agent.responses.insert("get_state".into(), "{}".into());
+        for r#type in [
+            "set_tools",
+            "append_system_prompt",
+            "set_permission_level",
+            "set_context_files",
+            "set_auto_compaction",
+            "set_auto_retry",
+        ] {
+            agent.fail_types.insert(r#type.to_string());
+        }
+        let (agent, _env) = mock_env(agent).await;
+
+        let (out, cap) = Output::memory();
+        let result = session(
+            Some("set"),
+            &[
+                "sess-1".into(),
+                "--tools".into(),
+                "read".into(),
+                "--system-prompt".into(),
+                "be brief".into(),
+                "--append-system-prompt".into(),
+                "and kind".into(),
+                "--permission".into(),
+                "workspace".into(),
+                "--context-files".into(),
+                "on".into(),
+                "--auto-compact".into(),
+                "on".into(),
+                "--auto-retry".into(),
+                "off".into(),
+                "--json".into(),
+            ],
+            &out,
+        )
+        .await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let report: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(
+            report["updated"]["systemPrompt"], "be brief",
+            "a working switch is not lost to a failing one: {stdout}"
+        );
+        for key in [
+            "tools",
+            "appendSystemPrompt",
+            "permissionLevel",
+            "contextFiles",
+            "autoCompaction",
+            "autoRetry",
+        ] {
+            assert!(
+                report["failed"][key].is_string(),
+                "{key} missing from failed: {stdout}"
+            );
+            assert!(
+                report["updated"].get(key).is_none(),
+                "{key} must not also be reported as applied: {stdout}"
+            );
+        }
+        assert_eq!(agent.seen_of("set_permission_level")[0].level, "workspace");
+
+        // The empty value is the restore path: it is reported as such and it is
+        // what went on the wire, because the agent clears on empty.
+        let (out, cap) = Output::memory();
+        session(
+            Some("set"),
+            &[
+                "sess-1".into(),
+                "--system-prompt".into(),
+                "".into(),
+                "--json".into(),
+            ],
+            &out,
+        )
+        .await
+        .expect("set");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let report: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(report["updated"]["systemPrompt"], "(built-in restored)");
+        assert_eq!(
+            agent
+                .seen_of("set_system_prompt")
+                .last()
+                .unwrap()
+                .system_prompt,
+            ""
+        );
+    }
+
+    /// The text form labels every switch it applied; the four labels below are
+    /// reachable only on the paths that apply those switches.
+    #[tokio::test]
+    async fn set_text_labels_each_live_switch_it_applied() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = crate::test_server::MockAgent::default();
+        agent.responses.insert("get_state".into(), "{}".into());
+        let (_agent, _env) = mock_env(agent).await;
+
+        let (out, cap) = Output::memory();
+        session(
+            Some("set"),
+            &[
+                "sess-1".into(),
+                "--sandbox".into(),
+                "auto".into(),
+                "--context-files".into(),
+                "on".into(),
+                "--auto-compact".into(),
+                "off".into(),
+                "--auto-retry".into(),
+                "on".into(),
+            ],
+            &out,
+        )
+        .await
+        .expect("set");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            stdout,
+            "Updated session sess-1\n  Sandbox:      auto\n  CtxFiles:     on\n  AutoCompact:  off\n  AutoRetry:    on\n"
+        );
+    }
+
+    /// The subcommands that parse their own arguments are dispatched from
+    /// `session`, and the live-session actions reach their own RPC instead of
+    /// the journal path below.
+    #[tokio::test]
+    async fn session_dispatches_the_self_parsing_subcommands() {
+        for name in ["transcript", "status", "reset", "wait"] {
+            let (out, cap) = Output::memory();
+            session(Some(name), &["--help".into()], &out)
+                .await
+                .unwrap_or_else(|err| panic!("{name}: {err}"));
+            let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+            assert!(stdout.starts_with("future session"), "{name}: {stdout}");
+        }
+
+        // `new` has its own help (and its own parser) rather than the shared one.
+        let (out, cap) = Output::memory();
+        session(Some("new"), &["--help".into()], &out)
+            .await
+            .expect("new help");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("future session new"), "{stdout}");
+
+        let _guard = crate::test_env::lock_env().await;
+        let agent = crate::test_server::MockAgent::default();
+        let (agent, _env) = mock_env(agent).await;
+
+        let (out, cap) = Output::memory();
+        session(Some("abort"), &["--help".into()], &out)
+            .await
+            .expect("abort help");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(
+            stdout.contains("future session abort <session-id>"),
+            "{stdout}"
+        );
+
+        let (out, _cap) = Output::memory();
+        session(Some("abort"), &["sess-1".into()], &out)
+            .await
+            .expect("abort");
+        let seen = agent.seen_of("abort_session");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].session_id, "sess-1");
+    }
+
+    /// `--json` is the machine-readable form of the fork family too, and the
+    /// fork call carries the entry id and target the caller named.
+    #[tokio::test]
+    async fn the_fork_family_reports_json_when_asked() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = crate::test_server::MockAgent::default();
+        agent.responses.insert(
+            "get_fork_messages".into(),
+            "{\"messages\":[{\"id\":\"e1\",\"blocks\":[{\"text\":\"hi\"}]}]}".into(),
+        );
+        agent
+            .responses
+            .insert("fork".into(), "{\"sessionId\":\"child-1\"}".into());
+        agent
+            .responses
+            .insert("clone".into(), "{\"sessionId\":\"child-2\"}".into());
+        let (agent, _env) = mock_env(agent).await;
+
+        let (out, cap) = Output::memory();
+        session(Some("forks"), &["s1".into(), "--json".into()], &out)
+            .await
+            .expect("forks");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let report: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(report["sessionId"], "s1");
+        assert_eq!(report["forks"][0]["id"], "e1");
+
+        let (out, cap) = Output::memory();
+        session(
+            Some("fork"),
+            &["s1".into(), "--entry".into(), "e1".into(), "--json".into()],
+            &out,
+        )
+        .await
+        .expect("fork");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert_eq!(stdout.trim(), "{\"sessionId\":\"child-1\"}");
+        let fork = &agent.seen_of("fork")[0];
+        assert_eq!(fork.entry_id, "e1");
+        assert_eq!(fork.session_id, "s1");
+
+        let (out, cap) = Output::memory();
+        session(Some("clone"), &["s1".into(), "--json".into()], &out)
+            .await
+            .expect("clone");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert_eq!(stdout.trim(), "{\"sessionId\":\"child-2\"}");
+
+        // The text form names the child too: a caller who did not ask for JSON
+        // still needs the id to continue with.
+        let (out, cap) = Output::memory();
+        session(Some("clone"), &["s1".into()], &out)
+            .await
+            .expect("clone");
+        assert_eq!(
+            String::from_utf8(cap.out.lock().unwrap().clone()).unwrap(),
+            "Cloned session s1 → child-2\n"
+        );
+    }
+
+    /// A refused system prompt lands in `failed` under its own label, like every
+    /// other switch — it is not silently dropped because the key is not a switch.
+    #[tokio::test]
+    async fn a_refused_system_prompt_is_reported_by_its_own_label() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = crate::test_server::MockAgent::default();
+        agent.responses.insert("get_state".into(), "{}".into());
+        agent.fail_types.insert("set_system_prompt".into());
+        let (_agent, _env) = mock_env(agent).await;
+
+        let (out, cap) = Output::memory();
+        let result = session(
+            Some("set"),
+            &[
+                "sess-1".into(),
+                "--system-prompt".into(),
+                "x".into(),
+                "--json".into(),
+            ],
+            &out,
+        )
+        .await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let report: Value = serde_json::from_str(&stdout).expect("json");
+        assert!(report["failed"]["systemPrompt"].is_string(), "{stdout}");
+        assert!(report["updated"].get("systemPrompt").is_none(), "{stdout}");
+    }
+
+    /// `title` and `export` report JSON with the fields the caller needs to
+    /// continue — the model that answered, whether the rename was applied, and
+    /// where the exported file ended up.
+    #[tokio::test]
+    async fn title_and_export_report_json() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = crate::test_server::MockAgent::default();
+        agent.responses.insert(
+            "generate_session_title".into(),
+            "{\"title\":\"Budget review\",\"model\":\"m1\"}".into(),
+        );
+        agent
+            .responses
+            .insert("export_html".into(), "{\"path\":\"/tmp/x.html\"}".into());
+        let (agent, _env) = mock_env(agent).await;
+
+        let (out, cap) = Output::memory();
+        session(
+            Some("title"),
+            &["s1".into(), "--lang".into(), "zh".into(), "--json".into()],
+            &out,
+        )
+        .await
+        .expect("title");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let report: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(report["title"], "Budget review");
+        assert_eq!(report["model"], "m1");
+        assert_eq!(report["applied"], json!(false));
+        assert_eq!(agent.seen_of("generate_session_title")[0].mode, "zh");
+
+        let (out, cap) = Output::memory();
+        session(Some("export"), &["s1".into(), "--json".into()], &out)
+            .await
+            .expect("export");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let report: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(report["sessionId"], "s1");
+        assert_eq!(report["path"], "/tmp/x.html");
+    }
+
+    /// The fork family rejects an unknown or valueless option before it calls
+    /// the agent, so a typo cannot silently fork at the wrong entry.
+    #[tokio::test]
+    async fn the_fork_family_rejects_unknown_and_valueless_options() {
+        let cases: [(&str, &[&str], &str); 5] = [
+            (
+                "fork",
+                &["s1", "--bogus"],
+                "Unknown option: --bogus; see future session forks s1\n",
+            ),
+            ("fork", &["s1", "--entry"], "Missing value for --entry\n"),
+            ("title", &["s1", "--lang"], "Missing value for --lang\n"),
+            ("export", &["s1", "--out"], "Missing value for --out\n"),
+            ("export", &["s1", "--bogus"], "Unknown option: --bogus\n"),
+        ];
+        for (name, argv, expected) in cases {
+            let (out, cap) = Output::memory();
+            let args: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
+            let result = session(Some(name), &args, &out).await;
+            assert_eq!(
+                result,
+                Err(crate::HANDLED_EXIT.to_string()),
+                "{name} {argv:?}"
+            );
+            let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+            assert_eq!(stderr, expected, "{name} {argv:?}");
+        }
+    }
+
+    /// An export the agent could not write has no path to report: saying so is
+    /// the only useful outcome, because the alternative is printing an empty
+    /// destination the caller would try to open.
+    #[tokio::test]
+    async fn export_refuses_an_agent_that_reported_no_path() {
+        let _guard = crate::test_env::lock_env().await;
+        let (_agent, _env) =
+            mock_env(crate::test_server::MockAgent::respond("export_html", "{}")).await;
+        let (out, cap) = Output::memory();
+        let result = session(Some("export"), &["s1".into()], &out).await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert_eq!(stderr, "The agent reported no export path.\n");
+    }
 }

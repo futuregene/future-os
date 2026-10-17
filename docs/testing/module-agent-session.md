@@ -1,5 +1,19 @@
 # future-agent / `ag-session` subtree — coverage, waivers and test-quality record
 
+> **Record form: prose-only, declared 2026-10-16 (user gate `todo_6a850a842666`, answered
+> "prose-only, and say so in the final report").** This is a **round-1 record** from the previous
+> coverage campaign. It carries **no machine-readable per-line ledger**: `271` table rows, **7**
+> `path:LINE` citations in the whole document, and **0** rows whose first cell is a claim shape.
+> So `reconcile.py`'s MISSING half reports it as mostly-missing and its STALE half has nothing to read —
+> a property of this record's **form**, not a defect, and deliberately not repaired: measured, adding
+> claim-shaped rows here would **invent** claims rather than recover them
+> (`.future/cov100/LEDGER-REWORK.md`, `blindrework.py`).
+>
+> **This round's per-line guarantee for the same subtrees lives in:** module-agent-rpc.md (agent-rpc, whose scopes include agent/src/session).
+> The final report classifies every module as *machine-checkable* or *prose-only*; this one is
+> **prose-only**, and its historical numbers are kept as history rather than re-verified this round.
+
+
 > Source paths and coverage figures in this record refer to the measured
 > revision. The subsequent storage refactor groups current implementations under
 > `agent/src/session/{database,sqlite_store,history,manager}/` and

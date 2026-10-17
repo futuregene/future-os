@@ -684,6 +684,71 @@ mod import_paths {
         ));
     }
 
+    /// A path that cannot be addressed at all (an interior NUL) fails with an
+    /// io error that is neither missing nor unreadable. It is an operator
+    /// error about the source list, not a damaged session, so it must
+    /// propagate with its own context rather than become `source_unreadable`.
+    #[test]
+    fn an_unaddressable_source_path_reports_the_read_failure() {
+        let error = read_source(PathBuf::from("bad\0name"))
+            .map_err(|error| format!("{error:#}"))
+            .err()
+            .unwrap();
+        assert!(
+            format!("{error:#}").contains("read legacy source"),
+            "{error:#}"
+        );
+        assert!(
+            !format!("{error:#}").contains('\0'),
+            "the path must not be echoed raw: {error:#}"
+        );
+    }
+
+    /// Revalidating nothing is a clean no-op, which is the state of a home with
+    /// no legacy sessions to check.
+    #[test]
+    fn an_empty_source_list_revalidates_cleanly() {
+        assert!(revalidate_sources(&[]).is_ok());
+    }
+
+    /// A cancelled startup must be reported as cancellation, not mistaken for a
+    /// source that changed while it was being read.
+    #[test]
+    fn a_cancelled_revalidation_reports_cancellation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.jsonl");
+        std::fs::write(&path, "initial").unwrap();
+        let source = read_source(path).unwrap();
+        let cancellation = crate::service::StartupCancellation::default();
+        cancellation.cancel();
+        assert!(matches!(
+            revalidate_sources_cancellable(std::slice::from_ref(&source), &cancellation),
+            Err(ParseFailure::Cancelled)
+        ));
+    }
+
+    /// A run-event directory that exists but cannot be enumerated (a
+    /// self-referential link yields ELOOP, which is neither "absent" nor an
+    /// unreadable-source category) is an operator error: it must surface with
+    /// its context instead of being swallowed as a session with no events.
+    #[cfg(unix)]
+    #[test]
+    fn a_run_event_directory_that_cannot_be_enumerated_reports_its_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let sessions = temp.path().join("sessions");
+        write(&sessions, "s.jsonl", &entry_line("s"));
+        let events = temp.path().join("run-events");
+        std::fs::create_dir_all(&events).unwrap();
+        std::os::unix::fs::symlink("s", events.join("s")).unwrap();
+        let store = store_in(temp.path());
+        let error = store
+            .import_legacy(&sessions, None)
+            .map_err(|error| format!("{error:#}"))
+            .err()
+            .unwrap();
+        assert!(error.contains("enumerate legacy events"), "{error}");
+    }
+
     fn entry_line(id: &str) -> String {
         format!(
             "{{\"id\":\"{id}\",\"type\":\"user\",\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"question\"}}],\"timestamp\":\"2026-01-01T00:00:00Z\"}}\n"

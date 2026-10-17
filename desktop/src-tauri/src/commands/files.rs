@@ -166,6 +166,15 @@ const MAX_ATTACHMENT_IMAGE_BYTES: u64 = 25 * 1024 * 1024;
 
 #[cfg(feature = "gui")]
 fn native_clipboard_file_paths() -> Vec<String> {
+    clipboard_file_paths_with(read_clipboard_file_list)
+}
+
+/// Read the OS clipboard's file list. Isolated from the projection below because
+/// `arboard` needs a live desktop session: on headless CI it errors out, and on
+/// a developer machine it reads *that* machine's pasteboard, so nothing about
+/// its content can be asserted.
+#[cfg(feature = "gui")]
+fn read_clipboard_file_list() -> Vec<PathBuf> {
     // The OS clipboard formats are intentionally not decoded in the webview:
     // Finder may use a file-reference URL (`file:///.file/id=...`), Explorer
     // uses CF_HDROP, and Linux file managers commonly publish URI lists.
@@ -173,6 +182,12 @@ fn native_clipboard_file_paths() -> Vec<String> {
     arboard::Clipboard::new()
         .and_then(|mut clipboard| clipboard.get().file_list())
         .unwrap_or_default()
+}
+
+/// Keep only the absolute file paths the clipboard yielded, as display strings.
+#[cfg(feature = "gui")]
+fn clipboard_file_paths_with(read: impl FnOnce() -> Vec<PathBuf>) -> Vec<String> {
+    read()
         .into_iter()
         .filter(|path| path.is_absolute())
         .map(|path| path.display().to_string())
@@ -991,8 +1006,15 @@ mod tests {
         // Other tests can intentionally leave HOME unset. Preserve its exact
         // prior state; USERPROFILE is a Windows-only fallback absent on
         // macOS/Linux.
-        let old_home = std::env::var_os("HOME");
+        //
+        // The `else` arm below exists for a process that never had a HOME (a bare
+        // `cargo test`, without this campaign's HOME override). This suite always
+        // has one, so the precondition is produced here — the real value is kept
+        // and put back at the end, and `TEST_HOME_LOCK` is held throughout, so no
+        // other test can observe the window.
+        let real_home = std::env::var_os("HOME");
         std::env::remove_var("HOME");
+        let old_home = std::env::var_os("HOME");
         std::env::remove_var("USERPROFILE");
 
         let file = write_under(&future_root("no_home"), "ok.txt");
@@ -1004,6 +1026,9 @@ mod tests {
             std::env::remove_var("HOME");
         }
         std::env::remove_var("USERPROFILE");
+        if let Some(real_home) = real_home {
+            std::env::set_var("HOME", real_home);
+        }
         drop(lock);
     }
 
@@ -1053,6 +1078,27 @@ mod tests {
         let dir = root.join("a_dir");
         fs::create_dir_all(&dir).unwrap();
         assert!(validate_image_preview_path(&dir.display().to_string()).is_err());
+    }
+
+    #[cfg(feature = "gui")]
+    #[test]
+    fn clipboard_file_paths_keep_only_absolute_entries() {
+        let absolute = std::env::temp_dir().join("future-clipboard-absolute.txt");
+        let relative = PathBuf::from("relative/pasted.txt");
+        assert_eq!(
+            clipboard_file_paths_with(|| vec![relative, absolute.clone()]),
+            vec![absolute.display().to_string()]
+        );
+    }
+
+    #[cfg(feature = "gui")]
+    #[test]
+    fn the_native_clipboard_reader_only_reports_absolute_paths() {
+        // The pasteboard belongs to the machine running the test, so this pins
+        // the projection's contract — every reported path is absolute — and
+        // never the clipboard's content.
+        let paths = read_native_clipboard_file_paths();
+        assert!(paths.iter().all(|path| Path::new(path).is_absolute()));
     }
 
     #[cfg(feature = "gui")]

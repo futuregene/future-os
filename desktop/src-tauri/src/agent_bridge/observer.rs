@@ -1582,6 +1582,74 @@ mod tests {
             state.session_cursor, 5,
             "the stale idx must not rewind the session cursor"
         );
+
+        // The other direction: a queued entry *ahead* of the session cursor is
+        // the head of a new prompt whose own session events have not arrived
+        // yet, so the cursor re-anchors forward instead of reporting a hole.
+        let mut state = ObserverState::default();
+        assert!(
+            handle_event(
+                "sess-order",
+                &shared,
+                &mut state,
+                session_event("user_message", 3)
+            )
+            .await
+        );
+        assert_eq!(
+            state.session_cursor, 3,
+            "a queued user entry ahead of the cursor re-anchors it"
+        );
+
+        // A non-user session event still obeys the hole check: idx 9 after 3 is
+        // a gap, and the caller must re-attach.
+        assert!(
+            !handle_event(
+                "sess-order",
+                &shared,
+                &mut state,
+                session_event("session_updated", 9)
+            )
+            .await,
+            "a hole in a non-user session event still forces re-attach"
+        );
+    }
+
+    /// The headless monitor's spawn: one poll of the Agent's resident streaming
+    /// set, then its own clock. Called from a fixture because the loop never
+    /// returns; the assertion is that the first poll ran against the double.
+    #[tokio::test]
+    async fn the_streaming_observer_monitor_polls_the_resident_set() {
+        let _home = TestHome::new("observer-streaming-monitor");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        mock.push_typed_data("list_sessions", serde_json::json!({"sessions": []}));
+
+        super::spawn_streaming_observer_monitor();
+        // Give the spawned loop time to take its first poll; the mock answers it.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    /// A session that was deleted outside the GUI is tombstoned, so a late
+    /// `session_created` announcement must find no Desktop owner to observe and
+    /// must not resurrect a thread row.
+    #[tokio::test]
+    async fn a_tombstoned_session_has_no_observer_to_attach() {
+        let home = TestHome::new("observer-tombstoned");
+        let _mock = crate::agent_bridge::test_support::mock_agent();
+        let workspace = crate::agent_bridge::test_support::seed_workspace(home.path(), "ws-tomb");
+        let thread = crate::agent_bridge::test_support::seed_thread(&workspace.id, Some("s-tomb"));
+
+        // Dropping the session is what tombstones it.
+        assert!(super::reconcile_deleted_session("s-tomb").expect("delete"));
+        assert!(crate::store::get_thread(&thread.id).expect("get").is_none());
+
+        // The late announcement now takes the "no Desktop owner" arm.
+        assert!(!super::reconcile_discovered_session("s-tomb")
+            .await
+            .expect("reconcile"));
+        assert!(crate::store::find_thread_by_agent_session("s-tomb")
+            .expect("find")
+            .is_none());
     }
 
     #[tokio::test]
@@ -1694,6 +1762,39 @@ mod tests {
         break_home, mock_agent, restore_home, seed_thread, seed_workspace, Reply, StreamScript,
         TestHome,
     };
+
+    #[tokio::test]
+    async fn message_activity_that_cannot_be_recorded_is_logged_not_fatal() {
+        let home = TestHome::new("observer-activity-uncordable");
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-activity-broken"));
+        let _lease = lease_run("run-activity-broken");
+        let shared = Arc::new(ObserverShared::new(&thread.id));
+        let mut state = ObserverState::default();
+        let mut event = stream_event("text_chunk", "run-activity-broken", 0);
+        event.timestamp =
+            chrono::DateTime::from_timestamp_millis(crate::store::now_millis() + 2_000)
+                .unwrap()
+                .to_rfc3339();
+
+        // A store that cannot be opened (HOME is a file) is a bookkeeping
+        // failure: the event still forwards, the stream is not torn down, and
+        // the activity stamp is left alone rather than advanced on a write that
+        // did not happen.
+        let previous = break_home();
+        let forwarded = handle_event("sess-activity-broken", &shared, &mut state, event).await;
+        restore_home(previous);
+
+        assert!(forwarded, "a failed activity write is not a stream failure");
+        assert!(
+            state.last_message_activity_ms.is_none(),
+            "an unrecorded stamp must not be treated as recorded"
+        );
+        let stored = crate::store::get_thread(&thread.id)
+            .expect("get_thread")
+            .expect("the thread survives");
+        assert!(stored.last_message_at.is_none());
+    }
 
     #[tokio::test]
     async fn message_activity_advances_on_output_and_flushes_terminal_without_replay_bumps() {
@@ -2118,6 +2219,81 @@ mod tests {
 
     /// A run-scoped event owned by the observer (not pipeline-owned) is
     /// persisted and settled end-to-end.
+    /// The pass reports what it removed. One empty conversation (a mirrored
+    /// session with no message at all, past the bind grace) makes the loop take
+    /// its `Ok(removed)` arm rather than the silent `Ok(0)` one.
+    #[tokio::test]
+    async fn the_discovery_pass_reports_removed_empty_and_orphaned_conversations() {
+        let home = TestHome::new("observer-discovery-removal");
+        let mock = mock_agent();
+        // An empty-mirror candidate: bound to a session, no run, created well
+        // before the bind grace (10 minutes).
+        let conn =
+            rusqlite::Connection::open(home.path().join(".future/app/app.db")).expect("open db");
+        let workspace = crate::agent_bridge::test_support::seed_workspace(home.path(), "ws-empty");
+        conn.execute(
+            "INSERT INTO threads (id, workspace_id, mode, title, agent_session_id, created_at, updated_at)\n             VALUES ('t-empty', ?1, 'chat', 'T', 'sess-empty', 1, 1)",
+            rusqlite::params![workspace.id],
+        )
+        .expect("seed empty thread");
+        drop(conn);
+
+        // The Agent answers the emptiness probe with an empty page, and lists no
+        // sessions of its own.
+        for _ in 0..8 {
+            mock.push_typed_data("list_sessions", serde_json::json!({"sessions": []}));
+            mock.push_data("list_session_ids", serde_json::json!({"ids": []}));
+            mock.push_data(
+                "get_session_entries",
+                serde_json::json!({"entries": [], "hasMore": false}),
+            );
+        }
+        std::env::set_var("FUTURE_TEST_DISCOVERY_INTERVAL_MS", "10");
+        spawn_session_discovery();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        TEST_DISCOVERY_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        std::env::remove_var("FUTURE_TEST_DISCOVERY_INTERVAL_MS");
+
+        assert!(
+            crate::store::get_thread("t-empty").expect("get").is_none(),
+            "a message-less mirror is reclaimed by the pass"
+        );
+        assert!(
+            !crate::store::is_agent_session_tombstoned("sess-empty").expect("tombstone"),
+            "reclaiming a mirror must not fence the session against re-import"
+        );
+    }
+
+    /// A store that cannot answer either reconcile query is *reported*, not
+    /// fatal: the loop must survive it and try again on its next tick.
+    #[tokio::test]
+    async fn a_broken_store_is_reported_by_both_reconcile_passes() {
+        let home = TestHome::new("observer-discovery-broken-store");
+        let mock = mock_agent();
+        for _ in 0..8 {
+            mock.push_typed_data("list_sessions", serde_json::json!({"sessions": []}));
+            mock.push_data("list_session_ids", serde_json::json!({"ids": []}));
+        }
+        // Both passes read `threads`. With the table gone, the emptiness sweep
+        // fails at its candidate query and the orphan sweep at its own.
+        let conn =
+            rusqlite::Connection::open(home.path().join(".future/app/app.db")).expect("open db");
+        conn.execute_batch("DROP TABLE threads;")
+            .expect("drop threads");
+        drop(conn);
+
+        std::env::set_var("FUTURE_TEST_DISCOVERY_INTERVAL_MS", "10");
+        spawn_session_discovery();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        TEST_DISCOVERY_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        std::env::remove_var("FUTURE_TEST_DISCOVERY_INTERVAL_MS");
+        // Reaching this line at all is the assertion: `import_missing_sessions`
+        // returns early on an empty session list, both reconciles log their
+        // error, and the loop keeps ticking.
+    }
+
     #[tokio::test]
     async fn handle_event_projects_and_settles_an_owned_run() {
         let home = TestHome::new("observer-owned-run");
@@ -2540,6 +2716,30 @@ mod tests {
         cancel_tx.send(()).unwrap();
         handle.await.unwrap();
         std::env::remove_var("FUTURE_TEST_OBSERVER_BACKOFF_MS");
+    }
+
+    /// `reconcile_streaming_observers` mirrors only sessions this Desktop knows
+    /// as a conversation. A session another client is streaming is skipped — no
+    /// thread is minted and no observer attached for an unknown session (the
+    /// import path owns discovery; this is the missing-event backstop).
+    #[tokio::test]
+    async fn a_streaming_session_without_a_desktop_thread_is_skipped() {
+        let _home = TestHome::new("observer-foreign-streaming");
+        let mock = mock_agent();
+        mock.push_data(
+            "list_streaming_sessions",
+            serde_json::json!({"sessionIds": ["sess-foreign", "sess-also-foreign"]}),
+        );
+
+        let threads = reconcile_streaming_observers().await.expect("reconcile");
+        assert!(
+            threads.is_empty(),
+            "no Desktop thread owns these sessions: {threads:?}"
+        );
+        assert!(
+            crate::store::list_threads().unwrap().is_empty(),
+            "reconciliation must not mint a conversation for a foreign session"
+        );
     }
 
     #[tokio::test]

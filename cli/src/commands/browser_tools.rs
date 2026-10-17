@@ -48,29 +48,83 @@ pub fn browser_tool_catalog() -> Vec<(&'static str, BrowserToolEntry)> {
         BrowserToolEntry {
             description: "Control a local Chrome/Edge/Safari browser for web automation: navigate pages, take snapshots, click elements, fill forms, capture screenshots. Connects over HTTP (a remote debugging port) or a local socket (`unix:<path>` / `abstract:<name>`, e.g. Chrome on Android).",
             args: vec![
-                ("command", "sub-command: start | status | open | snapshot | click | type | press | scroll | screenshot | console | tabs (required)"),
+                (
+                    "command",
+                    "sub-command: start | status | open | snapshot | click | type | press | scroll | screenshot | console | tabs (required)",
+                ),
                 ("url", "URL to navigate to (for open / start)"),
-                ("ref", "element reference from a previous snapshot (for click / type)"),
-                ("selector", "CSS selector, when no ref is available (for click / type / scroll)"),
+                (
+                    "ref",
+                    "element reference from a previous snapshot (for click / type)",
+                ),
+                (
+                    "selector",
+                    "CSS selector, when no ref is available (for click / type / scroll)",
+                ),
                 ("target", "alias for selector"),
                 ("text", "text to type into an element (for type)"),
-                ("key", "key to press, e.g. \"Enter\" or \"Escape\" (for press)"),
-                ("submit", "press Enter after typing, e.g. to submit a form (for type, default: false)"),
-                ("clear", "clear the element before typing (for type, default: true)"),
-                ("direction", "scroll direction: \"up\" | \"down\" (for scroll, default: down)"),
-                ("amount", "scroll distance in pixels (for scroll, default: 300)"),
-                ("action", "tab action: list | new | select | close (for tabs, default: list)"),
-                ("index", "tab index, from the tab list (for tabs select / close)"),
-                ("fullPage", "capture the full scrollable page (for screenshot, default: false)"),
+                (
+                    "key",
+                    "key to press, e.g. \"Enter\" or \"Escape\" (for press)",
+                ),
+                (
+                    "submit",
+                    "press Enter after typing, e.g. to submit a form (for type, default: false)",
+                ),
+                (
+                    "clear",
+                    "clear the element before typing (for type, default: true)",
+                ),
+                (
+                    "direction",
+                    "scroll direction: \"up\" | \"down\" (for scroll, default: down)",
+                ),
+                (
+                    "amount",
+                    "scroll distance in pixels (for scroll, default: 300)",
+                ),
+                (
+                    "action",
+                    "tab action: list | new | select | close (for tabs, default: list)",
+                ),
+                (
+                    "index",
+                    "tab index, from the tab list (for tabs select / close)",
+                ),
+                (
+                    "fullPage",
+                    "capture the full scrollable page (for screenshot, default: false)",
+                ),
                 ("limit", "max snapshot lines to return (default: 80)"),
-                ("path", "file path to save screenshot, e.g. ./page.png (for screenshot)"),
+                (
+                    "path",
+                    "file path to save screenshot, e.g. ./page.png (for screenshot)",
+                ),
                 ("output", "alias for path (for screenshot)"),
-                ("level", "console message level to filter: \"log\" | \"warn\" | \"error\" (for console)"),
-                ("endpoint", "CDP endpoint to use instead of the saved one, e.g. \"http://127.0.0.1:9222\", \"unix:/tmp/chrome.sock\", or \"abstract:chrome_devtools_remote\". Does not modify the saved endpoint."),
-                ("port", "debugging port (for start, default: 9222). Ignored for a socket endpoint."),
-                ("browser", "which browser to launch (for start): \"chrome\" | \"edge\" | \"safari\" (default: auto-detect)"),
-                ("executablePath", "browser binary to launch (for start), when auto-detection misses it"),
-                ("profileDir", "user-data directory for a launched browser (for start)"),
+                (
+                    "level",
+                    "console message level to filter: \"log\" | \"warn\" | \"error\" (for console)",
+                ),
+                (
+                    "endpoint",
+                    "CDP endpoint to use instead of the saved one, e.g. \"http://127.0.0.1:9222\", \"unix:/tmp/chrome.sock\", or \"abstract:chrome_devtools_remote\". Does not modify the saved endpoint.",
+                ),
+                (
+                    "port",
+                    "debugging port (for start, default: 9222). Ignored for a socket endpoint.",
+                ),
+                (
+                    "browser",
+                    "which browser to launch (for start): \"chrome\" | \"edge\" | \"safari\" (default: auto-detect)",
+                ),
+                (
+                    "executablePath",
+                    "browser binary to launch (for start), when auto-detection misses it",
+                ),
+                (
+                    "profileDir",
+                    "user-data directory for a launched browser (for start)",
+                ),
             ],
             example: "{\"command\": \"open\", \"url\": \"https://example.com\"}",
         },
@@ -80,6 +134,54 @@ pub fn browser_tool_catalog() -> Vec<(&'static str, BrowserToolEntry)> {
 /// `isBrowserTool(name)`.
 pub fn is_browser_tool(name: &str) -> bool {
     name == "browser"
+}
+
+/// The readiness window: how long `browser start` keeps asking a launched
+/// browser for its debugging endpoint (10 s / 250 ms, matching the TS original).
+const READINESS_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+const READINESS_INTERVAL_MS: u64 = 250;
+
+/// What ends the readiness loop: `None` is production (the wall-clock window
+/// above), `Some(max)` is the test seam (stop after `max` probes).
+///
+/// The seam exists because the "endpoint answers during the window" test would
+/// otherwise be a race between the product's 10 s budget and the host's
+/// scheduler: the endpoint cannot be up before the launch (a live endpoint
+/// takes `resolve_port`'s reuse arm and then `browser_start`'s
+/// `already_running` arm), so the test's own mock always has to appear inside
+/// the window. With a probe-count budget the outcome depends on the retry loop
+/// noticing the answer, not on how long a saturated host takes to schedule the
+/// test; the window itself stays covered by
+/// `start_launch_never_reachable_reports_starting`.
+fn readiness_budget() -> Option<u32> {
+    #[cfg(test)]
+    if let Some(max) = *READINESS_BUDGET_OVERRIDE.lock().unwrap() {
+        return Some(max);
+    }
+    None
+}
+
+#[cfg(test)]
+static READINESS_BUDGET_OVERRIDE: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
+
+/// Sets [`READINESS_BUDGET_OVERRIDE`] and restores it on drop, so a panicking
+/// test cannot leak a probe budget into the rest of the binary.
+#[cfg(test)]
+struct ReadinessBudgetGuard;
+
+#[cfg(test)]
+impl ReadinessBudgetGuard {
+    fn set(max_probes: u32) -> Self {
+        *READINESS_BUDGET_OVERRIDE.lock().unwrap() = Some(max_probes);
+        ReadinessBudgetGuard
+    }
+}
+
+#[cfg(test)]
+impl Drop for ReadinessBudgetGuard {
+    fn drop(&mut self) {
+        *READINESS_BUDGET_OVERRIDE.lock().unwrap() = None;
+    }
 }
 
 /// Test-only override for the browser-launcher lookup (dev machines with a
@@ -265,8 +367,22 @@ async fn browser_start(args: &Map<String, Value>) -> Result<LocalToolResult, Str
         drop(child);
     }
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while std::time::Instant::now() < deadline {
+    let budget = readiness_budget();
+    let deadline = std::time::Instant::now() + READINESS_WINDOW;
+    let mut probes: u32 = 0;
+    loop {
+        match budget {
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+            }
+            Some(max) => {
+                if probes >= max {
+                    break;
+                }
+            }
+        }
         if endpoint_reachable(&endpoint).await {
             let _transaction = lock_browser_config().await?;
             let mut cfg = load_browser_config().await?;
@@ -288,7 +404,8 @@ async fn browser_start(args: &Map<String, Value>) -> Result<LocalToolResult, Str
                 })),
             });
         }
-        crate::utils::time::sleep(250).await;
+        probes += 1;
+        crate::utils::time::sleep(READINESS_INTERVAL_MS).await;
     }
 
     let _transaction = lock_browser_config().await?;
@@ -2489,16 +2606,33 @@ mod tests {
     }
 
     /// A socket that accepts and then says nothing is the opposite diagnosis.
+    ///
+    /// What the mock stands in for is the *reachability* connection: it accepts
+    /// one and holds it open, unanswered, until the test releases it, which is
+    /// what makes the `/json/version` probe that follows time out. The release
+    /// (not an `abort()`) ends the task, so the mock's own body runs to its last
+    /// line and the recorded request says which call was the one left hanging.
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     async fn a_socket_that_never_answers_points_at_the_foreground() {
+        use tokio::io::AsyncReadExt as _;
+
         let path = std::env::temp_dir().join(format!("future-silent-{}.sock", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let listener = tokio::net::UnixListener::bind(&path).expect("bind");
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = std::sync::Arc::clone(&requests);
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
         // Accept and hold: connected, never answered.
         let held = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.expect("accept");
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut buf = [0u8; 2048];
+            let read = stream.read(&mut buf).await.unwrap_or(0);
+            recorded
+                .lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(&buf[..read]).into_owned());
+            let _ = released.await;
             drop(stream);
         });
 
@@ -2511,7 +2645,14 @@ mod tests {
             "something *is* listening: {reason}"
         );
 
-        held.abort();
+        release.send(()).expect("the holder is still listening");
+        held.await.expect("the holder must run to its own end");
+        let seen = requests.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1, "exactly one connection was held: {seen:?}");
+        assert!(
+            seen[0].is_empty(),
+            "the held connection is the bare reachability probe, which sends no request: {seen:?}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -2666,36 +2807,91 @@ mod tests {
     // ── browser_start ─────────────────────────────────────────────────
 
     /// Serve `GET /json/version` on a FIXED port with a hand-rolled HTTP
-    /// responder (spawn_http only binds ephemeral ports).
-    /// Serve `/json/version` on a fixed port for exactly `connections`
-    /// requests, then finish (an unbounded accept loop never completes, and
-    /// an aborted task body leaves its closing lines uncovered).
-    async fn serve_json_version_connections(
-        port: i64,
-        ws_url: &str,
-        connections: usize,
-    ) -> tokio::task::JoinHandle<()> {
+    /// responder (spawn_http only binds ephemeral ports), until the test stops
+    /// it, recording the request line of every connection it answered.
+    ///
+    /// Two things are deliberate. It records the request line of every connection
+    /// it answers, so a caller asserts the calls that were actually made — and
+    /// how many — instead of passing a connection count the code may not honour;
+    /// and the test stops it with a signal rather than `abort()`ing it, because a
+    /// task killed mid-accept leaves its own closing lines without a coverage
+    /// counter (`docs/testing/module-cli.md` §4b). [`stop`] awaits the task, so
+    /// the mock also has to run to its own end.
+    ///
+    /// [`stop`]: JsonVersionMock::stop
+    async fn serve_json_version(port: i64, ws_url: &str) -> JsonVersionMock {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", port as u16))
             .await
             .expect("bind fixed port");
-        let body = format!(r#"{{"Browser":"Chrome/126.0.0.0","webSocketDebuggerUrl":"{ws_url}"}}"#);
-        tokio::spawn(async move {
-            for _ in 0..connections {
-                // accept only fails if the listener is gone (it is owned by
-                // this task) — callers pass exact connection counts.
-                let (mut socket, _) = listener.accept().await.expect("accept");
-                use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                let mut buf = [0u8; 2048];
-                let _ = socket.read(&mut buf).await;
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                let _ = socket.write_all(response.as_bytes()).await;
-                let _ = socket.shutdown().await;
+        let body = std::sync::Arc::new(format!(
+            r#"{{"Browser":"Chrome/126.0.0.0","webSocketDebuggerUrl":"{ws_url}"}}"#
+        ));
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = std::sync::Arc::clone(&requests);
+        let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut served = Vec::new();
+            loop {
+                tokio::select! {
+                    _ = &mut stopped => break,
+                    accepted = listener.accept() => {
+                        // Invariant: accept on a listener this task owns (bound
+                        // microseconds above) only fails on OS-level resource
+                        // exhaustion — the same invariant `test_server.rs`'s mock
+                        // accept documents.
+                        let (mut socket, _) = accepted.expect("mock listener accept");
+                        let recorded = std::sync::Arc::clone(&recorded);
+                        let body = std::sync::Arc::clone(&body);
+                        served.push(tokio::spawn(async move {
+                            let mut buf = [0u8; 2048];
+                            let read = socket.read(&mut buf).await.unwrap_or(0);
+                            let request = String::from_utf8_lossy(&buf[..read]).into_owned();
+                            recorded.lock().unwrap().push(request);
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            );
+                            let _ = socket.write_all(response.as_bytes()).await;
+                            let _ = socket.shutdown().await;
+                        }));
+                    }
+                }
             }
-        })
+            for connection in served {
+                connection.await.expect("the connection's answer completed");
+            }
+        });
+        JsonVersionMock {
+            requests,
+            stop: Some(stop),
+            task,
+        }
+    }
+
+    /// Handle for [`serve_json_version`]: stop the mock and read back what it
+    /// answered.
+    struct JsonVersionMock {
+        requests: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        stop: Option<tokio::sync::oneshot::Sender<()>>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl JsonVersionMock {
+        /// Stop accepting, wait for the task, and report what it answered.
+        async fn stop(mut self) -> Vec<String> {
+            self.stop
+                .take()
+                .expect("stop once")
+                .send(())
+                .expect("the mock is still accepting");
+            tokio::time::timeout(std::time::Duration::from_secs(10), self.task)
+                .await
+                .expect("the in-flight answer completed")
+                .expect("the mock must run to its own end");
+            let answered = self.requests.lock().unwrap().clone();
+            answered
+        }
     }
 
     /// Find a currently-free port.
@@ -2711,7 +2907,7 @@ mod tests {
         let (_g, _e, _d) = isolated_home().await;
         let port = free_port();
         // Two browser_start calls × two probes each.
-        let server = serve_json_version_connections(port, "ws://127.0.0.1:1/ws", 4).await;
+        let server = serve_json_version(port, "ws://127.0.0.1:1/ws").await;
         let endpoint = format!("http://127.0.0.1:{port}");
 
         // First call: existing endpoint (default 9222) differs → update note.
@@ -2732,7 +2928,382 @@ mod tests {
             sc["note"],
             json!("Browser is already running at this endpoint.")
         );
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+        let asked = server.stop().await;
+        assert_eq!(asked.len(), 4, "two probes per call: {asked:?}");
+        assert!(
+            asked
+                .iter()
+                .all(|r| r.starts_with("GET /json/version HTTP/1.1")),
+            "an already-running check asks for the version, not for the page list: {asked:?}"
+        );
+    }
+
+    /// A listener on a socket path that answers `/json/version` with `body`
+    /// until the test stops it, recording the request line of every connection
+    /// it answered.
+    ///
+    /// Two things are deliberate. It records the request line of every connection
+    /// it answers, so the callers can assert that every probe asked for
+    /// `/json/version` rather than assuming it; and the test stops it with a
+    /// signal rather than `abort()`ing it, because a task killed mid-accept
+    /// leaves its own closing lines without a coverage counter
+    /// (`docs/testing/module-cli.md` §4b); waiting for the task in [`stop`] is
+    /// also the assertion that the mock finished the calls it was there for.
+    ///
+    /// [`stop`]: UnixJsonVersionMock::stop
+    #[cfg(unix)]
+    struct UnixJsonVersionMock {
+        requests: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        stop: Option<tokio::sync::oneshot::Sender<()>>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    #[cfg(unix)]
+    impl UnixJsonVersionMock {
+        async fn start(path: std::path::PathBuf, body: String) -> Self {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            let listener = tokio::net::UnixListener::bind(&path).expect("bind socket");
+            let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let recorded = std::sync::Arc::clone(&requests);
+            let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
+            let task = tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = &mut stopped => break,
+                        accepted = listener.accept() => {
+                            // Invariant: accept on a listener this task owns (bound
+                            // microseconds above) only fails on OS-level resource
+                            // exhaustion — the same invariant `test_server.rs`'s
+                            // mock accept documents.
+                            let (mut socket, _) = accepted.expect("mock listener accept");
+                            let mut buf = [0u8; 2048];
+                            let read = socket.read(&mut buf).await.unwrap_or(0);
+                            let request = String::from_utf8_lossy(&buf[..read]).into_owned();
+                            recorded.lock().unwrap().push(request.clone());
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            );
+                            let _ = socket.write_all(response.as_bytes()).await;
+                            let _ = socket.shutdown().await;
+                        }
+                    }
+                }
+            });
+            UnixJsonVersionMock {
+                requests,
+                stop: Some(stop),
+                task,
+            }
+        }
+
+        /// Stop accepting, wait for the task, and report what it answered.
+        async fn stop(mut self) -> Vec<String> {
+            self.stop
+                .take()
+                .expect("stop once")
+                .send(())
+                .expect("the mock is still accepting");
+            self.task.await.expect("the mock must run to its own end");
+            let answered = self.requests.lock().unwrap().clone();
+            answered
+        }
+    }
+
+    // ── socket endpoints (attach-only) ────────────────────────────────
+
+    /// A socket path unique to this test run (the process id and the clock keep
+    /// two tests in the same process from colliding).
+    #[cfg(unix)]
+    fn socket_path(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!("future-{tag}-{}-{nanos}.sock", std::process::id()))
+    }
+
+    /// `start` over a socket endpoint is an attach, never a launch: it records
+    /// the endpoint for later commands and says which of the two things
+    /// happened — nothing changed, or an endpoint was replaced.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_over_a_socket_endpoint_attaches_and_records_it() {
+        let (_g, _e, _d) = isolated_home().await;
+        let path = socket_path("start-socket");
+        let endpoint = format!("unix:{}", path.display());
+        let server = UnixJsonVersionMock::start(
+            path.clone(),
+            r#"{"Browser":"Chrome/126.0.0.0","webSocketDebuggerUrl":"ws://unix:/ws"}"#.to_string(),
+        )
+        .await;
+
+        // The first call replaces whatever endpoint was in effect (the default
+        // here), and says so — a caller pointing at a stale browser has to learn
+        // it was replaced.
+        let result = browser_start(&args(&[("endpoint", json!(endpoint))]))
+            .await
+            .expect("a reachable socket is an attach, not a launch");
+        let sc = structured(&result);
+        assert_eq!(sc["status"], json!("already_running"), "{sc}");
+        assert_eq!(sc["endpoint"], json!(endpoint));
+        assert!(sc["socket"].is_string(), "{sc}");
+        let note = sc["note"].as_str().unwrap_or_default();
+        assert!(
+            note.starts_with("Browser endpoint was updated (was "),
+            "{sc}"
+        );
+        assert!(
+            note.ends_with("). Subsequent commands will use this browser."),
+            "{sc}"
+        );
+        assert_eq!(
+            load_browser_config()
+                .await
+                .expect("config")
+                .connection
+                .endpoint(),
+            endpoint
+        );
+
+        // Same endpoint again: nothing changed, and the note says so rather than
+        // implying a switch.
+        let result = browser_start(&args(&[("endpoint", json!(endpoint))]))
+            .await
+            .expect("attach");
+        let sc = structured(&result);
+        assert_eq!(
+            sc["note"],
+            json!("Browser is already running at this endpoint."),
+            "{sc}"
+        );
+        let answered = server.stop().await;
+        assert!(
+            !answered.is_empty()
+                && answered
+                    .iter()
+                    .all(|r| r.starts_with("GET /json/version HTTP/1.1")),
+            "every probe asked for /json/version: {answered:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `status` over a reachable socket endpoint reports the endpoint as
+    /// reachable with the version the browser announced — the same fields the
+    /// TCP path reports, from the other transport.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn status_over_a_live_socket_reports_the_reachable_version() {
+        let (_g, _e, _d) = isolated_home().await;
+        let path = socket_path("status-socket");
+        let endpoint = format!("unix:{}", path.display());
+        let server = UnixJsonVersionMock::start(
+            path.clone(),
+            r#"{"Browser":"Chrome/126.0.0.0","webSocketDebuggerUrl":"ws://unix:/ws"}"#.to_string(),
+        )
+        .await;
+
+        let result = browser_status(&args(&[("endpoint", json!(endpoint))]))
+            .await
+            .expect("status over a live socket");
+        let sc = structured(&result);
+        assert_eq!(sc["reachable"], json!(true), "{sc}");
+        assert_eq!(sc["endpoint"], json!(endpoint));
+        // The projection carries the `/json/version` payload as the browser
+        // sent it, which is where a reader gets the identity from.
+        assert_eq!(sc["version"]["Browser"], json!("Chrome/126.0.0.0"), "{sc}");
+
+        let answered = server.stop().await;
+        assert_eq!(answered.len(), 1, "one status probe: {answered:?}");
+        assert!(
+            answered[0].starts_with("GET /json/version HTTP/1.1"),
+            "the probe asks for /json/version, not for the page list: {answered:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A socket endpoint has nothing this tool could launch, so an unreachable
+    /// one is a refusal that says where the browser actually belongs — not a
+    /// launch attempt against a socket path.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_over_a_dead_socket_refuses_to_invent_a_launch() {
+        let (_g, _e, _d) = isolated_home().await;
+        let endpoint = format!("unix:{}", socket_path("start-dead").display());
+        let error = browser_start(&args(&[("endpoint", json!(endpoint))]))
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("browser start: nothing is listening"),
+            "{error}"
+        );
+        assert!(
+            error.contains("not something this tool can launch for you"),
+            "{error}"
+        );
+    }
+
+    /// With neither `--endpoint` nor `--port` the endpoint comes from the saved
+    /// config — that is what makes a plain `browser start` resume the browser
+    /// the previous command was talking to instead of falling back to TCP.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_without_endpoint_or_port_uses_the_configured_endpoint() {
+        let (_g, _e, _d) = isolated_home().await;
+        save_cdp_config("unix:/tmp/future-config-dead.sock", "chromium").await;
+        let error = browser_start(&Map::new()).await.unwrap_err();
+        assert!(
+            error.contains("nothing is listening on unix:/tmp/future-config-dead.sock"),
+            "the saved socket is the endpoint, not a TCP port: {error}"
+        );
+    }
+
+    /// Accepts, answers with something that is not HTTP, and closes: that is a
+    /// third diagnosis — something *is* there and the probe failed.
+    ///
+    /// The two connections are the two calls the diagnosis makes, in order:
+    /// the bare `spec.connect()` reachability probe (no request on it), then the
+    /// `/json/version` probe that is handed the non-HTTP answer. Each connection
+    /// takes its slot in the recording when it is **accepted** — the bytes of a
+    /// connection only exist once its `read` returns, and read-completion order
+    /// is not accept order (the bare probe's read returns 0 only when the peer
+    /// closes, which can be after the other connection's read), so a
+    /// completion-ordered list would not say which was which. The count-bounded
+    /// loop ends on its own — awaited, not aborted — so the mock has no
+    /// unexecuted tail, and every slot is filled before it is read.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_socket_answering_garbage_reports_a_failed_probe() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let path = socket_path("garbage");
+        let listener = tokio::net::UnixListener::bind(&path).expect("bind socket");
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = std::sync::Arc::clone(&requests);
+        let server = tokio::spawn(async move {
+            let mut answered = Vec::new();
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.expect("mock listener accept");
+                let slot = {
+                    let mut seen = recorded.lock().unwrap();
+                    seen.push(String::new());
+                    seen.len() - 1
+                };
+                let recorded = std::sync::Arc::clone(&recorded);
+                answered.push(tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let read = socket.read(&mut buf).await.unwrap_or(0);
+                    recorded.lock().unwrap()[slot] =
+                        String::from_utf8_lossy(&buf[..read]).into_owned();
+                    let _ = socket.write_all(b"this is not http\r\n\r\n").await;
+                    let _ = socket.shutdown().await;
+                }));
+            }
+            for connection in answered {
+                connection.await.expect("the connection's answer completed");
+            }
+        });
+        let spec = SocketSpec::Path(path.display().to_string());
+        let reason = unreachable_socket_reason(&format!("unix:{}", path.display()), &spec).await;
+        assert!(reason.contains("the probe failed"), "{reason}");
+        assert!(
+            !reason.contains("nothing is listening"),
+            "the connect succeeded: {reason}"
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .expect("both probes reached the mock")
+            .expect("the mock must run to its own end");
+        let seen = requests.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2, "two probes, in order: {seen:?}");
+        assert!(
+            seen[0].is_empty(),
+            "the first is the bare reachability probe: {seen:?}"
+        );
+        assert!(
+            seen[1].starts_with("GET /json/version HTTP/1.1"),
+            "the second is the probe whose answer was not HTTP: {seen:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The last diagnosis: the socket answers the 2 s probe but not the 1 s one,
+    /// which means the probe timed out a moment too early. The fix is to retry —
+    /// neither a dead browser nor a frozen one.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_socket_that_answers_only_the_slower_probe_points_at_a_retry() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let path = socket_path("slow");
+        let listener = tokio::net::UnixListener::bind(&path).expect("bind socket");
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = std::sync::Arc::clone(&requests);
+        // The two connections are the two calls the diagnosis makes: the bare
+        // `spec.connect()` reachability probe (no request), then the
+        // `/json/version` probe that is answered after the delay below. Each
+        // connection takes its slot in the recording when it is **accepted**:
+        // the pair's bytes exist when their reads return, and read-completion
+        // order is not accept order (the bare probe's read returns 0 only when
+        // the peer closes), so the accepted slot is what says which probe was
+        // which. Each connection is its own task — the diagnostic probe arrives
+        // while the first is still sleeping, which is the whole point — and the
+        // accept loop joins them before it returns, so every connection's own
+        // lines execute too.
+        let server = tokio::spawn(async move {
+            let mut answered = Vec::new();
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.expect("mock listener accept");
+                let slot = {
+                    let mut seen = recorded.lock().unwrap();
+                    seen.push(String::new());
+                    seen.len() - 1
+                };
+                let seen = std::sync::Arc::clone(&recorded);
+                answered.push(tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let read = socket.read(&mut buf).await.unwrap_or(0);
+                    seen.lock().unwrap()[slot] = String::from_utf8_lossy(&buf[..read]).into_owned();
+                    // Slower than `endpoint_reachable`'s 1 s probe, faster than
+                    // the 2 s diagnostic probe below it.
+                    tokio::time::sleep(std::time::Duration::from_millis(1_300)).await;
+                    let body = br#"{"webSocketDebuggerUrl":"ws://unix:/ws"}"#;
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = socket.write_all(head.as_bytes()).await;
+                    let _ = socket.write_all(body).await;
+                    let _ = socket.shutdown().await;
+                }));
+            }
+            for connection in answered {
+                connection.await.expect("the connection's answer completed");
+            }
+        });
+        let spec = SocketSpec::Path(path.display().to_string());
+        let reason = unreachable_socket_reason(&format!("unix:{}", path.display()), &spec).await;
+        assert!(
+            reason.contains("answered a fresh probe but not the one that failed"),
+            "{reason}"
+        );
+        assert!(reason.contains("retry the command"), "{reason}");
+        tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .expect("both probes reached the mock")
+            .expect("the mock must run to its own end");
+        let seen = requests.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2, "two probes, in order: {seen:?}");
+        assert!(
+            seen[0].is_empty(),
+            "the first is the bare reachability probe: {seen:?}"
+        );
+        assert!(
+            seen[1].starts_with("GET /json/version HTTP/1.1"),
+            "the answer that arrives late is for /json/version: {seen:?}"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2951,41 +3522,41 @@ mod tests {
     /// and active URL it launched with and the connection persisted for the
     /// commands that follow.
     ///
-    /// The endpoint cannot simply be up beforehand: `browser_start` probes it
-    /// first and would take the `already_running` arm instead. So the launcher
-    /// is a script that records that it ran, and the mock CDP endpoint is
-    /// brought up only once that marker appears — the marker is proof that
-    /// `resolve_port` and the reachability pre-check are behind us, which makes
-    /// the ordering a fact of the code rather than a sleep the test hopes is
-    /// long enough. What is left for the code to do is notice the endpoint
-    /// within its own 10 s / 250 ms retry window.
+    /// The endpoint cannot be up beforehand: `browser_start` probes it first and
+    /// would take the `already_running` arm instead. The launch path commits
+    /// *before* the browser is spawned — it creates the profile directory — and
+    /// the mock is brought up as soon as that directory appears, so the endpoint
+    /// answers from the poll's first probe on. Waiting for the launcher itself
+    /// (its marker file) would put the launcher's own start-up inside the poll's
+    /// budget: a `#!` script is an external process the host can starve, which is
+    /// what the recorded failures of this test showed (they need a delay larger
+    /// than the whole 10 s window).
+    ///
+    /// The budget this test runs under is a probe count rather than 10 s of wall
+    /// clock, so that even then the outcome is decided by the retry loop
+    /// noticing the answer and not by the host's scheduler. The wall-clock
+    /// window keeps its own test (`start_launch_never_reachable_reports_starting`,
+    /// which asserts the full wait and the note).
     #[tokio::test(flavor = "multi_thread")]
     async fn start_reports_started_when_the_endpoint_answers_in_the_readiness_window() {
         let (_g, _e, dir) = isolated_home().await;
+        // Enough probes for the launch-committed → bind → answer sequence, none
+        // of them charged against the product's 10 s.
+        let _budget = ReadinessBudgetGuard::set(40);
         let port = free_port();
-        let marker = dir.path().join("launched.txt");
 
         #[cfg(windows)]
         let launcher = {
-            // `Start-Process` runs a `.cmd` (probed on this host), and the
-            // script writes its marker next to itself via `%~dp0`.
+            // `Start-Process` runs a `.cmd` (probed on this host).
             let script = dir.path().join("launcher.cmd");
-            std::fs::write(
-                &script,
-                "@echo off\r\n> \"%~dp0launched.txt\" echo launched\r\nexit /b 0\r\n",
-            )
-            .expect("write launcher script");
+            std::fs::write(&script, "@echo off\r\nexit /b 0\r\n").expect("write launcher script");
             script
         };
         #[cfg(unix)]
         let launcher = {
             use std::os::unix::fs::PermissionsExt;
             let script = dir.path().join("launcher.sh");
-            std::fs::write(
-                &script,
-                format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
-            )
-            .expect("write launcher script");
+            std::fs::write(&script, "#!/bin/sh\nexit 0\n").expect("write launcher script");
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
                 .expect("chmod launcher script");
             script
@@ -3002,11 +3573,15 @@ mod tests {
             .await
         });
 
+        // The launch has committed once the profile directory exists; that step
+        // is the CLI's own (it precedes the spawn and the poll), so no external
+        // process has to start for the endpoint to be up in time.
+        let profile = browser_dir().join(DEFAULT_PROFILE_DIR);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        while !marker.exists() {
+        while !profile.is_dir() {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the launcher never ran, so the flow never reached the launch step"
+                "the flow never reached the launch step (no profile directory)"
             );
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
@@ -3014,26 +3589,46 @@ mod tests {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", port as u16))
             .await
             .expect("the requested port is still free: nothing was listening on it");
+        // The readiness poll's own calls, recorded so the test can show what the
+        // browser that appeared late was actually asked for; the loop is stopped
+        // by the test (not aborted) and its per-connection answers are joined
+        // before it returns, so the mock has no unexecuted tail.
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = std::sync::Arc::clone(&requests);
+        let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
         let server = tokio::spawn(async move {
+            let mut served = Vec::new();
             loop {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    break;
-                };
-                tokio::spawn(async move {
-                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                    let mut request = [0u8; 2048];
-                    let _ = socket.read(&mut request).await;
-                    let body =
-                        br#"{"Browser":"Chrome/1","webSocketDebuggerUrl":"ws://127.0.0.1:1/ws"}"#;
-                    let mut response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        body.len()
-                    )
-                    .into_bytes();
-                    response.extend_from_slice(body);
-                    let _ = socket.write_all(&response).await;
-                    let _ = socket.shutdown().await;
-                });
+                tokio::select! {
+                    _ = &mut stopped => break,
+                    accepted = listener.accept() => {
+                        // Invariant: accept on a listener this task owns only
+                        // fails on OS-level resource exhaustion (the invariant
+                        // `test_server.rs`'s mock accept documents).
+                        let (mut socket, _) = accepted.expect("mock listener accept");
+                        let recorded = std::sync::Arc::clone(&recorded);
+                        served.push(tokio::spawn(async move {
+                            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                            let mut request = [0u8; 2048];
+                            let read = socket.read(&mut request).await.unwrap_or(0);
+                            let request =
+                                String::from_utf8_lossy(&request[..read]).into_owned();
+                            recorded.lock().unwrap().push(request);
+                            let body = br#"{"Browser":"Chrome/1","webSocketDebuggerUrl":"ws://127.0.0.1:1/ws"}"#;
+                            let mut response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            )
+                            .into_bytes();
+                            response.extend_from_slice(body);
+                            let _ = socket.write_all(&response).await;
+                            let _ = socket.shutdown().await;
+                        }));
+                    }
+                }
+            }
+            for connection in served {
+                connection.await.expect("the connection's answer completed");
             }
         });
 
@@ -3043,7 +3638,6 @@ mod tests {
             .expect("the task does not panic")
             .expect("a browser that answers inside the window is a success");
         *BROWSER_LAUNCHER_OVERRIDE.lock().unwrap() = None;
-        server.abort();
 
         let sc = structured(&result);
         assert_eq!(sc["status"], json!("started"), "{sc}");
@@ -3067,6 +3661,23 @@ mod tests {
             format!("http://127.0.0.1:{port}")
         );
         assert_eq!(saved.active_url.as_deref(), Some("http://home/"));
+
+        stop.send(()).expect("the mock is still accepting");
+        tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .expect("the readiness poll stopped asking")
+            .expect("the mock must run to its own end");
+        let asked = requests.lock().unwrap().clone();
+        assert!(
+            !asked.is_empty(),
+            "the readiness poll asked the browser something"
+        );
+        assert!(
+            asked
+                .iter()
+                .all(|r| r.starts_with("GET /json/version HTTP/1.1")),
+            "and it was the version probe, not another call: {asked:?}"
+        );
     }
 
     #[cfg(unix)]
@@ -3076,50 +3687,87 @@ mod tests {
         let _cleanup = SpawnedBrowserCleanup;
         SPAWNED_BROWSER_PIDS.lock().unwrap().clear();
         let (_g, _e, dir) = isolated_home().await;
-        // Fake chrome: a python script serving /json/version on the port
-        // given via --remote-debugging-port.
-        let py = dir.path().join("fake_chrome.py");
-        std::fs::write(
-            &py,
-            r#"import http.server, socketserver, sys, json, time
-port = 0
-for a in sys.argv:
-    if a.startswith("--remote-debugging-port="):
-        port = int(a.split("=")[1])
-class H(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        body = json.dumps({"Browser": "FakeChrome/1", "webSocketDebuggerUrl": "ws://127.0.0.1:1/ws"}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-    def log_message(self, *a):
-        pass
-time.sleep(0.3)
-socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
-"#,
-        )
-        .unwrap();
+        // Enough probes for the launch-committed → bind → answer sequence, none
+        // of them charged against the product's 10 s.
+        let _budget = ReadinessBudgetGuard::set(40);
+        // The launcher stays a real external `#!` process (this is the
+        // `executablePath` route, which the override-based test above does not
+        // cover), but its own start-up is no longer what puts the endpoint
+        // inside the poll's window: the script's *only* job is to be spawned,
+        // and the endpoint is the test's own listener, bound once the launch has
+        // committed. A launcher that takes 12 s to get to its job used to make
+        // this test report `"starting"` after the product's 10 s window had
+        // expired (5/5 red: it needed a delay larger than the whole window).
         let sh = dir.path().join("chrome");
-        std::fs::write(
-            &sh,
-            format!("#!/bin/sh\nexec python3 {} \"$@\"\n", py.display()),
-        )
-        .unwrap();
+        std::fs::write(&sh, "#!/bin/sh\nsleep 12\nexit 0\n").unwrap();
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&sh, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
 
         let port = free_port();
-        let result = browser_start(&args(&[
-            ("port", json!(port)),
-            ("executablePath", json!(sh.to_string_lossy().to_string())),
-            ("url", json!("http://home/")),
-        ]))
-        .await
-        .unwrap();
+        let exe = sh.to_string_lossy().to_string();
+        let started = tokio::spawn(async move {
+            browser_start(&args(&[
+                ("port", json!(port)),
+                ("executablePath", json!(exe)),
+                ("url", json!("http://home/")),
+            ]))
+            .await
+        });
+
+        // The launch has committed once the profile directory exists; that step
+        // is the CLI's own (it precedes the spawn and the poll), so nothing the
+        // launcher does can decide whether the endpoint is up in time.
+        let profile = browser_dir().join(DEFAULT_PROFILE_DIR);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !profile.is_dir() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the flow never reached the launch step (no profile directory)"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port as u16))
+            .await
+            .expect("the requested port is still free: nothing was listening on it");
+        let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let mut served = Vec::new();
+            loop {
+                tokio::select! {
+                    _ = &mut stopped => break,
+                    accepted = listener.accept() => {
+                        let Ok((mut socket, _)) = accepted else { break };
+                        served.push(tokio::spawn(async move {
+                            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                            let mut request = [0u8; 2048];
+                            let _ = socket.read(&mut request).await;
+                            let body = br#"{"Browser":"FakeChrome/1","webSocketDebuggerUrl":"ws://127.0.0.1:1/ws"}"#;
+                            let mut response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            )
+                            .into_bytes();
+                            response.extend_from_slice(body);
+                            let _ = socket.write_all(&response).await;
+                            let _ = socket.shutdown().await;
+                        }));
+                    }
+                }
+            }
+            for connection in served {
+                connection.await.expect("the connection's answer completed");
+            }
+        });
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(30), started)
+            .await
+            .expect("browser_start is bounded by its own 10 s window")
+            .expect("the task does not panic")
+            .expect("a browser that answers inside the window is a success");
+
         let sc = structured(&result);
         assert_eq!(sc["status"], json!("started"));
         assert_eq!(sc["port"], json!(port));
@@ -3135,6 +3783,12 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
             saved.connection.endpoint(),
             format!("http://127.0.0.1:{port}")
         );
+
+        stop.send(()).expect("the mock is still accepting");
+        tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .expect("the readiness poll stopped asking")
+            .expect("the mock must run to its own end");
     }
 
     #[cfg(unix)]
@@ -3168,6 +3822,32 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
         assert_eq!(
             sc["profileDir"],
             json!(profile.to_string_lossy().to_string())
+        );
+    }
+
+    /// The other way out of the same poll: a probe budget instead of the 10 s
+    /// window. The test above proves the wall-clock arm; this proves the seam
+    /// the fast launch tests run under really does end the wait (a launcher that
+    /// exits immediately, an endpoint nothing serves), so setting the budget can
+    /// never leave the retry loop unbounded.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_reports_starting_when_the_probe_budget_runs_out() {
+        let (_g, _e, _dir) = isolated_home().await;
+        let _budget = ReadinessBudgetGuard::set(2);
+        let started = std::time::Instant::now();
+        let result = browser_start(&args(&[
+            ("port", json!(free_port())),
+            ("executablePath", json!("/bin/true")),
+        ]))
+        .await
+        .unwrap();
+        let sc = structured(&result);
+        assert_eq!(sc["status"], json!("starting"), "{sc}");
+        assert!(
+            started.elapsed() < READINESS_WINDOW,
+            "the probe budget ended the poll, not the window: {:?}",
+            started.elapsed()
         );
     }
 
@@ -3328,7 +4008,7 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
         // the auto-start path short-circuits through "already running" and
         // re-points the saved config. Three probe connections in total.
         let port = free_port();
-        let server = serve_json_version_connections(port, "ws://127.0.0.1:1/ws", 3).await;
+        let server = serve_json_version(port, "ws://127.0.0.1:1/ws").await;
         let config = BrowserConfig {
             version: 2,
             connection: BrowserConnectionConfig::Cdp {
@@ -3342,7 +4022,14 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
             .await
             .unwrap();
         assert_eq!(endpoint, format!("http://127.0.0.1:{port}"));
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+        let asked = server.stop().await;
+        assert_eq!(asked.len(), 3, "three probes: {asked:?}");
+        assert!(
+            asked
+                .iter()
+                .all(|r| r.starts_with("GET /json/version HTTP/1.1")),
+            "the auto-start path probes the version endpoint only: {asked:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3781,7 +4468,7 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
         // Saved config already refined (browserKind "chrome") → the refine
         // result does not trigger a config rewrite.
         let port = free_port();
-        let server = serve_json_version_connections(port, "ws://127.0.0.1:1/ws", 1).await;
+        let server = serve_json_version(port, "ws://127.0.0.1:1/ws").await;
         let endpoint = format!("http://127.0.0.1:{port}");
         let config = BrowserConfig {
             version: 2,
@@ -3803,6 +4490,14 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
                 .browser_kind(),
             "chrome"
         );
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+        // The saved kind is already refined, so this path makes no probe at all:
+        // the mock was listening for the whole call and heard nothing. (An
+        // earlier version of this test passed it a connection count of one and
+        // never checked it — the mock's ``accept`` was simply never reached.)
+        let asked = server.stop().await;
+        assert!(
+            asked.is_empty(),
+            "an already-refined kind is not probed again: {asked:?}"
+        );
     }
 }

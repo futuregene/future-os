@@ -275,3 +275,37 @@ fn load_reads_model_from_model_change_entries() {
     let loaded = manager.load("s1").unwrap();
     assert_eq!(loaded.model, "deepseek/deepseek-chat");
 }
+
+/// A metadata update for a session whose row is gone: the append would fail on a
+/// foreign key, so the store names the real cause instead. This is the state a
+/// caller reaches after deleting a session and then using its id from a stale
+/// handle.
+#[test]
+fn a_metadata_update_for_a_missing_session_row_names_that_cause() {
+    let (_dir, manager) = temp_manager("update-info-missing-row");
+    // Entries exist (so the transcript is not the problem) but the `sessions`
+    // row does not: delete the session and keep the entries.
+    manager
+        .storage()
+        .unwrap()
+        .replace(
+            "s-gone",
+            vec![serde_json::json!({
+                "id": "e1", "type": "user", "role": "user",
+                "timestamp": "2026-01-01T00:00:00Z", "content": "hi"
+            })],
+        )
+        .unwrap();
+    manager.test_execute("DELETE FROM sessions WHERE id='s-gone'");
+
+    let mut fields = serde_json::Map::new();
+    fields.insert("session_name".to_string(), serde_json::json!("renamed"));
+    let error = manager
+        .update_session_info_fields("s-gone", fields)
+        .expect_err("a missing row cannot receive an entry");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("session not found: no row for s-gone"),
+        "the real cause is named instead of a foreign-key violation: {message}"
+    );
+}

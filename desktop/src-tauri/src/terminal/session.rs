@@ -998,6 +998,9 @@ mod tests {
         // A viewer attached but not yet activated when the exit happens: the
         // exit is held on the subscriber and delivered by `activate`.
         let mut pending = session.attach(Some(-1));
+        // Output queued ahead of the exit: the scan below has to step over it
+        // (`Ok(_) => continue`) before it reaches the held exit event.
+        session.on_data(b"queued-ahead-of-the-exit");
         session.on_eof();
         let mut events = pending
             .activate()
@@ -1187,5 +1190,105 @@ mod tests {
         assert_ne!(a, b);
         assert!(a.starts_with("term_"));
         assert!(Path::new(&a).is_relative());
+    }
+
+    /// The drain helper stops at `Lagged` instead of waiting out its deadline: a
+    /// viewer the session has cut loose will never receive the bytes it is
+    /// waiting for, and the disconnect that follows is what it must re-attach on.
+    #[test]
+    fn draining_a_lagged_viewer_stops_immediately() {
+        let session = spawn_idle();
+        let mut attachment = session.attach(None);
+        {
+            // A viewer that never activates while output keeps arriving.
+            let mut inner = session.inner.lock().unwrap();
+            let subscriber = inner
+                .subscribers
+                .get_mut(&attachment.token)
+                .expect("subscriber");
+            subscriber.pending_bytes = SUBSCRIBER_LIMIT + 1;
+        }
+        session.on_data(b"x");
+        // No `mut`: the binding is never reassigned, and a `&mut` reference is
+        // mutable through on its own.
+        let events = attachment.receiver();
+        let started = Instant::now();
+        let (bytes, meta) = drain_until(events, "", Duration::from_secs(5));
+        assert!(bytes.is_empty() && meta.is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a lagged viewer must not drain to the deadline"
+        );
+        assert!(
+            matches!(
+                events.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+            ),
+            "the lagged subscriber must be forgotten, so nothing follows the Lagged event"
+        );
+        session.close(Duration::from_millis(200));
+    }
+
+    /// A viewer whose sender is already gone ends the drain instead of waiting
+    /// for events that can no longer arrive.
+    #[test]
+    fn draining_a_detached_viewer_ends_immediately() {
+        let session = spawn_idle();
+        let mut attachment = session.attach(Some(-1));
+        attachment.detach();
+        let events = attachment.receiver();
+        let started = Instant::now();
+        let (bytes, meta) = drain_until(events, "", Duration::from_secs(5));
+        assert!(bytes.is_empty() && meta.is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a disconnected viewer must not drain to the deadline"
+        );
+        session.close(Duration::from_millis(200));
+    }
+
+    /// A quiet viewer waits out idle moments instead of spinning or bailing out
+    /// on the first empty read: a live session with nothing to say must not be
+    /// mistaken for a finished one.
+    #[test]
+    fn draining_a_quiet_viewer_waits_out_idle_moments() {
+        let session = spawn_idle();
+        let mut attachment = session.attach(Some(-1));
+        let mut events = attachment.activate().expect("activated");
+        let started = Instant::now();
+        let (bytes, meta) = drain_until(&mut events, "", Duration::from_millis(150));
+        assert!(bytes.is_empty() && meta.is_none());
+        assert!(
+            started.elapsed() >= Duration::from_millis(120),
+            "the drain must wait out the idle moments up to its deadline, took {:?}",
+            started.elapsed()
+        );
+        attachment.detach();
+        session.close(Duration::from_millis(200));
+    }
+
+    /// A child that asks for the cursor position is answered by the waiting
+    /// helper: a shell blocked on its own query must not be mistaken for a hung
+    /// session by every test that waits on real output.
+    #[cfg(unix)]
+    #[test]
+    fn a_cursor_querying_child_is_answered_by_the_wait_helper() {
+        let session = spawn_with(test_support::query_then_marker_command());
+        wait_until(&session, "the child's marker", || {
+            test_support::visible_text(&session.inner.lock().unwrap().buffer).contains("answered")
+        });
+        let buffer = session.inner.lock().unwrap().buffer.clone();
+        assert!(
+            test_support::asks_for_the_cursor(&buffer),
+            "the fixture must have asked, or the answer path was never driven: {:?}",
+            String::from_utf8_lossy(&buffer)
+        );
+        assert!(
+            test_support::visible_text(&buffer).contains("answered"),
+            "the child's own output must still arrive: {:?}",
+            String::from_utf8_lossy(&buffer)
+        );
+        session.close(Duration::from_millis(200));
+        assert!(!session.is_running());
     }
 }

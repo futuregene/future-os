@@ -115,6 +115,45 @@ mod home_tests {
 #[cfg(test)]
 pub(crate) static TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[cfg(test)]
+mod helper_dispatch_tests {
+    /// Two callers reach this dispatcher with the same request spelled
+    /// differently: a launcher passes its own `argv` unchanged, while a sandbox
+    /// child arrives behind the `agent` subcommand token. Stripping that token is
+    /// the whole of `dispatch_agent_helper`'s parsing, so both spellings must end
+    /// up in the same place — an unstripped `agent` would be read as the helper's
+    /// own positional argument and silently change what runs.
+    ///
+    /// `--linux-sandbox-helper` is Linux-only: on every other platform the helper
+    /// CLI refuses the request (agent/src/cli.rs:213-218), which is the answer
+    /// asserted here. On Linux the same argv would execute the real helper
+    /// instead, so this comparison is not a portable test — see
+    /// docs/testing/module-tauri-shell.md for the `platform-unmeasured` row that
+    /// covers the Linux success arm.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn an_agent_subcommand_prefix_reaches_the_same_helper_request() {
+        let request: Vec<String> = ["--linux-sandbox-helper", "probe"]
+            .iter()
+            .map(|part| (*part).to_string())
+            .collect();
+        let direct = super::dispatch_agent_helper(&request).expect("the flag dispatches");
+        let mut prefixed_args = vec!["agent".to_string()];
+        prefixed_args.extend(request.iter().cloned());
+        let prefixed = super::dispatch_agent_helper(&prefixed_args).expect("the flag dispatches");
+
+        assert!(
+            direct.is_err(),
+            "off Linux the helper CLI refuses the request instead of running it"
+        );
+        assert_eq!(
+            direct.map_err(|error| error.to_string()),
+            prefixed.map_err(|error| error.to_string()),
+            "the `agent` prefix must be stripped before the helper CLI parses the request"
+        );
+    }
+}
+
 fn install_rustls_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
@@ -141,6 +180,13 @@ pub(crate) use gui::{
 };
 #[cfg(feature = "gui")]
 pub use gui::{run, run_with};
+// The menu builder is reachable from an integration test only through a public path:
+// `cfg(test)` is false for an integration build, so a `#[cfg(test)]` re-export would be
+// invisible exactly where the main-thread target needs it. Re-exported, not made
+// `pub mod` — the module stays private and the item's own visibility is unchanged.
+#[cfg(all(feature = "gui", target_os = "macos"))]
+#[doc(hidden)]
+pub use menu::build_macos_menu;
 #[cfg(not(feature = "gui"))]
 mod no_gui;
 #[cfg(not(feature = "gui"))]
@@ -503,11 +549,23 @@ mod gui {
     /// file would otherwise fail silently at every launch.
     #[cfg(all(test, target_os = "macos"))]
     mod macos_dock_icon_tests {
-        use super::dock_icon_image;
+        use super::{dock_icon_image, set_macos_dock_icon};
 
         #[test]
         fn embedded_dock_icon_decodes_to_an_image() {
             assert!(dock_icon_image().is_some());
+        }
+
+        /// An unbundled launch has no Dock icon, and setting one is an
+        /// `NSApplication` call — main-thread only. Every libtest body runs on a
+        /// spawned worker thread (verified: `pthread_main_np() == 0` even under
+        /// `--test-threads=1`), so this is exactly the off-main-thread call site
+        /// the guard exists for: assert the precondition, then that the call is a
+        /// no-op rather than an AppKit call from the wrong thread.
+        #[test]
+        fn dock_icon_setup_is_a_noop_without_the_main_thread() {
+            assert!(objc2::MainThreadMarker::new().is_none());
+            set_macos_dock_icon();
         }
     }
 
@@ -565,7 +623,15 @@ mod gui {
     /// point prints no code, and a flag whose whole effect is off-screen would look
     /// like it did nothing.
     fn emit_remote_re_pair() {
-        if let Some(handle) = APP_HANDLE.get() {
+        emit_remote_re_pair_via(APP_HANDLE.get());
+    }
+
+    /// Route the notification through an optional handle (see
+    /// [`emit_review_updated_via`]): both arms are exercised with a mock handle,
+    /// because the process-global `APP_HANDLE` can only be filled by a real Wry
+    /// launch.
+    fn emit_remote_re_pair_via<R: tauri::Runtime>(handle: Option<&tauri::AppHandle<R>>) {
+        if let Some(handle) = handle {
             emit_remote_re_pair_on(handle);
         }
     }
@@ -875,16 +941,17 @@ mod gui {
         run_with(crate::launch::LaunchOptions::default())
     }
 
-    /// Same as [`run`], with what the command line asked for. Mobile enters
-    /// through [`run`], so it always gets the defaults.
-    pub fn run_with(launch: crate::launch::LaunchOptions) -> Result<(), AppError> {
-        // The combined Agent/Desktop dependency graph may include multiple
-        // rustls providers. Select ring and hydrate tool environment before
-        // Tauri starts threads or creates any HTTP clients.
-        crate::host_environment::initialize()?;
-        let mut context = tauri::generate_context!();
-        context.config_mut().identifier = instance::gui_identifier(&context.config().identifier)?;
-        let app = tauri::Builder::default()
+    /// The plugin and event registration the Desktop app is built with.
+    ///
+    /// Generic over the runtime so this registration — the part that decides what
+    /// the Desktop offers — is assertable: a test builds it for a mock runtime and
+    /// checks what it registered (the closure *bodies* still need real window/menu
+    /// events). Behaviour for the real runtime is unchanged: nothing here uses a
+    /// `Wry`-only API (the builders, the plugins and every handle the bodies touch
+    /// are `R`-generic), the chain is the one `run_with` used, and `run_with` is
+    /// the only production caller.
+    fn gui_builder<R: tauri::Runtime>() -> tauri::Builder<R> {
+        tauri::Builder::<R>::new()
             .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
                 // A second instance was launched — activate the existing window.
                 activate_main_window(app);
@@ -953,6 +1020,22 @@ mod gui {
                     }
                 }
             })
+    }
+
+    /// Same as [`run`], with what the command line asked for. Mobile enters
+    /// through [`run`], so it always gets the defaults.
+    pub fn run_with(launch: crate::launch::LaunchOptions) -> Result<(), AppError> {
+        // The combined Agent/Desktop dependency graph may include multiple
+        // rustls providers. Select ring and hydrate tool environment before
+        // Tauri starts threads or creates any HTTP clients.
+        crate::host_environment::initialize()?;
+        let mut context = tauri::generate_context!();
+        context.config_mut().identifier = instance::gui_identifier(&context.config().identifier)?;
+        // The `setup` hook and the invoke handler stay with the real runtime: the
+        // hook publishes the process-global `AppHandle<Wry>`, and the commands
+        // behind the handler take that same concrete handle. Appending them after
+        // `gui_builder` is equivalent — `Builder` keeps these in separate fields.
+        let app = gui_builder::<tauri::Wry>()
             .setup(|app| {
                 let _ = APP_HANDLE.set(app.handle().clone());
                 #[cfg(target_os = "macos")]
@@ -1153,23 +1236,52 @@ mod gui {
             .build(context)
             .map_err(|error| AppError::from(format!("Could not start Desktop: {error}")))?;
 
-        // Build initializes the single-instance plugin first, so a second GUI
-        // still activates the existing window. Acquire the shared GUI/headless
-        // lock before entering the event loop: returning an error from `setup`
-        // makes Tauri panic (and abort on macOS's non-unwinding callback).
-        let guard = instance::InstanceGuard::acquire()?;
-        tauri::Manager::manage(&app, guard);
-        crate::host_environment::start_logging()?;
-        store::initialize_app_store()?;
-        if let Err(error) = terminal::server::bind() {
-            eprintln!("FutureOS terminal server bind failed: {error}");
-        }
+        initialize_process_state(&app)?;
         // Keep the Windows console attached until startup errors can be reported.
         #[cfg(target_os = "windows")]
         unsafe {
             let _ = windows::Win32::System::Console::FreeConsole();
         }
-        app.run(move |app_handle, event| match event {
+        app.run(move |app_handle, event| dispatch_run_event(app_handle, event, launch));
+        Ok(())
+    }
+
+    /// The startup steps that need no window: the shared GUI/headless lock, the
+    /// host log, the app store and the terminal listener. Split out of
+    /// [`run_with`] and generic over both the runtime and the manager so a test
+    /// can drive it with `tauri::test::mock_app()` — the same shape as
+    /// [`start_backend_background`]. Behaviour for the real runtime is unchanged:
+    /// this is the same statement sequence `run_with` ran, with the same `?` on
+    /// the same `Result`s, and `&app` stays borrowed only for `manage`.
+    fn initialize_process_state<R: tauri::Runtime, M: tauri::Manager<R>>(
+        app: &M,
+    ) -> Result<(), AppError> {
+        // Build initializes the single-instance plugin first, so a second GUI
+        // still activates the existing window. Acquire the shared GUI/headless
+        // lock before entering the event loop: returning an error from `setup`
+        // makes Tauri panic (and abort on macOS's non-unwinding callback).
+        let guard = instance::InstanceGuard::acquire()?;
+        tauri::Manager::manage(app, guard);
+        crate::host_environment::start_logging()?;
+        store::initialize_app_store()?;
+        if let Err(error) = terminal::server::bind() {
+            eprintln!("FutureOS terminal server bind failed: {error}");
+        }
+        Ok(())
+    }
+
+    /// Dispatch one run event. Generic over the runtime and split out of
+    /// [`run_with`] for the same reason: every callee here either takes
+    /// `AppHandle<R>` already or takes no handle at all, so a mock handle
+    /// exercises the arms. `ExitRequested` is the exception and cannot be
+    /// dispatched from a test at all: `tauri::ExitRequestApi` has private fields
+    /// and only Tauri's own event loop constructs it.
+    fn dispatch_run_event<R: tauri::Runtime>(
+        app_handle: &tauri::AppHandle<R>,
+        event: tauri::RunEvent,
+        launch: crate::launch::LaunchOptions,
+    ) {
+        match event {
             // `setup` runs while Tauri is still constructing its event loop.
             // Starting the bridge there races the runtime initialization on
             // macOS and can leave the detached start task without a live
@@ -1215,11 +1327,17 @@ mod gui {
                 let _ = crate::desktop_shutdown::begin("exit");
             }
             _ => {}
-        });
-        Ok(())
+        }
     }
 
-    fn start_backend_background(app: tauri::AppHandle, launch: crate::launch::LaunchOptions) {
+    /// Start the window's background work. Generic over the runtime so a test can
+    /// drive it with a mock handle: every loop it starts takes `AppHandle<R>` and
+    /// does its real work on the shared runtime, so the mock changes nothing about
+    /// what is started. Behaviour for the real runtime is unchanged.
+    fn start_backend_background<R: tauri::Runtime>(
+        app: tauri::AppHandle<R>,
+        launch: crate::launch::LaunchOptions,
+    ) {
         // Independent fixed-interval maintenance: app updates (24h),
         // Future balance (1h), and Future models (24h). Missed ticks while
         // suspended are skipped; each task runs at most once after resume.
@@ -1372,15 +1490,32 @@ mod gui {
         });
     }
 
+    /// Print the terminal delivery's notice — exactly the text the launcher itself
+    /// prints, so both audiences read the same invitation. Extracted so the notice
+    /// path is asserted against a writer instead of the process's own stdout.
+    ///
+    /// `#[cfg(test)]`: since upstream's QR change the production terminal path uses
+    /// `launch::print_to_terminal` (which can render the QR), so this writer-shaped
+    /// twin is exercised by the tests below and nothing else.
+    #[cfg(test)]
+    fn print_re_pair_notice<W: std::io::Write>(
+        terminal: &mut W,
+        reply: &crate::launch::Reply,
+    ) -> std::io::Result<()> {
+        terminal.write_all(crate::launch::invitation_notice(reply, false).as_bytes())?;
+        terminal.flush()
+    }
+
     #[cfg(test)]
     mod runtime_update_tests {
         use super::{
             apply_main_window_geometry, coalesce_runtime_updates, emit_approvals_updated_on,
             emit_approvals_updated_via, emit_remote_activity_on, emit_remote_activity_via,
-            emit_remote_re_pair_on, emit_review_updated_on, emit_review_updated_via,
-            emit_runtime_updates_on, emit_threads_updated, emit_threads_updated_on,
-            emit_threads_updated_via, main_window_geometry, runtime_update_drain_loop,
-            sample_thread_streaming, sample_thread_streaming_with, size_main_window_to_screen,
+            emit_remote_re_pair, emit_remote_re_pair_on, emit_remote_re_pair_via,
+            emit_review_updated_on, emit_review_updated_via, emit_runtime_updates_on,
+            emit_threads_updated, emit_threads_updated_on, emit_threads_updated_via,
+            main_window_geometry, runtime_update_drain_loop, sample_thread_streaming,
+            sample_thread_streaming_with, size_main_window_to_screen,
             thread_streaming_monitor_loop, ThreadRuntimeUpdate, ThreadRuntimeUpdateBatch,
         };
 
@@ -1584,6 +1719,10 @@ mod gui {
             // The public entry point reads the process-global handle, which no
             // test populates, so it takes the None arm without panicking.
             emit_threads_updated();
+            // Same two arms for the re-pair hand-off notification.
+            emit_remote_re_pair_via(Some(handle));
+            emit_remote_re_pair_via::<tauri::test::MockRuntime>(None);
+            emit_remote_re_pair();
         }
 
         #[test]
@@ -1597,6 +1736,51 @@ mod gui {
             tx.send(update("run-2", 2, "running", false)).unwrap();
             drop(tx);
             handle.join().expect("drain loop exits on disconnect");
+        }
+
+        /// The loop only enters its body while the process is neither stopping nor
+        /// frozen, and both flags are process-global: a sibling test that freezes
+        /// the registry leaves the drain loop exiting before its first `recv`. Reset
+        /// them, then drive the exits one by one — an idle 100ms poll (`Timeout` →
+        /// `continue`), a burst that keeps arriving until the 16ms window itself
+        /// expires (`remaining.is_zero()` → `break`), a window that closes empty
+        /// (`Timeout` → `break`), and a dropped sender (`Disconnected` → return).
+        #[test]
+        fn runtime_update_drain_loop_covers_every_receive_exit() {
+            crate::desktop_shutdown::reset_for_test();
+            crate::runtime::cancel_test_tasks();
+            let (tx, rx) = std::sync::mpsc::channel::<ThreadRuntimeUpdate>();
+            let drain = std::thread::spawn(move || runtime_update_drain_loop(rx));
+            // Empty channel: the 100ms poll expires and the loop continues.
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            // A steady stream for longer than the coalescing window, so the inner
+            // loop is still receiving when the 16ms budget runs out. The stream is
+            // *time-bounded* rather than a fixed count of messages: a count can be
+            // fully sent while the drain thread is descheduled on a loaded host,
+            // which is exactly the run that left `remaining.is_zero()` unexecuted.
+            let burst = tx.clone();
+            let producer = std::thread::spawn(move || {
+                let until = std::time::Instant::now() + std::time::Duration::from_millis(500);
+                let mut revision = 1;
+                while std::time::Instant::now() < until {
+                    if burst
+                        .send(update("run-1", revision, "running", false))
+                        .is_err()
+                    {
+                        return;
+                    }
+                    revision += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            });
+            producer.join().expect("the producer finishes");
+            // One update on its own, then a quiet channel: the window closes empty.
+            tx.send(update("run-1", 21, "completed", false)).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            // Sender gone: the next poll reports a disconnect and the loop returns.
+            drop(tx);
+            drain.join().expect("the drain loop exits on disconnect");
+            crate::desktop_shutdown::reset_for_test();
         }
 
         #[tokio::test]
@@ -1614,6 +1798,281 @@ mod gui {
     mod startup_paths_tests {
         use super::*;
 
+        /// Poll for the answer the delivered re-pair was supposed to write, with a
+        /// deadline: the delivery happens on the background runtime, so the test
+        /// waits for the effect instead of assuming it already happened.
+        fn wait_for_reply(path: &std::path::Path) -> crate::launch::Reply {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            let missing = path.display().to_string();
+            loop {
+                if let Some(reply) = crate::launch::read_reply(path) {
+                    return reply;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "no answer at {missing}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+
+        /// The answer has to reach whoever asked for it: another process named a file
+        /// and is waiting on it, and a re-pair that *fails* still has to answer — the
+        /// waiter would otherwise sit out its whole timeout for nothing.
+        #[test]
+        fn a_re_pair_answer_is_delivered_to_the_waiting_file() {
+            let _home = crate::auth_store::test_support::HomeGuard::new("re-pair-reply-file");
+            let reply_path = std::env::temp_dir().join(format!(
+                "futureos-re-pair-test-{}-{}.json",
+                std::process::id(),
+                line!()
+            ));
+            let _ = std::fs::remove_file(&reply_path);
+            spawn_remote_re_pair(RePairDelivery::Reply(reply_path.clone()));
+
+            let reply = wait_for_reply(&reply_path);
+            // This HOME has no pairing credentials, so the re-pair fails — and the
+            // failure *is* the answer: a reason, never a link the phone cannot use.
+            assert!(reply.link.is_none(), "{reply:?}");
+            assert!(reply.error.is_some(), "{reply:?}");
+            assert!(
+                crate::launch::invitation_notice(&reply, false)
+                    .contains("No pairing invitation was issued"),
+                "{reply:?}"
+            );
+            let _ = std::fs::remove_file(&reply_path);
+        }
+
+        /// A re-pair that fails *before* it can start one still has to be delivered —
+        /// the waiting launcher would otherwise sit out its whole timeout and then
+        /// report "another Desktop did not accept the request", which is not what
+        /// happened. Here the failure is the revocation itself: the pairing file's
+        /// directory is read-only, so it cannot be removed, and re-pairing must not
+        /// proceed past that.
+        #[test]
+        #[cfg(unix)]
+        fn a_failed_re_pair_is_delivered_as_a_reason() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let _home = crate::auth_store::test_support::HomeGuard::new("re-pair-revoke-fails");
+            let root = std::env::temp_dir().join(format!(
+                "futureos-readonly-home-{}-{}",
+                std::process::id(),
+                line!()
+            ));
+            std::fs::remove_dir_all(&root).ok();
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("remote_pairing.json"), b"{}").unwrap();
+            std::env::set_var("FUTURE_HOME", &root);
+            // Removing a file needs write permission on its directory, so this is
+            // the one step that makes the revocation fail.
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+            let reply_path = std::env::temp_dir().join(format!(
+                "futureos-re-pair-failed-{}-{}.json",
+                std::process::id(),
+                line!()
+            ));
+            let _ = std::fs::remove_file(&reply_path);
+            spawn_remote_re_pair(RePairDelivery::Reply(reply_path.clone()));
+            let reply = wait_for_reply(&reply_path);
+
+            // Leave the filesystem as it was before judging the result.
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let _ = std::fs::remove_file(&reply_path);
+            std::env::remove_var("FUTURE_HOME");
+
+            assert!(reply.link.is_none(), "{reply:?}");
+            let error = reply
+                .error
+                .expect("a re-pair that failed must deliver the reason");
+            assert!(
+                error.contains("remove pairing creds"),
+                "the reason must be the revocation failure, not a start failure: {error}"
+            );
+        }
+
+        /// A delivery that cannot be written is reported, not fatal, and leaves the
+        /// named target exactly as it was — a directory here, which is also the
+        /// deterministic way to make `write_reply` fail.
+        #[test]
+        fn an_undeliverable_re_pair_answer_leaves_the_target_alone() {
+            let _home = crate::auth_store::test_support::HomeGuard::new("re-pair-undeliverable");
+            let directory = std::env::temp_dir().join(format!(
+                "futureos-re-pair-target-{}-{}",
+                std::process::id(),
+                line!()
+            ));
+            std::fs::remove_dir_all(&directory).ok();
+            std::fs::create_dir_all(&directory).unwrap();
+            spawn_remote_re_pair(RePairDelivery::Reply(directory.clone()));
+
+            // A failed re-pair is still attempted, so wait past the point the answer
+            // would have been written before judging the target untouched.
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            assert!(directory.is_dir(), "{directory:?} was replaced");
+            assert_eq!(
+                std::fs::read_dir(&directory).unwrap().count(),
+                0,
+                "a failed delivery must not leave partial files behind"
+            );
+            let _ = std::fs::remove_dir(&directory);
+        }
+
+        /// The terminal delivery prints the *launcher's* notice verbatim, so both
+        /// audiences read the same invitation — and the first writer failure is
+        /// reported to the caller instead of being swallowed inside the helper,
+        /// whether it happens while writing or while flushing.
+        #[test]
+        fn print_re_pair_notice_writes_the_launcher_notice() {
+            let reply = crate::launch::Reply::of_error("the remote start ended in Failed");
+            let mut sink = Vec::new();
+            print_re_pair_notice(&mut sink, &reply).expect("writing to memory cannot fail");
+            let written = String::from_utf8(sink).expect("the notice is UTF-8");
+            assert_eq!(written, crate::launch::invitation_notice(&reply, false));
+            assert!(
+                written.contains("No pairing invitation was issued"),
+                "{written}"
+            );
+
+            struct Failed(&'static str);
+            impl std::io::Write for Failed {
+                fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                    if self.0 == "write" {
+                        return Err(std::io::Error::other("closed"));
+                    }
+                    Ok(buf.len())
+                }
+                fn flush(&mut self) -> std::io::Result<()> {
+                    if self.0 == "flush" {
+                        return Err(std::io::Error::other("buffered flush failed"));
+                    }
+                    Ok(())
+                }
+            }
+            let write_error = print_re_pair_notice(&mut Failed("write"), &reply)
+                .expect_err("a closed sink must report the write failure");
+            assert_eq!(write_error.to_string(), "closed");
+            // The sink accepts the notice and then refuses to flush it: the caller
+            // must hear about that too, or a half-delivered invitation would look
+            // like a successful one.
+            let flush_error = print_re_pair_notice(&mut Failed("flush"), &reply)
+                .expect_err("a sink that cannot flush must report it");
+            assert_eq!(flush_error.to_string(), "buffered flush failed");
+        }
+
+        /// Points one of this process's descriptors at a file and restores it on
+        /// drop, so a test can read what a path that writes to `stdout()` /
+        /// `stderr()` really published. `println!`/`eprintln!` *macros* are captured
+        /// by the test harness; the `std::io` handles and `libc::write` below them
+        /// are not.
+        #[cfg(unix)]
+        struct FdCapture {
+            saved: i32,
+            fd: i32,
+            label: &'static str,
+            path: std::path::PathBuf,
+        }
+
+        #[cfg(unix)]
+        impl FdCapture {
+            fn stdout() -> Self {
+                Self::begin(1, "stdout")
+            }
+
+            /// A startup failure is reported on stderr, which is what a user sees.
+            fn stderr() -> Self {
+                Self::begin(2, "stderr")
+            }
+
+            fn begin(fd: i32, label: &'static str) -> Self {
+                use std::os::fd::AsRawFd;
+                let path = std::env::temp_dir().join(format!(
+                    "futureos-fd-capture-{}-{}-{}.txt",
+                    label,
+                    std::process::id(),
+                    line!()
+                ));
+                let _ = std::fs::remove_file(&path);
+                let sink = std::fs::File::create(&path).expect("create the capture file");
+                // SAFETY: both calls touch only this process's descriptor table;
+                // `saved` is restored in `drop` even if the test body panics.
+                let saved = unsafe { libc::dup(fd) };
+                assert!(saved >= 0, "dup({fd}): {}", std::io::Error::last_os_error());
+                let redirected = unsafe { libc::dup2(sink.as_raw_fd(), fd) };
+                // Hoisted: a call inside the message is evaluated only when the
+                // assertion fails, so its own line would go unexecuted.
+                let dup2_failure = format!("dup2({fd}): {}", std::io::Error::last_os_error());
+                assert_eq!(redirected, fd, "{dup2_failure}");
+                Self {
+                    saved,
+                    fd,
+                    label,
+                    path,
+                }
+            }
+
+            /// Everything captured so far.
+            fn text(&self) -> String {
+                std::fs::read_to_string(&self.path).unwrap_or_default()
+            }
+
+            /// The captured text, once it holds `needle` — the work runs on the
+            /// background runtime, so poll for the effect instead of assuming it.
+            fn wait_for(&self, needle: &str) -> String {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+                loop {
+                    let text = self.text();
+                    if text.contains(needle) {
+                        return text;
+                    }
+                    let message = format!(
+                        "nothing on this process's {} matching {needle:?}: {text:?}",
+                        self.label
+                    );
+                    assert!(std::time::Instant::now() < deadline, "{message}");
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            }
+        }
+
+        #[cfg(unix)]
+        impl Drop for FdCapture {
+            fn drop(&mut self) {
+                // SAFETY: `saved` is the descriptor `dup` returned above.
+                unsafe {
+                    libc::dup2(self.saved, self.fd);
+                    libc::close(self.saved);
+                }
+                let _ = std::fs::remove_file(&self.path);
+            }
+        }
+
+        /// `--re-pair` typed at a terminal names no file, so the invitation goes to
+        /// *this* process's stdout. That is the whole difference between the two
+        /// deliveries, and it is asserted here: the notice is read back out of fd 1.
+        #[cfg(unix)]
+        #[test]
+        fn the_terminal_delivery_prints_the_launcher_notice_to_this_stdout() {
+            let _home = crate::auth_store::test_support::HomeGuard::new("re-pair-terminal");
+            let capture = FdCapture::stdout();
+            spawn_remote_re_pair(RePairDelivery::Terminal { qr: false });
+
+            // This HOME has no pairing credentials, so the re-pair fails and the
+            // *failure* is the invitation's content — the same notice the launcher
+            // prints for a file delivery.
+            let notice = capture.wait_for("No pairing invitation was issued");
+            drop(capture);
+            assert!(
+                notice.contains("No pairing invitation was issued"),
+                "{notice:?}"
+            );
+            assert!(
+                notice.contains("The Remote page in the Desktop window"),
+                "the terminal must be sent on to the Remote page: {notice:?}"
+            );
+        }
+
         #[test]
         fn start_thread_streaming_monitor_spawns_the_loop() {
             // The spawned loop parks (APP_HANDLE is unset in tests) and sleeps; this
@@ -1622,6 +2081,313 @@ mod gui {
             start_thread_streaming_monitor();
         }
 
+        /// The Desktop's registration is runtime-generic: the same chain builds and
+        /// installs its plugins for a mock runtime. That is the property the seam
+        /// exists for — a plugin or hook that needed `Wry` would fail right here —
+        /// and the shell plugin is asserted through the state its own setup
+        /// installs, so dropping it from the chain fails this test.
+        #[test]
+        fn the_desktop_registration_builds_for_any_runtime() {
+            use tauri::Manager;
+
+            let builder = gui_builder::<tauri::test::MockRuntime>();
+            // The production builder lets Tauri install its default macOS menu, and
+            // `muda` may only build menus on the main thread — which no libtest
+            // thread is. `tauri::test::mock_builder` turns it off for the same
+            // reason; the registration under test is untouched by it.
+            #[cfg(target_os = "macos")]
+            let builder = builder.enable_macos_default_menu(false);
+            let mut context = tauri::test::mock_context(tauri::test::noop_assets());
+            // **This identifier is load-bearing, and an empty one kills the process.**
+            // The single-instance plugin this chain registers computes its socket as
+            // `/tmp/<identifier>_si.sock`; when a *live* listener is already there it
+            // answers with `std::process::exit(0)`
+            // (`notify_singleton` → exit, tauri-plugin-single-instance 2.4.3
+            // `platform_impl/macos.rs:23-31`). The mock context's identifier is the
+            // empty string — `/tmp/_si.sock` for *every* process on this host — so two
+            // concurrent runs of this suite (another worktree, another unit, a
+            // leftover child) silently kill one of them mid-suite: exit status 0, no
+            // test result line, and every test after this one unrun. A coverage
+            // measurement taken over such a run is partial with no error anywhere
+            // (measured: a gui leg that reported 927 of 2074 tests and lost
+            // `store`/`runtime`/`tasks` entirely). A process-unique identifier gives
+            // this test its own socket, which is why it no longer depends on what else
+            // is running on the host.
+            // The pid element is prefixed with a letter on purpose: D-Bus (which the
+            // single-instance plugin uses on LINUX) rejects a name element that
+            // starts with a digit, so `com.futureos.test.7995` is an invalid
+            // well-known name there and the plugin panics on `unwrap()`. Prefixing
+            // keeps the uniqueness this needs while staying a legal D-Bus name.
+            context.config_mut().identifier = format!("com.futureos.test.p{}", std::process::id());
+            // The app is built against `tauri.conf.json`, which carries the updater's
+            // plugin section; a mock context has none, and the updater refuses to
+            // initialize without one. Only the section's presence matters here.
+            context.config_mut().plugins.0.insert(
+                "updater".to_string(),
+                serde_json::json!({ "pubkey": "fixture", "endpoints": [] }),
+            );
+            let app = builder
+                .build(context)
+                .expect("the mock runtime accepts the Desktop's registration");
+            assert!(
+                app.try_state::<tauri_plugin_shell::Shell<tauri::test::MockRuntime>>()
+                    .is_some(),
+                "the registration must install the shell plugin"
+            );
+        }
+
+        /// The window's background work starts on the app it is handed: every loop
+        /// it starts takes an `AppHandle<R>`, so a mock handle reaches them, and
+        /// the loops do their real work on the shared runtime — drained here before
+        /// this test's HOME goes away.
+        #[test]
+        fn backend_background_work_starts_for_any_runtime() {
+            let _home = crate::auth_store::test_support::HomeGuard::new("backend-background");
+            let _mock = crate::agent_bridge::test_support::mock_agent();
+            crate::store::initialize_app_store().expect("init store");
+            let app = tauri::test::mock_app();
+            start_backend_background(
+                app.handle().clone(),
+                crate::launch::LaunchOptions::default(),
+            );
+            // The launch path's own reconciliation waits for Agent readiness (3s)
+            // and the startup maintenance job runs to completion; give both their
+            // window, then actually wait for the futures to be dropped.
+            std::thread::sleep(std::time::Duration::from_secs(4));
+            // The other launch shape: `--re-pair` takes the re-pair delivery in place
+            // of the auto-connect pass. No second wait — the delivery's own lines are
+            // the ones the terminal fixture asserts, and its task is drained below.
+            start_backend_background(
+                app.handle().clone(),
+                crate::launch::LaunchOptions {
+                    re_pair: true,
+                    no_qr: false,
+                },
+            );
+            crate::runtime::cancel_test_tasks();
+        }
+
+        /// Runs `child` in a fresh process and hands its output back to the caller —
+        /// which is the only way to observe a failure this host reports with
+        /// `eprintln!`: in this toolchain the harness's output capture is set for
+        /// *every* thread (`std::thread::spawn`ed maintenance jobs included), so an
+        /// in-process `dup2` of fd 2 sees nothing while the message shows up in the
+        /// harness's own dump. `--nocapture` in the child turns the capture off, so
+        /// the child's stderr is a real stream again. Inside the child this runs
+        /// `child` and returns `None`, so a fixture reads as one function:
+        ///
+        /// ```ignore
+        /// if let Some((status, stderr)) = in_child_process(MARKER, "path::to::test", || { … }) {
+        ///     assert!(status.success(), "{stderr}");
+        ///     assert!(stderr.contains("expected"), "{stderr}");
+        ///     return;
+        /// }
+        /// ```
+        ///
+        /// The child gets its own `HOME`: the launch path it drives must never resolve
+        /// the parent's temporary store.
+        fn in_child_process(
+            marker: &str,
+            test_path: &str,
+            child: impl FnOnce(),
+        ) -> Option<(std::process::ExitStatus, String)> {
+            if std::env::var_os(marker).is_some() {
+                child();
+                return None;
+            }
+            let exe = std::env::current_exe().expect("test binary path");
+            let child_home = std::env::temp_dir()
+                .join(format!("futureos-child-{}-{marker}", std::process::id()));
+            std::fs::create_dir_all(&child_home).expect("child HOME");
+            let output = std::process::Command::new(exe)
+                .args([test_path, "--exact", "--nocapture"])
+                .env(marker, "1")
+                .env("HOME", &child_home)
+                .env_remove("FUTURE_HOME")
+                .output()
+                .expect("spawn the isolated test process");
+            let _ = std::fs::remove_dir_all(&child_home);
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            Some((output.status, stderr))
+        }
+
+        /// The child's report, rendered before any assertion so a non-zero exit is
+        /// always explained (a lazily built message is never exercised on a pass).
+        fn child_report(status: &std::process::ExitStatus, stderr: &str) -> String {
+            format!("the isolated process must pass (exit {status}):\n{stderr}")
+        }
+
+        /// `serve()` is one-shot per process: the arm that reports a failure can only
+        /// be observed in a process where the listener is already taken — which is
+        /// exactly the state the fixture above consumes, so no test *body* can reach
+        /// it here. A child process gets it deterministically, the pattern
+        /// `commands::terminal::tests` uses for the pre-bind arm of the same server.
+        #[test]
+        fn a_ready_event_whose_listener_is_already_taken_reports_the_serve_failure() {
+            const CHILD_MARKER: &str = "FUTUREOS_READY_SERVE_CHILD";
+            if let Some((status, stderr)) = in_child_process(
+                CHILD_MARKER,
+                "gui::startup_paths_tests::a_ready_event_whose_listener_is_already_taken_reports_the_serve_failure",
+                || {
+                    // The child's only job: take the listener, then dispatch the event
+                    // whose arm must fail to serve it.
+                    terminal::server::bind().expect("bind the listener");
+                    terminal::server::serve().expect("the child serves it first");
+                    let app = tauri::test::mock_app();
+                    dispatch_run_event(
+                        app.handle(),
+                        tauri::RunEvent::Ready,
+                        crate::launch::LaunchOptions::default(),
+                    );
+                },
+            ) {
+                let report = child_report(&status, &stderr);
+                assert!(status.success(), "{report}");
+                assert!(
+                    stderr.contains("FutureOS terminal server failed to start"),
+                    "the arm must report the serve failure it could not avoid: {report}"
+                );
+            }
+        }
+
+        /// A store that cannot be opened is reported, not swallowed: both `Err` arms
+        /// of the post-readiness reconciliation run, and the removal arm must *not*.
+        #[cfg(unix)]
+        #[test]
+        fn a_broken_store_makes_the_startup_reconciliation_report_its_failures() {
+            const CHILD_MARKER: &str = "FUTUREOS_RECONCILE_BROKEN_CHILD";
+            if let Some((status, stderr)) = in_child_process(
+                CHILD_MARKER,
+                "gui::startup_paths_tests::a_broken_store_makes_the_startup_reconciliation_report_its_failures",
+                || {
+                    let _home =
+                        crate::auth_store::test_support::HomeGuard::new("startup-reconcile-broken");
+                    let _mock = crate::agent_bridge::test_support::mock_agent();
+                    crate::store::initialize_app_store().expect("init store");
+                    let database =
+                        future_app_settings::app_db_path().expect("db path under HOME");
+                    // A directory where the database should be makes `Connection::open`
+                    // fail immediately, on every platform. Deliberately not "garbage
+                    // bytes": a zero-filled header is what SQLite treats as a brand-new
+                    // database, so that shape would silently succeed and this fixture
+                    // would assert nothing.
+                    crate::store::close_pool();
+                    std::fs::remove_file(&database).expect("drop the fixture database");
+                    std::fs::create_dir(&database).expect("make the store unopenable");
+                    crate::runtime::cancel_test_tasks();
+                    let capture = FdCapture::stderr();
+                    let app = tauri::test::mock_app();
+                    start_backend_background(
+                        app.handle().clone(),
+                        crate::launch::LaunchOptions::default(),
+                    );
+                    // The block runs three seconds after readiness; poll for the effect
+                    // rather than sleeping blind, then hand the text to the parent.
+                    capture.wait_for("FutureOS orphan-session reconcile failed");
+                    let text = capture.wait_for("FutureOS empty-conversation reconcile failed");
+                    drop(capture);
+                    crate::runtime::cancel_test_tasks();
+                    eprintln!("isolated-process stderr:\n{text}");
+                },
+            ) {
+                let report = child_report(&status, &stderr);
+                assert!(status.success(), "{report}");
+                assert!(
+                    stderr.contains("FutureOS orphan-session reconcile failed"),
+                    "the unreadable store must be reported: {report}"
+                );
+                assert!(
+                    stderr.contains("FutureOS empty-conversation reconcile failed"),
+                    "{report}"
+                );
+                assert!(
+                    !stderr.contains("empty conversation(s)"),
+                    "an unreadable store cannot have removed a conversation: {report}"
+                );
+            }
+        }
+
+        /// The third arm: an empty conversation — a thread the Agent has never been
+        /// asked to fill — is dropped by the same pass, and the count is reported.
+        #[cfg(unix)]
+        #[test]
+        fn an_empty_conversation_is_removed_by_the_startup_reconciliation() {
+            const CHILD_MARKER: &str = "FUTUREOS_RECONCILE_EMPTY_CHILD";
+            const SESSION: &str = "sess-empty-conversation";
+            if let Some((status, stderr)) = in_child_process(
+                CHILD_MARKER,
+                "gui::startup_paths_tests::an_empty_conversation_is_removed_by_the_startup_reconciliation",
+                || {
+                    let _home =
+                        crate::auth_store::test_support::HomeGuard::new("startup-reconcile-empty");
+                    let mock = crate::agent_bridge::test_support::mock_agent();
+                    // Attribution: the low-frequency discovery backstop prints the
+                    // *same* message from `agent_bridge::observer`, so pin that tick
+                    // away — its interval is a cfg(test) seam read on every iteration,
+                    // and in this child the env var cannot affect any other test.
+                    std::env::set_var("FUTURE_TEST_DISCOVERY_INTERVAL_MS", "3600000");
+                    crate::store::initialize_app_store().expect("init store");
+                    // The first statement of the block hard-deletes threads whose Agent
+                    // session is not live, so the Agent must claim this session for the
+                    // row to reach the emptiness probe — and the launch path asks more
+                    // than once (its global session observer imports on attach), so
+                    // every queued reply agrees.
+                    for _ in 0..3 {
+                        mock.push_data("list_session_ids", serde_json::json!({"ids": [SESSION]}));
+                    }
+                    // A page with no message-role entry and no continuation proves
+                    // emptiness.
+                    mock.push_data("get_session_entries", serde_json::json!({"entries": []}));
+                    let database =
+                        future_app_settings::app_db_path().expect("db path under HOME");
+                    crate::store::close_pool();
+                    {
+                        let conn =
+                            rusqlite::Connection::open(&database).expect("open the fixture store");
+                        conn.execute_batch(&format!(
+                            "INSERT INTO workspaces(id,name,kind,path,created_at,updated_at)
+                               VALUES('w','W','temporary','fixture',1,1);
+                             INSERT INTO threads(id,workspace_id,mode,title,status,agent_session_id,created_at,updated_at)
+                               VALUES('t','w','chat','T','active','{SESSION}',1,1);"
+                        ))
+                        .expect("plant one thread that never produced a run");
+                    }
+                    crate::runtime::cancel_test_tasks();
+                    let capture = FdCapture::stderr();
+                    let app = tauri::test::mock_app();
+                    start_backend_background(
+                        app.handle().clone(),
+                        crate::launch::LaunchOptions::default(),
+                    );
+                    let text = capture.wait_for("FutureOS: removed 1 empty conversation(s)");
+                    drop(capture);
+                    crate::runtime::cancel_test_tasks();
+                    // The arm's effect, not just its message: the row is gone. Read it
+                    // back through a fresh connection (the pool was released above).
+                    let remaining: i64 = {
+                        let conn =
+                            rusqlite::Connection::open(&database).expect("open the fixture store");
+                        conn.query_row("SELECT COUNT(*) FROM threads WHERE id='t'", [], |row| {
+                            row.get(0)
+                        })
+                        .expect("count the planted thread")
+                    };
+                    assert_eq!(remaining, 0, "the empty conversation must be dropped");
+                    eprintln!("isolated-process stderr:\n{text}");
+                },
+            ) {
+                let report = child_report(&status, &stderr);
+                assert!(status.success(), "{report}");
+                assert!(
+                    stderr.contains("FutureOS: removed 1 empty conversation(s)"),
+                    "the removal must be reported with its count: {report}"
+                );
+                assert!(
+                    !stderr.contains("empty-conversation reconcile failed"),
+                    "the removal arm must be taken, not the failure arm: {report}"
+                );
+            }
+        }
         #[test]
         fn spawn_remote_auto_connect_returns_when_no_creds() {
             // API key present + auto-connect enabled + no persisted pairing creds →
@@ -1636,6 +2402,451 @@ mod gui {
             })
             .unwrap();
             spawn_remote_auto_connect();
+        }
+
+        /// **The deferred arm.** A Desktop that is signed in with a pairing on disk but
+        /// whose platform cannot be reached starts the bridge anyway and reports the
+        /// outcome instead of failing the launch: the pass runs, `remote::start`
+        /// returns in a non-ready phase, and the caller says so.
+        ///
+        /// The state is what makes it deterministic and offline: the signed-in platform
+        /// is a closed port, so the credential refresh is a connection-refused
+        /// transport failure (`network`), which `start_failure` categorizes into a
+        /// not-running status rather than an `Err`. The arm's own report is asserted —
+        /// and the *other* arm is asserted absent, so an input that slipped into the
+        /// failure path fails this test instead of passing it.
+        #[cfg(unix)]
+        #[test]
+        fn an_auto_connect_whose_platform_is_unreachable_is_reported_as_deferred() {
+            const CHILD_MARKER: &str = "FUTUREOS_AUTO_CONNECT_DEFERRED_CHILD";
+            if let Some((status, stderr)) = in_child_process(
+                CHILD_MARKER,
+                "gui::startup_paths_tests::an_auto_connect_whose_platform_is_unreachable_is_reported_as_deferred",
+                || {
+                    let _home =
+                        crate::auth_store::test_support::HomeGuard::new("auto-connect-deferred");
+                    crate::store::initialize_app_store().expect("init store");
+                    // Signed in (the gate needs a key) at a platform nothing listens on.
+                    crate::auth_store::set_future_login("sekret", "http://127.0.0.1:1")
+                        .expect("sign in");
+                    crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
+                        auto_connect_remote: Some(true),
+                        ..Default::default()
+                    })
+                    .expect("enable auto-connect");
+                    // A pairing on disk is the third gate: a valid NKey seed, so the
+                    // refresh gets as far as the request that then cannot be sent.
+                    let creds = crate::remote::test_support::pairing_creds("shell-deferred");
+                    crate::remote::pairing::save_creds(&creds).expect("persist the pairing");
+
+                    let capture = FdCapture::stderr();
+                    spawn_remote_auto_connect();
+                    let text = capture.wait_for("FutureOS remote auto-connect: deferred (");
+                    drop(capture);
+                    crate::runtime::cancel_test_tasks();
+                    eprintln!("isolated-process stderr:\n{text}");
+                },
+            ) {
+                let report = child_report(&status, &stderr);
+                assert!(status.success(), "{report}");
+                assert!(
+                    stderr.contains("FutureOS remote auto-connect: deferred ("),
+                    "the deferred arm must report the phase it stopped in: {report}"
+                );
+                assert!(
+                    !stderr.contains("FutureOS remote auto-connect failed"),
+                    "a categorized refusal is a deferred start, not a failure: {report}"
+                );
+                assert!(
+                    !stderr.contains("FutureOS remote auto-connect: connected"),
+                    "nothing connected; the ready arm must not have run: {report}"
+                );
+            }
+        }
+
+        /// **The failed arm.** A pairing whose desktop NKey cannot be read is a local
+        /// fault, not a remote condition: `remote::start` returns `Err`, and the pass
+        /// reports it as a failure. The two arms are separated by exactly this — a
+        /// categorized remote answer versus an uncategorized local one — so this
+        /// fixture asserts the failure text and the *absence* of the deferred one.
+        #[cfg(unix)]
+        #[test]
+        fn an_auto_connect_with_an_unreadable_pairing_key_is_reported_as_failed() {
+            const CHILD_MARKER: &str = "FUTUREOS_AUTO_CONNECT_FAILED_CHILD";
+            if let Some((status, stderr)) = in_child_process(
+                CHILD_MARKER,
+                "gui::startup_paths_tests::an_auto_connect_with_an_unreadable_pairing_key_is_reported_as_failed",
+                || {
+                    let _home =
+                        crate::auth_store::test_support::HomeGuard::new("auto-connect-failed");
+                    crate::store::initialize_app_store().expect("init store");
+                    crate::auth_store::set_future_login("sekret", "http://127.0.0.1:1")
+                        .expect("sign in");
+                    crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
+                        auto_connect_remote: Some(true),
+                        ..Default::default()
+                    })
+                    .expect("enable auto-connect");
+                    // Same persisted shape as the deferred fixture — valid handshake
+                    // version and peer identity, so the legacy-upgrade branch is not
+                    // what runs — with the one field a local fault belongs in.
+                    let mut creds = crate::remote::test_support::pairing_creds("shell-failed");
+                    creds.nkey_seed = "not-a-nkey-seed".to_string();
+                    crate::remote::pairing::save_creds(&creds).expect("persist the pairing");
+
+                    let capture = FdCapture::stderr();
+                    spawn_remote_auto_connect();
+                    let text = capture.wait_for("FutureOS remote auto-connect failed: ");
+                    drop(capture);
+                    crate::runtime::cancel_test_tasks();
+                    eprintln!("isolated-process stderr:\n{text}");
+                },
+            ) {
+                let report = child_report(&status, &stderr);
+                assert!(status.success(), "{report}");
+                assert!(
+                    stderr.contains("FutureOS remote auto-connect failed: read desktop NKey"),
+                    "the failure must name the local fault that caused it: {report}"
+                );
+                assert!(
+                    !stderr.contains("FutureOS remote auto-connect: deferred ("),
+                    "an uncategorized local error is an Err from start, not a status: {report}"
+                );
+            }
+        }
+
+        /// **The ready arm.** The whole pass runs to a *connected* bridge: the mock
+        /// platform is reachable, the fake broker is up, and the pass's own pairing
+        /// request is answered — so `remote::start` returns `Ready` and the arm whose
+        /// body reports a connection executed.
+        ///
+        /// The assertion is the pass's effect, not the log line: the bridge is
+        /// installed in the process-global supervisor with `Ready` and with the
+        /// pairing the pass minted. Nothing else in this test starts a bridge, so the
+        /// state is attributable to `spawn_remote_auto_connect`, and the bridge is
+        /// stopped before the test returns (a leaked one would break the fixture that
+        /// asserts `SUPERVISOR.state` is empty).
+        ///
+        /// Two robustness facts (checked in the source, §S6.7.2): `web_client_enabled()`
+        /// is `true` in test builds, and a *failed* `bind_web_listener` is non-fatal —
+        /// the bridge still reports `Ready` — so another test process holding port 8022
+        /// does not invalidate this fixture.
+        #[tokio::test]
+        async fn an_auto_connect_that_connects_is_reported_as_connected() {
+            use crate::remote::{test_support::MockPlatform, RemotePhase};
+
+            let _home = crate::auth_store::test_support::HomeGuard::new("auto-connect-ready");
+            crate::store::initialize_app_store().expect("init store");
+            crate::runtime::cancel_test_tasks();
+            // Signed in against the mock platform: the gate needs a key, and the
+            // credential refresh must reach a server that answers.
+            let platform = MockPlatform::start().await;
+            let nats = crate::remote::test_support::FakeNats::start().await;
+            crate::remote::test_support::sign_in(platform.url());
+            // The gate also requires a persisted pairing, and the pass then *refreshes*
+            // it (`establish` → `refresh_bridge_jwt`), so the mock platform has to
+            // answer the refresh with the broker's address. A valid seed and a v2
+            // handshake keep this out of the legacy-upgrade branch, so the refresh is
+            // what runs.
+            let creds = crate::remote::test_support::pairing_creds("shell-ready");
+            crate::remote::pairing::save_creds(&creds).expect("persist the pairing");
+            platform.respond_refresh(nats.url());
+            crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
+                auto_connect_remote: Some(true),
+                ..Default::default()
+            })
+            .expect("enable auto-connect");
+            // No persisted pairing: `establish()` mints one against the mock platform,
+            // so the pass walks its whole path to a connected bridge.
+            assert!(
+                crate::remote::pairing::load_creds().is_some(),
+                "the gate needs a persisted pairing for the pass to run at all"
+            );
+
+            spawn_remote_auto_connect();
+
+            // The pass runs on the shared runtime; poll for its effect.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                let status = crate::remote::status();
+                if matches!(status.phase, RemotePhase::Ready) {
+                    assert_eq!(
+                        status.pair_id, creds.pair_id,
+                        "the ready bridge runs the pairing the pass refreshed"
+                    );
+                    assert_eq!(
+                        status.nats_url,
+                        nats.url(),
+                        "…against the broker the refresh pointed it at"
+                    );
+                    assert!(
+                        crate::remote::pairing::load_creds().is_some(),
+                        "a ready bridge keeps its pairing on disk"
+                    );
+                    break;
+                }
+                let message = format!(
+                    "the ready arm never ran; last status {status:?}, last error {:?}",
+                    status.reason
+                );
+                assert!(std::time::Instant::now() < deadline, "{message}");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+
+            // Leave no bridge behind: the remote fixtures assert on an empty slot, and
+            // the local web listener takes the *fixed* port 8022, which the rest of the
+            // suite also needs. `remote::stop()` tears the generation down
+            // asynchronously, so wait (bounded) until the port is bindable again — the
+            // peers' own bridge test does the same, and skipping it would make this
+            // fixture a contributor to the suite's port-8022 flake.
+            crate::remote::stop();
+            crate::runtime::cancel_test_tasks();
+            let freed = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while std::net::TcpListener::bind(("127.0.0.1", 8022)).is_err() {
+                assert!(
+                    std::time::Instant::now() < freed,
+                    "the web listener never released port 8022"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            drop((platform, nats));
+        }
+
+        /// The startup steps that need no window really run on the app they are
+        /// handed — and the lock they take is *published as managed state*, which
+        /// is what makes a second Desktop refuse to start rather than run beside
+        /// this one.
+        #[test]
+        fn process_state_initializes_without_a_window() {
+            use tauri::Manager;
+
+            let _home = crate::auth_store::test_support::HomeGuard::new("process-state");
+            let app = tauri::test::mock_app();
+            initialize_process_state(&app).expect("initialize process state");
+
+            // (1) The shared GUI/headless lock: the file exists under this HOME and
+            // the *live* guard is managed on the app — a second acquisition of the
+            // same data directory is refused, which is the property that stops two
+            // Desktops, so the assertion is about the lock, not about a path.
+            let data_directory = future_app_settings::app_dir().expect("app dir under HOME");
+            // Hoisted: a format argument is evaluated only when the assertion
+            // fails, so a message built inside it leaves its own line unexecuted
+            // in a passing run (the trap §6.6 records).
+            let lock_missing = format!("the lock file must exist at {}", data_directory.display());
+            assert!(
+                data_directory.join("desktop.lock").is_file(),
+                "{lock_missing}"
+            );
+            assert!(
+                app.try_state::<instance::InstanceGuard>().is_some(),
+                "the acquired guard must be published as managed state"
+            );
+            let refused = instance::InstanceGuard::acquire()
+                .err()
+                .expect("the data directory is already owned by this app")
+                .to_string();
+            assert!(refused.contains("Desktop is already running"), "{refused}");
+
+            // (2) The host log: `start_logging` opened the file this host reports
+            // as its log, so a startup failure after this point has somewhere to go.
+            let log = crate::host_environment::log_file_path();
+            let log_missing = format!("the host log must exist at {}", log.display());
+            assert!(log.is_file(), "{log_missing}");
+
+            // (3) The app store: the database behind it exists and answers.
+            let database = future_app_settings::app_db_path().expect("db path under HOME");
+            let database_missing = format!("the database must exist at {}", database.display());
+            assert!(database.is_file(), "{database_missing}");
+
+            // (4) The terminal listener: bound (already memoised when a sibling
+            // test bound it), and reported by the same accessor the webview uses.
+            assert!(
+                terminal::server::info().is_some(),
+                "the terminal listener must be bound after startup"
+            );
+        }
+
+        /// `Ready` starts the window's background work on the handle the event
+        /// carries, and puts the terminal listener into serve mode. Both halves are
+        /// asserted through an effect of the arm, not through the call itself.
+        ///
+        /// The Agent assertion is deliberately *not* "an observer attached": the
+        /// global observers are once-per-process (`session_events::STARTED` and
+        /// friends) and a sibling test that already started them leaves this one
+        /// with no observable, which made an earlier draft of this fixture
+        /// order-dependent. The launch path's own post-readiness reconciliation is
+        /// created fresh by `start_backend_background`, so it runs here whatever
+        /// earlier tests did — and it asks the Agent for its session list.
+        #[test]
+        fn the_ready_event_starts_the_window_work_and_serves_the_terminal() {
+            let _home = crate::auth_store::test_support::HomeGuard::new("run-event-ready");
+            let mock = crate::agent_bridge::test_support::mock_agent();
+            crate::store::initialize_app_store().expect("init store");
+            // A sibling test can have frozen the process-global task registry
+            // (`perform_stop` does), and `spawn_native` is then a no-op — the very
+            // line under test would not run. Open it, exactly as the shutdown
+            // fixture does.
+            crate::runtime::cancel_test_tasks();
+            let app = tauri::test::mock_app();
+            // `run_with` binds before the event loop starts, and `serve` is
+            // one-shot per process, so this test owns the transition it asserts.
+            let _bound = terminal::server::bind().expect("bind the terminal listener");
+            // Attribution: the assertion below requires a *new* session-list
+            // command to arrive after this dispatch, so a leftover reconciliation
+            // from an earlier test cannot satisfy it.
+            let before = mock.requests_of("list_session_ids").len();
+            dispatch_run_event(
+                app.handle(),
+                tauri::RunEvent::Ready,
+                crate::launch::LaunchOptions::default(),
+            );
+
+            // (1) The arm served the listener it was handed. `serve` can only
+            // report this error after an accept loop took the listener, and the
+            // loop that is live here is the one this dispatch started.
+            let served_again = terminal::server::serve();
+            let error = served_again.expect_err("the Ready arm must have started the accept loop");
+            assert!(error.contains("already serving"), "{error}");
+
+            // (2) The spawned native job is the launch path: supervision (a no-op
+            // in a test build) then the window's background work, whose
+            // reconciliation asks the Agent which sessions are still live. The mock
+            // records every command it is asked for, and its log started empty for
+            // this test.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while mock.requests_of("list_session_ids").len() == before {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the Ready event never started the window's background work"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            // Let the startup maintenance job finish before this test's HOME goes
+            // away (the window it needs is the same one the assertion above waited
+            // through).
+            crate::runtime::cancel_test_tasks();
+        }
+
+        /// `Exit` reaches the shutdown barrier: producer admission closes and the
+        /// stop operation is published, naming the reason the event gave.
+        #[test]
+        fn the_exit_event_closes_admission_and_publishes_the_stop() {
+            let _home = crate::auth_store::test_support::HomeGuard::new("run-event-exit");
+            let _mock = crate::agent_bridge::test_support::mock_agent();
+            // Start from a known barrier state: this is the same flag a sibling
+            // shutdown fixture deliberately leaves closed.
+            crate::desktop_shutdown::reset_for_test();
+            assert!(
+                !crate::desktop_shutdown::is_stopping(),
+                "the fixture needs an open barrier to observe the transition"
+            );
+            let app = tauri::test::mock_app();
+            // An event this build has no arm for must change nothing: it is the
+            // `_ => {}` arm Tauri's `#[non_exhaustive]` `RunEvent` forces, and it
+            // must not start the launch path or close admission on the way past.
+            dispatch_run_event(
+                app.handle(),
+                tauri::RunEvent::MainEventsCleared,
+                crate::launch::LaunchOptions::default(),
+            );
+            assert!(
+                !crate::desktop_shutdown::is_stopping(),
+                "the wildcard arm must not close admission"
+            );
+            assert!(
+                crate::desktop_shutdown::snapshot().is_none(),
+                "the wildcard arm must not publish a stop"
+            );
+            dispatch_run_event(
+                app.handle(),
+                tauri::RunEvent::Exit,
+                crate::launch::LaunchOptions::default(),
+            );
+
+            assert!(
+                crate::desktop_shutdown::is_stopping(),
+                "the exit event must close producer admission"
+            );
+            let published = crate::desktop_shutdown::snapshot().expect("a published stop");
+            assert_eq!(published.reason, "exit", "the barrier names its reason");
+
+            // The worker runs concurrently with this assertion; `reset_for_test`
+            // waits for it (it asserts it finished) and clears the operation, so
+            // later tests do not inherit a stopping Desktop.
+            crate::desktop_shutdown::reset_for_test();
+            assert!(
+                !crate::desktop_shutdown::is_stopping(),
+                "the barrier must be releasable for the tests after this one"
+            );
+        }
+
+        /// `ExitRequested` from the **mock runtime's own loop**, with the real
+        /// `tauri::ExitRequestApi` it constructs.
+        ///
+        /// The record waived these six lines because "`ExitRequestApi` has private fields and
+        /// only Tauri's own event loop constructs it". The construction half is true and
+        /// irrelevant: `tauri::test::mock_app()`'s loop builds the event and hands the API to
+        /// the callback (`tauri-2.11.5/src/test/mock_runtime.rs`), so the production arm
+        /// receives exactly the value it receives in a real app. Destroying the only window is
+        /// what makes the mock loop request an exit.
+        ///
+        /// The Proceed arm is the one this test takes: no conversation is running here, so
+        /// `on_close_requested` answers Proceed and — because the exit is not yet authorised —
+        /// the handler vetoes the exit and starts the guarded quit (`prevent_exit` +
+        /// `request_quit`), which publishes a stop named `quit`. The panic is not the subject:
+        /// it is how a probe leaves Tauri's loop after `prevent_exit` (the loop would otherwise
+        /// keep running), and it is caught.
+        // macOS only, measured: the arm runs on both platforms (the probe panic proves
+        // `dispatch_run_event` was reached), but on the headless Linux runner
+        // `agent_supervisor::on_close_requested()` takes the CONFIRM path - there is no
+        // desktop session to show the dialog in - so the Proceed branch that publishes
+        // the stop never executes and `snapshot()` stays None. Exercising Proceed there
+        // needs a session, not a different assertion.
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn an_exit_requested_from_the_mock_loop_takes_the_guarded_quit_arm() {
+            let _home = crate::auth_store::test_support::HomeGuard::new("run-event-exit-requested");
+            crate::desktop_shutdown::reset_for_test();
+            let app = tauri::test::mock_app();
+            let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+                .build()
+                .expect("a mock window");
+            let destroyer = window.clone();
+            std::thread::spawn(move || {
+                // Long enough for `run` to enter its loop, short enough that the test stays
+                // inside the suite's budget.
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                let _ = destroyer.destroy();
+            });
+
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                app.run(move |handle, event| {
+                    if let tauri::RunEvent::ExitRequested { .. } = &event {
+                        dispatch_run_event(handle, event, crate::launch::LaunchOptions::default());
+                        panic!("EXIT-REQUESTED-PROBE: the arm ran");
+                    }
+                });
+            }));
+            let error = outcome.expect_err("the probe panics out of the mock loop");
+            let message = error.downcast_ref::<&str>().copied().unwrap_or_default();
+            assert!(
+                message.contains("EXIT-REQUESTED-PROBE"),
+                "the loop must have delivered ExitRequested to the handler: {message}"
+            );
+
+            // The arm's effect, read the way `stop()` reads it: a stop is published, and its
+            // reason is the one `request_quit` begins.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while crate::desktop_shutdown::snapshot().is_none()
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            let published =
+                crate::desktop_shutdown::snapshot().expect("the Proceed arm published a stop");
+            assert_eq!(published.reason, "quit", "a guarded quit names itself");
+            // Leave the barrier and the operation clear for the tests after this one.
+            crate::desktop_shutdown::reset_for_test();
         }
     }
 }

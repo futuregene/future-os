@@ -40,6 +40,49 @@ impl Drop for DriverPathReset {
     }
 }
 
+/// What ends the readiness poll: `None` is production (the 10 s wall-clock
+/// window), `Some(max)` is the test seam (stop after `max` probes).
+///
+/// The seam exists because a test that asserts "the driver is launched and the
+/// poll then finds it" would otherwise be a race between the product's 10 s
+/// window and the host: the endpoint cannot be up before the spawn (an endpoint
+/// that answered earlier takes the `already_running` arm), so an external
+/// process — the test's mock, or a driver script of its own — has to start
+/// inside the window. With a probe-count budget the outcome is decided by the
+/// retry loop noticing the answer, not by the host's scheduler; the wall-clock
+/// window keeps its own test (`start_launch_never_ready_times_out`, which
+/// asserts the 10 s wait and the `did not respond … within 10s` error).
+fn readiness_budget() -> Option<u32> {
+    #[cfg(test)]
+    if let Some(max) = *READINESS_BUDGET_OVERRIDE.lock().unwrap() {
+        return Some(max);
+    }
+    None
+}
+
+#[cfg(test)]
+static READINESS_BUDGET_OVERRIDE: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
+
+/// Sets [`READINESS_BUDGET_OVERRIDE`] and restores it on drop, so a panicking
+/// test cannot leak a probe budget into the rest of the binary.
+#[cfg(test)]
+struct ReadinessBudgetGuard;
+
+#[cfg(test)]
+impl ReadinessBudgetGuard {
+    fn set(max_probes: u32) -> Self {
+        *READINESS_BUDGET_OVERRIDE.lock().unwrap() = Some(max_probes);
+        ReadinessBudgetGuard
+    }
+}
+
+#[cfg(test)]
+impl Drop for ReadinessBudgetGuard {
+    fn drop(&mut self) {
+        *READINESS_BUDGET_OVERRIDE.lock().unwrap() = None;
+    }
+}
+
 /// The safaridriver executable path (honors the test override). Single
 /// definition so no cfg(not(test))-only copy goes unexecuted in the
 /// integration-test (non-cfg-test) build.
@@ -138,8 +181,23 @@ pub async fn safari_start(
     let pid = child.id().unwrap_or(0) as i64;
 
     // Wait for it to be ready.
+    let budget = readiness_budget();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while std::time::Instant::now() < deadline {
+    let mut probes: u32 = 0;
+    loop {
+        match budget {
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+            }
+            Some(max) => {
+                if probes >= max {
+                    break;
+                }
+            }
+        }
+        probes += 1;
         if endpoint_reachable(&driver_endpoint).await {
             let session_id = create_session_with_translation(&driver_endpoint).await?;
             return Ok(SafariStartResult {
@@ -294,8 +352,8 @@ mod tests {
         }
     }
 
-    /// Kill a spawned child on drop (macOS/Linux `kill`). Prevents the
-    /// `fake_driver.py` processes launched by tests from leaking as orphans.
+    /// Kill a spawned child on drop (macOS/Linux `kill`). Prevents the fake
+    /// driver scripts these launch tests spawn from leaking as orphans.
     #[cfg(unix)]
     struct KillChild(Option<i64>);
     #[cfg(unix)]
@@ -397,10 +455,26 @@ mod tests {
     ///
     /// The driver is a script that records that it ran; the mock WebDriver
     /// endpoint is brought up only once that marker appears, which proves the
-    /// spawn step is behind us. An endpoint that answered earlier would take
-    /// the already-running branch instead (the endpoint is probed before the
-    /// driver is launched), so the marker — not a sleep — is what puts the
-    /// appearance inside the poll's 10 s / 250 ms window.
+    /// spawn step is behind us. An endpoint that answered earlier would take the
+    /// already-running branch instead (the endpoint is probed before the driver
+    /// is launched), so the marker — not a sleep — is what puts the appearance
+    /// after the spawn.
+    ///
+    /// What stops the poll, though, is what this test used to get wrong: it was
+    /// the product's 10 s wall-clock window, so an external process (this mock,
+    /// or a driver script that takes its time) had to start inside the window
+    /// and the outcome was decided by the host's scheduler. The poll is now
+    /// stopped by a probe budget, and the difference is measured: with a driver
+    /// script that takes 12 s to touch its marker this test failed 5/5 before
+    /// (`safaridriver did not respond … within 10s`) and passes 5/5 after; with
+    /// the plain `touch` driver it is 0/24 loaded at 8 concurrent streams under
+    /// 48 burners. The 10 s window keeps its own test
+    /// (`start_launch_never_ready_times_out`).
+    ///
+    /// A 12 s driver is deliberately *not* kept here: it would sit on this
+    /// test's own marker wait (a 20 s bound), which is exactly the
+    /// load-sensitive construction the workstream forbids (measured 8/24 at 8
+    /// concurrent streams under 48 burners).
     #[tokio::test(flavor = "multi_thread")]
     async fn launch_then_become_reachable_reports_started() {
         let _guard = crate::test_env::lock_env().await;
@@ -409,6 +483,12 @@ mod tests {
         let marker = dir.path().join("driver-ran.txt");
         let script = driver_script(dir.path(), &marker);
         let _driver = set_driver_path_for_tests(&script.display().to_string());
+        // Enough probes for the spawn → mock-up → answer sequence, none of them
+        // charged against the product's 10 s. The outcome is then decided by the
+        // poll noticing the answer, not by the host starting the test's mock
+        // inside the window (a driver that took 12 s to touch its marker used to
+        // make this test report `did not respond … within 10s`, 5/5 red).
+        let _budget = ReadinessBudgetGuard::set(200);
 
         let port = free_port().await;
         let started = tokio::spawn(async move { safari_start(port, None).await });
@@ -428,7 +508,7 @@ mod tests {
             .expect("safari_start is bounded by its own 10 s window")
             .expect("the task does not panic")
             .expect("a driver that answers in the window is a success");
-        server.abort();
+        let answered = server.stop().await;
 
         assert_eq!(result.status, "started");
         assert_eq!(result.port, port);
@@ -444,6 +524,26 @@ mod tests {
                 } if pid > 0
             ),
             "the spawned driver's pid is reported for cleanup"
+        );
+        // The readiness poll asks `/status` as often as it takes; the session
+        // is created exactly once, and nothing else is ever asked of it.
+        assert_eq!(
+            answered
+                .iter()
+                .filter(|r| r.starts_with("POST /session "))
+                .count(),
+            1,
+            "one session is created: {answered:?}"
+        );
+        assert!(
+            answered
+                .iter()
+                .all(|r| r.starts_with("GET /status ") || r.starts_with("POST /session ")),
+            "only the two calls this mock stands in for: {answered:?}"
+        );
+        assert!(
+            answered.iter().any(|r| r.starts_with("GET /status ")),
+            "the poll saw it become reachable: {answered:?}"
         );
     }
 
@@ -523,6 +623,12 @@ mod tests {
     /// the script is written in whatever dialect the platform executes — a
     /// `.cmd` (started through `cmd.exe` by both `Start-Process` and Rust's
     /// `Command`, both probed on this host) or a POSIX shell script.
+    ///
+    /// It stays a plain `touch`: the test's own wait for the marker is a bounded
+    /// wait for a condition, and a script that took 12 s to get there (the
+    /// forcing device used to reproduce the old window dependence) turns that
+    /// bound into a load-sensitive one — measured 8/24 at 8 concurrent streams
+    /// under 48 burners.
     fn driver_script(dir: &std::path::Path, marker: &std::path::Path) -> std::path::PathBuf {
         #[cfg(windows)]
         {
@@ -555,36 +661,92 @@ mod tests {
     /// A minimal WebDriver endpoint on `port`: `/status` and `/session` both
     /// answer 200, which is what the readiness poll and
     /// `create_session_with_translation` need.
-    async fn serve_webdriver(port: i64) -> tokio::task::JoinHandle<()> {
+    ///
+    /// The answer is keyed on the request *path* — `GET /status` gets the ready
+    /// body, anything else the session body — so a caller that asks for a
+    /// different path is not silently handed the ready-body; the test also
+    /// asserts from the recorded request lines that those two calls were the
+    /// only ones made. The test stops it with a signal rather than `abort()`ing
+    /// it — a task killed mid-accept leaves its own closing lines without a
+    /// coverage counter (`docs/testing/module-cli.md` §4b), and waiting for the
+    /// task is also the assertion that the mock finished its work.
+    async fn serve_webdriver(port: i64) -> WebdriverMock {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", port as u16))
             .await
             .expect("the resolved port is still free");
-        tokio::spawn(async move {
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = std::sync::Arc::clone(&requests);
+        let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let mut served = Vec::new();
             loop {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    break;
-                };
-                tokio::spawn(async move {
-                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                    let mut buf = [0u8; 2048];
-                    let read = socket.read(&mut buf).await.unwrap_or(0);
-                    let request = String::from_utf8_lossy(&buf[..read]);
-                    let body = if request.contains("/session") {
-                        r#"{"sessionId":"sid-start","value":{}}"#
-                    } else {
-                        r#"{"ready":true}"#
-                    };
-                    let mut response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        body.len()
-                    )
-                    .into_bytes();
-                    response.extend_from_slice(body.as_bytes());
-                    let _ = socket.write_all(&response).await;
-                    let _ = socket.shutdown().await;
-                });
+                tokio::select! {
+                    _ = &mut stopped => break,
+                    accepted = listener.accept() => {
+                        // Invariant: accept on a listener this task owns (bound
+                        // microseconds above) only fails on OS-level resource
+                        // exhaustion — the same invariant `test_server.rs`'s mock
+                        // accept documents.
+                        let (mut socket, _) = accepted.expect("mock listener accept");
+                        let recorded = std::sync::Arc::clone(&recorded);
+                        served.push(tokio::spawn(async move {
+                            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                            let mut buf = [0u8; 2048];
+                            let read = socket.read(&mut buf).await.unwrap_or(0);
+                            let request = String::from_utf8_lossy(&buf[..read]).into_owned();
+                            // The two calls this mock stands in for, keyed on the
+                            // request *path*: the readiness poll asks `GET /status`,
+                            // and the session is created with `POST /session`. The
+                            // test asserts which of them arrived (and that nothing
+                            // else did) from the recorded request lines.
+                            let body = if request.starts_with("GET /status ") {
+                                r#"{"ready":true}"#
+                            } else {
+                                r#"{"sessionId":"sid-start","value":{}}"#
+                            };
+                            recorded.lock().unwrap().push(request);
+                            let mut response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            )
+                            .into_bytes();
+                            response.extend_from_slice(body.as_bytes());
+                            let _ = socket.write_all(&response).await;
+                            let _ = socket.shutdown().await;
+                        }));
+                    }
+                }
             }
-        })
+            for connection in served {
+                connection.await.expect("the connection's answer completed");
+            }
+        });
+        WebdriverMock {
+            requests,
+            stop: Some(stop),
+            task,
+        }
+    }
+
+    /// Handle for [`serve_webdriver`].
+    struct WebdriverMock {
+        requests: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        stop: Option<tokio::sync::oneshot::Sender<()>>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl WebdriverMock {
+        /// Stop accepting, wait for the task, and report what it answered.
+        async fn stop(mut self) -> Vec<String> {
+            self.stop
+                .take()
+                .expect("stop once")
+                .send(())
+                .expect("the mock is still accepting");
+            self.task.await.expect("the mock must run to its own end");
+            let answered = self.requests.lock().unwrap().clone();
+            answered
+        }
     }
 
     // ── safari_start: already-running + error translation ─────────────
@@ -684,42 +846,75 @@ mod tests {
         assert!(started.elapsed().as_secs() >= 10);
     }
 
+    /// The budgeted twin of the test above: the poll is stopped by the probe
+    /// budget rather than by the product's 10 s window. The driver spawns and
+    /// never answers (the `cfg(test)` default driver is `/bin/sh`), so the loop
+    /// leaves through `probes >= max` — the arm every fast launch test relies on
+    /// but none takes, because their endpoint answers first.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_stops_polling_when_the_probe_budget_runs_out() {
+        let _guard = crate::test_env::lock_env().await;
+        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
+        let _reset = PlatformReset;
+        let _budget = ReadinessBudgetGuard::set(2);
+        let started = std::time::Instant::now();
+        let err = safari_start(free_port().await, Some("https://x"))
+            .await
+            .err()
+            .unwrap();
+        assert!(err.contains("did not respond"), "{err}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the probe budget ended the poll, not the 10 s window: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// The unix launch path: a real driver process is spawned and the readiness
+    /// poll finds it. The driver is a script that records the port it was
+    /// launched on, and then lingers like the server it stands in for; the
+    /// WebDriver endpoint is brought up by **this test**, and only once that
+    /// record exists.
+    ///
+    /// Host-independent by construction (`.future/cov100/FLAKES.md` §3). The
+    /// previous revision had the driver `exec python3` to serve the port itself
+    /// and relied on the interpreter completing its cold start inside the CLI's
+    /// 10 s window — a wall-clock race against the host, decided by the host's
+    /// process start-up rather than by the code under test (reproduced
+    /// deterministically with a `python3` shim that starts 12 s late:
+    /// `safaridriver did not respond at http://127.0.0.1:<port> within 10s.`).
+    /// Two further host dependencies are gone with the python fixture:
+    ///
+    /// * the mock answers on the port the **CLI** resolved (`resolve_port` can
+    ///   scan past the requested one when another process takes it in the
+    ///   meantime), so a port collision elsewhere on the machine can no longer
+    ///   point the poll at a port nobody serves;
+    /// * no interpreter is on the critical path at all — the only party that
+    ///   makes the endpoint reachable is this test's in-process mock.
+    ///
+    /// The record (not a sleep) is also what keeps the two branches apart: an
+    /// endpoint that answered *before* the spawn would take the already-running
+    /// branch, so the mock cannot be up front.
     #[cfg(unix)]
     #[tokio::test]
     async fn start_launch_success_against_fake_driver() {
         let _guard = crate::test_env::lock_env().await;
         *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
         let _reset_platform = PlatformReset;
-        // Fake safaridriver: a shell script launching a tiny python HTTP
-        // server that answers /status and POST /session.
+        // Fake safaridriver: a POSIX shell script that records the port it was
+        // launched with (`$2`) and then stays alive (`exec`, so the pid the CLI
+        // reports is exactly the process this test kills) — a real driver is a
+        // long-running server.
         let dir = tempfile::tempdir().unwrap();
-        let py = dir.path().join("fake_driver.py");
-        std::fs::write(
-            &py,
-            r#"import http.server, socketserver, sys, json
-port = int(sys.argv[1])
-class H(http.server.BaseHTTPRequestHandler):
-    def _send(self, body):
-        b = json.dumps(body).encode()
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', str(len(b)))
-        self.end_headers()
-        self.wfile.write(b)
-    def do_GET(self):
-        self._send({"ready": True})
-    def do_POST(self):
-        self._send({"sessionId": "fake-sid", "value": {}})
-    def log_message(self, *a):
-        pass
-socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
-"#,
-        )
-        .unwrap();
+        let port_file = dir.path().join("driver-port.txt");
         let sh = dir.path().join("safaridriver");
         std::fs::write(
             &sh,
-            format!("#!/bin/sh\nexec python3 {} \"$2\"\n", py.display()),
+            format!(
+                "#!/bin/sh\nprintf '%s' \"$2\" > '{}'\nexec sleep 20\n",
+                port_file.display()
+            ),
         )
         .unwrap();
         #[cfg(unix)]
@@ -729,15 +924,36 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
         }
         let _reset = set_driver_override(&sh.to_string_lossy());
 
-        // Pre-warm the python interpreter (page-in under full-suite load can
-        // otherwise exceed the 10 s readiness window).
-        let _ = std::process::Command::new("python3")
-            .arg("--version")
-            .output();
+        let requested = free_port().await;
+        let started = tokio::spawn(async move { safari_start(requested, Some("http://x/")).await });
 
-        let result = safari_start(free_port().await, Some("http://x/"))
+        // The spawn is behind us once the driver has recorded its port; only
+        // then does the endpoint appear, so the poll — not a lucky first probe —
+        // is what witnesses the driver answering. The port is the CLI's own
+        // resolved one, never an assumption about `requested`.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let port: i64 = loop {
+            if let Ok(raw) = std::fs::read_to_string(&port_file) {
+                if let Ok(port) = raw.trim().parse::<i64>() {
+                    if port > 0 {
+                        break port;
+                    }
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the driver was never spawned, so the poll was never reached"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
+        let server = serve_webdriver(port).await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(30), started)
             .await
-            .expect("start");
+            .expect("safari_start is bounded by its own 10 s window")
+            .expect("the task does not panic")
+            .expect("a driver that answers in the window is a success");
+        let answered = server.stop().await;
+
         // Reap the fake-driver child this test spawned on exit (even on panic).
         let driver_pid = match &result.connection {
             BrowserConnectionConfig::Webdriver { driver_pid, .. } => *driver_pid,
@@ -745,14 +961,40 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
         };
         let _kill = KillChild(driver_pid);
         assert_eq!(result.status, "started");
-        assert_eq!(result.connection.session_id(), Some("fake-sid"));
-        assert!(matches!(
-            result.connection,
-            BrowserConnectionConfig::Webdriver {
-                driver_pid: Some(_),
-                ..
-            }
-        ));
+        assert_eq!(result.port, port);
+        assert_eq!(result.launcher, SAFARIDRIVER_PATH);
+        assert_eq!(result.connection.protocol(), "webdriver");
+        assert_eq!(result.connection.session_id(), Some("sid-start"));
+        assert!(
+            matches!(
+                result.connection,
+                BrowserConnectionConfig::Webdriver {
+                    driver_pid: Some(pid),
+                    ..
+                } if pid > 0
+            ),
+            "the spawned driver's pid is reported for cleanup"
+        );
+        // The session is created exactly once, and nothing else is ever asked
+        // of the endpoint.
+        assert_eq!(
+            answered
+                .iter()
+                .filter(|r| r.starts_with("POST /session "))
+                .count(),
+            1,
+            "one session is created: {answered:?}"
+        );
+        assert!(
+            answered
+                .iter()
+                .all(|r| r.starts_with("GET /status ") || r.starts_with("POST /session ")),
+            "only the two calls this mock stands in for: {answered:?}"
+        );
+        assert!(
+            answered.iter().any(|r| r.starts_with("GET /status ")),
+            "the poll saw it become reachable: {answered:?}"
+        );
     }
 
     /// Reset the platform override after a test.

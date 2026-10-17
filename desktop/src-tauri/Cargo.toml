@@ -15,6 +15,21 @@ name = "futureos-headless"
 path = "src/bin/futureos-headless.rs"
 required-features = ["headless"]
 
+# The main-thread driver (TAU-C8). `harness = false` gives this target a real `fn main()`
+# — i.e. the process's main thread — which is what makes the AppKit/`muda` family
+# (`menu.rs`, `run_with`'s own body, the `.setup` hook) reachable at all; libtest runs
+# every test body on a spawned thread (docs/testing/module-tauri-shell.md §6.2).
+# It is a *test* target on purpose: `cargo test` runs it (so `cargo llvm-cov` instruments
+# it and its profile merges) and it is never bundled into the app, whereas a `src/bin/`
+# file would be auto-discovered as a product binary.
+# `required-features = ["gui"]`: `run_with` only exists in the gui build, so the headless
+# leg (and CI's headless job) skips this target instead of failing to compile it.
+[[test]]
+name = "gui_main_thread_drive"
+path = "tests/gui_main_thread_drive.rs"
+harness = false
+required-features = ["gui"]
+
 [features]
 default = ["gui"]
 # Opt-in binary, built with --no-default-features so GUI libraries cannot leak

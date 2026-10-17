@@ -267,6 +267,45 @@ pub(crate) mod test_support {
         // Drop restores the process-global HOME to exactly what it found.
         guard.previous = previous;
     }
+
+    /// `FUTURE_HOME` is the documented way to relocate the whole FutureOS root
+    /// (`future agent --home DIR`, an embedded host). The fixture clears it
+    /// while it is live — the tests must resolve *its* home, not the caller's —
+    /// and `restore` puts the caller's value back, the same way it does HOME.
+    #[test]
+    fn home_guard_restores_a_previously_set_future_home() {
+        let lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let previous = std::env::var("HOME").ok();
+        let dir =
+            std::env::temp_dir().join(format!("futureos-test-{}-future-home", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut guard = HomeGuard {
+            previous,
+            previous_future_home: Some(std::ffi::OsString::from("/opt/pre-existing-future-home")),
+            dir: dir.clone(),
+            _lock: lock,
+        };
+        // While the fixture is live the variable is removed, so the code under
+        // test resolves the fixture's HOME-based root.
+        std::env::set_var("FUTURE_HOME", "/opt/temporary-future-home");
+
+        guard.restore();
+
+        assert_eq!(
+            std::env::var_os("FUTURE_HOME"),
+            Some(std::ffi::OsString::from("/opt/pre-existing-future-home")),
+            "restore must put the caller's FUTURE_HOME back"
+        );
+        assert!(!dir.exists(), "the fixture directory is removed too");
+        // Re-arm with the observed (absent) previous value *and* drop the
+        // saved FUTURE_HOME, so the guard's Drop leaves the process-global
+        // environment exactly as this test found it instead of re-setting it.
+        guard.previous_future_home = None;
+        std::env::remove_var("FUTURE_HOME");
+    }
 }
 
 #[cfg(test)]

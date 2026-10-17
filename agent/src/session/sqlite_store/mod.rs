@@ -128,3 +128,5 @@ mod event_selection_tests;
 mod reclamation_tests;
 #[cfg(test)]
 mod replay_tests;
+#[cfg(test)]
+mod schema_damage_tests;

@@ -1,5 +1,19 @@
 # Module `tau-core` — coverage result, waiver ledger and dimension evidence
 
+> **Record form: prose-only, declared 2026-10-16 (user gate `todo_6a850a842666`, answered
+> "prose-only, and say so in the final report").** This is a **round-1 record** from the previous
+> coverage campaign. It carries **no machine-readable per-line ledger**: `212` table rows, **3**
+> `path:LINE` citations in the whole document, and **0** rows whose first cell is a claim shape.
+> So `reconcile.py`'s MISSING half reports it as mostly-missing and its STALE half has nothing to read —
+> a property of this record's **form**, not a defect, and deliberately not repaired: measured, adding
+> claim-shaped rows here would **invent** claims rather than recover them
+> (`.future/cov100/LEDGER-REWORK.md`, `blindrework.py`).
+>
+> **This round's per-line guarantee for the same subtrees lives in:** module-tauri-shell.md (tauri-shell-seg2, whose scopes include lib.rs / menu.rs / launch.rs / runtime.rs).
+> The final report classifies every module as *machine-checkable* or *prose-only*; this one is
+> **prose-only**, and its historical numbers are kept as history rather than re-verified this round.
+
+
 Subtree: `desktop/src-tauri/src/{lib.rs, main.rs, instance.rs, runtime.rs,
 config_io.rs, windows_power.rs, git_review.rs, skills.rs, skills_bootstrap.rs,
 store/, shadow_review/, agent_providers/}` — the `tau-core` group of

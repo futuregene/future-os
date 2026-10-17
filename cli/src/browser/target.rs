@@ -264,4 +264,40 @@ mod tests {
         assert!(err.contains("future-no-such-socket"), "{err}");
         assert!(err.contains('@'), "names the abstract form: {err}");
     }
+
+    /// `as_str` is what error messages and the config round-trip echo back, so
+    /// every target shape has to answer with exactly what it was given.
+    #[test]
+    fn every_target_shape_round_trips_through_as_str() {
+        assert_eq!(
+            EndpointTarget::parse("http://127.0.0.1:9222")
+                .unwrap()
+                .as_str(),
+            "http://127.0.0.1:9222"
+        );
+        assert_eq!(
+            EndpointTarget::parse("unix:/data/local/tmp/chrome.sock")
+                .unwrap()
+                .as_str(),
+            "/data/local/tmp/chrome.sock"
+        );
+        assert_eq!(
+            EndpointTarget::parse("abstract:chrome_devtools_remote")
+                .unwrap()
+                .as_str(),
+            "chrome_devtools_remote"
+        );
+    }
+
+    /// Off Linux/Android an abstract socket cannot be connected to at all, and
+    /// the error says which platform can rather than reporting the browser as
+    /// missing.
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    #[tokio::test]
+    async fn an_abstract_socket_says_which_platform_supports_it() {
+        let spec = SocketSpec::Abstract("chrome_devtools_remote".to_string());
+        let error = spec.connect().await.expect_err("this platform cannot");
+        assert!(error.contains("only exist on Linux/Android"), "{error}");
+        assert!(error.contains("@chrome_devtools_remote"), "{error}");
+    }
 }

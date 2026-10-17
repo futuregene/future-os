@@ -961,6 +961,44 @@ mod tests {
         assert_eq!(got.session_retention, SessionRetention::Keep);
     }
 
+    /// A stored retention value this build does not know (a newer version wrote
+    /// it, or the row was edited by hand) must not be read as "the user asked to
+    /// delete the conversation": `keep` is the safe default. The pair of
+    /// functions that spell the column is also the pair that parses it.
+    #[test]
+    fn an_unknown_session_retention_reads_as_keep_and_the_spelling_round_trips() {
+        for retention in [SessionRetention::Keep, SessionRetention::Delete] {
+            assert_eq!(
+                parse_session_retention(session_retention_str(retention)),
+                Some(retention),
+                "the crate must read back exactly what it writes"
+            );
+        }
+        assert_eq!(
+            parse_session_retention("purge"),
+            None,
+            "an unknown value has no meaning"
+        );
+
+        let dir = TempDir::new().unwrap();
+        let s = Store::open(dir.path()).unwrap();
+        let t = task("unknown-retention");
+        s.insert_task(&t).unwrap();
+        let raw = Connection::open(store_path(dir.path())).unwrap();
+        raw.execute(
+            "UPDATE tasks SET session_retention = 'purge' WHERE id = ?1",
+            params![t.id],
+        )
+        .unwrap();
+        drop(raw);
+
+        assert_eq!(
+            s.get_task(&t.id).unwrap().unwrap().session_retention,
+            SessionRetention::Keep,
+            "an unreadable retention must never delete a conversation"
+        );
+    }
+
     /// A run row written before the answer was saved on it: reading it must not
     /// invent an answer, and the run must not claim its conversation was
     /// deleted.

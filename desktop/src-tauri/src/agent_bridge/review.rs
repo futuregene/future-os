@@ -880,6 +880,55 @@ mod tests {
         assert!(!err.to_string().is_empty());
     }
 
+    /// A failed after-capture is an ordinary outcome, not a panic and not a
+    /// fabricated empty review: the failure is recorded as its own snapshot row
+    /// and the Run keeps whatever the before side proved.
+    #[test]
+    fn a_failed_after_capture_is_recorded_and_reported_as_empty() {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (_fx, thread, run) = fixture("after-capture-fails");
+        let ws_id = store::get_thread(&thread.id).unwrap().unwrap().workspace_id;
+
+        // A before snapshot must exist or the capture is not even attempted.
+        store::create_review_snapshot(store::CreateReviewSnapshotInput {
+            workspace_id: ws_id.clone(),
+            thread_id: thread.id.clone(),
+            run_id: run.id.clone(),
+            phase: "before".to_string(),
+            commit_id: None,
+            tree_id: None,
+            status: "complete".to_string(),
+            file_count: 0,
+            total_bytes: 0,
+            ignored_count: 0,
+            omitted_count: 0,
+            error_message: None,
+        })
+        .unwrap();
+
+        // Make the after-side write fail deterministically: the capture does its
+        // git work and then inserts the snapshot row, so an ABORT trigger on
+        // `phase = 'after'` fails the capture at its last step without touching
+        // anything the before-side read needs. (`record_failure` writes an
+        // after-phase row too and therefore also fails; the caller ignores that
+        // result by design, which is part of what this test pins.)
+        let conn =
+            rusqlite::Connection::open(_fx.base.join("home/.future/app/app.db")).expect("open db");
+        conn.execute_batch(
+            "CREATE TRIGGER hostile_after_capture BEFORE INSERT ON review_snapshots\n             WHEN NEW.phase = 'after'\n             BEGIN SELECT RAISE(ABORT, 'hostile after-capture'); END;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let sensitive = super::try_capture_after(&thread.id, &run.id).expect("never panics");
+        assert!(
+            sensitive.is_empty(),
+            "a failed capture contributes no sensitive paths"
+        );
+    }
+
     /// A `partial` before snapshot makes the changeset completeness `partial`
     /// (before it is upserted successfully).
     #[test]

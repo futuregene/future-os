@@ -966,3 +966,99 @@ describe("tasksView", () => {
     expect(container.querySelector("input[aria-label='Working directory']")).toBeNull();
   });
 });
+
+/**
+ * A yearly task's month and time are editable, not just readable.
+ *
+ * The round-trip test above edits the *day*; month and time are separate
+ * controls with their own writers, and a form that displays a value it cannot
+ * change is worse than one that omits it — the user reads the schedule, believes
+ * it, and cannot correct it. Both are asserted through what the save sends.
+ */
+it("edits a yearly trigger's month and time", async () => {
+  const { container } = await renderView([
+    task({ trigger: { mode: "yearly", month: 12, day: 31, time: "22:00" } }),
+  ]);
+  await click(rows(container)[0]);
+  await click(buttonByText(container, "Edit"));
+
+  await setValue(field(container, "Month") as HTMLInputElement, "3");
+  await setValue(field(container, "Time") as HTMLInputElement, "07:05");
+  backend([]);
+  await click(buttonByText(container, "Save"));
+
+  const call = mocks.invokeCommand.mock.calls.find(([command]) => command === "update_task");
+  expect(call?.[1]).toMatchObject({
+    input: { triggerKind: "schedule", trigger: { mode: "yearly", month: 3, day: 31, time: "07:05" } },
+  });
+});
+
+/**
+ * An emptied month field is read as January, not as month zero or `NaN`.
+ *
+ * Clearing a number input is the ordinary way a user starts typing a new one,
+ * and the value React hands back for an empty box is the empty string — which
+ * `Number()` turns into 0. Sending 0 (or `NaN`) would store a month the host
+ * cannot schedule, so the field is clamped to a real month.
+ */
+it("reads an emptied month field as January rather than month zero", async () => {
+  const { container } = await renderView([
+    task({ trigger: { mode: "yearly", month: 12, day: 31, time: "22:00" } }),
+  ]);
+  await click(rows(container)[0]);
+  await click(buttonByText(container, "Edit"));
+
+  await setValue(field(container, "Month") as HTMLInputElement, "");
+  backend([]);
+  await click(buttonByText(container, "Save"));
+
+  const call = mocks.invokeCommand.mock.calls.find(([command]) => command === "update_task");
+  expect(call?.[1]).toMatchObject({ input: { trigger: { month: 1 } } });
+});
+
+/**
+ * A model without a thinking level is refused on *that* message.
+ *
+ * The existing refusal test leaves both unchosen, so it stops at the model —
+ * the thinking-level branch is only reached by a form that has a model and no
+ * level, which is a state a user can produce by clearing the level after
+ * choosing a model (the level select keeps its "not chosen yet" option, since
+ * a model that can think may still be left unconfigured). Without this branch
+ * the save would send `thinkingLevel: null` and the host would pick for them.
+ */
+it("refuses a save that has a model but no thinking level", async () => {
+  const { container } = await renderView([]);
+  await click(buttonByText(container, "New scheduled task"));
+  await setValue(field(container, "Name") as HTMLInputElement, "half configured");
+  await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
+  await chooseModelAndThinking(container, "future/gpt-5", "medium");
+  // …and then the user clears the level.
+  await setValue(field(container, "Thinking level") as HTMLSelectElement, "");
+  mocks.invokeCommand.mockClear();
+
+  await click(buttonByText(container, "Save"));
+
+  expect(container.textContent).toContain("Choose a thinking level");
+  expect(mocks.invokeCommand).not.toHaveBeenCalledWith("create_task", expect.anything());
+});
+
+/**
+ * A stored date the summary cannot parse is shown as the host wrote it.
+ *
+ * An empty or malformed `date` is not a date to format — formatting it would
+ * throw or invent a day. The reader gets the raw pair instead, which is at least
+ * true, and the empty-clock case leaves no trailing space.
+ */
+it("shows an unparsable one-off date as the host wrote it", async () => {
+  const tasks = [
+    task({ id: "t_bad", name: "odd one", triggerKind: "schedule", trigger: { mode: "once", date: "someday", time: "09:00" } }),
+    task({ id: "t_empty", name: "empty one", triggerKind: "schedule", trigger: { mode: "once", date: "", time: "" } }),
+  ];
+  const { container } = await renderView(tasks);
+  const text = rows(container).map(row => row.textContent ?? "").join("\n");
+
+  expect(text).toContain("someday 09:00");
+  // Nothing to show at all: no stray separator either.
+  expect(text).not.toContain("undefined");
+  expect(text).not.toContain("  ");
+});

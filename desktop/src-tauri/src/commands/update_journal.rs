@@ -274,4 +274,93 @@ mod tests {
             Some("interrupted")
         );
     }
+
+    /// `latest()` fails closed on every damaged shape of its own state: an
+    /// absent pointer is "no record", a pointer that is not an operation id is
+    /// refused, and any other read failure is an error rather than silence.
+    #[test]
+    fn latest_fails_closed_on_damaged_state() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-journal-latest");
+        let root = root();
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(latest().unwrap().is_none(), "no pointer means no record");
+
+        std::fs::write(root.join("latest.json"), b"\"../outside\"").unwrap();
+        let error = latest().unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Invalid update operation identifier"));
+
+        std::fs::remove_file(root.join("latest.json")).unwrap();
+        std::fs::create_dir(root.join("latest.json")).unwrap();
+        assert!(latest().is_err(), "a read error is not an absent record");
+    }
+
+    /// A record whose stage or outcome is unknown, or that claims to be
+    /// restart-safe on an outcome that is not, is refused. The cleanup-failure
+    /// outcome is a known one and must be accepted.
+    #[test]
+    fn latest_rejects_an_inconsistent_record() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-journal-record");
+        let id = "update-abc";
+        let directory = root().join(id);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(root().join("latest.json"), format!("\"{id}\"")).unwrap();
+        let record = |outcome: &str, restart_safe: bool| {
+            serde_json::json!({
+                "formatVersion": 1,
+                "operationId": id,
+                "fromVersion": "old",
+                "targetVersion": null,
+                "stage": "finished",
+                "outcome": outcome,
+                "diagnostic": null,
+                "restartSafe": restart_safe,
+            })
+        };
+        let write = |value: &serde_json::Value| {
+            std::fs::write(directory.join("result.json"), value.to_string()).unwrap();
+        };
+
+        write(&record("cleanup-failed", false));
+        assert_eq!(
+            latest().unwrap().unwrap().outcome.as_deref(),
+            Some("cleanup-failed")
+        );
+
+        let mut unknown_stage = record("cleanup-failed", false);
+        unknown_stage["stage"] = serde_json::json!("halfway");
+        write(&unknown_stage);
+        assert!(latest().is_err());
+
+        let mut unsafe_claim = record("repair-required", false);
+        unsafe_claim["restartSafe"] = serde_json::json!(true);
+        write(&unsafe_claim);
+        assert!(latest().is_err());
+    }
+
+    /// A repair acknowledgement is bound to the operation it was shown for.
+    #[test]
+    fn repair_acknowledgement_refuses_a_stale_operation_id() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-journal-stale-ack");
+        let op = Operation::begin("old").unwrap();
+        let id = latest().unwrap().unwrap().operation_id;
+        drop(op);
+        let error = acknowledge_repair(&format!("{id}-other")).unwrap_err();
+        assert!(error.to_string().contains("Update operation changed"));
+    }
+
+    /// The drop guard's last resort: a record that cannot be persisted when the
+    /// operation is abandoned is *reported*, not panicked. `result.json` is a
+    /// directory here, so the atomic rename cannot land.
+    #[test]
+    fn an_unpersistable_interrupted_record_is_reported_without_panicking() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-journal-drop-failure");
+        let op = Operation::begin("old").unwrap();
+        let path = op.path();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+
+        drop(op);
+    }
 }

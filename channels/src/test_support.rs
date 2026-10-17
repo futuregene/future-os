@@ -1173,6 +1173,37 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_silent_peer_ends_wait_for_received_at_its_deadline() {
+        // A client that connects and then says nothing must not wedge the
+        // script: the wait gives up at its deadline and the actions after it
+        // still run. (This is the arm a test takes when it closes a socket
+        // whose client stayed silent.)
+        use futures_util::StreamExt as _;
+        let (url, received) = spawn_ws(vec![
+            WsAction::WaitForReceived {
+                count: 1,
+                timeout: Duration::from_millis(80),
+            },
+            WsAction::SendText("after the wait".into()),
+        ])
+        .await;
+        let (mut stream, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let message = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("the script must continue past the deadline")
+            .expect("a frame")
+            .expect("no stream error");
+        assert!(matches!(
+            message,
+            tokio_tungstenite::tungstenite::Message::Text(_)
+        ));
+        assert!(
+            lock_unpoisoned(&received).is_empty(),
+            "the client sent nothing, so only the deadline can end the wait"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn ws_server_send_after_close_breaks() {
         // Per-connection scripts: each client vanishes right after the
         // handshake; the delay lets the close propagate so the next scripted
@@ -1231,6 +1262,40 @@ mod tests {
     async fn wait_until_times_out() {
         assert!(!wait_until(|| false, Duration::from_millis(60)).await);
         assert!(wait_until(|| true, Duration::from_millis(60)).await);
+    }
+
+    /// The third arm of `expect_write_half_closed`.
+    ///
+    /// `shutdown(Write)` reports `NotConnected` when the peer has already reset;
+    /// for any *other* error the descriptor has to stop being a socket. Replacing
+    /// it with `/dev/null` (`dup2`, one atomic step, the number stays owned by
+    /// the socket) makes `shutdown` answer ENOTSOCK, and the panic's message is
+    /// the assertion.
+    ///
+    /// The test dials the mock itself, so it owns the descriptor it replaces
+    /// instead of having to reach inside the socket for it.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    #[should_panic(expected = "shutdown the client socket's write half")]
+    async fn kill_write_half_reports_an_error_that_is_not_notconnected() {
+        use std::os::unix::io::AsRawFd as _;
+        ensure_crypto_provider();
+        let (url, _) = spawn_ws(vec![WsAction::Delay(Duration::from_secs(30))]).await;
+        let tcp = tokio::net::TcpStream::connect(&url["ws://".len()..])
+            .await
+            .expect("connect to the mock");
+        let fd = tcp.as_raw_fd();
+        let (socket, _) =
+            tokio_tungstenite::client_async(&url, tokio_tungstenite::MaybeTlsStream::Plain(tcp))
+                .await
+                .expect("handshake with the mock");
+        let dev_null = std::fs::File::open("/dev/null").expect("open /dev/null");
+        let replaced = unsafe { libc::dup2(dev_null.as_raw_fd(), fd) };
+        assert_eq!(
+            replaced, fd,
+            "dup2 must replace the socket's own descriptor"
+        );
+        kill_write_half(&socket);
     }
 
     #[test]

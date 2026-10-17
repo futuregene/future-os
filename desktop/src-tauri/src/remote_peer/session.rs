@@ -26,11 +26,62 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Value};
 use std::time::Duration;
 
+/// The phone's budget for one command or handshake request.
+///
+/// `mobile/src/remote/client.ts` passes `{ timeout: 10_000 }` on both lanes, so
+/// this is the client contract rather than a local choice. It is a *named*
+/// constant so it can be pinned by a test and so the fixture tolerance below
+/// has something to be a tolerance **of**.
+const PHONE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long the socket-connect leg gets.
+///
+/// This is `async-nats`'s own default for `ConnectOptions::connection_timeout`
+/// (0.49: 5 s). It is written down and set explicitly rather than inherited:
+/// inherited, a dependency bump could silently change how long the app waits for
+/// a socket, and nothing in the code or the docs would have said 5 s.
+const NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a leg gets, and the record of the tolerance that was tried here and
+/// **withdrawn**.
+///
+/// A fixture tolerance (60 s per leg under `cfg(test)`) was implemented and
+/// measured against the hostile rig of `docs/testing/flaky-tauri.md` §13.6 —
+/// `taskpolicy -b` + 40 burners, two concurrent rigs, `-j 32`, load 60–75, the
+/// window in which the pre-fix binary reproduced the failure in 4 of 4 runs. It
+/// did not turn those runs green: it turned them into **900 s timeouts of the
+/// whole filter** (both instances hit the harness cap; the pre-fix binary had
+/// finished the same filter in 370–415 s with 13 failures). Starvation scales
+/// every wait, including the tolerance, so a larger wall clock buys nothing at
+/// the load where the failure is reachable — and at the loads this host can
+/// otherwise produce the failure does not fire at all (0 budget-class failures
+/// in 26 natural runs, §13.3). The tolerance's cost (a 12× longer worst case for
+/// every future run) is real and its benefit is unmeasurable here, so the shape
+/// is withdrawn and the finding is recorded instead: what matters in production
+/// is not the budget but *what the client concludes* from a timeout (see the
+/// next step in §13.6 — a timeout currently drops the connection, which is how a
+/// slow host becomes `peer_not_connected`).
+fn request_budget() -> Duration {
+    PHONE_REQUEST_TIMEOUT
+}
+
+/// The socket-connect leg, named so the option below cannot be inherited by
+/// accident. See [`request_budget`] for the tolerance that was tried here.
+fn connect_budget() -> Duration {
+    NATS_CONNECT_TIMEOUT
+}
+
 /// Handshake legs are small and the host expires pending candidates after 30 s;
 /// 10 s matches the phone and leaves room for one retry inside that window.
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const HANDSHAKE_TIMEOUT: Duration = PHONE_REQUEST_TIMEOUT;
+
+/// What one handshake request gets.
+fn handshake_budget() -> Duration {
+    HANDSHAKE_TIMEOUT
+}
+
 /// Ordinary commands default, matching the phone's request timeout.
-pub(crate) const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const COMMAND_TIMEOUT: Duration = PHONE_REQUEST_TIMEOUT;
 
 /// How many attempts a retryable command gets in total, and the base of the
 /// `250·2ⁿ ms` backoff between them. The phone's numbers
@@ -361,6 +412,25 @@ impl PeerSession {
     /// only way a stream task can observe that its socket is gone. Killing the
     /// broker does not do it: the client reconnects and keeps the subscriptions
     /// open.
+    /// Whether the transport itself is still up, as the NATS client sees it.
+    ///
+    /// This is the distinction a *timed-out request* cannot make on its own: a
+    /// slow host and a dead one look identical from the caller's seat, and the
+    /// client is the only component that knows whether the socket beneath the
+    /// request is still there. `Connected` means the client has a live
+    /// connection to the broker (its own PING/PONG bookkeeping is what moves it
+    /// off `Connected`), so a request that timed out over a `Connected` client is
+    /// a **slow peer**, not a lost connection.
+    ///
+    /// Used by `runtime::on_transport_failure`, which is what decides whether a
+    /// failed command also means "this host is gone".
+    pub(crate) fn is_connected(&self) -> bool {
+        matches!(
+            self.client.connection_state(),
+            async_nats::connection::State::Connected
+        )
+    }
+
     #[cfg(test)]
     pub(crate) async fn close_socket(&self) -> Result<(), crate::AppError> {
         self.client
@@ -649,6 +719,28 @@ pub(crate) struct Connected {
     pub consumed_invitation: bool,
 }
 
+/// Map the library's connect-failure kind onto this crate's two kinds.
+///
+/// `Authentication`/`AuthorizationViolation` are the credential being refused:
+/// `AppError::RemoteAuthorization`, which the runtime treats as permanent (a
+/// retry cannot repair it, and retrying would hide the re-pair the user has to
+/// do). Every other kind — `TimedOut`, `Io`, `Dns`, `MaxReconnects`, `Tls`,
+/// `ServerParse` — is `AppError::RemoteTransport`, the transient class the
+/// runtime may retry.
+///
+/// A free function so both arms are asserted directly
+/// (`connect_failures_are_classified_by_their_kind`), instead of needing a
+/// fixture that can make a real broker refuse authorization.
+fn classify_connect_error(kind: async_nats::ConnectErrorKind, message: &str) -> crate::AppError {
+    match kind {
+        async_nats::ConnectErrorKind::Authentication
+        | async_nats::ConnectErrorKind::AuthorizationViolation => {
+            crate::AppError::RemoteAuthorization(message.to_string())
+        }
+        _ => crate::AppError::RemoteTransport(message.to_string()),
+    }
+}
+
 /// Connect and authenticate. One attempt, no retry policy (the supervisor owns
 /// that), but the two handshake patterns are tried in the only order that is
 /// safe: PSK pairing first, then `IK` with the pinned key.
@@ -661,7 +753,14 @@ pub(crate) async fn connect(creds: &PeerCreds) -> Result<Connected, crate::AppEr
         let signer = signer.clone();
         async move { signer.sign(&nonce).map_err(async_nats::AuthError::new) }
     })
-    .custom_inbox_prefix(format!("p.{}.rep.{}", creds.pair_id, creds.device_id));
+    .custom_inbox_prefix(format!("p.{}.rep.{}", creds.pair_id, creds.device_id))
+    // Both budgets are set explicitly rather than inherited from `async-nats`:
+    // inherited, a dependency bump could change how long the app waits for a
+    // socket without anything in this crate saying so, and nothing here named
+    // the value. `request_budget`/`connect_budget` carry the values and the
+    // record of the fixture tolerance that was tried and withdrawn.
+    .connection_timeout(connect_budget())
+    .request_timeout(Some(request_budget()));
     // Same platform-store read as the bridge's own connection (`remote::trust`):
     // the intermittent failure is in reading the store, not in the handshake.
     let options = match crate::remote::trust::root_bundle() {
@@ -673,7 +772,17 @@ pub(crate) async fn connect(creds: &PeerCreds) -> Result<Connected, crate::AppEr
     #[cfg(not(test))]
     let options = options.require_tls(true);
     let client = options.connect(&creds.nats_url).await.map_err(|error| {
-        crate::AppError::RemoteTransport(format!("Failed to connect to NATS: {error}"))
+        // Two different kinds of failure, which need two different responses from
+        // the caller: an authorization failure will never succeed on a retry (the
+        // credential is the problem), while everything else on this leg — a
+        // socket that timed out, a refused connection, DNS — is the network, and
+        // is exactly the case a bounded retry exists for.
+        //
+        // Classified by the library's own kind rather than by the message text,
+        // because "timed out" is a phrase several legs produce (the handshake
+        // and the request budgets do too) and matching it here is how this crate
+        // would start retrying a rejected credential.
+        classify_connect_error(error.kind(), &format!("Failed to connect to NATS: {error}"))
     })?;
 
     let identity = creds
@@ -880,7 +989,7 @@ async fn handshake(
                 "deviceName": super::runtime::device_name(),
                 "deviceKind": "desktop",
             }),
-            HANDSHAKE_TIMEOUT,
+            handshake_budget(),
         )
         .await?;
     Ok(session)
@@ -926,7 +1035,7 @@ async fn exchange(
     let bytes = serde_json::to_vec(&body)
         .map_err(|error| crate::AppError::Message(format!("encode handshake: {error}")))?;
     let response = tokio::time::timeout(
-        HANDSHAKE_TIMEOUT,
+        handshake_budget(),
         client.request(subject.to_string(), bytes.into()),
     )
     .await
@@ -1153,5 +1262,84 @@ mod tests {
                 .expect("presence is optional");
         assert_eq!(confirmed.presence, Value::Null);
         assert!(!agent_available(&confirmed.presence));
+    }
+
+    /// A refused credential and a dead network must arrive as *different*
+    /// variants, because the runtime's decision to retry is made on the variant.
+    ///
+    /// The two arms are asserted directly on the classifier rather than through a
+    /// live broker: `FakeNats` cannot be made to refuse authorization, and a test
+    /// that cannot fail is worse than no test. The library's own kinds are used,
+    /// not message text — several legs say "timed out", and matching that phrase
+    /// is how the crate would start retrying a rejected credential.
+    #[test]
+    fn connect_failures_are_classified_by_their_kind() {
+        use async_nats::ConnectErrorKind;
+        // The credential is wrong: permanent, and the user must re-pair.
+        for kind in [
+            ConnectErrorKind::Authentication,
+            ConnectErrorKind::AuthorizationViolation,
+        ] {
+            let error = classify_connect_error(kind, "Failed to connect to NATS: x");
+            assert!(
+                matches!(error, crate::AppError::RemoteAuthorization(_)),
+                "{kind:?} must not be retried"
+            );
+        }
+        // Everything else on this leg is the network: retryable.
+        for kind in [
+            ConnectErrorKind::TimedOut,
+            ConnectErrorKind::Io,
+            ConnectErrorKind::Dns,
+            ConnectErrorKind::MaxReconnects,
+        ] {
+            let error = classify_connect_error(kind, "Failed to connect to NATS: x");
+            assert!(
+                matches!(error, crate::AppError::RemoteTransport(_)),
+                "{kind:?} is the transient class"
+            );
+        }
+        // The message is carried through unchanged, so the UI shows the same text
+        // it always did.
+        assert_eq!(
+            classify_connect_error(ConnectErrorKind::TimedOut, "Failed to connect to NATS: t")
+                .to_string(),
+            "Failed to connect to NATS: t"
+        );
+    }
+
+    /// The production budgets are "the phone's" and "the library's default",
+    /// and they are asserted **from the test build** — which is the only thing
+    /// that makes the fixture tolerance safe.
+    ///
+    /// A fixture tolerance for these budgets was measured and withdrawn
+    /// (see `request_budget`), but the lesson stays: a budget a test cannot see
+    /// is a budget that can drift. These constants are the numbers themselves —
+    /// the wire contract they encode is the phone's (`mobile/src/remote/
+    /// client.ts` sends `{ timeout: 10_000 }`) — so the pin belongs here rather
+    /// than in a comment, together with the wiring that reads them.
+    #[test]
+    fn production_budgets_are_the_phone_and_the_library() {
+        assert_eq!(
+            PHONE_REQUEST_TIMEOUT,
+            Duration::from_secs(10),
+            "the phone sends {{ timeout: 10_000 }} on the command and handshake lanes"
+        );
+        assert_eq!(
+            HANDSHAKE_TIMEOUT, PHONE_REQUEST_TIMEOUT,
+            "the handshake is one of those requests"
+        );
+        assert_eq!(
+            NATS_CONNECT_TIMEOUT,
+            Duration::from_secs(5),
+            "async-nats 0.49's own ConnectOptions::connection_timeout default, now written down"
+        );
+        // And the wiring: what a command and a socket actually get is the pair
+        // above, in this build too — the one assertion that would have caught a
+        // fixture tolerance being left in place unconditionally.
+        assert_eq!(COMMAND_TIMEOUT, PHONE_REQUEST_TIMEOUT);
+        assert_eq!(handshake_budget(), HANDSHAKE_TIMEOUT);
+        assert_eq!(request_budget(), PHONE_REQUEST_TIMEOUT);
+        assert_eq!(connect_budget(), NATS_CONNECT_TIMEOUT);
     }
 }

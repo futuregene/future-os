@@ -2645,17 +2645,12 @@ mod tests {
         // Sanity bound on top of the marker evidence: the retained slice is the last
         // MAX_KEEP (500_000) bytes, so the body must be close to that. It also has to be
         // smaller than the full payload (600_024+ bytes on unix, 600_024 on Windows),
-        // which independently confirms the head was removed.
-        assert!(
-            result.len() >= 490_000,
-            "kept too little: {} bytes kept",
-            result.len()
-        );
-        assert!(
-            result.len() < 600_000,
-            "head not dropped: {} bytes kept",
-            result.len()
-        );
+        // which independently confirms the head was removed. Both bounds read the
+        // length once into a binding, so the numbers in the messages are the ones the
+        // assertions compared rather than a re-evaluation guarded by the panic arm.
+        let kept = result.len();
+        assert!(kept >= 490_000, "kept too little: {kept} bytes kept");
+        assert!(kept < 600_000, "head not dropped: {kept} bytes kept");
     }
 
     #[test]
@@ -2806,6 +2801,58 @@ mod tests {
         .await;
         let error = result.unwrap_err().to_string();
         assert!(error.contains("not approved: no way"), "{error}");
+    }
+
+    /// The two *interrupted* pre-execution decisions, which the approved and
+    /// denied legs above do not reach: a cancelled or context-invalidated
+    /// escalation must name its own end state and must not run the command.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_escalation_records_cancelled_and_invalidated_end_states() {
+        for (decision, status, needle) in [
+            (
+                crate::sandbox::EscalationDecision::Cancelled("user stopped it".to_string()),
+                "cancelled",
+                "Shell approval cancelled: user stopped it",
+            ),
+            (
+                crate::sandbox::EscalationDecision::ContextInvalidated(
+                    "the run was replaced".to_string(),
+                ),
+                "context_invalidated",
+                "Shell approval context invalidated: the run was replaced",
+            ),
+        ] {
+            let ws = std::env::temp_dir()
+                .join(format!("futureos-esc-end-{}", crate::utils::generate_id()));
+            std::fs::create_dir_all(&ws).unwrap();
+            let mut sandbox = crate::sandbox::ResolvedSandbox::resolve(
+                &crate::sandbox::SandboxPolicy {
+                    tier: crate::sandbox::SandboxTier::Sandbox,
+                    model_reviewer: false,
+                },
+                ws.to_string_lossy().as_ref(),
+            );
+            sandbox.set_backend_available_for_test(true);
+            let requester: crate::sandbox::EscalationRequester =
+                Arc::new(move |_request| decision.clone());
+            let error = with_tool_scope(
+                ScopeOptions {
+                    workspace: ws.to_string_lossy().to_string(),
+                    permission_level: "all".to_string(),
+                    interrupt_flag: Arc::new(AtomicBool::new(false)),
+                    sandbox: Arc::new(sandbox),
+                    escalation: Some(requester),
+                    on_sandboxed: None,
+                },
+                run_shell("echo never-runs", 10, true, "because test"),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains(needle), "{status}: {error}");
+            let _ = std::fs::remove_dir_all(ws);
+        }
     }
 
     #[tokio::test]

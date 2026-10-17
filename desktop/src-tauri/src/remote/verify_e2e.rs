@@ -210,7 +210,7 @@ struct HistoryCapture {
 /// payload bytes only; the probe in the report moves them by exactly the
 /// payload size. A window delta on `out_*` is therefore directly comparable
 /// with the payload bytes the harness received and decrypted.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 struct PhoneAccounting {
     in_messages: u64,
     in_bytes: u64,
@@ -220,7 +220,7 @@ struct PhoneAccounting {
 
 /// The broker both connections run on: the in-process fake for the
 /// self-contained tests, or a real `nats-server` for the real-broker replay.
-enum Broker {
+pub(super) enum Broker {
     Fake(FakeNats),
     Real { url: String },
 }
@@ -289,7 +289,7 @@ impl Broker {
 
 /// Connect a client the way the harness needs it: named, so the broker's
 /// monitoring view identifies each side.
-async fn connect(url: &str, name: &str) -> async_nats::Client {
+pub(super) async fn connect(url: &str, name: &str) -> async_nats::Client {
     async_nats::ConnectOptions::new()
         .name(name)
         .connect(url)
@@ -320,6 +320,101 @@ struct E2e {
     probe_messages: u64,
 }
 
+/// A host bridge on a real broker with **no in-process phone**.
+///
+/// [`E2e`] keeps both ends in one process. The real product does not: a phone
+/// (or a desktop's client role) pairs from another process over the real
+/// transport. This fixture installs exactly the same production state
+/// [`E2e::on_broker`] installs — one secure transport shared by the command
+/// loop and the event drain — and then gets out of the way, so a second process
+/// can pair with `v2_creds`' invitation.
+///
+/// `real_agent` leaves `FUTURE_AGENT_GRPC_ADDR` alone (the caller has pointed
+/// it at a running `future-agent`) instead of installing the scripted mock.
+pub(super) struct InstalledHost {
+    _home: HomeGuard,
+    pub(super) pair_id: String,
+    pub(super) creds: PairingCreds,
+}
+
+impl Drop for InstalledHost {
+    fn drop(&mut self) {
+        lean::set_enabled(false);
+        stop();
+    }
+}
+
+/// Start the production host bridge for a cross-process client.
+pub(super) async fn install_host(broker: Broker, label: &str, real_agent: bool) -> InstalledHost {
+    let creds = v2_creds(&broker);
+    install_host_with_creds(creds, broker, label, real_agent).await
+}
+
+/// [`install_host`] with pairing credentials supplied by the caller: the shape
+/// a restarted host needs, because a peer that keeps the same identity must
+/// present the same Noise static key after the restart.
+pub(super) async fn install_host_with_creds(
+    creds: PairingCreds,
+    broker: Broker,
+    label: &str,
+    real_agent: bool,
+) -> InstalledHost {
+    let home = HomeGuard::new(label);
+    init_store();
+    if !real_agent {
+        ensure_mock_agent();
+    }
+    let pair_id = creds.pair_id.clone();
+    let _shared = super::supervisor::shared_runtime(&creds, true, false);
+    let bridge_client = connect(broker.url(), &format!("realnet-host-{pair_id}")).await;
+    let bridge_instance_id = format!("bridge_{}", unique("realnet-host"));
+    let handshake = HandshakeState::new(
+        creds.clone(),
+        Arc::new(AtomicBool::new(true)),
+        bridge_instance_id.clone(),
+    );
+    let mut tasks = build_transport(&bridge_client, &pair_id, &handshake, new_reply_slots())
+        .await
+        .expect("host bridge transport");
+    let previous = SUPERVISOR.state.lock().unwrap().replace(RemoteState {
+        security: handshake.secure.clone(),
+        generation_id: 1,
+        client: bridge_client,
+        nats_health: Arc::new(NatsHealth::default()),
+        nats_url: broker.url().to_string(),
+        pair_id: pair_id.clone(),
+        desktop_id: creds.desktop_id.clone(),
+        desktop_public_key: "REALNETHOSTPUBKEY".to_string(),
+        bridge_instance_id,
+        event_tx: tasks.event_tx,
+        drop_counters: Arc::new(DropCounters::new()),
+        event_task: tasks.event_task,
+        cmd_task: tasks.cmd_task,
+        transfer_task: tasks.transfer_task,
+        heartbeat_task: tasks.heartbeat_task,
+        refresh_task: tokio::spawn(std::future::pending()),
+        web_task: None,
+        web_url: None,
+        web_lan_url: None,
+        pairing_code: None,
+        pairing_code_expires_at: None,
+        pairing_confirmed: Arc::new(AtomicBool::new(true)),
+    });
+    assert!(
+        previous.is_none(),
+        "a previous fixture leaked SUPERVISOR.state"
+    );
+    tasks.candidate_tasks.installed();
+    // The bridge publishes what the Agent stream observer hands it; without
+    // this sink the phone would see commands answered and no events at all.
+    crate::remote_host::attach_events();
+    InstalledHost {
+        _home: home,
+        pair_id,
+        creds,
+    }
+}
+
 impl Drop for E2e {
     fn drop(&mut self) {
         // Capabilities are process-global (single `AtomicBool`/`Arc<AtomicBool>`
@@ -330,7 +425,7 @@ impl Drop for E2e {
     }
 }
 
-fn v2_creds(broker: &Broker) -> PairingCreds {
+pub(super) fn v2_creds(broker: &Broker) -> PairingCreds {
     PairingCreds {
         handshake_version: 2,
         secure: Some(secure::PairingIdentity::new(now_secs() + 600).unwrap()),
@@ -346,7 +441,7 @@ fn v2_creds(broker: &Broker) -> PairingCreds {
 
 /// The QR invitation a phone scans, built the way `remote_host::pairing` builds
 /// it for the real app.
-fn invitation(creds: &PairingCreds) -> String {
+pub(super) fn invitation(creds: &PairingCreds) -> String {
     let identity = creds.secure.as_ref().expect("v2 identity");
     let mut url = reqwest::Url::parse("futureos://remote/pair").expect("constant URL");
     url.query_pairs_mut()
@@ -481,10 +576,10 @@ impl E2e {
         // it (`secure::reply_context`).
         let context = future_remote_crypto::reply_context(subject, &wire).expect("reply context");
         // The wire carries a v2 record, not the JSON the bridge produced.
+        let head = reply.payload[..reply.payload.len().min(8)].to_vec();
         assert!(
             reply.payload.starts_with(b"FRE2"),
-            "the reply must be a sealed v2 record, got {:?}",
-            &reply.payload[..reply.payload.len().min(8)]
+            "the reply must be a sealed v2 record, got {head:?}"
         );
         // A NATS header would ride outside `payload` (and outside the byte
         // count): the lane uses none, which is what keeps received payload
@@ -666,10 +761,10 @@ async fn receive_event(
     // The wire carries a v2 record, not the JSON the bridge produced: this is
     // the check that separates a received-bytes measurement from a tap taken
     // before encryption.
+    let head = message.payload[..message.payload.len().min(8)].to_vec();
     assert!(
         message.payload.starts_with(b"FRE2"),
-        "received bytes must be a sealed v2 record, got {:?}",
-        &message.payload[..message.payload.len().min(8)]
+        "received bytes must be a sealed v2 record, got {head:?}"
     );
     // The lane must not smuggle a NATS header block alongside the sealed
     // record: `message.payload` (and so every byte counted below) would then
@@ -913,10 +1008,10 @@ fn assert_history_lean(capture: &ReplyCapture, full: &ReplyCapture, entries: &Va
                 .expect("block survives");
             match block["kind"].as_str().unwrap_or_default() {
                 "reasoning" | "tool_result" => {
+                    let kind = block["kind"].as_str().unwrap_or_default();
                     assert!(
                         returned_block.get("text").is_none(),
-                        "{what}: {} body must be dropped, not blanked",
-                        block["kind"]
+                        "{what}: {kind} body must be dropped, not blanked"
                     );
                     trimmed += 1;
                 }
@@ -999,11 +1094,11 @@ async fn run_fixture(broker: Broker, label: &str) {
         serde_json::from_str(lean_capture.received[3].body["data"].as_str().unwrap()).unwrap();
     assert!(tool_end.get("text").is_none(), "captured output is dropped");
     assert_eq!(tool_end["exit_code"], json!(3), "outcome survives");
+    let lean_bytes = lean_capture.wire_bytes();
+    let full_bytes = full.wire_bytes();
     assert!(
-        lean_capture.wire_bytes() < full.wire_bytes(),
-        "the lean lane must receive fewer bytes ({} vs {})",
-        lean_capture.wire_bytes(),
-        full.wire_bytes()
+        lean_bytes < full_bytes,
+        "the lean lane must receive fewer bytes ({lean_bytes} vs {full_bytes})"
     );
 
     // ── Coalesced: fragments merge, and the merge is verifiable ──
@@ -1019,11 +1114,11 @@ async fn run_fixture(broker: Broker, label: &str) {
     );
     let coalesced = e2e.replay_live_lane(&session, "run-verify", &journal).await;
     assert_lane(&coalesced, &journal, false, "coalesced");
+    let coalesced_messages = coalesced.received.len();
+    let full_messages = full.received.len();
     assert!(
-        coalesced.received.len() < full.received.len(),
-        "the coalesced lane must merge fragments ({} vs {} messages)",
-        coalesced.received.len(),
-        full.received.len()
+        coalesced_messages < full_messages,
+        "the coalesced lane must merge fragments ({coalesced_messages} vs {full_messages} messages)"
     );
     e2e.declare(&[]).await;
     assert!(!e2e.coalescing());
@@ -1306,6 +1401,23 @@ async fn run_real_traffic(broker: Broker) {
     let entries: Value =
         serde_json::from_str(&std::fs::read_to_string(entries_path).expect("entries readable"))
             .expect("entries JSON");
+    let monitor = std::env::var("VERIFY_E2E_NATS_MONITOR").ok();
+    run_real_traffic_with(broker, &journal, &session, &run, &entries, monitor).await;
+}
+
+/// The measurement itself, with its inputs as arguments instead of env vars, so
+/// a test can drive the same code over a fixture page. The env-gated drivers
+/// above are the ones that read a *real* run's journal and history dump
+/// (`scripts/measure/verify-e2e-bytes.py`); everything below them is this
+/// function, and it is where the invariants of the measurement are asserted.
+async fn run_real_traffic_with(
+    broker: Broker,
+    journal: &[JournalEvent],
+    session: &str,
+    run: &str,
+    entries: &Value,
+    monitor: Option<String>,
+) {
     assert!(!journal.is_empty(), "the journal dump must not be empty");
 
     let _agent_lock = mock_agent_lock();
@@ -1313,7 +1425,6 @@ async fn run_real_traffic(broker: Broker) {
     // The broker's view of the phone's connection is a cumulative counter, so
     // take a baseline before the measured traffic: the window delta is then
     // exactly the measured lanes (the handshake and setup fall outside it).
-    let monitor = std::env::var("VERIFY_E2E_NATS_MONITOR").ok();
     let before = match &monitor {
         Some(url) => Some(e2e.phone_accounting(url).await.expect("phone connection")),
         None => None,
@@ -1322,16 +1433,16 @@ async fn run_real_traffic(broker: Broker) {
     // agent link is a process-global mock in this test binary). The dump is the
     // bare entries array the agent replied with; the mock speaks the desktop's
     // `{ "entries": [...] }` page shape.
-    e2e.set_session_entries(&session, &json!({ "entries": entries }));
+    e2e.set_session_entries(session, &json!({ "entries": entries }));
 
     // ── Undeclared: the pre-change lane over real traffic ──
     assert!(
         !lean::enabled(),
         "build_transport must reset the declaration"
     );
-    let live_full = e2e.replay_live_lane(&session, &run, &journal).await;
-    assert_lane(&live_full, &journal, false, "undeclared");
-    let history_full = e2e.history(&session).await;
+    let live_full = e2e.replay_live_lane(session, run, journal).await;
+    assert_lane(&live_full, journal, false, "undeclared");
+    let history_full = e2e.history(session).await;
     let history_undeclared = json!({
         "full": history_full.full.summary(),
         "paged": history_full.paged.summary(),
@@ -1346,9 +1457,9 @@ async fn run_real_traffic(broker: Broker) {
     // ── Declared: the lean lane over the same traffic ──
     e2e.declare(&[lean::LEAN_EVENTS_FEATURE]).await;
     assert!(lean::enabled());
-    let live_lean = e2e.replay_live_lane(&session, &run, &journal).await;
-    assert_lane(&live_lean, &journal, true, "declared");
-    let history_lean = e2e.history(&session).await;
+    let live_lean = e2e.replay_live_lane(session, run, journal).await;
+    assert_lane(&live_lean, journal, true, "declared");
+    let history_lean = e2e.history(session).await;
     assert_eq!(
         history_lean.full.body["success"],
         json!(true),
@@ -1375,25 +1486,24 @@ async fn run_real_traffic(broker: Broker) {
         e2e.coalescing(),
         "the coalescing declaration must land in the flag the drain reads"
     );
-    let live_coalesced = e2e.replay_live_lane(&session, &run, &journal).await;
-    assert_lane(&live_coalesced, &journal, false, "coalesced");
+    let live_coalesced = e2e.replay_live_lane(session, run, journal).await;
+    assert_lane(&live_coalesced, journal, false, "coalesced");
+    let coalesced_messages = live_coalesced.received.len();
+    let source_events = journal.len();
     assert!(
-        live_coalesced.received.len() < journal.len(),
-        "the coalesced lane must merge fragments ({} messages for {} source events)",
-        live_coalesced.received.len(),
-        journal.len()
+        coalesced_messages < source_events,
+        "the coalesced lane must merge fragments ({coalesced_messages} messages for {source_events} source events)"
     );
     e2e.declare(&[EVENT_COALESCING_FEATURE, lean::LEAN_EVENTS_FEATURE])
         .await;
     assert!(lean::enabled());
-    let live_phone = e2e.replay_live_lane(&session, &run, &journal).await;
-    assert_lane(&live_phone, &journal, true, "coalesced+lean");
+    let live_phone = e2e.replay_live_lane(session, run, journal).await;
+    assert_lane(&live_phone, journal, true, "coalesced+lean");
+    let phone_bytes = live_phone.wire_bytes();
+    let coalesced_bytes = live_coalesced.wire_bytes();
     assert!(
-        live_phone.wire_bytes() < live_coalesced.wire_bytes()
-            || live_phone.received.len() <= live_coalesced.received.len(),
-        "the phone's lane may not grow when lean is added ({} vs {})",
-        live_phone.wire_bytes(),
-        live_coalesced.wire_bytes()
+        phone_bytes < coalesced_bytes || live_phone.received.len() <= live_coalesced.received.len(),
+        "the phone's lane may not grow when lean is added ({phone_bytes} vs {coalesced_bytes})"
     );
     println!(
         "VERIFY_E2E_LIVE_PHONE {}",
@@ -1418,23 +1528,23 @@ async fn run_real_traffic(broker: Broker) {
             .map(Vec::len)
             .unwrap_or(0)
     };
+    let lean_full_entries = count(&history_lean.full);
+    let full_entries = count(&history_full.full);
     assert!(
-        count(&history_lean.full) >= count(&history_full.full),
-        "the lean full page must not carry fewer entries ({} vs {})",
-        count(&history_lean.full),
-        count(&history_full.full)
+        lean_full_entries >= full_entries,
+        "the lean full page must not carry fewer entries ({lean_full_entries} vs {full_entries})"
     );
+    let lean_full_bytes = history_lean.full.plaintext_bytes;
+    let undeclared_full_bytes = history_full.full.plaintext_bytes;
     assert!(
-        history_lean.full.plaintext_bytes <= history_full.full.plaintext_bytes,
-        "the lean full page must not be larger: {} vs {}",
-        history_lean.full.plaintext_bytes,
-        history_full.full.plaintext_bytes
+        lean_full_bytes <= undeclared_full_bytes,
+        "the lean full page must not be larger: {lean_full_bytes} vs {undeclared_full_bytes}"
     );
+    let lean_paged_entries = count(&history_lean.paged);
+    let undeclared_paged_entries = count(&history_full.paged);
     assert!(
-        count(&history_lean.paged) >= count(&history_full.paged),
-        "the lean paged page must not carry fewer entries ({} vs {})",
-        count(&history_lean.paged),
-        count(&history_full.paged)
+        lean_paged_entries >= undeclared_paged_entries,
+        "the lean paged page must not carry fewer entries ({lean_paged_entries} vs {undeclared_paged_entries})"
     );
 
     println!(
@@ -1459,50 +1569,7 @@ async fn run_real_traffic(broker: Broker) {
         })
     );
     if let (Some(before), Some(url)) = (before, monitor.as_deref()) {
-        let after = e2e
-            .phone_accounting(url)
-            .await
-            .expect("phone connection after the measurement");
-        // The broker's own count of what it relayed to the phone (`out_*`),
-        // against what the harness received and decrypted.
-        //
-        // The comparison subtracts the harness's own probe traffic rather than
-        // allowing slack, so it stays an exact equality: the probe subscription
-        // is registered on the phone connection and the broker counts its echo,
-        // but the probe is not lane traffic and the harness does not count it.
-        // (`replay_live_lane` runs twice per measurement, so this is exactly
-        // 2 messages and 2 x `"verify-sub-probe".len()` = 32 bytes.)
-        let relayed = after.out_bytes - before.out_bytes - e2e.probe_bytes;
-        let decrypted = e2e.phone_rx_bytes as u64;
-        assert_eq!(
-            relayed, decrypted,
-            "the broker must relay exactly the bytes the phone decrypted, \
-             once its own probe traffic ({} B) is excluded",
-            e2e.probe_bytes
-        );
-        let relayed_messages = after.out_messages - before.out_messages - e2e.probe_messages;
-        assert_eq!(
-            relayed_messages, e2e.phone_rx_messages as u64,
-            "the broker must relay exactly the messages the phone received, \
-             once its own probe traffic ({} msgs) is excluded",
-            e2e.probe_messages
-        );
-        // The event subject is what every per-message protocol frame carries,
-        // so its length is what the framing arithmetic in the report needs.
-        let evt_subject = format!("p.{}.evt.{session}", e2e.pair_id);
-        println!(
-            "VERIFY_E2E_NATS_ACCOUNTING {}",
-            json!({
-                "receivedMessages": e2e.phone_rx_messages,
-                "receivedBytes": e2e.phone_rx_bytes,
-                "serverOutMessages": after.out_messages - before.out_messages,
-                "serverOutBytes": after.out_bytes - before.out_bytes,
-                "sentMessages": after.in_messages - before.in_messages,
-                "sentBytes": after.in_bytes - before.in_bytes,
-                "evtSubject": evt_subject,
-                "evtSubjectBytes": evt_subject.len(),
-            })
-        );
+        assert_broker_accounting_against(&e2e, before, url, session).await;
     }
 
     // ── The way back: what one opened shell row costs ──
@@ -1549,7 +1616,7 @@ async fn run_real_traffic(broker: Broker) {
         .max_by_key(|(_, _, bytes)| *bytes)
         .expect("carried is not empty")
         .clone();
-    let fetched = e2e.fetch_tool_call_args(&session, &row_run, &row_id).await;
+    let fetched = e2e.fetch_tool_call_args(session, &row_run, &row_id).await;
     assert_eq!(
         fetched.body["success"],
         json!(true),
@@ -1601,4 +1668,770 @@ async fn run_real_traffic(broker: Broker) {
                 / (paged_commands / paged_carried.len() + overhead),
         })
     );
+}
+
+/// The broker-accounting window: read the server's counters now, and compare the
+/// delta since `before` with what this harness received and decrypted.
+///
+/// Split from [`assert_broker_accounting`] only so the reading and the
+/// arithmetic can each be driven by an ordinary test: the reading is one HTTP
+/// call against a monitoring endpoint (`/connz`), the arithmetic is a pure
+/// function of two counter snapshots. A real `nats-server` supplies both; the
+/// in-process broker supplies neither, so the state a *truthful* server reports
+/// has to be scripted — and a scripted endpoint is only worth having if the
+/// arithmetic it feeds is asserted on its own terms, which is what the two
+/// tests next door do.
+async fn assert_broker_accounting_against(
+    e2e: &E2e,
+    before: PhoneAccounting,
+    monitor: &str,
+    session: &str,
+) {
+    let after = e2e
+        .phone_accounting(monitor)
+        .await
+        .expect("phone connection after the measurement");
+    assert_broker_accounting(
+        before,
+        after,
+        PhoneReceipt {
+            bytes: e2e.phone_rx_bytes,
+            messages: e2e.phone_rx_messages,
+            probe_bytes: e2e.probe_bytes,
+            probe_messages: e2e.probe_messages,
+        },
+        session,
+        &e2e.pair_id,
+    );
+}
+
+/// What the harness received, and how much of the broker's traffic for it was
+/// the harness's own subscription probes.
+#[derive(Clone, Copy, Debug)]
+struct PhoneReceipt {
+    bytes: usize,
+    messages: usize,
+    probe_bytes: u64,
+    probe_messages: u64,
+}
+
+/// The window's arithmetic, with both sides as arguments.
+///
+/// Two subtractions matter and both are asserted, not merely reported:
+///
+/// * the counters are cumulative, so the window is `after - before`;
+/// * the broker also relays the harness's own probe traffic, which is not lane
+///   traffic the phone counts, so it is subtracted too rather than left as
+///   slack.
+///
+/// The equality is exact because the sealed record is the only thing on the
+/// lane: whatever the publisher wrote is what the phone received. A test that
+/// drives this with a zero baseline and a zero probe would pass an
+/// implementation that skipped both subtractions, so the ordinary test next
+/// door supplies non-zero values for each and a lying broker that is one byte
+/// and one message over.
+fn assert_broker_accounting(
+    before: PhoneAccounting,
+    after: PhoneAccounting,
+    receipt: PhoneReceipt,
+    session: &str,
+    pair_id: &str,
+) {
+    let relayed = after.out_bytes - before.out_bytes - receipt.probe_bytes;
+    let decrypted = receipt.bytes as u64;
+    assert_eq!(
+        relayed, decrypted,
+        "the broker must relay exactly the bytes the phone decrypted, \
+         once its own probe traffic ({} B) is excluded",
+        receipt.probe_bytes
+    );
+    let relayed_messages = after.out_messages - before.out_messages - receipt.probe_messages;
+    assert_eq!(
+        relayed_messages, receipt.messages as u64,
+        "the broker must relay exactly the messages the phone received, \
+         once its own probe traffic ({} msgs) is excluded",
+        receipt.probe_messages
+    );
+    // The event subject is what every per-message protocol frame carries, so
+    // its length is what the framing arithmetic in the report needs.
+    let evt_subject = format!("p.{pair_id}.evt.{session}");
+    println!(
+        "VERIFY_E2E_NATS_ACCOUNTING {}",
+        json!({
+            "receivedMessages": receipt.messages,
+            "receivedBytes": receipt.bytes,
+            "serverOutMessages": after.out_messages - before.out_messages,
+            "serverOutBytes": after.out_bytes - before.out_bytes,
+            "sentMessages": after.in_messages - before.in_messages,
+            "sentBytes": after.in_bytes - before.in_bytes,
+            "evtSubject": evt_subject,
+            "evtSubjectBytes": evt_subject.len(),
+        })
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli_tool::EnvGuard;
+    use futures::FutureExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// A page in the shape a real history dump has, carrying the one thing the
+    /// lazy-fetch half of the measurement needs: shell rows whose commands the
+    /// undeclared page carries and the lean page drops, with the call identity
+    /// (`runId` + `toolCallId`) the on-open fetch is scoped by.
+    fn traffic_entries() -> Value {
+        json!([
+            {
+                "id": "u1", "kind": "user", "role": "user",
+                "createdAtMs": 1, "runId": "run-verify",
+                "blocks": [{"kind": "text", "text": "run it"}],
+            },
+            {
+                "id": "a1", "kind": "assistant", "role": "assistant",
+                "createdAtMs": 2, "runId": "run-verify",
+                "blocks": [
+                    {"kind": "reasoning", "text": "r".repeat(300)},
+                    {"kind": "tool_call", "name": "shell", "toolCallId": "call-small",
+                     "arguments": {"command": "ls"}},
+                    {"kind": "tool_call", "name": "shell", "toolCallId": "call-big",
+                     "arguments": {"command": "cargo test --all-targets -- --test-threads=1"}},
+                    {"kind": "tool_result", "toolCallId": "call-big",
+                     "text": "o".repeat(300), "isError": true},
+                ],
+            },
+        ])
+    }
+
+    /// The journal dump parser: one JSON object per line, with the event's own
+    /// `data` as an embedded, stringified document — exactly what
+    /// `scripts/measure/verify-e2e-bytes.py` writes out of `run_events.payload`.
+    /// Blank lines are skipped, and a field the agent did not send falls back to
+    /// the value the schema means (`session_idx` of -1, an empty `data`), so a
+    /// dump from an older agent still measures instead of panicking.
+    #[test]
+    fn a_journal_dump_parses_line_by_line_with_its_defaults() {
+        let dump = concat!(
+            r#"{"event_type":"text_chunk","data":"{\"text\":\"hi\"}","idx":3,"epoch":2,"timestamp":"t","session_idx":7,"run_sequence":9}"#,
+            "\n\n",
+            r#"{"event_type":"tool_end"}"#,
+            "\n"
+        );
+        let journal = parse_journal(dump);
+        assert_eq!(journal.len(), 2, "a blank line is not an event");
+        assert_eq!(journal[0].event_type, "text_chunk");
+        assert_eq!(journal[0].data, r#"{"text":"hi"}"#);
+        assert_eq!(journal[0].idx, 3);
+        assert_eq!(journal[0].epoch, 2);
+        assert_eq!(journal[0].timestamp, "t");
+        assert_eq!(journal[0].session_idx, 7);
+        assert_eq!(journal[0].run_sequence, 9);
+        assert_eq!(journal[1].event_type, "tool_end");
+        assert_eq!(journal[1].data, "{}", "no data means an empty document");
+        assert_eq!(journal[1].idx, 0);
+        assert_eq!(journal[1].epoch, 0);
+        assert_eq!(journal[1].session_idx, -1);
+        assert_eq!(journal[1].timestamp, "");
+        assert_eq!(journal[1].run_sequence, 0);
+    }
+
+    /// The measured body is what the publisher will really send: an event over
+    /// the lane's cap is counted truncated, and a streamed type is counted as
+    /// dropped rather than as an event the phone receives.
+    #[test]
+    fn an_oversized_event_is_measured_as_the_truncated_body() {
+        let huge = "x".repeat(MAX_EVENT_BYTES + 5_000);
+        let event = journal_event("text_chunk", json!({ "text": huge }), 1);
+        let undeclared = expected_lane_data(&event, false).expect("kept undeclared");
+        assert_ne!(
+            undeclared, event.data,
+            "the measured body is the cut one, not the source's"
+        );
+        let cut = undeclared.len();
+        let source = event.data.len();
+        assert!(cut < source, "the cut body is smaller: {cut} vs {source}");
+        let lean = expected_lane_data(&event, true).expect("a text chunk is kept");
+        assert_eq!(lean, undeclared, "the same cap applies on either lane");
+
+        // A streamed type is not measured at all when the client declared it.
+        let streamed = journal_event("thinking_delta", json!({ "text": huge }), 2);
+        assert!(expected_lane_data(&streamed, true).is_none());
+        assert!(expected_lane_data(&streamed, false).is_some());
+    }
+
+    /// The summary a measurement prints: sealed bytes, decrypted bytes, and how
+    /// many entries the page held. A harness that reported the pre-seal size
+    /// would understate every page by the record overhead it exists to measure.
+    #[test]
+    fn a_reply_summary_separates_the_wire_size_from_the_decrypted_one() {
+        let capture = ReplyCapture {
+            wire_bytes: 300,
+            plaintext_bytes: 256,
+            request_wire_bytes: 128,
+            body: json!({ "data": { "entries": [{"id": "a"}, {"id": "b"}] } }),
+        };
+        assert_eq!(
+            capture.summary(),
+            json!({ "wireBytes": 300, "plaintextBytes": 256, "entries": 2 })
+        );
+        let empty = ReplyCapture {
+            wire_bytes: 44,
+            plaintext_bytes: 0,
+            request_wire_bytes: 44,
+            body: json!({ "data": null }),
+        };
+        assert_eq!(
+            empty.summary()["entries"],
+            json!(0),
+            "a reply with no page has nothing to count"
+        );
+    }
+
+    /// The real-broker URL is read from the environment the measurement script
+    /// exports (`scripts/measure/verify-e2e-bytes.py --broker real`), and it is
+    /// what both the URL accessor and the connect path use. The restore a
+    /// driver does afterwards has two shapes — a value that was already there
+    /// comes back, a var that was absent stays absent — and both are exercised
+    /// here, because a measurement that leaves its inputs set would make the
+    /// next run read the previous run's dump.
+    #[test]
+    fn a_real_broker_reads_its_url_from_the_environment() {
+        // The same variable the driver tests set: serialized with them so a
+        // concurrent writer cannot interleave, and restored by the closures
+        // below so no value outlives this test (`FLAKES.md` item 27).
+        let _env_lock = driver_env_lock();
+        let original = std::env::var_os("VERIFY_E2E_NATS_URL");
+        std::env::set_var("VERIFY_E2E_NATS_URL", "nats://127.0.0.1:14221");
+        let previous = std::env::var_os("VERIFY_E2E_NATS_URL");
+
+        std::env::set_var("VERIFY_E2E_NATS_URL", "nats://127.0.0.1:14222");
+        let broker = Broker::real_from_env();
+        assert_eq!(broker.url(), "nats://127.0.0.1:14222");
+
+        for (value, expected) in [
+            (previous.clone(), Some("nats://127.0.0.1:14221".to_string())),
+            (None, None),
+        ] {
+            match value {
+                Some(value) => std::env::set_var("VERIFY_E2E_NATS_URL", value),
+                None => std::env::remove_var("VERIFY_E2E_NATS_URL"),
+            }
+            assert_eq!(
+                std::env::var("VERIFY_E2E_NATS_URL").ok(),
+                expected,
+                "the restore puts back exactly what the run saw"
+            );
+        }
+        match original {
+            Some(value) => std::env::set_var("VERIFY_E2E_NATS_URL", value),
+            None => std::env::remove_var("VERIFY_E2E_NATS_URL"),
+        }
+    }
+
+    /// The readiness probe a real broker needs: subscribe, publish an echo on
+    /// the *same* connection, and only then treat the subscription as live — a
+    /// publish that overtook the SUB is dropped by the server, never retried, so
+    /// without the probe the first measured message would be a race.
+    #[tokio::test]
+    async fn the_subscription_probe_round_trips_its_own_echo() {
+        let nats = FakeNats::start().await;
+        // The `Real` branch is the one under test, and it speaks the ordinary
+        // NATS protocol through the same client the measurement uses: what it
+        // needs is a broker that delivers a publish to the subscriber that made
+        // it. (What a fake cannot stand in for is a *real server's* accounting,
+        // which is read separately, over `/connz`.)
+        let broker = Broker::Real {
+            url: nats.url().to_string(),
+        };
+        let client = connect(broker.url(), "verify-probe-test").await;
+        let bytes = broker
+            .await_subscription(&client, "p.pair-x.evt.session")
+            .await;
+        assert_eq!(
+            bytes,
+            "verify-sub-probe".len() as u64,
+            "the probe reports exactly what it put on the connection, so the \
+             harness can subtract it from the broker's own accounting"
+        );
+    }
+
+    /// The broker's accounting for the phone connection is read from its
+    /// monitoring endpoint and found **by the name the harness gave that
+    /// connection**. A `/connz` view without it has nothing to compare against
+    /// and answers `None` — reporting zeroes instead would look like a
+    /// perfectly quiet window and silently excuse any discrepancy.
+    #[tokio::test]
+    async fn the_phone_accounting_finds_the_connection_by_name() {
+        let _agent_lock = mock_agent_lock();
+        let e2e = E2e::on_broker(Broker::Fake(FakeNats::start().await), "verify-accounting").await;
+        let phone = format!("verify-phone-{}", e2e.pair_id);
+        let view = serve_connz(
+            &json!({
+                "connections": [
+                    {"name": "verify-bridge-x", "in_msgs": 1, "in_bytes": 2,
+                     "out_msgs": 3, "out_bytes": 4},
+                    {"name": phone, "in_msgs": 11, "in_bytes": 12,
+                     "out_msgs": 13, "out_bytes": 14},
+                ]
+            })
+            .to_string(),
+        )
+        .await;
+        let accounting = e2e
+            .phone_accounting(&view)
+            .await
+            .expect("the phone's own connection is found, not the bridge's");
+        assert_eq!(accounting.in_messages, 11);
+        assert_eq!(accounting.in_bytes, 12);
+        assert_eq!(accounting.out_messages, 13);
+        assert_eq!(accounting.out_bytes, 14);
+
+        let without_the_phone = serve_connz(
+            &json!({"connections": [{"name": "someone-else", "in_msgs": 0}]}).to_string(),
+        )
+        .await;
+        assert!(
+            e2e.phone_accounting(&without_the_phone).await.is_none(),
+            "no such connection is not a quiet one"
+        );
+
+        let not_a_list = serve_connz(&json!({"connections": {"name": phone}}).to_string()).await;
+        assert!(
+            e2e.phone_accounting(&not_a_list).await.is_none(),
+            "a malformed view answers nothing rather than panicking"
+        );
+    }
+
+    /// A replay longer than the bounded event queue has to drain while it
+    /// publishes: an overflow drops events silently, which would shrink a
+    /// measurement without failing it.
+    #[tokio::test]
+    async fn a_long_replay_drains_the_bounded_queue_while_it_publishes() {
+        let _agent_lock = mock_agent_lock();
+        let mut e2e =
+            E2e::on_broker(Broker::Fake(FakeNats::start().await), "verify-long-replay").await;
+        let session = format!("sess_{}", unique("long-replay"));
+        // Every event is kept off the lean lane, so events in flight is the
+        // journal's own length — 80 is past the queue's 64-event burst.
+        let journal: Vec<JournalEvent> = (1..=80)
+            .map(|idx| journal_event("text_chunk", json!({ "text": format!("chunk {idx}") }), idx))
+            .collect();
+        let capture = e2e.replay_live_lane(&session, "run-long", &journal).await;
+        assert_lane(&capture, &journal, false, "long replay");
+        assert_eq!(
+            capture.received.len(),
+            80,
+            "the drain must not have dropped an event"
+        );
+        assert_eq!(e2e.phone_rx_messages, 80);
+        assert_eq!(
+            capture
+                .received
+                .last()
+                .map(|event| event.body["idx"].clone()),
+            Some(json!(80)),
+            "the last source event arrives last"
+        );
+    }
+
+    /// The real-traffic measurement body, over inputs this test owns. The
+    /// ignored drivers read a live run's journal and one session's history page
+    /// (that is what `scripts/measure/verify-e2e-bytes.py` exists for); what
+    /// they *do* with it is this function, and this is where its claims run in
+    /// the ordinary suite: the lean lane carries fewer bytes for the same
+    /// events, the lean page never delivers fewer exchanges, and the one opened
+    /// shell row gives back exactly the command the lean page dropped.
+    #[tokio::test]
+    async fn the_real_traffic_lane_holds_its_invariants_on_fixture_inputs() {
+        run_real_traffic_with(
+            Broker::Fake(FakeNats::start().await),
+            &fixture_journal(),
+            "sess_fixture_traffic",
+            "run-verify",
+            &traffic_entries(),
+            None,
+        )
+        .await;
+    }
+
+    /// The catalog lane's measurement body, at this test's own row and write
+    /// counts: what one second of a streaming run costs, for the client that
+    /// declared the activity lane and for one that did not. The declaration is
+    /// the whole difference, so the claim the measurement prints — declaring is
+    /// cheaper than not declaring — is asserted rather than only reported.
+    #[tokio::test]
+    async fn the_catalog_measurement_publishes_activity_only_to_a_declared_client() {
+        let declared = measure_catalog_writes(2, 2, true, "catalog-measure-declared").await;
+        let undeclared = measure_catalog_writes(2, 2, false, "catalog-measure-undeclared").await;
+
+        assert!(
+            declared["activityPackets"].as_u64().unwrap_or_default() > 0,
+            "a declared client receives the activity lane: {declared}"
+        );
+        assert_eq!(
+            undeclared["activityPackets"],
+            json!(0),
+            "an undeclared client is not sent it: {undeclared}"
+        );
+        // The declared lane announces a change as an activity packet *instead
+        // of* re-sending the whole catalogue, so it never sends more of them.
+        assert!(
+            declared["sessionsPackets"].as_u64().unwrap_or_default()
+                <= undeclared["sessionsPackets"].as_u64().unwrap_or_default(),
+            "the declared lane must not also re-send the catalogue snapshot: \
+             {declared} vs {undeclared}"
+        );
+        assert!(
+            declared["activityPayloadBytes"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0,
+            "the activity packet carries the row it announces: {declared}"
+        );
+        assert_eq!(
+            declared["records"],
+            json!(
+                declared["sessionsPackets"].as_u64().unwrap_or_default()
+                    + declared["activityPackets"].as_u64().unwrap_or_default()
+            ),
+            "every published packet is one record on the wire"
+        );
+        assert_eq!(declared["rows"], json!(2));
+        assert_eq!(declared["writes"], json!(2));
+        assert!(declared["baselineBytes"].as_u64().unwrap_or_default() > 0);
+    }
+
+    /// One `/connz` answer on a loopback socket, plus the URL to ask it by.
+    /// `nats-server`'s monitoring endpoint is the only source of the broker's
+    /// own counters, and the harness has to read them the way it writes them.
+    async fn serve_connz(body: &str) -> String {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind loopback");
+        let url = format!("http://{}", listener.local_addr().expect("addr"));
+        let body = body.to_string();
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut request = [0u8; 2048];
+                let _ = socket.read(&mut request).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        url
+    }
+
+    // ── The `#[ignore]`d measurement drivers, run on the in-process broker ──
+    //
+    // The annotations stay: they name the external inputs a *real* run needs
+    // (a `nats-server`, a live run's journal, a session's history page), and
+    // they are the operator's instruments. What these tests add is the
+    // observation that a driver's *body* is ordinary code: hand it those inputs
+    // from a fixture and it must hold every invariant the measurement asserts.
+    //
+    // They are `#[test]`, not `#[tokio::test]`, on purpose. A `#[tokio::test]`
+    // function is a plain blocking fn that builds its own runtime, so calling
+    // one from inside a runtime panics ("Cannot start a runtime from within a
+    // runtime"); the caller has to be the same kind of test libtest itself
+    // would run. An external in-process broker is started on a runtime the
+    // caller owns and keeps alive, because the driver cannot create it.
+
+    /// Serializes the drivers' process-global inputs. `EnvGuard` is the
+    /// *restore* (`FLAKES.md` item 4c: a lock is not a restore); this is only
+    /// what stops two concurrent writers from interleaving.
+    static DRIVER_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn driver_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        DRIVER_ENV
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    /// The two on-disk shapes `scripts/measure/verify-e2e-bytes.py` writes,
+    /// built from the same fixtures the in-module tests measure: a journal dump
+    /// (one JSON object per line) and the bare entries array a history page
+    /// was converted to.
+    struct DriverInputs {
+        _dir: tempfile::TempDir,
+        /// Restored on drop, including while a driver panics mid-measurement.
+        _guards: Vec<EnvGuard>,
+    }
+
+    impl DriverInputs {
+        fn write(broker_url: &str) -> Self {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let journal_path = dir.path().join("journal.jsonl");
+            let mut dump = String::new();
+            for event in fixture_journal() {
+                dump.push_str(
+                    &json!({
+                        "event_type": event.event_type,
+                        "data": event.data,
+                        "idx": event.idx,
+                        "epoch": event.epoch,
+                        "timestamp": event.timestamp,
+                        "session_idx": event.session_idx,
+                        "run_sequence": event.run_sequence,
+                    })
+                    .to_string(),
+                );
+                dump.push('\n');
+            }
+            std::fs::write(&journal_path, dump).expect("write the journal dump");
+            let entries_path = dir.path().join("entries.json");
+            std::fs::write(&entries_path, traffic_entries().to_string())
+                .expect("write the history dump");
+
+            // `VERIFY_E2E_NATS_MONITOR` is deliberately left unset: the fake
+            // broker has no `/connz`, and a scripted endpoint would have to
+            // invent the counters the window compares against. The window is
+            // asserted on its own terms by the tests below.
+            let guards = vec![
+                EnvGuard::set("VERIFY_E2E_JOURNAL", journal_path.as_os_str()),
+                EnvGuard::set(
+                    "VERIFY_E2E_SESSION",
+                    std::ffi::OsStr::new("sess_fixture_traffic"),
+                ),
+                EnvGuard::set("VERIFY_E2E_RUN", std::ffi::OsStr::new("run-verify")),
+                EnvGuard::set("VERIFY_E2E_ENTRIES", entries_path.as_os_str()),
+                EnvGuard::set("VERIFY_E2E_NATS_URL", std::ffi::OsStr::new(broker_url)),
+            ];
+            Self {
+                _dir: dir,
+                _guards: guards,
+            }
+        }
+    }
+
+    /// An in-process broker on a runtime the caller keeps alive.
+    fn broker_on_its_own_runtime() -> (tokio::runtime::Runtime, FakeNats) {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("broker runtime");
+        let nats = runtime.block_on(FakeNats::start());
+        (runtime, nats)
+    }
+
+    /// Both measurement drivers, through their own bodies, with the inputs the
+    /// script would hand them.
+    ///
+    /// `measure_real_e2ee_bytes` starts its own broker; `measure_real_broker_bytes`
+    /// takes one URL from `VERIFY_E2E_NATS_URL`, and the `Broker::Real` arm only
+    /// needs an address — the in-process broker answers the probe publish that
+    /// arm uses to prove the subscription is live. That is the same arm a real
+    /// `nats-server` takes; what is *not* real here is the server's own
+    /// accounting, which is why the window is asserted separately.
+    #[test]
+    fn the_ignored_measurement_drivers_run_their_own_bodies() {
+        let _env_lock = driver_env_lock();
+        let (broker_runtime, nats) = broker_on_its_own_runtime();
+        let _inputs = DriverInputs::write(nats.url());
+
+        super::measure_real_e2ee_bytes();
+        super::measure_real_broker_bytes();
+
+        drop(broker_runtime);
+    }
+
+    /// The real-broker fixture driver, through its own body, against the
+    /// address `VERIFY_E2E_NATS_URL` names. Everything it asserts — the
+    /// handshake, both declaration states, both history shapes — is the
+    /// shipping behaviour; only the server under it is in-process.
+    #[test]
+    fn the_ignored_fixture_driver_runs_its_own_body() {
+        let _env_lock = driver_env_lock();
+        let (broker_runtime, nats) = broker_on_its_own_runtime();
+        let _inputs = DriverInputs::write(nats.url());
+
+        super::verify_e2e_real_broker_round_trip();
+
+        drop(broker_runtime);
+    }
+
+    /// The catalog measurement, through its own body, at this test's own row
+    /// and write counts (its two env inputs have in-code defaults — 232 rows,
+    /// 20 writes — that would make the suite pay for a measurement).
+    #[test]
+    fn the_ignored_catalog_driver_runs_its_own_body() {
+        let _env_lock = driver_env_lock();
+        let _rows = EnvGuard::set("CATALOG_ACTIVITY_ROWS", std::ffi::OsStr::new("2"));
+        let _writes = EnvGuard::set("CATALOG_ACTIVITY_WRITES", std::ffi::OsStr::new("2"));
+
+        super::measure_catalog_activity_lane();
+    }
+
+    // ── The broker-accounting window, with both sides as arguments ──
+
+    fn accounting(before: PhoneAccounting, out_bytes: u64, out_messages: u64) -> PhoneAccounting {
+        PhoneAccounting {
+            in_messages: before.in_messages + 2,
+            in_bytes: before.in_bytes + 200,
+            out_messages: before.out_messages + out_messages,
+            out_bytes: before.out_bytes + out_bytes,
+        }
+    }
+
+    /// A truthful broker, over a window that has a **non-zero baseline** and a
+    /// **non-zero probe**: the equality only holds if both are subtracted, so
+    /// an implementation that dropped either would fail here rather than pass
+    /// for the want of a value to subtract.
+    #[test]
+    fn the_accounting_window_subtracts_the_baseline_and_the_probes() {
+        let before = PhoneAccounting {
+            in_messages: 3,
+            in_bytes: 300,
+            out_messages: 9,
+            out_bytes: 4_096,
+        };
+        let after = accounting(before, 32 + 9_234, 2 + 55);
+        super::assert_broker_accounting(
+            before,
+            after,
+            PhoneReceipt {
+                bytes: 9_234,
+                messages: 55,
+                probe_bytes: 32,
+                probe_messages: 2,
+            },
+            "sess_window",
+            "pair_window",
+        );
+    }
+
+    /// One byte more than the phone decrypted is a broker that is accounting
+    /// for something the client never received.
+    #[test]
+    #[should_panic(expected = "the broker must relay exactly the bytes the phone decrypted")]
+    fn a_broker_one_byte_over_the_receipt_is_caught() {
+        let before = PhoneAccounting::default();
+        let after = accounting(before, 101, 5);
+        super::assert_broker_accounting(
+            before,
+            after,
+            PhoneReceipt {
+                bytes: 100,
+                messages: 5,
+                probe_bytes: 0,
+                probe_messages: 0,
+            },
+            "sess_window",
+            "pair_window",
+        );
+    }
+
+    /// Same for the message count: a relayed message the phone never saw is a
+    /// lane the measurement is not accounting for.
+    #[test]
+    #[should_panic(expected = "the broker must relay exactly the messages the phone received")]
+    fn a_broker_one_message_over_the_receipt_is_caught() {
+        let before = PhoneAccounting::default();
+        let after = accounting(before, 100, 6);
+        super::assert_broker_accounting(
+            before,
+            after,
+            PhoneReceipt {
+                bytes: 100,
+                messages: 5,
+                probe_bytes: 0,
+                probe_messages: 0,
+            },
+            "sess_window",
+            "pair_window",
+        );
+    }
+
+    /// The reading half: one `/connz` answer, parsed and handed to the same
+    /// arithmetic. The endpoint is scripted — the in-process broker has no
+    /// monitoring service — but the counters it serves are the ones a truthful
+    /// server reports for this traffic: a non-zero baseline, the probe it
+    /// relayed, and exactly what the phone decrypted. The two sides are
+    /// independent only in the real-broker run; here the point is that the
+    /// reading and the arithmetic compose, and that `Broker::Real`'s probe path
+    /// (16 bytes and 1 message per replay) is what the subtraction removes.
+    #[tokio::test]
+    async fn the_accounting_window_reads_the_monitor_and_accepts_a_truthful_broker() {
+        let _agent_lock = mock_agent_lock();
+        let nats = FakeNats::start().await;
+        // `Broker::Real` against the in-process broker: the only difference is
+        // that this arm's subscription probe is a real publish/echo counted by
+        // the server, which is what gives the window a non-zero probe to
+        // subtract.
+        let mut e2e = E2e::on_broker(
+            Broker::Real {
+                url: nats.url().to_string(),
+            },
+            "verify-window",
+        )
+        .await;
+        let session = "sess_window";
+        e2e.set_session_entries(session, &json!({ "entries": traffic_entries() }));
+        e2e.replay_live_lane(session, "run-verify", &fixture_journal())
+            .await;
+        assert!(e2e.probe_bytes > 0, "the Real arm probes the subscription");
+
+        let before = PhoneAccounting {
+            in_messages: 3,
+            in_bytes: 300,
+            out_messages: 9,
+            out_bytes: 4_096,
+        };
+        let after = PhoneAccounting {
+            in_messages: before.in_messages + 2,
+            in_bytes: before.in_bytes + 200,
+            out_messages: before.out_messages + e2e.probe_messages + e2e.phone_rx_messages as u64,
+            out_bytes: before.out_bytes + e2e.probe_bytes + e2e.phone_rx_bytes as u64,
+        };
+        let url = serve_connz(
+            &json!({
+                "connections": [{
+                    "name": format!("verify-phone-{}", e2e.pair_id),
+                    "in_msgs": after.in_messages,
+                    "in_bytes": after.in_bytes,
+                    "out_msgs": after.out_messages,
+                    "out_bytes": after.out_bytes,
+                }]
+            })
+            .to_string(),
+        )
+        .await;
+
+        super::assert_broker_accounting_against(&e2e, before, &url, session).await;
+
+        // And the same reading against a server that is one byte over: the
+        // window has to reject it, or the reading is not feeding the assertion.
+        let liar = PhoneAccounting {
+            out_bytes: after.out_bytes + 1,
+            ..after
+        };
+        let liar_url = serve_connz(
+            &json!({
+                "connections": [{
+                    "name": format!("verify-phone-{}", e2e.pair_id),
+                    "in_msgs": liar.in_messages,
+                    "in_bytes": liar.in_bytes,
+                    "out_msgs": liar.out_messages,
+                    "out_bytes": liar.out_bytes,
+                }]
+            })
+            .to_string(),
+        )
+        .await;
+        let outcome = std::panic::AssertUnwindSafe(super::assert_broker_accounting_against(
+            &e2e, before, &liar_url, session,
+        ))
+        .catch_unwind()
+        .await;
+        assert!(
+            outcome.is_err(),
+            "a monitor one byte over the receipt must be rejected"
+        );
+    }
 }

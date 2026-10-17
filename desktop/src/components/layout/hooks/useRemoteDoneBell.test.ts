@@ -177,4 +177,21 @@ describe("useRemoteDoneBell", () => {
 
     expect(playDoneBell).toHaveBeenCalledTimes(2);
   });
+
+  it("ignores a push that is not an event, or names no session", async () => {
+    // A host's pushes also carry status chatter and partially-shaped events; a
+    // payload that is not an object, or that carries no session, cannot be
+    // identified as a run at all and must not ring.
+    renderHook(() => useRemoteDoneBell(true));
+    await flushAsync();
+
+    push({ desktopId: "desktop_a", kind: "presence", payload: { sessionId: "sess_1", type: "agent_end" } });
+    push({ desktopId: "desktop_a", kind: "event", payload: null as unknown as RemotePeerEvent["payload"] });
+    push({ desktopId: "desktop_a", kind: "event", payload: "agent_end" as unknown as RemotePeerEvent["payload"] });
+    push({ desktopId: "desktop_a", kind: "event", payload: { type: "agent_end" } as Record<string, unknown> });
+    await flushAsync();
+
+    expect(playDoneBell).not.toHaveBeenCalled();
+    expect(requestUserAttention).not.toHaveBeenCalled();
+  });
 });

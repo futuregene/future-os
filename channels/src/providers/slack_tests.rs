@@ -1288,6 +1288,53 @@ async fn socket_mode_acks_envelopes_and_stops_on_a_server_disconnect() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_events_envelope_without_a_payload_event_is_acked_and_dropped() {
+    // An `events_api` envelope whose payload carries no `event` key: the
+    // envelope is still acknowledged (Slack retries anything it does not see
+    // acked), and nothing is dispatched. The sender standing untouched is the
+    // proof that no dispatch ran — an offline agent would otherwise turn a
+    // dispatched message into an immediate reply.
+    let envelope = json!({ "envelope_id": "env-2", "type": "events_api", "payload": {} });
+    let (url, received) = crate::test_support::spawn_ws(vec![
+        crate::test_support::WsAction::SendText(envelope.to_string()),
+        crate::test_support::WsAction::Delay(Duration::from_millis(300)),
+        crate::test_support::WsAction::SendClose,
+    ])
+    .await;
+    let dir = crate::test_support::temp_dir("slack-session-no-event");
+    let ctx = dispatch_ctx(config_value(&test_config("http://127.0.0.1:1")), &dir);
+    let recording: Arc<RecordingSender> = Arc::new(RecordingSender::new());
+    let sender: Arc<dyn ChannelSender> = recording.clone();
+    let socket = crate::transport::ws::connect(&url, &[]).await.unwrap();
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        socket_mode_session(&ctx, sender, "UBOT", socket),
+    )
+    .await
+    .expect("the closed socket must end the session promptly");
+    assert!(
+        result.is_err(),
+        "a close frame is a reconnect reason, not a clean exit: {result:?}"
+    );
+    let received = received
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    assert!(
+        received
+            .iter()
+            .filter_map(|message| message.to_text().ok())
+            .any(|text| text.contains("env-2")),
+        "the envelope must still be acknowledged: {received:?}"
+    );
+    assert!(
+        recording.taken().is_empty(),
+        "an envelope with no payload.event must not be dispatched: {:?}",
+        recording.taken()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn socket_mode_fails_when_the_platform_drops_the_socket() {
     // A clean close frame.
     let (url, _) =
@@ -1708,6 +1755,27 @@ async fn the_events_webhook_verifies_signatures_and_answers_the_challenge() {
         recording.taken().len(),
         1,
         "an ignored payload type adds no second acknowledgement"
+    );
+
+    // An `event_callback` with no `event` field: acked, and nothing spawned.
+    // (The platform retries an unacknowledged delivery, so the ack must not
+    // depend on the body carrying a usable event.)
+    let body = json!({ "type": "event_callback", "team_id": "T1" }).to_string();
+    let timestamp = slack_now();
+    let signature = slack_signature("signing-secret", &timestamp, body.as_bytes());
+    let response = client
+        .post(&url)
+        .header("x-slack-request-timestamp", &timestamp)
+        .header("x-slack-signature", &signature)
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        recording.taken().len(),
+        1,
+        "an event_callback without an event must dispatch nothing"
     );
 
     shutdown.trigger();

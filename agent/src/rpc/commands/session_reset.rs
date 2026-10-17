@@ -16,6 +16,27 @@ fn fail(id: &str, code: &str, error: &str, data: serde_json::Value) -> String {
     RpcResponse::build_fail_code(id, "reset_session_history", code, error, data)
 }
 
+/// Test-only hook fired in the window **between** the store accepting the reset
+/// and the in-memory working history being reloaded from it, for one session id.
+///
+/// It exists for the same reason `reset.rs`'s `RESET_RACE_HOOK` does: this window
+/// is real — the rewrite has committed, the reload has not run — and something
+/// else can touch the store in between (the store is a file; the reset's own
+/// digest/rewrite pair exists precisely because a concurrent writer can slip into
+/// that gap). Making it deterministic lets the `reload_failed` arm be tested
+/// rather than argued about, because no *input* can reach it: the planner reads
+/// through the same path the reload does, so damaging the store before the reset
+/// fails the plan instead.
+#[cfg(test)]
+#[allow(clippy::type_complexity)]
+pub(crate) static RELOAD_FAILURE_HOOK: parking_lot::Mutex<Option<(String, Box<dyn Fn() + Send>)>> =
+    parking_lot::Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn set_reload_failure_hook(session: &str, hook: Box<dyn Fn() + Send>) {
+    *RELOAD_FAILURE_HOOK.lock() = Some((session.to_string(), hook));
+}
+
 /// Selectors as the wire carries them, validated into a plan the store can apply.
 fn selectors_from(reset: &HistoryResetCommand) -> Result<ResetSelectors, String> {
     let bound = |value: Option<i64>, flag: &str| -> Result<Option<u64>, String> {
@@ -126,6 +147,16 @@ pub(crate) fn handle_reset_session_history(
     };
 
     if outcome.applied {
+        #[cfg(test)]
+        {
+            // Id-gated so unrelated resets never consume the hook.
+            let mut slot = RELOAD_FAILURE_HOOK.lock();
+            if matches!(slot.as_ref(), Some((sid, _)) if sid == &session_id) {
+                if let Some((_, hook)) = slot.take() {
+                    hook();
+                }
+            }
+        }
         // The in-memory working history is what the next request sends (and what
         // a terminal rewrite would persist), so it must become the rewritten
         // history in the same breath as the store: re-read rather than reuse,

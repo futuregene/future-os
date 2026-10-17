@@ -784,3 +784,125 @@ describe("useQuestionNav paging from the window's top", () => {
     world.container.remove();
   });
 });
+
+/**
+ * A press with no transcript on screen neither throws nor spins.
+ *
+ * `pageUp` reads the rows *before* it looks at the container, and the unmounted
+ * case is real: the hook outlives a closed conversation long enough for a key
+ * press or a click to arrive. The read must answer "no rows" rather than throw,
+ * and the frame loop that waits for the page's rows must stay bounded — a page
+ * that never brings any (because there is nothing to draw it into) cannot leave
+ * a requestAnimationFrame loop running behind the app.
+ */
+it("takes a press with no transcript mounted, and stops looking for rows", async () => {
+  // Its own window: the paging suite's fixtures live inside its `describe`.
+  const messages: TranscriptMessage[] = [user("u1"), assistant("a1", [text("t1")])];
+  const frames = queuedFrames();
+  const loadOlder = vi.fn(() => Promise.resolve());
+  const onTakeOver = vi.fn();
+  const hook = renderHook(() => useQuestionNav({
+    hasOlderHistory: true,
+    loadOlder,
+    messages,
+    onTakeOver,
+    scrollRef: { current: null },
+  }));
+
+  // Nothing is mounted, so the walk itself finds nothing...
+  expect(hook.current.hasPrevious).toBe(true);
+  expect(hook.current.previous).toBeNull();
+
+  // ...and the press falls through to the page, which is handed the viewport
+  // first (the transcript stops following its tail even while it is away).
+  act(() => hook.current.goToPrevious());
+  expect(loadOlder).toHaveBeenCalledTimes(1);
+  expect(onTakeOver).toHaveBeenCalledTimes(1);
+
+  // The page arrives with no rows to draw: the loop looks, gives up, and leaves
+  // nothing behind.
+  await act(async () => {
+    await Promise.resolve();
+  });
+  frames.paint(12);
+  expect(frames.waiting).toBe(0);
+
+  hook.unmount();
+  frames.restore();
+});
+
+/**
+ * A `loadOlder` that throws *synchronously* still releases the press.
+ *
+ * `pageUp` holds `pagePendingRef` until the read settles, and every later press
+ * is refused while it does. A callback that throws on the way in (a caller whose
+ * page lookup is not async-safe) must therefore not leave the flag set: the next
+ * press would be swallowed for the rest of the conversation, which the reader
+ * experiences as a ↑ button that stopped working.
+ */
+it("releases the press when the page read throws on the way in", async () => {
+  const messages: TranscriptMessage[] = [user("u1"), assistant("a1", [text("t1")])];
+  const world = pagedTranscript();
+  world.layOut(["u1", "a1"]);
+  const frames = queuedFrames();
+  let attempts = 0;
+  const loadOlder = vi.fn(() => {
+    attempts += 1;
+    if (attempts === 1)
+      throw new Error("page lookup failed");
+    return Promise.resolve();
+  });
+  const hook = renderHook(() => useQuestionNav({
+    hasOlderHistory: true,
+    loadOlder,
+    messages,
+    onTakeOver: vi.fn(),
+    scrollRef: world.scrollRef,
+  }));
+
+  act(() => hook.current.goToPrevious());
+  expect(loadOlder).toHaveBeenCalledTimes(1);
+
+  // The failed press armed the frame loop that waits for rows that will never
+  // come; let it finish.
+  await act(async () => {
+    await Promise.resolve();
+  });
+  frames.paint(12);
+  expect(frames.waiting).toBe(0);
+
+  // And the *pending* flag was released by the throw, so the next press asks
+  // again — a press swallowed here would be a ↑ that stopped working.
+  act(() => hook.current.goToPrevious());
+  expect(loadOlder).toHaveBeenCalledTimes(2);
+  hook.unmount();
+  frames.restore();
+  world.container.remove();
+});
+
+/**
+ * What the reader is reading, when no row's middle is on screen.
+ *
+ * A row taller than two viewports (a long tool output) has neither its top nor
+ * its middle in view, and the rows after it are below the fold: the walk has to
+ * stop looking at that point and answer with the row the reader is *in*, rather
+ * than walking on to a row nobody can see. Getting this wrong sends the first ↓
+ * past the prompt of the turn on screen.
+ */
+describe("useQuestionNav inside a row taller than the viewport", () => {
+  it("answers with the row the reader is in, and offers the reply below it", () => {
+    const { container, hook } = mount(MESSAGES, {
+      anchors: {},
+      heights: [900, 100, 100, 100],
+      viewportHeight: 300,
+    });
+
+    // The reader is inside u1 (900px tall, its middle far below the fold)…
+    expect(hook.current.previous).toBeNull();
+    // …so the next stop below is the end of the reply that follows it.
+    expect(hook.current.next).toEqual({ kind: "replyTail", index: 1, messageId: "a1" });
+
+    hook.unmount();
+    container.remove();
+  });
+});

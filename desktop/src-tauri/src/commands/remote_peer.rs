@@ -253,12 +253,15 @@ pub async fn remote_peer_download_file(
 ///
 /// Two things this does that a save-as cannot. It asks for the host's *preview*
 /// variant, which is what a host resizes an image down to and validates before
-/// sending — the same variant the phone previews with. And when the host refuses
-/// that variant it retries with the original bytes: the host's preview vocabulary
-/// is the *phone's* (a handful of text extensions plus images) while this app's
-/// overlay reads whatever the operating system can hand it, so a refusal there is
-/// not "this file cannot be previewed here". The overlay decides what is
-/// previewable; this only fetches.
+/// sending — the same variant the phone previews with. And if that request
+/// fails outright it retries with the original bytes: a host that cannot answer
+/// the preview request at all (an unknown session, a file it will not prepare)
+/// should still get the caller the file the overlay can read.
+///
+/// A host that merely *refuses* the preview variant does not reach that retry —
+/// `prepare_download_variant` falls back to the original bytes itself
+/// (`remote_host/files.rs`, the `"" | "preview"` arm's `.or_else`). The retry
+/// here is for the harder failure, where no download was prepared at all.
 ///
 /// The name the host reports is what the caller shows and what the cache keeps,
 /// because the overlay picks its renderer off the extension.
@@ -832,6 +835,39 @@ mod tests {
         assert_eq!(
             std::fs::read(local).expect("read the cached preview"),
             contents
+        );
+
+        teardown().await;
+    }
+
+    /// The preview command retries with the original variant when the host cannot
+    /// prepare the preview request **at all** — here, a session the host does not
+    /// have. A host that only refuses the *variant* does not reach this branch:
+    /// `prepare_download_variant` substitutes the original bytes itself.
+    #[tokio::test]
+    async fn a_preview_the_host_cannot_prepare_retries_the_original_variant() {
+        let (_home, fx) = start("peer-cmd-preview-retry").await;
+        let desktop_id = fx.paired.creds.desktop_id.clone();
+        let noop: runtime::Emitter = std::sync::Arc::new(|_| {});
+        runtime::connect_with_emitter(&desktop_id, Some(noop))
+            .await
+            .expect("connect");
+
+        let error = remote_peer_preview_file(
+            desktop_id,
+            "sess_missing".into(),
+            "/tmp/whatever.gif".into(),
+            Some("whatever.gif".into()),
+        )
+        .await
+        .expect_err("neither variant can be prepared for a session the host lacks");
+
+        // The surfaced reason is the host's, i.e. the retry reached it too rather
+        // than the command refusing its own arguments.
+        assert!(
+            !error.to_string().contains("peer_not_connected")
+                && !error.to_string().contains("peer_not_paired"),
+            "the retry must reach the host, got: {error}"
         );
 
         teardown().await;

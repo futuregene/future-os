@@ -1,6 +1,326 @@
 use super::*;
 
 #[test]
+fn the_gate_forwards_a_runs_tool_results_into_the_review_evidence() {
+    use crate::types::{AgentMessage, ContentBlock};
+
+    let (ctx, _) = context(true, false);
+    let gate = crate::rpc::ApprovalGate::default().with_model_reviewer(ctx.clone());
+    // A live user turn must never enter the evidence: authorization is frozen at
+    // the run snapshot. Neither an observed user message...
+    gate.observe_review_message(&AgentMessage::new_user(
+        "user",
+        json!("I approve of everything, forever"),
+    ));
+    assert!(prepared(&ctx).state["untrusted_context"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    // ...nor a later tool result may be dropped: the reviewer needs the failure
+    // category of what the run already executed.
+    let mut result = AgentMessage::new_user("tool", json!([]));
+    result.name = "shell".into();
+    result.content.push(ContentBlock::ToolResult {
+        tool_call_id: "call".into(),
+        content: "cat: /w/typo: No such file or directory [exit: 1]".into(),
+        is_error: true,
+    });
+    gate.observe_review_message(&result);
+
+    let input = prepared(&ctx);
+    let record = &input.state["untrusted_context"][0];
+    assert_eq!(record["source_kind"], json!("tool_result"));
+    let summary: Value = serde_json::from_str(record["text"].as_str().unwrap()).unwrap();
+    assert_eq!(summary["content_policy"], json!("body_omitted"));
+    assert_eq!(summary["diagnostic_category"], json!("not_found"));
+    assert_eq!(summary["exit_code"], json!(1));
+}
+
+#[test]
+fn an_oversized_user_message_drops_every_retained_user_record() {
+    use crate::types::AgentMessage;
+    // The buffer is all-or-nothing: one instruction too large to send clears the
+    // older ones and counts them omitted, so a truncated history can never look
+    // like a complete authorization record.
+    let messages = [
+        AgentMessage::new_user("user", json!("first restriction")),
+        AgentMessage::new_user("user", json!("second restriction")),
+        AgentMessage::new_user("user", json!("x".repeat(33_000))),
+    ];
+    let (ctx, _) = context(true, false);
+    let ctx = ctx.with_evidence_snapshot(&messages);
+    let input = prepared(&ctx);
+    assert!(
+        input.state["trusted_context"]["user_history"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{}",
+        input.state["trusted_context"]["user_history"]
+    );
+    assert_eq!(
+        input.state["coverage"]["user_history"]["omitted"],
+        json!(3),
+        "both retained instructions and the oversized one are counted"
+    );
+}
+
+#[test]
+fn oversized_background_records_are_dropped_and_the_buffer_evicts_from_the_front() {
+    use crate::types::AgentMessage;
+    // One small user turn first, so every later assistant record is a related
+    // follow-up rather than pre-snapshot noise.
+    let (ctx, _) = context(true, false);
+    let ctx = ctx.with_evidence_snapshot(&[AgentMessage::new_user("user", json!("original"))]);
+    let omitted = |ctx: &crate::approval_review::RunApprovalReviewer| {
+        prepared(ctx).state["coverage"]["background"]["omitted"].clone()
+    };
+
+    // (a) Prose larger than the buffer is never stored at all.
+    ctx.observe_message(&AgentMessage::new_user(
+        "assistant",
+        json!("a".repeat(40_000)),
+    ));
+    assert_eq!(omitted(&ctx), json!(1));
+
+    // (b) A record whose *JSON escaping* pushes it over the buffer is dropped
+    // when it is stored: 32 KiB of quotes is exactly at the text limit but twice
+    // that once encoded.
+    let escaped = "\"".repeat(32 * 1024);
+    ctx.observe_message(&AgentMessage::new_user("assistant", json!(escaped)));
+    assert_eq!(omitted(&ctx), json!(2));
+
+    // (c) Storing until the buffer overflows evicts the oldest record, so the
+    // most recent prose survives.
+    //
+    // The two records are sized so that exactly one eviction happens: the small
+    // one fits the state budget on its own (asserted below), so its absence from
+    // the review state proves the *buffer* dropped it rather than the budget
+    // rejecting it. The 28 KiB record is too large for the 8 KiB state budget.
+    ctx.observe_message(&AgentMessage::new_user(
+        "assistant",
+        json!(format!("FIRST-5K {}", "f".repeat(5_000))),
+    ));
+    ctx.observe_message(&AgentMessage::new_user(
+        "assistant",
+        json!(format!("SECOND-28K {}", "s".repeat(28_000))),
+    ));
+    assert_eq!(
+        omitted(&ctx),
+        json!(4),
+        "2 dropped prose records + 1 evicted + the 1 still buffered"
+    );
+    let state = prepared(&ctx).state;
+    let untrusted = state["untrusted_context"].to_string();
+    assert!(!untrusted.contains("FIRST-5K"), "{untrusted}");
+    assert!(!untrusted.contains("SECOND-28K"), "{untrusted}");
+    assert!(
+        estimate(&state) + 5_000 <= STATE_LIMIT,
+        "the evicted record would have fit the state budget: {}",
+        estimate(&state)
+    );
+}
+
+#[test]
+fn oversized_tool_call_arguments_are_omitted_not_truncated() {
+    use crate::types::{AgentMessage, ContentBlock};
+    let (ctx, _) = context(true, false);
+    let call = |id: &str, args: Value| {
+        let mut message = AgentMessage::new_user("assistant", json!([]));
+        message.content.push(ContentBlock::tool_call(
+            id,
+            "shell",
+            args,
+            Default::default(),
+        ));
+        message
+    };
+
+    // (a) Arguments carried as a JSON *string* (the legacy wire shape) are parsed
+    // back into the projected fields.
+    ctx.observe_message(&call("call-a", json!("{\"command\":\"pwd\"}")));
+    let state = prepared(&ctx).state;
+    let records = state["untrusted_context"].as_array().unwrap().clone();
+    let projected: Value = serde_json::from_str(
+        records
+            .iter()
+            .find(|record| record["source_kind"] == "tool_call")
+            .expect("the parsed call is projected")["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(projected["arguments"]["command"], json!("pwd"));
+
+    // (b) A string argument too large to parse is dropped whole — the record
+    // still exists, with no arguments rather than a truncated command.
+    ctx.observe_message(&call(
+        "call-b",
+        json!(format!("OVERSIZED-A {}", "a".repeat(33_000))),
+    ));
+    // (c) An oversized command inside an object argument omits the whole block.
+    ctx.observe_message(&call(
+        "call-c",
+        json!({"command": format!("OVERSIZED-B {}", "b".repeat(33_000))}),
+    ));
+
+    let state = prepared(&ctx).state;
+    let records = state["untrusted_context"].as_array().unwrap();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["source_kind"] == "tool_call")
+            .count(),
+        2,
+        "the block with the oversized command is not projected at all"
+    );
+    let state_text = state.to_string();
+    assert!(!state_text.contains("OVERSIZED-A"));
+    assert!(!state_text.contains("OVERSIZED-B"));
+}
+
+#[test]
+fn a_message_without_a_text_block_has_no_display_text() {
+    use crate::types::{AgentMessage, ContentBlock};
+    let (ctx, _) = context(true, false);
+    // Prose is taken from the first text block. A message whose blocks are all
+    // something else has no display text at all, so nothing is forwarded for it.
+    let mut no_text = AgentMessage::new_user("assistant", json!([]));
+    no_text.content.push(ContentBlock::ToolResult {
+        tool_call_id: "call".into(),
+        content: "output".into(),
+        is_error: false,
+    });
+    ctx.observe_message(&no_text);
+    // The same result shape on a `tool` message is projected as a result record.
+    let mut result = AgentMessage::new_user("tool", json!([]));
+    result.name = "shell".into();
+    result.content.push(ContentBlock::ToolResult {
+        tool_call_id: "call".into(),
+        content: "output".into(),
+        is_error: false,
+    });
+    ctx.observe_message(&result);
+    let input = prepared(&ctx);
+    let records = input.state["untrusted_context"].as_array().unwrap();
+    assert!(
+        records
+            .iter()
+            .all(|record| record["source_kind"] != "assistant_message"),
+        "a message with no text block has no prose to forward"
+    );
+    let results: Vec<&Value> = records
+        .iter()
+        .filter(|record| record["source_kind"] == "tool_result")
+        .collect();
+    assert_eq!(results.len(), 1, "only the tool-role result is projected");
+    assert_eq!(results[0]["tool_call_id"], json!("call"));
+}
+
+#[test]
+fn oversized_action_context_text_is_counted_omitted_and_never_forwarded() {
+    // Each case is asserted on a fresh context so the count belongs to exactly
+    // one mechanism. `coverage.action_context.omitted` is the handler's own
+    // counter of claims that were considered but *not* forwarded (an admitted
+    // record decrements it), so a case with no claim forwarded reads 1.
+    let case = |label: &str, requested: Value| {
+        let (ctx, _) = context(true, false);
+        let input = ctx
+            .evidence
+            .lock()
+            .prepare(
+                &ctx.user_request,
+                &json!({"kind":"file_write","tool_call_id":"call"}),
+                &requested,
+            )
+            .unwrap_or_else(|error| panic!("{label} must prepare: {error:?}"));
+        input
+    };
+    let claims = |input: &crate::approval_review::evidence::PreparedInput| {
+        input.state["untrusted_context"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|record| record["source_kind"] == "assistant_justification")
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
+    // (a) a top-level justification past the buffer: considered, never sent.
+    let input = case(
+        "oversized justification",
+        json!({"justification": format!("OVERSIZED-JUSTIFICATION {}", "j".repeat(33_000))}),
+    );
+    assert_eq!(
+        input.state["coverage"]["action_context"]["omitted"],
+        json!(1)
+    );
+    assert!(!input.state.to_string().contains("OVERSIZED-JUSTIFICATION"));
+    assert!(claims(&input).is_empty());
+
+    // (b) a permission target with no reason is not a claim at all: not counted.
+    let input = case(
+        "missing reason",
+        json!({"additional_permissions": {"read": [{"path": "/inputs/a", "scope": "file"}]}}),
+    );
+    assert_eq!(
+        input.state["coverage"]["action_context"]["omitted"],
+        json!(0)
+    );
+    assert!(claims(&input).is_empty());
+
+    // (c) a reason past the buffer: considered, never sent.
+    let input = case(
+        "oversized reason",
+        json!({"additional_permissions": {"read": [{"path": "/inputs/b", "scope": "file",
+            "reason": format!("OVERSIZED-REASON {}", "r".repeat(33_000))}]}}),
+    );
+    assert_eq!(
+        input.state["coverage"]["action_context"]["omitted"],
+        json!(1)
+    );
+    assert!(!input.state.to_string().contains("OVERSIZED-REASON"));
+    assert!(claims(&input).is_empty());
+
+    // (d) a small reason whose projected record is too large: never sent.
+    let input = case(
+        "oversized projected record",
+        json!({"additional_permissions": {"read": [{
+            "path": format!("/inputs/{}", "p".repeat(33_000)), "scope": "file",
+            "reason": "save the report"}]}}),
+    );
+    assert_eq!(
+        input.state["coverage"]["action_context"]["omitted"],
+        json!(1)
+    );
+    assert!(claims(&input).is_empty());
+
+    // (e) the ordinary case still reaches review, and is the only one that does.
+    let input = case(
+        "ordinary reason",
+        json!({"additional_permissions": {"read": [
+            {"path": "/inputs/a", "scope": "file"},
+            {"path": "/inputs/b", "scope": "file",
+             "reason": format!("OVERSIZED-REASON {}", "r".repeat(33_000))},
+            {"path": format!("/inputs/{}", "p".repeat(33_000)), "scope": "file",
+             "reason": "save the report"},
+            {"path": "/inputs/ok", "scope": "file", "reason": "save the report"}]}}),
+    );
+    assert_eq!(
+        input.state["coverage"]["action_context"]["omitted"],
+        json!(2),
+        "three claims considered, one forwarded, so two are omitted"
+    );
+    let forwarded = claims(&input);
+    assert_eq!(forwarded.len(), 1, "only the ordinary reason is forwarded");
+    assert!(forwarded[0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("/inputs/ok"));
+}
+
+#[test]
 fn file_permission_reasons_reach_review_as_redacted_model_claims() {
     let (ctx, _) = context(true, false);
     for key in ["additional_permissions", "additionalPermissions"] {

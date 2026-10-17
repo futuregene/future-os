@@ -239,3 +239,43 @@ mod tests {
             .unwrap();
     }
 }
+
+#[cfg(test)]
+mod listener_shutdown_tests {
+    use super::*;
+
+    /// The shutdown futures resolve when their watch flag flips — and also when
+    /// the owner disappears first (a dropped `ServiceWork` drops the sender), so
+    /// a host that abandons the instance never waits forever on a signal that
+    /// can no longer arrive.
+    #[test]
+    fn a_shutdown_future_resolves_when_its_owner_is_dropped() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let work = ServiceWork::default();
+            let mut streams = std::pin::pin!(work.stream_shutdown());
+            let mut listener = std::pin::pin!(work.listener_shutdown());
+            // Nothing has been signalled yet, so neither future can be ready.
+            assert!(
+                futures::FutureExt::now_or_never(streams.as_mut()).is_none(),
+                "an unsignalled shutdown future must wait"
+            );
+            assert!(futures::FutureExt::now_or_never(listener.as_mut()).is_none());
+
+            // The owner goes away: both senders drop, and each future resolves
+            // instead of hanging on a signal that can never come.
+            drop(work);
+            streams.await;
+            listener.await;
+
+            // The explicit signal path also resolves (the happy path the service
+            // uses), so the drop arm above is not the only way out.
+            let work = ServiceWork::default();
+            work.close_streams();
+            work.stream_shutdown().await;
+        });
+    }
+}

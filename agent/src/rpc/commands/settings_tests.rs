@@ -1034,3 +1034,222 @@ fn set_sandbox_policy_downgrades_automatic_review_without_future_account() {
     assert_eq!(resp["data"]["tier"], expected);
     assert_eq!(resp["data"]["fallback"], expected);
 }
+
+/// A provider that panics instead of answering: the manual-compaction worker
+/// must survive it and report a terminal failure, never a silent hang.
+struct PanickingSummaryProvider;
+
+#[async_trait::async_trait]
+impl LLMProvider for PanickingSummaryProvider {
+    async fn stream_model(
+        &self,
+        _request: crate::llm::schema::ModelRequest,
+    ) -> anyhow::Result<ReceiverStream<crate::llm::schema::ModelStreamEvent>> {
+        panic!("summary provider panicked");
+    }
+}
+
+/// A compaction request never starts work behind a stopping service: the
+/// background-admission guard answers before any state is touched.
+#[test]
+fn compact_is_refused_when_the_service_is_stopping() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    session.write().service_work = state.service_work.clone();
+    state.service_work.close();
+    let response = parse_response(&handle_command_internal(&state, make_cmd("compact")));
+    assert_eq!(response["success"], false, "{response}");
+    assert!(
+        response["error"].as_str().unwrap().contains("stopping"),
+        "{response}"
+    );
+    assert!(
+        !session
+            .read()
+            .compaction_in_progress
+            .load(std::sync::atomic::Ordering::Relaxed),
+        "a refused compaction must not claim the in-progress flag"
+    );
+    assert!(session.read().compaction_request.lock().is_none());
+}
+
+/// The worker's panic arm: the summary provider unwinds, so the terminal event
+/// must be a failure naming the panic — and the in-progress flag must be
+/// released by the guard, or every later /compact would be refused forever.
+#[test]
+fn compact_worker_panic_is_reported_as_a_terminal_failure() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    {
+        let session = session.write();
+        session.agent_loop.try_write().unwrap().provider = Arc::new(PanickingSummaryProvider);
+        let mut messages = session.messages.write();
+        for (role, text) in [("user", "investigate"), ("assistant", "working")] {
+            let mut message = AgentMessage {
+                role: role.to_string(),
+                content: vec![ContentBlock::text(text)],
+                ..Default::default()
+            };
+            message.ensure_journal_entry_id();
+            messages.push(message);
+        }
+        let entries = messages
+            .iter()
+            .map(crate::session::agent_message_to_entry)
+            .map(|entry| serde_json::to_value(entry).unwrap())
+            .collect();
+        session
+            .session_manager
+            .storage()
+            .unwrap()
+            .replace("default", entries)
+            .unwrap();
+    }
+    let mut events = session.read().broadcaster.subscribe();
+    let response = parse_response(&handle_command_internal(&state, make_cmd("compact")));
+    assert_eq!(response["success"], true, "{response}");
+    assert_eq!(
+        events.blocking_recv().unwrap().event_type,
+        "compaction_started"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let terminal = loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the worker never reported a terminal event"
+        );
+        if let Ok(event) = events.try_recv() {
+            if matches!(
+                event.event_type.as_str(),
+                "compaction_committed" | "compaction_failed" | "compaction_unchanged"
+            ) {
+                break event;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert_eq!(
+        terminal.event_type, "compaction_failed",
+        "{}",
+        terminal.data
+    );
+    let data: serde_json::Value = serde_json::from_str(&terminal.data).unwrap();
+    assert_eq!(
+        data["error"],
+        serde_json::json!("context compaction worker panicked")
+    );
+    assert!(
+        !session
+            .read()
+            .compaction_in_progress
+            .load(std::sync::atomic::Ordering::Acquire),
+        "the flag is released so a later compaction can start"
+    );
+}
+
+/// A parent link that cannot be persisted is still applied in memory and
+/// answered, but the failure is logged rather than swallowed silently.
+#[test]
+fn set_parent_session_survives_a_persist_error() {
+    let state = make_app_state();
+    save_via(
+        &state,
+        "default",
+        "mock",
+        vec![crate::session::SessionEntry::session_info(
+            serde_json::json!({"cwd": state.welcome_cwd, "model": "mock"}),
+            "mock".to_string(),
+            "low".to_string(),
+        )],
+    );
+    save_via(
+        &state,
+        "parent-1",
+        "mock",
+        vec![crate::session::SessionEntry::session_info(
+            serde_json::json!({"cwd": state.welcome_cwd, "model": "mock"}),
+            "mock".to_string(),
+            "low".to_string(),
+        )],
+    );
+    // Every write to the record table is refused from here on.
+    state.session_manager.test_execute("CREATE TRIGGER fail_entries BEFORE INSERT ON entries BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;");
+
+    let mut cmd = make_cmd("set_parent_session");
+    cmd.parent_session = "parent-1".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true, "{resp}");
+    assert_eq!(resp["data"]["parentSessionId"], "parent-1");
+    let session = state.get_session("default").unwrap();
+    assert_eq!(
+        session.read().parent_session_id,
+        "parent-1",
+        "the in-memory link is applied even when the write fails"
+    );
+}
+
+/// The persist-failure arms of the two prompt setters. Both skip the write for a
+/// session with no record on disk (the existing tests cover that shape), so the
+/// failure log is only reachable for a session that *has* a record and a store
+/// that refuses the write.
+#[test]
+fn prompt_overrides_survive_a_persist_error_and_are_logged() {
+    let state = make_app_state();
+    save_via(
+        &state,
+        "default",
+        "mock",
+        vec![crate::session::SessionEntry::session_info(
+            serde_json::json!({"cwd": state.welcome_cwd, "model": "mock"}),
+            "mock".to_string(),
+            "low".to_string(),
+        )],
+    );
+    state.session_manager.test_execute("CREATE TRIGGER fail_entries BEFORE INSERT ON entries BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;");
+
+    let mut cmd = make_cmd("set_system_prompt");
+    cmd.system_prompt = "You are terse.".to_string();
+    let response = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(response["success"], true, "{response}");
+    let session = state.get_session("default").unwrap();
+    assert_eq!(
+        session.read().custom_system_prompt,
+        "You are terse.",
+        "the in-memory override is applied even when the write fails"
+    );
+
+    let mut cmd = make_cmd("append_system_prompt");
+    cmd.system_prompt = "Extra instructions".to_string();
+    let response = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(response["success"], true, "{response}");
+    assert_eq!(session.read().append_system_prompt, "Extra instructions");
+}
+
+/// `/compact` reached without the dispatcher: its own background-admission guard
+/// (the dispatcher answers first for a normal command, see §0.4 of
+/// docs/testing/module-agent-rpc.md) refuses work behind a stopping service
+/// instead of starting a worker that can never finish.
+#[test]
+fn compact_refuses_directly_when_the_bound_service_is_stopping() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    session.write().service_work = state.service_work.clone();
+    state.service_work.close();
+    let response = parse_response(&crate::rpc::commands::settings::handle_compact(
+        &session,
+        &make_cmd("compact"),
+        "direct-compact",
+    ));
+    assert_eq!(response["success"], false, "{response}");
+    assert!(
+        response["error"].as_str().unwrap().contains("stopping"),
+        "{response}"
+    );
+    assert!(
+        !session
+            .read()
+            .compaction_in_progress
+            .load(std::sync::atomic::Ordering::Relaxed),
+        "a refused compaction must not claim the in-progress flag"
+    );
+}

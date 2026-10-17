@@ -6,6 +6,7 @@ import type {
 import { describe, expect, it } from "vitest";
 import {
   compareConversations,
+  compareSource,
   groupMergedRows,
   localTimestamp,
   mergeConversations,
@@ -615,5 +616,35 @@ describe("mergeConversations", () => {
       ));
       expect(mixed.workspaces.map(group => group.key)).toEqual(["ws_local", "ws_new"]);
     });
+  });
+});
+
+/**
+ * The comparator every order in the module ends on: this machine (`null`) first,
+ * then a host by its device id.
+ */
+describe("compareSource", () => {
+  it("sorts this machine ahead of every host", () => {
+    expect(compareSource(null, "desktop_a")).toBe(-1);
+    expect(compareSource("desktop_a", null)).toBe(1);
+  });
+
+  it("orders two hosts by device id and treats a missing id as itself", () => {
+    expect(compareSource("desktop_a", "desktop_b")).toBeLessThan(0);
+    expect(compareSource("desktop_b", "desktop_a")).toBeGreaterThan(0);
+    expect(compareSource("desktop_a", "desktop_a")).toBe(0);
+    expect(compareSource(null, null)).toBe(0);
+  });
+
+  it("is the rule that decides a tie in the merged list", () => {
+    // Same timestamp on this machine and on a host: the local row must lead,
+    // and the tie must not be decided by how "local" and "desktop_a" sort.
+    const merged = mergeConversations(
+      [thread({ id: "tie-local", lastMessageAt: 400 })],
+      [catalog("desktop_a", [{ sessionId: "tie-remote", title: "remote", lastMessageAt: 400 }])],
+      ALL,
+    );
+    expect(merged.map(row => row.desktopId)).toEqual([null, "desktop_a"]);
+    expect(compareSource(merged[0]!.desktopId, merged[1]!.desktopId)).toBeLessThan(0);
   });
 });

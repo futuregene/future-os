@@ -734,4 +734,130 @@ mod tests {
         assert!(manager.list(None).is_empty());
         assert_eq!(manager.running_count(), 0);
     }
+
+    /// The failure contract the client keys its UI off: every variant has a
+    /// stable wire code, the HTTP status its control route answers with, and a
+    /// message that names the object at fault.
+    #[test]
+    fn every_manager_error_reports_its_code_status_and_message() {
+        let cases = [
+            (
+                ManagerError::NotFound("term_1".into()),
+                "TERMINAL_NOT_FOUND",
+                404,
+            ),
+            (
+                ManagerError::ThreadNotWritable("thread-1".into()),
+                "THREAD_READONLY",
+                400,
+            ),
+            (
+                ManagerError::ShellUnavailable("SHELL_UNAVAILABLE: none".into()),
+                "SHELL_UNAVAILABLE",
+                400,
+            ),
+            (
+                ManagerError::Spawn("SPAWN_FAILED: no pty".into()),
+                "SPAWN_FAILED",
+                400,
+            ),
+            (
+                ManagerError::Capacity("CAPACITY_EXCEEDED: 32".into()),
+                "CAPACITY_EXCEEDED",
+                429,
+            ),
+            (ManagerError::Stopping, "TERMINAL_STOPPING", 503),
+            (
+                ManagerError::Cwd(cwd::CwdError::Missing(PathBuf::from("/nope"))),
+                "CWD_INVALID",
+                400,
+            ),
+        ];
+        for (error, code, status) in cases {
+            assert_eq!(error.code(), code, "{error:?}");
+            assert_eq!(error.status(), status, "{error:?}");
+        }
+        // Messages that are not the stored detail verbatim carry their own text.
+        assert_eq!(
+            ManagerError::ThreadNotWritable("thread-1".into()).message(),
+            "THREAD_READONLY: conversation thread-1 does not accept terminal tabs"
+        );
+        assert_eq!(ManagerError::Stopping.message(), "Desktop is stopping");
+        assert_eq!(
+            ManagerError::NotFound("term_1".into()).message(),
+            "TERMINAL_NOT_FOUND: no terminal term_1"
+        );
+        assert_eq!(
+            ManagerError::Cwd(cwd::CwdError::Missing(PathBuf::from("/nope"))).message(),
+            cwd::CwdError::Missing(PathBuf::from("/nope")).to_string()
+        );
+        assert_eq!(
+            ManagerError::ShellUnavailable("SHELL_UNAVAILABLE: none".into()).message(),
+            "SHELL_UNAVAILABLE: none"
+        );
+        assert_eq!(
+            ManagerError::Spawn("SPAWN_FAILED: no pty".into()).message(),
+            "SPAWN_FAILED: no pty"
+        );
+        assert_eq!(
+            ManagerError::Capacity("CAPACITY_EXCEEDED: 32".into()).message(),
+            "CAPACITY_EXCEEDED: 32"
+        );
+    }
+
+    /// A read-only conversation keeps the *manager's* code through the `cwd`
+    /// conversion: the client keys its UI off the two separately, and only the
+    /// thread-shaped error is actionable.
+    #[test]
+    fn a_read_only_conversation_keeps_its_own_error_code() {
+        let converted = ManagerError::from(cwd::CwdError::ThreadNotWritable("thread-3".into()));
+        assert_eq!(
+            converted,
+            ManagerError::ThreadNotWritable("thread-3".into())
+        );
+        assert_eq!(converted.code(), "THREAD_READONLY");
+        let converted = ManagerError::from(cwd::CwdError::ThreadNotFound("thread-4".into()));
+        assert_eq!(
+            converted,
+            ManagerError::Cwd(cwd::CwdError::ThreadNotFound("thread-4".into()))
+        );
+        assert_eq!(converted.code(), "THREAD_NOT_FOUND");
+    }
+
+    /// `Manager::default()` must be as usable as `new()`: the IPC layer builds
+    /// one without arguments.
+    #[test]
+    fn the_default_manager_starts_empty_and_usable() {
+        let manager = Manager::default();
+        assert!(manager.list(None).is_empty());
+        assert_eq!(manager.running_count(), 0);
+        assert!(matches!(
+            manager.get("term_missing"),
+            Err(ManagerError::NotFound(_))
+        ));
+    }
+
+    /// A tab whose child asks for the cursor position is still reaped and
+    /// recorded as exited: the manager must not depend on a shell that never
+    /// blocks on a device-status query.
+    #[cfg(unix)]
+    #[test]
+    fn a_cursor_querying_child_is_reaped_and_recorded_as_exited() {
+        let manager = manager_with_shell();
+        let info = create_with_command(
+            &manager,
+            "cursor-thread",
+            test_support::query_then_marker_command(),
+        );
+        note_exit_now(&manager, &info);
+        let reported = manager.get(&info.id).expect("the tab stays listed");
+        assert_eq!(
+            reported.status,
+            crate::terminal::session::Status::Exited,
+            "the tab must be reported exited"
+        );
+        assert_eq!(manager.running_count(), 0);
+        let session = manager.session(&info.id).expect("session");
+        assert!(session.child_is_reaped());
+    }
 }
