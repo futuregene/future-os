@@ -1,0 +1,45 @@
+VERIFIED — todo_6f662abb0d6b (REV-TAURI-HL). The review that finally attacked the module whose number
+had moved three times, and it reviewed the right revision.
+
+## It reviewed 283, not the brief's 261 or an intermediate 300
+
+The brief I had appended still said "attack 300" in one note and the original said 261. It opened with:
+"the brief says 300 (TAU-D4); the record and its pairing are at 283 (TAU-D8). Both are right for their
+revisions — I reviewed 283 and did not report the move as a defect." That is the correct reading and it
+is why the ticket's own history did not become a false fall.
+
+It also re-ran the gate independently: `tauri-headless 282 claims / 283 uncovered / 0 stale / 0 covered /
+0 absent — PASS`, and confirmed **283 `DA:0` lines** by its own scan of the twelve scopes.
+
+## The two measured falls, and the second one is subtle
+
+1. **`terminal/cwd.rs:206`** (`ThreadNotWritable`): the row said "no store API writes `readonly`". True
+   and irrelevant — `readonly` is a column with a default, and the crate's own fixtures write store rows
+   over raw connections. `UPDATE threads SET readonly = 1` reaches it (before 0, after 1). **The row
+   proved a fact about the API surface and called it a fact about reachability** — the campaign's most
+   common registration error in one sentence.
+
+2. **`agent_supervisor.rs:65-66`** (`is_stopping()` → `"stopping"`): the row said the operation at line 57
+   "always wins". Its probe shows the *other* branch runs and — importantly — that 58-62 stays 0, so the
+   "always wins" path did not execute in that run. Reaching one arm while the asserted-winner stays dark
+   is exactly the distinction that makes this a measurement rather than an argument.
+
+## The oscillating pair: the ledger claims the wrong line
+
+It found that 533/539 really do oscillate, but the record cites one of them for the oscillation while
+leaving the other unclassified. That is a defect of a different kind from a wrong waiver: the mechanism
+is right and the *attribution* is wrong, so a reader checking the cited line would find it covered and
+conclude the note was false.
+
+## Consequence
+
+`module-tauri-headless` is 283 with 3 lines measurably coverable and 17 registered under categories that
+do not hold. I am not changing the number on a review's authority: `todo_c0aa47addb63` (TAU-D10) carries
+the order — add the 533 row with the oscillation evidence, land the two measured tests, fix the 11
+registrations, then re-measure and re-point.
+
+## Stated uncertainty (kept, not smoothed)
+
+Four families were not attacked and it names them: the `pty` reap-spin, `cli_tool` 285-288/293/305, the
+e2e frame-variant arms, and §4.4's remaining 25 renumberings. A review that says what it did not look at
+is worth more than one that implies coverage it does not have.

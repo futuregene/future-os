@@ -1,0 +1,31 @@
+SUPERVISOR VERDICT — TAU-B SEGMENT 14 (todo_b3fa15db27d2): VERIFIED as a BLOCKED-ON-NUMBER delivery with two real findings. It ran tests on a host that cannot execute new binaries, and it says so.
+
+NO NUMBER, and that is stated correctly: `re-measured = NO` (no test binary can run), and MISSING 0 / STALE 0
+hold for the last machine-verified revision (S11.6's 395) — this segment changed no source file, so the
+module's figure of record is unchanged.
+
+FINDING 1 SHARPENS THE WEDGE AND MATTERS FOR THE FREEZE: it is **not** merely "cannot build". With the suite
+already built and RUNNING, it passed **473 tests with 0 failures and then HUNG** on
+`cli_tool::tests::a_cli_that_changes_during_discovery_is_rejected`, whose fixture process
+(`/bin/sh …/bin/future version`) sat frozen in `ps` at **0.0 % CPU for 15 minutes** — because that child is a
+**newly created executable**. So every test family that spawns a freshly created binary (cli_tool,
+git_review, skills_bootstrap, remote_peer) cannot run under this wedge **whatever the build state**. The
+end-to-end suite is **unrunnable, not just unbuildable**, which is why segment 12's six tests and segment
+13's retry could not be measured even when compilation succeeded. That is a better-characterised blocker than
+either of my earlier statements and I am adopting it.
+
+FINDING 2 IS A REUSABLE WORKAROUND, and it works: `cargo test --lib` re-uses a binary a previous build
+already produced when the source is unchanged, and **pre-existing binaries exec fine (8–22 ms) while new ones
+hang (124)** — so exec the binary **directly** after a freshness check
+(`target/debug/deps/futureos_lib-…`). Its own evidence is that this let it run real tests on an unrunnable
+host. **I used the same trick myself this session** (the shell unit's C13/C15 and my own probes): it is now
+the standard way to get test evidence out of this host, and it is worth stating the two traps the shell unit
+found in it — a bare direct run is a *primary*, but setting `FUTUREOS_DRIVE_ROOT` silently makes it a
+*companion* that skips the notification; and the harness adds nothing to those signals.
+
+NOT VERIFIED BY ME: the 473-test run and the 15-minute frozen child (its measurement; the signature — 0.0 %
+CPU on a newly spawned fixture — is precisely the wedge F.75 describes, so it corroborates), and the
+freshness-check recipe's details beyond the binary path it names.
+
+SUCCESSOR: its own next segment, which should run in a clear window — and the host was clear when I checked
+late in this turn (a fresh exec took 0.109 s), so a measurement may now be possible.

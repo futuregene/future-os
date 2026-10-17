@@ -1,0 +1,669 @@
+{
+ "version": 1,
+ "generated": "2026-10-16T20:50+08:00",
+ "author": "reconcile-hygiene unit (todo_ab3b61bf54f4)",
+ "purpose": "One entry per invocation that should be measured, so the STALE half has a recorded expectation instead of a number a reviewer has to interpret. `authoritative` is the report + section the DOC ITSELF declares current: that is the pairing an acceptance check should use, and it must have 0 COVERED rows or a recorded justification. The `superseded-*`/`wide` roles exist to make the wide invocation's non-zero COVERED count explainable rather than alarming: each carries the quote that says it is history.",
+ "role_help": {
+  "authoritative": "the report + section the doc declares current; COVERED must be 0 or justified",
+  "superseded-ledger": "a ledger the doc itself marks superseded, kept in the same file",
+  "wide": "no --section: every ledger in the doc at once (the number a careless invocation prints)",
+  "superseded-report": "a report the doc's own newer measurement replaces"
+ },
+ "scope_placeholder": "${ROOT} expands to the worktree root at run time",
+ "pairings": [
+  {
+   "label": "goal",
+   "role": "authoritative",
+   "report": "/tmp/r2d-lcov.info",
+   "scopes": [
+    "${ROOT}/packages",
+    "${ROOT}/orchestration/tasks",
+    "${ROOT}/orchestration/goal"
+   ],
+   "doc": "docs/testing/module-goal.md",
+   "section": "Round 2",
+   "section_heading": "## 11. Round 2 (`cov100-r2`): `packages/*` + `orchestration/{tasks,goal}` — per-line residuals",
+   "provenance": "documented",
+   "provenance_quotes": [
+    "--doc docs/testing/module-goal.md --section \"Round 2\""
+   ],
+   "note": "documented §11.9; 92 residual lines, every one classified",
+   "expect": {
+    "uncovered": 77,
+    "claims": 77,
+    "missing": 0,
+    "covered": 0,
+    "absent": 0
+   }
+  },
+  {
+   "label": "agent-core",
+   "role": "authoritative",
+   "report": "/tmp/agb-p6.info",
+   "scopes": [
+    "${ROOT}/agent/src/tools",
+    "${ROOT}/agent/src/llm",
+    "${ROOT}/agent/src/agent",
+    "${ROOT}/agent/src/compaction",
+    "${ROOT}/agent/src/sandbox",
+    "${ROOT}/agent/src/config",
+    "${ROOT}/agent/src/models",
+    "${ROOT}/agent/src/runtime",
+    "${ROOT}/agent/src/utils",
+    "${ROOT}/agent/src/auth",
+    "${ROOT}/agent/src/prompt",
+    "${ROOT}/agent/src/types",
+    "${ROOT}/agent/src/skill_reco"
+   ],
+   "doc": "docs/testing/module-agent-core.md",
+   "section": "6. Waiver ledger",
+   "section_heading": "## 6. Waiver ledger (`lines-100-or-waived`)",
+   "provenance": "documented",
+   "provenance_quotes": [
+    "python3 .future/cov100/reconcile.py --report /tmp/agb-p6.info \"${scopes[@]}\"",
+    "**213 uncovered lines in 21 files**, taken from `/tmp/agb-p6.info` with the"
+   ],
+   "note": "the AG-B unit published pass 5 (`/tmp/agb-p6.info`, 21:03:24) and re-pointed its section 6 at it while this pass ran (doc edited 21:07:17), the third time this campaign a doc moved to a newer report. Found by `--suggest`, which named agb-p6 as the only clean candidate that the doc also names; measured 213 uncovered, 213 claims, 0 missing, 0 covered, 0 absent. Previous report was agb-final6.info.",
+   "expect": {
+    "uncovered": 213,
+    "claims": 213,
+    "missing": 0,
+    "covered": 0,
+    "absent": 0
+   }
+  },
+  {
+   "label": "agent-rpc",
+   "role": "authoritative",
+   "report": "/tmp/agent-svc-rework-norm.info",
+   "scopes": [
+    "/Users/geilige/future-os/agent/src/rpc",
+    "/Users/geilige/future-os/agent/src/grpc",
+    "/Users/geilige/future-os/agent/src/service",
+    "/Users/geilige/future-os/agent/src/session",
+    "/Users/geilige/future-os/agent/src/skills",
+    "/Users/geilige/future-os/agent/src/approval_review",
+    "/Users/geilige/future-os/agent/src/cli.rs"
+   ],
+   "doc": "docs/testing/module-agent-rpc.md",
+   "section": "0.5 Residual ledger",
+   "section_heading": "### 0.5 Residual ledger — **202 lines**, every line classified",
+   "provenance": "documented",
+   "provenance_quotes": [
+    "Round-2 state: **§0**."
+   ],
+   "note": "documented; the report is the S7 one §0.2 declares current, and §0.5's heading matches its 324-line count (the unit refreshed the ledger while this table was being written) (its ledger grew 280 -> 296 claims between two edits by its own unit; still 0 covered, 0 absent, MISSING 0) Its unit (AG-A, still open) edited §0.5 again at 20:59:22, moving the claim count 296 -> 281 with no change to the verdict (uncovered 324, missing 0, covered 0): the expectation is re-measured rather than the check loosened.",
+   "expect": {
+    "uncovered": 202,
+    "claims": 281,
+    "missing": 0,
+    "covered": 0,
+    "absent": 0
+   }
+  },
+  {
+   "label": "agent-rpc-r1",
+   "role": "superseded-ledger",
+   "report": "/tmp/agent-a-s7-norm.info",
+   "scopes": [
+    "/Users/geilige/future-os/agent/src/rpc",
+    "/Users/geilige/future-os/agent/src/grpc",
+    "/Users/geilige/future-os/agent/src/service",
+    "/Users/geilige/future-os/agent/src/session",
+    "/Users/geilige/future-os/agent/src/skills",
+    "/Users/geilige/future-os/agent/src/approval_review",
+    "/Users/geilige/future-os/agent/src/cli.rs"
+   ],
+   "doc": "docs/testing/module-agent-rpc.md",
+   "section": "6. Waiver ledger",
+   "section_heading": "## 6. Waiver ledger — every remaining uncovered file, with category and reason",
+   "provenance": "documented-quoted",
+   "note": "§6 is the round-1 ledger; MISSING 281 is expected because §6 covers a subset of the current residuals",
+   "expect": {
+    "uncovered": 324,
+    "claims": 169,
+    "missing": 281,
+    "covered": 99,
+    "absent": 45
+   },
+   "covered_justification": {
+    "sections": [
+     "6. Waiver ledger — every remaining uncovered file, with category and reason"
+    ],
+    "quotes": [
+     "Round 2 (cov100-r2) supersedes §1–§9 below for scope, figures and ledger."
+    ],
+    "reason": "§6 lives in §1–§9, which the doc's own header blockquote declares the round-1 record (revision c173e64e); round 2's ledger for the same seven subtrees is §0.5. The 99 covered rows are the revision drift between the two rounds, not rows that disagree with a current ledger."
+   }
+  },
+  {
+   "label": "channels",
+   "role": "authoritative",
+   "report": "/tmp/chan-lcov-r2rework2.info",
+   "scopes": [
+    "${ROOT}/channels/src"
+   ],
+   "doc": "docs/testing/module-channels.md",
+   "section": "10.4 Residual uncovered lines",
+   "section_heading": "### 10.4 Residual uncovered lines (one row per line)",
+   "provenance": "documented",
+   "provenance_quotes": [
+    "Quote §10.7's numbers for the current state, and §10.4 for the per-line ledger."
+   ],
+   "note": "documented §10.7.5; the doc names §10.4 as the current per-line ledger and this report as the current measurement",
+   "expect": {
+    "uncovered": 8,
+    "claims": 6,
+    "missing": 0,
+    "covered": 0,
+    "absent": 0
+   }
+  },
+  {
+   "label": "channels-wide",
+   "role": "wide",
+   "report": "/tmp/chan-lcov-r2rework2.info",
+   "scopes": [
+    "${ROOT}/channels/src"
+   ],
+   "doc": "docs/testing/module-channels.md",
+   "section": null,
+   "section_heading": "# Module: channel bridge — `future-channels` (`channels/`)",
+   "provenance": "counter-example",
+   "note": "the wide invocation: 5 sections contribute covered rows, every one a table describing what is covered now or a category the doc declares empty",
+   "expect": {
+    "uncovered": 8,
+    "claims": 167,
+    "missing": 0,
+    "covered": 22,
+    "absent": 3
+   },
+   "covered_justification": {
+    "sections": [
+     "`attribution-artifact` — a zero region (`?` branch, `}` / span end, macro body) on an executed line",
+     "`unreachable-in-this-environment` — needs a platform, a broken socket, or a device the harness cannot produce",
+     "10.7.2 The 16 fallen rows: what covers each line now",
+     "10.2 What is covered now, and by which test",
+     "10.2b Closing the brace-shaped lines: what worked and what did not"
+    ],
+    "quotes": [
+     "the two categories that the fallen rows had occupied — `attribution-artifact` and `unreachable-in-this-environment` — are now **empty for this crate**",
+     "Every one of the 16 is covered by a test named in §10.7.2"
+    ],
+    "reason": "§10.2 / §10.2b / §10.7.2 are tables of 'what covers this line now', and the two category tables are the ones the doc declares empty after round 2b. Their rows are deliberate statements about lines that ARE covered, so a covered row there is the row working as written. The current per-line ledger is §10.4 (0 covered), so the authoritative pairing is clean."
+   }
+  },
+  {
+   "label": "channels-superseded-report",
+   "role": "superseded-report",
+   "report": "/tmp/chan-lcov-r2final.info",
+   "scopes": [
+    "${ROOT}/channels/src"
+   ],
+   "doc": "docs/testing/module-channels.md",
+   "section": "Round 2 (cov100)",
+   "section_heading": "## 10. Round 2 (cov100) — macOS re-measurement, 85 → 24 → 8 lines",
+   "provenance": "counter-example",
+   "note": "the pre-rework report: its §10 ledger carries 24 lines, and 13 of them are not in the current report's residual set (though they are cited in the current text, which is why MISSING is only 13)",
+   "expect": {
+    "uncovered": 24,
+    "claims": 15,
+    "missing": 13,
+    "covered": 5,
+    "absent": 0
+   },
+   "covered_justification": {
+    "sections": [
+     "10.2 What is covered now, and by which test",
+     "10.2b Closing the brace-shaped lines: what worked and what did not"
+    ],
+    "quotes": [
+     "the crate now reads **8 uncovered lines of 25 841 = 99.9690 %** (`/tmp/chan-lcov-r2rework2.info`, §10.7.1)"
+    ],
+    "reason": "this report predates the round-2b rework (24 lines) and the doc's current measurement is 8 lines from /tmp/chan-lcov-r2rework2.info; the covered rows sit in the two 'what covers this line now' subsections, and MISSING 13 is the other half of the same fact."
+   }
+  },
+  {
+   "label": "channels-policy",
+   "role": "authoritative",
+   "report": "/tmp/chan-lcov-r2rework2.info",
+   "scopes": [
+    "${ROOT}/channels/src"
+   ],
+   "doc": "docs/architecture/channels-test-coverage.md",
+   "section": "Uncovered lines in the framework",
+   "section_heading": "## Uncovered lines in the framework",
+   "provenance": "documented",
+   "provenance_quotes": [
+    "--doc docs/architecture/channels-test-coverage.md --section \"Uncovered lines in the framework\""
+   ],
+   "note": "documented; the section is the policy page's ledger, and its categories are declared empty/settled one by one The report is named in the sibling record (module-channels.md §10.7.5 runs reconcile against this page with --report /tmp/chan-lcov-r2rework2.info); this page has no command block of its own, which is what `named_in` records.",
+   "expect": {
+    "uncovered": 8,
+    "claims": 13,
+    "missing": 0,
+    "covered": 6,
+    "absent": 0
+   },
+   "covered_justification": {
+    "sections": [
+     "`unreachable-in-this-environment` (0)"
+    ],
+    "quotes": [
+     "Two of the three groups below are now empty for this crate**: every `attribution-artifact` and every `unreachable-in-this-environment` row this page used to carry was *executable* once the right input was built."
+    ],
+    "reason": "the rows' own section heading carries the current count — `(0)` — and the page's intro says those two groups are 'now empty for this crate'. A covered row under a heading that declares the group empty is the heading working as written."
+   },
+   "named_in": "docs/testing/module-channels.md"
+  },
+  {
+   "label": "review-rust",
+   "role": "authoritative",
+   "report": "/tmp/chan-lcov-r2final.info",
+   "scopes": [
+    "${ROOT}/channels/src"
+   ],
+   "doc": "docs/testing/review-rust.md",
+   "section": "REV-CH",
+   "section_heading": "# rev-rust — round 2 (cov100): adversarial review of the channels residue (REV-CH)",
+   "provenance": "documented",
+   "provenance_quotes": [
+    "--doc docs/testing/review-rust.md --section \"REV-CH\""
+   ],
+   "note": "documented; the review was run against the frozen report, so its 4 rows are claims about that revision",
+   "expect": {
+    "uncovered": 24,
+    "claims": 4,
+    "missing": 0,
+    "covered": 0,
+    "absent": 0
+   }
+  },
+  {
+   "label": "desktop",
+   "role": "authoritative",
+   "report": "desktop/coverage/coverage-final.json",
+   "scopes": [
+    "${ROOT}/desktop/src"
+   ],
+   "doc": "docs/testing/module-desktop.md",
+   "section": null,
+   "section_heading": "# desktop (TS/React) module — coverage, dimensions, waivers",
+   "provenance": "documented",
+   "provenance_quotes": [
+    "--scope \"$PWD/desktop/src\" --doc docs/testing/module-desktop.md"
+   ],
+   "note": "documented; Istanbul JSON report (the format dispatch in reconcile.py reads it)",
+   "expect": {
+    "uncovered": 60,
+    "claims": 61,
+    "missing": 0,
+    "covered": 0,
+    "absent": 0
+   }
+  },
+  {
+   "label": "mobile",
+   "role": "authoritative",
+   "report": "mobile/coverage/lcov.info",
+   "scopes": [
+    "src/"
+   ],
+   "doc": "docs/testing/module-mobile.md",
+   "section": "Segment 50",
+   "section_heading": "# Segment 50 — **cov100 round 2** (revision `8449acf6`, worktree `cov100-r2`): 131 → 13 uncovered lines, every residual classified",
+   "provenance": "documented",
+   "provenance_quotes": [
+    "--doc docs/testing/module-mobile.md --section \"Segment 50\""
+   ],
+   "note": "documented; the recorded '0 STALE' in this doc is now a real measurement rather than a vacuous one",
+   "expect": {
+    "uncovered": 13,
+    "claims": 17,
+    "missing": 0,
+    "covered": 0,
+    "absent": 0
+   }
+  },
+  {
+   "label": "tauri-shell",
+   "role": "superseded-ledger",
+   "report": "/tmp/tauri-shell-lcov-final.info",
+   "scopes": [
+    "${ROOT}/desktop/src-tauri/src/bin/futureos-headless.rs",
+    "${ROOT}/desktop/src-tauri/src/desktop_shutdown.rs",
+    "${ROOT}/desktop/src-tauri/src/desktop_shutdown/coordinator.rs",
+    "${ROOT}/desktop/src-tauri/src/future_login.rs",
+    "${ROOT}/desktop/src-tauri/src/host_environment.rs",
+    "${ROOT}/desktop/src-tauri/src/instance.rs",
+    "${ROOT}/desktop/src-tauri/src/launch.rs",
+    "${ROOT}/desktop/src-tauri/src/lib.rs",
+    "${ROOT}/desktop/src-tauri/src/macos_power.rs",
+    "${ROOT}/desktop/src-tauri/src/main.rs",
+    "${ROOT}/desktop/src-tauri/src/menu.rs",
+    "${ROOT}/desktop/src-tauri/src/runtime.rs"
+   ],
+   "doc": "docs/testing/module-tauri-shell.md",
+   "section": "8. Per-line index",
+   "section_heading": "## 8. Per-line index of the residual (318 rows)",
+   "provenance": "documented-quoted",
+   "note": "was a whole-doc pairing; the TAU-C2 unit added a second ledger for a second revision at 21:05:50 (318 rows for the previous revision in sections 1-8, 270 rows for the current one), so the doc held TWO ledgers and one report - the same shape as module-cli's section 4/4b/4c. Split into this pairing (the previous revision's ledger, which the doc says is 'deliberately left untouched') and `tauri-shell-seg2` (the current one, authoritative). Measured clean: 318 claims, 0 missing, 0 covered, 0 absent.",
+   "expect": {
+    "uncovered": 318,
+    "claims": 318,
+    "missing": 0,
+    "covered": 0,
+    "absent": 0
+   }
+  },
+  {
+   "label": "cli",
+   "role": "authoritative",
+   "report": "/tmp/cli-r2s4-final-lcov.info",
+   "scopes": [
+    "${ROOT}/cli/src/commands",
+    "${ROOT}/cli/src/browser",
+    "${ROOT}/cli/src"
+   ],
+   "doc": "docs/testing/module-cli.md",
+   "section": "4c. Ledger",
+   "section_heading": "## 4c. Ledger — measurement S12 (`/tmp/cli-r2s4-final-lcov.info`)",
+   "provenance": "documented-report-only",
+   "provenance_quotes": [
+    "**S9 (final revision)** | `cargo llvm-cov -p future-cli --no-fail-fast --lcov --output-path /tmp/cli-r2s3-final3-lcov.info -j 4`",
+    "the doc's line numbers are S9's"
+   ],
+   "note": "the doc records the S9 report AND says its line numbers are S9's (\"the doc's line numbers are S9's, and S9/S10 are ...\"); §4c is the ledger it names. Measured against S7 first, where one claim (safari_manager.rs:820) had no DA record because the normalisation that moved it 819 -> 820 happened between S7 and S9 -- the same 'stale report' resolution as agent-core, and the reason the pairing now uses the report the doc's numbering follows.",
+   "expect": {
+    "uncovered": 52,
+    "claims": 119,
+    "missing": 0,
+    "covered": 0,
+    "absent": 0
+   }
+  },
+  {
+   "label": "cli-4b",
+   "role": "superseded-ledger",
+   "report": "/tmp/cli-r2s3-final3-lcov.info",
+   "scopes": [
+    "${ROOT}/commands",
+    "${ROOT}/browser",
+    "${ROOT}/cli/src"
+   ],
+   "doc": "docs/testing/module-cli.md",
+   "section": "4b. Final ledger",
+   "section_heading": "## 4b. Final ledger — measurement S5 (`/tmp/cli-r2s2-final-lcov.info`, superseded by §4c)",
+   "provenance": "documented-quoted",
+   "note": "the S5 ledger measured against the S9 report: 7 of its rows are lines S7 now covers",
+   "expect": {
+    "uncovered": 123,
+    "claims": 129,
+    "missing": 0,
+    "covered": 8,
+    "absent": 3
+   },
+   "covered_justification": {
+    "sections": [
+     "4b. Final ledger — measurement S5 (`/tmp/cli-r2s2-final-lcov.info`, superseded by §4c)"
+    ],
+    "quotes": [
+     "superseded by §4c"
+    ],
+    "reason": "§4b's own heading declares it superseded by §4c, and the pairing measures it against §4c's report — so its 7 covered rows are the lines the mock-span pass closed, which is the reason §4c exists."
+   }
+  },
+  {
+   "label": "cli-4",
+   "role": "superseded-ledger",
+   "report": "/tmp/cli-r2s3-final3-lcov.info",
+   "scopes": [
+    "${ROOT}/commands",
+    "${ROOT}/browser",
+    "${ROOT}/cli/src"
+   ],
+   "doc": "docs/testing/module-cli.md",
+   "section": "4. Waiver ledger",
+   "section_heading": "## 4. Waiver ledger — every residual line, with its category",
+   "provenance": "documented-quoted",
+   "note": "segment 1's S3 ledger: 39 of its rows are lines the later measurements cover, and 10 of its citations are not in the current report's text at all",
+   "expect": {
+    "uncovered": 123,
+    "claims": 188,
+    "missing": 10,
+    "covered": 44,
+    "absent": 11
+   },
+   "covered_justification": {
+    "sections": [
+     "4. Waiver ledger — every residual line, with its category"
+    ],
+    "quotes": [
+     "**This is segment 1's ledger (measurement S3, 180 residual lines).**",
+     "authoritative *final* ledger is §4b (measurement S5, 133 lines)"
+    ],
+    "reason": "§4 leads with a blockquote saying it is segment 1's S3 ledger and naming §4b as authoritative (which §4c then supersedes). Its rows are two measurements old; the covered rows are progress, not errors."
+   }
+  },
+  {
+   "label": "cli-wide",
+   "role": "wide",
+   "report": "/tmp/cli-r2s3-final3-lcov.info",
+   "scopes": [
+    "${ROOT}/commands",
+    "${ROOT}/browser",
+    "${ROOT}/cli/src"
+   ],
+   "doc": "docs/testing/module-cli.md",
+   "section": null,
+   "section_heading": "# future-cli — coverage, waivers and test-quality record",
+   "provenance": "counter-example",
+   "note": "the wide invocation: 43 covered rows, every one from §4 or §4b (the two superseded ledgers)",
+   "expect": {
+    "uncovered": 123,
+    "claims": 203,
+    "missing": 0,
+    "covered": 48,
+    "absent": 14
+   },
+   "covered_justification": {
+    "sections": [
+     "4. Waiver ledger — every residual line, with its category",
+     "4b. Final ledger — measurement S5 (`/tmp/cli-r2s2-final-lcov.info`, superseded by §4c)"
+    ],
+    "quotes": [
+     "**This is segment 1's ledger (measurement S3, 180 residual lines).**",
+     "superseded by §4c"
+    ],
+    "reason": "both contributed sections are superseded ledgers the doc keeps for its own history, and every covered row is attributed to one of them. The authoritative pairing (`cli`, §4c) is 0 covered."
+   }
+  },
+  {
+   "label": "tui",
+   "role": "authoritative",
+   "report": "/tmp/tui-r2-crate.info",
+   "doc_cited_report": "/tmp/tui-r2-crate.info",
+   "scopes": [
+    "${ROOT}/tui/src/agent_supervisor.rs",
+    "${ROOT}/tui/src/app.rs",
+    "${ROOT}/tui/src/components/chat_area.rs",
+    "${ROOT}/tui/src/rpc/grpc_client.rs",
+    "${ROOT}/tui/src/terminal.rs",
+    "${ROOT}/tui/src/update.rs"
+   ],
+   "doc": "docs/testing/module-tui.md",
+   "section": "9.4 Residual ledger",
+   "section_heading": "### 9.4 Residual ledger — every `DA:0` line, with its mechanism",
+   "provenance": "documented-now",
+   "provenance_quotes": [
+    "the line numbers below are `tui-r2-crate.info`, the run recorded in §9.1"
+   ],
+   "note": "the tui unit rewrote this doc at 20:43:03 and produced /tmp/tui-r2-crate.info at 20:44; against its own report the §9.4 ledger is clean (13 uncovered in scope, all cited, 0 covered). An earlier revision of this pairing was recorded as unverifiable because that report did not yet exist — the gate refused to pass it, which is how the change was noticed",
+   "expect": {
+    "uncovered": 13,
+    "claims": 5,
+    "missing": 0,
+    "covered": 0,
+    "absent": 0
+   }
+  },
+  {
+   "label": "cli-mcp",
+   "role": "authoritative",
+   "report": "/tmp/cli-r2s4-final-lcov.info",
+   "scopes": [
+    "/Users/geilige/future-os/.worktrees/cov100-r2/cli/src/commands/mcp_client.rs",
+    "/Users/geilige/future-os/.worktrees/cov100-r2/cli/src/commands/mcp_servers.rs"
+   ],
+   "doc": "docs/testing/module-cli-mcp.md",
+   "section": "6. Waiver ledger",
+   "provenance": "reconstructed",
+   "note": "4 residual lines; the doc names no report of its own in the campaign's pairing vocabulary, so the scope is the two files its §6 rows name. Sound because MISSING is 0 (a scope that does not match the ledger prints MISSING in the hundreds).",
+   "expect": {
+    "uncovered": 4,
+    "claims": 4,
+    "missing": 0,
+    "covered": 0,
+    "absent": 0
+   },
+   "section_heading": "## 6. Waiver ledger — the 4 residual lines"
+  },
+  {
+   "label": "tauri-appdata",
+   "role": "authoritative",
+   "report": "/tmp/appdata-busy/union.info",
+   "scopes": [
+    "/Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/commands",
+    "/Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/tasks.rs",
+    "/Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/store",
+    "/Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/scheduler",
+    "/Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/agent_bridge",
+    "/Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/agent_providers",
+    "/Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/shadow_review",
+    "/Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/error.rs",
+    "/Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/auth_store.rs",
+    "/Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/agent_events.rs"
+   ],
+   "doc": "docs/testing/module-tauri-appdata.md",
+   "section": "S18.5 Residual ledger",
+   "provenance": "documented",
+   "provenance_quotes": [
+    "python3 .future/cov100/reconcile.py --report /tmp/appdata-normalized-lcov.info",
+    "mentioned 610 / MISSING 0 / STALE 0"
+   ],
+   "note": "re-pointed 2026-10-18 (segment 24) from /tmp/appdata-rework/union-pair.info (378) to /tmp/appdata-busy/union.info: gui 169 files (2151 passed, 0 failed, 14 ignored) + headless 136 files (1715 passed, 8 failed, 14 ignored; the eight are the standing port-8022 family in remote/remote_peer, outside the ten scopes, so 374 is an upper bound), each leg after cargo llvm-cov clean --workspace, union 170 files. The 4-line drop is test_support.rs's DatabaseBusy retry arm, covered by a cfg(test)-only fault hook (§S30.1) - the campaign's last UNVERIFIABLE row. Split: 374 = 348 WAIVED + 24 OPEN + 2 deliberate exclusions.",
+   "expect": {
+    "uncovered": 374,
+    "claims": 374,
+    "missing": 0,
+    "covered": 0,
+    "absent": 0
+   },
+   "section_heading": "### S18.5 Residual ledger"
+  },
+  {
+   "label": "tauri-remote",
+   "role": "authoritative",
+   "report": "/tmp/tauri-tau-d7b-lcov.info",
+   "scopes": [
+    "/Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/remote",
+    "/Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/remote_host",
+    "/Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/remote_peer"
+   ],
+   "doc": "docs/testing/module-tauri-remote.md",
+   "section": "4. Uncovered-line ledger",
+   "provenance": "documented",
+   "note": "resolved during the final pass: the TAU-A unit (still open) published `/tmp/tauri-tau-remote-lcov4.info` at 20:54 and named it in the doc at 21:02, so this pairing is no longer reconstructed — the report it checks against is the one the doc's own text names, which is what CLOSEOUT 5-pre requires. Measured against lcov4: 331 uncovered in scope, 109 claims, MISSING 0, covered 0, absent 0 (both the whole doc and §4.1 alone). The earlier revision of this pairing pointed at lcov2 by matching (the doc then named only lcov) and was labelled reconstructed; the gate's red on the doc's 21:02 edit is what surfaced the newer report. | 2026-10-17: scope widened to the record's three trees (remote 331 + remote_host 106 + remote_peer 13 = 450, measured); five ledger rows carried a trailing \"(N lines)\" in the claim cell which made them parse as 0 claims, so the pairing used to certify only 331 of 450 -- counts moved to the mechanism cell (PLAN 5.2) and claims now read 450/450 with 0 STALE. | 2026-10-17 TAU-D7: the nine OPEN lines were closed by tests (seven cases, no product change), so the pin moved to `/tmp/tauri-tau-d7b-lcov.info` (16:02, both flavors: gui 2114 passed/1 known shell flake, headless exit 0). Measured: 1195 uncovered, 1484 claims, MISSING 0, COVERED 0, ABSENT 289; two registered rows moved only because the new tests were inserted above them in their own files (runtime.rs 2694->2721, test_support.rs 2433->2477).",
+   "expect": {
+    "uncovered": 1195,
+    "claims": 1484,
+    "missing": 0,
+    "covered": 0,
+    "absent": 289
+   },
+   "section_heading": "## 4. Uncovered-line ledger (residual: 1195 lines; 343 of them predate the real-network harness)",
+   "provenance_quotes": [
+    "(`/tmp/tauri-tau-remote-lcov4.info`), `gui` flavor **2006 passed / 0 failed"
+   ]
+  },
+  {
+   "label": "tauri-headless",
+   "role": "authoritative",
+   "report": ".future/cov100/tauri-tau-d8-union-lcov.info",
+   "scopes": [
+    "${ROOT}/desktop/src-tauri/src/terminal/server.rs",
+    "${ROOT}/desktop/src-tauri/src/terminal/pty.rs",
+    "${ROOT}/desktop/src-tauri/src/terminal/session.rs",
+    "${ROOT}/desktop/src-tauri/src/terminal/manager.rs",
+    "${ROOT}/desktop/src-tauri/src/terminal/shell.rs",
+    "${ROOT}/desktop/src-tauri/src/terminal/cwd.rs",
+    "${ROOT}/desktop/src-tauri/src/headless/mod.rs",
+    "${ROOT}/desktop/src-tauri/src/headless/agent.rs",
+    "${ROOT}/desktop/src-tauri/src/cli_tool.rs",
+    "${ROOT}/desktop/src-tauri/src/agent_host.rs",
+    "${ROOT}/desktop/src-tauri/src/agent_supervisor.rs",
+    "${ROOT}/desktop/src-tauri/src/skills_bootstrap.rs"
+   ],
+   "doc": "docs/testing/module-tauri-headless.md",
+   "section": "4. Residual uncovered lines",
+   "provenance": "documented",
+   "provenance_quotes": [
+    "`.future/cov100/tauri-tau-d8-union-lcov.info`",
+    "Driver `/tmp/d8-measure.sh`, log `/tmp/d8-measure.log`"
+   ],
+   "note": "the doc names tau2 as the report §2 tabulates and as 'after-2' (first segment = tauri-tau-lcov, second added). This pairing also bounds the vacuous `0 MISSING / 0 stale` this doc recorded at line 512: against tau2 the ledger is genuinely clean (0 MISSING, 0 covered, 2 absent), against tauri-tau (the earlier segment) it showed 11 covered rows and 66 uncited lines — which is why the line the doc records is only meaningful now that it names a report. | 2026-10-17 (TAU-D4 delivered): report re-pointed to the segment-3 union (tauri-tau3-union-lcov.info, retained in .future/cov100/) and measured over the record's 12 scopes: 300 uncovered / 300 mentioned / MISSING 0 / COVERED 0 / STALE 0. The figure moved 359 -> 300 because the segment-3 tests covered 59 of those lines. I had rewritten the section 4.4 crosswalk rows into the claim shape, which made 25 of them read as COVERED; the unit's numbers-first shape was right, because 4.4 is an EXPLANATION of why the after-2 numbers do not apply, not a ledger. Reverted. | 2026-10-17 (TAU-D8 delivered): re-measured at HEAD 36c568972, both flavours rendered separately with `cargo llvm-cov clean` between the legs and unioned (PLAN 6a-ter; leg-flavour-check LEG IDENTITY ok, flavor-alive ok, both legs green: gui lib 2142 passed / 0 failed, headless lib 1717 / 0). The record's 12 scopes now read 283 uncovered / 283 mentioned / MISSING 0 / COVERED 0 / STALE 0 / ABSENT 0. The 300 -> 283 move is attributable: agent_supervisor 81 -> 67 (14 lines covered by the macOS mock-loop quit test), agent_host 26 -> 23 (the oscillating attach arms 111/319/320 covered in this run). cli_tool.rs stayed at 11 lines but the SET changed (the doc's 'statements unchanged' claim was false: EnvGuard's None arm at old 338 is now covered, and the NEW-B seam's fail-only panic at 759 is new); 294 -> 356 and 598 -> 672 correct the earlier note's 357 and 666. The registry 'claims' is 282 rather than 283 because the claim parser keys rows by the path the doc writes: the two `headless/` files are keyed by BASENAME in the report (`mod.rs`, `agent.rs`), so their rows (`headless/mod.rs`, `headless/agent.rs`) do not collide literally with the claim set; suffix resolution still makes STALE 0 and `missing` 0, so `uncovered`/`mentioned` are the 283 to read.",
+   "expect": {
+    "uncovered": 283,
+    "claims": 282,
+    "missing": 0,
+    "covered": 0,
+    "absent": 0
+   },
+   "section_heading": "## 4. Residual uncovered lines (per line, with the mechanism)",
+   "covered_justification": {
+    "sections": [
+     "4. Residual uncovered lines (per line, with the mechanism)"
+    ],
+    "quotes": [
+     "**1205 waived · 0 unwaived.**"
+    ],
+    "reason": "kept only to satisfy the schema; the pairing now reads COVERED 0 / STALE 0 over 283/283."
+   }
+  },
+  {
+   "label": "tauri-shell-seg2",
+   "role": "authoritative",
+   "report": "/tmp/tauri-shell-land/union.info",
+   "scopes": [
+    "${ROOT}/desktop/src-tauri/src/bin/futureos-headless.rs",
+    "${ROOT}/desktop/src-tauri/src/desktop_shutdown.rs",
+    "${ROOT}/desktop/src-tauri/src/desktop_shutdown/coordinator.rs",
+    "${ROOT}/desktop/src-tauri/src/future_login.rs",
+    "${ROOT}/desktop/src-tauri/src/host_environment.rs",
+    "${ROOT}/desktop/src-tauri/src/instance.rs",
+    "${ROOT}/desktop/src-tauri/src/launch.rs",
+    "${ROOT}/desktop/src-tauri/src/lib.rs",
+    "${ROOT}/desktop/src-tauri/src/macos_power.rs",
+    "${ROOT}/desktop/src-tauri/src/main.rs",
+    "${ROOT}/desktop/src-tauri/src/menu.rs",
+    "${ROOT}/desktop/src-tauri/src/runtime.rs"
+   ],
+   "doc": "docs/testing/module-tauri-shell.md",
+   "section": "Per-line index of this segment's residual (109 rows)",
+   "section_heading": "### Per-line index of this segment's residual (109 rows)",
+   "provenance": "documented",
+   "provenance_quotes": [
+    "Sections 1–8 above describe the previous revision",
+    "this section describes the revision measured here"
+   ],
+   "note": "§S13.10 (SHELL-TAIL) re-pointed this pairing from §S13.5's 115-row index to the 109-row index, after a mock app with a window labelled `main` ran `activate_main_window` and closed lib.rs 212/215/244 plus the three `if let` braces that fall with them (214/217/246). Measured with the gui leg only on the current source, clean before the leg, unioned with the same-recipe headless leg (the headless library does not compile `mod gui`, and its highest lib.rs DA line is 174, below mod gui's first line 196). 109 measured, 87 projected for a Ready-delivering session (22 rows are host-state-blocked).",
+   "expect": {
+    "uncovered": 109,
+    "claims": 109,
+    "missing": 0,
+    "covered": 0,
+    "absent": 0
+   }
+  }
+ ]
+}

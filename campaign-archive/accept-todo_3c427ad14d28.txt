@@ -1,0 +1,61 @@
+REV-GOAL (todo_3c427ad14d28) — SUPERVISOR VERDICT: VERIFIED. Six rows fell, and the strongest one I verified in the source myself.
+
+CALIBRATION (now seven reviews, this one included): 6 rows fell of 33 (82 lines). Three fell on REACHABILITY with measured DA evidence (F-1, F-2, F-3 - 5 lines), three on CATEGORY (F-6 - 3 lines), plus an EVIDENCE defect (F-5: 23 of 54 quoted neighbour counts do not reproduce against the pinned report) and two mechanism corrections inside rows that survived (F-4, F-4b).
+
+F-1 IS THE BEST FALL OF THE CAMPAIGN SO FAR, and I verified its whole mechanism in the source rather than taking it:
+  `orchestration/goal/src/compat.rs:270` was called `unreachable-in-this-environment`. The reviewer reached it with ONE DANGLING SYMLINK: `DA:270` 0 -> 1 and `DA:235` 3 -> 512.
+  I checked why, because "one symlink" sounds too easy to be true, and every link holds:
+  * `fs::OpenOptions::new().write(true).create_new(true).open(&lock_path)` (compat.rs 220-224) is O_CREAT|O_EXCL,
+    and O_EXCL on a dangling symlink fails with **EEXIST** on POSIX - the symlink itself exists, and O_EXCL
+    refuses to follow it;
+  * `create_is_contention` (151-163) treats `AlreadyExists` as contention, so the error is swallowed and the
+    loop proceeds to classify;
+  * `classify_lock`'s `fs::read_to_string` (274) FOLLOWS the symlink to a missing target -> `NotFound` ->
+    `LockState::Released` -> `continue` (235);
+  * the loop is `for _ in 0..MAX_LOCK_ATTEMPTS` with `MAX_LOCK_ATTEMPTS = 512` (126, loop at 217), which
+    matches the reviewer's measured `DA:235 = 512` exactly;
+  * the loop then falls out to `bail!(...)` at 270.
+  So the line is reachable by a state any filesystem can produce, and the count 512 corroborates the
+  mechanism rather than merely accompanying it. The record's category was wrong, not just its wording.
+
+F-6 IS AN INTERNAL INCONSISTENCY, not an opinion: this record labels three lines whose mechanism is "a lazy
+  `assert!` message argument" as `attribution-artifact` (`app-settings/src/lib.rs:1050`, `console.rs:10651`,
+  `compat.rs:682`), while the SAME shape is `unreachable-by-construction` in AG-A (its F-29, six rows, which
+  I verified line by line) and in this record's own `console.rs:10663` row, which says it was "reclassified
+  from `attribution-artifact` after re-reading the mechanism". One record cannot hold both. I confirmed the
+  shape at `console.rs:10651` from the source line (`reported[0]`, the third argument of the §11.11 guard).
+  The reviewer also states why the label matters rather than being pedantry: a category tells the next reader
+  whether to write a fixture, and mislabelling a lazily-evaluated argument as a region artifact closes a line
+  that a real fixture could close.
+
+F-5 IS PARTIAL, AND I SPOT-CHECKED IT BOTH WAYS rather than accepting either frame: the `console.rs:10651`
+  row's quoted counts reproduce EXACTLY against the pinned report (10648=1, 10649=1, 10651=0, 10660-10662=1,
+  10663=0, 10665=1), so §11.5 is not wholesale stale - 23 of 54 pairs failing is a real, bounded defect of
+  the F.48/F.9 kind (a count must name the run it describes). The rework says to fix the ones that fail and
+  leave the ones that hold.
+
+WHAT SURVIVED, and I am not re-opening any of it: all 39 `attribution-artifact` lines except F-6's three;
+  the four `platform-unmeasured` rows (11 lines, all shape (b) with platform AND condition named per row);
+  the other 12 `unreachable-by-construction` rows; and `unix_endpoint.rs` 114-116 / 129, which the reviewer
+  measured at **0 hits in 20 000 drives** against an aggressive churner - that is a rate, not an argument.
+  It also correctly treated `compat.rs:235` as a documented flipper (exactly what I told it) and reported it
+  rather than counting it as a fall.
+  Its ledger coverage is complete: all 82 lines got a verdict, and the F.14 hazard I inherited was checked
+  the right way - per-file, PER-LINE SET EQUALITY (82 claimed = 82 residual, 0 missing, 0 extra), not counts.
+
+IT DID THE THREE THINGS I ASKED IN THE STEER: used the current 82 (not the ticket's stale 92); did not
+  re-derive the three items I had already routed (webui/server.rs, the §0.5 block, compat.rs:235) and did
+  not count them as its falls; and attacked the ASSIGNED tags, which is where it found all six falls.
+  Ten probe/tool sources embedded byte-exact beside their sha256 (10/10 verified by it), a unique scratch
+  tree it built from `git archive HEAD` plus rsync'd sources, and no processes left behind.
+
+NOT VERIFIED BY ME: the two biased-race counts (F-2's 4 hits in 24 000 drives, F-3's 6 of 7 swap delays) -
+  re-running them needs its 3.3 GB scratch tree, which it kept alive; and F-5's 23-pair arithmetic beyond
+  the one row I checked. Those are the reviewer's measurements, and the rework re-derives line numbers from
+  its own report anyway.
+
+REWORK ROUTED: todo_18c1197eb8c3 (REWORK-GOAL, worker-pkgs, P1) - cover the three falls with the reviewer's
+  fixtures (5 lines, all sub-4-second), fix F-6's three categories, re-derive F-5's failing counts, and
+  apply F-4/F-4b's two mechanism corrections; it is told explicitly what NOT to re-open. Sequenced with
+  todo_dd2f1e6835f1 (the same record's webui/server.rs row, same owner) so the two do not leave the file
+  half-done. Successor: none from the reviewer (--no-follow-up, correct under rule 6).

@@ -1,0 +1,33 @@
+VERIFIED — todo_91ba6fdfa95a (TAU-A3): `verify_e2e.rs`'s driver/window row 68 -> 1, MEASURED.
+
+## The shape of the result
+
+68 uncovered lines -> **1**, from a fresh merged two-flavour report (`/tmp/tauri-tau-a3-lcov2.info`,
+2026-10-17 14:48/14:55; gui exit 101 with 2104 passed / 1 failed / 14 ignored; headless exit 0;
+`--no-fail-fast`). Its method is the interesting part and I checked that too: each `#[ignore]`d driver is
+executed THROUGH ITS OWN BODY from a plain `#[test]` — a `#[tokio::test]` fn is a blocking fn, so calling
+it inside a runtime panics, which is why the caller has to be `#[test]` — with the script inputs supplied
+through `EnvGuard` (FLAKES item 27, RAII restore) rather than a mutex that only serialises.
+
+Four new tests: the measurement drivers on `FakeNats` plus `Broker::Real` pointed at a `FakeNats` URL (the
+Real arm only needs an address and the fake answers its probe echo); the fixture driver likewise; the
+catalog driver at ROWS=2/WRITES=2; and the `/connz` window split into
+`assert_broker_accounting_against` (one HTTP read, driven by a loopback `serve_connz`) plus
+`assert_broker_accounting` (pure arithmetic with a NON-ZERO baseline and probe, and two `#[should_panic]`
+cases where the broker is 1 byte / 1 message over).
+
+## The rule it kept, which I checked in the gate run
+
+**No `#[ignore]` removed, no reason string changed, no assertion weakened.** `remote::verify_e2e` runs
+**17 passed / 0 failed / 4 ignored** — the four real-broker tests are still ignored for the reason they
+always carried, and the coverage comes from separate ordinary tests driving the same shared bodies. That
+was the explicit requirement and it held.
+
+Also verified in the gate: `tauri-remote` reads 1205 uncovered / 1187 mentioned / MISSING 18 at that
+point, which is exactly why todo_d4aa585e3dd1 (TAU-D6) existed; it is now closed and the pairing passes.
+
+## Uncertainty
+
+Its own note stands: 46 of the 68 closed lines are the same source lines and 21 moved into the extracted
+window functions (no `DA:0` line there), and 1 stays uncovered. That arithmetic accounts for the 68 -> 1
+without claiming more than it measured.

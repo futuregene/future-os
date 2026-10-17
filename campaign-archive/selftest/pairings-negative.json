@@ -1,0 +1,68 @@
+{
+ "version": 1,
+ "generated": "self-test fixture (todo_ab3b61bf54f4)",
+ "purpose": "Three ways a pairing must FAIL, one per entry. The gate is run against this file by selftest.py and must exit 1 and name all three. Without this file the gate would only ever have been observed passing.",
+ "pairings": [
+  {
+   "label": "neg-unjustified",
+   "role": "authoritative",
+   "report": "${ROOT}/.future/cov100/selftest/fixture-lcov.info",
+   "scopes": [
+    "/tmp/cov100-selftest/src"
+   ],
+   "doc": "${ROOT}/.future/cov100/selftest/fixture-doc.md",
+   "section": null,
+   "section_heading": "# Self-test fixture for `reconcile.py`'s STALE split (do not treat as a report)",
+   "provenance": "fixture",
+   "note": "the fixture report shows demo.rs:11 and :12 covered, and nothing here explains that",
+   "expect": {
+    "uncovered": 1,
+    "claims": 5,
+    "missing": 0,
+    "covered": 3,
+    "absent": 1
+   }
+  },
+  {
+   "label": "neg-vanished-quote",
+   "role": "authoritative",
+   "report": "${ROOT}/.future/cov100/selftest/fixture-lcov.info",
+   "scopes": [
+    "/tmp/cov100-selftest/src"
+   ],
+   "doc": "${ROOT}/.future/cov100/selftest/fixture-doc.md",
+   "section": null,
+   "section_heading": "# Self-test fixture for `reconcile.py`'s STALE split (do not treat as a report)",
+   "provenance": "fixture",
+   "note": "a justification whose quote cannot be found in the doc (a stale or invented citation)",
+   "expect": {
+    "covered": 3
+   },
+   "covered_justification": {
+    "sections": [
+     "Self-test fixture"
+    ],
+    "quotes": [
+     "This sentence was never written in the fixture document."
+    ],
+    "reason": "the quote is fabricated, so the justification cannot be checked"
+   }
+  },
+  {
+   "label": "neg-misslice",
+   "role": "authoritative",
+   "report": "${ROOT}/.future/cov100/selftest/fixture-lcov.info",
+   "scopes": [
+    "/tmp/cov100-selftest/src"
+   ],
+   "doc": "${ROOT}/.future/cov100/selftest/fixture-trap-doc.md",
+   "section": "4c",
+   "section_heading": "## 4c. Ledger (the real one)",
+   "provenance": "fixture",
+   "note": "the needle matches the cross-reference heading first, so the slice is not the ledger",
+   "expect": {
+    "claims": 0
+   }
+  }
+ ]
+}

@@ -1,0 +1,57 @@
+SUPERVISOR VERDICT — TAU-B SEGMENT 11 (todo_774d2ea77424): VERIFIED. 400 -> 395, and it found three defects, one of them in MY tooling.
+
+NUMBER, reproduced: `covlines.py total` over the ten scopes on `/tmp/appdata-seg11-normalized-lcov.info`
+  -> **covered 34242 / measured 34637 / uncovered 395 / 98.8596 %**, exactly its claim. Tripwire:
+  **395 mentioned / MISSING 0**. The five closed lines check out in the DA records: `commands/agent.rs`
+  185-189 = 70 (its dead duplicate closure removed) and `store/threads.rs` 616 = 3, 621 = 3
+  (neighbours 617-620 = 18).
+
+ITS S11.4 IS THE MOST VALUABLE THING IN THIS DELIVERY, and it exposes a hole in MY OWN RECIPE. Its FIRST
+  measurement attempt produced a report in which the **whole gui flavour was absent** — `commands/agent.rs`
+  364 of 364 uncovered, `tasks.rs` 586 of 586, `scheduler/mod.rs` 175 — and the tell is that the report's
+  **`DA:` line COUNT was IDENTICAL to segment 10's** (34 751): the same lines are measured, they simply all
+  read 0. **The flavour check my recipe prescribed ("a flavour-only file HAS `DA` records") cannot detect
+  this, because it measured presence, not hits.** Its cause was measured too: an external **SIGTERM** killed
+  the gui lib test binary (`signal: 15`), and a test binary killed by a signal **writes no profraw at all**.
+  * I sharpened PLAN §6a-ter: a flavour-only file must have at least one **NONZERO** hit in that flavour's
+    own report; all-zero records mean the flavour's binary died whatever the exit code said; and a leg whose
+    log shows `signal: 15`/`9` produced no data for that target regardless of how the report reads.
+  * New checker `flavor-alive.py` (per-flavour covered/uncovered totals; exit 1 if a flavour has no nonzero
+    hit), verified against a synthetic all-zero report (FAIL, exit 1) and against segment 11's live pair
+    (ok, exit 0) — and **wired into `measure-final.sh`'s tauri track**, which previously printed file COUNTS
+    only and so could not see this. That is the frozen harness, so the hole is closed where it counts.
+
+ITS FENCE FINDING IS A DEFECT IN MY F.70 FIX (INCIDENTS F.72), and I fixed it: an unpaired ``` made the
+  fence-aware slicer blind to every later heading, and the tool said "no heading contains 'Segment 11'" —
+  blaming a missing heading for a malformed fence, while the tripwire silently stopped covering the doc.
+  It deleted the stray marker (83 -> 84, even) and the tripwire runs; I re-ran it (395 / MISSING 0). I made
+  `slice_section` raise a message that NAMES the fence and its line, `reconcile.py` exit 3 with it,
+  `staletable.check_pairing` report it instead of the misleading text, added selftest §12 with the negative
+  control, and ran a census: **0 of 264 campaign markdown files now have odd parity**.
+
+ITS FALSIFIED WAIVER IS THE SECOND REAL FINDING: `store/threads.rs` 616/621 had been filed
+  `attribution-artifact` on neighbour counts ("616 closes a covered `if dir.exists()`…"), i.e. as lines no
+  test could move; a test that makes that one statement fail gives both `DA:1`. Its statement of the lesson
+  is exactly right and worth the campaign's attention: **a neighbour count shows where a region is NOT; a
+  failure-path region reads `DA:0` exactly as an artifact does, and only the trigger that reaches it can
+  tell them apart.** It names five sibling rows of that shape for re-checking.
+
+ALSO ACCEPTED: S11.8's stray-fence repair; S11.4's second failure (an unlabelled `pmset` slice it read and
+  then corrected with labels); the corrected flavour tokens (`commands/update.rs` gui-only, `no_gui.rs`
+  headless-only) replacing the vacuous triple I reported; and 17 rows OPEN->WAIVED with source-quoted
+  mechanisms, flagged as inconsistent with S10.7 which re-opened them while claiming no category changed.
+  That last one is the unit's own accounting of a PRIOR segment's error, which is what I want.
+
+NOT VERIFIED BY ME: the per-scope addends (commands 205, tasks.rs 97, store 13, scheduler 23,
+  agent_bridge 32, agent_providers 0, shadow_review 24, error.rs 0, auth_store.rs 0, agent_events.rs 1 —
+  they sum to 395 by its own arithmetic and I checked the total and two files); its `seg11verify.py`
+  partition (rows 43, cited-not-DA:0 = 0); and the 17-row re-classification's individual mechanisms.
+
+A RULE BREACH, RECORDED WITHOUT DRAMA: the unit committed its own doc (`56d584d32`, "docs(cov100): TAU-B
+  segment 11 …"), while PLAN §3 reserves state-changing git for the supervisor. The content is correct and
+  on the branch, so there is no damage; but I am noting it because the PR plan assumes I control what lands
+  in which commit, and because a unit that commits can also commit something it should have reverted (the
+  F.67 experiment reached HEAD through MY snapshot, so neither of us is immune). I will restate the rule in
+  the next briefs rather than re-litigate this commit.
+
+SUCCESSOR: the unit's own next segment, owner worker-tauri-appdata.

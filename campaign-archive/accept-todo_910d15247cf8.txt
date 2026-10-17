@@ -1,0 +1,67 @@
+REWORK-S6 (todo_910d15247cf8) — SUPERVISOR VERDICT: REWORK. Three of the four corrections are right and the new evidence is solid; the fourth re-labelled a row to a category the report contradicts, so the record still carries a wrong row. Precise fix list below, plus the PLAN 4b decision it asked for.
+
+WHAT I VERIFIED AND ACCEPT:
+  * reconcile.py -> `82 mentioned, 0 MISSING`, no STALE (reproduced myself). The residual statement
+    "82 lines, all waived" holds.
+  * Correction 1 (§11.14.1): the paused-clock experiment was RUN and lost, with the load stated.
+    Probe 1 (20 runs, load 4.48-4.49): connect failed 16/20, succeeded 4/20 in 1.22-1.38 ms. Probe 2
+    (20 runs, same load): failed 20/20 at the `.expect("the scripted mock is reachable")`, never
+    reached a turn. Merged 20 profraws: `console.rs 5101=0 5102=0 5104=0 5108=0 5109=0 5110=0 5111=0
+    5112=0`. I corroborated that independently: `/tmp/reworks6-paused20.info` lists exactly those
+    console.rs lines as uncovered, i.e. the guard really is never evaluated in that probe. Combined
+    with REV-S6's own ~11.6-with-burners point, the rejection now rests on 40 drive runs across two
+    load points and two independently built binaries - not on a 0.01 s anecdote. That is the right
+    shape for a rejection.
+  * Correction 2 (§11.14.2): "the only test in the crate that waits on purpose" is corrected to the
+    measured census (23 sleep sites in 16 files), and the doc says the story was refuted without
+    touching the conclusion. Correct: the falsified claim was support, not the finding.
+  * Correction 3: the conjunct-deletion control wording - and it reports the 2-line tool fix.
+  * Honest self-reporting: it flags that §1's round-1 sentence "GREEN (every uncovered file waived,
+    §6)" is now stale by exactly this row, rather than letting the two contradict quietly.
+
+WHAT IS WRONG (the rework): §11.14.4's "parity fix" re-labelled `webui/server.rs`'s Windows arm as
+  `coverable`-with-a-price, listing **6 lines: 88, 106-110**. I checked the ledgers' own report
+  (`/tmp/r2c-lcov.info`, a macOS run) line by line, and the row is wrong twice:
+  1. **Line 88 reads 1 - it is COVERED.** §11.13(2) covered it with a stub `open` on PATH. It cannot
+     be one of the six residual lines. (Its own handoff says "0 coverable, 0 OPEN", which already
+     contradicted the row.)
+  2. **Lines 105-110 have NO `DA:` record at all** in that report, because `open_in_browser` at
+     105-110 is `#[cfg(target_os = "windows")]`. A line that is not compiled cannot be an *uncovered*
+     line, and the mechanism the row gives for reaching it - "a stub named `rundll32.exe` on `PATH`
+     *executes* the arm" - is therefore not reachable on this host at all: the arm is not in the
+     binary. So round 1's original class was RIGHT (its stated reason was wrong, which is what the
+     correction should have fixed).
+  3. "`coverable`-with-a-price" is not one of the four classes, and the row's label therefore sits
+     outside the policy while reading as though it were inside it.
+
+MY DECISION ON THE TWO QUESTIONS THE ROW ROUTES TO ME:
+  * **PLAN 4b: do NOT authorise a recorder PE / bin target.** §4b allows a seam when the injection
+    point already exists and was already executed; this is not that - it is new build machinery
+    (a manifest change plus a PE fixture) for lines that do not compile on the measuring platform.
+    Precedent, kept consistent: I refused the same shape for `remote_host/start.rs`'s 167 lines.
+  * **Classification: the Windows arm is `unreachable-in-this-environment`, shape (a) - "the line
+    does not compile here" - with Windows named as the platform, and the DA-record argument as its
+    mechanical evidence** (no `DA:` record exists for 105-110 in a macOS report). This is the shape
+    `waiver-ledger.md` defines for exactly this case.
+  * The parity problem the correction was chasing is thereby resolved the other way: the macOS twin
+    (102-104) is now **covered** by §11.13(2), so the platforms no longer disagree - macOS covered,
+    Windows not-compiled-here. The perceived disagreement came from comparing the macOS twin's OLD
+    label with the Windows twin's OLD label.
+
+THE PRECISE FIX (one row, doc-only; no re-measurement, no code):
+  1. In §6's `webui/server.rs` row, DELETE line 88 from the residual list (it reads 1 in
+     `/tmp/r2c-lcov.info`) and re-label the Windows arm as `unreachable-in-this-environment` shape
+     (a), lines 105-110, naming Windows and citing the missing-`DA:`-record argument.
+  2. Update the row's totals from "16 lines" to 15, and re-check the four class counts add up.
+  3. In §11.14.4, replace the "parity fix" paragraph with the above (the parity framing is the part
+     that produced the wrong label), and record the 4b decision as "refused, with reason".
+  4. Keep the stale-§1-sentence note honest: after this fix the sentence is stale only in that the
+     Windows lines are shape (a) rather than waived - i.e. the correction changes the *class*, so
+     say which sentence in §1 needs its wording touched.
+  Verification for the rework: `python3 .future/cov100/reconcile.py --report /tmp/r2c-lcov.info
+  --scope packages --scope orchestration/tasks --scope orchestration/goal --doc
+  docs/testing/module-goal.md` still reads 82/82/MISSING 0, and the row's line-level arithmetic
+  matches the report (88 = 1; 105-110 absent).
+
+SUCCESSOR: todo_dd2f1e6835f1 (goal-record owner).
+NOTE: the new evidence in §11.14.1 is accepted as-is and must NOT be re-run; only the row changes.

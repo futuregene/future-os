@@ -1,0 +1,372 @@
+# reconcile.py, every pairing in pairings.json, with exit codes.
+# Regenerate: python3 .future/cov100/staletable.py --cli
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label goal --report /tmp/p1b-lcov.info --scope /Users/geilige/future-os/.worktrees/cov100-r2/packages --scope /Users/geilige/future-os/.worktrees/cov100-r2/orchestration/tasks --scope /Users/geilige/future-os/.worktrees/cov100-r2/orchestration/goal --doc docs/testing/module-goal.md --section Round 2
+[goal] files with uncovered lines=13 uncovered lines=92
+  mentioned in module-goal.md: 92
+  MISSING (uncovered, not mentioned): 0
+exit=0
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label agent-core --report /tmp/agb-p6.info --scope /Users/geilige/future-os/.worktrees/cov100-r2/agent/src/tools --scope /Users/geilige/future-os/.worktrees/cov100-r2/agent/src/llm --scope /Users/geilige/future-os/.worktrees/cov100-r2/agent/src/agent --scope /Users/geilige/future-os/.worktrees/cov100-r2/agent/src/compaction --scope /Users/geilige/future-os/.worktrees/cov100-r2/agent/src/sandbox --scope /Users/geilige/future-os/.worktrees/cov100-r2/agent/src/config --scope /Users/geilige/future-os/.worktrees/cov100-r2/agent/src/models --scope /Users/geilige/future-os/.worktrees/cov100-r2/agent/src/runtime --scope /Users/geilige/future-os/.worktrees/cov100-r2/agent/src/utils --scope /Users/geilige/future-os/.worktrees/cov100-r2/agent/src/auth --scope /Users/geilige/future-os/.worktrees/cov100-r2/agent/src/prompt --scope /Users/geilige/future-os/.worktrees/cov100-r2/agent/src/types --scope /Users/geilige/future-os/.worktrees/cov100-r2/agent/src/skill_reco --doc docs/testing/module-agent-core.md --section 6. Waiver ledger
+[agent-core] files with uncovered lines=21 uncovered lines=213
+  mentioned in module-agent-core.md: 213
+  MISSING (uncovered, not mentioned): 0
+exit=0
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label agent-rpc --report /tmp/agent-a-s7-norm.info --scope /Users/geilige/future-os/agent/src/rpc --scope /Users/geilige/future-os/agent/src/grpc --scope /Users/geilige/future-os/agent/src/service --scope /Users/geilige/future-os/agent/src/session --scope /Users/geilige/future-os/agent/src/skills --scope /Users/geilige/future-os/agent/src/approval_review --scope /Users/geilige/future-os/agent/src/cli.rs --doc docs/testing/module-agent-rpc.md --section 0.5 Residual ledger
+[agent-rpc] files with uncovered lines=51 uncovered lines=324
+  mentioned in module-agent-rpc.md: 324
+  MISSING (uncovered, not mentioned): 0
+exit=0
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label agent-rpc-r1 --report /tmp/agent-a-s7-norm.info --scope /Users/geilige/future-os/agent/src/rpc --scope /Users/geilige/future-os/agent/src/grpc --scope /Users/geilige/future-os/agent/src/service --scope /Users/geilige/future-os/agent/src/session --scope /Users/geilige/future-os/agent/src/skills --scope /Users/geilige/future-os/agent/src/approval_review --scope /Users/geilige/future-os/agent/src/cli.rs --doc docs/testing/module-agent-rpc.md --section 6. Waiver ledger
+[agent-rpc-r1] files with uncovered lines=51 uncovered lines=324
+  mentioned in module-agent-rpc.md: 43
+  MISSING (uncovered, not mentioned): 281
+     activity.rs:71
+     approval.rs:611
+     broadcaster/replay.rs:172
+     broadcaster/replay.rs:173
+     broadcaster/replay.rs:211
+     cli.rs:195
+     cli.rs:197
+     cli.rs:228
+     cli.rs:234
+     cli.rs:235
+     cli.rs:236
+     cli.rs:310
+     cli.rs:449
+     cli.rs:505
+     cli.rs:506
+     cli.rs:590
+     cli.rs:591
+     commands/mod.rs:404
+     connection.rs:19
+     connection.rs:42
+     connection.rs:52
+     database/mod.rs:65
+     database/mod.rs:79
+     database/mod.rs:80
+     database/mod.rs:81
+     database/mod.rs:82
+     database/mod.rs:83
+     database/mod.rs:119
+     database/mod.rs:133
+     display_index.rs:64
+     display_index.rs:160
+     entry_records.rs:15
+     entry_records.rs:134
+     entry_records.rs:139
+     entry_records.rs:149
+     entry_records.rs:216
+     entry_records.rs:288
+     escalation.rs:93
+     events.rs:64
+     events.rs:277
+     ... and 241 more
+  STALE (doc cites it as uncovered; old doc sections also match unless --section is given): 144
+    COVERED (DA>0 - a real disagreement, the actionable half): 99
+       approval.rs:220
+       approval.rs:221
+       approval.rs:222
+       approval.rs:224
+       approval.rs:230
+       approval.rs:232
+       approval.rs:233
+       approval.rs:234
+       approval.rs:235
+       approval.rs:237
+       approval.rs:240
+       approval.rs:242
+       approval.rs:244
+       approval.rs:245
+       approval.rs:246
+       approval.rs:247
+       approval.rs:249
+       approval.rs:250
+       approval.rs:251
+       approval.rs:252
+       ... and 79 more
+    ABSENT (no `DA:` record -- NOT evidence: a blank line inside a claimed range, a comment, or a report from another revision): 45
+       absent approval.rs:223
+       absent approval.rs:225
+       absent approval.rs:226
+       absent approval.rs:227
+       absent approval.rs:228
+       absent approval.rs:229
+       absent approval.rs:231
+       absent approval.rs:236
+       absent approval.rs:238
+       absent approval.rs:239
+       ... and 35 more (list them all with python3 .future/cov100/staledetail.py --all)
+exit=1
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label channels --report /tmp/chan-lcov-r2rework2.info --scope /Users/geilige/future-os/.worktrees/cov100-r2/channels/src --doc docs/testing/module-channels.md --section 10.4 Residual uncovered lines
+[channels] files with uncovered lines=8 uncovered lines=8
+  mentioned in module-channels.md: 8
+  MISSING (uncovered, not mentioned): 0
+exit=0
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label channels-wide --report /tmp/chan-lcov-r2rework2.info --scope /Users/geilige/future-os/.worktrees/cov100-r2/channels/src --doc docs/testing/module-channels.md
+[channels-wide] files with uncovered lines=8 uncovered lines=8
+  mentioned in module-channels.md: 8
+  MISSING (uncovered, not mentioned): 0
+  STALE (doc cites it as uncovered; old doc sections also match unless --section is given): 25
+    COVERED (DA>0 - a real disagreement, the actionable half): 22
+       dingtalk/mod.rs:110
+       feishu/mod.rs:111
+       imessage.rs:391
+       mattermost.rs:118
+       mattermost.rs:162
+       mattermost.rs:173
+       mattermost.rs:435
+       mattermost.rs:469
+       mattermost.rs:552
+       qq.rs:303
+       slack.rs:257
+       slack.rs:746
+       slack.rs:763
+       slack.rs:772
+       slack.rs:829
+       slack.rs:903
+       slack.rs:934
+       slack.rs:935
+       slack.rs:936
+       test_support.rs:724
+       ... and 2 more
+    ABSENT (no `DA:` record -- NOT evidence: a blank line inside a claimed range, a comment, or a report from another revision): 3
+       absent test_support.rs:706
+       absent test_support.rs:752
+       absent test_support.rs:825
+    -> the covered rows come from 5 section(s): `attribution-artifact` — a zero region (`?` bran (10), 10.7.2 The 16 fallen rows: what covers each line (8), `unreachable-in-this-environment` — needs a plat (3)
+       this doc holds 8 sections with claims: if one of them is superseded (a re-measurement), re-run with --section for the authoritative ledger
+exit=0
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label channels-superseded-report --report /tmp/chan-lcov-r2final.info --scope /Users/geilige/future-os/.worktrees/cov100-r2/channels/src --doc docs/testing/module-channels.md --section Round 2 (cov100)
+[channels-superseded-report] files with uncovered lines=11 uncovered lines=24
+  mentioned in module-channels.md: 11
+  MISSING (uncovered, not mentioned): 13
+     imessage.rs:391
+     lib.rs:172
+     lib.rs:173
+     lib.rs:190
+     lib.rs:191
+     mattermost.rs:552
+     slack.rs:934
+     slack.rs:935
+     slack.rs:936
+     test_support.rs:780
+     webhook.rs:149
+     webhook.rs:150
+     webhook.rs:151
+  STALE (doc cites it as uncovered; old doc sections also match unless --section is given): 5
+    COVERED (DA>0 - a real disagreement, the actionable half): 5
+       lib.rs:386
+       prompt_loop.rs:53
+       slack.rs:763
+       slack.rs:903
+       test_support.rs:724
+    ABSENT (no `DA:` record -- NOT evidence: a blank line inside a claimed range, a comment, or a report from another revision): 0
+exit=1
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label channels-policy --report /tmp/chan-lcov-r2rework2.info --scope /Users/geilige/future-os/.worktrees/cov100-r2/channels/src --doc docs/architecture/channels-test-coverage.md --section Uncovered lines in the framework
+[channels-policy] files with uncovered lines=8 uncovered lines=8
+  mentioned in channels-test-coverage.md: 8
+  MISSING (uncovered, not mentioned): 0
+  STALE (doc cites it as uncovered; old doc sections also match unless --section is given): 6
+    COVERED (DA>0 - a real disagreement, the actionable half): 6
+       imessage.rs:391
+       mattermost.rs:552
+       slack.rs:934
+       slack.rs:935
+       slack.rs:936
+       test_support.rs:780
+    ABSENT (no `DA:` record -- NOT evidence: a blank line inside a claimed range, a comment, or a report from another revision): 0
+exit=0
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label review-rust --report /tmp/chan-lcov-r2final.info --scope /Users/geilige/future-os/.worktrees/cov100-r2/channels/src --doc docs/testing/review-rust.md --section REV-CH
+[review-rust] files with uncovered lines=11 uncovered lines=24
+  mentioned in review-rust.md: 24
+  MISSING (uncovered, not mentioned): 0
+exit=0
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label desktop --report desktop/coverage/coverage-final.json --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src --doc docs/testing/module-desktop.md
+[desktop] files with uncovered lines=34 uncovered lines=60
+  mentioned in module-desktop.md: 60
+  MISSING (uncovered, not mentioned): 0
+exit=0
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label mobile --report mobile/coverage/lcov.info --scope src/ --doc docs/testing/module-mobile.md --section Segment 50
+[mobile] files with uncovered lines=7 uncovered lines=13
+  mentioned in module-mobile.md: 13
+  MISSING (uncovered, not mentioned): 0
+exit=0
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label tauri-shell --report /tmp/tauri-shell-lcov-final.info --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/bin/futureos-headless.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/desktop_shutdown.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/desktop_shutdown/coordinator.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/future_login.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/host_environment.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/instance.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/launch.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/lib.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/macos_power.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/main.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/menu.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/runtime.rs --doc docs/testing/module-tauri-shell.md --section 8. Per-line index
+[tauri-shell] files with uncovered lines=12 uncovered lines=318
+  mentioned in module-tauri-shell.md: 318
+  MISSING (uncovered, not mentioned): 0
+exit=0
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label cli --report /tmp/cli-r2s3-final3-lcov.info --scope /Users/geilige/future-os/.worktrees/cov100-r2/commands --scope /Users/geilige/future-os/.worktrees/cov100-r2/browser --scope /Users/geilige/future-os/.worktrees/cov100-r2/cli/src --doc docs/testing/module-cli.md --section 4c. Ledger
+[cli] files with uncovered lines=21 uncovered lines=123
+  mentioned in module-cli.md: 123
+  MISSING (uncovered, not mentioned): 0
+exit=0
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label cli-4b --report /tmp/cli-r2s3-final3-lcov.info --scope /Users/geilige/future-os/.worktrees/cov100-r2/commands --scope /Users/geilige/future-os/.worktrees/cov100-r2/browser --scope /Users/geilige/future-os/.worktrees/cov100-r2/cli/src --doc docs/testing/module-cli.md --section 4b. Final ledger
+[cli-4b] files with uncovered lines=21 uncovered lines=123
+  mentioned in module-cli.md: 123
+  MISSING (uncovered, not mentioned): 0
+  STALE (doc cites it as uncovered; old doc sections also match unless --section is given): 11
+    COVERED (DA>0 - a real disagreement, the actionable half): 8
+       auth.rs:997
+       browser_tools.rs:2557
+       browser_tools.rs:2973
+       browser_tools.rs:3310
+       browser_tools.rs:3328
+       safari_manager.rs:565
+       safari_manager.rs:587
+       safari_manager.rs:744
+    ABSENT (no `DA:` record -- NOT evidence: a blank line inside a claimed range, a comment, or a report from another revision): 3
+       absent browser_tools.rs:2556
+       absent browser_tools.rs:2817
+       absent browser_tools.rs:3016
+exit=0
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label cli-4 --report /tmp/cli-r2s3-final3-lcov.info --scope /Users/geilige/future-os/.worktrees/cov100-r2/commands --scope /Users/geilige/future-os/.worktrees/cov100-r2/browser --scope /Users/geilige/future-os/.worktrees/cov100-r2/cli/src --doc docs/testing/module-cli.md --section 4. Waiver ledger
+[cli-4] files with uncovered lines=21 uncovered lines=123
+  mentioned in module-cli.md: 113
+  MISSING (uncovered, not mentioned): 10
+     cdp_connection.rs:229
+     cdp_transport.rs:255
+     chromium_manager.rs:244
+     chromium_manager.rs:248
+     chromium_manager.rs:251
+     chromium_manager.rs:255
+     mcp_client.rs:385
+     mcp_servers.rs:85
+     mcp_servers.rs:342
+     mcp_servers.rs:412
+  STALE (doc cites it as uncovered; old doc sections also match unless --section is given): 55
+    COVERED (DA>0 - a real disagreement, the actionable half): 44
+       auth.rs:997
+       browser_tools.rs:2566
+       browser_tools.rs:2567
+       browser_tools.rs:2827
+       browser_tools.rs:2983
+       browser_tools.rs:3026
+       browser_tools.rs:3322
+       browser_tools.rs:3340
+       cdp_connection.rs:154
+       cdp_connection.rs:155
+       cdp_connection.rs:156
+       cdp_transport.rs:233
+       cdp_transport.rs:250
+       chromium_manager.rs:39
+       chromium_manager.rs:241
+       chromium_manager.rs:245
+       configure.rs:47
+       configure.rs:345
+       configure.rs:346
+       configure.rs:347
+       ... and 24 more
+    ABSENT (no `DA:` record -- NOT evidence: a blank line inside a claimed range, a comment, or a report from another revision): 11
+       absent chromium_manager.rs:234
+       absent chromium_manager.rs:238
+       absent chromium_manager.rs:242
+       absent configure.rs:48
+       absent configure.rs:821
+       absent configure.rs:834
+       absent configure.rs:836
+       absent configure.rs:847
+       absent configure.rs:849
+       absent configure.rs:853
+       ... and 1 more (list them all with python3 .future/cov100/staledetail.py --all)
+exit=1
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label cli-wide --report /tmp/cli-r2s3-final3-lcov.info --scope /Users/geilige/future-os/.worktrees/cov100-r2/commands --scope /Users/geilige/future-os/.worktrees/cov100-r2/browser --scope /Users/geilige/future-os/.worktrees/cov100-r2/cli/src --doc docs/testing/module-cli.md
+[cli-wide] files with uncovered lines=21 uncovered lines=123
+  mentioned in module-cli.md: 123
+  MISSING (uncovered, not mentioned): 0
+  STALE (doc cites it as uncovered; old doc sections also match unless --section is given): 62
+    COVERED (DA>0 - a real disagreement, the actionable half): 48
+       auth.rs:997
+       browser_tools.rs:2557
+       browser_tools.rs:2566
+       browser_tools.rs:2567
+       browser_tools.rs:2827
+       browser_tools.rs:2973
+       browser_tools.rs:2983
+       browser_tools.rs:3026
+       browser_tools.rs:3310
+       browser_tools.rs:3322
+       browser_tools.rs:3328
+       browser_tools.rs:3340
+       cdp_connection.rs:154
+       cdp_connection.rs:155
+       cdp_connection.rs:156
+       cdp_transport.rs:233
+       cdp_transport.rs:250
+       chromium_manager.rs:39
+       chromium_manager.rs:241
+       chromium_manager.rs:245
+       ... and 28 more
+    ABSENT (no `DA:` record -- NOT evidence: a blank line inside a claimed range, a comment, or a report from another revision): 14
+       absent browser_tools.rs:2556
+       absent browser_tools.rs:2817
+       absent browser_tools.rs:3016
+       absent chromium_manager.rs:234
+       absent chromium_manager.rs:238
+       absent chromium_manager.rs:242
+       absent configure.rs:48
+       absent configure.rs:821
+       absent configure.rs:834
+       absent configure.rs:836
+       ... and 4 more (list them all with python3 .future/cov100/staledetail.py --all)
+    -> the covered rows come from 2 section(s): 4. Waiver ledger — every residual line, with its (44), 4b. Final ledger — measurement S5 (`/tmp/cli-r2s (8)
+       this doc holds 3 sections with claims: if one of them is superseded (a re-measurement), re-run with --section for the authoritative ledger
+exit=0
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label tui --report /tmp/tui-r2-crate.info --scope /Users/geilige/future-os/.worktrees/cov100-r2/tui/src/agent_supervisor.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/tui/src/app.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/tui/src/components/chat_area.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/tui/src/rpc/grpc_client.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/tui/src/terminal.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/tui/src/update.rs --doc docs/testing/module-tui.md --section 9.4 Residual ledger
+[tui] files with uncovered lines=5 uncovered lines=13
+  mentioned in module-tui.md: 13
+  MISSING (uncovered, not mentioned): 0
+exit=0
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label cli-mcp --report /tmp/clamcp-final-lcov.info --scope /Users/geilige/future-os/.worktrees/cov100-r2/cli/src/commands/mcp_client.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/cli/src/commands/mcp_servers.rs --doc docs/testing/module-cli-mcp.md --section 6. Waiver ledger
+[cli-mcp] files with uncovered lines=2 uncovered lines=4
+  mentioned in module-cli-mcp.md: 4
+  MISSING (uncovered, not mentioned): 0
+exit=0
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label tauri-appdata --report /tmp/appdata-normalized-lcov.info --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/commands --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/tasks.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/store --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/scheduler --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/agent_bridge --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/agent_providers --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/shadow_review --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/error.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/auth_store.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/agent_events.rs --doc docs/testing/module-tauri-appdata.md --section S2.4b Residual inventory
+[tauri-appdata] files with uncovered lines=38 uncovered lines=610
+  mentioned in module-tauri-appdata.md: 610
+  MISSING (uncovered, not mentioned): 0
+exit=0
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label tauri-remote --report /tmp/tauri-tau-remote-lcov4.info --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/remote --doc docs/testing/module-tauri-remote.md
+[tauri-remote] files with uncovered lines=11 uncovered lines=331
+  mentioned in module-tauri-remote.md: 331
+  MISSING (uncovered, not mentioned): 0
+exit=0
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label tauri-headless --report /tmp/tauri-tau2-lcov.info --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/headless --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/terminal --doc docs/testing/module-tauri-headless.md
+[tauri-headless] files with uncovered lines=8 uncovered lines=222
+  mentioned in module-tauri-headless.md: 222
+  MISSING (uncovered, not mentioned): 0
+  STALE (doc cites it as uncovered; old doc sections also match unless --section is given): 2
+    COVERED (DA>0 - a real disagreement, the actionable half): 0
+    ABSENT (no `DA:` record -- NOT evidence: a blank line inside a claimed range, a comment, or a report from another revision): 2
+       absent pty.rs:788
+       absent pty.rs:789
+    -> nothing to fix: no claimed line disagrees with this report. If the absent ones surprise you, the ledger and the report describe different revisions.
+exit=0
+
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/geilige/future-os/.worktrees/cov100-r2/.future/cov100/reconcile.py --label tauri-shell-seg2 --report /tmp/tauri-shell-lcov-seg2b.info --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/bin/futureos-headless.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/desktop_shutdown.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/desktop_shutdown/coordinator.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/future_login.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/host_environment.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/instance.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/launch.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/lib.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/macos_power.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/main.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/menu.rs --scope /Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/runtime.rs --doc docs/testing/module-tauri-shell.md --section Per-line index of this segment's residual
+[tauri-shell-seg2] files with uncovered lines=11 uncovered lines=270
+  mentioned in module-tauri-shell.md: 270
+  MISSING (uncovered, not mentioned): 0
+exit=0
+

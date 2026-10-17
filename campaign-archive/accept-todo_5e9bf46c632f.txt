@@ -1,0 +1,42 @@
+SUPERVISOR VERDICT — TAU-C15 (todo_5e9bf46c632f): VERIFIED as a correctly TERMINAL-BLOCKED close, and it contains the first good news this scope has had in five segments — plus one new fact that CHANGES my ruling's premise.
+
+(i) TERMINAL-IF-BLOCKED WAS THE RIGHT CALL: six consecutive segments have reported the same launchd-domain
+  blocker, so it closed with **no successor** rather than manufacturing a seventh. That is exactly the rule I
+  gave it, and the reasoning is right — another successor would be churn, and the real fix is the user action
+  `todo_3917fe72dae3`. **A unit that recognises its own terminal state is doing the campaign a favour.**
+
+(ii) CHECK A FAILS AGAIN (5th consecutive, `without … listener_up=true elapsed=42.9s`), so the `Ready` gate is
+  unchanged: the nine window/setup arms stay host-state dependent and no number moves — 217 and S8's 150 stand.
+
+(iii) **CHECK B PASSES — for the first time since segment 10**:
+```
+  bare --re-pair child          exited 0 after 2.24 s        (was 17.10/17.11/17.08/17.14 s)
+  --re-pair --re-pair-reply     exited 0 after 2.24 s        (was 17.16/17.11 s, no reply)
+  "the forwarded re-pair was answered on …/…-25547.json: {"error": "the remote start ended in Failed (AccountAuthorization)"}"
+```
+  The reply content is the same attribution segment 10's good run produced, so the Reply arm executed and the
+  hand-off genuinely worked. **So the hand-off is INTERMITTENT, not broken** — which is a different diagnosis
+  from the one my ruling was written against, and it makes both halves of that ruling more valuable rather
+  than less: (a) a single bounded retry can now turn a companion-path run into a good one, and (c) still
+  catches the case where it does not.
+
+  TWO-SESSION EFFECT I AM RECORDING AS A MEASUREMENT CONSTRAINT: the two checks gate **different line groups** —
+  `Ready` gates the window arms and the setup-hook coverage, the hand-off gates the **nine callback lines** —
+  so a run can be good for one and bad for the other. That is exactly why the unit made the precondition two
+  checks, and it means the shell figure must be reported per-check, not as a single "healthy/unhealthy".
+  It also explains a number I recorded earlier without questioning it enough: **217 is what this session
+  produces when BOTH the window arms are lost**; with the hand-off working, the honest reading for the nine
+  callback lines could be earned again in a future run.
+
+(iv) HOUSEKEEPING WORTH CREDITING: it let the run finish rather than SIGKILL it, and reports **0 leaked roots**
+  — noting that killing leaked 636 KB in segment 14. That is the F.51/`ps`-check discipline applied to its own
+  cleanup.
+
+NOT VERIFIED BY ME: the 2.24 s timings and the reply JSON content (its measurement; the JSON matches segment
+  10's attribution, and 2.24 s is in the fast band rather than the 17 s companion band, so the classification
+  is consistent), and the 42.9 s `listener_up` figure.
+
+MY OWN ACTION: I have appended this to the ruling ticket, because my (c)+(a) ruling was written assuming the
+  hand-off failed consistently. The ruling's content does not change — (c) is still required and (a) is still
+  the right bounded retry — but the premise is now "intermittent", and the unit should not have to discover
+  that I ruled on a stale picture.

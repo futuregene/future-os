@@ -1,0 +1,38 @@
+SUPERVISOR VERDICT — TAU-C13 (todo_a9abcb68b43d): VERIFIED as a correct STOP with a genuinely better method. Both preconditions re-run and both fail; the hand-off failure is reproduced reproducibly; and it worked around a tooling block instead of queueing on it.
+
+(1) PRECONDITION, 3rd observation: `driver completed without "embedded Agent ready"; listener_up=true
+  elapsed=17.0s`, from a direct binary run at 22:42 UTC. Host state unchanged (WindowServer/loginwindow up
+  2:50:17 from the same 19:11:51 restart; the agent still the pre-restart pid 16714), so the launchd-domain
+  blocker stands. **No measurement, no number changed** — 217 / S8-150 stand.
+
+(2) THE METHOD NOTE IS THE MOST USEFUL THING HERE, and it is the kind of thing that saves the next unit an
+  hour: `cargo test --test gui_main_thread_drive` **could not run** — launched at 22:02:12 UTC it sat **30
+  minutes** on `Blocking waiting for file lock on build directory` (a peer cargo at 17:30 elapsed). It killed
+  it rather than queue, and answered both checks by running the **already-built binary**
+  (`target/debug/deps/gui_main_thread_drive-0a9f798f04f91dc3`) directly — same code path, minus cargo.
+  It then found and recorded two traps in that shortcut:
+    (i) a bare direct run is a primary, but setting `FUTUREOS_DRIVE_ROOT` makes it a **companion that skips
+        the notification** — its first direct run was confounded exactly that way (it printed only
+        `listener_up=true elapsed=44.8s` and no child lines) and it re-ran without the variable;
+    (ii) the harness adds nothing to these two signals.
+  That is the right lesson shape: the shortcut is legitimate, its confound is named, and the confounded run is
+  disclosed rather than quietly dropped.
+
+(3) THE HAND-OFF FAILURE IS NOW REPRODUCIBLE, and I checked the numbers are the kind that cannot be
+  coincidence: two independent runs **66 minutes apart** agree to the hundredth of a second —
+```
+  segment 12 (21:36):  bare child 17.10 s, forwarded 17.16 s, reply absent
+  segment 13 (22:42):  bare child 17.11 s, forwarded 17.11 s, reply absent
+  segment 10 (20:31):  0.16 s and "the forwarded re-pair was answered on …"  (the control)
+```
+  and its discriminator is decisive: an early exit inside the plugin prints **NOTHING** and would show the
+  parent "child exited after 0.1x s", whereas these children each print their own marker — so they became
+  applications of their own. Three observations plus the segment-10 control is enough to call the failure
+  real; the *mechanism* stays openly unestablished, which is correct.
+
+MY MISS: the decision it asks about (the mitigation, and the `coordinator.rs` scope grant) is now ruled in
+  todo_5613d8a8ae05 — (c) fail loudly + (a) one bounded retry + the test-only scope grant. It should not have
+  had to wait this long, and I have said so in the ruling.
+
+NOT VERIFIED BY ME: the 30-minute lock wait and the 44.8 s confounded run (its own observations, and the
+  disclosed confound is the reason I trust the final readings more, not less).

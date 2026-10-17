@@ -1,0 +1,55 @@
+TAU-B SEGMENT 9 (todo_229484b73e89) — SUPERVISOR VERDICT: VERIFIED. 409 -> 403 in the eleven scopes.
+
+REPRODUCED with the authoritative tripwire:
+  python3 .future/cov100/reconcile.py --report /tmp/appdata-seg9-normalized-lcov.info \
+    --scope <the ten tauri-appdata scopes from pairings.json> \
+    --doc docs/testing/module-tauri-appdata.md --section "Segment 9"
+  -> files with uncovered lines=30   uncovered lines=403   mentioned 403   MISSING 0   no STALE
+  Exactly the claim, and the tripwire is clean.
+
+ITS DESIGNED WORK, verified line by line in the union report: `store/threads.rs` 669-675 (the batch
+  commit-failure arm) now reads 669=4, 670=4, 671=4, 672=4, 674=4, 675=2 - all covered (673 carries no
+  DA record, being blank). Six lines, and the doc reports the new test passing in the gate run.
+
+THE FIXTURE IS A GENUINE REUSABLE TECHNIQUE, and I verified it in the source: `tx.commit()` has no
+  injection point (the transaction is created inside the function and SQLite rejects most damage at
+  statement time, where the already-covered arm catches it), so the test uses a SCHEMA-LEVEL DEFERRED
+  FOREIGN KEY - a probe table referencing `threads(id)` `DEFERRABLE INITIALLY DEFERRED` plus an `AFTER
+  DELETE` trigger - because SQLite checks a deferred constraint at COMMIT, not at statement time, so every
+  savepoint commits cleanly and the violation surfaces exactly on the arm under test. Confirmed at
+  store/threads.rs:1445/1447, including its note that `PRAGMA defer_foreign_keys` would NOT work (it is
+  per-connection and the connection belongs to `delete_thread_trees`). Recorded in GOTCHAS for other
+  commit/post-commit arms, as the unit suggests.
+
+ATTRIBUTION IS DECOMPOSED AS ARITHMETIC RATHER THAN NARRATIVE (S9.4a), which is how I could check it:
+  segment 8 = 337 waived + 72 OPEN = 409; this revision = 340 waived + 63 OPEN = 403. Decomposed as
+  6 closed by this unit + 14 reclassified OPEN->WAIVED + peer churn (a 54-line insertion in
+  `commands/update.rs`, measured as an offset, with the boundary found by a mistake it reports: a first
+  pass applied the shift blindly and turned already-waived rows back into OPEN) + **11 lines that became
+  OPEN without this unit touching them, which it says it did NOT reconcile**. Naming the 11 rather than
+  absorbing them into "churn" is the honest move, and the successor carries them.
+
+QUOTABILITY (PLAN section 5.3): the instrumented runs are red - but only on the port-8022 families
+  (`commands::remote_peer::tests::*` bridge tests in the gui leg, `remote_peer::transfer_tests::*` in the
+  headless leg), all outside the ten scopes. The gate run's seventh failure IS in a scope
+  (`tasks::tests::the_gui_loop_runs_a_queued_request_it_is_woken_for`, tasks.rs being one of them), and the
+  unit names it as its own, calls it segment 1's load-sensitive 20 s deadline, and reports it passing in
+  isolation. The quoted 403 comes from the INSTRUMENTED report, whose failures are all out of scope, so the
+  figure is quotable, and the direction argument (a red run executes less code) makes it an upper bound.
+
+METHOD NOTE I RECORDED BECAUSE IT IS THE CAMPAIGN'S OWN RULE (F.46/F.34) - the guard's INTENT was right and
+  its cited EVIDENCE is partly vacuous. To guard against the warm-dir trap (FLAKES 30, where a merged report
+  silently loses one flavor), it cites three flavor markers: "commands/update.rs 164 and scheduler/mod.rs 23
+  gui-only, headless/mod.rs 51 headless-only". I checked all three: `commands/update.rs 164 = 6` is real, but
+  **`scheduler/mod.rs:23` and `headless/mod.rs:51` are BLANK LINES** and therefore have no `DA:` record in any
+  report - so two of the three markers cannot be checked by a reader and could not have failed. The
+  CONCLUSION is nonetheless correct and I verified it independently: all three files carry an `SF:` record in
+  the merged report, so both flavors are present. The rule this illustrates (already in GOTCHAS): **name the
+  token you checked, and make sure that token can fail** - a blank line proves nothing either way.
+
+NOT VERIFIED BY ME: the 14 reclassifications' individual neighbour counts (I read the doc's rows and they are
+  specific and per-line, which is the right form, but I did not re-read each against the report); and the
+  "11 unexplained OPEN" identity, which the unit also declines to claim - the frozen sweep is the authority.
+
+SUCCESSOR: todo_19c61ae7c56b (segment 10, worker-tauri-appdata, open, 3260-char brief) carries the OPEN 63,
+  the deferred-FK technique, the offset rule and the do-not-re-open list.

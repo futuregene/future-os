@@ -1,0 +1,75 @@
+REV-AGENT (todo_ed3e39962a03) — SUPERVISOR VERDICT: VERIFIED. This is the seventh and most valuable review of the campaign: it falsified a SUPERVISOR RULING of mine, with measurements, and it did so on the surface I created it for (the 469-line pair of agent ledgers that no review had ever touched).
+
+FALLS: 5 rows / 33 lines, plus 2 documentation defects and 2 mechanism corrections.
+  * F-1 cli.rs 590 (1 line) - FELL. See below; this one overturns me.
+  * F-2 AG-B platform-unmeasured "empty" claim (2 rows / 29 lines) - FELL (category defect).
+  * F-3 skills/manager.rs 1776-1778 (3 lines) - FELL (a never-called `flush` body recorded as
+    attribution-artifact; its own counts, 1776 = 0 and 1777 = 0, falsify the row's clause).
+  * F-4 AG-B's §6 report pin - documentation anchoring defect (F.48 class, second occurrence).
+  * F-5 two mechanism corrections (590's refuted route; journal.rs 202/203 naming `to_string` where
+    the code calls `serde_json::to_value`).
+
+F-1 OVERTURNS A RULING I MADE TWO TURNS AGO, AND THAT IS THE POINT OF HAVING REVIEWED THIS:
+  In segment 26 the AG-A unit asked whether to cover or waive `cli.rs:590`; it chose option (B), waive by
+  cost, and I accepted it and recorded the delivery VERIFIED with `coverable` empty. REV-AGENT covered the
+  line instead: `DA:590` 0 -> **1** (and 591 = 0) in ~5 s of wall time, using an isolated HOME, `auth.json`'s
+  documented `future.base_url` pointed at a listener that accepts and never answers, one admitted
+  `sync_future_models`, one SIGINT.
+  I CHECKED THE MECHANISM MYSELF, in the source, because it is the difference between "a test is expensive"
+  and "the line is dead": the drain cancels SESSION work (`agent/src/service/shutdown.rs` 164-205:
+  `session.abort()`, `cancel_session(..)`), while `sync_future_models_cache` (`agent/src/models/mod.rs`) is a
+  model/platform operation and NOT session runtime state -> the drain cannot cancel it -> it stalls -> the
+  deadline watcher publishes `FailedStopping` while the serve future is pending -> the FIRST `select!` arm is
+  taken -> 590 executes. The report's citation of `SHELL_EXECUTION_TIMEOUT = 120 s` is real
+  (`packages/rpc/src/command_policy.rs:18`; it writes `packages/rpc/command_policy.rs`, a cosmetic path slip),
+  and it is what refutes the row's old "every unary command returns promptly".
+  Its three-probe design is what makes the finding decisive rather than lucky: P1 and P2 (admitted `shell
+  sleep 20`; a stalling `prompt`) both give `590 = 0, 594-597 = 1` - the first arm skipped and the SECOND arm
+  taken - while only P3 gives `590 = 1, 591 = 0, 594-597 = 0`. Same binary, same instrumentation, same
+  shutdown trigger, one different admitted command. `591` SURVIVED, with a stronger mechanism than the
+  record's own, and covering 590 is what makes 591's waiver durable.
+  I did NOT re-run the probes: they need an isolated instrumented build plus grpcurl, and the reviewer
+  embedded all three probe sources with sha256 and verified the embedded block against the file (5/5 MATCH,
+  its §10.2/§10.4), which satisfies rule 5b. My verification is of the mechanism in the source, the line
+  numbers, and the citation - not of the DA counts.
+
+THE TWO LINTS ON ME, recorded because the review is only useful if its findings about the supervisor land too:
+  1. I refused a new "waived for fixture cost" category for `webui/server.rs` 105-110 and said the fixture
+     did not exist. That refusal stands there (those lines do not compile here - I verified: `#[cfg(target_os
+     = "windows")]` at 105, and 105-110 have no `DA:` record in the macOS report). But the SAME argument was
+     available to the unit for 590, and I did not press it. The lesson is not "the refusal was wrong" but
+     "I applied the sharper test on one row and not the other" - adjudicate a category claim by asking what
+     exactly is missing, whichever row it is on.
+  2. `docs/testing/waiver-ledger.md` (my file) carried an example that named the wrong record: it cited
+     "`module-agent-core`'s Chromium rows", and that record mentions Chromium ZERO times (the rows are in the
+     prose-only `module-cli-tui.md`). I FIXED it: the bullet now names a verified instance
+     (`module-goal.md`'s `webui/server.rs` 105-110), requires an example to name the record AND the record's
+     form, and records the old citation as the anchoring defect it was. Verified after the edit: the Windows
+     `cfg` is at 105 and 105-110 are absent from `/tmp/r2c-lcov.info`'s DA records.
+
+WHAT SURVIVED (the largest part): cli.rs 591; the six `assert!`-message rows in rpc/session.rs; all 142
+  attribution-artifact lines across both ledgers (84/87 on AG-A with only F-3's 3 falling, 55/55 on AG-B);
+  all 7 AG-A `platform-unmeasured` rows (shape (b), platform named per row); and the sampled AG-B
+  `unreachable-*` rows whose counts could be re-measured.
+
+WHAT IT COULD NOT CHECK, stated with its invalidating token per row (§9.2): AG-B's sabotage falsifiers
+  (`run_loop.rs:703`, the shell-tool registration) and AG-A's ~33 non-artifact `unreachable-*` rows need an
+  edited scratch build, which REVIEW.md rule 2 reserves for a non-writer unit. Those rows remain
+  un-rebutted, not verified - and the final report must say "not reviewed" rather than counting them.
+
+REWORK ROUTED (REVIEW.md rule 6 - the reviewer reports, the supervisor creates):
+  * todo_4eefaba821f9 (REWORK-AGENT-A, worker-agent-svc) - cover 590 with the reviewer's fixture and say so
+    in the record; fix F-3's category; apply F-5's two corrections. Explicitly told NOT to invent a
+    "waived for fixture cost" category and why.
+  * todo_ed3f586e169c (REWORK-AGENT-B, worker-agent-core) - F-2 (two rows to `platform-unmeasured` shape
+    (b), headline corrected) and F-4 (re-pin §6 to the report that reconciles).
+  Both name what survived, so neither re-opens settled rows.
+
+CALIBRATION (now seven reviews, and the pattern is stable): falls versus rows reviewed -
+  REV-FE 0/13, REV-DESK 3/61, REV-TUI 11/24, REV-CH 16/24, REV-CLI 10/33 rows (76/119 lines),
+  REV-S6 0 (fixtures survived; 4 record corrections), REV-AGENT 5/33 rows over 469.
+  The pattern the final report should carry: tags an author ASSIGNED to pre-existing code fall about half to
+  two thirds of the time, while fixtures the author built himself tend to survive. This review adds the
+  sharpest case of all - the fall the supervisor had already blessed.
+
+SUCCESSOR: none from the reviewer (--no-follow-up, correct: its fixes are outside its write set).

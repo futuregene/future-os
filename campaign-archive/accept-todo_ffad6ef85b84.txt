@@ -1,0 +1,56 @@
+SUPERVISOR VERDICT — F-TAURI FOLLOW-UP (todo_ffad6ef85b84): VERIFIED, and it is the most honest rate delivery of the campaign: it measured its own hypothesis to ZERO and then found the real family instead.
+
+(a) THE FIX IS IN THE CODE, verified by reading it rather than its summary:
+  * the **test-only 500 ms budget is gone** from the transfer path — `pull_chunk_within` now takes the budget
+    as an argument and `runtime.rs:1806` passes `chunk_pull_timeout()`, with the comment at 1870 stating the
+    point: "One value for the app and for the suite. It used to be two (500 ms under …)". So the suite
+    exercises the production budget.
+  * the two remaining budgets are **10 s in both builds** (`session.rs:31` HANDSHAKE_TIMEOUT,
+    `session.rs:33` COMMAND_TIMEOUT), and the only remaining `cfg(test)` durations in `remote_peer/**` are the
+    reconnect backoff at `runtime.rs:153/157` — exactly as it says.
+
+ITS DECISIVE COUNT HOLDS, and I checked it the right way: the two budget-class signatures
+  (`remote_download_chunk_missing`, `peer_not_connected`) appear **zero times as failures** across all 26
+  runs. The only text hits in the tree are the **driver's own header line** listing the patterns it greps for
+  (`hostile-*-driver.log:5/:16`) — so the claim is true and the near-miss is my own trap, not its error.
+
+ITS NATURAL-ARM RATES REPRODUCE, with one small correction:
+```
+                 red runs (claim)   per-test FAILED   panics @remote_peer/testing.rs:30
+  before (500 ms)   5 of 10 (5)          12                 12
+  after             2 of 10 (2)           5                  5
+```
+  The run counts match exactly and the after-count matches exactly; I count **12** per-test failures before
+  where it says 13 — a one-test difference in "which victims the 8022 collision picks", which is a number the
+  collision itself decides. **And the important part is verified in both arms: every single red is the
+  8022 shared-port family** (12 and 5 panics at `remote_peer/testing.rs:30`), i.e. **none of them is its
+  family** — so it is right to claim "budget-class = 0 in both arms" and to refuse credit for the red-count drop
+  (that belongs to the port family, owned by another todo).
+
+ITS STARVED ARM IS THE BEST PART, and it handles an asymmetry that points the WRONG WAY for a fix:
+  starved-before **0** occurrences of the production-budget failure vs starved-after **5** (in 2 of 3 runs). A
+  fix that makes the hostile arm worse is not evidence for the fix, and it says so: **"NOT CLAIMED: … any
+  attribution of the starved-arm asymmetry (before 0 red vs after 9 red)"**, and hands the real hunt to a
+  successor. I verified the 0-vs-5 counts myself. Most units would have buried that.
+
+ITS NEW FINDING IS WHAT `CI #1094` LIKELY IS: under starvation the break is on the request/connection half of
+  **PRODUCTION** budgets — "Remote request failed: request timed out: deadline has elapsed" (`transfer.rs:76/:895`)
+  and "Failed to connect to NATS: timed out" (`commands/remote_peer.rs:593`) — which is the family CI #1094
+  belongs to (NW001 2410 ms then `peer_not_connected`). Its scope statement is exactly right: **the fix removes
+  a test-only hazard and makes an arm deterministic; it does NOT fix the CI flake.** Successor
+  `todo_a0ee2bdabdbf` carries that hunt.
+
+GATES, verified: `CLIPPY_ALLTARGETS_EXIT=0` and `CLIPPY_HEADLESS_EXIT=0` (both in the logs it names); rustfmt
+  clean on the four touched files; affected tests 127 passed / 0 failed; the serialized forms it reports
+  (settings 6/6, bridge_tests 65/65) are the PLAN §2.0-correct shape.
+
+A REUSABLE OPERATIONAL FACT I AM ALSO FILING AGAINST MY OWN F.75 ENTRY (its §14.1): the launch stall is macOS
+  **per-INODE code-signature verification** under a saturated syspolicyd, and **killing a stalled launch
+  attempt RESTARTS the verification** — it measured five short attempts making no progress and one
+  **uninterrupted** attempt succeeding in **315 s**. So the right behaviour when a build/exec stalls is to
+  **wait it out, not retry**: a retry throws away the verification work already done. That refines F.75's
+  remedy note and belongs next to it.
+
+NOT VERIFIED BY ME: the 13-vs-12 red-test count (above); the 5.0× starvation factor; the 315 s single
+  attempt; and the CI #1094 linkage (that is an inference from the matching signature and it is labelled as
+  one).

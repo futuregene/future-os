@@ -1,0 +1,68 @@
+REWORK-AGENT-A (todo_4eefaba821f9) — SUPERVISOR VERDICT: VERIFIED. It covered the line MY OWN RULING had waived, and the verification below is the cleanest in the campaign because the delta is exactly one line.
+
+REPRODUCED, three independent checks:
+  1. NUMBER: covlines.py over the seven scopes against /tmp/agent-svc-rework-norm.info ->
+     `covered=28530 measured=28732 uncovered=202 lines%=99.2970`. Exactly its claim (203 -> 202).
+  2. THE DECISIVE PAIR, in the SAME report: `agent/src/cli.rs` **590 = 1** and **591 = 0**
+     (neighbours 586-589 = 22, 593 = 22, 594-597 = 21, 600 = 34). So the line my segment-26 ruling
+     called unreachable-by-cost EXECUTES, while 591 remains unreachable - and both now rest on one
+     measured report rather than on a ruling plus a scratch-tree probe.
+  3. THE WHOLE-REPORT DELTA, which I computed myself by diffing the per-file uncovered SETS of
+     `/tmp/agent-a-s36-norm.info` and `/tmp/agent-svc-rework-norm.info`: **newly uncovered = 0**,
+     **newly covered = exactly 1 = `agent/src/cli.rs:590`**. Nothing else in the entire report moved in
+     either direction. That is what makes this a one-line change with no collateral damage, and it is
+     the fact a reviewer should ask for.
+  QUOTABILITY: the instrumented run is GREEN - /tmp/svc-measure2.log (03:29, the report's own timestamp)
+    has 11 `Running` lines, 11 `test result:` lines and **0 failed**, so this is a complete measurement
+    under the strongest precondition, not a partial one.
+  TRIPWIRE: reconcile.py --section "Residual ledger" over the seven scopes -> 202 mentioned / MISSING 0.
+
+MY RULING IS NOW SUPERSEDED BY A MEASUREMENT, and I am recording that rather than quietly dropping it:
+  in segment 26 the AG-A unit offered cover-vs-waive for 590, chose waive-by-cost, and I accepted and
+  recorded it VERIFIED. REV-AGENT falsified it with a scratch-tree probe; this ticket closes it with a
+  shipped test. So the campaign's final ledger must show 590 as COVERED, and the "waive by cost" shape
+  must not reappear - which is why I refused a fifth category for it, and why the same refusal stands for
+  `webui/server.rs` 105-110 (where the fixture genuinely cannot exist on this platform).
+
+THE TEST IS WELL-BUILT, and I read it rather than the summary:
+  `agent/src/cli.rs:923 a_cut_short_drain_is_reported_instead_of_a_clean_stop`:
+  * it re-executes the test binary as the child (`--exact THIS_TEST`), which is required because the
+    startup path installs process-global state, and it becomes the agent through the same `run_from_args`
+    that `main` calls;
+  * it waits for a **successful `connect_verified` handshake** before interrupting, so the failure cannot
+    be "the agent never started" - a readiness boundary, not a sleep;
+  * `fetch_in_flight` is an **assertion**, not a wait (and the wait loop it replaced is where three of the
+    seven `DA:0` lines came from - restructured away, not waived);
+  * the outcome travels in a **file**, because libtest captures and discards a test's stdout on exit;
+  * the **control leg runs FIRST** - the identical home, agent and SIGINT but with the Future credential
+    removed - and asserts `clean-stop` with exit 0, which is what makes the failing leg attributable;
+  * it handles both honest outcomes of the fixture leg (the reported refusal, or the `130` grace watchdog)
+    and says plainly that the refusal's own coverage is taken from the profile, not from those lines.
+
+ITS MECHANISM IS BETTER THAN THE REVIEW'S, and it found it the right way: REV-AGENT blocked the drain with
+  an admitted `sync_future_models` RPC; this unit found the blocker is the agent's **own startup
+  background platform fetch** (`models/future.rs`'s `spawn_future_models_refresh`, holding a
+  `process_background()` registration across a native fetch thread), so no RPC or admission is needed at
+  all. It surfaced from a WRONG CONTROL: its first control skipped the RPC but kept the stalling
+  credential, failed identically, and that is what proved the RPC was never the blocker. Finding the real
+  mechanism by breaking your own control is the behaviour I want, and it is why I can accept a mechanism
+  correction that supersedes the reviewer's.
+
+RESIDUAL ITEMS IT REPORTS RATHER THAN HIDES:
+  1. The test costs ~4.4 s and spawns two child agents (~9 s of suite time across lib and bin targets).
+  2. A pre-existing flake in this crate: `utils::util_tests::default_config_dir_exists`
+     (`agent/src/utils/mod.rs:835`) reads `default_config_dir()` without `test_support::home_env_lock()`,
+     so a concurrent `FUTURE_HOME`-setting test can fail its `.future` assertion. One line; it fired once
+     in its gate run and passed in isolation, the re-run and the measurement run. Routed to the successor
+     rather than fixed here (it is outside this ticket's subject).
+  3. Documented load-sensitive flips (`llm/mod.rs` 422, `sandbox/mod.rs` 906, `shutdown.rs` 303,
+     `journal_compaction.rs` 171) did not recur, but may in a later run.
+  4. `591`'s waiver now has a NAMED invalidator (a third writer of `server_running = false` outside the
+     serve future's poll) and a second one: if 590 ever reads 0 again, first check whether the isolated
+     HOME got a WARM models cache, which would remove the stall the fixture depends on.
+
+SUCCESSOR: the one it proposes, extended per its own question - the flipping-row convention (§9.1) applied
+  to the AG-A row (`journal_compaction.rs` 171 carries its count in the claim cell while its own text says
+  it flips) PLUS the same convention checked against AG-B's flipping rows (`llm/mod.rs` 422,
+  `skill_reco` 228), plus the one-line `home_env_lock()` fix. Created as one ticket so the convention is
+  settled campaign-wide rather than per-record.

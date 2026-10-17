@@ -1,0 +1,59 @@
+TAU-B SEGMENT 10 (todo_19c61ae7c56b) — SUPERVISOR VERDICT: VERIFIED. 403 -> 400 in the ten scopes, and its attribution is arithmetic I could check line by line.
+
+REPRODUCED:
+  * covlines over the ten scopes against /tmp/appdata-seg10-normalized-lcov.info ->
+    `covered=34219 measured=34619 uncovered=400 lines%=98.8446` - exactly its claim.
+  * tripwire (reconcile.py --section "Segment 10") -> 400 mentioned / MISSING 0 / no STALE.
+  * `store/threads.rs:171 = 2` (covered; neighbours 166 = 4, 170 = 4, 172 = 2) - the arm it built the
+    fixture for. Its own test `store::threads::tests::a_create_that_loses_the_race_returns_the_winners_row`
+    reads **`ok` in BOTH the instrumented run and the gate run** (I grepped both logs), which is the
+    condition PLAN §5.3 now makes explicit.
+  * I computed the whole per-file SET DIFF against segment 9's report myself, and its attribution is exact:
+    215 + 729 + 1019 + 1020 + 171 closed, 771 + 1024 + 1648 newly uncovered, with `1581 -> 1648` and
+    `771` being renumberings from its own insertions - so the net is -3 and **exactly one of the three
+    lines gained is its own work** (171). It says so itself.
+
+THE FIXTURE IS THE FINDING, and its two failed attempts are the valuable part: `tx.commit`-style ordering
+  tricks failed before it found the working shape. (a) A `BEFORE INSERT` trigger that inserts the winner
+  and `RAISE(ABORT)`s the loser does NOT work, because ABORT reverts the current STATEMENT and the
+  trigger's insert is part of it, so the winner vanishes with the loser (measured: ConstraintViolation).
+  (b) Racing two threads fails because the loser returns at the cheap pre-check (:166) - the window is
+  microseconds wide. What works: a SECOND CONNECTION HOLDING THE WRITE LOCK - the winner is inserted in an
+  IMMEDIATE transaction and left UNCOMMITTED so WAL isolation hides it from the caller's pre-check, the
+  caller blocks on the lock, the winner commits, the caller's insert hits the unique agent-session index
+  and the re-check returns the winner. The assertion `created == false` is itself the proof the arm ran.
+
+A TEST WITHDRAWN, and this is the behaviour I most want to reward: it wrote a test for
+  `agent_bridge/test_support.rs:215` (on the OPEN list), it passed, and then a fmt run surfaced
+  `test_support.rs:711` - a PEER's test asserting exactly that arm, landed AFTER segment 9's lcov, which
+  is why the line still read DA:0 in its base report. It REMOVED its own duplicate. I verified the peer's
+  test is real and asserts the arm (it cancels an unanswered deferred reply and expects
+  `tonic::Code::Cancelled` / "test reply dropped", and it even checks the precondition: "the mock did
+  reach the deferred branch, so the arm was exercised and not merely unreachable behind an earlier
+  failure"). Its rule is worth keeping: **check the report's vintage against the source's before adding a
+  test** - the mirror image of segment 5, where a test existed and covered nothing.
+
+QUOTABILITY: gui `2068 passed/6 failed`, headless `1651/1`. Six failures are the documented 8022 bind and
+  CLI-probe families; **one is inside the ten scopes** (`commands/update.rs:497`, a peer's new test that
+  passes in isolation in 0.9 s). That is the case that exposed a defect in MY OWN RULE - see F.69 below;
+  under the corrected wording the figure is quotable, because the segment's own new test passed in both
+  runs and the direction argument holds.
+
+TWO THINGS ROUTED RATHER THAN LEFT:
+  * The flavour-marker checklist it cites for both-flavour presence is two-thirds vacuous: I checked all
+    three against the merged report - `commands/update.rs:164` = 6 (fine), but `scheduler/mod.rs:23` is a
+    **blank line** and `headless/mod.rs:51` is a **closing brace with no record**, so neither can fail.
+    (This is the second segment in a row to cite the blank line; I noted it in my segment-9 verdict but
+    that note lived in my record, not in a ticket, so the unit could not act on it - my miss.) I APPENDED
+    the correction plus the rule to the successor ticket (todo_774d2ea77424, F.66 discipline: append, not
+    replace) and verified the markers landed. Its conclusion was still right, and I verified it
+    independently (all three files carry an SF: record, so both flavours are present).
+  * The withdrawn-duplicate pattern and the vintage rule are recorded in its record; no ticket needed.
+
+NEW OPERATIONAL LESSON recorded in GOTCHAS: `ls -t /tmp/<pattern>*.log | head -1` is NOT a way to find
+  your own log when several units share a naming pattern - newest-by-mtime flips between them, and it read
+  a peer's log first. What made it visible was content: the peer's log carried steps its script does not
+  emit (`GUI_RUN_EXIT`, `CLEAN_EXIT`). Rule: pin the exact path you wrote, and when reading a log confirm
+  it is yours by a marker only your script prints.
+
+SUCCESSOR: todo_774d2ea77424 (already created by the unit; now carrying the flavour-marker correction).

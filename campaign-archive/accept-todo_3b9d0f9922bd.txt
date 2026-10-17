@@ -1,0 +1,38 @@
+AG-A SEGMENT 26 (todo_3b9d0f9922bd) — SUPERVISOR ACCEPTANCE: VERIFIED. The unit is CLOSED at 203 uncovered lines with `coverable` EMPTY.
+
+THE DECISION: option (B) — `cli.rs` 590 is WAIVED by cost, not covered; it moves `coverable` -> `unreachable-in-this-environment`. So the ledger has no unwaived work left, and the unit declares no successor.
+
+REPRODUCED (my own run, authoritative tool):
+  python3 .future/cov100/covlines.py total --under agent/src/rpc --under agent/src/grpc \
+      --under agent/src/service --under agent/src/session --under agent/src/skills \
+      --under agent/src/approval_review --under agent/src/cli.rs /tmp/agent-a-s36-norm.info
+  -> covered=28399 measured=28602 uncovered=203 lines%=99.2903
+  Same as segment 25 (this segment reclassified rather than closed), and the unit chain is 581 -> 203 = -378.
+
+GREEN RUN (quotability precondition): /tmp/agent-a-s36.log
+  11 `Running` lines = 11 `test result:` lines (no NEW-A truncation); sum 2486 passed / 0 failed
+  (lib 2423 / 0 failed / 1 ignored). Separate run from s35, not a copy: md5 of the two logs and the two
+  .info reports all differ (they are byte-equal in SIZE only).
+
+GATES: test EXIT=0; clippy EXIT=0 (/tmp/g30-clippy.log, 159 B); fmt EXIT=0 (/tmp/g30-fmt.log, 0 B -
+  consistent with its "0 lines of diff" claim). All three logs exist on disk: I checked, because segment
+  24 cited /tmp/g28-fmt.log which never existed - its own F-60 finding, now fixed in the record, and its
+  adopted rule (cite a log path only after ls-ing it) is what these three satisfy.
+
+I DID NOT VERIFY: the `unreachable-by-construction` tag on `cli.rs` 591 and the by-cost tag on 590. I
+  checked their PREMISE in the source (agent/src/service/mod.rs:302-321 clears `server_running` only in
+  `ServerGuard::drop`, which lives inside `serve`), but whether a tokio `select!` can take the first arm
+  while the serve future is ready is not decidable by reading - and these two ADJACENT statements sit in
+  DIFFERENT categories, which is the sharpest claim in the record. Per the campaign's calibration
+  (author-assigned tags fall about two thirds of the time), both are named attacks in REV-AGENT's brief,
+  which I refreshed for this revision and dispatched (todo_ed3e39962a03, running).
+
+DEFECT I FOUND AND ROUTED (F.48 class, second occurrence in this document): the "How this ledger is
+  checked" block inside section 0.5 pins /tmp/agent-a-s25-norm.info (segment 19) and records
+  "uncovered lines=241 ... MISSING 0". Run verbatim today it prints MISSING 7 against a 241-line reading,
+  while the ledger it describes is 203 lines - a false alarm for any reviewer following it. The section
+  label and the seven-scope list are fine, and the CURRENT report gives a clean
+  203 / 203 mentioned / MISSING 0 (my own tripwire run). Filed as todo_f38668bffc51 for the owner; the
+  fix is doc-only.
+
+Artifacts: /tmp/agent-a-s36-norm.info, /tmp/agent-a-s36.log, /tmp/g30-{clippy,fmt}.log.

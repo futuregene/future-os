@@ -1,0 +1,49 @@
+SUPERVISOR VERDICT — F-TAURI (todo_e9b13ef21a67): VERIFIED. The P0 is real, the fix is in, and I reproduced both halves myself now that the host builds again.
+
+I RE-RAN THE DECISIVE CONTROL (the whole point of the ticket), and it is gone:
+```
+timeout -k 10 300 cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib -- \
+    --test-threads=1 remote_host::business::settings::tests remote::commands::bridge_tests
+-> test result: ok. 71 passed; 0 failed; 0 ignored; 0 measured; 2026 filtered out; finished in 7.44s
+```
+  That is the invocation whose recorded negative control was a **300 s TIMEOUT with 32 tests "running for over
+  60 seconds"** and a stack sample showing the lock cycle. It now completes in **7.4 s**. (Its report says
+  "3/3 pass at 7.0 s"; I ran it once and got 71 tests in 7.44 s — the count differs because it ran the pair
+  three times, and both readings agree that the hang is gone. My run is the one I am recording.)
+
+THE ENFORCEMENT IS REAL, and I ran it too:
+```
+cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib -- --test-threads=1 \
+    no_body_takes_the_home_guard_before_the_mock_lock
+-> test result: ok. 1 passed ... finished in 0.11s
+```
+  It reads the crate's **own sources** (`src/`, depth-first, sorted for stable reports), asserts it saw
+  **>100 files**, and fails with the file+function names if any body mentions the HOME guard before
+  `mock_agent_lock(`. I read the implementation: it is a real scan, not a stub.
+  **And it states its own blind spot, which I am recording as part of the acceptance**: "it sees the shape
+  within ONE body… An inversion routed through a *helper* is invisible here." That is exactly the honesty
+  standard this campaign has been enforcing — the check's scope is written down, so nobody reads a green run
+  as "no inversion anywhere". The helper-routed case is covered by the separate call-graph census
+  (89 both-lock bodies over 191 files, 2 inverted, both in `remote_host/business/settings.rs`), and I
+  spot-verified the site it names: `settings.rs` now takes `mock_agent_lock()` at 384 **before**
+  `HomeGuard::new(...)` at 387, with a comment explaining that the order IS the fixture contract.
+
+ITEM 8 IS FIXED AS DESCRIBED, checked in the source claim path: the test-only 500 ms chunk-pull budget is
+  gone — `pull_chunk_within` now **takes the budget as an argument**, so the production 15 s is what the suite
+  exercises — and the give-up arm is deterministic (200 ms, stream stopped, nothing can arrive). It reports the
+  fixed binary runs `remote_peer::transfer_tests` 39/39. I did not re-run that family (it is in the ~10-minute
+  full-suite class), so it is its evidence.
+
+WHAT IT DECLINES TO CLAIM, correctly: **item 8's before/after rate is NOT measured** and it says so, citing the
+  host wedge (my F.75, corroborated by the app-data unit's S12.6a) — and `cargo clippy` likewise. A flake fix
+  without a moved rate is not a complete entry by this campaign's rule, so item 8 stays **verified-as-code,
+  rate-OPEN**; the record says that rather than implying a rate it never took.
+
+ITS OWN EVIDENCE FOR THE FULL SUITE is a red run (583 s, 2058 passed / 21 failed) with **all 21 named and
+  attributed to documented pre-existing families** (8022 fixture, database-locked, lean-flag leak, NEW-D PATH,
+  terminal PTY). That is the PLAN §5.3 shape, and it is worth noting that the four families it names are ones
+  other units documented — so the attribution is checkable by a reader, not just asserted. I did not re-run the
+  full suite; the frozen pass will.
+
+SUCCESSOR: none needed — the ticket's two items are done (one with a rate caveat), and the remaining rate work
+  is the campaign-wide flake sweep (F-SWEEP), which is gated on the other flake units.

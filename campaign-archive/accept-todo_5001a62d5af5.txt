@@ -1,0 +1,50 @@
+SUPERVISOR VERDICT — TAU-B SEGMENT 15 (todo_5001a62d5af5): VERIFIED. It measured (the first such segment in several turns), the number reproduces, and it closed exactly what segment 12 predicted.
+
+NUMBER, reproduced by me:
+  * tripwire: `reconcile.py --report /tmp/appdata-s15-normalized-lcov.info --scope <the ten> --doc
+    docs/testing/module-tauri-appdata.md --section "Segment 15"` -> **387 uncovered / 387 mentioned / MISSING 0**,
+    27 files with uncovered lines. Exactly its claim, and **395 -> 387** is the module's move.
+  * the EIGHT closed lines reproduce in the union report: `db.rs` 218=4, 296=1, 358=14, 363=1, 454=1, 1607=1,
+    `cleanup.rs:495`=1, `review_snapshots.rs:295`=789. And it attributes them **exactly** to segment 12's
+    PREDICTION (-8 from the six tests segment 12 wrote but could not measure) — so a prediction made under a
+    blocked host came out right, which is the best possible outcome for a labelled prediction.
+  * it also states the residual structure: **343 WAIVED + 44 OPEN**, and that `store` is the only scope that
+    moved (13 -> 5) with no other file's numbering shifted.
+
+ITS FLAVOUR CHECK IS BETTER THAN THE ONE I BUILT, and I verified it rather than taking it:
+  it proves both flavours are present by **HIT COUNT** on four markers — `commands/update.rs:19` = 4 (gui) with
+  the headless side absent, `no_gui.rs:3` = 16 (headless) with the gui side absent, `scheduler/mod.rs:205` = 0
+  (gui) absent headless, and `headless/mod.rs:150` = 2 as a control. I checked all four in the merged report
+  and they match. **This is precisely the gap I recorded in PLAN §6a-ter about my own `flavor-alive.py`**: that
+  check catches a flavour which is ENTIRELY dead, and cannot see a PARTIALLY lost one — a per-marker hit count
+  does. So the "aliveness" gap now has a working technique attached to it, and it is worth propagating rather
+  than leaving as a limitation note.
+  It also reports `grep 'signal: 15' = 0` — i.e. it explicitly checked the failure mode I wired into
+  `measure-final.sh` after the shell unit's dead-lib-target finding. Two units and I have converged on the same
+  guard from three directions.
+
+QUOTABILITY (PLAN §5.3): the lib gate is RED (101, 2080 passed / 5 failed / 12 ignored in 711 s) **with a
+  COMPLETE summary** — which matters here, because a complete summary is what *distinguishes* a real failure
+  from the signal-killed target that printed none (the shell unit's frame). All five failures are named and
+  attributed: 3 `remote_peer` port-8022, 1 `skills_bootstrap` CLI-probe timeout, 1 `tasks::tests` — all
+  outside the ten scopes, with the four §5.3 conditions stated. So 387 is quotable, and the direction argument
+  holds.
+
+THE COLLISION IT WAS ASKED TO RESOLVE IS RESOLVED, and carefully: the record's two Segment-11 figures (43 vs
+  45 OPEN) are **one revision differing by two lines** (`import.rs:559` and `test_support.rs:547`), both DA:0
+  in the frozen report, so **neither statement overstated the residual and the metric never depended on the
+  choice** — it takes 352 WAIVED + 43 OPEN as accepted and annotates the three other statements as superseded
+  on those two rows only. That is the right shape: resolve the ambiguity, name what changed, and leave the
+  rest alone. (I independently verified 559's mechanism last turn — byte-identical twin text with the brace
+  covered in one settlement and not the other, in one report.)
+
+GATES: clippy gui 0, clippy headless 0, scoped rustfmt over the 88 files 0.
+
+NOT VERIFIED BY ME: the per-scope addends summing to 387 (I verified the total and eight specific lines); the
+  `seg11verify.py` partition (rows 41, waived 343 + open 44); and the gates' individual runs (I read its
+  report of them, and their logs are named).
+
+REGISTRY NOTE (F.77): this moves the module further from its registry entry (`expect.uncovered = 610`, ten
+  segments stale), so the freeze-time pairing repair for this record is a re-point whose `expect` must be
+  taken from a fresh measurement — already recorded in CLOSEOUT as pre-classified freeze work, not done now
+  because this unit is still writing.

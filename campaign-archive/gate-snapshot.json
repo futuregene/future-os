@@ -1,0 +1,421 @@
+{
+  "kind": "pairing-gate-snapshot",
+  "when": "2026-10-16T21:19:06+08:00",
+  "git": {
+    "rev": "8220744c",
+    "dirty": "",
+    "dirty_paths": 0
+  },
+  "pairings_file": ".future/cov100/pairings.json",
+  "pairings_sha256": "14230ebd1d247f8b",
+  "gate_exit": 0,
+  "docs_not_covered_by_any_pairing": [
+    "docs/testing/module-agent-llm.md",
+    "docs/testing/module-agent-sandbox.md",
+    "docs/testing/module-agent-session.md",
+    "docs/testing/module-agent.md",
+    "docs/testing/module-cli-tui.md",
+    "docs/testing/module-tauri-bridge.md",
+    "docs/testing/module-tauri-core.md",
+    "docs/testing/module-tauri-terminal.md",
+    "docs/testing/module-tauri.md"
+  ],
+  "pairings": [
+    {
+      "label": "goal",
+      "role": "authoritative",
+      "doc": "docs/testing/module-goal.md",
+      "doc_sha256": "1886bb19333d7a92",
+      "report": "/tmp/p1b-lcov.info",
+      "report_sha256": "3242f05de753bac9",
+      "report_size": 1685682,
+      "section": "Round 2",
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 92,
+        "claims": 92,
+        "missing": 0,
+        "covered": 0,
+        "absent": 0
+      }
+    },
+    {
+      "label": "agent-core",
+      "role": "authoritative",
+      "doc": "docs/testing/module-agent-core.md",
+      "doc_sha256": "2baca0a809a413b1",
+      "report": "/tmp/agb-p6.info",
+      "report_sha256": "d872eb99c3e4461c",
+      "report_size": 4240157,
+      "section": "6. Waiver ledger",
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 213,
+        "claims": 213,
+        "missing": 0,
+        "covered": 0,
+        "absent": 0
+      }
+    },
+    {
+      "label": "agent-rpc",
+      "role": "authoritative",
+      "doc": "docs/testing/module-agent-rpc.md",
+      "doc_sha256": "da33603bffc85c43",
+      "report": "/tmp/agent-a-s7-norm.info",
+      "report_sha256": "374c7dfd2feb2a1c",
+      "report_size": 4231912,
+      "section": "0.5 Residual ledger",
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 324,
+        "claims": 281,
+        "missing": 0,
+        "covered": 0,
+        "absent": 0
+      }
+    },
+    {
+      "label": "agent-rpc-r1",
+      "role": "superseded-ledger",
+      "doc": "docs/testing/module-agent-rpc.md",
+      "doc_sha256": "da33603bffc85c43",
+      "report": "/tmp/agent-a-s7-norm.info",
+      "report_sha256": "374c7dfd2feb2a1c",
+      "report_size": 4231912,
+      "section": "6. Waiver ledger",
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 324,
+        "claims": 169,
+        "missing": 281,
+        "covered": 99,
+        "absent": 45
+      }
+    },
+    {
+      "label": "channels",
+      "role": "authoritative",
+      "doc": "docs/testing/module-channels.md",
+      "doc_sha256": "ecf3ad435d4e00af",
+      "report": "/tmp/chan-lcov-r2rework2.info",
+      "report_sha256": "e701f669f20acfa0",
+      "report_size": 1431077,
+      "section": "10.4 Residual uncovered lines",
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 8,
+        "claims": 6,
+        "missing": 0,
+        "covered": 0,
+        "absent": 0
+      }
+    },
+    {
+      "label": "channels-wide",
+      "role": "wide",
+      "doc": "docs/testing/module-channels.md",
+      "doc_sha256": "ecf3ad435d4e00af",
+      "report": "/tmp/chan-lcov-r2rework2.info",
+      "report_sha256": "e701f669f20acfa0",
+      "report_size": 1431077,
+      "section": null,
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 8,
+        "claims": 167,
+        "missing": 0,
+        "covered": 22,
+        "absent": 3
+      }
+    },
+    {
+      "label": "channels-superseded-report",
+      "role": "superseded-report",
+      "doc": "docs/testing/module-channels.md",
+      "doc_sha256": "ecf3ad435d4e00af",
+      "report": "/tmp/chan-lcov-r2final.info",
+      "report_sha256": "3634680c9c9c6388",
+      "report_size": 1427272,
+      "section": "Round 2 (cov100)",
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 24,
+        "claims": 15,
+        "missing": 13,
+        "covered": 5,
+        "absent": 0
+      }
+    },
+    {
+      "label": "channels-policy",
+      "role": "authoritative",
+      "doc": "docs/architecture/channels-test-coverage.md",
+      "doc_sha256": "10a8cc3634350686",
+      "report": "/tmp/chan-lcov-r2rework2.info",
+      "report_sha256": "e701f669f20acfa0",
+      "report_size": 1431077,
+      "section": "Uncovered lines in the framework",
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 8,
+        "claims": 13,
+        "missing": 0,
+        "covered": 6,
+        "absent": 0
+      }
+    },
+    {
+      "label": "review-rust",
+      "role": "authoritative",
+      "doc": "docs/testing/review-rust.md",
+      "doc_sha256": "f44a7bfa0510db0a",
+      "report": "/tmp/chan-lcov-r2final.info",
+      "report_sha256": "3634680c9c9c6388",
+      "report_size": 1427272,
+      "section": "REV-CH",
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 24,
+        "claims": 4,
+        "missing": 0,
+        "covered": 0,
+        "absent": 0
+      }
+    },
+    {
+      "label": "desktop",
+      "role": "authoritative",
+      "doc": "docs/testing/module-desktop.md",
+      "doc_sha256": "a308c9b567dab07e",
+      "report": "desktop/coverage/coverage-final.json",
+      "report_sha256": "390ac3aaf9132fd4",
+      "report_size": 3848962,
+      "section": null,
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 60,
+        "claims": 61,
+        "missing": 0,
+        "covered": 0,
+        "absent": 0
+      }
+    },
+    {
+      "label": "mobile",
+      "role": "authoritative",
+      "doc": "docs/testing/module-mobile.md",
+      "doc_sha256": "0cfdd71c3bcd017b",
+      "report": "mobile/coverage/lcov.info",
+      "report_sha256": "570bf946e7248cf3",
+      "report_size": 385204,
+      "section": "Segment 50",
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 13,
+        "claims": 17,
+        "missing": 0,
+        "covered": 0,
+        "absent": 0
+      }
+    },
+    {
+      "label": "tauri-shell",
+      "role": "superseded-ledger",
+      "doc": "docs/testing/module-tauri-shell.md",
+      "doc_sha256": "f2125a68dae3f87b",
+      "report": "/tmp/tauri-shell-lcov-final.info",
+      "report_sha256": "5bd353544e023d7c",
+      "report_size": 5186611,
+      "section": "8. Per-line index",
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 318,
+        "claims": 318,
+        "missing": 0,
+        "covered": 0,
+        "absent": 0
+      }
+    },
+    {
+      "label": "cli",
+      "role": "authoritative",
+      "doc": "docs/testing/module-cli.md",
+      "doc_sha256": "e274f0d0b62151cb",
+      "report": "/tmp/cli-r2s3-final3-lcov.info",
+      "report_sha256": "21927540a8bc1d19",
+      "report_size": 1718827,
+      "section": "4c. Ledger",
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 123,
+        "claims": 119,
+        "missing": 0,
+        "covered": 0,
+        "absent": 0
+      }
+    },
+    {
+      "label": "cli-4b",
+      "role": "superseded-ledger",
+      "doc": "docs/testing/module-cli.md",
+      "doc_sha256": "e274f0d0b62151cb",
+      "report": "/tmp/cli-r2s3-final3-lcov.info",
+      "report_sha256": "21927540a8bc1d19",
+      "report_size": 1718827,
+      "section": "4b. Final ledger",
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 123,
+        "claims": 129,
+        "missing": 0,
+        "covered": 8,
+        "absent": 3
+      }
+    },
+    {
+      "label": "cli-4",
+      "role": "superseded-ledger",
+      "doc": "docs/testing/module-cli.md",
+      "doc_sha256": "e274f0d0b62151cb",
+      "report": "/tmp/cli-r2s3-final3-lcov.info",
+      "report_sha256": "21927540a8bc1d19",
+      "report_size": 1718827,
+      "section": "4. Waiver ledger",
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 123,
+        "claims": 188,
+        "missing": 10,
+        "covered": 44,
+        "absent": 11
+      }
+    },
+    {
+      "label": "cli-wide",
+      "role": "wide",
+      "doc": "docs/testing/module-cli.md",
+      "doc_sha256": "e274f0d0b62151cb",
+      "report": "/tmp/cli-r2s3-final3-lcov.info",
+      "report_sha256": "21927540a8bc1d19",
+      "report_size": 1718827,
+      "section": null,
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 123,
+        "claims": 203,
+        "missing": 0,
+        "covered": 48,
+        "absent": 14
+      }
+    },
+    {
+      "label": "tui",
+      "role": "authoritative",
+      "doc": "docs/testing/module-tui.md",
+      "doc_sha256": "66d6d86ab8345992",
+      "report": "/tmp/tui-r2-crate.info",
+      "report_sha256": "a3ed369e54cdbfd4",
+      "report_size": 2856405,
+      "section": "9.4 Residual ledger",
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 13,
+        "claims": 5,
+        "missing": 0,
+        "covered": 0,
+        "absent": 0
+      }
+    },
+    {
+      "label": "cli-mcp",
+      "role": "authoritative",
+      "doc": "docs/testing/module-cli-mcp.md",
+      "doc_sha256": "66cb224eb012af19",
+      "report": "/tmp/clamcp-final-lcov.info",
+      "report_sha256": "6735033ad5f841d1",
+      "report_size": 1713536,
+      "section": "6. Waiver ledger",
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 4,
+        "claims": 4,
+        "missing": 0,
+        "covered": 0,
+        "absent": 0
+      }
+    },
+    {
+      "label": "tauri-appdata",
+      "role": "authoritative",
+      "doc": "docs/testing/module-tauri-appdata.md",
+      "doc_sha256": "7465dfd46169c2e1",
+      "report": "/tmp/appdata-normalized-lcov.info",
+      "report_sha256": "b06a05c0cf2e0238",
+      "report_size": 5216154,
+      "section": "S2.4b Residual inventory",
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 610,
+        "claims": 610,
+        "missing": 0,
+        "covered": 0,
+        "absent": 0
+      }
+    },
+    {
+      "label": "tauri-remote",
+      "role": "authoritative",
+      "doc": "docs/testing/module-tauri-remote.md",
+      "doc_sha256": "b224024e60cff071",
+      "report": "/tmp/tauri-tau-remote-lcov4.info",
+      "report_sha256": "4409b8e0904401a2",
+      "report_size": 5211522,
+      "section": null,
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 331,
+        "claims": 109,
+        "missing": 0,
+        "covered": 0,
+        "absent": 0
+      }
+    },
+    {
+      "label": "tauri-headless",
+      "role": "authoritative",
+      "doc": "docs/testing/module-tauri-headless.md",
+      "doc_sha256": "2fda79d6b912e5e9",
+      "report": "/tmp/tauri-tau2-lcov.info",
+      "report_sha256": "e89004b4d25a5eb8",
+      "report_size": 5187993,
+      "section": null,
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 222,
+        "claims": 261,
+        "missing": 0,
+        "covered": 0,
+        "absent": 2
+      }
+    },
+    {
+      "label": "tauri-shell-seg2",
+      "role": "authoritative",
+      "doc": "docs/testing/module-tauri-shell.md",
+      "doc_sha256": "f2125a68dae3f87b",
+      "report": "/tmp/tauri-shell-lcov-seg2b.info",
+      "report_sha256": "6048bcfddd8725b7",
+      "report_size": 5219738,
+      "section": "Per-line index of this segment's residual",
+      "verdict": "PASS",
+      "measured": {
+        "uncovered": 270,
+        "claims": 270,
+        "missing": 0,
+        "covered": 0,
+        "absent": 0
+      }
+    }
+  ]
+}

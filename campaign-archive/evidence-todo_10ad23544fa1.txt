@@ -1,0 +1,127 @@
+RECONCILE STALE HALF — todo_10ad23544fa1, 2026-10-16 20:40. All work is in .future/cov100
+(gitignored, .gitignore:42); no PR content, no Rust/JS file touched.
+
+(1) THE SPLIT IS INLINE. reconcile.py now prints, for every STALE row, COVERED (DA>0, the
+actionable half) vs ABSENT (no `DA:` record at all - a blank line inside a claimed range,
+a comment, or a report from another revision) and, when `--section` is not given, WHICH
+SECTION the covered rows came from. Example (cli): "STALE ...: 51 / COVERED: 38 / ABSENT:
+13 / -> the covered rows come from 1 section(s): 4. Waiver ledger (38) / this doc holds 2
+sections with claims: if one of them is superseded (a re-measurement), re-run with
+--section for the authoritative ledger". Exit codes: 1 MISSING>0, 2 unknown --section, 3
+NEW empty scope match, else 0; a COVERED row does not redden the gate (it is a finding for
+a human). The split logic lives in reconcile.py (split_stale/counts_for/report_counts) and
+staledetail.py/staletable.py import it, so they cannot drift.
+
+(1b) A BUG MY OWN SELF-TEST FOUND, WHICH INVALIDATES MY PREVIOUS TURN'S HEADLINE. The
+first version of the split looked a key_files() NEEDLE ("persistence.rs") up in a
+report_counts() mapping keyed by FULL normalised paths ("agent/src/session/persistence.rs").
+Every lookup missed, so every claimed line was classified ABSENT and the tool printed
+"COVERED 0 everywhere" - for exactly the wrong reason. My previous handoff's sentence "not
+one real disagreement anywhere" was produced by that broken lookup and must be withdrawn.
+Found by the fixture in selftest.py (selftest/fixture-doc.md + fixture-lcov.info), not by
+reading the code: the fixture's covered lines MUST come back COVERED, so it failed loudly.
+
+(2) TAG AUDIT + TIGHTENING. LEDGER_ROW_TAGGED accepted any 1-13 char word as the first
+cell, so "| plain prose | `src/a.rs:12` | x |" was a claim (a false-STALE door). Measured
+before changing: all 86 rows in docs/**/*.md that only this pattern accepts carry a D<n>
+tag (D1-D54, module-desktop's waivers), and substituting the loose class changes the
+parsed claim set of 0 of 243 docs. Tightened to [A-Za-z]{1,2}[0-9]{1,3}. Residual risk is
+the LOUD kind (0 claims -> the vacuity WARNING). patternprobe.py: 24 cases with
+expectations, 0 mismatches, and --contrast reports 5 flipped cases against the
+pre-tightening class, so the probe is shown to discriminate; five of the must-reject cases
+are real rows from these docs (counts, slashed ratios, prose).
+
+(2b) COVERED PER PAIRING, MEASURED WITH THE FIXED CODE (staletable.py --cli, 13 pairings,
+log .future/cov100/stale-check-after.log; 11 exit 0, 2 exit 1 explained below):
+ goal 92 claims -> COVERED 0, ABSENT 0 | agent-core 212 -> 0 / 0 | agent-rpc-s0
+ (documented slice) 280 -> 0 / 0 | agent-rpc-s6 (round-1 ledger) 169 -> 99 / 45 |
+ channels-r2b 15 -> 3 / 0 | channels-superseded 15 -> 5 / 0 | channels-policy 13 -> 6 / 0 |
+ review-rust-revch 4 -> 0 / 0 | desktop (Istanbul JSON) 61 -> 0 / 0 | mobile 17 -> 0 / 0 |
+ tauri-shell 321 -> 0 / 0 | cli 202 -> 38 / 13 | tui 13 -> 0 / 0.
+ So COVERED is NOT 0 everywhere: 5 pairings disagree. Triage (staletriage.py + reading the
+ rows) resolves every one to a real property of the record, none to a tooling bug:
+ * cli 38 - all 38 come from section "4. Waiver ledger", whose own note says "the
+   authoritative final ledger is section 4b ... The line numbers in this table are the ones
+   S3 reported". Superseded ledger kept in the same file: re-running with --section 4b
+   gives 0 STALE. Invocation-side fix available today.
+ * agent-rpc-s6 99 - section 6 is the round-1 ledger beside the round-2 section 0.5. Same
+   class. (Its documented invocation slices section 0 and, after that unit's own 20:32
+   revision, reads 347/347 mentioned, 0 MISSING, 0 STALE over 280 claims.)
+ * channels-r2b 3 and channels-superseded 5 - the rows sit in section 10.2 "What is covered
+   now, and by which test", whose rows each name the new test. channels-policy 6 - the
+   table naming "the covering test of every fallen row". Rows whose prose says the line is
+   covered.
+ I deliberately did NOT add prose inference for that last class (matching text like a
+ check mark, "now covered", "fallen row" would be guessing, and a wrong guess hides a real
+ finding). Doc-side decision for the supervisor.
+ Exit 1 rows: agent-rpc-s6 (MISSING 299, expected - section 6 is a subset of the 347
+ uncovered lines) and channels against the superseded r2final report (MISSING 13, the doc's
+ own r2b run supersedes it). Both are documented in the pairing table's notes; neither is
+ caused by this change.
+
+(2c) ALSO FIXED, FOUND WHILE MEASURING: staletable.py's first version hard-coded the lcov
+reader and read desktop's Istanbul coverage-final.json as "0 uncovered" instead of 60 - a
+silent zero of the same class. The format dispatch now lives in reconcile.py
+(report_lines/report_counts/istanbul_counts) and every tool calls it. And one run in this
+turn printed 0/0 for a 4.3 MB report that the next identical run read as 347 uncovered
+lines (not reproducible); reconcile.py now exits 3 when no SF: record matches the --scope,
+which is unambiguous because a fully covered scope still yields per-file entries. Both
+sides are pinned in selftest.py, and the convention matches covlines.py, which already
+exits 3 on the same condition (verified).
+
+(3) THE SUPERVISOR HANDOFF LIST - .future/cov100/LEDGER-REWORK.md, per-doc numbers from
+blindrework.py (measured, not estimated). Eight module records parse 0 claims and the
+cause is NOT a shape, which is why another pattern is the wrong fix:
+ | doc | table rows | path:LINE citations anywhere | in a table | claim-shaped rows | own report |
+ | module-agent-sandbox.md | 248 | 0 | 0 | 0 | coverage/agent-ag-sandbox-report.json absent |
+ | module-agent.md | 328 | 0 | 0 | 0 | coverage/agent-report.json absent |
+ | module-cli-tui.md | 353 | 0 | 0 | 0 | coverage/tui-report.json absent |
+ | module-agent-session.md | 271 | 7 | 1 | 0 | coverage/agent-ag-session-report.json absent |
+ | module-tauri-bridge.md | 215 | 7 | 3 | 0 | coverage/llvm-cov-tauri.json absent |
+ | module-tauri-core.md | 212 | 3 | 1 | 0 | coverage/tauri-tau-core-report.json absent |
+ | module-tauri.md | 250 | 3 | 0 | 0 | coverage/llvm-cov-tauri.json absent |
+ | module-tauri-terminal.md | 610 | 1 | 0 | 0 | coverage/tauri-tau-terminal-report.json absent |
+ Zero claim-shaped rows in all eight; four cite no path:NNN anywhere in any form; every one
+ names a coverage/*.json report that is absent from this worktree, so even a doc-side fix
+ cannot be re-verified without re-measuring those units. Characterisation against reports
+ other units measured for overlapping scopes (NOT a gate): module-agent-sandbox.md shows
+ "mentioned 0 of 43" - the document cites no per-line claim in any form. The doc-side change
+ that fixes it is a per-line claim table like module-goal.md section 11.5 / module-tauri-shell
+ section 4; the five must-reject counterexamples that show why parsing more shapes invents
+ findings are in patternprobe.py and LEDGER-REWORK.md.
+ Also for the supervisor: module-channels.md - 29 of its 49 Round-2 rows end in prose after
+ the line list and are rejected by design (20 rows / 15 claims parse); module-tauri-headless.md
+ line 512 records "359 mentioned, 0 MISSING, 0 stale" - that 0 was vacuous (0 rows parsed
+ before this week's fix), it now parses 42 rows / 261 claims, and it names neither report nor
+ scope, so re-verifying it needs a re-measure.
+
+GATES (PLAN 5.1), with exit codes. python3 -m py_compile on all 11 touched tools: 0.
+selftest.py: 0 (18 checks: pattern contract, all three STALE states, and the exit-3 guard
+vs a legitimately fully-covered scope). cargo fmt --check: 0 workspace-wide this time (the
+tui unit fixed terminal_posix.rs, which was the 9-diff red gate in my previous turn).
+cargo clippy -p future-goal --all-targets -- -D warnings: 0. No JS was touched by this unit
+(only .future/cov100/*.py and *.md), so npx tsc --noEmit and eslint are not applicable
+rather than omitted; git status shows no file of mine outside .future - the modified
+agent/cli/tui/desktop/docs files belong to peers, including docs/testing/module-agent-rpc.md,
+which its own unit edited at 20:32 while I was measuring it.
+
+ARTIFACTS: .future/cov100/reconcile.py (pattern tightening, inline split, section
+attribution, counts_for fix, istanbul_counts, empty-scope exit 3), and new tools
+patternprobe.py, staletable.py, staletriage.py, blindrework.py, selftest.py,
+selftest/fixture-{doc.md,lcov.info,covered.info}, plus ledgerrows.py/rowscan.py/claimrows.py
+refactored to discover the shipped patterns instead of restating them. Records:
+STALE-CHECK.md (the per-pairing table, the COVERED triage, the withdrawn claim, limits),
+LEDGER-REWORK.md (the supervisor handoff), stale-check-after.log (13 raw CLI runs with exit
+codes). Logs: /tmp/cov100-selftest.log, /tmp/cov100-staletable.log, /tmp/cov100-fmt.log,
+/tmp/cov100-clippy.log.
+
+REPRODUCE: python3 .future/cov100/selftest.py; python3 .future/cov100/patternprobe.py
+--contrast; python3 .future/cov100/staletable.py --cli; python3 .future/cov100/staletriage.py
+--label cli --report /tmp/cli-r2s2-final-lcov.info --scope "$PWD/commands" --scope
+"$PWD/browser" --scope "$PWD/cli/src" --doc docs/testing/module-cli.md; python3
+.future/cov100/blindrework.py.
+
+UNCERTAIN / NEXT CHECK: the COVERED rows in the two "rows that say covered now" classes are
+one doc-side marker away from being machine-checkable; until then a reviewer must read the
+row. reconcile.py is a shared live file with three authors today - run selftest.py after any
+edit to it.

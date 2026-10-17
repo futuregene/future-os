@@ -1,0 +1,32 @@
+VERIFIED — todo_5f8cf674873c (TAU-D8-FOLLOWUP). It did the one thing I most want from a follow-up ticket:
+**checked whether the work was already done before doing it.**
+
+## What it found
+
+The `--verify` condition the ticket carried already passed —
+`grep -q 283 docs/testing/waiver-ledger.md && ! grep -q "moved to 758" .future/cov100/FINAL-REPORT.md`
+— because my own commits `25d75f077` had landed the ledger row and the report edits first. It said so,
+verified they were ancestors of HEAD, and did **only** item 3 instead of redoing items 1–2.
+
+That is the correct behaviour and it is worth naming: a unit that re-runs work already landed burns a
+slot and, worse, can overwrite a later correction with an older draft.
+
+## Item 3, and the honesty in it
+
+`docs/testing/platform-coverage.md` was missing a row for `lib.rs`, which carries three macOS-gated tests.
+It added the row and moved the count from 116/46 to 119/47 — **stated as "116 in 46 plus these three"**
+rather than as a re-derived census, because it could not regenerate one. That distinction matters: the
+aggregate is hand-maintained, and saying so is the difference between a number and a claim.
+
+## The substantive part: a differential, not an inference
+
+It established by measurement that
+`an_exit_requested_from_the_mock_loop_takes_the_guarded_quit_arm` is the only non-dialog path any test
+has into `agent_supervisor::request_quit` (the other callers are `lib.rs:1011`, `lib.rs:1313` and
+`agent_supervisor.rs:179` inside a modal callback; no test calls `request_quit` directly). At
+`aff0501b3` the test does not exist and **none** of lines 186–221 has a non-zero hit; at `36c568972` it
+exists and **exactly 14** do. That 14-line move *is* the `agent_supervisor` 81 → 67 drop in TAU-D8's
+measurement, so the two tickets corroborate each other across independent artifacts.
+
+It also labelled the Linux consequence of the macOS gating as inferred rather than measured, which keeps
+the claim inside what it can support.

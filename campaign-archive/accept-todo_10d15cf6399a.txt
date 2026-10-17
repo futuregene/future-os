@@ -1,0 +1,56 @@
+TAU-D3 (todo_10d15cf6399a) — SUPERVISOR VERDICT: VERIFIED. 365 -> 300 uncovered lines on the headless scope.
+
+REPRODUCED with the authoritative tripwire, exactly as the record documents it (six `--scope` runs of
+one report, summed, because reconcile.py takes one prefix per invocation):
+  for s in headless terminal cli_tool.rs agent_host.rs agent_supervisor.rs skills_bootstrap.rs:
+    python3 .future/cov100/reconcile.py --report /tmp/tauri-tau3-union-lcov.info \
+      --scope "desktop/src-tauri/src/$s" --doc docs/testing/module-tauri-headless.md --label TAU-D3
+  -> headless 52 + terminal 113 + cli_tool.rs 11 + agent_host.rs 26 + agent_supervisor.rs 81 +
+     skills_bootstrap.rs 17 = **300**, and **MISSING 0 / STALE 0 in every one of the six**.
+  Its claim that `agent_supervisor.rs` "stays at 81 uncovered" matches my reading of that scope exactly,
+  which is a good sign its per-scope numbers are its own measurement rather than a total divided up.
+  (My first pass mis-parsed the tool's two-number line - "files with uncovered lines=N uncovered lines=M" -
+  and read 12; worth knowing for anyone else scripting it, and it is why I report the six addends here.)
+
+QUOTABILITY (PLAN section 5.3, four conditions): the instrumented run is NOT green - gui leg exit 101 with
+  8 scoped-suite failures plus `cli_tool::tests::a_runnable_cli_on_path_is_discovered_and_probed` - and the
+  unit's own attribution is that these are ONE flake (the 3 s `probe` deadline, its NEW-B, which it reports
+  as IN ITS SCOPE) plus the host-wide 8022 `remote_peer` bind family. That is a red failure inside the
+  tested scope, which normally blocks quotability - but here the unit supplies the fact that decides it:
+  **the failure cost 0 measured lines** (that file's uncovered set is byte-identical to the run in which the
+  test passed). I did not re-derive that byte-identity (it needs the other report), so I record it as the
+  unit's evidence, not mine, and the frozen pass re-measures anyway. Direction argument holds: a red run
+  executes less code, so 300 is an upper bound.
+
+ITS NEW EVIDENCE IS THE RIGHT SHAPE: three subprocess arms in `desktop/src-tauri/tests/headless_cli.rs`
+  driving the BUILT `futureos-headless` against a loopback platform, because `session()` drives per-process
+  singletons and cannot be reached in-process. I verified they exist and assert behaviour rather than
+  touching lines: `a_deferred_remote_start_keeps_serving_and_stops_on_a_signal` (622),
+  `a_revoked_pairing_stops_the_run_with_the_reason_and_drops_the_credential` (686),
+  `a_non_auto_agent_mode_never_starts_an_embedded_agent` (743) - and the fixture records the endpoints it
+  served (`served: Arc<Mutex<Vec<String>>>` at 320) so the arm can assert WHICH endpoints the platform saw.
+  It also states the method's boundary rather than implying reach: `agent_supervisor.rs:33` is NOT reachable
+  this way (it needs a Tauri command), and the doc no longer implies it is.
+
+F3 IS THE FINDING WORTH PROPAGATING - a test that silently measured the wrong arm, found by the unit itself:
+  its first instrumented run of the revoked arm did not fail. On macOS a socket accepted from a non-blocking
+  listener INHERITS `O_NONBLOCK`, so the fixture's `read` returned `EAGAIN`, it dropped the connection, and
+  the entry point correctly took its DEFERRED path - so the assertion looked like a 300 s timeout while the
+  test was never exercising the revoked path at all. Fixed with `set_nonblocking(false)` on the accepted
+  stream (verified present at tests/headless_cli.rs:398) plus a thread per connection and an accept loop that
+  records and retries. The generalisable half, which belongs with the vacuous-test and
+  attribution-artifact entries: **a fixture that fails via a transport-side error may be measuring a
+  different branch than the one it names, and the fix is to assert which observable actually happened.**
+
+CAMPAIGN HYGIENE IT REPORTED, and I confirmed the cause: peers' snapshot commits captured its in-flight
+  test file twice, and `124e34e50` (mine, 02:31) holds its FINAL content - so the file is in the branch under
+  my commit rather than its own. That is the snapshot mechanism doing its job (preserve in-flight work) and
+  the unit correctly reported it instead of rewriting history; its own commits are aff0501b3 + 9e782766f.
+  No action.
+
+NOT VERIFIED BY ME: the "0 measured lines" byte-identity above; the four oscillating `agent_host` lines
+  (it says a calmer re-run may read 296-300 - consistent with this campaign's documented load sensitivity);
+  and the claim that the two `headless/mod.rs` 207-227 rows need a NATS broker with JWT+TLS.
+
+SUCCESSOR: none (--no-follow-up). The two open items it names - the oscillating `agent_host` lines and the
+  NATS-broker rows - stay as classified rows, and the frozen pass re-measures the first.

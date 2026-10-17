@@ -1,0 +1,52 @@
+SUPERVISOR VERDICT (todo_f38668bffc51, the module-agent-rpc.md doc-anchor correction) — VERIFIED, and the tooling finding it raised is REAL and now FIXED (F.70).
+
+ITS ASSIGNED TASK IS DONE, verified by me:
+  * `docs/testing/module-agent-rpc.md` §0.5's "How this ledger is checked" block no longer pins a
+    superseded report: it now names `/tmp/agent-svc-rework-norm.info` (the rework's own), states the rule
+    (name the report that produced the ledger; re-derive when the ledger moves), and replaces the stale
+    recorded output with the current one.
+  * I ran BOTH labels it prints - `Residual ledger` and ``unit `AG-A` `` - and both give
+    `43 files / 202 uncovered / 202 mentioned / MISSING 0 / no STALE`. So the false MISSING 7 I reported is
+    gone, and it did not take the easy way out of keeping only the narrow label (which was the broken one
+    until it indented a fence-level `#` line).
+  * Its corrections are honest about their own limits: it measured 6 MISSING then 0 where my ticket said 7
+    (the count is TEXT-dependent, since the doc it slices contains the number), softened a claim about
+    "10 in all three runs" to reflect which runs it actually re-measured, and caught its own draft error
+    (`persistence.rs` shifted 18, not 99). It also states that every pasted MISSING count is a snapshot of
+    the document text that contains it - the STALE half being the stable one.
+
+THE TOOLING FINDING IT RAISED IS THE REAL PRIZE, AND I FIXED IT RATHER THAN FILING IT (F.70):
+  It reported that `reconcile.py`'s section slicing is FENCE-BLIND - a `#` at column 0 inside a code fence
+  is matched as a heading, so a record that pastes example output like
+  `# -> files with uncovered lines=202` has its slice truncated there and every row below becomes
+  invisible. It identified 12 records at risk and correctly said the fix was outside its write set.
+  I verified and fixed it, because the tool is mine and it asked for one writer:
+  * CONTROL on the function: fence-level `#` -> slice 135 chars with the row OUTSIDE; indented -> 293 chars
+    with the row INSIDE.
+  * CENSUS of every pairing: **4 of 22 had a truncated slice** (channels-superseded-report hid 18 687
+    chars, mobile 2 198, review-rust 1 621, tauri-appdata 725), and for channels-superseded-report the
+    GATE's own measure() changed verdict: **missing 13 -> 0**. So this was not a doc-style issue: the gate
+    shares the slicer (staletable.measure -> rec.slice_section), and it had been reporting 13 phantom
+    MISSING. 283 such lines exist in 30 docs.
+  * FIX: fence-aware at both ends (finding the opening heading AND the terminator).
+  * VERIFIED after: 0 of 22 pairings truncated; channels-superseded-report measures 0 missing where the
+    recorded pairing said 13; the AG-A block reads 202/MISSING 0 under both labels; SELFTEST still green.
+  * REGRESSION CONTROL added as selftest section 11, with a NEGATIVE control: the old implementation,
+    kept verbatim, fails BOTH fixtures while the new one passes both. My first draft of the second fixture
+    passed on the old code too - a check that cannot fail - so I changed it until it discriminated.
+  * CONSEQUENCE FOR THE 12 RECORDS: none needs editing. Its step (3) (indent every flush-left `#`) was the
+    workaround; fixing the tool is the durable answer, so the documents stay as written. Its step (2) is
+    now satisfied by construction, and section 11 guards the future.
+
+WHAT I DID NOT DO, and why: I did not take its cheaper option (indent the 12 documents and leave the tool
+  alone). Indenting fixes the symptom in the documents that exist today and leaves the trap armed for the
+  next pasted example; and since the gate shares the slicer, the trap could corrupt a VERDICT, not just a
+  reader's command. One tool change with a control is cheaper than 12 doc edits plus a standing hazard.
+
+RESIDUAL ITEMS IT REPORTS (correctly, and none blocks this):
+  * The 12 at-risk records are IDENTIFIED, not verified defect-by-defect - whether a given one actually
+    under-reports depends on the `--section` label passed and where its offending line sits. My census
+    above settles this for the PAIRINGS (the ones the gate reads); a review doc's example command is now
+    correct by construction.
+  * §0.1's historical block - it says the stale anchor run against the fixed text gives STALE 10 /
+    MISSING 0, which is the right shape for a historical example.

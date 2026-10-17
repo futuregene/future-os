@@ -1,0 +1,40 @@
+VERIFIED (as a blocked delivery) — todo_38719e740a2c. The block was correct and I applied the patch.
+
+## What it did
+
+It was asked to correct `docs/testing/real-network.md`, checked its recorded write set (the kernel's
+`workspace_lock_acquired` event lists only `desktop/src-tauri/src/remote`, `remote_host`, `remote_peer`
+and `docs/testing/module-tauri-remote.md`), found the target file absent from it, and **stopped without
+editing**, citing F.76.3 ("dispatch is not a grant"). It confirmed the file was untouched by mtime.
+
+That is exactly the discipline the campaign has been trying to instil: a unit cannot widen its own write
+set, and a dispatch note is not an authorisation. It then produced `git apply`-able patch
+`/tmp/realnet/doc-correction.patch` and stated its `--check` result, so the work was one grant away
+rather than lost.
+
+I did three things:
+1. `git apply --check` -> 0 (verified myself).
+2. Read the patch: it replaces the wrong reading in §3.3a and §8 item 1 with the measured one, and adds
+   the burst-paced journal that demonstrates the window merging 2.30x. Nothing else changes.
+3. Applied it as supervisor, since the file is a record I own the correction of, and the claim being
+   corrected is one I published.
+
+## Why I applied rather than re-dispatching
+
+The ticket is already `done(no-follow-up)` and its successor closed the underlying question
+(todo_030dca12cfea). Re-dispatching would cost a unit run to apply a reviewed 6.5 KB documentation
+patch. The alternative - leaving the record carrying a refuted claim - is the one outcome the campaign
+must never accept, because `real-network.md` is the document the completion claim rests on.
+
+## What the correction says (now in place)
+
+`real-network.md` §3.3a (a) reads: "the production window: PASSES, and the lane is byte-identical",
+names the cause (the driver printed its numbers after its assertions, so the failing run reported none),
+names the mechanism (`merged == 0` returns a lone fragment unchanged; gaps 100.9-110 ms vs a 100 ms
+window), and states that the defect was the measurement's strict `coalesced < today`. §8 item 1 is
+likewise replaced.
+
+## Uncertainty
+
+The patch was generated against the tree as of this unit's run; `real-network.md` has not otherwise
+changed since (mtime 13:55, before this turn), and `git apply --check` was run on the current tree.

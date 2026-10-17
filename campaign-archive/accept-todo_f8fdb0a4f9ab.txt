@@ -1,0 +1,47 @@
+TAU-C7 (todo_f8fdb0a4f9ab) — SUPERVISOR VERDICT: VERIFIED. Scope residual 268 -> 238.
+
+REPRODUCED with the authoritative tripwire (never my own arithmetic):
+  python3 .future/cov100/reconcile.py --report /tmp/tauri-shell-lcov-c7union.info \
+    --scope <the twelve tauri-shell scopes from pairings.json> \
+    --doc docs/testing/module-tauri-shell.md --section "Segment 7"
+  -> files with uncovered lines=11   uncovered lines=238   mentioned 238   MISSING 0   no STALE
+  Exactly the claim.
+
+THE CLOSED LINE, verified in the report's DA records (lib.rs):
+  1403 = 1 (was 0) - the ready-arm body. Neighbours as it states: 1398=3, 1400=3, 1401=3,
+  1402=2, 1405=1, 1409=1, 1411=3. And desktop_shutdown.rs is now 18 uncovered lines
+  (221,222,223,256,257,258,267-274,460,499,500,501) - the "19 -> 18" it reports.
+  The fixture exists and is test-only: `an_auto_connect_that_connects_is_reported_as_connected`
+  at lib.rs:2480, which sits below the `#[cfg(test)]` at 1466.
+
+ITEM (3) - THE NEW-A TRUNCATION HAZARD - IS HONOURED, and this is the point of the item:
+  grep -c "test store::threads" /tmp/tau-c7-measure.log = 56, i.e. the tail modules RAN. The gui leg
+  printed its own result line: `test result: FAILED. 2063 passed; 8 failed; 12 ignored; 0 measured;
+  0 filtered out; finished in 609.67s`. So this run was NOT silently truncated - which is exactly what
+  the previous incident looked like from the outside (927 of 2074 tests, no result line, exit 0).
+
+QUOTABILITY (PLAN section 5.3). The instrumented run is NOT green: gui leg 2063 passed / 8 failed.
+  All four conditions hold:
+  * every failure is NAMED and has ONE cause: 8 occurrences of `remote_peer/testing.rs:30` ("web server
+    bind on port..." - the fixed-port 8022 family run_control.rs and the remote unit already document).
+  * none is inside the twelve scopes: a grep for panics in src/{lib,menu,main,launch,instance,runtime,
+    future_login,macos_power,desktop_shutdown} returns NOTHING. The failing module is `remote_peer/`,
+    outside the scope list.
+  * direction: a red run executes less code, so 238 is an upper bound and no line can be falsely
+    reported as covered.
+  * the frozen pass re-measures (endgame.sh), which is where the published number comes from.
+
+ITS RECIPE CORRECTION IS WORTH KEEPING and I have no reason to doubt it: the gate needs persisted creds
+  (`load_creds().is_some()`), so the "fresh pairing" variant (respond_pair_code, no creds) returns at
+  the gate and never reaches the arm - its first attempt failed with phase Stopped, and the working
+  fixture persists a pairing and answers the REFRESH. It also states the honest limit that in a PASSING
+  run libtest captures the eprintln (S4.7.2), so the assertion is the status effect rather than the log
+  line - i.e. the test asserts the observable, not the message.
+
+NOT VERIFIED BY ME: the per-file breakdown of its "-30 = 1 arm + 16 attribution flips + 12 vanished
+  regions + 1 flaky-pair line" attribution. I verified the TOTAL (238), the arm line (1403=1), and one
+  file's count (desktop_shutdown.rs 18); the attribution of the other 29 is its own analysis, and the
+  per-line index it writes is what REV-TAURI-SHELL will attack.
+
+SUCCESSOR: todo_33f1a7d209c0 (TAU-C8, already created by me - the gui_main_thread_drive harness=false
+  test target I authorised, whose untracked file is in the tree as in-flight work).

@@ -1,0 +1,40 @@
+VERIFIED — todo_2090adf0ae54 (TAU-D8). It corrected my own pre-check, which is the best outcome this
+ticket could have had.
+
+## What it measured
+
+`tauri-headless` **300 → 283** at HEAD `36c568972`, attributable to two causes:
+
+- `agent_supervisor` **81 → 67**: 14 lines covered by the macOS-only mock-loop quit test;
+- `agent_host` **26 → 23**: the oscillating attach arms (111/319/320) were covered in this run.
+
+Method: both flavours rendered separately with `cargo llvm-cov clean` between legs, then unioned
+(PLAN §6a-ter); legs green (gui lib 2142 passed / 0 failed / 14 ignored; headless 1717 / 0 / 14);
+`leg-flavour-check` LEG IDENTITY ok (gui 170 files, headless 138) and flavor-alive ok.
+
+## My verification
+
+- I re-ran `reconcile.py` over the record's 12 scopes against
+  `.future/cov100/tauri-tau-d8-union-lcov.info`: **283 uncovered / 283 mentioned / MISSING 0**.
+- I read the 11 `DA:0` lines out of the union report myself:
+  **83, 92, 285-288, 293, 305, 356, 672, 759** — exactly what it reported.
+- Gate: `tauri-headless` PASS (282 claims / 283 uncovered / 0 stale / 0 covered / 0 absent).
+
+## Where it corrected me (all three, and it was right each time)
+
+1. **My `357` was `356` and my `666` was `672`.** I had printed lines 357 and 666 and read them as the
+   statements; they are one line off and a different statement respectively.
+2. **The statement set CHANGED, not just moved:** `338` (EnvGuard's restore arm) is now **covered**
+   because `remote/verify_e2e.rs` guards five absent `VERIFY_E2E_*` names, and **759 is new** from the
+   NEW-B seam. So the record's "the statement set is unchanged" was false — precisely the claim the
+   ticket existed to test.
+3. **My classification was right but for one row I had not diagnosed:** I had flagged `:83` as
+   `platform-unmeasured` because it sits inside `if cfg!(windows)`; the unit confirmed that and assigned
+   the other ten.
+
+## The transferable lesson
+
+My pre-check was worth writing (it gave the unit the `cfg!` vs `#[cfg]` discriminator and saved it from
+chasing a Windows-only arm with a fixture), but **three of eleven line numbers were wrong and one
+structural claim was wrong**. A pre-check written from a quick read is a hypothesis with a timestamp, not
+a measurement — and the value came from the unit being willing to check it rather than build on it.

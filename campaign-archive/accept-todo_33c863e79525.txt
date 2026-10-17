@@ -1,0 +1,47 @@
+SUPERVISOR VERDICT — TAU-B SEGMENT 13 (todo_33c863e79525): VERIFIED as a BLOCKED delivery. Nothing measured, and it says so; the segment's real product is the sharpest root cause of the host fault yet, and I verified its one ledger change.
+
+IT CLAIMS NO NUMBER, correctly: `re-measured = NO`, and MISSING 0 / STALE 0 hold only for the **last measured
+  revision** (segment 11's 395, re-confirmed with its own verifier before its edits). So the module's figure of
+  record is unchanged, and nothing here asks the final report to publish an unmeasured value.
+
+ITS S13.1 IS A BETTER ROOT CAUSE THAN MINE, reduced to a reproduction I can check: `rustc -O` compiles a
+  hello-world in **0.09–0.11 s** and writes a 465 968-byte binary, but **EXECUTING it hangs** (timeout → 124);
+  a byte-copy of the system-signed `/usr/bin/true` hangs too; ad-hoc codesigning does not help; and every
+  **pre-existing** binary runs in 8–22 ms. So the trigger is **"newly created file"**, not signing/quarantine —
+  which is sharper than my F.75 finding (dylib load + builds stalling) and consistent with it: both are the
+  policy daemon never answering a verdict for something new.
+  * **I tested it and the host is CLEAR right now**: a fresh copy of `/usr/bin/true` exec'd in **0.109 s** while
+    the original took 0.003 s. That is the negative control for the fault (not for its claim) and it confirms
+    the intermittency both units reported — so the actionable fact for the endgame is that a **clear window is
+    open now**, and the frozen pass should be taken in it rather than deferred.
+  * Its "whole-host outage" note is right and worth keeping: cargo holds the shared `~/.cargo/.package-cache`
+    lock, so this stops the Rust track for **every** worktree and unit, not just its own.
+  * Remediation needs root (`sudo -n true` → "a password is required"); `killall -9 syspolicyd` or a reboot.
+    **User action**, recorded in CLOSEOUT.
+
+ITS ONE LEDGER CHANGE IS RIGHT, AND I VERIFIED IT THE STRONGEST WAY AVAILABLE — the same text, in the same
+  report, with opposite records:
+```
+import.rs settlements, /tmp/appdata-seg11-normalized-lcov.info
+  A (505-510): 505=15 506=15 507=10 508=10 509= 5(the brace, COVERED) 510=15
+  B (555-560): 555=45 556=45 557=45 558=45 559= 0(the brace, DA:0)   560=45
+  diff of the two blocks after normalising indentation: IDENTICAL
+```
+  Identical text, one brace covered and its twin not, in one report ⇒ that is an attribution artifact by
+  definition, not an unexecuted line. So `agent_bridge/import.rs:559` becomes WAIVED as
+  `attribution-artifact` with **no metric effect** (351 WAIVED + 44 OPEN = 395, total unchanged) — and the
+  row's evidence is the kind a reviewer can re-derive in one command, which is what I just did.
+  It also **keeps `commands/skills.rs:96` OPEN deliberately**, with the reason that its claim is about compiler
+  instantiation that no reading can confirm and there is no new evidence — the right call: I would rather see a
+  line stay OPEN than be waived on an argument nobody can check.
+
+S13.3 DISPOSITIONS THE S11.5b RE-CHECK LIST completely: every `?`-tail/brace row of that family is either
+  covered (store/threads.rs 616/621), tested-and-awaiting-measurement (the six segment-12 tests), or waived
+  with a quoted mechanism. That list existed because a sibling row was falsified, so closing it out is the
+  correct follow-through — and its split (which are measured vs which are argued) is the honest form.
+
+WHAT I DID NOT VERIFY: the six segment-12 tests still awaiting measurement (they need the same build the host
+  refuses), the S11.5b list's individual dispositions, and the `S13.5` items I did not read. None changes the
+  module's figure of record, which stays 395.
+
+SUCCESSOR: its own next segment (worker-tauri-appdata), which should run in the clear window while it lasts.

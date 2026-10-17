@@ -1,0 +1,38 @@
+VERIFIED — todo_daa782a842c0 (TAU-D7). The kernel's "verify gate rejected (exit 1)" was the
+malformed-validator class, not a test failure; the tests pass.
+
+## The nine OPEN lines are closed with test-only changes
+
+Seven test functions across four files, no product change:
+
+- `remote_peer/transfer.rs` 458-459, 466 — a `mod tests` driving `retrying()` through a `RemoteTransport`
+  `FnMut` step: one retry, then the spent budget reporting the FIRST error.
+- `remote_peer/runtime.rs` 202-203 — `reset_for_test` with a supervisor left resident by
+  `install_supervisor_for_test`.
+- `runtime.rs` 1159 — `state.activity` -> `sessions_activity`: subscribe, create a row, wait for the
+  structural packet, then move only recency with `record_thread_message_activity`.
+- `runtime.rs` 1699 — the ~640 KiB page path.
+- plus the remaining rows named in its evidence.
+
+## My checks
+
+- `cargo test -p futureos --lib --no-features headless -- remote_peer::transfer` -> **42 passed, 0
+  failed, 55 s**.
+- `remote_peer::runtime::tests` -> **22 passed, 0 failed**.
+- The seven function names exist where it says: `a_page_larger_than_one_reply_arrives_intact` (:479),
+  `a_run_scoped_page_repeats_its_run_on_every_chunk` (:540),
+  `a_command_against_a_dead_broker_drops_the_host_and_starts_retrying` (:672),
+  `connect_retry_policy_is_transient_and_not_stopped_and_not_already_retrying` (:1442).
+
+## The `verify gate rejected (exit 1)`
+
+Not reproduced as a test failure. This is the class recorded in INCIDENTS F.93: a `--verify` command
+attached at creation that cannot pass as written (wrong flags, wrong scope, or a filter that includes a
+known-contended group). Per PLAN §6a a failing validator does not block completion when the evidence is
+supplied directly, which it was. Recorded rather than silently ignored: the validator should be re-pointed
+to the exact test group this ticket touched, not to the whole crate.
+
+## Uncertainty
+
+Its evidence does not state the load during the run, so the rates are not offered; nothing here claims a
+rate, only that nine specific lines now execute under a named test.

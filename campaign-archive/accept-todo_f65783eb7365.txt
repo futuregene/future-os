@@ -1,0 +1,41 @@
+VERIFIED — todo_f65783eb7365 (TAU-SHELL-LAND), and its successor SHELL-TAIL already took the figure further.
+
+## What this settled
+
+The module's residual had been a **range** (107–127) since REV-TAURI-SHELL falsified 90 of 217 rows and I
+could not tell how many of the 43 environment-attributed lines were actually coverable. This delivery
+measured it.
+
+## My verification (independent of its report)
+
+- `reconcile.py` over the record's 12 scopes against `/tmp/tauri-shell-land/union.info`:
+  **115 uncovered / 115 mentioned / MISSING 0 / no STALE**.
+- Gate: `tauri-shell-seg2` PASS on 115 recorded vs 115 measured.
+- The family it claimed to have closed reads **0 uncovered** in that same report
+  (`macos_power.rs`), which is the strongest single row: the review proved its 10 lines cover with
+  **no seam** by posting the three `NSWorkspace` notification names to the `notificationCenter` the
+  observers register on.
+- Per-file: `lib.rs` 75, and the two rows that resisted are named (`main.rs:51` a closing brace;
+  `lib.rs:1040` `APP_HANDLE.set`, the setup hook).
+
+## Three numbers, one artifact
+
+The ledger said **107** (my arithmetic: 150 − 43), the review's own ticket expected **127**, and the
+instrument said **115**. Both estimates were wrong; the review's per-row verdicts were right. 25 of the
+115 were `host-state-blocked` (they need `RunEvent::Ready`, absent here — F.90, seventh observation), so
+the projection for a Ready session was 90.
+
+## Already superseded
+
+Its successor **SHELL-TAIL** then closed the last three reachable rows (`lib.rs` 212/215/244 via a mock
+window labelled `main`, plus the three `if let` braces), measuring **109** with a projection of **87**.
+I verified that separately (109/109/MISSING 0) and the ledger now carries 109 with the full history of
+the wrong estimates kept in place — 150 published, retracted, my 107, the review's 127, then 115, then
+109.
+
+## Method worth keeping
+
+Two flavours rendered per leg with `clean` between, then unioned; `ALIVE_EXIT=0`, `LEGCHECK_EXIT=0`
+(SF 170 gui / 138 headless / 172 union); gui leg 2142 passed / 0 failed at load 4.10. The headless leg's
+highest `lib.rs` DA line (174) is below `mod gui` (196), which is *why* the union is legitimate rather
+than an accident — the kind of check that makes a union a measurement instead of an addition.

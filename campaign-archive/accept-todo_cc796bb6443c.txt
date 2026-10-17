@@ -1,0 +1,61 @@
+SUPERVISOR VERDICT — AG-A/AG-B HYGIENE (todo_cc796bb6443c): VERIFIED, and it corrected an instruction of mine with a measurement.
+
+THE PART THAT MATTERS MOST: **IT REFUSED MY TICKET'S LITERAL INSTRUCTION AND WAS RIGHT.**
+  My Part 1 said to move `session/journal_compaction.rs:171`'s number out of the claim cell, on REV-GOAL
+  §9.1's premise that the row "flips". The unit checked the premise instead of executing the instruction,
+  found **0 in all 39 reports of the campaign's documented chain**, and refused — because for a
+  non-flipping line the number belongs in the claim cell, **where the tripwire's STALE half checks it**,
+  and moving it would hide a genuinely uncovered line from that check. That is the correct reading of the
+  convention and a better answer than the one I asked for; I have recorded the refusal as settled in the
+  ruling ticket (todo_23d2a86efeb3) so nobody re-opens it.
+
+I REPRODUCED THE DECISIVE EVIDENCE AND ADDED ONE PRECISION OF MY OWN:
+  * **the category is refuted as it says**: the line **has its own `DA:` record (count 0)** in every report
+    while its statement-shape siblings read non-zero, and `attribution-artifact` means llvm-cov does not
+    instrument the region. So the label was wrong regardless of the history question.
+  * **the source is byte-identical to the baseline revision** (it verified; consistent with a "flip" story
+    that cannot be a source-change artifact).
+  * **my own scan of all 341 reports on disk** sharpens its claim: `DA:171` reads **1** in exactly two
+    reports — `/tmp/agent-a-lcov.info` (17:55) and `/tmp/agent-a-norm.info` (17:57) — and **0 in the 162
+    since**, including both reports the old row named. Those two are **pre-campaign exploratory runs with a
+    147-file scope** (segment 1's accepted report has 163), which reconciles the row's vague "covered in
+    the baseline and first run" with the unit's "0 in all 39". Its refutation is correct about the artifacts
+    the row cited; I recorded the two early ones so the history is exact and nobody re-litigates it.
+
+ITS §6-EXCEPTION WARNING WAS ALREADY RESOLVED BY MY SNAPSHOT, and I checked rather than assumed: it said
+  HEAD carried the pre-tightening wording while the tree had the tightened one. `git status` shows
+  `docs/testing/module-agent-core.md` **clean**, so the snapshot captured the tightened text — exactly the
+  F.59/F.67 class it was worried about, caught in advance this time.
+
+PART 2 (the home-lock fix) IS REAL AND DOCUMENTED — I read the code: `agent/src/utils/mod.rs:833`'s
+  `default_config_dir_exists` now takes `test_support::home_env_lock()` with a comment explaining why this
+  was the one outlier (the other readers assert only a leaf, a filename or a trailing component, so a
+  redirected root cannot break them). Its honesty about the limit is right: **the lock fixes the race, not a
+  leak** — a leaked `FUTURE_HOME` would still defeat the assertion, which is why it asked for the audit over
+  the crate's other readers. I made that audit item 2 of the ruling ticket, with the instruction to
+  re-measure the call sites rather than trust its count of 31.
+
+AG-B ITEMS: it measured rather than repeated — `llm/mod.rs` 422 flips **5 of 17**, `skill_reco/mod.rs` 228
+  **does not** flip under the final test set (its one non-zero reading is the pre-work baseline, a different
+  test set), and it recomputed the AG-B arithmetic from the table, **exposing two compensating errors that
+  had made the old expression right by accident**. I did not re-derive the 5/17 or the arithmetic myself; I
+  record them as its measurements, and the row wording now distinguishes "flips" from "reads non-zero once
+  under a different test set" — which is the distinction that matters for the convention.
+
+ITS OWN PROCESS ERRORS, reported rather than hidden: two earlier drafts of its item-13 text — one displaced
+  §7 item 12's opening (repaired; items 11/12/13 now read in order), one asserted "the other 12 readers" from
+  memory and was re-measured to 31 call sites across 12 files. Both are the class this campaign keeps
+  finding, and the fixes are the right ones.
+
+RULING ISSUED (todo_23d2a86efeb3, P2, worker-agent-svc, its scope): the line is **`coverable`** — write the
+  "hold the SQLite worker, `shutdown()`, release" fixture, and if the window cannot be hit after an honest
+  attempt, register `unreachable-in-this-environment` with the race argument plus the attempt's evidence.
+  I applied the campaign's own precedent, both directions: I first accepted a waiver for `cli.rs:590` and
+  REV-AGENT covered it cheaply; I refused re-waiving `webui/server.rs` 105-110 only because no fixture can
+  exist on this platform. Here the fixture exists, so the line gets a test — and covering it removes an OPEN
+  line instead of renaming it. The ticket also carries the history precision above and the home-lock audit.
+
+NOT VERIFIED BY ME: the 5/17 flip count and the AG-B arithmetic recomputation; the "39 reports" enumeration
+  (I scanned all 341 and reported what I found, which reconciles); the load-stamped 2×40 pair for part 2
+  (recorded as its evidence, and I confirmed the deterministic part — the `mktemp` predicate failure — is the
+  claim it leans on).

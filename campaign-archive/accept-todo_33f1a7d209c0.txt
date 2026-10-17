@@ -1,0 +1,52 @@
+TAU-C8 (todo_33f1a7d209c0) — SUPERVISOR VERDICT: VERIFIED. 238 -> 150 uncovered lines in the twelve scopes: the authorised driver covered 88 lines, and "needs the main thread" is retired from the ledger.
+
+REPRODUCED with the authoritative tripwire:
+  python3 .future/cov100/reconcile.py --report /tmp/tauri-shell-lcov-c8union.info \
+    --scope <the twelve tauri-shell scopes from pairings.json> \
+    --doc docs/testing/module-tauri-shell.md --section "Segment 8"
+  -> files with uncovered lines=11   uncovered lines=150   mentioned 150   MISSING 0   no STALE
+
+EVERY PER-FILE NUMBER MATCHES ITS CLAIM, which is also what proves its "LOST=0":
+  lib.rs 63 (was 105 = -42) · menu.rs 2 (was 48 = -46) · main.rs 21 · desktop_shutdown.rs 18 ·
+  launch.rs 15 · macos_power.rs 10 · coordinator.rs 8 · instance.rs 5 · runtime.rs 4 ·
+  future_login.rs 3 · bin/futureos-headless.rs 1 · host_environment.rs ABSENT (0)
+  = 150 exactly, 11 files with uncovered lines. The other ten files are byte-identical to segment 7's
+  counts I verified last turn, so the -88 is -42 in lib.rs and -46 in menu.rs and NOTHING else moved -
+  i.e. the "zero lost lines in both directions" claim is an ARITHMETIC consequence I could check, not a
+  narrative I had to trust. (Its own estimate from the S5.3 probe was ~87; the measurement is 88.)
+
+MY RULING WAS THE RIGHT ONE, and the evidence is on disk: I refused its first two options (a new
+  `src/bin/` product artifact, or waiving the family) and directed route (iii), a `harness = false` TEST
+  target - strictly better because it runs on the real main thread, is run by `cargo test` (so llvm-cov
+  instruments it), is not packaged, and needs no new product artifact. Verified present:
+  `desktop/src-tauri/tests/gui_main_thread_drive.rs` with `harness = false` AND
+  `required-features = ["gui"]` (Cargo.toml:32-35). The author's own module doc records why it exits via
+  `libc::exit`/atexit rather than SIGKILL (LLVM writes the profile from an atexit handler - Appendix S7).
+
+THE INTERFACE REQUIREMENT I ADDED IS HONOURED AND OBSERVABLE, which matters because I had to amend my own
+  harness for it: the driver prints `gui_main_thread_drive: driver completed` (const at line 50, printed at
+  109) precisely because a `harness = false` target emits no `test result:` line and the campaign's NEW-A
+  truncation guard would otherwise report a CORRECT run as truncated. I checked the measurement log:
+  the marker appears **2 times**, and the log's `Running` lines are all accounted for by result lines plus
+  that marker - so the guard can count this target and the run is not flagged.
+
+QUOTABILITY (PLAN section 5.3): the gui leg is red - `2069 passed; 3 failed` - and the three are the known
+  out-of-scope families (`remote_peer/testing.rs:30` once, `remote/tests.rs:424` twice: the port-8022 bridge
+  family, down from 8 earlier in the day because it is intermittent). None is inside the twelve scopes; the
+  direction argument holds (a red run executes less code, so 150 is an upper bound); and the frozen sweep
+  re-measures.
+
+THE RE-DERIVATION IS THE SUBSTANTIVE PART AND IT IS THE RIGHT SHAPE: the 88 lines are now COVERED with no
+  waiver, and the remaining 150 are grouped by what is ACTUALLY missing - 21 groups (S8.1-S8.21), each a
+  concrete input: a second instance (12), a real menu click (11), a real window close request (11), failure
+  arms of calls that succeed on this host (11), a launcher process plus bin argv arms (36), `cfg(not(test))`
+  (11), real power notifications (10), and so on - rolled up as 127 `unreachable-in-this-environment` +
+  19 `unreachable-by-construction` + 3 `attribution-artifact` + 1 `platform-unmeasured` = 150, with a
+  21-group per-line index. That is the difference between "these lines need a main thread" (a category that
+  retired this segment) and "here is the concrete thing each line needs".
+
+NOT VERIFIED BY ME: the individual 150 rows' group assignments and the claimed `cfg(not(test))` / private
+  `ExitRequestApi` mechanisms; the per-line index's row count. The review unit for this record
+  (REV-TAURI-SHELL) exists and is correctly gated behind this module's writers - that is where those
+  categories get attacked, per the campaign's calibration (author-assigned tags fall about half to two
+  thirds of the time).

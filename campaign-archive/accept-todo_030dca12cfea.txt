@@ -1,0 +1,55 @@
+VERIFIED — todo_030dca12cfea (COALESCE-GROWTH), and this ticket overturned my own published claim.
+
+## What it found
+
+`real-network.md` §3.3a recorded `measure_real_journal` FAILING at the production 100 ms window with
+`coalescing must not grow the lane`, and read that as "the envelope makes the published lane larger".
+I carried that reading into the PR body and the final report as "a real defect".
+
+Measured properly, THERE IS NO PRODUCT DEFECT. The lane was byte-identical:
+`{"events":19,"todayBytes":9196,"coalescedBytes":9196,"published":19,"published":19,"ratio":1.0}`.
+
+## Mechanism, verified by me in the source
+
+- `coalesce.rs:208` — `if pending.merged == 0 { out.push(pending.event); return; }`: a lone fragment is
+  handed back unchanged, so a merged envelope CANNOT land on a single event. I read this line myself.
+- `COALESCE_WINDOW = 100 ms` (`coalesce.rs:59`);
+- that journal's `text_chunk` gaps are **100.9-110 ms**, i.e. every fragment arrives after its
+  predecessor's window closed. Nothing *may* merge.
+- the old assertion was strict (`coalesced_bytes < today_bytes`), which no journal that cannot merge
+  can ever satisfy. THAT was the defect — the measurement, not the coalescer.
+
+## Why the first reading was a guess
+
+The driver printed its marker AFTER its assertions, so the failing run reported no numbers at all. The
+ticket made printing-before-asserting permanent and then measured both cases:
+
+| journal (real stack) | gaps | window | publishes | bytes | verdict |
+|---|---|---|---|---|---|
+| slow (stub 100 ms/token) | 100.9-110 ms | 100 ms (prod) | 19/19 | 9196 -> 9196 | nothing to merge; unchanged is correct |
+| same journal | same | 5000 ms | 7/19 | 9196 -> 4748 (1.94x) | merge path correct |
+| burst (stub 20 ms/token) | 8-30 ms | **100 ms (prod)** | 21/69 | 31375 -> 13666 (2.30x) | the window does its job |
+
+The burst journal is the case the original finding was really about, and it shows the production window
+merging 2.30x with every invariant held (69 parties, no character lost, newest index published).
+
+## What I corrected because of this
+
+1. `docs/testing/real-network.md` — applied the unit's `doc-correction.patch` myself (`git apply
+   --check` = 0). It had been blocked on a one-file grant for `docs/testing/real-network.md`, which is
+   not in its write set; the grant was correct to refuse to be inferred from dispatch (F.76.3), and the
+   patch was reviewed before applying.
+2. `.future/cov100/PR-BODY.md` and the GitHub PR body — the "real defect" paragraph now states the
+   correction and the reason (marker printed after the assertions).
+3. `.future/cov100/FINAL-REPORT-DRAFT.md` §6.4 — same, plus the sentence that this is the campaign's
+   clearest example of a published conclusion being wrong and corrected in place.
+
+No production behaviour changed: `COALESCE_WINDOW` is still 100 ms and the only non-test addition is a
+`#[cfg(test)]` predicate.
+
+## The transferable lesson
+
+A failing assertion is a claim about the CODE until the instrument is shown to report what it measured.
+This run's numbers were printed after the assertions, so the failure carried no evidence - and a guess
+became a "real defect" that reached two published documents. Recorded for the FLAKES/PLAN rules: a
+measurement driver must print its numbers BEFORE it asserts anything about them.

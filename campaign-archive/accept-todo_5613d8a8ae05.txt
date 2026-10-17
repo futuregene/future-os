@@ -1,0 +1,61 @@
+VERIFIED — todo_5613d8a8ae05 (shell ruling: item (3) alone, asks (a) and (c)).
+
+## What the ruling asked for, and what landed
+
+My ruling told the unit to do (c) loud failure, allow (a) one bounded retry with provenance
+printed, and reject (b)/(d). I read the code rather than the report:
+
+- **(c) implemented, in the wording the ruling specified**: a run that does not complete the
+  hand-off prints one greppable line
+  `gui_main_thread_drive: hand-off FAILED (<reason>; no reply within Ns); socket=<path>`.
+  The socket is resolved from `own_socket()` and labelled `<undetermined>` when absent — the
+  ruling's point was that the socket is the one thing a reader cannot reconstruct.
+- **(a) implemented and BETTER than asked**: it added the provenance lines
+  `hand-off ok, first-try` / `hand-off ok, retried (the second spawn produced the reply; the
+  first round was degraded)` — and, which I did not ask for, it GATED the retry behind
+  `listener_is_up(socket)` plus a distinct `hand-off NOT RETRIED (nothing is accepting on …)`
+  line. That removes the failure mode my ruling was worried about: a retry can no longer mask
+  a dead listener, because an unattended retry is not attempted at all.
+- (b) and (d) rejected, as ruled. `pub(super)` rejected. No fault-injection env knob added.
+
+## Checks I ran myself
+
+- `cargo fmt --check` (desktop/src-tauri) rc 0.
+- `cargo clippy --tests -- -D warnings` — first run FAILED at
+  `src/desktop_shutdown/coordinator.rs:249` (`nonminimal_bool`). I verified via `git show HEAD:`
+  that this line is **pre-existing in HEAD**, and the unit's 73-line change to that file is
+  entirely inside `mod tests` — so it is not this unit's regression, and the unit correctly
+  reported it as outside its grant. I fixed it as supervisor (one line:
+  `!is_some_and(op.state=="failed")` -> `is_none_or(op.state!="failed")`, equivalent for Option).
+  After the fix: clippy rc 0.
+- `cargo test --test gui_main_thread_drive` -> **rc 0**, and it printed
+  `hand-off ok, first-try` on **2 of 2** runs.
+
+## The datum that matters for the freeze
+
+**The hand-off now succeeds.** The record documents CHECK B (hand-off) failing five consecutive
+segments; my two runs read `hand-off ok, first-try` with children exiting in 1.86 s and a real
+reply forwarded. So the hand-off is INTERMITTENT, not broken — which is exactly what I recorded
+in the ruling's addendum after TAU-C15 passed it once. Two consequences for the module record:
+
+1. A measurement leg can no longer be discarded merely because the hand-off failed once; it has
+   to be read from the FAILED/retried line (which is why (c) mattered).
+2. `hand-off ok, first-try` does NOT imply the nine callback lines are reachable: those need
+   `RunEvent::Ready` (CHECK A), which still does not fire on this host. This run again printed
+   `driver completed without "embedded Agent ready"; listener_up=true elapsed=20.0s`.
+
+## Not committed, deliberately
+
+The successor (todo_f65783eb7365, TAU-SHELL-LAND) has claimed the ticket and was writing the
+same tree while I checked this: `lib.rs` 12:31:56, a new `tests/re_pair_entry_points.rs` 12:31:38,
+`macos_power.rs` 12:30:21 — i.e. it is already landing the fallen rows. Under F.80/§4b I do not
+commit a running unit's files, and path-level ownership cannot separate two units' work inside
+one file. Nothing is lost: the work is in the working tree and the successor's snapshot will
+carry both halves. When it delivers I will check its record for any withdraw/revert (F.80).
+
+## Uncertainties carried forward (the unit's own, which I agree with)
+
+- The `companion path` wording of the FAILED line never executed (no natural miss occurred), so
+  that branch is code-read only.
+- Whether `a_success_after_the_deadline…` flake predates this segment is not established; the
+  mechanism and fix are.

@@ -1,0 +1,25 @@
+SUPERVISOR VERDICT — `webui/server.rs` ROW (todo_dd2f1e6835f1): VERIFIED. The row I ruled on is corrected, and it found where the phantom line came from.
+
+REPRODUCED INDEPENDENTLY over BOTH reports (my own parse, not its helper):
+  * `orchestration/goal/src/webui/server.rs` line **88 reads `DA:1`** in `/tmp/r2c-lcov.info` AND
+    `/tmp/r2d-lcov.info` — it is covered by §11.13(2)'s stub `open` on PATH, so it cannot be a residual line;
+  * lines **105-110 have NO `DA:` record at all** in either report, because the definition there is
+    `#[cfg(target_os = "windows")]`. A line that is not compiled is not an *uncovered* line.
+  * the row now reads **"(15 lines)"** with the Windows arm as **shape (a)**, Windows named — matching the
+    ruling: `unreachable-in-this-environment`, "does not compile here", with the missing-`DA:`-record
+    argument as its mechanical evidence.
+
+THE PHANTOM SIXTEENTH LINE HAS A DIAGNOSIS, which is better than a repair: the round-1 group was
+  **mis-numbered by one** — it said "6 lines: 88, 106-110", and that list names SEVEN. So the count and its
+  own list disagreed, and the row's total inherited the error. I had verified the two line-level facts and
+  concluded "15"; it found why the record said 16. That is the right way to close a row: the number, the
+  list it is derived from, and the arithmetic between them all checked.
+
+ACCURACY OF ITS EXTRA CLAIMS: I did not re-verify each of the four doc fixes line by line (the row at 615,
+§11.14.4's withdrawn parity paragraph, §11.14's next-checks item 2, §11.13's "What this does not claim"
+bullet, §11.15's subsection). I verified the two facts that decide the row and the row's new totals, which
+is what the ruling turned on.
+
+NOT RE-OPENED, correctly: the recorder-PE PLAN §4b seam stays REFUSED (no new build machinery for lines
+  that do not compile here), and no Windows measurement was taken — there is no Windows host, which is the
+  entire point of shape (a).

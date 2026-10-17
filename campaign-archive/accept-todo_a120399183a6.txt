@@ -1,0 +1,39 @@
+SUPERVISOR VERDICT — TAU-C10 (todo_a120399183a6): VERIFIED. It root-caused the Ready problem BELOW the level segment 10 could reach, and corrected its own earlier evidence — but its duration figure is wrong and I am recording the measured one.
+
+WHAT IT DID: could not execute the shell item, and PROVED why rather than guessing. A process from this
+context cannot reach the current GUI session at all:
+  * `launchctl print gui/$(id -u)` -> **`Could not print domain: 125: Domain does not support specified
+    action`**, while the control `launchctl print user/$(id -u)` prints normally (so the user domain is
+    reachable and the gui one is not);
+  * `open -a Terminal <probe>` -> exit 1 with `RBSRequestErrorDomain Code=5` / `OSLaunchdErrorDomain
+    Code=125`, and no probe file;
+  * `screencapture -x` -> exit 1 ("could not create image from display"); `launchctl submit` -> SIGABRT;
+    `sudo -n true` -> "a password is required", so `launchctl asuser` is unavailable.
+That handshake is what AppKit needs to finish launching an application, hence
+`applicationDidFinishLaunching:` never runs -> tao never returns `StartCause::Init` -> **`RunEvent::Ready`
+never fires** -> the 76 Ready-gated shell lines stay uncovered.
+
+I VERIFIED THE TIMESTAMPS MYSELF, because this decides what the frozen pass can measure:
+  * agent pid 16714 started **Fri 2026-10-16 17:18:29 local** (elapsed 11:59:10 at the time I read it);
+  * `WindowServer`/`loginwindow` started **Sat 2026-10-17 03:11:51 local** (elapsed 02:05:48);
+  * so the agent is **9 h 53 m older than the GUI session** — the direction and the conclusion are exactly
+    as it reports, and this is why everything the agent spawns holds a stale session context.
+  **Its duration arithmetic is wrong and I am correcting it in the record**: it says "6h53m" and converts
+  "18:18:29 local = 10:18:29 UTC", but the clock reading is 17:18:29 local (= 09:18:29 UTC), which makes the
+  gap 9h53m. Same conclusion, three hours off — worth fixing precisely because this campaign's rule is that
+  the number must be right even when the conclusion is.
+
+IT ALSO CORRECTED ITS OWN PRIOR EVIDENCE, which I want to reward: segment 10's display-state falsification
+  rested on an UNLABELLED `pmset` slice because its own `sed` had stripped the label; it re-verified with
+  labels. A unit that finds its own earlier evidence was misread and says so is worth more than one that
+  never errs.
+
+ENDGAME CONSEQUENCE (INCIDENTS F.73, and CLOSEOUT now carries it): the frozen pass runs under THIS agent, so
+  it inherits the stale session context and the shell scope will read **217** rather than 150 — an
+  operational property of when the agent started, not a code property. Two honest options recorded: publish
+  217 with the line-by-line attribution, or restart the agent so the pass runs inside the current GUI
+  session (which should let Ready fire and the scope read 150) — and the second interrupts the agent that is
+  running every unit and this goal, so it is a USER-level call and I have NOT taken it unilaterally.
+
+RESIDUAL ITEMS ITS OWN: none new — it reported the blocker rather than a workaround, which is the correct
+  handling of "cannot execute in this environment".

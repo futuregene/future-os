@@ -1,0 +1,47 @@
+AG-A SEGMENT 25 (todo_eb29eeb3ba7a) — SUPERVISOR ACCEPTANCE: VERIFIED (204 -> 203).
+
+REPRODUCED (my own run, authoritative tool):
+  python3 .future/cov100/covlines.py total --under agent/src/rpc --under agent/src/grpc \
+      --under agent/src/service --under agent/src/session --under agent/src/skills \
+      --under agent/src/approval_review --under agent/src/cli.rs /tmp/agent-a-s35-norm.info
+  -> covered=28399 measured=28602 uncovered=203 lines%=99.2903
+  Exactly the claimed 203 / 99.2903% (unit chain 581 -> 203 = -378).
+
+GREEN RUN (the quotability precondition): /tmp/agent-a-s35.log
+  sum of the 11 `test result:` lines = 2486 passed / 0 failed (lib 2423); 11 Running lines
+  = 11 summaries, so no NEW-A truncation. Quotable.
+
+THE TWO ROW CLAIMS, per the report's per-line detail:
+  * approval_review/provider.rs 181 -> COVERED. The file's whole remaining uncovered set is
+    {188}; 181 no longer appears. Mechanism (its F-61) verified in the source and by running it:
+    agent/src/approval_review/tests/provider.rs:113 is #[tokio::test(start_paused = true)] and
+    drives a gateway that accepts and never answers; I ran it -> ok in 0.01s. So the "30 s cost"
+    that this row carried for five segments was never a cost.
+  * cli.rs 591 -> unreachable-by-construction. cli.rs 590/591 remain DA:0 in the report; the row
+    moved out of `coverable` without claiming coverage. Premise I checked in the source:
+    agent/src/service/mod.rs:302-321 clears `server_running` ONLY in `ServerGuard::drop`, and that
+    guard lives inside `serve`. See the caveat below.
+
+ITS SELF-CORRECTION (F-60) IS HONEST AND I VERIFIED IT:
+  Segment 24 printed `cargo fmt --check EXIT=0 clean (/tmp/g28-fmt.log)`. That file does not exist
+  (`ls`: /tmp/g28-clippy.log exists, /tmp/g28-fmt.log does not) and the doc now says so at §0.5
+  (lines 1368-1377) with the adopted rule. A gate cited a log that was never written - the same
+  provenance class it flags in peers. Reporting it against itself is the right behaviour.
+
+THE FMT ITEM I RAISED IS STALE, AS IT SAYS: reclamation_arm_tests.rs:264 is the wrapped form,
+  matches HEAD, and the tree-wide `cargo fmt --check` is clean now.
+
+CAVEAT RECORDED (not a failure): cli.rs 591's `unreachable-by-construction` rests on a tokio
+  `select!` arm-ordering argument (a pair of adjacent lines landing in DIFFERENT categories) that I
+  could not adjudicate by reading the code - the select's branch choice among simultaneously-ready
+  futures is what decides it. Per the campaign's calibration (author-assigned categories fail
+  roughly two thirds of the time under adversarial review), this is exactly what REV-AGENT's brief
+  must attack by name. Recorded, not disputed.
+
+DOC DEFECT I FOUND AND ROUTED (F.48 class, second occurrence in this doc): the "How this ledger is
+  checked" block inside §0.5 cites /tmp/agent-a-s25-norm.info (segment 19) and the old section label
+  `unit \`AG-A\``, and records "uncovered lines=241 ... MISSING 0". Run verbatim today it prints
+  `uncovered lines=241 / mentioned 234 / MISSING 7`, i.e. it no longer reproduces its own recorded
+  output while the section heading is correct at 203. See the follow-up todo.
+
+Artifacts: /tmp/agent-a-s35-norm.info, /tmp/agent-a-s35.log.

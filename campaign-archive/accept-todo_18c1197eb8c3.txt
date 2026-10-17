@@ -1,0 +1,75 @@
+REWORK-GOAL (todo_18c1197eb8c3) — SUPERVISOR VERDICT: VERIFIED. The three falls REV-GOAL found are COVERED, the number is 77, and the three artifacts agree.
+
+NUMBER + LEDGER, reproduced by me:
+  * `covlines.py total` over `packages` + `orchestration/tasks` + `orchestration/goal` on
+    `/tmp/r2d-lcov.info` -> **covered 33243 / measured 33320 / uncovered 77 / 99.7689 %** - exactly its claim
+    (82 -> 77).
+  * tripwire: `reconcile.py --report /tmp/r2d-lcov.info --scope <the three> --doc
+    docs/testing/module-goal.md --section "Round 2"` -> **77 uncovered / 77 mentioned / MISSING 0**, no STALE.
+  * category census over the 77: `platform-unmeasured` 11 + `unreachable-in-this-environment` 9 +
+    `unreachable-by-construction` 21 + `attribution-artifact` 36 = **77** (arithmetic checks).
+
+THE THREE FALLS ARE COVERED, and one of them confirms the mechanism I derived when verifying F-1:
+  * `compat.rs:270 = 1` (was 0) **and `compat.rs:235 = 512`** - and 512 is exactly `MAX_LOCK_ATTEMPTS`,
+    the constant I read in the source when I checked REV-GOAL's claim that one dangling symlink drives the
+    loop to exhaustion. The landed fixture is that symlink (`a_dangling_symlink_lock_spins_the_attempt_budget
+    _and_reports_contention`, 1.9 ms), so the state I called "absurdly cheap to build" was built.
+    Neighbours are covered (234 = 1378, 271 = 1372), so this is real coverage, not region luck.
+  * `unix_endpoint.rs:157 = 1` (neighbours 155/156 = 22, 158/159 = 21).
+  * `supervision.rs 315/316/317 = 1/1/1` (neighbours 313/314 = 220, 318/319 = 219).
+  It ALSO replaced its own first `unix_endpoint` fixture rather than re-budgeting it: the first version
+  failed a real plain-suite run (0 hits in 20 000 drives), so it re-created the endpoint per attempt with
+  four churners (measured hit at attempts 1-173 over 12 runs). Replacing a fixture that does not work
+  instead of widening it is the right instinct.
+
+I DID THE REGISTRY RE-POINT THE RECORD ASKED FOR, and verified the outcome:
+  * `repoint-pairing.py` (new tool) refuses unless the pairing's CURRENT values match the ones the caller
+    states - so a stale instruction cannot silently rewrite a live registry entry. Controls: it aborts on
+    a wrong old report, on a wrong old count, and on a second run (idempotence).
+  * After it: `goal` pairing = `/tmp/r2d-lcov.info`, expect 77/77, and the gate line for that pairing now
+    reads **`goal … 77 77 0 0 0 section PASS`** (it was FAIL with 92 recorded vs 77 measured).
+
+TWO TEST-ONLY FIXES - VERIFIED BY DIFF, NOT BY READING THE RESULT (the campaign's rule is that a flake is
+  never fixed by weakening an assertion):
+  * `serve_sse_ends_cleanly_when_the_client_vanishes_before_a_ping`: a single `advance(16 s)` became a
+    bounded loop (0..64 of advance + yields + 1 ms real sleep). The diff touches ONLY the drive loop, and
+    both assertions survive verbatim ("the heartbeat write to a vanished client must end the task" / "a
+    vanished client is an ordinary end of stream, not an error"). The comment documents why one advance is
+    insufficient (a post-close write is not refused synchronously; the reset is a kernel event, not a
+    virtual-time one) and states the measured rate (3 of 4 instrumented whole-suite runs red at load 16-55,
+    passing standalone). Legitimate.
+  * `run_server_serves_and_broadcaster_ticks`: the connect-poll loop changed from `for _ in 0..500 { if let
+    Ok(c) = connect() { client = Some(c); break; } yield_now().await; }` to a `while client.is_none() &&
+    attempt < 500 { attempt += 1; client = connect().await.ok(); yield_now().await; }`. Still bounded at 500,
+    the `client.expect("server binds and accepts")` and every assertion after it are unchanged (the diff
+    has no other lines).
+  **BUT I AM NOT ACCEPTING ITS STATED MECHANISM FOR THE SECOND ONE, and this is the one item carried
+  forward**: it says "the loop no longer `break`s early, so the retry path runs every time". Removing the
+  early `break` does NOT make the retry run more often - both shapes retry exactly when a connect FAILS, and
+  whether the first connect fails still depends on whether the server task has bound yet (the very race it
+  describes). The likely real change is an ATTRIBUTION flip: an explicit `attempt += 1` line now carries the
+  loop bookkeeping that the `for` iterator's increment used to hold, and llvm attributes it to a different
+  line/region. If that is what happened, the row belongs in `attribution-artifact` (as `shutdown.rs` 273/303
+  and `journal.rs` 202/203 do), not "now covered by my fix". I am NOT calling it a fall: no assertion was
+  weakened and the loop is still bounded. REV-GOAL-2 must rule on which of the two it is, with evidence.
+
+TOOL PERFORMANCE FINDING (matters at the freeze, so recording it): `staletable.py --suggest` **timed out at
+  300 s** on this tree. `endgame.sh` calls that path when it sees drift, so at freeze time the documented
+  repair would hang instead of naming a candidate. The re-point above is the workaround - a direct edit
+  behind a precondition guard - and I did not investigate whether my fence-aware slicer (which now slices
+  more text per pairing) contributed to the cost. Flagged for the endgame, not fixed here.
+
+SUCCESSOR: `todo_cd99a76b7a69` (REV-GOAL-2, declared by the unit). I have RE-SCOPED it and its brief says so:
+  * it is now **P2**, not P1 - its subject is the smallest remaining review (77 lines, three fixtures whose
+    DA counts I verified myself), while the four tauri-ledger reviews and VERIFY-CLI-R2 are larger and
+    closer to publication;
+  * it must **rule on the two test-only fixes** (the item above is its highest-value task) and confirm the
+    F-6/F-4 corrections and the untouched list;
+  * it must **NOT re-falsify the three fixtures' coverage** - I reproduced `compat.rs 270/235`,
+    `unix_endpoint.rs:157` and `supervision.rs 315-317` from `/tmp/r2d-lcov.info` myself, so re-deriving
+    those would spend its budget on work already done.
+
+ALSO: the third fall's integration test (`orchestration/goal/tests/supervision_watchdog_stall_drive.rs`) was
+  left untracked for me to add, as the unit said. I confirmed it compiles (`cargo check -p future-goal
+  --test supervision_watchdog_stall_drive` -> Finished) before committing it, because an uncompilable test
+  in the tree would break both the frozen suite and the PR.

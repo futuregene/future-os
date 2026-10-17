@@ -1,0 +1,39 @@
+SUPERVISOR VERDICT — TAU-C14 (todo_ff5db8d40fd4): VERIFIED as a correct STOP, and its item (1) is an unanswered decision of MINE — now ruled.
+
+(1) IT CORRECTLY REFUSED TO LAND ANY OPTION SILENTLY, having searched the goal ledger for a ruling on the four
+  hand-off options (§S11.9.5) and the `coordinator.rs` scope grant and found none. That check is itself the
+  right behaviour: the correct response to "the supervisor has not decided" is to say so with the search you
+  did, not to pick for me. **The fault was mine, not its** — the asks were recorded in S11.6 and S11.9.5 and I
+  let three of its segments pass without answering. **Ruled now in `todo_5613d8a8ae05`**:
+    * **(c) fail loudly — REQUIRED**: print a distinct line naming the hand-off failure and the socket path, so
+      a measurement that earns nothing is discarded instead of silently reading ~226 where 217 is honest.
+    * **(a) one bounded retry — AUTHORISED**, printing which spawn produced the data, because the outcomes are
+      trivially distinguishable (≈0.1 s/no marker vs ≈17 s/marker) so a retry cannot mask a real hand-off.
+    * **(b) refused** (its own evidence: `listener_up` was already true while the children failed) and
+      **(d) refused as policy** ("acceptable only while a human reads the lines" is the property I want gone).
+    * Plus the **test-only write-set grant** for `desktop/src-tauri/src/desktop_shutdown/coordinator.rs`,
+      correcting my earlier conflation of a *seam* (a production change — still refused) with a *scope grant*
+      (a test in a file the unit already measures).
+  And its standing instruction is endorsed verbatim: **neither (a) nor (c) may be used to claim the
+  environment is healthy** — the fixes are the user action `todo_3917fe72dae3`, not a driver change.
+
+(2) PRECONDITION, 4th observation, direct binary, no `FUTUREOS_DRIVE_ROOT`: `driver completed without
+  "embedded Agent ready"; listener_up=true elapsed=17.0s`. Host state unchanged since S11.1. **No
+  measurement, no number changed** — 217 and S8's 150 stand.
+
+(3) ITS NEW MEASUREMENT IS THE BEST YET ON THE MECHANISM, and it is quantified: with `lsof -U` against a live
+  primary, the process holds **NO `_si.sock` listener at t=5 s or t=15 s and holds its socket from t≈25 s** —
+  i.e. the plugin's listener bind takes **~25 s** in this session. That single fact explains three things that
+  were previously separate observations: why `RunEvent::Ready` never fires, why the driver's `listener_up`
+  gate behaves erratically (fast on some runs, budget-expiring on others), and why the §S11.9.4 isolation
+  primary missed its 30 s listener budget with `listener_up=false`. **A third quantified symptom of one
+  degraded session is exactly what this campaign's diagnosis style asks for**, and it is the first time the
+  bind stall was measured rather than inferred.
+
+(4) IT ALSO MAINTAINS S11.10.2's three independent ways this environment "can look plausible and be wrong" —
+  which is the right frame: the danger here has never been an obviously broken run, it is a run that produces
+  a believable number as an artefact of the session.
+
+NOT VERIFIED BY ME: the `lsof` timings (its measurement; the 25 s figure is consistent with the 17 s companion
+  path it observed and with `Ready` never firing, so it corroborates rather than surprises) and the search it
+  did for the ruling (I confirmed there was indeed no ruling, since I am the one who failed to write it).

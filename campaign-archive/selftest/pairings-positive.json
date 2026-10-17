@@ -1,0 +1,53 @@
+{
+ "version": 1,
+ "generated": "self-test fixture (todo_ab3b61bf54f4)",
+ "purpose": "The positive control for the gate: the same fixture pairing as the negative file, but with a justification whose quote IS in the doc and whose section list names the section the covered rows come from. Must exit 0. Together with pairings-negative.json this pins that the gate discriminates rather than always failing (or always passing).",
+ "pairings": [
+  {
+   "label": "pos-justified",
+   "role": "authoritative",
+   "report": "${ROOT}/.future/cov100/selftest/fixture-lcov.info",
+   "scopes": [
+    "/tmp/cov100-selftest/src"
+   ],
+   "doc": "${ROOT}/.future/cov100/selftest/fixture-doc.md",
+   "section": null,
+   "section_heading": "# Self-test fixture for `reconcile.py`'s STALE split (do not treat as a report)",
+   "provenance": "fixture",
+   "note": "the same two covered rows, this time explained by a quote that exists",
+   "expect": {
+    "uncovered": 1,
+    "claims": 5,
+    "missing": 0,
+    "covered": 3,
+    "absent": 1
+   },
+   "covered_justification": {
+    "sections": [
+     "Self-test fixture for `reconcile.py`'s STALE split"
+    ],
+    "quotes": [
+     "The rows below are kept after the fact on purpose: two of them describe lines the fixture report shows as covered."
+    ],
+    "reason": "the fixture doc says in its own words that two rows describe covered lines"
+   }
+  },
+  {
+   "label": "pos-correct-needle",
+   "role": "authoritative",
+   "report": "${ROOT}/.future/cov100/selftest/fixture-lcov.info",
+   "scopes": [
+    "/tmp/cov100-selftest/src"
+   ],
+   "doc": "${ROOT}/.future/cov100/selftest/fixture-trap-doc.md",
+   "section": "4c. Ledger",
+   "section_heading": "## 4c. Ledger (the real one)",
+   "provenance": "fixture",
+   "note": "the positive control for neg-misslice: the same doc, a needle that is unique to the ledger heading",
+   "expect": {
+    "claims": 1,
+    "covered": 0
+   }
+  }
+ ]
+}

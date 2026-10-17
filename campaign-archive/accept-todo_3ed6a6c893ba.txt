@@ -1,0 +1,49 @@
+VERIFIED — todo_3ed6a6c893ba (REV-TAURI-REMOTE). The heaviest review of the campaign, and the one that
+says most clearly what the published number does NOT mean.
+
+## Its accounting closes
+
+| verdict | rows | lines |
+|---|---|---|
+| FELL — measured | 1 | **2** |
+| FELL — registration | 2 | **146** |
+| wrong mechanism (row survives, reason does not) | 3 | — |
+| SURVIVED (source-checked, token named) | 37 | 1037 |
+| NOT ATTACKED (carried, stated) | 2 | 7 |
+| total | **45** | **1195** |
+
+## What it actually established
+
+1. **Two lines are measurably coverable now** — `verify_e2e.rs:1429` (the baseline `Some(url)` arm) and
+   `:1572` (the `assert_broker_accounting_against` call). Its probe supplies a scripted loopback monitor
+   and drives the **shipping** `run_real_traffic_with(.., Some(url))`; the arithmetic panic is caught on
+   purpose, because reachability — not the numbers — is what the row claims. It also shows the record's
+   mechanism ("the second reading must be known before the run") is true only for the *second* reading:
+   the baseline needs no such number, and §8.4's "fixture-specific constant" route is a **policy refusal,
+   not an impossibility**.
+
+2. **146 lines are registered under a category their mechanism does not support** (132 `start.rs`, 14
+   `transport.rs`). This is the same defect class REV-TAURI-APP found and the same one that made 42 rows
+   wrong in TAU-D6: the category is an environmental claim attached to lines whose obstacle is "no
+   fixture exists yet". It also answers the shape question I would have asked — **the 132-line
+   `cfg(not(test))` block is falsifiable without a seam**: the lines are absent only from the lib *test*
+   binary, and the record's own measurement shows the spawned `futureos`/`futureos-headless` children
+   already reach a prefix of the non-test copy. It names two seam-free constructs (stop the child during
+   the retry sleep, or a ~30-line loopback CONNECT refuser answering `-ERR 'Authorization Violation'`).
+
+3. **"Do not quote 1195 at HEAD."** `transport.rs` and `start.rs` have drifted (+52 / +9) since the record
+   was pinned, so those two rows' anchors no longer resolve. That is the single most useful sentence in
+   the report: the number I have been quoting describes a revision that no longer exists.
+
+## What I am doing about it
+
+I am **not** editing the ledger on the strength of a review. The order that keeps the number honest is:
+re-pin at HEAD → build the one fixture it names → land the 2 measured falls → re-register the 146 with
+the truth (an unbuilt fixture, or a policy exclusion) → re-point the pairing → publish. That is
+`todo_c18f8fd589b6` (TAU-D9), and it carries this review as its recipe.
+
+## Uncertainty it stated rather than smoothed
+
+Two families were not attacked (7 lines) and it says so; three rows carry a mechanism it believes is
+wrong without changing the row's verdict, which is the right granularity — a wrong *reason* is a
+different defect from a wrong *category*, and conflating them would have made its own table unreadable.

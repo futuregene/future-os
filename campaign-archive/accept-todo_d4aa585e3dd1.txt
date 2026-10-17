@@ -1,0 +1,43 @@
+VERIFIED — todo_d4aa585e3dd1 (TAU-D6). The gate is now green on the authoritative set, and the ticket's
+biggest finding overturns a waiver mechanism used on 42 rows.
+
+## Gate state (my measurement, not its report)
+
+`python3 .future/cov100/staletable.py --gate` after this delivery:
+`tauri-remote  authoritative  1484 claims / 1195 uncovered / 289 covered-justified / 0 absent  PASS`,
+and **authoritative pairings: 15 -> clean 14, justified 1, failing 0.** The two remaining FAIL lines are
+`role=wide` (whole-document) pairings, which over-count by design.
+
+## The 18 unregistered lines: registered, and five of them declared REACHABLE
+
+All 18 were in `remote_peer/` and were made by the flake fixes (ccb51ffa3, 5569d8c22) after the ledger
+was written. It registered 13 with a mechanism read in the source and put **5 in a new §4.2 OPEN table
+rather than waiving them** (`transfer.rs:459,466`; `runtime.rs:1699`; `test_support.rs:1838,1896-1897`).
+Declaring a line reachable is the honest outcome I asked for and the opposite of inventing a waiver.
+
+## The finding that matters: the `cfg(test)` waiver was wrong for 42 rows
+
+The record claimed "only the `cfg(test)` copy of the lib runs under the harness". It is false:
+`tests/headless_cli.rs` and `tests/re_pair_entry_points.rs` spawn the instrumented `futureos` /
+`futureos-headless` children via `CARGO_BIN_EXE_*`, and `gui_main_thread_drive.rs` re-executes itself -
+all link the lib WITHOUT `cfg(test)` and call `remote::start()` (`start.rs:24`). So `spawn_start_retry`,
+`spawn_revoke_cleanup` and the rest really execute, and 35 `start.rs` + 5 `shutdown.rs` + 2 `publisher.rs`
+rows were waived on a mechanism that does not hold. Corrected in place, keeping only the tails that are
+genuinely `DA:0`.
+
+The other 7 covered rows are a different case, decided separately and cited: their numbers come from the
+2026-10-16 `lcov4` report and the code moved under them.
+
+## My verification
+
+`cargo fmt --check` clean; `cargo clippy --tests -D warnings` clean (desktop/src-tauri);
+`remote_peer::` tests 0 failed; `remote::verify_e2e` **17 passed / 0 failed / 4 ignored** — the
+`#[ignore]`s were NOT removed, which was an explicit rule of the ticket.
+
+## Uncertainty carried forward
+
+`remote/publisher/coalesce.rs` was modified at 15:00, after the report's 14:48, adding 60 production
+lines. It had 0 uncovered lines in that report, so no row is affected, but **a fresh two-flavour merge is
+needed before "1205" describes the current tree** — recorded in the successor path, not papered over.
+It also flags a real tool artifact: running reconcile with `--scope remote_peer` alone reports a COVERED
+row at `transfer.rs:103` because `remote/transfer.rs` and `remote_peer/transfer.rs` share a basename.

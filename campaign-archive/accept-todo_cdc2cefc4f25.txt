@@ -1,0 +1,52 @@
+TAU-B SEGMENT 8 (todo_cdc2cefc4f25) — SUPERVISOR VERDICT: VERIFIED. 419 -> 409 uncovered in the eleven scopes.
+
+REPRODUCED with the campaign's authoritative verifier (not my own arithmetic):
+  python3 .future/cov100/reconcile.py --report /tmp/appdata-seg8-normalized-lcov.info \
+    --scope desktop/src-tauri/src/commands --scope desktop/src-tauri/src/tasks.rs \
+    --scope desktop/src-tauri/src/store --scope desktop/src-tauri/src/scheduler \
+    --scope desktop/src-tauri/src/agent_bridge --scope desktop/src-tauri/src/agent_providers \
+    --scope desktop/src-tauri/src/shadow_review --scope desktop/src-tauri/src/error.rs \
+    --scope desktop/src-tauri/src/auth_store.rs --scope desktop/src-tauri/src/agent_events.rs \
+    --doc docs/testing/module-tauri-appdata.md --section "Segment 8"
+  -> files with uncovered lines=30   uncovered lines=409   mentioned 409   MISSING 0   no STALE
+  Exactly the claim, and the tripwire is clean.
+
+A TRAP I WALKED INTO AND OUT OF (worth one line in the record's favour): my first attempt used
+  `/tmp/appdata-seg8-normalized.info` and produced 410 uncovered with **97 MISSING** - a false alarm.
+  That file is a partial/per-flavor render; the UNION report the unit named is the right artifact
+  (PLAN section 6a-ter). Same F.48-class trap this campaign keeps finding: the number only means
+  something next to the artifact that produced it. The unit named its artifact correctly.
+
+QUOTABILITY (PLAN section 5.3, four conditions, all satisfied):
+  * the instrumented runs are NOT fully green - /tmp/appdata-seg8-measure.log holds two failing target
+    summaries (gui: 2065 passed / 6 failed; headless: 1646 passed / 3 failed) - but every failure is
+    NAMED and lies OUTSIDE the ten/eleven scopes: `gui::startup_paths_tests::an_auto_connect_that_
+    connects_is_reported_as_connected` (lib.rs:2518), 3 x `remote::tests::runtime_tests::*`
+    (remote/tests.rs:424), 2 x `remote_peer::runtime_tests::*` (remote_peer/testing.rs:30). These are
+    the known NEW-A / fixed-port-8022 families the shell and remote units already documented, in
+    `gui/`, `remote/`, `remote_peer/` - none of which is one of the ten scopes.
+  * direction argument: a red run executes LESS code, so 409 is an upper bound and no line can be
+    falsely reported as covered.
+  * the frozen pass re-measures (endgame.sh), which is where the published number comes from.
+
+ITS DESIGNED WORK, verified in the report: the three closed lines are the ones its two new tests were
+  written for - `agent_bridge/tests.rs::watchdog_leaves_a_settled_row_the_agent_refuses_to_resolve`
+  (reconciliation.rs 649/675: the Agent answers the ledger read successfully AND with a refusal, i.e.
+  SettledRunOutcome::Unknown - the row keeps its own message, is not rewritten, is not memoized) and
+  `run_control.rs::a_second_turn_during_the_history_read_drops_the_pending_title` (run_control.rs 203).
+  Its "three files left the uncovered set entirely" claim checks out: `persist.rs`,
+  `reconciliation.rs` and `session.rs` do not appear in the union report's uncovered set at all.
+
+TEST-ONLY (checked cheaply, stated as such): both new test functions sit below the first `#[cfg(test)]`
+  marker in their file (tests.rs:1383 after 185; run_control.rs:902 after 306), consistent with the
+  claim that no production line changed. I did not re-diff the whole change set for production edits.
+
+ITS ATTRIBUTION IS HONEST AND I AM NOT CREDITING IT TO THE UNIT: only 3 of the 10 closed lines are its
+  designed work; it says so itself (S8.4a: 8 of the 11 closures came from another session's work or a
+  cleaner merge). That is the right way to report a measurement taken on a shared tree.
+
+NOT VERIFIED BY ME: the two flavor runs' raw logs (I read the measure log and the union report, not the
+  per-flavor logs); and the store/threads.rs clippy item I routed earlier this session is part of the
+  frozen-tree gate sweep (CLOSEOUT section 2 is the authority for that), not this delivery.
+
+SUCCESSOR: todo_229484b73e89 (declared by the unit).

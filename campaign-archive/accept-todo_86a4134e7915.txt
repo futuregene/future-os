@@ -1,0 +1,57 @@
+VERIFIED — todo_86a4134e7915 (REV-TAURI-APP). This is the strongest review of the campaign so far in one
+respect: every one of its four measured falls carries a probe that moved the `DA` count from 0 to 1, and
+its accounting closes exactly.
+
+## What it falsified
+
+`module-tauri-appdata` §S18.5 = 378 (368 WAIVED + 10 OPEN). Its verdict table:
+
+| verdict | rows | lines |
+|---|---|---|
+| FELL — measured | 4 | **11** |
+| FELL — registration | 3 | **21** |
+| UNVERIFIABLE | 1 | 4 |
+| SURVIVED | 35 | 342 |
+| total | 43 | **378** |
+
+4+3+1+35 = 43 rows and 11+21+4+342 = 378 lines, so nothing is unaccounted for — which is the property I
+ask every review for and rarely get.
+
+## The four measured falls, and why each is a real correction
+
+1. **`update_recovery.rs:36-38`** — recorded as "did not finish in 600 s". The review measured
+   `elapsed=332.252785958s ok=true files=8115` over an 8.7 GB instrumented `deps/` tree, in a four-test
+   run of 336.78 s total. **It completes.** So the category `unreachable-in-this-environment` was wrong;
+   the truth is "expensive, and a bounded tree would be cheap". This is the cleanest instance in the
+   campaign of a one-off timeout being written down as an impossibility.
+2. **`review.rs:289-293`** — recorded as "TOCTOU, no seam". A `git` PATH shim deleting the Run row inside
+   `materialize` reaches it deterministically in 1.70 s; the review is careful to say it is not a timing
+   race.
+3. **`debug.rs:114,116`** — recorded as "no phase setter". Production `select_agent -> External` sets
+   `Ready && !owned`, with the mock agent as a real TCP server. No production change needed.
+4. **`run_control.rs:179`** — recorded `unreachable-by-construction` on a FK constraint. FK enforcement is
+   per-connection, so a raw `PRAGMA foreign_keys=OFF` delete produces the orphan run the app's own test
+   helpers already produce.
+
+## The three registration falls matter more than the measured ones
+
+Eleven `tasks.rs` production failure arms (217-219/223/306/371/426/436/454-455/466) are registered under a
+row whose text describes only the **two `#[ignore]`d paid harnesses**, while the record's own §4.2 lists
+them as reachable OPEN work with fixtures and §S11.4 admits the grouping is unsettled. That is the
+campaign's recurring defect class in its purest form: **the category is attached to the wrong construct**,
+so it reads as justified while nothing justifies it.
+
+Plus `remote.rs:69-70`: a deliberate side-effect exclusion is a policy decision, not an environmental
+impossibility, and it must be named as the first.
+
+## Consequence for the published figure, which I have NOT yet applied
+
+378 = 368 WAIVED + 10 OPEN cannot stand as written: at most it is **347 waived + 10 OPEN + 21 needing a
+real category**, with 11 of the 347 coverable. I deliberately did not change the ledger, because the
+honest order is measure -> land -> re-register -> re-point, and `todo_63d51c4ac67e` (REWORK-3) does
+exactly that with the review's probes as its recipes.
+
+## Uncertainty
+
+The review says one row is UNVERIFIABLE (4 lines) and names what is missing rather than guessing — that is
+the correct handling and it is why the accounting still closes.

@@ -1,0 +1,60 @@
+NEW-B (todo_9725791b6e9b) — SUPERVISOR VERDICT: VERIFIED, and it is the most valuable flake finding of the campaign: it is a defect in a MEASUREMENT INSTRUCTION, not in a test.
+
+WHAT IT FOUND (NEW-C): `cargo test --lib -j 8 -- <filter> -- --test-threads=1` runs the suite PARALLEL. cargo splits its own args from the binary's at the FIRST `--`, and libtest stops option parsing at the first `--` it then sees - so a filter before that second `--` turns `--test-threads=1` into a TEST-NAME FILTER, and the harness runs at default concurrency (32 threads here). So the campaign's rule "`--test-threads=1` is MANDATORY: the lib suite deadlocks in parallel on this host" was NOT IN FORCE whenever a filter sat in that position.
+
+I PROVED IT WITH A CHEAPER CONTROL THAN ITS TIMING PAIR, and this method is the part to reuse:
+  * `-- --test-threads=ABC <filter>`  -> libtest ERRORS: "argument for --test-threads must be a number > 0".
+  * `-- <filter> -- --test-threads=ABC` -> runs 81 tests, ok, NO error.
+  An invalid value can only fail when parsed, so "no error" is direct evidence the flag was not an
+  option. Two seconds instead of a two-1.5s-test timing run, and immune to load.
+
+I THEN CENSUSED THE WHOLE CORPUS, and the result CORRECTS THE BLAST RADIUS (F.9 family - a unit's claim
+about the whole tree needs a census):
+  * the AUTHORITATIVE harness (`measure-final.sh` + every tauri measurement script): **0 SWALLOWED**;
+  * the repo's own `scripts/` and `Makefile`: **0 SWALLOWED**;
+  * every doc: 124 invocations, **2 SWALLOWED**;
+  * the target ledger (commands recorded in todo texts and evidence): 54 invocations, **7 SWALLOWED**;
+  and every one of those 2 + 7 is a QUOTATION of the bad shape inside the explanation of the defect
+  (its own ticket, its completion evidence, its successor, and my follow-through ticket) - not a command
+  anyone executed. So the campaign's recorded RATES are not retroactively voided. Its framing ("the form
+  used everywhere", "every flake rate taken with that form measured a 32-way-parallel suite")
+  OVERSTATES it; the mechanism is real, the population is not.
+
+AND THE ONE REAL EXECUTION IN THE WRONG FORM IS MINE - recording it because it is the same failure the
+  campaign keeps finding, this time in my own method: when I wrote NEW-B's ticket I recorded my
+  confirming measurement as `cargo test --lib -- cli_tool::tests -- --test-threads=1` (TWO `--`) and
+  stated "at load 12-13, 11 passed / 2 FAILED". So "I CONFIRMED IT MYSELF" was taken at 32-way
+  parallelism, and those two failures may well be the parallelism itself (its NEW-D: a process-global
+  `PATH` swap is visible to CONCURRENTLY running tests). That strengthens its finding rather than
+  weakening it - it explains why my confirmation saw 2 failures where the corrected form sees 0 - and it
+  is the second time in this campaign that MY measurement method was the defect (the first was F.67, my
+  snapshot committing an experiment).
+
+ITS SEAM IS RIGHT IN SHAPE AND PRODUCTION IS UNCHANGED, which I checked in the source: `PROBE_DEADLINE`
+  stays 3 s; the override is a THREAD-LOCAL (not a process-wide static, precisely because this file's
+  destructive mode is a leaked global plus concurrency); `ProbeDeadlineGuard` restores on `Drop`;
+  `a_silent_cli_is_killed_and_reported_as_a_timeout` deliberately keeps the production budget as the
+  NEGATIVE CONTROL; and it proved sensitivity by neutering the seam in a scratch copy (both new tests go
+  red). Its own honesty is the standard I want: "the seam is HARDENING, not a measured rate fix (I could
+  not reproduce the deadline class in the corrected form at any load <= 86)", and it declined to report
+  the parallel-form improvement as a deadline fix.
+
+ACTIONS I TOOK:
+  * FLAKES §8c: the mechanism, my invalid-value control, the full census, and the correction to the blast
+    radius - including my own wrong-form measurement.
+  * PLAN §2.0: the rule, placed where every unit reads its environment rules, with the "check a
+    must-be-in-force option with an invalid value" technique.
+  * The clippy red it reported (`tests/gui_main_thread_drive.rs:230`, `clippy::empty_line_after_doc_comments`)
+    is FIXED - but not by routing it: it is in the driver I landed last turn, so it is my file now, and
+    the cause was an ORPHANED doc comment whose function does not exist in the file (the killing logic
+    lives in `spawn_child`, which has its own doc). Deleted; `cargo clippy --all-targets -- -D warnings`
+    for the crate is now clean, so that CI blocker is gone.
+  * Its DO items (1)/(2) are answered by the census above: (1) here it is, (2) there is nothing to
+    re-measure, because no recorded rate used the wrong shape. (3) is done in PLAN §2.0; my census shows
+    `module-tauri-headless.md`'s own invocations were already in the correct position, so that half was
+    unnecessary.
+  * Successor: none needed. Its follow-through ticket (todo_1aaa66bf0360) is resolved by this verdict.
+
+GATES IT REPORTED, verified as consistent with its claim of a clean crate: clippy `--lib -D warnings` 0,
+  `--no-default-features --features headless --all-targets -D warnings` 0, `cargo fmt --check` 0
+  crate-wide, `cargo test --lib -- --test-threads=1 cli_tool::tests` 15/15.

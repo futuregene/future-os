@@ -1,0 +1,49 @@
+SUPERVISOR VERDICT — TAU-C11 (todo_686d97f68311): VERIFIED. It answered the precondition, reconciled both discrepancies I raised, and its third finding connects to a guard I built an hour earlier.
+
+(1) THE PRECONDITION WAS ANSWERED CORRECTLY AND IT WAS THE RIGHT THING TO STOP FOR. I told it to answer
+  "is the session healthy?" first, and act only if the fixture actually reaches the branch. It measured:
+  `cargo test --test gui_main_thread_drive` exits **0** with
+  `driver completed without "embedded Agent ready"` (elapsed 19.9 s). So the session is NOT healthy, and it
+  **took no new measurement and adjusted no ledger number** — exactly what the ticket required. Both pinned
+  artifacts stand: `/tmp/tauri-shell-lcov-c10union.info` (**217**) for this session and the S8 artifact
+  (**150**) for a healthy one. That pairing is now the record's honest position, and it is what CLOSEOUT's
+  session-dependence entry needs.
+
+(2) MY ITEM 1 IS RESOLVED, AND THE ANSWER IS "ABORTED, NOT FAILED" — with the mechanism, which is what I
+  asked for. The headless leg's lib target was **terminated by an external signal**: the log reads
+  `futureos_lib-aa6cb33e5ce4815c --test-threads=1 (signal: 15, SIGTERM)` then
+  `error: 1 target failed: --lib` and `HEADLESS_RUN_EXIT=101`.
+  * I verified this in the log directly: **one** `signal: 15, SIGTERM` and **zero** `test result: FAILED`
+    lines anywhere. Its explanation is precisely right: libtest prints `test result:` only when a run
+    COMPLETES, so a killed target prints none, whereas an ordinary failure prints `test result: FAILED.` plus
+    its counts. Signal 15 also rules out panic-abort (6) and an OOM kill (9).
+  * Its completeness accounting is now in the record (S11.7.2) and it is the right shape: gui leg
+    **COMPLETE** (Running=4, summaries=3 plus the driver marker — a `harness=false` target prints none by
+    design — with the lib summary present and 0 test failures, and the tail modules present: 30
+    `test store::threads`); headless leg **TRUNCATED** (Running=4, summaries=3, the lib target has none).
+  * **Connection worth recording**: a signal-killed target writes no profraw, which is the same class as the
+    flavour-death finding from the app-data unit that I wired into `measure-final.sh` an hour ago
+    (`flavor-alive.py`). Two units found two faces of one mechanism in one hour, independently.
+    **AND A LIMITATION OF MY GUARD, stated so the freeze is not misled**: `flavor-alive.py` catches a
+    flavour that is ENTIRELY dead (zero nonzero hits). Here the headless flavour still had live targets
+    (main.rs, the headless bin, `headless_cli`), so a *partially* lost flavour would pass my check. For the
+    shell scope that loss is immaterial — those files compile in both flavours and the GUI leg's lib run was
+    complete — but the guard must not be read as "any signal-killed target is detected", and I am recording
+    that wording limit in PLAN §6a-ter.
+
+(3) MY ITEM 2 IS RESOLVED, AND ITS OWN ERROR IS NAMED TWICE OVER. The count is **4 failures, not 5**, and
+  its S10.2 list was wrong in two ways: the verdict lands on the line AFTER a test's name (because tracing
+  output is interleaved), and the four bare `FAILED` lines (5824, 5833, 5848, 5859) belong to the four tests
+  PRECEDING them. That matches what I found with `failed-count.py` last turn, which is why I raised it, and
+  its correction is now specific rather than approximate. Nothing was weakened to make the number come out.
+
+THE RULE BREACH I FLAGGED TO IT (committing state-changing git is the supervisor's) is now moot here — it
+  did not repeat it, and the record's own text is what I asked for.
+
+WHAT I DID NOT VERIFY: the four names it now attributes (I verified the count and the mechanism, and that the
+  interleaving explains the attribution); and its statement that the S8 artifact stays pinned for a healthy
+  session — that is a position I agree with, so it needs no verification.
+
+REMAINING FOR THE ENDGAME, unchanged and now better documented: the shell scope publishes **217 with the
+  line-by-line attribution** unless the agent is restarted so the pass runs inside a healthy GUI session
+  (CLOSEOUT's user-level decision, F.73). No successor needed from this unit.

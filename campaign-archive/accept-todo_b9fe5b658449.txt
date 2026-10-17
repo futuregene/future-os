@@ -1,0 +1,65 @@
+TAU-A2 (todo_b9fe5b658449) — SUPERVISOR ACCEPTANCE: VERIFIED
+============================================================
+
+The most valuable part of this delivery is that it CORRECTED MY TASK TEXT rather
+than following it. The full record follows, because the `delivery record` note for
+this todo was truncated by a shell quoting error on my side (INCIDENTS F.54) and
+this file is the correction of record.
+
+(a) THE FOUR DEAD CONDITIONS — DECIDED: KEEP all four, with per-item reasoning and
+    the alternative's exact cost recorded in §6.1. Two corrections to what I wrote,
+    both of which I checked against the code myself:
+      * `commands.rs:885` is NOT one of the "arms that cannot fail" — it is a
+        codec-dependent size heuristic, re-registered as
+        `unreachable-in-this-environment` in §4.1;
+      * MY FRAMING WAS WRONG for `read_pages.rs:70`. My task text said "delete them
+        (behaviour-neutral) or keep with the waiver". I read the code: line 70 is
+        the `else { break; }` arm of the eviction loop — that loop's ONLY exit — so
+        deleting it would NOT have been behaviour-neutral (it would permit an
+        unbounded spin in exactly the case the guard exists for). It also notes
+        `files.rs:367` is not a bare guard either. Had the unit followed my text
+        literally, it would have introduced a bug.
+    NO PRODUCTION DELETIONS: I checked the diff. The deletions under
+    `remote/` + `remote_host/` are test-side refactors (`verify_e2e.rs`, `tests.rs`)
+    plus the campaign's new tests, and both named guards are still present in the
+    tree.
+
+(b) MY RULING, RECORDED AND EXECUTED EXACTLY. §6.2 quotes it verbatim; the §3.2
+    proposed follow-up seam is WITHDRAWN; §4.2 item 2 no longer proposes it; and the
+    167 lines stay registered as `unreachable-in-this-environment` with the
+    mechanism named ("unreachable in this test harness because the failure transport
+    is not injectable"). It also RE-VERIFIED the cfg split against the tree and
+    found the record's line numbers had DRIFTED (`:558/:605/:638-641/:643-648` are
+    now `:604/:633`), noting that rather than leaving it stale. It further flagged
+    that `transport.rs` 31, `publisher.rs` 11, `transfer.rs` 6 and `start.rs` 5 more
+    lines name the SAME failure-injection route, so the ruling covers them
+    consistently rather than line by line.
+
+(c) THE SCRIPT ROUTE: NOT RUN, for reasons I verified rather than accepted.
+    `scripts/measure/verify-e2e-bytes.py` is outside its declared write set, and it
+    reads the OPERATOR's live home — I checked the script: `SOCKET =
+    ~/.future/run/agent.sock`, `AGENT_DB = ~/.future/agent/agent.db`, plus a real
+    `nats-server` needing the binary on `PATH` and its `-m` monitoring port — and
+    the drivers are `#[ignore]`d on top. Declining that was correct and is exactly
+    what my constraints asked for. The 68 lines stay registered, and it NAMED
+    (without taking) the safe alternative.
+
+    I ADOPTED that alternative as the decision and created **TAU-A3
+    (`todo_91ba6fdfa95a`)**: drive the same shared bodies with a FAKE broker
+    (`run_real_traffic_with(Broker::Fake(FakeNats::start().await), …)`; the catalog
+    lane's inputs already default in code, `verify_e2e.rs:1163-1170`; a scripted
+    local HTTP server for the `/connz` window) — with three hard constraints: keep
+    both `#[ignore]`d real-broker instruments and their reason strings INTACT, restore
+    every env var panic-safely (FLAKES item 27 / 4c), and never weaken an assertion or
+    delete an `#[ignore]` to make a line move.
+
+TRIPWIRE, re-run by me: `reconcile.py` scoped to the three subtrees ->
+**450 uncovered / 450 mentioned / MISSING 0**, exactly as claimed.
+
+NOTE FOR THE FREEZE: the registry pairing for `tauri-remote` still records the older
+single-subtree scope (`expect uncovered 331, claims 109`) while the ledger now covers
+three subtrees (450), so that pairing needs re-pointing along with the other three
+already recorded in CLOSEOUT.
+
+NOT VERIFIED BY ME: the classification half of the 450 rows — that is
+REV-TAURI-REMOTE (`todo_3ed6a6c893ba`), gated behind the remote handoff chain.

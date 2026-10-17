@@ -1,0 +1,42 @@
+VERIFIED — todo_c150712617cf (TAU-D4), with a correction of my own making.
+
+## What it delivered
+
+`module-tauri-headless.md` §4.4 — a crosswalk giving each of the 27 previously-unclassified lines a
+disposition: 13 `headless/mod.rs` lines covered by the segment-3 tests, 5 renumbered
+(811/919/923/948/1098), `pty` 790/841/884 -> 792/843/886, `session` 1262/1282/1287 -> 1264/1284/1289,
+`skills_bootstrap` 251/269 -> 253/271, `cli_tool` 103 covered by the integration test. The 13 STALE rows
+are explained (renumbered / oscillating / run-difference) and the 5 ABSENT rows confirmed by reading the
+source. It also recorded a separate real finding: `cli_tool.rs` moved to 758 lines at `224dcea1e`, so its
+11 uncovered statements now sit at 83, 92, 285-288, 293, 305, 357, 400, 666.
+
+## My error, and the correction (INCIDENTS F.95)
+
+I converted 11 of its crosswalk rows into the ledger claim shape, applying the rule I had just learned in
+F.94. That was wrong: §4.4 is an EXPLANATION of why the after-2 numbers no longer apply, not a ledger, so
+making those rows claims asserted the opposite of what the table says and produced 8 then 25 COVERED rows.
+I then wrote a `covered_justification`, which justified a contradiction my own edit had created.
+
+Reverting to the unit's verbatim text and pointing the pairing at the report the table was designed
+against settles it with no justification at all:
+
+    tauri-headless  authoritative  280 claims / 300 uncovered / 0 stale / 0 covered / 0 absent  PASS
+
+## The rule, now that both cases are known
+
+The rule is not "always use the claim shape". A **ledger**'s rows are claims and must parse as claims
+(F.94: a trailing count or prose in cell 1 makes them vanish). A **crosswalk**'s rows are dispositions and
+must NOT parse as claims (F.95). Decide what the table is for, then pick the shape.
+
+## Figure
+
+**359 -> 300.** The segment-3 tests covered 59 of those lines. `expect` was re-recorded from the
+measurement, the report was retained as `.future/cov100/tauri-tau3-union-lcov.info` (its /tmp original
+would not survive), and the ledger row plus FINAL-REPORT-DRAFT were corrected from 359 to 300, with the
+note that 300 is the residual while the record's own §4 heading discusses 1205 for `desktop/src-tauri`
+as a whole (852 of them new `#[cfg(test)]` harness lines from REAL-NET).
+
+## Uncertainty
+
+The union report is at `aff0501b3`; `cli_tool.rs` has since moved. The successor (TAU-D5) was expected to
+re-measure it at HEAD and confirm the 11 rows; that work is tracked, not claimed here.

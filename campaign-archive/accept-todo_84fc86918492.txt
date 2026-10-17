@@ -1,0 +1,40 @@
+F-CLI-5 (todo_84fc86918492) — SUPERVISOR VERDICT: REWORK (the measurement is real and is now recorded; the ticket's deliverable is only partly done, and the run left two cleanup items).
+
+WHY NOT VERIFIED: the ticket asked to sweep the remaining wall-clock budgets in cli/src/browser, fix or waive EACH with its consumer, then re-run the cli repeat-run sweep. What exists:
+  * (a) backend.rs 16/24/28: measured and settled (see below).
+  * (b) chromium_navigation.rs 167/214: instrumented but NEVER ENTERED - the diag sites
+    (`nav-phase1:*`, `wait-until:*`) appear ZERO times in its own captured log, because its driver
+    ran the filter `browser::backend::tests::deadline_semantics`. Two of the five named lines are
+    therefore unmeasured, not waived.
+  * (c) the repeat-run sweep: not started.
+  * (d) it wrote no record, and its `todo_completed` evidence is a four-sentence PLAN fragment
+    ("First, back up the pristine files:") - not a report.
+
+WHAT IT DID PRODUCE, and I verified it from its artifacts rather than from its word:
+  /tmp/fcli5/{clock-check.sh,clock-backend-diag/*,pristine/*}. 20 rounds, reds=0 in every round
+  (I re-summed the .rc files), load stamped per round 50.87 -> 62.91 (1-min), 5102 CLOCK samples,
+  wall-vs-Instant divergence 0 ms in 3205 comparable samples and 1 ms in 370 (the instrumentation's
+  own ms granularity), never more. So a clock-origin fault is REFUTED for backend.rs's budgets at
+  worse-than-CI load. Recorded as flaky-cli.md section 10 with the provenance stated ("supervisor-
+  verified record; the unit's run ended before it wrote this").
+
+TWO CLEANUP ITEMS, both mine to do and both done:
+  1. F.67: its instrumentation (`TEMP DIAG (F-CLI-5)` / FUTURE_CLOCK_DIAG; a `start_instant` field on
+     Deadline plus five eprintln sites) was left in the tree and a SUPERVISOR SNAPSHOT committed it
+     into HEAD - after which `git status` read clean and only history knew. I reverted both files to
+     their pristine bytes (verified: `git diff` against the pre-snapshot revision is empty),
+     `cargo check -p future-cli` passes (1m28s).
+  2. F.65: its burn.sh batch (48 x `timeout 2400 sh -c 'while :; do :; done'`, pid file
+     /tmp/fcli5/burn/pids) OUTLIVED the run and held 1-min load at 71-82 on 32 CPUs while three peer
+     units (app-data seg 8/9, TAU-D3, TAU-C7) were mid-measurement. I verified all 48 pids were
+     burners (48 matched, 0 mismatches) and stopped them; load fell 68 -> 53 in 20 s.
+
+SUCCESSOR: todo_6c9460d45a7b (F-CLI-6, worker-flake-cli) - measure chromium_navigation.rs 167/214
+with a filter that actually enters them (and report the captured-site counts), run the repeat-run
+sweep at the frozen revision, write it up, and prove no instrumentation and no burners are left.
+It is told explicitly NOT to re-do what section 10 settles.
+
+NOTE ON FAIRNESS: the run ended at ~02:15 under its own load with `terminal_state: completed,
+error: null`; I cannot say why it stopped, because this journal persists no tool payloads or
+thinking text (only the narration, which is those four sentences). The verdict reflects what is on
+disk, not an attribution of blame.

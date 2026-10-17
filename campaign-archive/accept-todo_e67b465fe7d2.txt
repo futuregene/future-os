@@ -1,0 +1,55 @@
+TAU-C9 (todo_e67b465fe7d2) — SUPERVISOR VERDICT: VERIFIED. It reworked the driver I authorised, and the arithmetic is exact — but its number is HOST-SESSION-dependent, which I have added to the freeze's known risks.
+
+REPRODUCED, and this is the strongest form of verification I can do on a number:
+  * tripwire: `reconcile.py --report /tmp/tauri-shell-lcov-c10union.info --scope <twelve> --doc
+    docs/testing/module-tauri-shell.md --section "Segment 10"` -> **217 uncovered / 217 mentioned / MISSING 0**.
+  * per-file: lib.rs 83, menu.rs 48, main.rs 21, desktop_shutdown.rs 18, launch.rs 15, macos_power.rs 10,
+    coordinator.rs 8, runtime.rs 5, instance.rs 5, future_login.rs 3, bin/ 1 = **217 exactly**, matching its
+    table cell for cell (including the S8/S9/S10 triple it prints).
+  * the three artifacts each reproduce: **S8 = 150, S9 = 220, S10 = 217**.
+  * and I re-derived its G/L arithmetic from the per-line SETS myself, not from its prose:
+      `S10 - S9` = **empty** (no line regressed),
+      `S9 - S10` = **runtime.rs 64/65/66** (the 3 regained),
+      `S10 - S8` = **76** = menu.rs **46** + lib.rs **29** + runtime.rs **1**,
+      `S8 - S10` = **9** = lib.rs **906, 910, 916, 917, 919, 920, 921, 923, 924** — the exact nine it names.
+    So "217 = 150 - 9 + 76" is not a narrative; every term is a set difference I computed.
+
+THE FINDING IS REAL AND I VERIFIED THE CORRELATE: `RunEvent::Ready` is not delivered in the current GUI
+  session, and the 76 lines it explains are gated behind it. The unit pinned the chain to source
+  (Ready <- tao `StartCause::Init` <- `applicationDidFinishLaunching:`), probed with a bound listener that
+  never accepts, and falsified load, fd limits, its own notify children, its own tree (an older peer gui
+  binary fails identically) and display power state. **What I checked myself**: `WindowServer`/`loginwindow`
+  elapsed time puts this GUI session's start at **~19:11:51 UTC**, and the S8 artifact (150, Ready
+  delivered) was rendered at **18:58:57 UTC — twelve minutes earlier**. I did not re-run the probe.
+  * CONSEQUENCE RECORDED IN CLOSEOUT (before §6, so the endgame reads it): the shell residual is
+    session-dependent, the frozen pass must state the session state, and if Ready is not delivered the
+    figure must be reported as **217 with the 76-line difference attributed line by line** (S10.1/S10.3),
+    NOT as lost coverage — the lines are unreachable in this session, and the S8 artifact shows them covered.
+
+ITS DRIVER REWORK IS DISCIPLINED AND WITHIN SCOPE: it made the single-instance notification unconditional
+  (the plugin delivers the callback on its own thread, so the target coverage does not need `RunEvent::Ready`)
+  and clamped the waits (readiness 15 s, was 90 s; reply 6 s; listener 30 s). I verified the interface I
+  required: the marker `gui_main_thread_drive: driver completed` is present, and the gui leg's tail modules
+  ran (`test store::threads` = 30 occurrences). Cargo.toml stanza unchanged, 0 leaked roots, and the gui leg
+  is **GREEN: 2076 passed / 0 failed / 12 ignored** — the first fully green gui leg for this scope, which
+  also means this run did not meet the port-8022 contention.
+
+TWO EVIDENCE DEFECTS I ROUTED RATHER THAN PASSED OVER (steered to the shell unit, which is still running):
+  1. The headless leg's `--lib` target printed **no `test result:` summary** — the log ends that leg with
+     `error: 1 target failed: --lib`, `exit status: 101`, and no summary line in either anchored or
+     interleaved form. That is the NEW-A signature (a target that dies before reporting), and the reason it
+     matters is forward-looking: a harness that can swallow a summary can under-report silently.
+  2. It reports **5** failures; the log yields **4**, all `remote_peer` (parsed with the verdict on a
+     following line, because `tracing` output is injected into the per-test lines). Its list also names two
+     tests that do not appear as failures.
+  Neither affects the number: all four failures are outside the twelve scopes, and under the corrected PLAN
+  §5.3 the deciding condition is that the segment's own new tests RAN and PASSED — which they did, in the
+  green gui leg. But a failure list its own log does not reproduce is exactly the "record that reads as
+  complete while being a fragment" class, so I asked it to reconcile both.
+
+ALSO ROUTED (not its scope): the one CI-blocking clippy red on the frozen tree —
+  `src/store/threads.rs:1717` (`cloned_ref_to_slice_refs`), which is app-data's file; I steered app-data to
+  fix it in its current segment, because PLAN §5.1 makes `clippy --all-targets -- -D warnings` exit 0 a
+  publication gate and `--all-targets` includes test code.
+
+SUCCESSOR: todo_a120399183a6 (the shell unit's current segment), which now carries the two evidence items.

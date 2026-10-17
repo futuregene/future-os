@@ -1,0 +1,50 @@
+SUPERVISOR VERDICT — TAU-B SEGMENT 12 (todo_62ad8a457966): VERIFIED as a BLOCKED delivery — the unit is not at fault, it claims no new number, and the blocker is a host fault I verified and then pinned further (F.75).
+
+WHAT IT CLAIMS, AND WHAT I COULD CHECK:
+  * **Six new tests exist**, one per named arm — I confirmed all six by grep
+    (store/db.rs × 4, store/cleanup.rs, store/review_snapshots.rs). It reports them GREEN in targeted runs
+    on a frozen source (last edit 05:16:31, every run after it) at 30/0, 1/0, 1/0. **I could not re-run
+    them**: the host cannot build (see below). So this is its evidence, and it is the right shape
+    (a named test per arm, run after the last source edit).
+  * **It claims NO new coverage number.** That is the important half: `re-measured = NO (blocked)`, and it
+    labels the expected `395 -> 387` as a **PREDICTION**, not a claim. So the figure of record for this
+    module stays **395** (segment 11's, which I verified last turn), and nothing in this delivery asks the
+    final report to publish an unmeasured number.
+  * **My clippy steer is answered with exit codes, and my steer was already stale** — I verified this
+    myself from git rather than taking its word: the lint it was fixing was `cloned_ref_to_slice_refs`, and
+    the fix is the diff from `&[thread.id.clone()]` to `std::slice::from_ref(&thread.id)`, which landed in
+    commit `a92416757` (my snapshot capturing its in-flight edit) — **one commit after** the report
+    (TAU-C9's) I had steered from. So the red was already gone, and the unit said so instead of
+    manufacturing a change. That is the second time today my instruction was stale because it was derived
+    from a report about an older revision (F.58's class), and it is worth my own note: **when a peer's
+    report names a line and I route it on, I should re-check the line, not just the report.**
+  * **Scoped rustfmt over the 88 files of the ten scopes → 0**, and it says the gate caught a real defect
+    its own edit introduced, which it fixed. Not re-run by me (builds blocked).
+
+THE BLOCKER, VERIFIED AND THEN PINNED FURTHER (F.75): it reports `/usr/libexec/syspolicyd` spinning above
+  1000 % CPU, no `rustc` in `ps`, builds freezing mid-dependency. I confirmed the daemon (pid 217,
+  **978–1049 % CPU, elapsed 8 d 20 h**, sampled three times), confirmed the effect on a forced rebuild
+  (120 s timeout with cargo's own CPU at 0.06 s — blocked, not computing; 0.31 s on a cached target), and
+  then **pinned the mechanism past its report**: a five-way import test shows **`import hashlib` hangs**
+  (it loads `libcrypto`) while json/os/re/ssl are instant, and plain file I/O is FAST (2 GB/s). So the fault
+  is **exec/dylib-load**, measured intermittently (0 of 8 hangs in one window, 8 of 8 in another) — which
+  also explains why this looked like load sensitivity from the outside.
+
+CONSEQUENCE I ACTED ON, because a hang in the freeze tooling is worse than a failed one:
+  * `staletable.py`'s digest path hung on a wedged host, so the stamp could neither be verified nor explain
+    itself. It now imports hashlib lazily under a `SIGALRM` guard, raises `HostStall` naming the fault and
+    the remedy, and exits 3 with "HOST STALL (INCIDENTS F.75): … This is a MACHINE fault, not a repo one".
+    A deterministic control (`stall-control.py`) injects a stalled import to prove the path, since the real
+    stall cannot be summoned on demand.
+  * `endgame.sh` gained a BUILD precondition (cheap `syspolicyd` signature; refuses with the numbers; says a
+    restart is the remedy). Live output: `build: TOO HIGH - syspolicyd is at 1001.7% CPU`.
+  * **The frozen pass therefore cannot run on this host state**, and the remedy needs root or a machine
+    restart — a user decision, not mine.
+
+WHAT I DID NOT VERIFY: the six tests' green runs (builds blocked), the scoped rustfmt result, and the
+  wedge-detection order it recorded for the successor. All three are things the successor re-does anyway.
+
+SUCCESSOR: `todo_33c863e79525` (TAU-B segment 13), which carries the retry recipe, the wedge-detection
+  order, the expected 387 and the db.rs line map. **It must not be dispatched until the host can build** —
+  `endgame.sh --check` now reports that field, and I will not spend its budget against a wedged policy
+  daemon.

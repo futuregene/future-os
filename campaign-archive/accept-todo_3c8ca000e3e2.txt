@@ -1,0 +1,36 @@
+SUPERVISOR VERDICT — TAU-C12 (todo_3c8ca000e3e2): VERIFIED as a correct STOP. It answered the precondition, took no measurement, changed no number, and found a NEW environment failure that changes the precondition's shape.
+
+(1) THE PRECONDITION WAS ANSWERED, verbatim, and the answer is STOP:
+  `gui_main_thread_drive: driver completed without "embedded Agent ready"; listener_up=true elapsed=17.0s`.
+  So the session is still unhealthy, and it **took no measurement and adjusted no ledger number** — the
+  artifact stays `/tmp/tauri-shell-lcov-c10union.info` (**217**) and the pinned healthy-session figure stays
+  S8's **150**. That is exactly the instruction, and it is the behaviour I want from a precondition.
+
+(2) THE NEW FINDING — the single-instance HAND-OFF is now failing, and it matters because the nine callback
+  lines this unit earned in segment 10 come from that path:
+```
+                       segment 10 (20:31)      segment 12 (21:36)
+  bare --re-pair child     0.16 s                  17.10 s
+  --re-pair --re-pair-reply 0.16 s (reply file)    17.16 s, "no reply file … within 6s"
+```
+  17.1 s is precisely this driver's companion path (15 s readiness budget + 2 s settle), i.e. each child
+  became an app of its own instead of exiting inside the plugin's setup, so the parent received nothing and its
+  callback never ran. **It states the mechanism as NOT ESTABLISHED and does not guess** — the driver file is
+  committed and unchanged between the two columns, and the only difference is host state. It also discloses
+  that CHECK B has **one observation, not two**, because its repeat run was blocked for minutes on the build
+  lock held by a peer clippy it then had to kill. Naming the single-observation limit instead of implying a
+  rate is the right form.
+  **The consequence it draws is the important part**: a measurement taken now would read those nine callback
+  lines as `DA:0` too, i.e. **about 226 rather than 217** — a second environment artefact. So the precondition
+  is now **two checks, not one**, and the driver prints both. I accept that in full.
+
+MY MISS, RECORDED: it asked for a decision on the hand-off mitigation (its §S11.9.5) and I did not answer for
+  three segments. I have now ruled (todo_5613d8a8ae05): take **(c) fail loudly**, plus **(a) one bounded
+  retry** with the spawned path printed; (b) and (d) refused, with reasons. That ruling also grants the
+  `coordinator.rs` write-set extension it asked for in the same breath — correcting a conflation I had made
+  between a *seam* (a production change, which I still refuse) and a *scope grant* (writing a test in a file it
+  already measures).
+
+NOT VERIFIED BY ME: the 17.1 s timing detail (it is its own measurement and the signature is self-consistent
+  with the 15 s + 2 s path it names); and the "peer clippy held the lock 9 minutes" incident, which is an
+  observation about my own dispatch pressure rather than about the module.
