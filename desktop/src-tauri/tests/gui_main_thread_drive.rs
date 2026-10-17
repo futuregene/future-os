@@ -428,6 +428,19 @@ fn build_the_menu() {
 }
 
 fn main() {
+    // This target is a `harness = false` binary, so `main` runs unconditionally; on
+    // anything but macOS there is nothing here it can do. The main-thread requirement it
+    // exists for is muda's (`muda-0.19.3/src/platform_impl/macos/mod.rs:328`), and
+    // building a real Tauri app on a headless Linux runner panics inside tao with
+    // "Failed to initialize GTK" - after the whole lib suite there had already gone green.
+    // Returning here keeps the target cheap and honest elsewhere rather than failing a job
+    // for a display it cannot have.
+    #[cfg(not(target_os = "macos"))]
+    {
+        eprintln!("gui_main_thread_drive: macOS only (main-thread menu builder); nothing to drive");
+        return;
+    }
+
     // A notification child (`ROOT_ENV` set) reuses the primary's root so it lands on the
     // same single-instance socket; a primary makes its own and is the one that removes it.
     // The same flag decides which of the two this process is: only a primary notifies, or
