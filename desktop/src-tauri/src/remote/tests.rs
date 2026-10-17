@@ -1303,6 +1303,96 @@ mod runtime_tests {
         wait_for_web_port_free().await;
     }
 
+    /// A desktop the platform already knows gets the same `pair_id` back for a new
+    /// invitation, so `--re-pair` must deliver the old binding's revoke *before* it
+    /// mints the replacement — a revoke queued behind the new invitation would
+    /// cancel the code the command prints. The invitation also retires that queued
+    /// revoke, so the compensation loop cannot cancel it on its next tick.
+    #[tokio::test]
+    async fn re_pair_settles_the_old_revoke_before_minting_the_same_pair_id() {
+        let _home = HomeGuard::new("remote-re-pair-same-pair-id");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        let pair_id = format!("pair_{}", unique("same"));
+        pairing::save_creds(&test_creds(&pair_id, "nats://127.0.0.1:1", 3600)).unwrap();
+        platform.push("/client/v1/remote/pair/revoke", 200, json!({}));
+        platform.respond_pair_code_for(&pair_id, nats.url());
+
+        let status = super::re_pair().await.expect("re-pair");
+        assert_eq!(status.pair_id, pair_id, "the platform reused the pair id");
+        assert!(matches!(status.phase, RemotePhase::Ready), "{status:?}");
+        assert!(status.pairing_code.is_some());
+
+        let paths: Vec<String> = platform
+            .requests()
+            .into_iter()
+            .map(|(_, path, _)| path)
+            .collect();
+        let revoke = paths
+            .iter()
+            .position(|path| path.ends_with("/pair/revoke"))
+            .unwrap_or_else(|| panic!("the saved pairing was never revoked: {paths:?}"));
+        let minted = paths
+            .iter()
+            .position(|path| path.ends_with("/pair/code"))
+            .expect("an invitation is minted");
+        assert!(
+            revoke < minted,
+            "the old binding must be gone before its replacement exists: {paths:?}"
+        );
+
+        // Nothing is left for a later compensation tick to revoke.
+        pairing::retry_pending_revokes().await.unwrap();
+        assert_eq!(
+            platform.requests().len(),
+            2,
+            "the replacement invitation must retire its own queued revoke: {:?}",
+            platform.requests()
+        );
+
+        let code = status.pairing_code.clone().expect("a fresh invitation");
+        let mobile = nats_connect(&nats).await;
+        let _channel = super::test_support::secure_pair(&mobile, &code, &status.pair_id).await;
+
+        stop();
+        wait_for_web_port_free().await;
+    }
+
+    /// The compensation loop runs once per tick and outlives the unpair that
+    /// queued a revoke. An invitation that takes over the same pair id supersedes
+    /// that revoke — otherwise the loop would revoke the live invitation moments
+    /// after the user was handed its code.
+    #[tokio::test]
+    async fn a_new_invitation_retires_a_queued_revoke_for_its_pair_id() {
+        let _home = HomeGuard::new("remote-retire-queued-revoke");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        let pair_id = format!("pair_{}", unique("retired"));
+        pairing::queue_revoke(&test_creds(&pair_id, "nats://127.0.0.1:1", 3600)).unwrap();
+        platform.respond_pair_code_for(&pair_id, nats.url());
+
+        let status = start(RemoteStartInput {}).await.expect("start");
+        assert_eq!(status.pair_id, pair_id);
+        assert!(status.pairing_code.is_some());
+
+        pairing::retry_pending_revokes().await.unwrap();
+        assert!(
+            platform
+                .requests()
+                .iter()
+                .all(|(_, path, _)| !path.ends_with("/pair/revoke")),
+            "the live invitation was revoked by the compensation loop: {:?}",
+            platform.requests()
+        );
+
+        stop();
+        wait_for_web_port_free().await;
+    }
+
     #[tokio::test]
     async fn start_runs_the_full_bridge_and_stop_winds_it_down() {
         let _home = HomeGuard::new("remote-start");

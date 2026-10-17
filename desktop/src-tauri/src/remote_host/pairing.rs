@@ -34,6 +34,15 @@ struct RefreshTokenResponse {
     nats_ws_url: String,
 }
 
+/// Serializes revoke delivery with invitation creation.
+///
+/// A revoke and the invitation that replaces it change the same binding, and the
+/// platform reuses the pair id for a known desktop. An in-flight revoke must
+/// finish — and its queued entry be retired — before `create_pairing` hands out
+/// the replacement, or the revoke that was meant for the old binding would land
+/// on the new one.
+static REVOKE_DELIVERY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn pairing_path() -> Result<PathBuf, crate::AppError> {
     Ok(crate::store::future_dir()?.join("remote_pairing.json"))
 }
@@ -116,6 +125,17 @@ pub async fn create_pairing() -> Result<(PairingCreds, String, Option<i64>), cra
         .await
         .map_err(|error| transport_or_message("create pairing code", error))?;
     let response: CreatePairCodeResponse = parse_response(response, "create pairing code").await?;
+    // The platform hands a desktop it already knows the same `pair_id` for a
+    // fresh invitation, and this invitation replaces that binding. A revoke still
+    // queued from the unpair that preceded it is therefore obsolete: delivering it
+    // later would delete the pairing just minted. Retiring it here — as soon as
+    // the new pair id is known, and before returning the invitation — is what
+    // keeps the compensation loop from revoking the code a `--re-pair` prints.
+    // The lock waits out any revoke already in flight for this binding.
+    {
+        let _delivery = REVOKE_DELIVERY.lock().await;
+        retire_pending_revoke(&response.pair_id, &platform);
+    }
     let jwt_expires_at = jwt_expiry(&response.user_jwt)?;
     let code_expires_at = pairing_code_expiry(&response.pairing_code);
     let creds = PairingCreds {
@@ -215,7 +235,39 @@ pub(crate) fn queue_revoke(creds: &PairingCreds) -> Result<(), crate::AppError> 
     })
 }
 
+/// Retire a queued revoke for the pair id a new invitation just took over.
+///
+/// Only the entry for the platform that minted the invitation is retired: a
+/// queued revoke for the same pair id on another platform targets a different
+/// binding and must still be delivered there. A local storage failure is logged
+/// rather than returned — the invitation exists and is usable, and failing the
+/// pairing over bookkeeping would cost the user the code they asked for.
+fn retire_pending_revoke(pair_id: &str, platform: &str) {
+    let result = (|| -> Result<(), crate::AppError> {
+        let path = pairing_path()?.with_file_name("remote_pending_revokes.json");
+        crate::config_io::with_config_lock(&path, || {
+            let mut pending = crate::config_io::read_json_object(&path)?;
+            if pending.get(pair_id).and_then(Value::as_str) != Some(platform) {
+                return Ok(());
+            }
+            pending
+                .as_object_mut()
+                .expect("read_json_object returns an object")
+                .remove(pair_id);
+            crate::config_io::write_json_atomic(&path, &pending, true)
+        })
+    })();
+    if let Err(error) = result {
+        eprintln!(
+            "remote: could not retire the queued revoke for the replacement invitation: {error}"
+        );
+    }
+}
+
 pub(crate) async fn retry_pending_revokes() -> Result<(), crate::AppError> {
+    // Hold the delivery lock for the whole pass so an invitation is never minted
+    // while a revoke for its pair id is on the wire (see `REVOKE_DELIVERY`).
+    let _delivery = REVOKE_DELIVERY.lock().await;
     static BLOCKED: std::sync::LazyLock<
         std::sync::Mutex<std::collections::HashSet<(String, String)>>,
     > = std::sync::LazyLock::new(Default::default);
