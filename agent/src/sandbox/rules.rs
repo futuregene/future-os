@@ -1465,6 +1465,37 @@ mod tests {
             format!(r#"{{"rules":[{{"path":"{over}","access":"read","action":"deny"}}]}}"#),
         )
         .unwrap();
+
+        // The session layer refuses the same shape, so a grant can never be the
+        // way around the rule-file refusal.
+        let clean = RuleSet::resolve_isolated(&workspace);
+        assert!(!clean.add_session_rule(&over, Access::Read, Decision::Allow));
+        assert!(clean.add_session_rule(&at_limit, Access::Read, Decision::Allow));
+    }
+
+    /// The fail-closed half: an over-limit pattern in a rule FILE leaves the rule set
+    /// carrying a resolution error, and both consumers of it refuse rather than run with
+    /// the rule silently dropped.
+    ///
+    /// `cfg(not(windows))` because both fixtures are: `with_rules_for_test` is
+    /// `cfg(all(test, not(windows)))` and `sandbox::file_request` is `cfg(not(windows))`.
+    /// Everything assertable without them - the pattern logic, the rule-file parse
+    /// refusal, the session-grant refusal - stays in the portable test above and runs on
+    /// every platform.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_refused_rule_file_makes_the_sandbox_fail_closed() {
+        let workspace = ws();
+        let at_limit = format!("**/{}*.key", "a".repeat(MAX_RULE_PATTERN_BYTES - 8));
+        let over = format!("{at_limit}x");
+        let workspace_rules = workspace.join(".future/approval_rule.json");
+        std::fs::create_dir_all(workspace.join(".future")).unwrap();
+        std::fs::write(
+            &workspace_rules,
+            format!(r#"{{"rules":[{{"path":"{over}","access":"read","action":"deny"}}]}}"#),
+        )
+        .unwrap();
+
         let mut degraded = crate::sandbox::ResolvedSandbox::with_rules_for_test(
             RuleSet::resolve_isolated(&workspace),
         );
@@ -1490,12 +1521,6 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(refusal.contains("could not be loaded"), "{refusal}");
-
-        // The session layer refuses the same shape, so a grant can never be the
-        // way around the rule-file refusal.
-        let clean = RuleSet::resolve_isolated(&workspace);
-        assert!(!clean.add_session_rule(&over, Access::Read, Decision::Allow));
-        assert!(clean.add_session_rule(&at_limit, Access::Read, Decision::Allow));
     }
 
     /// A client-supplied "allow in this workspace" pattern is the other
