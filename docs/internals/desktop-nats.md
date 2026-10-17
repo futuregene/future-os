@@ -15,7 +15,13 @@ are deployment listener details, not instructions to connect mobile over plainte
 client requires verified TLS even when that endpoint uses the `nats://` scheme, so
 a plaintext relay listener cannot serve the desktop. Only unit tests connect to an
 in-process plaintext fake broker; there is no runtime switch that permits a
-production plaintext downgrade. Do not describe all hops as encrypted or recommend
+production plaintext downgrade. The desktop takes its trust anchors from a PEM
+snapshot of the platform store it writes itself (`~/.future/app/
+relay-root-certs.pem`) instead of letting the NATS client read the platform
+store on every connection — that read is what fails intermittently on macOS,
+and a failed read used to fail the connection. The snapshot is the platform
+store, so it changes no trust decision; deleting it costs nothing.
+Do not describe all hops as encrypted or recommend
 plaintext WebSocket URLs to current mobile clients. Only use test data in test
 relay deployments. User pairing instructions: [Remote](../wiki/en/Remote.md).
 

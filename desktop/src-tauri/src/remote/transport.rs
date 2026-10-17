@@ -114,6 +114,26 @@ pub(super) async fn build_transport(
     })
 }
 
+/// How long to wait after a failed renewal.
+///
+/// Once the credential has expired, nothing can be published — every waiting
+/// tick is dropped events and a phone showing an offline desktop — so retry
+/// quickly until a rotation lands. While the credential still has life, the
+/// normal cadence is right: a broker or platform outage does not improve by
+/// hammering it.
+#[cfg(not(test))]
+const RETRY_WHILE_EXPIRED: std::time::Duration = std::time::Duration::from_secs(3);
+#[cfg(test)]
+const RETRY_WHILE_EXPIRED: std::time::Duration = std::time::Duration::from_millis(5);
+
+fn renewal_retry_delay(seconds_until_expiry: i64) -> std::time::Duration {
+    if seconds_until_expiry <= 0 {
+        RETRY_WHILE_EXPIRED
+    } else {
+        refresh_tick()
+    }
+}
+
 pub(super) fn spawn_credential_refresh(
     pair_id: String,
     reply_slots: commands::ReplySlots,
@@ -133,7 +153,15 @@ pub(super) fn spawn_credential_refresh(
             // RemoteSupervisor, preventing two loops from replacing the same
             // generation concurrently.
             loop {
-                tokio::time::sleep(refresh_tick()).await;
+                // Check at the tick cadence — so a replaced generation stops
+                // promptly — but wake exactly when the renewal is due. Waiting
+                // out a fixed tick and *then* asking "is it due yet" made the
+                // margin a function of the tick rather than of the work the
+                // renewal has to do.
+                let wait = pairing::refresh_delay(&creds).min(refresh_tick());
+                if !wait.is_zero() {
+                    tokio::time::sleep(wait).await;
+                }
                 let generation_active =
                     SUPERVISOR
                         .state
@@ -158,11 +186,9 @@ pub(super) fn spawn_credential_refresh(
                     // not improve by rotating the same credentials forever.
                     return;
                 }
-                // Refresh this far ahead of expiry (a production tick); kept
-                // independent of the test-shrunk tick so the due path stays
-                // reachable under test timing.
-                let refresh_due =
-                    pairing::refresh_delay(&creds) < std::time::Duration::from_secs(15);
+                // Renew once the lead time is reached; the delay above means
+                // the loop is already awake at that moment.
+                let refresh_due = pairing::refresh_delay(&creds).is_zero();
                 if refresh_due {
                     SUPERVISOR
                         .credential_refreshing
@@ -171,6 +197,7 @@ pub(super) fn spawn_credential_refresh(
                 }
             }
             let _start_guard = SUPERVISOR.start_lock.lock().await;
+            let until_expiry = pairing::seconds_until_expiry(&creds);
             let refreshed = match pairing::refresh_bridge_jwt(creds).await {
                 Ok(creds) => creds,
                 Err(error)
@@ -222,7 +249,7 @@ pub(super) fn spawn_credential_refresh(
                     SUPERVISOR
                         .credential_refreshing
                         .store(false, Ordering::Release);
-                    tokio::time::sleep(refresh_tick()).await;
+                    tokio::time::sleep(renewal_retry_delay(until_expiry)).await;
                     continue;
                 }
             };
@@ -250,7 +277,10 @@ pub(super) fn spawn_credential_refresh(
                     SUPERVISOR
                         .credential_refreshing
                         .store(false, Ordering::Release);
-                    tokio::time::sleep(refresh_tick()).await;
+                    tokio::time::sleep(renewal_retry_delay(pairing::seconds_until_expiry(
+                        &refreshed,
+                    )))
+                    .await;
                     continue;
                 }
             };
@@ -271,6 +301,10 @@ pub(super) fn spawn_credential_refresh(
                         SUPERVISOR
                             .credential_refreshing
                             .store(false, Ordering::Release);
+                        tokio::time::sleep(renewal_retry_delay(pairing::seconds_until_expiry(
+                            &refreshed,
+                        )))
+                        .await;
                         continue;
                     }
                 };
@@ -330,4 +364,22 @@ pub(super) fn spawn_credential_refresh(
                 .store(false, Ordering::Release);
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_renewal_retries_fast_only_once_the_credential_expired() {
+        // Still usable: the ordinary cadence, so a broker or platform outage is
+        // not hammered.
+        assert_eq!(renewal_retry_delay(600), refresh_tick());
+        assert_eq!(renewal_retry_delay(1), refresh_tick());
+        // Expired: nothing can be published, so waiting a full tick is dropped
+        // events — retry faster than the ordinary cadence.
+        assert_eq!(renewal_retry_delay(0), RETRY_WHILE_EXPIRED);
+        assert_eq!(renewal_retry_delay(-30), RETRY_WHILE_EXPIRED);
+        assert!(RETRY_WHILE_EXPIRED < refresh_tick());
+    }
 }

@@ -2071,6 +2071,7 @@ dependencies = [
  "reqwest 0.13.4",
  "rusqlite",
  "rustls",
+ "rustls-native-certs",
  "semver",
  "serde",
  "serde_json",

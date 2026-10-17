@@ -38,6 +38,7 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 │   ├── app.db                 # SQLite database (threads, runs, approvals, …)
 │   ├── images/                # per-thread image tree (thumb/ + origin/)
 │   ├── review/                # per-workspace shadow git review repos
+│   ├── relay-root-certs.pem   # platform trust-anchor snapshot for the relay's TLS client
 │   ├── remote-previews/       # files pulled from a paired host to preview (pruned by age and count)
 │   └── run_events/            # per-run event logs (JSONL)
 ├── workspaces/
@@ -209,6 +210,10 @@ Owned by the Tauri desktop app (see `desktop/`):
   `<workspace_id>` subdir per workspace's runs.
 - `run_events/` — per-run event logs (JSONL), derived from the agent's JSONL
   sessions.
+- `relay-root-certs.pem` — PEM snapshot of the platform trust anchors, used
+  only as the trust store for the remote bridge's TLS connection to the relay.
+  Rewritten on every connect, and safe to delete: the next connect rebuilds it.
+  See [internal desktop NATS](../internals/desktop-nats.md).
 
 The desktop remote bridge keeps its pairing identity (`nkey_seed` +
 `user_jwt` + NATS addresses) in `~/.future/remote_pairing.json` (at the

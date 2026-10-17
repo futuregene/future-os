@@ -599,6 +599,15 @@ pub(in crate::remote) async fn connect_nats(
         let health = event_health.clone();
         async move { health.handle_event(&event) }
     });
+    // Load the platform trust store here, once, rather than letting async-nats
+    // do it on every connection: that read fails intermittently on macOS and
+    // takes the whole connection (and therefore the credential rotation) down
+    // with it. A failed read now degrades to the last snapshot; `None` keeps
+    // async-nats' own platform load.
+    let options = match trust::root_bundle() {
+        Some(bundle) => options.add_root_certificates(bundle),
+        None => options,
+    };
     // Unit tests use an in-process, plaintext fake broker. There is no runtime
     // configuration switch that permits a production TLS downgrade.
     #[cfg(not(test))]

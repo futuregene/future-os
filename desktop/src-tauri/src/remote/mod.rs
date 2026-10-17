@@ -25,6 +25,7 @@ pub(crate) mod test_support;
 mod tests;
 pub(crate) mod transfer;
 mod transport;
+pub(crate) mod trust;
 mod types;
 #[cfg(test)]
 mod verify_e2e;
