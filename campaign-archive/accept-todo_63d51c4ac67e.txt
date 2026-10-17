@@ -1,0 +1,47 @@
+VERIFIED — todo_63d51c4ac67e (TAU-B REWORK-3). The unit's holder died mid-run (host_died) but its work
+landed first; I verified the result rather than the process, and it is complete.
+
+## What it did, against the review that ordered it
+
+REV-TAURI-APP falsified `module-tauri-appdata`'s published split in both directions: 11 lines were
+measurably coverable and 21 more carried categories their mechanisms could not support. The ticket asked
+for the four measured falls, the three registration falls, and a re-measure before any ledger edit.
+
+| item | result |
+|---|---|
+| 4 measured falls | **landed** — six tests close 11 lines (`update_recovery.rs:36-38` excluded, see below) |
+| 3 registration falls | **fixed** — 11 `tasks.rs` arms re-registered individually; `remote.rs:69-70` named as a policy exclusion |
+| the UNVERIFIABLE row | **closed beyond the ask** — `test_support.rs`'s `DatabaseBusy` retry arm, via a **test-only** fault hook (`arm_busy_fault()` fails the first `initialize` with the real `SqliteFailure{DatabaseBusy}` shape, so the test panics if the retry body is deleted) |
+| the published figure | **378 = 368 WAIVED + 10 OPEN → 374 = 348 WAIVED + 24 OPEN + 2 exclusions** |
+
+## The one item it did NOT close, and why that is right
+
+`update_recovery.rs:36-38`: the review measured `capture()` completing in **332.25 s over 8115 files**, so
+the old "did not finish in 600 s" was false. The unit did **not** add a 5.6-minute test to every suite run;
+it registered the three lines `cost-deferred` **with that measurement** and left the policy call to me,
+which is exactly what my addendum asked for. **I accept the registration**: three lines are not worth five
+and a half minutes on every future run, and a `cost-deferred` row carrying its measurement is a
+verifiable statement, not a hidden one.
+
+## My verification (not the report's)
+
+- `reconcile.py` over the ten scopes against `/tmp/appdata-busy/union.info`: **374 uncovered / 374
+  mentioned / MISSING 0**.
+- Gate: `tauri-appdata 374 claims / 374 uncovered / 0 stale / 0 absent / 0 covered — PASS`.
+- The record's own split reads `374 = 348 + 24 + 2` (line 6629) and §S30 supersedes the older text
+  rather than deleting it, so a reader following the history arrives at the current number.
+
+## What the unit stated honestly and I am keeping
+
+`374` is an **upper bound**, because the headless leg carried failures: **7 of the port-8022 family
+(outside this module's eleven scopes) and 1 `cli_tool` probe timeout that is *inside*
+`module-tauri-headless`'s twelve scopes and cost 0 lines**. I had conflated those two records' failure
+lists in a commit message and recorded the correction as INCIDENTS F.99 — the distinction matters because
+"outside the scope" is only meaningful with the module named.
+
+## Why the ticket is closed rather than re-dispatched
+
+The holder is gone and the tree contains the finished work. Re-running would re-measure a number that
+already passes both checks. The 24 OPEN lines are **not** unfinished work in the ticket's sense: each has
+a stated reason (missing mock shape, missing window, or the cost decision above), which is what the
+ticket asked to leave behind.

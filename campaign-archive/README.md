@@ -2,20 +2,25 @@
 
 > ## RELOAD MARKER — read this before quoting any number below
 >
-> **Snapshot taken from:** branch `test/cov100-r2`, commit `692c6e2bd` (2026-10-18).
-> **Refreshed on:** every push to this branch; the commit date above is the snapshot's date.
+> **Snapshot taken from:** branch `test/cov100-r2`, commit `b6cbc666e` (2026-10-18).
+> **Refreshed on:** every push to this branch; the commit above is the snapshot's date.
 >
-> **Open work will change these numbers.** `TAU-D9` (re-pin `module-tauri-remote` at HEAD and
-> re-register 146 lines) and `TAU-D10` (`module-tauri-headless`: land 3 measured lines, fix 11
-> registrations) are still in flight. When they land, `1195` and `283` **will move**.
+> **What moved since the previous snapshot (2026-10-18, `692c6e2bd`):** `tauri-remote` went
+> **1195 → 1208 (re-pinned at HEAD) → 1117** after TAU-D9 and TAU-D11. TAU-D9 re-pinned first and the
+> number went UP before the work brought it down — a ledger edit before the re-pin would have published
+> a figure that described a revision no longer in the tree. TAU-D11 then built the non-test child fixture
+> and closed 91 lines.
 >
-> **Until this archive is refreshed against a source commit that contains those tickets' results,
-> every figure here is provisional and the working branch `test/cov100-r2` is authoritative.**
-> The refresh obligation is the supervisor's; if this marker's commit is older than the newest
-> `docs/testing/` commit in the working branch, the archive is stale by definition.
+> **Still in flight and still able to move numbers:** **TAU-D10** (`module-tauri-headless`: land 3
+> measured lines, fix 11 registrations, correct the oscillating pair's attribution).
 >
-> This warning exists because the campaign's own rule says a stale capture is worse than an absent
-> one: this directory has the look of a complete, current record, and it will not always be one.
+> **Until this archive is refreshed against a source commit that contains TAU-D10's results, every figure
+> here is provisional and the working branch `test/cov100-r2` is authoritative.** The refresh obligation
+> is the supervisor's; if this marker's commit is older than the newest `docs/testing/` commit in the
+> working branch, the archive is stale by definition.
+>
+> This warning exists because the campaign's own rule says a stale capture is worse than an absent one:
+> this directory has the look of a complete, current record, and it will not always be one.
 
 ---
 

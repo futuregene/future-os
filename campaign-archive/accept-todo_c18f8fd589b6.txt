@@ -1,0 +1,52 @@
+VERIFIED — todo_c18f8fd589b6 (TAU-D9). It did the thing the review demanded before any edit — re-pinned — and
+the re-pin is what makes its number trustworthy.
+
+## The re-pin changed the number, which is the point
+
+The review said "do not quote 1195 at HEAD". It re-pinned and the figure became **1208**, not 1195 and not
+lower: the drift (+52 `transport.rs`, +9 `start.rs`) added uncovered lines, and the work it then did closed
+some. A unit that had edited the ledger first would have published 1195 minus its closures and been wrong
+in a way nobody could see.
+
+**My verification** (independent of its report): `reconcile.py` over the three scopes against
+`/tmp/tau-remote-final/final.info` -> **1208 uncovered / 1208 mentioned / MISSING 0 / COVERED 0**
+(290 ABSENT = the `real_network.rs` envelope, which is the expected shape). Gate:
+`tauri-remote 1497 claims / 1208 uncovered / 290 absent / PASS`; authoritative pairings **14 clean +
+1 justified, failing 0**.
+
+## Item 1 — the two measured falls, and a flaw it found in the review's own probe
+
+`verify_e2e.rs:1429` and `:1572` are now `DA>0` (0→3, 0→1). More interesting: the full-suite run exposed
+that **the review's probe was wrong** — its `1–599` id window assumed a low `unique()` counter, false in a
+2167-test suite. The committed test reserves the counter and offers the following 4096 ids.
+
+That is the best thing in this delivery: a review's probe is a hypothesis too, and this unit ran it in the
+real suite instead of copying it.
+
+## Item 2 — the CONNECT refuser built; 146 → 133 OPEN; and it stopped at the right boundary
+
+`NatsAuthRefuser` (loopback `INFO` → read `CONNECT` → `-ERR 'Authorization Violation'`) plus one test closes
+`transport.rs:258-271` (14 lines, `DA:2`). For the remaining **133 `start.rs` cfg-split lines** it did what I
+asked and did **not** invent a category: they are **OPEN with the fixture named**, and it says explicitly
+that building that fixture is outside its write set and is the supervisor's decision.
+
+I have taken that decision: **`todo_47f5c83d0e3f` (TAU-D11) builds it**, and the reasons are on the ticket —
+the spawn-the-child pattern already exists in `tests/headless_cli.rs` and `tests/re_pair_entry_points.rs`,
+these 133 are the largest single honest concentration left, and the review already proved the shape is legal
+because the lines are absent only from the lib *test* binary while the spawned children link the non-test
+copy.
+
+It also closed `trust.rs:61-63` (`a_failed_write_keeps_the_previous_bundle`, staging path occupied by a
+directory) — not asked for, and correct.
+
+## Item 3 — three mechanisms corrected, verdicts unchanged
+
+`files.rs:1145` (`hard_link` fallback), `:1183` (`remove_file` in the rename-failure arm), `commands.rs:885`
+(`unreachable-by-construction` with the codec invariant stated). Keeping "the reason was wrong" separate
+from "the row is wrong" is the granularity the APP review established and this one kept.
+
+## Uncertainty
+
+The 290 ABSENT rows are not evidence either way — that is the envelope's line table, not a disagreement.
+The three one-line fixtures it left OPEN (`pairing.rs:146`, `:261-263`, `re_pair.rs:25`) are folded into
+TAU-D11.

@@ -1,0 +1,54 @@
+VERIFIED — todo_47f5c83d0e3f (TAU-D11). It built the fixture I authorised and the number moved by 91
+lines, with an engineering fact I did not know and that changes how this scope must be measured.
+
+## The result
+
+`tauri-remote` **1208 → 1117** (−91). Per file: `remote` 1087→999, `remote_host` 109→106,
+`remote_peer` 12→12.
+
+**My verification** (independent of its report): `reconcile.py` over the three scopes against
+`/tmp/tau11-measure/union.info` → **1117 uncovered / 1117 mentioned / MISSING 0 / COVERED 0**
+(290 ABSENT = the `real_network.rs` envelope). Gate: `tauri-remote 1406 claims / 1117 uncovered /
+290 absent — PASS`; authoritative pairings **14 clean + 1 justified, failing 0**.
+
+## The `ws://` fact, which is the reason this worked at all
+
+It did not use a plaintext `nats://` listener for the broker's refusal, and explained why: in the
+**non-test** build `async-nats` skips the mandatory TLS upgrade **for WebSocket addresses only**, so a
+plaintext `nats://` listener can never deliver a broker-level refusal — only an IO/TLS error, which is
+retryable. A `ws://` listener can speak the protocol and answer `-ERR 'Authorization Violation'`.
+
+That is the kind of detail that makes a fixture possible instead of "impossible": the earlier
+`unreachable-in-this-environment` verdict on those lines was not lazy, it was **correct for the address
+scheme someone would naturally try**. My authorisation to build the fixture was necessary but not
+sufficient — the unit still had to find the one address scheme whose semantics allow the refusal to be
+observed.
+
+## What it closed, and what it did NOT re-waive
+
+Four tests close 75 of the 139 `start.rs`-family lines: the retry worker's prefix and one iteration,
+`spawn_runtime_reconnect`'s entry and `Err` arm, `GenerationWatch`'s healthy reset and unhealthy branch,
+`spawn_runtime_supervisor`, `classify_nats_connect_error`'s authorization arm, `trust::root_bundle`'s
+non-test path, and the compensation worker's error arm; plus a `--re-pair` child on a pty for
+`pairing.rs:261-263`.
+
+The remainder is **registered per construct, not re-waived**, and I checked the two `start.rs` rows that
+still carry `unreachable-in-this-environment`: they are (a) what a controlled child still cannot schedule,
+with each group naming the missing seam, and (b) `spawn_web_reconnect`'s body, which in a non-test build
+requires the platform URL to be exactly `https://test.future-os.cn` (`web_server.rs:41`) — a platform
+property, not an unbuilt test. Both are legitimate, and the block went from **139 lines to 27 + 36**
+rather than staying whole.
+
+It also **corrected** `pairing.rs:146` to `unreachable-by-construction` (the platform never supplies the
+identity) rather than claiming it — the opposite direction from the usual error, and the right one.
+
+## Uncertainty it stated
+
+`verify_e2e.rs:2510` is newly `DA:0` **in the union recipe** — a recipe artefact rather than a coverage
+regression, and flagged as such instead of quietly disappearing into the total.
+
+## The decision I am recording
+
+36 web-listener lines stay registered because reaching them needs a platform URL this environment cannot
+provide. That is `unreachable-in-this-environment` in the strict sense the ledger means. If anyone later
+wants them, the obstacle is a platform fixture, not a test — and the row says so.

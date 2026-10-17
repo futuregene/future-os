@@ -564,7 +564,7 @@
   {
    "label": "tauri-remote",
    "role": "authoritative",
-   "report": "/tmp/tauri-tau-d7b-lcov.info",
+   "report": "/tmp/tau11-measure/union.info",
    "scopes": [
     "/Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/remote",
     "/Users/geilige/future-os/.worktrees/cov100-r2/desktop/src-tauri/src/remote_host",
@@ -573,15 +573,15 @@
    "doc": "docs/testing/module-tauri-remote.md",
    "section": "4. Uncovered-line ledger",
    "provenance": "documented",
-   "note": "resolved during the final pass: the TAU-A unit (still open) published `/tmp/tauri-tau-remote-lcov4.info` at 20:54 and named it in the doc at 21:02, so this pairing is no longer reconstructed — the report it checks against is the one the doc's own text names, which is what CLOSEOUT 5-pre requires. Measured against lcov4: 331 uncovered in scope, 109 claims, MISSING 0, covered 0, absent 0 (both the whole doc and §4.1 alone). The earlier revision of this pairing pointed at lcov2 by matching (the doc then named only lcov) and was labelled reconstructed; the gate's red on the doc's 21:02 edit is what surfaced the newer report. | 2026-10-17: scope widened to the record's three trees (remote 331 + remote_host 106 + remote_peer 13 = 450, measured); five ledger rows carried a trailing \"(N lines)\" in the claim cell which made them parse as 0 claims, so the pairing used to certify only 331 of 450 -- counts moved to the mechanism cell (PLAN 5.2) and claims now read 450/450 with 0 STALE. | 2026-10-17 TAU-D7: the nine OPEN lines were closed by tests (seven cases, no product change), so the pin moved to `/tmp/tauri-tau-d7b-lcov.info` (16:02, both flavors: gui 2114 passed/1 known shell flake, headless exit 0). Measured: 1195 uncovered, 1484 claims, MISSING 0, COVERED 0, ABSENT 289; two registered rows moved only because the new tests were inserted above them in their own files (runtime.rs 2694->2721, test_support.rs 2433->2477).",
+   "note": "TAU-D11 (2026-10-18) built the child fixture the TAU-D9 row handed to the supervisor and re-measured per flavour with `clean` between legs, unioned (`lcov-union.py`; `leg-flavour-check` LEG IDENTITY ok, gui 170 / headless 138 files). Both legs exit 0: gui 2154 passed / 0 failed / 14 ignored; headless 1726 passed / 0 failed / 14 ignored plus 4 new integration tests (81 s). Totals 1208 -> 1117: start.rs 139 -> 64 (-75), trust.rs 19 -> 6 (-13), remote_host/pairing.rs 4 -> 1 (-3), verify_e2e.rs 66 -> 67 (+1, the union recipe no longer attributes :2510's arm to a covered region). The fixture is `desktop/src-tauri/tests/remote_start_refusal.rs`: a loopback platform + a controlled `ws://` NATS broker (async-nats skips the mandatory TLS upgrade for WebSocket URLs in the non-test build) driving a real `futureos-headless` child. | Earlier history: the TAU-A44 pairing pointed at lcov4 by matching, then lcov2; TAU-D7 moved it to d7b (1195 uncovered, 1484 claims, ABSENT 289); TAU-D9 re-pinned to tau-remote-final (1208, 1497 claims).",
    "expect": {
-    "uncovered": 1195,
-    "claims": 1484,
+    "uncovered": 1117,
+    "claims": 1406,
     "missing": 0,
     "covered": 0,
-    "absent": 289
+    "absent": 290
    },
-   "section_heading": "## 4. Uncovered-line ledger (residual: 1195 lines; 343 of them predate the real-network harness)",
+   "section_heading": "## 4. Uncovered-line ledger (residual: 1117 lines at HEAD; 265 without the real-network harness)",
    "provenance_quotes": [
     "(`/tmp/tauri-tau-remote-lcov4.info`), `gui` flavor **2006 passed / 0 failed"
    ]
