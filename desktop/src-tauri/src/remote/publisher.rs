@@ -147,7 +147,9 @@ pub fn publish_event(
     // Lean feed: reasoning and streamed tool arguments never reach the lane.
     // Dropping here (rather than later in the drain) keeps the queue and the
     // coalescer from ever holding them.
-    let lean = crate::remote_host::lean::enabled();
+    // The controlling connection's declaration. Events go to that device only,
+    // so its own declaration is the one that decides the trimming.
+    let lean = SUPERVISOR.lean_events(&pair_id).load(Ordering::Acquire);
     let data = if lean {
         match crate::remote_host::lean::lean_event_data(event_type, data) {
             Some(data) => data,

@@ -719,7 +719,11 @@ mod runtime_tests {
         install_state(fake_state(&nats, "pair_lean").await);
         let mut tap = nats.tap();
 
-        crate::remote_host::lean::set_enabled(true);
+        // The declaration belongs to this connection; the publisher reads it
+        // from the pairing that is in control.
+        SUPERVISOR
+            .lean_events("pair_lean")
+            .store(true, Ordering::Release);
         publish_event(
             "sess-lean",
             "thinking_delta",
@@ -781,7 +785,9 @@ mod runtime_tests {
             -1,
             0,
         );
-        crate::remote_host::lean::set_enabled(false);
+        SUPERVISOR
+            .lean_events("pair_lean")
+            .store(false, Ordering::Release);
 
         // The first thing on the lane is the tool start, not the reasoning that
         // was published before it.

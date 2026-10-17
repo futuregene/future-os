@@ -137,28 +137,50 @@ impl Supervisor {
             .map(|shared| shared.client_identity.clone())
     }
 
-    /// The live-lane capabilities declared for `pair_id`. An unknown pairing
-    /// gets a fresh, off flag: capability is always per connection, never
-    /// inherited from whoever connected before.
+    /// The live-lane capabilities declared for `pair_id`. Always off for a
+    /// connection that has not declared them: capability is never inherited
+    /// from whoever connected before.
     pub(in crate::remote) fn coalesce_events(&self, pair_id: &str) -> Arc<AtomicBool> {
-        self.bridge_shared
-            .lock()
-            .unwrap()
-            .get(pair_id)
-            .map(|shared| shared.coalesce_events.clone())
-            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)))
+        self.shared_or_insert(pair_id).coalesce_events
     }
 
     /// Whether the client on `pair_id` asked for the catalog's recency packets
     /// instead of a whole session list per second of streaming. Same per-pairing
     /// rule as [`Supervisor::coalesce_events`].
     pub(in crate::remote) fn catalog_activity(&self, pair_id: &str) -> Arc<AtomicBool> {
-        self.bridge_shared
-            .lock()
-            .unwrap()
-            .get(pair_id)
-            .map(|shared| shared.catalog_activity.clone())
-            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)))
+        self.shared_or_insert(pair_id).catalog_activity
+    }
+
+    /// Whether the connection on `pair_id` declared the lean feed.
+    pub(in crate::remote) fn lean_events(&self, pair_id: &str) -> Arc<AtomicBool> {
+        self.shared_or_insert(pair_id).lean_events
+    }
+
+    /// The capability state of `pair_id`, creating an empty one if this pairing
+    /// has no runtime entry yet.
+    ///
+    /// A capability is recorded on a declaration and read on every request, and
+    /// a declaration can arrive before the runtime is installed (the command
+    /// loop subscribes first). Answering with a throwaway flag there would look
+    /// like a declaration that silently did nothing.
+    fn shared_or_insert(&self, pair_id: &str) -> BridgeRuntimeShared {
+        let mut guard = self.bridge_shared.lock().unwrap();
+        guard
+            .entry(pair_id.to_string())
+            .or_insert_with(|| BridgeRuntimeShared {
+                reply_slots: commands::new_reply_slots(),
+                pairing_confirmed: Arc::new(AtomicBool::new(false)),
+                bridge_instance_id: format!("bridge_{}", nkeys::KeyPair::new_user().public_key()),
+                drop_counters: Arc::new(DropCounters::new()),
+                coalesce_events: Arc::new(AtomicBool::new(false)),
+                catalog_activity: Arc::new(AtomicBool::new(false)),
+                lean_events: Arc::new(AtomicBool::new(false)),
+                client_identity: Arc::new(Mutex::new(None)),
+                next_generation_id: Arc::new(AtomicU64::new(1)),
+                handshake: Arc::new(Mutex::new(None)),
+                invitation: None,
+            })
+            .clone()
     }
 
     /// Whether `pair_id` is the device driving this machine.
@@ -276,6 +298,10 @@ pub(in crate::remote) struct BridgeRuntimeShared {
     /// with the other capability flags and for the same reason: a client that
     /// cannot apply a packet must keep receiving whole snapshots.
     pub(in crate::remote) catalog_activity: Arc<AtomicBool>,
+    /// Whether this connection declared the lean feed. Per pairing like the
+    /// others: trimming one device's history to fields another device asked to
+    /// skip would be a silent narrowing of what it receives.
+    pub(in crate::remote) lean_events: Arc<AtomicBool>,
     /// What the connected client said it was, until a new pairing replaces it.
     ///
     /// Spans generations like the fields above, and for the same reason: a
@@ -361,6 +387,7 @@ pub(in crate::remote) fn shared_runtime(
         drop_counters: Arc::new(DropCounters::new()),
         coalesce_events: Arc::new(AtomicBool::new(false)),
         catalog_activity: Arc::new(AtomicBool::new(false)),
+        lean_events: Arc::new(AtomicBool::new(false)),
         client_identity: Arc::new(Mutex::new(None)),
         next_generation_id: Arc::new(AtomicU64::new(1)),
         handshake: Arc::new(Mutex::new(None)),

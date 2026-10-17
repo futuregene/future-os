@@ -816,9 +816,9 @@ async fn a_lean_event_recovers_its_session_from_the_subject() {
         .await
         .expect("connect with a stream");
 
-    // The declaration is process-wide; the home guard this fixture holds is what
-    // keeps a sibling test from publishing while it is flipped.
-    crate::remote_host::lean::set_enabled(true);
+    // The declaration belongs to the host bridge that will publish these
+    // events, so it is set on that pairing rather than process-wide.
+    crate::remote::test_support::set_pair_lean(&fx.pair_id, true);
     crate::remote::publish_event(
         "sess_lean_events",
         "user_message",
@@ -831,7 +831,7 @@ async fn a_lean_event_recovers_its_session_from_the_subject() {
         1,
         1,
     );
-    crate::remote_host::lean::set_enabled(false);
+    crate::remote::test_support::set_pair_lean(&fx.pair_id, false);
     // The same lane with the declaration withdrawn: nothing about the full feed
     // may change, envelope keys included.
     crate::remote::publish_event(

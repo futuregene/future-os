@@ -297,11 +297,20 @@ pub(super) async fn connect(url: &str, name: &str) -> async_nats::Client {
         .expect("connect to the broker")
 }
 
+/// Whether the connection on `pair_id` declared the lean feed.
+///
+/// The declaration is per connection (a machine serves several clients), so it
+/// is read where it is recorded rather than from the old process-wide flag.
+fn lean_declared(pair_id: &str) -> bool {
+    super::SUPERVISOR
+        .lean_events(pair_id)
+        .load(std::sync::atomic::Ordering::Acquire)
+}
+
 /// The real bridge + a paired phone, both on `broker`.
 ///
 /// Field order matters for teardown: dropping `E2e` runs its `Drop` (which
-/// resets the process-global declaration and stops the bridge) before the
-/// `HomeGuard` restores `HOME`.
+/// stops the bridge) before the `HomeGuard` restores `HOME`.
 struct E2e {
     _home: HomeGuard,
     broker: Broker,
@@ -650,7 +659,7 @@ impl E2e {
         self.probe_bytes += self.broker.await_subscription(&self.phone, &subject).await;
         self.probe_messages += 1;
 
-        let lean_on = lean::enabled();
+        let lean_on = lean_declared(&self.pair_id);
         let mut capture = LaneCapture::default();
         // Flow control counts *source events*, not messages. With coalescing on,
         // one message can stand for many events (`coalescedCount`); decrementing
@@ -1083,7 +1092,7 @@ async fn run_fixture(broker: Broker, label: &str) {
     let journal = fixture_journal();
 
     // ── Undeclared: the pre-change lane, byte-identical to the journal ──
-    assert!(!lean::enabled());
+    assert!(!lean_declared(&e2e.pair_id));
     let full = e2e.replay_live_lane(&session, "run-verify", &journal).await;
     assert_lane(&full, &journal, false, "undeclared");
     // Spot checks so a regression names the mechanism, not just a count.
@@ -1094,7 +1103,7 @@ async fn run_fixture(broker: Broker, label: &str) {
 
     // ── Declared: streamed content drops, outcomes survive ──
     e2e.declare(&[lean::LEAN_EVENTS_FEATURE]).await;
-    assert!(lean::enabled());
+    assert!(lean_declared(&e2e.pair_id));
     let lean_capture = e2e.replay_live_lane(&session, "run-verify", &journal).await;
     assert_lane(&lean_capture, &journal, true, "declared");
     assert_eq!(lean_capture.received.len(), 5, "two content events drop");
@@ -1142,7 +1151,7 @@ async fn run_fixture(broker: Broker, label: &str) {
 
     // ── Withdrawn: a later connection must not inherit the declaration ──
     e2e.declare(&[]).await;
-    assert!(!lean::enabled());
+    assert!(!lean_declared(&e2e.pair_id));
     let withdrawn = e2e.replay_live_lane(&session, "run-verify", &journal).await;
     assert_eq!(
         withdrawn.received.len(),
@@ -1164,7 +1173,7 @@ async fn run_fixture(broker: Broker, label: &str) {
     assert_history_undeclared(&full_pages.paged, &entries, "undeclared paged");
 
     e2e.declare(&[lean::LEAN_EVENTS_FEATURE]).await;
-    assert!(lean::enabled());
+    assert!(lean_declared(&e2e.pair_id));
     let lean_pages = e2e.history(&session).await;
     assert_history_lean(
         &lean_pages.full,
@@ -1180,7 +1189,7 @@ async fn run_fixture(broker: Broker, label: &str) {
     );
 
     e2e.declare(&[]).await;
-    assert!(!lean::enabled());
+    assert!(!lean_declared(&e2e.pair_id));
     let withdrawn_pages = e2e.history(&session).await;
     assert_history_undeclared(&withdrawn_pages.full, &entries, "withdrawn full");
     assert_history_undeclared(&withdrawn_pages.paged, &entries, "withdrawn paged");
@@ -1450,7 +1459,7 @@ async fn run_real_traffic_with(
 
     // ── Undeclared: the pre-change lane over real traffic ──
     assert!(
-        !lean::enabled(),
+        !lean_declared(e2e.pair_id.as_str()),
         "build_transport must reset the declaration"
     );
     let live_full = e2e.replay_live_lane(session, run, journal).await;
@@ -1469,7 +1478,7 @@ async fn run_real_traffic_with(
 
     // ── Declared: the lean lane over the same traffic ──
     e2e.declare(&[lean::LEAN_EVENTS_FEATURE]).await;
-    assert!(lean::enabled());
+    assert!(lean_declared(&e2e.pair_id));
     let live_lean = e2e.replay_live_lane(session, run, journal).await;
     assert_lane(&live_lean, journal, true, "declared");
     let history_lean = e2e.history(session).await;
@@ -1509,7 +1518,7 @@ async fn run_real_traffic_with(
     );
     e2e.declare(&[EVENT_COALESCING_FEATURE, lean::LEAN_EVENTS_FEATURE])
         .await;
-    assert!(lean::enabled());
+    assert!(lean_declared(&e2e.pair_id));
     let live_phone = e2e.replay_live_lane(session, run, journal).await;
     assert_lane(&live_phone, journal, true, "coalesced+lean");
     let phone_bytes = live_phone.wire_bytes();

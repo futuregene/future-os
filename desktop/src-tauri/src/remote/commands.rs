@@ -83,6 +83,13 @@ pub(super) struct HandshakeState {
     /// receiving plain JSON: it has no magic-byte detection and would fail to
     /// parse a compressed reply.
     pub(super) gzip_replies: Arc<AtomicBool>,
+    /// Whether this connection declared the lean feed.
+    ///
+    /// Lives with the connection like [`HandshakeState::gzip_replies`]: it is a
+    /// property of who is asking, and this machine now serves several clients,
+    /// so a process-wide flag would trim one device's replies to another
+    /// device's declaration.
+    pub(super) lean_events: Arc<AtomicBool>,
 }
 
 /// Capability a client declares on `secure_ready` to accept gzip-compressed
@@ -145,9 +152,15 @@ pub(super) fn apply_declared_features(
             .any(|feature| feature == super::publisher::CATALOG_ACTIVITY_FEATURE),
         Ordering::Release,
     );
-    // The lean feed is read from two layers (see `remote_host::lean`), so it is
-    // recorded in one place instead of an `Arc` per declaration site.
-    crate::remote_host::lean::set_enabled(crate::remote_host::lean::feature_declared(features));
+    // The declaration belongs to the connection that made it: it is recorded on
+    // the handshake (what the command path reads) and on the pairing's shared
+    // runtime (what the event publisher reads, since events go to the device in
+    // control). This machine serves several clients, so neither may be global.
+    let lean = crate::remote_host::lean::feature_declared(features);
+    handshake.lean_events.store(lean, Ordering::Release);
+    super::SUPERVISOR
+        .lean_events(pair_id)
+        .store(lean, Ordering::Release);
     handshake.gzip_replies.store(
         features.iter().any(|feature| feature == REPLY_GZIP_FEATURE),
         Ordering::Release,
@@ -178,6 +191,7 @@ impl HandshakeState {
             bridge_instance_id,
             pending: Arc::new(Mutex::new(HashMap::new())),
             gzip_replies: Arc::new(AtomicBool::new(false)),
+            lean_events: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -496,6 +510,18 @@ async fn handle_command_singleflight(
 // session); the other handlers trust the pair-scoped ACL because the paired
 // device is authorized to operate on all of this desktop's sessions.
 async fn handle_command(
+    client: &async_nats::Client,
+    msg: async_nats::Message,
+    handshake: HandshakeState,
+) {
+    // Every handler below reads `remote_host::lean::enabled()` to decide whether
+    // to trim a reply to the lean feed. That is this command's connection's
+    // declaration — not the machine's, which now has several.
+    let lean = handshake.lean_events.load(Ordering::Acquire);
+    crate::remote_host::lean::in_request(lean, handle_command_inner(client, msg, handshake)).await;
+}
+
+async fn handle_command_inner(
     client: &async_nats::Client,
     msg: async_nats::Message,
     handshake: HandshakeState,
