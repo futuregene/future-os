@@ -212,7 +212,7 @@ mod tests {
         .expect("write the legacy credential");
         let creds_path = std::path::Path::new(&std::env::var("HOME").unwrap())
             .join(".future")
-            .join("remote_pairing.json");
+            .join("remote_pairings.json");
         assert!(
             creds_path.is_file(),
             "the legacy credential must be on disk before the start"

@@ -49,14 +49,31 @@ pub fn device_id_or_empty() -> String {
 }
 
 fn legacy_pairing_device_id() -> Option<String> {
-    let path = crate::store::future_dir().ok()?.join("remote_pairing.json");
-    crate::config_io::read_json_object(&path)
-        .ok()?
-        .get("desktopId")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(str::to_string)
+    // The multi-device book is the modern location; the single-pairing file is
+    // what an installation paired before it holds. Either one describes this
+    // machine, and the id must not change between the two shapes — every agent
+    // session ever created names its creator with this value.
+    let dir = crate::store::future_dir().ok()?;
+    for name in ["remote_pairings.json", "remote_pairing.json"] {
+        let value = match crate::config_io::read_json_object(&dir.join(name)) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let slot = value
+            .get("slots")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|slots| slots.first());
+        let id = slot
+            .and_then(|slot| slot.get("desktopId"))
+            .or_else(|| value.get("desktopId"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty());
+        if let Some(id) = id {
+            return Some(id.to_string());
+        }
+    }
+    None
 }
 
 fn new_device_id() -> String {
