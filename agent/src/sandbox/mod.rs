@@ -199,13 +199,16 @@ impl ResolvedSandbox {
     }
 
     /// Add a runtime "allow in this workspace" rule for the rest of this run.
-    pub fn add_session_allow(&self, abs_pattern: &str, op: Op) {
+    /// Returns `false` when the pattern is refused as malformed (see
+    /// [`rules::MAX_RULE_PATTERN_BYTES`]); the previous verdict then stands, so
+    /// a refused grant can never widen access.
+    pub fn add_session_allow(&self, abs_pattern: &str, op: Op) -> bool {
         let access = match op {
             Op::Read => rules::Access::Read,
             Op::Write => rules::Access::Write,
         };
         self.rules
-            .add_session_rule(abs_pattern, access, Decision::Allow);
+            .add_session_rule(abs_pattern, access, Decision::Allow)
     }
 
     /// Whether shell commands use the resolved OS sandbox backend (Sandbox
@@ -816,6 +819,10 @@ fn on_path_in(path: Option<std::ffi::OsString>, name: &str) -> bool {
 /// RC noise on stderr is discarded; a 5s timeout guards against a hanging
 /// rc. PATH is always taken from the login shell; other vars are merged only
 /// when absent, so intentional launcher overrides are never clobbered.
+/// Delimiter the login shell prints around its env dump, so whatever the user's
+/// rc files print before/after it is ignored.
+const ENV_DUMP_MARKER: &str = "__future_env_boundary_9c4f__";
+
 /// No-op on Windows, where GUI processes already inherit the full registry PATH.
 #[cfg(not(target_os = "windows"))]
 pub fn hydrate_from_login_shell() {
@@ -828,8 +835,8 @@ pub fn hydrate_from_login_shell() {
     // shell ($SHELL), even if it is fish/nu (we only harvest the resulting env,
     // we don't run shell-specific syntax beyond printf + the env binary).
     let shell = std::env::var("SHELL").unwrap_or_else(|_| unix_shell().to_string());
-    let marker = "__future_env_boundary_9c4f__";
-    let script = format!("printf '%s' '{marker}'; /usr/bin/env; printf '%s' '{marker}'");
+    let script =
+        format!("printf '%s' '{ENV_DUMP_MARKER}'; /usr/bin/env; printf '%s' '{ENV_DUMP_MARKER}'");
 
     let mut child = match Command::new(&shell)
         .args(["-l", "-i", "-c", &script])
@@ -871,7 +878,24 @@ pub fn hydrate_from_login_shell() {
         }
     };
 
-    let (path, merged) = plan_env_merge(&dump, marker, &|key| std::env::var_os(key).is_some());
+    apply_env_dump(&dump, &shell);
+}
+
+/// Merge a login-shell env dump into this process: PATH is always taken from the
+/// dump, every other var only when this process does not already have it
+/// (additive — never overwrite a var the launcher set on purpose).
+///
+/// Split out of [`hydrate_from_login_shell`] so the merge contract can be
+/// asserted without spawning a shell. The spawn and its budget are best-effort
+/// by design — a refused, hung or truncated shell is skipped silently — so
+/// asserting a merge *through* the spawn makes a test depend on the host's
+/// scheduler rather than on this behaviour (see
+/// `docs/testing/module-agent-core.md` §7.7).
+#[cfg(not(target_os = "windows"))]
+fn apply_env_dump(dump: &str, shell: &str) {
+    let (path, merged) = plan_env_merge(dump, ENV_DUMP_MARKER, &|key| {
+        std::env::var_os(key).is_some()
+    });
     let merged_count = merged.len();
     for (key, value) in &merged {
         std::env::set_var(key, value);
@@ -2183,13 +2207,21 @@ mod tests {
             path_before,
             "a timed-out hydration must not rewrite PATH"
         );
+        let elapsed = started.elapsed();
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(20),
-            "the 5s timeout must fire instead of waiting for the hung shell: {:?}",
-            started.elapsed()
+            elapsed < std::time::Duration::from_secs(20),
+            "the 5s timeout must fire instead of waiting for the hung shell: {elapsed:?}"
         );
     }
 
+    /// The merge contract, asserted against a dump shaped exactly like a real
+    /// login shell's. Applied directly instead of through a spawned shell:
+    /// production's spawn is best-effort (a refused, hung or truncated shell is
+    /// skipped silently by design), so asserting a merge *through* it makes the
+    /// test depend on the host's scheduler. It failed that way once in three
+    /// runs under load — `Err(NotPresent)`, while the three spawn-path tests
+    /// beside it stayed green, which is what pins the mechanism to the spawn
+    /// rather than to the merge (`docs/testing/module-agent-core.md` §7.7).
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn hydrate_merges_env_from_login_shell_dump() {
@@ -2200,20 +2232,27 @@ mod tests {
                 .finish(),
         );
         // PATH is re-set to its CURRENT value (no effective change, safe for
-        // parallel tests); the unique var must be absent beforehand to merge.
+        // parallel tests); the unique var must be absent beforehand to merge,
+        // while a var this process already has keeps its own value.
         std::env::remove_var("FUTURE_HYDRATE_MERGE_TEST");
+        std::env::set_var("FUTURE_HYDRATE_KEEP_TEST", "kept");
         let current_path = std::env::var("PATH").unwrap_or_default();
-        let (_dir, shell) = fake_shell(&format!(
-            "printf '%s' '__future_env_boundary_9c4f__'; printf 'PATH={current_path}\\nFUTURE_HYDRATE_MERGE_TEST=merged\\n'; printf '%s' '__future_env_boundary_9c4f__'"
-        ));
-        let _guard = ShellEnvGuard::set(&shell);
-        hydrate_from_login_shell();
+        let dump = format!(
+            "rc noise\n{ENV_DUMP_MARKER}\nPATH={current_path}\nFUTURE_HYDRATE_MERGE_TEST=merged\nFUTURE_HYDRATE_KEEP_TEST=clobbered\n{ENV_DUMP_MARKER}\ntrailing rc noise"
+        );
+        apply_env_dump(&dump, "fakesh");
         assert_eq!(
             std::env::var("FUTURE_HYDRATE_MERGE_TEST").as_deref(),
             Ok("merged")
         );
+        assert_eq!(
+            std::env::var("FUTURE_HYDRATE_KEEP_TEST").as_deref(),
+            Ok("kept"),
+            "a var this process already has must not be overwritten (additive merge)"
+        );
         assert_eq!(std::env::var("PATH").unwrap_or_default(), current_path);
         std::env::remove_var("FUTURE_HYDRATE_MERGE_TEST");
+        std::env::remove_var("FUTURE_HYDRATE_KEEP_TEST");
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -2238,5 +2277,59 @@ mod tests {
         reap_with_grace(&mut child, std::time::Duration::from_millis(100));
         assert!(child.try_wait().unwrap().is_some());
         assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    }
+    /// Falsifier for the registration that carries the shell tool's Linux
+    /// helper-report block (`tools/shell/execution.rs`: the `expects_report` guard
+    /// and the report reading/formatting below it).
+    ///
+    /// Those lines run only when `prepare_shell_for_cwd` hands the tool a
+    /// `ShellBackend::LinuxBubblewrap` boundary, and the backend selection is a
+    /// `cfg` split, not a runtime choice: on macOS the arm at the top of
+    /// `prepare_shell_for_cwd_with_cancel` returns `seatbelt::prepare(..)`, while the
+    /// `LinuxBubblewrap` receipt is only consulted under `#[cfg(target_os = "linux")]`.
+    /// This test pins that even a receipt which *claims* Linux (the test seam the
+    /// Linux tests use) cannot make the macOS build route to Linux — so no test on
+    /// this host can reach the block, while a Linux build can.
+    ///
+    /// If this ever fails, the registration must be revisited rather than relaxed:
+    /// a macOS build that can produce a Linux boundary would make those lines
+    /// reachable here, and they would then need real coverage.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_shell_tool_cannot_see_a_linux_boundary_on_a_non_linux_build() {
+        let ws = temp_workspace("linux-boundary-cfg");
+        let mut sandbox = ResolvedSandbox::resolve(
+            &SandboxPolicy {
+                tier: SandboxTier::Sandbox,
+                model_reviewer: false,
+            },
+            &ws,
+        );
+        sandbox.set_linux_backend_available_for_test();
+        assert!(
+            sandbox.wraps_shell(),
+            "the seam must look like an active sandbox, or the test proves nothing"
+        );
+        let linux_receipt = matches!(
+            sandbox.backend_receipt,
+            SandboxBackendReceipt::LinuxBubblewrap { .. }
+        );
+        assert!(
+            linux_receipt,
+            "the seam installs a Linux receipt, which is the premise of the check"
+        );
+        let prepared = sandbox
+            .prepare_shell_for_cwd("true", false, std::path::Path::new(&ws))
+            .expect("a resolvable sandbox must prepare a shell");
+        assert_ne!(
+            prepared.boundary.backend,
+            crate::sandbox::backend::ShellBackend::LinuxBubblewrap,
+            "the macOS build must route to seatbelt, never to the Linux helper"
+        );
+        assert_eq!(
+            prepared.boundary.backend,
+            crate::sandbox::backend::ShellBackend::MacosSeatbelt
+        );
+        std::fs::remove_dir_all(ws).ok();
     }
 }

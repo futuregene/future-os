@@ -313,3 +313,138 @@ fn the_projected_page_is_never_larger_than_the_bytes_that_were_read() {
         "the projection inflated a page: {projected} projected > {stored} read"
     );
 }
+
+// ─── schema damage is reported, never swallowed ────────────────────────
+
+const ENTRIES_DDL: &str = "CREATE TABLE entries(\
+    session_id TEXT, position INTEGER, run_id TEXT, entry_type TEXT)";
+const BLOCKS_DDL: &str = "CREATE TABLE message_blocks(\
+    session_id TEXT, entry_position INTEGER, tool_call_id TEXT, kind TEXT)";
+const SHAPES_DDL: &str = "CREATE TABLE history_shapes(\
+    session_id TEXT, position INTEGER, payload TEXT)";
+
+fn schema(statements: &[&str]) -> Connection {
+    let db = Connection::open_in_memory().unwrap();
+    for statement in statements {
+        db.execute_batch(statement).unwrap();
+    }
+    db
+}
+
+fn shape_row(value: Value) -> String {
+    let entry: SessionEntry = serde_json::from_value(value).expect("valid entry");
+    serde_json::to_string(&entry).unwrap()
+}
+
+/// Every writer runs inside the session database. When the schema underneath it
+/// is incomplete (a partially migrated or damaged file), the write must fail
+/// loudly — a silently skipped projection would serve a page that no longer
+/// matches the transcript.
+#[test]
+fn an_incomplete_schema_surfaces_instead_of_swallowing_the_write() {
+    let value = json!({"id":"u1","type":"user","role":"user","timestamp":"2026-01-01T00:00:00Z",
+        "content":[{"type":"text","text":"question"}]});
+    let message = |error: anyhow::Error| format!("{error:#}");
+
+    // Nothing at all: the shape insert and the metadata refresh both report the
+    // missing tables instead of returning Ok.
+    let empty = schema(&[]);
+    assert!(
+        message(insert_entry_shape(&empty, "s1", 0, &value).unwrap_err())
+            .contains("history_shapes")
+    );
+    assert!(message(refresh_session_metadata(&empty, "s1").unwrap_err()).contains("history_shapes"));
+    assert!(message(affected_history_start(&empty, "s1", 0).unwrap_err()).contains("entries"));
+
+    // Only `entries` exists: the tool-dependency expansion cannot be answered,
+    // so the caller must not treat the tail as already projected.
+    let entries_only = schema(&[ENTRIES_DDL]);
+    assert!(
+        message(affected_history_start(&entries_only, "s1", 0).unwrap_err())
+            .contains("message_blocks")
+    );
+
+    // `entries` without the requested column (a partially applied migration).
+    let stale_entries = schema(&[
+        "CREATE TABLE entries(session_id TEXT, position INTEGER, run_id TEXT)",
+        BLOCKS_DDL,
+    ]);
+    let error = message(affected_history_start(&stale_entries, "s1", 0).unwrap_err());
+    assert!(error.contains("entry_type"), "{error}");
+
+    // A complete transcript side but no display table: the ordinal probe fails.
+    let no_display = schema(&[ENTRIES_DDL, BLOCKS_DDL]);
+    let error = message(update_display_index_from(&no_display, "s1", 0).unwrap_err());
+    assert!(error.contains("history_shapes"), "{error}");
+
+    // Shapes present but empty: the reconcile reaches the delete and confirms
+    // the display table it is missing.
+    let shapes_only = schema(&[ENTRIES_DDL, BLOCKS_DDL, SHAPES_DDL]);
+    let error = message(update_display_index_from(&shapes_only, "s1", 0).unwrap_err());
+    assert!(error.contains("history_display"), "{error}");
+
+    // A stored shape to project: the upsert is what reports the missing table.
+    let shape = shape_row(value.clone());
+    let with_shape = schema(&[
+        ENTRIES_DDL,
+        BLOCKS_DDL,
+        SHAPES_DDL,
+        &format!("INSERT INTO history_shapes VALUES ('s1',0,'{shape}')"),
+    ]);
+    let error = message(update_display_index_from(&with_shape, "s1", 0).unwrap_err());
+    assert!(error.contains("history_display"), "{error}");
+
+    // The metadata refresh joins the record entry and then writes the display
+    // row: with no display table the update is the failing statement.
+    let info = shape_row(json!({"id":"info","type":"session_info","role":"system",
+        "timestamp":"2026-01-01T00:00:00Z","content":{"session_name":"n"}}));
+    let metadata = schema(&[
+        ENTRIES_DDL,
+        SHAPES_DDL,
+        "INSERT INTO entries VALUES ('s1',0,'r','session_info')",
+        &format!("INSERT INTO history_shapes VALUES ('s1',0,'{info}')"),
+    ]);
+    let error = message(refresh_session_metadata(&metadata, "s1").unwrap_err());
+    assert!(error.contains("history_display"), "{error}");
+
+    // A damaged index with a *non-zero* dirty start: the ordinal probe only runs
+    // when the tail begins after position 0, and it must report the missing
+    // table rather than silently restarting the index at zero.
+    let probe = schema(&[
+        ENTRIES_DDL,
+        BLOCKS_DDL,
+        SHAPES_DDL,
+        "INSERT INTO entries VALUES ('s1',5,'r1','user')",
+    ]);
+    let error = message(update_display_index_from(&probe, "s1", 5).unwrap_err());
+    assert!(error.contains("history_display"), "{error}");
+
+    // The display table exists but refuses writes: both the upsert and the
+    // trailing delete must surface the damage instead of leaving a half-written
+    // index behind.
+    const DISPLAY_DDL: &str = "CREATE TABLE history_display(session_id TEXT, ordinal INTEGER, \
+        source_position INTEGER, is_user INTEGER, payload TEXT, PRIMARY KEY(session_id,ordinal))";
+    for (timing, when, seed_stale_row) in [
+        ("BEFORE INSERT", "inserts", false),
+        ("BEFORE DELETE", "deletes", true),
+    ] {
+        let trigger = format!(
+            "CREATE TRIGGER refuse_{when} {timing} ON history_display \
+             BEGIN SELECT RAISE(ABORT, 'damaged display index'); END;"
+        );
+        // The trailing delete only touches rows past the new projection, so the
+        // delete case needs one stale row for its trigger to have anything to
+        // refuse.
+        let stale_row = "INSERT INTO history_display VALUES ('s1',1,0,0,'stale')";
+        let mut statements: Vec<&str> =
+            vec![ENTRIES_DDL, BLOCKS_DDL, SHAPES_DDL, DISPLAY_DDL, &trigger];
+        if seed_stale_row {
+            statements.push(stale_row);
+        }
+        let shape_insert = format!("INSERT INTO history_shapes VALUES ('s1',0,'{shape}')");
+        statements.push(&shape_insert);
+        let db = schema(&statements);
+        let error = message(update_display_index_from(&db, "s1", 0).unwrap_err());
+        assert!(error.contains("damaged display index"), "{when}: {error}");
+    }
+}

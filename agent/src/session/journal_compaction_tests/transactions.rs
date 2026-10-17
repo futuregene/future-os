@@ -183,3 +183,70 @@ fn pinned_reader_does_not_block_foreground_write_or_destroy_snapshot() {
         .is_some());
     reader.execute_batch("ROLLBACK").unwrap();
 }
+
+/// The other half of the pinned-reader story, and the record of a falsified
+/// hypothesis: it is tempting to think a pinned reader makes
+/// `incremental_vacuum` stall, which would reach the "no further progress"
+/// branch. It does not. Measured here with a **non-empty** freelist (the
+/// sibling test above pins a reader too, but with nothing to reclaim): the
+/// vacuum still drains every free page, and the call reports `false` only
+/// because the trailing `wal_checkpoint(TRUNCATE)` is blocked by the reader.
+///
+/// `.worktrees/cov100-r2/agent/src/session/database/reclamation_arm_tests.rs`
+/// carries the wider probe that settles the branch itself.
+#[test]
+fn a_pinned_reader_blocks_the_checkpoint_but_not_the_reclamation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agent.db");
+    let store = fixture(&path, "completed", 20);
+    // Filler rows leave free pages in the file once deleted: the freelist is a
+    // persistent property of the database, so the worker's own connection sees
+    // it even though a different connection freed it.
+    store
+        .db
+        .call(|db| {
+            db.execute_batch("CREATE TABLE filler(id INTEGER PRIMARY KEY, body BLOB);")?;
+            for _ in 0..40 {
+                db.execute("INSERT INTO filler(body) VALUES (zeroblob(8192))", [])?;
+            }
+            db.execute("DELETE FROM filler", [])?;
+            Ok(())
+        })
+        .unwrap();
+    let free_before: i64 = store
+        .db
+        .call(|db| Ok(db.pragma_query_value(None, "freelist_count", |r| r.get(0))?))
+        .unwrap();
+    assert!(
+        free_before > 0,
+        "the fixture must leave something to reclaim"
+    );
+
+    let reader = rusqlite::Connection::open(&path).unwrap();
+    reader
+        .execute_batch("BEGIN; SELECT count(*) FROM run_events;")
+        .unwrap();
+    let reclaimed = store
+        .db
+        .call(crate::session::database::reclaim_space_when_idle)
+        .unwrap();
+    reader.execute_batch("ROLLBACK").unwrap();
+
+    assert!(
+        !reclaimed,
+        "the blocked checkpoint must still be reported as unfinished"
+    );
+    let free_after: i64 = store
+        .db
+        .call(|db| Ok(db.pragma_query_value(None, "freelist_count", |r| r.get(0))?))
+        .unwrap();
+    // Only that *some* page was freed is asserted: the loop is bounded by the
+    // 10 ms idle slice as well as by the freelist, so how far it gets depends on
+    // load (a parallel run once stopped with 21 pages left). The point of the
+    // test is the direction, not the distance.
+    assert!(
+        free_after < free_before,
+        "the vacuum itself is not blocked by a reader: free {free_before} -> {free_after} \
+         must have shown progress"
+    );
+}

@@ -1895,15 +1895,46 @@ mod tests {
 
     #[test]
     fn get_default_model_returns_something() {
+        // Pin the ambient environment instead of inheriting whichever isolated
+        // home a previously-run test left behind: without a configured, resolvable
+        // default the two lines below are covered or not depending on test ORDER
+        // (measured: identical source reported them covered in one run and
+        // uncovered in the next), which is not an assertion about this code.
+        let home = crate::test_support::TestHome::new();
+        let candidate = Registry::new()
+            .all_models()
+            .into_iter()
+            .find(|model| {
+                model.provider != "future" && model.output.iter().any(|kind| kind == "text")
+            })
+            .expect("the builtin catalog has a non-future text model");
+        let chosen = format!("{}/{}", candidate.provider, candidate.id);
+        let auth_path = home.auth_path();
+        std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &auth_path,
+            serde_json::json!({ candidate.provider.clone(): {"type": "api_key", "key": "sk-cov100"} })
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            home.settings_path(),
+            serde_json::json!({ "defaultModel": chosen }).to_string(),
+        )
+        .unwrap();
+
         // Whatever this host has configured, a named default must be an id the
         // same catalog can resolve — never a half-formatted `provider//id` or a
-        // stale preference pointing at a model that no longer exists.
-        if let Some(id) = super::get_default_model() {
-            assert!(
-                super::Registry::new().resolve(&id).is_some(),
-                "get_default_model named {id:?}, which the catalog cannot resolve"
-            );
-        }
+        // stale preference pointing at a model that no longer exists. With the
+        // pinned home the selection must also return the configured choice.
+        let id = super::get_default_model()
+            .expect("a configured, credentialed default must resolve to a model");
+        let resolved = super::Registry::new().resolve(&id).is_some();
+        assert!(resolved, "unresolvable default model: {id:?}");
+        assert_eq!(
+            id, chosen,
+            "the configured choice must win over the heuristics"
+        );
 
         // The selection rule, against registries built in the test so the
         // result does not depend on the host's auth.json / settings.json.

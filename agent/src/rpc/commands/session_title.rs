@@ -320,6 +320,70 @@ mod tests {
     }
 
     #[test]
+    fn suggestion_replaces_a_model_whose_provider_cannot_reach_it() {
+        use super::super::{handle_command_internal, test_support};
+        use crate::session::{Session, SessionEntry};
+        let home = tempfile::tempdir().unwrap();
+        let state = test_support::make_app_state_with(
+            home.path().join("sessions"),
+            std::sync::Arc::new(crate::runtime::GlobalQueueBudget::defaults()),
+        );
+        // Two models of one provider: the session's own is **known but not
+        // credential-reachable**, so `resolve` finds it while
+        // `resolve_for_request` refuses it, and the sibling becomes its
+        // replacement. That mismatch (`resolved != canonical`) is the only way
+        // to reach the third "Session model is unavailable" arm — the two
+        // earlier ones fail on an *unknown* model, which is what the test above
+        // covers.
+        let model = |id: &str, key: &str| crate::models::Model {
+            id: id.to_string(),
+            provider: "test".to_string(),
+            api_key: key.to_string(),
+            output: vec!["text".into()],
+            context_window: 32_000,
+            max_tokens: 1_000,
+            ..Default::default()
+        };
+        *state.model_registry.write() = crate::models::Registry::from_models_and_auth(
+            vec![model("a", ""), model("b", "sk-b")],
+            "{}",
+        );
+        let mut session = Session::new("workspace", "test/a");
+        session.entries = vec![
+            SessionEntry::session_info(
+                serde_json::json!({"model":"test/a", "session_name":"Original"}),
+                "test/a".into(),
+                "low".into(),
+            ),
+            SessionEntry::new_user("user", serde_json::json!("Question")),
+            SessionEntry::new_assistant(serde_json::json!("Answer"), vec![]),
+        ];
+        state.session_manager.save(&session).unwrap();
+        // Preconditions, asserted so this test cannot silently stop exercising
+        // the arm it was written for: the model resolves, and resolving a
+        // *request* target for it lands on the sibling instead.
+        {
+            let registry = state.model_registry.read();
+            assert!(registry.resolve("test/a").is_some(), "the model is known");
+            let (resolved, _, _) = registry
+                .resolve_request_target("test/a")
+                .expect("a request target exists");
+            assert_eq!(resolved, "test/b", "the sibling is the replacement");
+        }
+
+        let mut command = test_support::make_cmd("generate_session_title");
+        command.session_id = session.id.clone();
+        command.mode = "en".into();
+        let response: serde_json::Value =
+            serde_json::from_str(&handle_command_internal(&state, command)).unwrap();
+        assert_eq!(response["success"], false);
+        assert_eq!(
+            response["error"].as_str().unwrap(),
+            "Session model is unavailable"
+        );
+    }
+
+    #[test]
     fn suggestion_does_not_hydrate_or_replace_an_unavailable_session_model() {
         use super::super::{handle_command_internal, test_support};
         use crate::session::{Session, SessionEntry};
@@ -685,6 +749,84 @@ mod tests {
             error.contains("127.0.0.1:9"),
             "the failure must come from the request to the configured provider: {error}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_successful_generation_returns_the_title_from_the_configured_provider() {
+        // The handler's *success* path end to end: a real provider is resolved
+        // from the on-disk config, a real HTTP request is made against a local
+        // SSE server, and the streamed title comes back in the response. The
+        // other handler tests stop at model selection (they point the provider
+        // at a closed port), so nothing had ever reached the `Ok` arm.
+        use super::super::{handle_command_internal, test_support};
+        use crate::rpc::commands::test_support::parse_response;
+        use crate::session::{Session, SessionEntry};
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        // Serve exactly one chat-completions response and then exit.
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                // Read the request head (the body is irrelevant to this mock, and
+                // the frame below is what the client parses).
+                let mut buffer = [0u8; 8192];
+                let _ = stream.read(&mut buffer);
+                let body = concat!(
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"Exporting a session\"}}]}\n\n",
+                    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                    "data: [DONE]\n\n",
+                );
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(body.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+
+        let home = crate::test_support::TestHome::new();
+        std::fs::create_dir_all(home.path().join(".future/agent")).unwrap();
+        std::fs::write(
+            home.models_path(),
+            format!(
+                r#"{{"providers":{{"demo":{{"baseUrl":"http://{address}/v1","apiKey":"sk-test","api":"openai",
+                "models":[{{"id":"model-x","name":"X","contextWindow":8000,"maxTokens":1024}}]}}}}}}"#
+            ),
+        )
+        .unwrap();
+
+        let state = test_support::make_app_state();
+        let mut session = Session::new("workspace", "demo/model-x");
+        session.entries = vec![
+            SessionEntry::session_info(
+                serde_json::json!({"model":"demo/model-x","session_name":"Untitled"}),
+                "demo/model-x".into(),
+                "low".into(),
+            ),
+            SessionEntry::new_user("user", serde_json::json!("How do I export a session?")),
+            SessionEntry::new_assistant(serde_json::json!("Use export_html."), vec![]),
+        ];
+        state.session_manager.save(&session).unwrap();
+
+        let mut command = test_support::make_cmd("generate_session_title");
+        command.session_id = session.id.clone();
+        command.mode = "en".into();
+
+        let raw = tokio::task::spawn_blocking(move || handle_command_internal(&state, command))
+            .await
+            .unwrap();
+        let response = parse_response(&raw);
+        assert_eq!(response["success"], true, "{response}");
+        assert_eq!(
+            response["data"]["title"], "Exporting a session",
+            "the streamed title must be returned: {response}"
+        );
+        // The handler reports the session's model reference, not the bare id.
+        assert_eq!(response["data"]["model"], "demo/model-x", "{response}");
     }
 
     #[test]

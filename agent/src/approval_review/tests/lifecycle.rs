@@ -409,3 +409,34 @@ fn historical_automatic_policy_keeps_os_sandbox_after_logout() {
         );
     }
 }
+
+/// The deadline is a wall-clock budget for the whole review, not just the model
+/// call: when the provider is still running as it expires, the outcome is a
+/// review error (never a silent approval).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_review_whose_provider_outlives_the_deadline_reports_reviewer_timeout() {
+    let (ctx, calls) = context(true, true); // true, true = provider never answers
+    let mut action = prepare_review_action(
+        "shell",
+        "call",
+        &json!({"command":"pwd"}),
+        &json!({}),
+        &json!({}),
+        "/project",
+    );
+    // Leave a sliver of the deadline: the zero-remaining fast path is skipped,
+    // the provider is reached, and the timeout expires while it is running.
+    action.started = std::time::Instant::now() - REVIEW_TIMEOUT + Duration::from_millis(150);
+    let outcome = ctx.review_action(action, &Value::Null).await;
+    assert_eq!(outcome.verdict.status, ReviewStatus::ReviewError);
+    assert_eq!(
+        outcome.verdict.error_code.as_deref(),
+        Some("reviewer_timeout")
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "the provider really was reached before the deadline expired"
+    );
+    assert!(outcome.verdict.reported.is_none());
+}

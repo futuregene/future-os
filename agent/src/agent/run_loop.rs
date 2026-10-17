@@ -1882,9 +1882,11 @@ mod tests {
         /// Opt-in: that usage chunk carries no `credit_cost`, so the caller has to
         /// fall back to pricing it from the catalog.
         summary_unpriced: std::sync::atomic::AtomicBool,
+        /// Opt-in replacement for the canned handoff summary text. Used to drive a
+        /// summary that matches no documented section at all.
+        summary_text: parking_lot::Mutex<Option<String>>,
         summary_calls: std::sync::atomic::AtomicUsize,
     }
-
     impl ScriptedProvider {
         fn new(scripts: Vec<Script>) -> Arc<Self> {
             Arc::new(Self {
@@ -1896,6 +1898,7 @@ mod tests {
                 summary_usage: std::sync::atomic::AtomicBool::new(false),
                 summary_unpriced: std::sync::atomic::AtomicBool::new(false),
                 summary_calls: std::sync::atomic::AtomicUsize::new(0),
+                summary_text: parking_lot::Mutex::new(None),
             })
         }
     }
@@ -1927,10 +1930,10 @@ mod tests {
                         "summary provider unavailable (test script)"
                     ));
                 }
-                let mut events = vec![
-                    ev_text("## Objective\n- Continue the test.\n\n## Important Details\n- Preserve history.\n\n## Work State\n### Completed\n- Earlier work.\n\n### Active\n- Current run.\n\n### Blocked\n- (none)\n\n## Next Move\n1. Continue.\n\n## Relevant Files\n- (none)"),
-                    ev_stop(),
-                ];
+                let text = self.summary_text.lock().clone().unwrap_or_else(|| {
+                    "## Objective\n- Continue the test.\n\n## Important Details\n- Preserve history.\n\n## Work State\n### Completed\n- Earlier work.\n\n### Active\n- Current run.\n\n### Blocked\n- (none)\n\n## Next Move\n1. Continue.\n\n## Relevant Files\n- (none)".to_string()
+                });
+                let mut events = vec![ev_text(&text), ev_stop()];
                 if self
                     .summary_usage
                     .load(std::sync::atomic::Ordering::Relaxed)
@@ -6821,5 +6824,178 @@ mod tests {
             "a refused receipt is announced as a failure, not a commit"
         );
         assert!(loop_.active_checkpoint.lock().is_none());
+    }
+    /// The summary text is used **verbatim**: there is no template validation
+    /// anywhere between the model's answer and the checkpoint. That is what makes
+    /// the `InvalidSummary` arm in this loop unreachable from a "bad template"
+    /// summary, and it is the falsifier for that claim — introduce a section check
+    /// that reports `InvalidSummary` and this test fails, because the committed
+    /// checkpoint would no longer carry the marker text.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_summary_that_matches_no_documented_section_is_used_verbatim() {
+        const MARKER: &str = "THIS-SUMMARY-MATCHES-NO-SECTION-AT-ALL";
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
+        *provider.summary_text.lock() = Some(MARKER.to_string());
+        let mut loop_ = Loop::new(provider.clone(), "mock");
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: true,
+            reserve_tokens: 2000,
+            keep_recent_tokens: 1,
+            context_window: 8192,
+            model: "mock".into(),
+        });
+        let checkpoints = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                compactable_messages(26_000),
+                &StreamContext::default(),
+                noop_on_text,
+                {
+                    let checkpoints = checkpoints.clone();
+                    let events = events.clone();
+                    move |event| {
+                        if let RunEvent::CompactionCommitted { checkpoint, .. } = &event {
+                            checkpoints.lock().push(checkpoint.clone());
+                        }
+                        record_compaction_event(&events, event);
+                    }
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            text, "ok",
+            "a summary with no sections must not fail the run"
+        );
+        assert_eq!(
+            events.lock().as_slice(),
+            ["compaction_started", "compaction_committed"],
+            "an unstructured summary is committed, not reported as a failure"
+        );
+        let checkpoints = checkpoints.lock();
+        let checkpoint = checkpoints.first().expect("the compaction committed");
+        assert_eq!(
+            checkpoint
+                .summary_outcome
+                .as_ref()
+                .map(|outcome| outcome.status),
+            Some(crate::compaction::CompactionSummaryStatus::Generated),
+            "the model's text was accepted as a summary rather than refused"
+        );
+        let summary = serde_json::to_string(&checkpoint.summary).unwrap();
+        assert!(
+            summary.contains(MARKER),
+            "the model's text must reach the checkpoint unchanged: {summary}"
+        );
+    }
+
+    /// A provider-limit recovery must claim its **own** receipt, even when an
+    /// automatic attempt in the same run already recorded a "nothing to compact"
+    /// receipt over the same journal input. The claim key is
+    /// `hash(input_hash, policy)` and the policy JSON carries `trigger` and `phase`,
+    /// so the two attempts are distinct operations; if that stopped being true the
+    /// recovery would replay the automatic answer, return `Unchanged`, and fail the
+    /// run with "no progress after provider limit" instead of doing the recovery at
+    /// all. This test is the falsifier: it asserts the recovery claimed a *second*
+    /// receipt (two rows over one input digest) and that the run did not take the
+    /// replay path.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_provider_limit_recovery_claims_its_own_receipt_not_the_automatic_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::session::Manager::new(dir.path().to_owned()));
+        // One lone oversized input: the automatic attempt can claim but has no
+        // compactable boundary, so it closes its receipt with `checkpoint: null`.
+        let mut lone =
+            crate::types::AgentMessage::new_user("user", serde_json::json!("x".repeat(27_000)));
+        lone.ensure_journal_entry_id();
+        let messages = vec![lone];
+        let entries = messages
+            .iter()
+            .map(crate::session::agent_message_to_entry)
+            .map(|entry| serde_json::to_value(entry).unwrap())
+            .collect::<Vec<_>>();
+        store.storage().unwrap().replace("s", entries).unwrap();
+
+        let provider = ScriptedProvider::new(vec![
+            Script::Fail(
+                "[CTX_LIMIT] Request exceeds the model's maximum context length (HTTP 400)."
+                    .to_string(),
+            ),
+            Script::Events(vec![ev_text("recovered"), ev_stop()]),
+        ]);
+        let mut loop_ = Loop::new(provider, "mock").with_config(crate::types::AgentConfig {
+            max_retries: 1,
+            ..Default::default()
+        });
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: true,
+            // Above the 512-token margin, so the economic trigger sits below the
+            // hard input limit and the automatic receipt is claimed.
+            reserve_tokens: 2000,
+            keep_recent_tokens: 1,
+            context_window: 8192,
+            model: "mock".into(),
+        });
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let error = loop_
+            .run_streaming_with_messages(
+                messages,
+                &StreamContext {
+                    compaction_journal: Some(crate::compaction::CompactionJournal::new(
+                        store.clone(),
+                        crate::session::SessionPersistence::new(store.clone(), "s".into()),
+                        "s".into(),
+                        serde_json::json!({"model": "mock"}),
+                    )),
+                    on_checkpoint: Some(Arc::new(|_| Ok(()))),
+                    ..Default::default()
+                },
+                noop_on_text,
+                {
+                    let events = events.clone();
+                    move |event| record_compaction_event(&events, event)
+                },
+                None,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("no valid journal boundary"),
+            "the recovery must reach its own planner and refuse there: {error}"
+        );
+        assert!(
+            !error.contains("no progress after provider limit"),
+            "the recovery replayed the automatic receipt instead of claiming its own: {error}"
+        );
+
+        // The mechanical proof: two receipts over ONE input digest, so the claim key
+        // differed by policy (trigger/phase) alone — and exactly one of them is the
+        // null-checkpoint answer the automatic attempt recorded.
+        const ROWS: &str = "SELECT COUNT(*) FROM compaction_operations WHERE session_id='s'";
+        const KEYS: &str =
+            "SELECT COUNT(DISTINCT input_key) FROM compaction_operations WHERE session_id='s'";
+        const NULLS: &str = "SELECT COUNT(*) FROM compaction_operations WHERE session_id='s' \
+             AND state='completed' AND json_extract(result_json,'$.checkpoint') IS NULL";
+        const DIGESTS: &str =
+            "SELECT COUNT(DISTINCT input_digest) FROM compaction_operations WHERE session_id='s'";
+        let measured = store
+            .storage()
+            .unwrap()
+            .db
+            .call(|db| {
+                let one = |sql: &str| -> rusqlite::Result<i64> {
+                    db.query_row(sql, [], |row| row.get(0))
+                };
+                Ok((one(ROWS)?, one(KEYS)?, one(NULLS)?, one(DIGESTS)?))
+            })
+            .unwrap();
+        assert_eq!(
+            measured,
+            (2, 2, 1, 1),
+            "one input, two policies: the automatic null-checkpoint receipt plus the recovery's own"
+        );
     }
 }

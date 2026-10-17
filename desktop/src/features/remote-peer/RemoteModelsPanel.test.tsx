@@ -248,3 +248,29 @@ it("shows a hidden model with its switch off, and can turn it back on", async ()
   expect(view.onChangeHidden).toHaveBeenCalledWith([]);
   await view.unmount();
 });
+
+/**
+ * A folded group unfolds again, and its rows come back.
+ *
+ * Folding was covered in one direction only: the suite folds, searches, and checks
+ * the folded rows are hidden. Without the reverse the control would be a
+ * one-way door — the reader folds a long provider away, changes their mind, and
+ * the rows never return — which is the failure mode a `Set`-based toggle has when
+ * only the `add` arm is exercised.
+ */
+it("unfolds a folded group and brings its rows back", async () => {
+  const view = await mount();
+  // A row is named by the reference the panel writes, which is also what the
+  // hidden set holds — so the assertion speaks the same vocabulary as the data.
+  expect(view.text()).toContain("openai/gpt-5");
+
+  await act(async () => view.foldFor("openai")!.click());
+  expect(view.text()).not.toContain("openai/gpt-5");
+
+  await act(async () => view.foldFor("openai")!.click());
+  expect(view.text()).toContain("openai/gpt-5");
+  // The heading says the group is open again, so the two agree.
+  expect(view.text()).toContain("2 models");
+
+  await view.unmount();
+});

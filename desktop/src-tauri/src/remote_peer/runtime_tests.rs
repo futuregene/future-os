@@ -11,10 +11,10 @@ use super::creds;
 use super::runtime::cov_harness;
 use super::runtime::{
     close_socket_for_test, connect, connect_all, connect_with_emitter, disconnect,
-    ensure_connected, forget_connection_for_test, install_supervisor_for_test, list, live_count,
-    pair_with_emitter, request, sessions, set_label, set_visible_session, spawn_supervisor,
-    stream_count, supervisor_count, unpair, workspaces, Emitter, PeerEvent, PeerSummary,
-    INJECT_CONNECTION_LOST,
+    ensure_connected, forget_connection_for_test, install_supervisor_for_test, is_request_timeout,
+    list, live_count, pair_with_emitter, request, sessions, set_label, set_visible_session,
+    should_retry_connect, spawn_supervisor, stream_count, supervisor_count, unpair, workspaces,
+    Emitter, PeerEvent, PeerSummary, INJECT_CONNECTION_LOST,
 };
 use super::session::EventsSubscription;
 use super::testing::{fixture, teardown, Fixture};
@@ -529,6 +529,60 @@ async fn a_page_larger_than_one_reply_arrives_intact() {
     teardown().await;
 }
 
+/// A run-scoped page repeats its run on every chunk it fetches.
+///
+/// The host scopes a page to bridge + session + **run** and refuses a chunk
+/// asked for by anything else (`remote_read_owner_mismatch`), so a fetch that
+/// dropped `runId` would fail *after* the first chunk — the page would arrive
+/// truncated with no error the UI could explain. Asking for a page that names a
+/// run proves the fetch carries it, because the host compares the two.
+#[tokio::test]
+async fn a_run_scoped_page_repeats_its_run_on_every_chunk() {
+    let (_home, fx) = start("peer-rt-chunked-page-run").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    connect(&desktop_id).await.expect("connect");
+
+    let agent = crate::remote::test_support::ensure_mock_agent();
+    agent.clear_scripts();
+    let session = "sess_rt_chunked_page_run";
+    // Past the host's 512 KiB page threshold, so the reply is chunked at all:
+    // eight 80 KiB turns are ~640 KiB, i.e. four 192 KiB chunks.
+    let body = "y".repeat(80 * 1024);
+    let mut entries = vec![json!({
+        "id": "u", "kind": "user", "role": "user",
+        "blocks": [{"kind": "text", "text": "question"}],
+    })];
+    entries.extend((0..8).map(|index| {
+        json!({
+            "id": format!("a{index}"), "kind": "assistant", "role": "assistant",
+            "runId": "r",
+            "blocks": [{"kind": "text", "text": body}],
+        })
+    }));
+    agent.set_session_entries(session, json!({ "entries": entries }));
+
+    let page = request(
+        &desktop_id,
+        json!({
+            "type": "get_session_entries", "sessionId": session,
+            "runId": "r", "before": i64::MAX, "limit": 3,
+        }),
+        session,
+    )
+    .await
+    .expect("the host accepts a page scoped to the run that produced it");
+
+    let rows = page["entries"].as_array().expect("entries");
+    assert_eq!(rows.len(), 9, "no entry is lost to the chunking");
+    assert_eq!(
+        rows[8]["blocks"][0]["text"],
+        json!(body),
+        "the last chunk is the run's own bytes, not a refusal"
+    );
+
+    teardown().await;
+}
+
 /// A catalogue read against an unpaired host fails rather than opening a
 /// connection as a side effect of a background poll.
 #[tokio::test]
@@ -674,6 +728,75 @@ async fn a_connected_host_streams_its_events_to_the_emitter() {
     let events = count.lock().unwrap().clone();
     assert_eq!(events[0].desktop_id, desktop_id);
     assert_eq!(events[0].payload["sessionId"], json!("sess_rt_events"));
+
+    teardown().await;
+}
+
+/// An activity-only move arrives on the catalogue lane, tagged with its domain.
+///
+/// The peer declares `catalog_activity_v1`, so the host stops re-sending the
+/// whole session list when only a row's recency moved and sends the moved rows
+/// on `state.activity` instead. The client has to classify that subject as an
+/// *activity* snapshot and tag the payload `sessions_activity`: the UI applies
+/// the replacement packet only for that domain, so a peer that dropped the
+/// packet (or tagged it as a session list) would leave every remote row's
+/// ordering frozen while the conversation streams.
+#[tokio::test]
+async fn an_activity_packet_arrives_tagged_with_its_catalogue_domain() {
+    let (_home, fx) = start("peer-rt-activity-lane").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+
+    let (emitter, seen) = recording_emitter();
+    connect_with_emitter(&desktop_id, Some(emitter))
+        .await
+        .expect("connect with a stream");
+
+    // The conversation is created *after* the subscription exists, so the
+    // structural packet it forces is one the peer is guaranteed to see. Waiting
+    // for that packet is what makes the move below recency-only: the publisher
+    // folds a recency change into a whole-list packet when the row set changed in
+    // the same tick, and that would leave no activity packet to assert on.
+    let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+        mode: "chat".into(),
+        title: Some("Moving row".into()),
+        workspace_id: None,
+        workspace_path: None,
+        workspace_name: None,
+        agent_session_id: Some("sess_rt_activity".into()),
+    })
+    .expect("seed a conversation");
+
+    let saw = |seen: &Arc<std::sync::Mutex<Vec<PeerEvent>>>, domain: &str| {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == "catalog" && event.payload["domain"] == json!(domain))
+    };
+    wait_for("the structural catalogue snapshot never arrived", || {
+        saw(&seen, "sessions")
+    })
+    .await;
+
+    // Above every row's current activity: a write that moves the value is what a
+    // streamed turn does, and a backwards one is refused by the store.
+    let at = crate::remote_host::catalog::sessions_catalog("")
+        .expect("store readable")
+        .activity
+        .iter()
+        .map(|(_, at)| *at)
+        .max()
+        .unwrap_or(0)
+        + 1_000;
+    crate::store::record_thread_message_activity(&thread.id, at).expect("move the row's recency");
+
+    wait_for("no sessions_activity packet reached the emitter", || {
+        seen.lock().unwrap().iter().any(|event| {
+            event.kind == "catalog"
+                && event.payload["domain"] == json!("sessions_activity")
+                && event.desktop_id == desktop_id
+        })
+    })
+    .await;
 
     teardown().await;
 }
@@ -1259,23 +1382,146 @@ async fn a_supervisor_gives_up_after_its_window() {
     teardown().await;
 }
 
-/// A supervisor that has never been installed is not waiting on anything: the
-/// runtime only starts one when a *live* connection fails.
+/// A connect that fails **transiently** schedules a bounded retry — and still
+/// reports the failure to its caller.
+///
+/// This is the connect-leg half of §13.7/§13.8: the pairing is still valid, so an
+/// unreachable socket is not an error state that only a user action can clear.
+/// The old policy is what this test used to encode ("a user who watched Connect
+/// fail should see that failure, not a quiet retry"); both halves hold now,
+/// because the *caller* still gets the error while the *runtime* schedules the
+/// same bounded retry the drop path schedules. What the user sees is unchanged;
+/// what changes is that the host comes back without them.
 #[tokio::test]
-async fn a_failed_first_connect_does_not_start_retrying_on_its_own() {
+async fn a_transient_first_connect_failure_schedules_a_bounded_retry() {
     let (_home, mut fx) = start("peer-rt-no-supervisor").await;
     fx.paired.creds.nats_url = "nats://127.0.0.1:1".into();
     creds::upsert(fx.paired.creds.clone()).expect("store");
 
-    connect(&fx.paired.creds.desktop_id)
+    let error = connect(&fx.paired.creds.desktop_id)
         .await
         .expect_err("the host is unreachable");
     assert!(
-        supervisor_count().await == 0,
-        "a user who watched Connect fail should see that failure, not a quiet retry"
+        matches!(error, crate::AppError::RemoteTransport(_)),
+        "an unreachable socket is the transient class, got: {error:?}"
+    );
+    assert!(
+        supervisor_count().await > 0,
+        "a transient connect failure must schedule a retry, not wait for a user action"
+    );
+    // And the failure is still recorded, so the row can explain itself while the
+    // retry is in flight.
+    assert!(
+        list()
+            .await
+            .expect("list")
+            .iter()
+            .find(|peer| peer.desktop_id == fx.paired.creds.desktop_id)
+            .is_some_and(|peer| !peer.connected),
+        "the host must not look connected while its retry is pending"
     );
 
+    // The retry we just scheduled must not outlive the test. In the test build the
+    // schedule runs on `delay_unit()` = 1 ms, so a loop left behind burns CPU and
+    // hammers the in-process broker for every later test in this binary — the
+    // leak that made one starved run's red count rise from 9 to 18 while this fix
+    // was being developed (`docs/testing/flaky-tauri.md` §13.8.4). `teardown`
+    // aborts it, and this is the assertion that keeps that true.
     teardown().await;
+    assert_eq!(
+        supervisor_count().await,
+        0,
+        "teardown must abort a retry loop a failed connect scheduled"
+    );
+}
+
+/// The decision itself, every combination — the three conditions are each
+/// load-bearing, and a fixture cannot produce a rejected credential or a
+/// user-stopped host on demand.
+#[test]
+fn connect_retry_policy_is_transient_and_not_stopped_and_not_already_retrying() {
+    let transient = crate::AppError::RemoteTransport("Failed to connect to NATS: x".into());
+    let permanent = crate::AppError::RemoteAuthorization("Failed to connect to NATS: x".into());
+    let other_fault = crate::AppError::Message("no such host".into());
+
+    // The one case that retries.
+    assert!(should_retry_connect(&transient, false, false));
+    // A refused credential never does: the pairing, not the network, is wrong.
+    assert!(!should_retry_connect(&permanent, false, false));
+    // Anything that is not a transport fault is not the network either.
+    assert!(!should_retry_connect(&other_fault, false, false));
+    // A host the user disconnected stays disconnected.
+    assert!(!should_retry_connect(&transient, true, false));
+    // The loop's own `resume` comes through here; it must not spawn a second loop.
+    assert!(!should_retry_connect(&transient, false, true));
+}
+
+/// The Noise handshake leg's two failures land on opposite sides of the retry
+/// decision, and that is the whole point of `classify_connect_error` existing
+/// for the socket leg: a handshake that **timed out** is the network, a
+/// handshake the host **refused** is the pairing.
+///
+/// Pinned rather than inferred (the todo for this section asked for exactly
+/// that). The three messages are the ones the code really produces
+/// (`session::handshake`'s `exchange`): the outer budget's own timeout, the
+/// `async-nats` inner one, and the refusal that carries the host's `detail`.
+#[test]
+fn handshake_failures_are_retried_only_when_they_are_timeouts() {
+    let outer_timeout = crate::AppError::RemoteTransport("Remote handshake timed out".into());
+    let inner_timeout = crate::AppError::RemoteTransport(
+        "Remote handshake failed: request timed out: deadline has elapsed".into(),
+    );
+    let refused = crate::AppError::Message("remote_secure_channel_invalid (invitation)".into());
+
+    // A handshake that timed out is transient: the host may have been busy.
+    assert!(
+        should_retry_connect(&outer_timeout, false, false),
+        "an expired handshake budget is the network, not the pairing"
+    );
+    assert!(
+        should_retry_connect(&inner_timeout, false, false),
+        "the library's inner timeout is the same kind of failure"
+    );
+    // A handshake the host refused is not: the invitation, the pin or the
+    // credential is wrong, and retrying would repeat a refusal forever while
+    // hiding the re-pair the user has to do.
+    assert!(
+        !should_retry_connect(&refused, false, false),
+        "a refused handshake must not be retried"
+    );
+    // And neither is retried once the user has stopped the host.
+    assert!(!should_retry_connect(&outer_timeout, true, false));
+}
+
+/// `is_request_timeout` answers for *request* legs only, which is what its
+/// callers rely on.
+///
+/// The handshake rows are the reason this test exists: the Noise leg's inner
+/// timeout contains the request phrase verbatim, so a bare substring match said
+/// "yes" for a handshake. Nothing calls it with one today (handshake errors come
+/// out of `connect_with_emitter`, not from a live connection's request path), and
+/// this pins that a future caller cannot get the wrong answer either.
+#[test]
+fn request_timeouts_are_request_legs_only() {
+    let transport = |message: &str| crate::AppError::RemoteTransport(message.to_string());
+
+    // The two request-leg shapes: yes.
+    assert!(is_request_timeout(&transport("Remote request timed out")));
+    assert!(is_request_timeout(&transport(
+        "Remote request failed: request timed out: deadline has elapsed"
+    )));
+    // The handshake leg's inner timeout carries the same phrase: no.
+    assert!(!is_request_timeout(&transport(
+        "Remote handshake failed: request timed out: deadline has elapsed"
+    )));
+    // The socket-connect leg: no (there is no session to probe).
+    assert!(!is_request_timeout(&transport(
+        "Failed to connect to NATS: timed out"
+    )));
+    // Anything that is not a transport fault: no.
+    assert!(!is_request_timeout(&crate::AppError::Message(
+        "request timed out".into()
+    )));
 }
 
 /// The supervisor is keyed by host, so one host's outage cannot retry another's

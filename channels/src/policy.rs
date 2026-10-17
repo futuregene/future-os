@@ -412,6 +412,18 @@ mod tests {
         assert!(back.require_mention);
     }
 
+    /// The reason behind a refusal, or `None` when the message was allowed.
+    ///
+    /// Both arms are driven by the tests below — a stranger is refused and an
+    /// open policy allows — so this is a decomposition, not a guard nobody can
+    /// reach.
+    fn denial(outcome: Access) -> Option<String> {
+        match outcome {
+            Access::Denied(reason) => Some(reason),
+            Access::Allowed => None,
+        }
+    }
+
     #[test]
     fn an_unconfigured_engine_refuses_a_stranger_in_dm() {
         // Default posture: a DM from someone who is not on the allowlist is
@@ -419,13 +431,18 @@ mod tests {
         // sender their id so an admin can add it, which also proves the DM
         // default did not degrade to `disabled` (silent) or `open` (unrestricted).
         let engine = PolicyEngine::new(AccessPolicyConfig::default());
-        match engine.check_dm("ou_stranger") {
-            Access::Denied(reason) => {
-                assert!(reason.contains("ou_stranger"), "reason: {reason}");
-                assert!(reason.contains("dm_allowlist"), "reason: {reason}");
-            }
-            other => panic!("an unconfigured channel must refuse a stranger, got {other:?}"),
-        }
+        let reason = denial(engine.check_dm("ou_stranger")).expect("a stranger must be refused");
+        assert!(reason.contains("ou_stranger"), "reason: {reason}");
+        assert!(reason.contains("dm_allowlist"), "reason: {reason}");
+
+        // The allowed half of the same decomposition: an open DM policy lets
+        // the very same sender through, so the `expect` above really is a
+        // statement about the refusal and not about the decomposition.
+        let open = PolicyEngine::new(AccessPolicyConfig {
+            dm_policy: "open".into(),
+            ..AccessPolicyConfig::default()
+        });
+        assert_eq!(denial(open.check_dm("ou_stranger")), None);
     }
 
     #[test]
@@ -443,13 +460,9 @@ mod tests {
         // is the only path that observes that default once group chats are off.
         let mut enabled = PolicyEngine::new(AccessPolicyConfig::default());
         enabled.set_override("oc_unconfigured".into(), override_with(Some(true), None));
-        assert!(
-            matches!(
-                enabled.check_group("oc_unconfigured", false),
-                Access::Denied(_)
-            ),
-            "the default mention gate must survive an explicit per-chat enable"
-        );
+        let reason = denial(enabled.check_group("oc_unconfigured", false))
+            .expect("the default mention gate must survive an explicit per-chat enable");
+        assert_eq!(reason, "Mention the bot to get a response");
         assert_eq!(
             enabled.check_group("oc_unconfigured", true),
             Access::Allowed

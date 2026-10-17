@@ -623,4 +623,277 @@ mod tests {
             }
         }
     }
+
+    /// The cursor query is answered by writing the reply to the child's stdin,
+    /// and the child's byte count proves those six bytes really arrived ahead of
+    /// the line terminator (the count is a multiple of the reply length, because
+    /// a helper may answer the still-buffered query more than once).
+    #[cfg(unix)]
+    #[test]
+    fn a_cursor_query_is_answered_on_the_childs_stdin() {
+        let mut session = spawn_with(test_support::cursor_query_command());
+        let rx = drained(&session);
+
+        // Answer first: the child is blocked in `read` until a whole line arrives.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut answered = false;
+        while !answered && Instant::now() < deadline {
+            if let Some(buf) = latest(&rx) {
+                answered = answer_dsr(&mut session, &buf);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            answered,
+            "the child must ask for the cursor before the reply can be sent"
+        );
+        session
+            .write(b"\n")
+            .expect("terminate the line the child is reading");
+
+        let text = wait_for(&mut session, &rx, "answered:");
+        let visible = test_support::visible_text(text.as_bytes());
+        let count: usize = visible
+            .split("answered:")
+            .nth(1)
+            .and_then(|rest| rest.trim().parse().ok())
+            .unwrap_or(0);
+        assert!(
+            count >= test_support::DSR_REPLY.len()
+                && count.is_multiple_of(test_support::DSR_REPLY.len()),
+            "the child must have read the reply bytes it was sent, got {count} in {visible:?}"
+        );
+        assert_eq!(wait_for_exit(&mut session, &rx), Some(0));
+    }
+
+    /// The waiting helper answers a cursor query it observes and still reaps the
+    /// child.
+    ///
+    /// The reply carries no line terminator, so on a fresh canonical PTY the only
+    /// trace a reader could leave is the echo the line discipline sends back —
+    /// and the helper has already drained that channel by the time it returns.
+    /// Delivery of the reply to the child is therefore asserted one layer up
+    /// (`terminal::session::tests::a_cursor_querying_child_is_answered_by_the_wait_helper`);
+    /// this test asserts what *is* observable here: a child that asks for the
+    /// cursor and then finishes on its own is reaped instead of wedging the wait
+    /// until its deadline.
+    #[cfg(unix)]
+    #[test]
+    fn wait_for_exit_answers_a_cursor_query_and_then_reaps_the_child() {
+        let mut session = spawn_with(test_support::query_then_marker_command());
+        let rx = drained(&session);
+        assert_eq!(
+            wait_for_exit(&mut session, &rx),
+            Some(0),
+            "a child that asked for the cursor must still be reaped, not waited out"
+        );
+    }
+
+    /// `pid_running` answers "not alive" for the sentinel pids (which must never
+    /// be probed as real processes) and "alive" for a child this test owns.
+    #[cfg(unix)]
+    #[test]
+    fn pid_running_separates_live_children_from_the_sentinel_pids() {
+        assert!(!pid_running(0), "pid 0 is the process group, not a process");
+        assert!(!pid_running(-1), "a negative pid is not a process");
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "sleep 60"])
+            .spawn()
+            .expect("spawn fixture child");
+        let pid = child.id() as i32;
+        assert!(pid_running(pid), "the fixture child must be observed alive");
+        // Signal sentinel pids are ignored rather than broadcast to the group.
+        signal_pid(0, libc::SIGTERM);
+        signal_pid(-1, libc::SIGTERM);
+        signal_pid(pid, libc::SIGTERM);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the signalled child never exited"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(
+            !status.success(),
+            "the child must have died from the signal, not exited on its own"
+        );
+    }
+
+    /// Teardown without a process group signals the pid directly (the shape a
+    /// platform that cannot report a group leader gets) and still leaves no
+    /// child behind.
+    #[cfg(unix)]
+    #[test]
+    fn teardown_without_a_process_group_signals_the_pid() {
+        // `exec` so the signalled pid *is* the sleeping process: a shell that
+        // forked it would leave the child behind under its own pid.
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exec sleep 60"])
+            .spawn()
+            .expect("spawn fixture child");
+        let pid = child.id() as i32;
+        assert!(pid_running(pid));
+        kill_tree(None, pid, Duration::from_millis(500));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "teardown left the child alive");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(!status.success(), "teardown must have killed the child");
+    }
+
+    /// A child that traps `SIGTERM` survives the grace period, so the escalation
+    /// to `SIGKILL` is what ends it — the arm a polite-only teardown would hang
+    /// on.
+    #[cfg(unix)]
+    #[test]
+    fn teardown_escalates_to_sigkill_for_a_child_that_ignores_sigterm() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let ready = root.path().join("trap-installed");
+        let mut child = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                &format!(
+                    "trap \"\" TERM; printf ready > '{}'; while true; do sleep 0.2; done",
+                    ready.display()
+                ),
+            ])
+            .spawn()
+            .expect("spawn fixture child");
+        let pid = child.id() as i32;
+        assert!(pid_running(pid));
+        // Wait for the trap to be installed: signalling before it is would make
+        // this test measure the default disposition instead of the escalation.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "the fixture child never installed its SIGTERM trap"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        kill_tree(None, pid, Duration::from_millis(300));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the SIGKILL escalation left the child alive"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(
+                status.signal(),
+                Some(libc::SIGKILL),
+                "a child that ignored SIGTERM must be killed with SIGKILL"
+            );
+        }
+    }
+
+    /// A fixture `ps` for the session query: it prints exactly the pairs the
+    /// caller needs to see. The real `ps` on this host reports `sess` as 0 for
+    /// every process (measured: the PTY child's own session leader has
+    /// `pid == pgid == sess` in a live test, yet `ps -axo pid=,sess=` prints 0),
+    /// so this is the only way to exercise the parser and the sweep it feeds.
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn fake_ps(directory: &Path, output: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(directory).unwrap();
+        let path = directory.join("ps");
+        std::fs::write(&path, format!("#!/bin/sh\n{output}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    /// The `ps`-based session query is the whole guarantee on this platform, so
+    /// its parser is driven directly: a well-formed member is reported,
+    /// malformed columns are skipped, and a `ps` that cannot run yields no
+    /// members instead of panicking.
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn the_ps_based_session_query_parses_and_survives_a_broken_ps() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        // Line 2 is not a pair, line 3 has an unparsable session, line 4 is the
+        // member: this process itself, alive while the parent parses the reply.
+        fake_ps(
+            &bin,
+            "printf 'alone\\n'; printf '12 notanumber\\n'; printf '%d 4242\\n' \"$PPID\"",
+        );
+        let saved = std::env::var_os("PATH");
+        std::env::set_var("PATH", bin.as_os_str());
+        let members = session_members_via_ps(4242);
+        // A `ps` that cannot be spawned at all is not an error: no members.
+        std::env::set_var("PATH", "");
+        let unavailable = session_members_via_ps(4242);
+        match saved {
+            Some(value) => std::env::set_var("PATH", value),
+            None => std::env::remove_var("PATH"),
+        }
+        assert_eq!(
+            members,
+            vec![std::process::id() as i32],
+            "only the well-formed member line must be reported"
+        );
+        assert!(
+            unavailable.is_empty(),
+            "an unusable `ps` must report no members rather than failing"
+        );
+    }
+
+    /// The sweep after the group signal is what removes a job that escaped the
+    /// shell's process group: every reported member is signalled, a member that
+    /// is still observable at the end of the grace period is killed on a fresh
+    /// enumeration, and the shell itself is always killed last. Driven through
+    /// the fixture `ps`, because the platform query on this host reports no
+    /// members at all (see `the_ps_based_session_query_…`).
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn the_session_sweep_signals_reported_members_and_escalates() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        let mut victim = std::process::Command::new("/bin/sh")
+            .args(["-c", "exec sleep 60"])
+            .spawn()
+            .expect("spawn the shell to tear down");
+        let victim_pid = victim.id() as i32;
+        // The escaped job, in the victim's session as the sweep sees it.
+        let mut member = std::process::Command::new("/bin/sh")
+            .args(["-c", "exec sleep 60"])
+            .spawn()
+            .expect("spawn the escaped member");
+        let member_pid = member.id() as i32;
+        fake_ps(&bin, &format!("printf '{member_pid} {victim_pid}\\n'"));
+        let saved = std::env::var_os("PATH");
+        std::env::set_var("PATH", bin.as_os_str());
+
+        kill_tree(None, victim_pid, Duration::from_millis(300));
+
+        match saved {
+            Some(value) => std::env::set_var("PATH", value),
+            None => std::env::remove_var("PATH"),
+        }
+        let member_status = member.try_wait().unwrap();
+        assert!(
+            member_status.is_some_and(|status| !status.success()),
+            "the reported session member must have been signalled, not left running"
+        );
+        let victim_status = victim.try_wait().unwrap();
+        assert!(
+            victim_status.is_some_and(|status| !status.success()),
+            "the shell itself must be gone once teardown returns"
+        );
+    }
 }

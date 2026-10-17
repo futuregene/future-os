@@ -94,6 +94,23 @@ describe("buildNavRungs", () => {
       { kind: "replyTail", index: 2, messageId: "a2" },
     ]);
   });
+
+  it("walks past a non-reply row (a tool/system row) to the assistant reply", () => {
+    // A turn's slice can hold rows that are neither the prompt nor a reply —
+    // a tool row, or a system note. Only an assistant row can be the turn's
+    // tail, so the walk must step over them rather than adopt their text as
+    // the answer.
+    const rungs = buildNavRungs([
+      user("u1"),
+      { id: "s1", role: "system", content: "compaction applied" },
+      { id: "t1", role: "tool", content: "12 results" },
+      assistant("a1", { segments: [text("x1")] }),
+    ]);
+    expect(rungs).toEqual([
+      { kind: "question", index: 0, messageId: "u1" },
+      { kind: "replyTail", index: 3, messageId: "a1" },
+    ]);
+  });
 });
 
 const LADDER = buildNavRungs(MESSAGES);

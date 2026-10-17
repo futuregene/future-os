@@ -453,6 +453,21 @@ const SERVE_USAGE: &str =
 /// guessing how long analysis takes. Requests are answered in order, one at a
 /// time: a stateful engine session is not something to drive concurrently.
 async fn mcp_serve(args: &[String], out: &Output) -> Result<(), String> {
+    mcp_serve_with_stdin(args, out, tokio::io::BufReader::new(tokio::io::stdin())).await
+}
+
+/// [`mcp_serve`] over an explicit reader.
+///
+/// Production passes the process's own stdin. Taking the reader as a parameter
+/// is what makes this command's *own* paths reachable: a stdin whose reads fail
+/// (rather than ending at EOF) and the diagnostics-and-shutdown that follow the
+/// request loop both run after the happy path, on a real spawned server, which
+/// an in-process test cannot provide through a pipe it does not own.
+async fn mcp_serve_with_stdin<R: tokio::io::AsyncBufRead + Unpin>(
+    args: &[String],
+    out: &Output,
+    reader: R,
+) -> Result<(), String> {
     let flags = parse_flags(args, &["--timeout", "--max-frame-bytes"], &[], &[])?;
     let name = flags.exactly_one_positional("a server name", SERVE_USAGE)?;
     let timeout = flags.timeout()?;
@@ -484,8 +499,6 @@ async fn mcp_serve(args: &[String], out: &Output) -> Result<(), String> {
         .to_string(),
     );
 
-    let stdin = tokio::io::stdin();
-    let reader = tokio::io::BufReader::new(stdin);
     serve_requests(&mut process, out, reader).await?;
 
     let stderr = process.stderr_tail();
@@ -1143,6 +1156,7 @@ fn shorten(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::output::Output;
 
     fn args(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| item.to_string()).collect()
@@ -1361,6 +1375,453 @@ mod tests {
     fn an_empty_document_is_an_empty_configuration() {
         let config: McpConfig = serde_json::from_str("{}").unwrap();
         assert!(config.servers.is_empty());
+    }
+
+    // ── The configuration file ─────────────────────────────────────────────
+
+    /// A throwaway FutureOS home, optionally holding `body` as its `mcp.json`.
+    fn home_with_config(body: Option<&str>) -> (tempfile::TempDir, crate::test_env::EnvGuard) {
+        let home = tempfile::tempdir().expect("tempdir");
+        if let Some(body) = body {
+            std::fs::write(home.path().join("mcp.json"), body).unwrap();
+        }
+        let guard =
+            crate::test_env::EnvGuard::set(&[("FUTURE_HOME", home.path().as_os_str().to_owned())]);
+        (home, guard)
+    }
+
+    fn rendered(captured: &crate::output::Captured) -> (String, String) {
+        let out = String::from_utf8(captured.out.lock().unwrap().clone()).unwrap();
+        let err = String::from_utf8(captured.err.lock().unwrap().clone()).unwrap();
+        (out, err)
+    }
+
+    fn a_spec(command: &str) -> ServerSpec {
+        ServerSpec {
+            command: command.to_string(),
+            args: Vec::new(),
+            env: Map::new(),
+            cwd: None,
+            enabled: true,
+        }
+    }
+
+    /// A missing file, a blank file and a file that cannot be read are three
+    /// different states, and only the last one is an error: a blank file is
+    /// what `save_config` leaves behind, not a broken configuration.
+    #[tokio::test]
+    async fn config_reads_an_absent_blank_and_unreadable_file() {
+        let _lock = crate::test_env::lock_env().await;
+
+        // No file at all: the state before the first `future mcp add`.
+        {
+            let (_home, _env) = home_with_config(None);
+            assert!(load_config().unwrap().servers.is_empty());
+        }
+
+        // A file that exists but says nothing is the same state.
+        {
+            let (_home, _env) = home_with_config(Some("  \n"));
+            assert!(load_config().unwrap().servers.is_empty());
+        }
+
+        // Text that is not JSON names the file it came from.
+        {
+            let (_home, _env) = home_with_config(Some("{ not json"));
+            let error = load_config().unwrap_err();
+            assert!(error.contains("mcp.json is not valid"), "{error}");
+        }
+
+        // A path that cannot be read as a file (here: a directory) is reported
+        // rather than silently read as "nothing configured".
+        {
+            let home = tempfile::tempdir().unwrap();
+            std::fs::create_dir(home.path().join("mcp.json")).unwrap();
+            let _env = crate::test_env::EnvGuard::set(&[(
+                "FUTURE_HOME",
+                home.path().as_os_str().to_owned(),
+            )]);
+            let error = load_config().unwrap_err();
+            assert!(error.contains("could not read"), "{error}");
+            assert!(error.contains("mcp.json"), "{error}");
+        }
+    }
+
+    /// `save_config` creates the directory it needs, replaces the file
+    /// atomically (no temp file survives), and reports both ways it can fail
+    /// instead of leaving a half-written server list behind.
+    #[tokio::test]
+    async fn save_config_creates_its_parent_and_reports_its_failures() {
+        let _lock = crate::test_env::lock_env().await;
+        let mut config = McpConfig::default();
+        config.servers.insert("rea".to_string(), a_spec("rea"));
+
+        // A home that does not exist yet: the directory is created.
+        {
+            let outer = tempfile::tempdir().unwrap();
+            let home = outer.path().join("fresh");
+            let _env =
+                crate::test_env::EnvGuard::set(&[("FUTURE_HOME", home.as_os_str().to_owned())]);
+            save_config(&config).unwrap();
+            let written: McpConfig =
+                serde_json::from_str(&std::fs::read_to_string(home.join("mcp.json")).unwrap())
+                    .unwrap();
+            assert_eq!(written.servers["rea"].command, "rea");
+            assert!(
+                !home.join("mcp.json.tmp").exists(),
+                "the temp file is renamed away, not left behind"
+            );
+        }
+
+        // A directory that cannot be created (a regular file is in the way) is
+        // reported: the caller must not be told the list was saved.
+        {
+            let blocked = tempfile::tempdir().unwrap();
+            let file = blocked.path().join("file");
+            std::fs::write(&file, "not a directory").unwrap();
+            let _env = crate::test_env::EnvGuard::set(&[(
+                "FUTURE_HOME",
+                file.join("home").as_os_str().to_owned(),
+            )]);
+            let error = save_config(&config).unwrap_err();
+            assert!(error.contains("could not create"), "{error}");
+        }
+
+        // A destination that cannot be replaced (a directory sits at
+        // `mcp.json`) is reported too, and the temp file is cleaned up.
+        {
+            let home = tempfile::tempdir().unwrap();
+            std::fs::create_dir(home.path().join("mcp.json")).unwrap();
+            let _env = crate::test_env::EnvGuard::set(&[(
+                "FUTURE_HOME",
+                home.path().as_os_str().to_owned(),
+            )]);
+            let error = save_config(&config).unwrap_err();
+            assert!(error.contains("could not replace"), "{error}");
+            assert!(
+                !home.path().join("mcp.json.tmp").exists(),
+                "the temp file must not survive a failed replace"
+            );
+        }
+    }
+
+    /// `resolve` distinguishes the three ways a name can fail: configured but
+    /// disabled, unknown with alternatives, unknown with nothing configured.
+    #[tokio::test]
+    async fn resolve_reports_a_disabled_server_and_names_the_alternatives() {
+        let _lock = crate::test_env::lock_env().await;
+        let (_home, _env) = home_with_config(None);
+        let config: McpConfig = serde_json::from_str(
+            r#"{ "servers": {
+                   "off":  { "command": "x", "enabled": false },
+                   "live": { "command": "y" }
+                 } }"#,
+        )
+        .unwrap();
+
+        let error = resolve(&config, "off").unwrap_err();
+        assert!(error.contains("'off' is disabled"), "{error}");
+        assert!(error.contains("mcp.json"), "{error}");
+        assert_eq!(resolve(&config, "live").unwrap().command, "y");
+
+        // A typo is answered with the names that do exist, so it can be fixed
+        // from the message alone.
+        let error = resolve(&config, "typo").unwrap_err();
+        assert!(error.contains("unknown MCP server 'typo'"), "{error}");
+        assert!(error.contains("configured: live, off"), "{error}");
+
+        // With nothing configured there is nothing to list, so the message
+        // points at the command that creates the first entry.
+        let error = resolve(&McpConfig::default(), "typo").unwrap_err();
+        assert!(error.contains("none are configured"), "{error}");
+        assert!(error.contains("future mcp add"), "{error}");
+    }
+
+    // ── Argument parsing ───────────────────────────────────────────────────
+
+    /// A switch is a switch: `--json=1` is a mistake, not a value to ignore.
+    #[test]
+    fn a_switch_with_a_value_is_rejected() {
+        let error = parse_flags(&args(&["--json=1"]), &[], &[], &["--json"]).unwrap_err();
+        assert_eq!(error, "--json does not take a value");
+    }
+
+    /// The two numeric budgets are bounded at both ends: zero is refused in
+    /// each, because zero means "no budget at all".
+    #[test]
+    fn the_timeout_and_frame_cap_boundaries_are_enforced() {
+        let flags = parse_flags(&args(&["--timeout", "5"]), &["--timeout"], &[], &[]).unwrap();
+        assert_eq!(flags.timeout().unwrap(), Duration::from_secs(5));
+
+        let flags = parse_flags(&args(&["--timeout", "0"]), &["--timeout"], &[], &[]).unwrap();
+        assert_eq!(
+            flags.timeout().unwrap_err(),
+            "--timeout must be at least 1 second"
+        );
+
+        let flags = parse_flags(
+            &args(&["--max-frame-bytes", "0"]),
+            &["--max-frame-bytes"],
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            flags.max_frame_bytes().unwrap_err(),
+            "--max-frame-bytes must be at least 1 byte"
+        );
+        let flags = parse_flags(
+            &args(&["--max-frame-bytes", "4096"]),
+            &["--max-frame-bytes"],
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(flags.max_frame_bytes().unwrap(), 4096);
+    }
+
+    /// Every subcommand that takes one name reports both ways of getting the
+    /// count wrong, and both messages end with the usage line.
+    #[test]
+    fn a_missing_or_extra_positional_reports_the_usage() {
+        let flags = parse_flags(&args(&[]), &[], &[], &[]).unwrap();
+        assert_eq!(
+            flags
+                .exactly_one_positional("a server name", REMOVE_USAGE)
+                .unwrap_err(),
+            format!("missing a server name\n\n{REMOVE_USAGE}")
+        );
+
+        let flags = parse_flags(&args(&["one", "two"]), &[], &[], &[]).unwrap();
+        assert_eq!(
+            flags
+                .exactly_one_positional("a server name", REMOVE_USAGE)
+                .unwrap_err(),
+            format!("unexpected argument: two\n\n{REMOVE_USAGE}")
+        );
+    }
+
+    /// `lib.rs` only reaches the dispatch table for the eight documented
+    /// subcommands, so this pins the fallback the table still owns.
+    #[tokio::test]
+    async fn an_unknown_subcommand_is_rejected_with_its_name() {
+        let (out, _sink) = Output::memory();
+        let error = mcp("bogus", &args(&[]), &out).await.unwrap_err();
+        assert_eq!(error, "unknown mcp command: bogus");
+    }
+
+    /// A usage error is found before the configuration is read, so a mistyped
+    /// flag costs nothing and cannot be masked by a broken `mcp.json`.
+    #[tokio::test]
+    async fn tools_and_call_reject_an_unknown_option_before_reading_any_config() {
+        let (out, _sink) = Output::memory();
+        assert_eq!(
+            mcp_tools(&args(&["fake", "--bogus"]), &out)
+                .await
+                .unwrap_err(),
+            "unknown option: --bogus"
+        );
+        assert_eq!(
+            mcp_call(&args(&["fake", "plain", "--bogus"]), &out)
+                .await
+                .unwrap_err(),
+            "unknown option: --bogus"
+        );
+    }
+
+    /// `call` needs exactly two names, and `--args` must be a JSON *object*:
+    /// an array is a common mistake and is refused before any server starts.
+    #[tokio::test]
+    async fn call_validates_its_names_and_its_args_flag() {
+        let (out, _sink) = Output::memory();
+
+        let error = mcp_call(&args(&["fake"]), &out).await.unwrap_err();
+        assert!(
+            error.contains("expected a server and a tool name (1)"),
+            "{error}"
+        );
+        let error = mcp_call(&args(&["fake", "plain", "extra"]), &out)
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("expected a server and a tool name (3)"),
+            "{error}"
+        );
+
+        let error = mcp_call(&args(&["fake", "plain", "--args", "{not json}"]), &out)
+            .await
+            .unwrap_err();
+        assert!(error.contains("--args is not valid JSON"), "{error}");
+        let error = mcp_call(&args(&["fake", "plain", "--args", "[1,2]"]), &out)
+            .await
+            .unwrap_err();
+        assert_eq!(error, "--args must be a JSON object of tool arguments");
+    }
+
+    /// `status` takes at most one name; two is a usage error, not "check the
+    /// first one and ignore the rest".
+    #[tokio::test]
+    async fn status_takes_at_most_one_server_name() {
+        let (out, _sink) = Output::memory();
+        let error = mcp_status(&args(&["one", "two"]), &out).await.unwrap_err();
+        assert!(
+            error.contains("expected at most one server name (2)"),
+            "{error}"
+        );
+    }
+
+    // ── list / add / remove on the configuration file ──────────────────────
+
+    #[tokio::test]
+    async fn list_rejects_an_extra_argument_and_prints_the_document_on_request() {
+        let _lock = crate::test_env::lock_env().await;
+        let (_home, _env) = home_with_config(Some(
+            r#"{ "servers": {
+                   "off": { "command": "x", "enabled": false },
+                   "rea": { "command": "rea", "args": ["--mcp"], "cwd": "/tmp/work" }
+                 } }"#,
+        ));
+
+        let (out, _sink) = Output::memory();
+        let error = mcp_list(&args(&["extra"]), &out).unwrap_err();
+        assert!(error.contains("unexpected argument: extra"), "{error}");
+
+        let (out, sink) = Output::memory();
+        mcp_list(&args(&["--json"]), &out).unwrap();
+        let (stdout, stderr) = rendered(&sink);
+        assert_eq!(stderr, "");
+        let document: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(
+            document["configPath"],
+            json!(config_path().display().to_string())
+        );
+        assert_eq!(document["servers"][0]["name"], "off");
+        assert_eq!(document["servers"][0]["command"], "x");
+        assert_eq!(document["servers"][0]["enabled"], json!(false));
+        assert_eq!(document["servers"][1]["name"], "rea");
+        assert_eq!(document["servers"][1]["args"], json!(["--mcp"]));
+        assert_eq!(document["servers"][1]["cwd"], json!("/tmp/work"));
+        assert_eq!(document["servers"][1]["enabled"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn add_stores_the_arguments_environment_and_working_directory() {
+        let _lock = crate::test_env::lock_env().await;
+        let (_home, _env) = home_with_config(None);
+        let (out, sink) = Output::memory();
+
+        mcp_add(
+            &args(&[
+                "rea",
+                "--command",
+                "rea",
+                "--arg",
+                "--mcp",
+                "--env",
+                "TOKEN=secret",
+                "--env",
+                "EMPTY=",
+                "--cwd",
+                "/tmp/work",
+            ]),
+            &out,
+        )
+        .unwrap();
+
+        let (stdout, stderr) = rendered(&sink);
+        assert_eq!(stderr, "");
+        assert!(
+            stdout.contains("Added MCP server 'rea': rea --mcp"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("future mcp tools rea"), "{stdout}");
+
+        // The file is the contract: arguments verbatim (dash and all), the
+        // environment as strings, the working directory, enabled by default.
+        let config = load_config().unwrap();
+        let spec = &config.servers["rea"];
+        assert_eq!(spec.command_line(), "rea --mcp");
+        assert_eq!(spec.env["TOKEN"], json!("secret"));
+        assert_eq!(spec.env["EMPTY"], json!(""));
+        assert_eq!(spec.cwd.as_deref(), Some("/tmp/work"));
+        assert!(spec.enabled);
+
+        // Adding a name twice must not quietly overwrite what is there.
+        let (out, _sink) = Output::memory();
+        let error = mcp_add(&args(&["rea", "--command", "other"]), &out).unwrap_err();
+        assert!(error.contains("already exists"), "{error}");
+        assert!(error.contains("future mcp remove rea"), "{error}");
+        assert_eq!(load_config().unwrap().servers["rea"].command, "rea");
+    }
+
+    #[tokio::test]
+    async fn add_rejects_an_unusable_name_and_a_malformed_environment_pair() {
+        let _lock = crate::test_env::lock_env().await;
+        let (_home, _env) = home_with_config(None);
+        let (out, _sink) = Output::memory();
+
+        let error = mcp_add(&args(&["has space", "--command", "x"]), &out).unwrap_err();
+        assert!(error.contains("is not a usable server name"), "{error}");
+
+        let error = mcp_add(&args(&["srv", "--command", "x", "--env", "TOKEN"]), &out).unwrap_err();
+        assert_eq!(error, "--env expects KEY=VALUE, got 'TOKEN'");
+
+        let error =
+            mcp_add(&args(&["srv", "--command", "x", "--env", "=secret"]), &out).unwrap_err();
+        assert_eq!(error, "--env expects KEY=VALUE, got '=secret'");
+
+        // None of the three refusals wrote anything.
+        assert!(load_config().unwrap().servers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn remove_reports_an_unknown_server_and_deletes_a_known_one() {
+        let _lock = crate::test_env::lock_env().await;
+        let (_home, _env) =
+            home_with_config(Some(r#"{ "servers": { "rea": { "command": "rea" } } }"#));
+
+        let (out, _sink) = Output::memory();
+        let error = mcp_remove(&args(&["ghost"]), &out).unwrap_err();
+        assert!(error.contains("no MCP server named 'ghost'"), "{error}");
+        assert!(
+            load_config().unwrap().servers.contains_key("rea"),
+            "a refused removal changes nothing"
+        );
+
+        let (out, sink) = Output::memory();
+        mcp_remove(&args(&["rea"]), &out).unwrap();
+        let (stdout, _) = rendered(&sink);
+        assert!(stdout.contains("Removed MCP server 'rea'"), "{stdout}");
+        assert!(load_config().unwrap().servers.is_empty());
+    }
+
+    // ── The two shared helpers this file renders with ──────────────────────
+
+    /// A content block that is neither text nor detailed, and one that does not
+    /// say what it is at all, are both named rather than dropped.
+    #[test]
+    fn content_blocks_without_a_detail_are_named() {
+        assert_eq!(
+            render_tool_result(&json!({ "content": [{ "type": "image" }] })),
+            "[image content]"
+        );
+        assert_eq!(
+            render_tool_result(&json!({ "content": [{ "data": "x" }] })),
+            "[unrecognized content block omitted]"
+        );
+        assert_eq!(
+            render_tool_result(&json!({ "content": [{ "type": "resource", "uri": "file:///a" }] })),
+            "[resource content: file:///a]"
+        );
+    }
+
+    #[test]
+    fn stderr_is_attached_to_a_failure_only_when_the_server_wrote_some() {
+        assert_eq!(attach_stderr("boom".to_string(), "   \n"), "boom");
+        assert_eq!(
+            attach_stderr("boom".to_string(), "line one\nline two\n"),
+            "boom\n--- server stderr (last lines) ---\nline one\nline two"
+        );
     }
 
     // ── End to end against a real spawned server ───────────────────────────
@@ -1891,6 +2352,647 @@ done
             assert_eq!(answers[4]["ok"], json!(true));
             assert_eq!(answers[4]["result"]["content"][0]["text"], "called");
             process.shutdown().await;
+        }
+
+        // ── status: the JSON form and the handshake that succeeds alone ────
+
+        /// The `--json` form is what a script reads: one record per configured
+        /// server, in configuration order, with its state and tool count.
+        #[tokio::test]
+        async fn status_json_reports_every_server_with_its_state() {
+            let _lock = crate::test_env::lock_env().await;
+            let home = tempfile::tempdir().unwrap();
+            std::fs::write(
+                home.path().join("mcp.json"),
+                json!({
+                    "servers": {
+                        "off": { "command": "/nonexistent", "enabled": false },
+                        "fake": { "command": "/bin/sh", "args": ["-c", FAKE_SERVER] },
+                    },
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let _env = crate::test_env::EnvGuard::set(&[(
+                "FUTURE_HOME",
+                home.path().as_os_str().to_owned(),
+            )]);
+            let (out, sink) = Output::memory();
+
+            mcp_status(&args(&["--json"]), &out).await.unwrap();
+            let (stdout, _) = split(&sink);
+            let document: Value = serde_json::from_str(&stdout).unwrap();
+            assert_eq!(
+                document["configPath"],
+                json!(config_path().display().to_string())
+            );
+            let servers = document["servers"].as_array().unwrap();
+            assert_eq!(servers.len(), 2, "{document}");
+            assert_eq!(servers[0]["name"], "fake");
+            assert_eq!(servers[0]["state"], "ok");
+            assert_eq!(servers[0]["toolCount"], json!(2));
+            assert!(
+                servers[0]["command"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("/bin/sh -c"),
+                "{document}"
+            );
+            assert!(servers[0]["handshakeMs"].is_u64(), "{document}");
+            assert!(servers[0]["totalMs"].is_u64(), "{document}");
+            // A disabled server is a configuration state with no error of its
+            // own; it is reported, and it does not fail the command.
+            assert_eq!(servers[1]["name"], "off");
+            assert_eq!(servers[1]["state"], "disabled");
+            assert!(servers[1].get("error").is_none(), "{document}");
+        }
+
+        /// The handshake can succeed and the next request still fail — the
+        /// server's own stderr is the only explanation of why.
+        #[tokio::test]
+        async fn status_reports_a_server_that_fails_after_a_successful_handshake() {
+            let _lock = crate::test_env::lock_env().await;
+            let home = tempfile::tempdir().unwrap();
+            std::fs::write(
+                home.path().join("mcp.json"),
+                json!({
+                    "servers": { "quiet": {
+                        "command": "/bin/sh",
+                        "args": ["-c", HANDSHAKE_ONLY_SERVER],
+                    }},
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let _env = crate::test_env::EnvGuard::set(&[(
+                "FUTURE_HOME",
+                home.path().as_os_str().to_owned(),
+            )]);
+            let (out, sink) = Output::memory();
+
+            let error = mcp_status(&args(&["--timeout", "1"]), &out)
+                .await
+                .expect_err("a server that stops answering is a failed check");
+            assert_eq!(error, crate::HANDLED_EXIT.to_string());
+            let (stdout, _) = split(&sink);
+            assert!(stdout.contains("quiet"), "{stdout}");
+            assert!(stdout.contains("FAILED"), "{stdout}");
+            assert!(stdout.contains("timed out after 1s"), "{stdout}");
+            assert!(stdout.contains("JAVA_HOME is not set"), "{stdout}");
+            assert!(stdout.contains("0/1 server(s) reachable"), "{stdout}");
+        }
+
+        // ── tools: the query, the page and the JSON form ────────────────────
+
+        /// A query matches the name or the description, case-insensitively, and
+        /// the header says how much of the list survived it.
+        #[tokio::test]
+        async fn tools_filters_by_query_and_reports_the_totals() {
+            let _lock = crate::test_env::lock_env().await;
+            let _home = with_fake_server();
+
+            let (out, sink) = Output::memory();
+            mcp_tools(&args(&["fake", "--query", "BOOM"]), &out)
+                .await
+                .unwrap();
+            let (stdout, _) = split(&sink);
+            assert!(
+                stdout.contains("Tools of 'fake' matching \"boom\" (1 of 2):"),
+                "{stdout}"
+            );
+            assert!(stdout.contains("boom"), "{stdout}");
+            assert!(!stdout.contains("plain"), "{stdout}");
+
+            // The description matches too, not only the name.
+            let (out, sink) = Output::memory();
+            mcp_tools(&args(&["fake", "--query", "always works"]), &out)
+                .await
+                .unwrap();
+            let (stdout, _) = split(&sink);
+            assert!(stdout.contains("(1 of 2)"), "{stdout}");
+            assert!(stdout.contains("plain"), "{stdout}");
+            assert!(!stdout.contains("boom"), "{stdout}");
+        }
+
+        #[tokio::test]
+        async fn tools_json_page_carries_the_progress_through_the_list() {
+            let _lock = crate::test_env::lock_env().await;
+            let _home = with_fake_server();
+
+            let (out, sink) = Output::memory();
+            mcp_tools(&args(&["fake", "--json", "--limit", "1"]), &out)
+                .await
+                .unwrap();
+            let (stdout, _) = split(&sink);
+            let document: Value = serde_json::from_str(&stdout).unwrap();
+            assert_eq!(document["server"], "fake");
+            assert_eq!(document["total"], json!(2));
+            assert_eq!(document["offset"], json!(0));
+            assert_eq!(document["limit"], json!(1));
+            assert_eq!(document["tools"].as_array().unwrap().len(), 1);
+            assert_eq!(document["tools"][0]["name"], "boom");
+            assert_eq!(document["tools"][0]["description"], "always fails");
+            assert_eq!(document["nextOffset"], json!(1));
+
+            // The last page says so with an explicit null rather than by
+            // leaving the field out, so a caller can always read it.
+            let (out, sink) = Output::memory();
+            mcp_tools(
+                &args(&["fake", "--json", "--offset", "1", "--limit", "1"]),
+                &out,
+            )
+            .await
+            .unwrap();
+            let (stdout, _) = split(&sink);
+            let document: Value = serde_json::from_str(&stdout).unwrap();
+            assert_eq!(document["tools"][0]["name"], "plain");
+            assert_eq!(document["nextOffset"], Value::Null);
+        }
+
+        #[tokio::test]
+        async fn tools_names_the_next_offset_and_the_offset_that_is_past_the_end() {
+            let _lock = crate::test_env::lock_env().await;
+            let _home = with_fake_server();
+
+            // A page that is not the last one points at the next offset.
+            let (out, sink) = Output::memory();
+            mcp_tools(&args(&["fake", "--limit", "1"]), &out)
+                .await
+                .unwrap();
+            let (stdout, _) = split(&sink);
+            assert!(stdout.contains("Showing 1 of 2 tools."), "{stdout}");
+            assert!(stdout.contains("More tools exist"), "{stdout}");
+            assert!(stdout.contains("--offset 1"), "{stdout}");
+
+            // An offset past the end is a page that cannot exist, and the
+            // message gives the last offset that can.
+            let (out, sink) = Output::memory();
+            mcp_tools(&args(&["fake", "--offset", "9"]), &out)
+                .await
+                .unwrap();
+            let (stdout, _) = split(&sink);
+            assert!(stdout.contains("Showing 0 of 2 tools."), "{stdout}");
+            assert!(stdout.contains("--offset 9 is past the end"), "{stdout}");
+            assert!(
+                stdout.contains("the last page starts at --offset 1"),
+                "{stdout}"
+            );
+        }
+
+        // ── describe ───────────────────────────────────────────────────────
+
+        #[tokio::test]
+        async fn describe_prints_the_description_and_the_schema() {
+            let _lock = crate::test_env::lock_env().await;
+            let _home = with_server(DESCRIBE_SERVER);
+            let (out, sink) = Output::memory();
+
+            mcp_describe(&args(&["fake", "full"]), &out).await.unwrap();
+            let (stdout, _) = split(&sink);
+            assert!(stdout.starts_with("full\n"), "{stdout}");
+            assert!(stdout.contains("does a thing"), "{stdout}");
+            assert!(stdout.contains("Arguments (JSON Schema):"), "{stdout}");
+            assert!(stdout.contains("\"path\""), "{stdout}");
+
+            // A tool with neither a description nor a schema is still
+            // describable: the schema falls back to `null`, and no empty
+            // description line is printed.
+            let (out, sink) = Output::memory();
+            mcp_describe(&args(&["fake", "bare"]), &out).await.unwrap();
+            let (stdout, _) = split(&sink);
+            assert!(
+                stdout.starts_with("bare\n\nArguments (JSON Schema):"),
+                "{stdout}"
+            );
+            assert!(
+                stdout.ends_with("Arguments (JSON Schema):\nnull\n"),
+                "{stdout}"
+            );
+        }
+
+        #[tokio::test]
+        async fn describe_json_prints_the_tool_verbatim() {
+            let _lock = crate::test_env::lock_env().await;
+            let _home = with_server(DESCRIBE_SERVER);
+            let (out, sink) = Output::memory();
+
+            mcp_describe(&args(&["fake", "full", "--json"]), &out)
+                .await
+                .unwrap();
+            let (stdout, _) = split(&sink);
+            let document: Value = serde_json::from_str(&stdout).unwrap();
+            assert_eq!(document["name"], "full");
+            assert_eq!(document["description"], "does a thing");
+            assert_eq!(
+                document["inputSchema"]["properties"]["path"]["type"],
+                "string"
+            );
+        }
+
+        #[tokio::test]
+        async fn describe_requires_two_names_and_suggests_alternatives() {
+            let _lock = crate::test_env::lock_env().await;
+            let _home = with_server(DESCRIBE_SERVER);
+            let (out, _sink) = Output::memory();
+
+            let error = mcp_describe(&args(&[]), &out).await.unwrap_err();
+            assert!(
+                error.contains("expected a server and a tool name (0)"),
+                "{error}"
+            );
+            let error = mcp_describe(&args(&["fake"]), &out).await.unwrap_err();
+            assert!(
+                error.contains("expected a server and a tool name (1)"),
+                "{error}"
+            );
+
+            // A name that resembles nothing is answered with how to list what
+            // the server does have, rather than with a bad guess...
+            let error = mcp_describe(&args(&["fake", "zzzz"]), &out)
+                .await
+                .unwrap_err();
+            assert!(error.contains("has no tool named 'zzzz'"), "{error}");
+            assert!(
+                error.contains("future mcp tools fake --query <text>"),
+                "{error}"
+            );
+            assert!(!error.contains("Did you mean"), "{error}");
+
+            // ...and a near miss with the name it was probably meant to be.
+            let error = mcp_describe(&args(&["fake", "ful"]), &out)
+                .await
+                .unwrap_err();
+            assert!(error.contains("Did you mean: full"), "{error}");
+        }
+
+        // ── call: --args, --json and --out ──────────────────────────────────
+
+        #[tokio::test]
+        async fn call_passes_a_json_args_object_to_the_tool() {
+            let _lock = crate::test_env::lock_env().await;
+            let _home = with_server(ECHO_PATH_SERVER);
+            let (out, sink) = Output::memory();
+
+            mcp_call(
+                &args(&["fake", "plain", "--args", r#"{"path":"/bin/ls"}"#]),
+                &out,
+            )
+            .await
+            .unwrap();
+            let (stdout, _) = split(&sink);
+            assert_eq!(stdout, "the tool got /bin/ls\n", "{stdout}");
+        }
+
+        #[tokio::test]
+        async fn call_json_prints_the_raw_result_envelope() {
+            let _lock = crate::test_env::lock_env().await;
+            let _home = with_fake_server();
+            let (out, sink) = Output::memory();
+
+            mcp_call(&args(&["fake", "plain", "--json"]), &out)
+                .await
+                .unwrap();
+            let (stdout, _) = split(&sink);
+            let document: Value = serde_json::from_str(&stdout).unwrap();
+            assert_eq!(document["content"][0]["type"], "text");
+            assert_eq!(document["content"][0]["text"], "fine");
+        }
+
+        /// A result that fits is written whole, and the caller is told where.
+        #[tokio::test]
+        async fn call_writes_a_short_result_to_out_and_says_where_it_went() {
+            let _lock = crate::test_env::lock_env().await;
+            let _home = with_fake_server();
+            let path = std::env::temp_dir().join("future-mcp-call-out-small.txt");
+            let _ = std::fs::remove_file(&path);
+            let path_arg = path.display().to_string();
+            let (out, sink) = Output::memory();
+
+            mcp_call(&args(&["fake", "plain", "--out", &path_arg]), &out)
+                .await
+                .unwrap();
+            let (stdout, stderr) = split(&sink);
+            assert_eq!(stderr, "");
+            assert!(stdout.contains("[the whole result is also in"), "{stdout}");
+            assert!(stdout.contains(&path_arg), "{stdout}");
+            assert!(stdout.ends_with("fine\n"), "{stdout}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "fine");
+            let _ = std::fs::remove_file(&path);
+        }
+
+        /// A result past the print cap is truncated, and the header gives both
+        /// numbers and the flag that writes the whole thing.
+        #[tokio::test]
+        async fn call_truncates_a_large_result_and_names_the_rerun_flag() {
+            let _lock = crate::test_env::lock_env().await;
+            let _home = with_fake_server();
+            let (out, sink) = Output::memory();
+
+            mcp_call(&args(&["fake", "plain", "--max-bytes", "3"]), &out)
+                .await
+                .unwrap();
+            let (stdout, _) = split(&sink);
+            assert!(
+                stdout.contains("[first 3 bytes of 4 — rerun with --out <file> to write it all]"),
+                "{stdout}"
+            );
+            assert!(stdout.ends_with("fin\n"), "{stdout}");
+        }
+
+        /// A protocol-level failure for a tool that *is* in the list keeps the
+        /// server's own error: replacing it with "no such tool" would hide what
+        /// actually went wrong.
+        #[tokio::test]
+        async fn call_keeps_the_servers_error_when_the_tool_is_in_the_list() {
+            let _lock = crate::test_env::lock_env().await;
+            let _home = with_server(REJECTING_SERVER);
+            let (out, _sink) = Output::memory();
+
+            let error = mcp_call(&args(&["fake", "plain"]), &out).await.unwrap_err();
+            assert!(error.contains("MCP 'tools/call' failed"), "{error}");
+            assert!(error.contains("unknown tool"), "{error}");
+            assert!(!error.contains("has no tool named"), "{error}");
+        }
+
+        // ── serve over a real stdin ────────────────────────────────────────
+
+        /// `serve` reads its requests from the process's own stdin, which no
+        /// in-process test can replace (fd 0 belongs to the whole test binary).
+        /// This re-runs this same instrumented test binary as a child with a
+        /// piped stdin — the technique `commands::tools` uses for the same
+        /// shape — so the production stdin path runs for real and its coverage
+        /// merges with the parent's.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn serve_drives_a_real_stdin_session() {
+            const CHILD: &str = "FUTURE_MCP_SERVE_CHILD";
+            const MODE: &str = "FUTURE_MCP_SERVE_MODE";
+            const NAME: &str =
+                "commands::mcp_servers::tests::process::serve_drives_a_real_stdin_session";
+
+            if let Some(home) = std::env::var_os(CHILD) {
+                let mode = std::env::var(MODE).expect("the parent sets the mode");
+                let _env = crate::test_env::EnvGuard::set(&[("FUTURE_HOME", home)]);
+                let out = Output::stdio();
+                match mode.as_str() {
+                    // The server answers `initialize` and then stops
+                    // answering, so the command fails *after* a successful
+                    // handshake and its last words are the explanation.
+                    "fails" => {
+                        let error = mcp_serve(&args(&["fake", "--timeout", "1"]), &out)
+                            .await
+                            .expect_err("a server that stops answering fails the command");
+                        assert!(error.contains("timed out after 1s"), "{error}");
+                        assert!(error.contains("JAVA_HOME is not set"), "{error}");
+                    }
+                    // A stdin whose reads *fail* rather than reaching EOF: the
+                    // request loop reports it, and the session still closes
+                    // with the server's diagnostics on stderr. A directory
+                    // cannot be read as lines, so this is a real broken stdin.
+                    "shutdown" => {
+                        let broken = tokio::fs::File::open(".")
+                            .await
+                            .expect("a directory to read");
+                        mcp_serve_with_stdin(
+                            &args(&["fake"]),
+                            &out,
+                            tokio::io::BufReader::new(broken),
+                        )
+                        .await
+                        .expect("a stdin that fails to read is reported, not fatal");
+                    }
+                    _ => {
+                        mcp_serve(&args(&["fake"]), &out)
+                            .await
+                            .expect("the session runs to its end");
+                    }
+                }
+                return;
+            }
+
+            for (mode, server, requests) in [
+                (
+                    "serves",
+                    SERVE_SERVER,
+                    "{\"tool\":\"plain\"}\n{\"tool\":\"boom\"}\n",
+                ),
+                ("fails", HANDSHAKE_ONLY_SERVER, ""),
+                ("shutdown", SERVE_SERVER, ""),
+            ] {
+                let home = tempfile::tempdir().unwrap();
+                let log = home.path().join("starts.log");
+                std::fs::write(
+                    home.path().join("mcp.json"),
+                    serde_json::to_string(&json!({
+                        "servers": { "fake": { "command": "/bin/sh", "args": ["-c", server] } },
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+
+                let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", NAME, "--nocapture"])
+                    .env(CHILD, home.path())
+                    .env(MODE, mode)
+                    .env("MCP_START_LOG", &log)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .expect("spawn the child test");
+                use std::io::Write;
+                child
+                    .stdin
+                    .as_mut()
+                    .expect("stdin")
+                    .write_all(requests.as_bytes())
+                    .expect("write the requests");
+
+                let output = child.wait_with_output().expect("wait for the child");
+                let stdout = String::from_utf8(output.stdout).unwrap();
+                let stderr = String::from_utf8(output.stderr).unwrap();
+                assert!(
+                    output.status.success(),
+                    "{mode} child failed: {stdout}\n{stderr}"
+                );
+                assert!(
+                    stdout.contains("running 1 test"),
+                    "the child filter must select this test: {stdout}"
+                );
+                let answers: Vec<Value> = stdout
+                    .lines()
+                    .filter(|line| line.starts_with('{'))
+                    .map(|line| serde_json::from_str(line).expect("one JSON object per line"))
+                    .collect();
+
+                if mode == "serves" {
+                    // The ready ack comes first, so a caller can wait for it
+                    // instead of guessing how long the engine takes to load.
+                    assert_eq!(answers.len(), 3, "{stdout}");
+                    assert_eq!(answers[0]["ok"], json!(true));
+                    assert_eq!(answers[0]["ready"], json!(true));
+                    assert_eq!(answers[0]["server"], "fake");
+                    assert_eq!(answers[0]["toolCount"], json!(2));
+                    assert_eq!(answers[1]["result"]["content"][0]["text"], "called");
+                    assert_eq!(answers[2]["isError"], json!(true));
+                    assert_eq!(answers[2]["result"]["content"][0]["text"], "engine missing");
+                    // One cold start for two calls: what `serve` exists for.
+                    assert_eq!(
+                        std::fs::read_to_string(&log)
+                            .unwrap_or_default()
+                            .lines()
+                            .filter(|line| !line.trim().is_empty())
+                            .count(),
+                        1,
+                        "the session is reused, not restarted"
+                    );
+                    // The server's diagnostics go to stderr, so stdout stays a
+                    // clean JSON stream.
+                    assert!(stderr.contains("engine warm"), "{stderr}");
+                } else if mode == "shutdown" {
+                    // The ack was still printed, and the request loop reported
+                    // the failing stdin rather than treating it as end-of-input.
+                    assert_eq!(answers.len(), 2, "{stdout}");
+                    assert_eq!(answers[0]["ready"], json!(true));
+                    assert_eq!(answers[1]["ok"], json!(false));
+                    assert!(
+                        answers[1]["error"].as_str().unwrap().starts_with("stdin: "),
+                        "{stdout}"
+                    );
+                    assert!(stderr.contains("engine warm"), "{stderr}");
+                } else {
+                    assert!(answers.is_empty(), "{stdout}");
+                }
+            }
+        }
+
+        /// A reader that fails instead of delivering a line: the loop must
+        /// report it and stop, not treat it as EOF or spin.
+        struct FailingReader;
+
+        impl tokio::io::AsyncRead for FailingReader {
+            fn poll_read(
+                self: std::pin::Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+                _buf: &mut tokio::io::ReadBuf<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                std::task::Poll::Ready(Err(std::io::Error::other("the reader went away")))
+            }
+        }
+
+        #[tokio::test]
+        async fn serve_reports_a_stdin_that_fails_to_read() {
+            let _lock = crate::test_env::lock_env().await;
+            let log = tempfile::tempdir().unwrap();
+            let _home = home_with(COUNTING_SERVER, &log.path().join("starts.log"));
+
+            let config = load_config().unwrap();
+            let spec = resolve(&config, "fake").unwrap();
+            let mut process = ServerProcess::start("fake", spec, Duration::from_secs(10))
+                .await
+                .unwrap();
+            let (out, sink) = Output::memory();
+            serve_requests(&mut process, &out, tokio::io::BufReader::new(FailingReader))
+                .await
+                .unwrap();
+
+            let (stdout, _) = split(&sink);
+            assert!(stdout.contains("stdin: the reader went away"), "{stdout}");
+            assert!(stdout.contains("\"ok\":false"), "{stdout}");
+            process.shutdown().await;
+        }
+
+        /// Answers `initialize`, writes one line to stderr, then reads and
+        /// ignores everything else: the handshake succeeds and every later
+        /// request stops being answered.
+        const HANDSHAKE_ONLY_SERVER: &str = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *notifications/initialized*) ;;
+    *'"initialize"'*)
+      printf 'JAVA_HOME is not set\n' >&2
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18"}}\n' "$id" ;;
+  esac
+done
+"#;
+
+        /// `full` has a description and an input schema; `bare` has neither.
+        const DESCRIBE_SERVER: &str = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *notifications/initialized*) ;;
+    *'"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18"}}\n' "$id" ;;
+    *'"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"full","description":"does a thing","inputSchema":{"type":"object","properties":{"path":{"type":"string"}}}},{"name":"bare"}]}}\n' "$id" ;;
+    *'"tools/call"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"fine"}]}}\n' "$id" ;;
+  esac
+done
+"#;
+
+        /// Reports back the `path` member of the arguments object, so a test can
+        /// see what actually reached the server.
+        const ECHO_PATH_SERVER: &str = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *notifications/initialized*) ;;
+    *'"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18"}}\n' "$id" ;;
+    *'"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"plain"}]}}\n' "$id" ;;
+    *'"tools/call"'*)
+      path=$(printf '%s' "$line" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"the tool got %s"}]}}\n' "$id" "$path" ;;
+  esac
+done
+"#;
+
+        /// The `serve` server: logs every `initialize` to `$MCP_START_LOG` (so a
+        /// test can count cold starts), writes one line to stderr (so the
+        /// hand-off at the end of `serve` has something to print), and reports
+        /// `boom` as a tool error.
+        const SERVE_SERVER: &str = r#"
+printf 'engine warm\n' >&2
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *notifications/initialized*) ;;
+    *'"initialize"'*)
+      printf 'start\n' >> "$MCP_START_LOG"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18"}}\n' "$id" ;;
+    *'"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"plain"},{"name":"boom"}]}}\n' "$id" ;;
+    *'"tools/call"'*)
+      case "$line" in
+        *'"name":"boom"'*)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"isError":true,"content":[{"type":"text","text":"engine missing"}]}}\n' "$id" ;;
+        *)
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"called"}]}}\n' "$id" ;;
+      esac ;;
+  esac
+done
+"#;
+
+        /// A throwaway FutureOS home whose `mcp.json` runs `script` as `fake`.
+        fn with_server(script: &str) -> (tempfile::TempDir, crate::test_env::EnvGuard) {
+            let home = tempfile::tempdir().expect("tempdir");
+            std::fs::write(
+                home.path().join("mcp.json"),
+                serde_json::to_string(&json!({
+                    "servers": { "fake": { "command": "/bin/sh", "args": ["-c", script] } },
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let paths = std::env::var_os("PATH").unwrap_or_default();
+            let guard = crate::test_env::EnvGuard::set(&[
+                ("FUTURE_HOME", home.path().as_os_str().to_owned()),
+                ("PATH", paths),
+            ]);
+            (home, guard)
         }
     }
 }

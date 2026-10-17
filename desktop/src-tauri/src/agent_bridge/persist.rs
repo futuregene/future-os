@@ -1410,6 +1410,30 @@ mod tests {
             "locked-out writes record nothing"
         );
     }
+    /// An assessment the projection cannot record is logged and dropped, never
+    /// propagated: one malformed event on a live stream must not take the
+    /// stream (or the run) down with it.
+    #[test]
+    fn an_unrecordable_assessment_is_logged_and_dropped() {
+        let f = fixture("assessment_unrecordable");
+        // Missing `approval_request_id`: the projection refuses the payload
+        // before it touches the store, so the log arm is what runs.
+        persist_run_event(
+            Some(&f.run.id),
+            "approval_assessment",
+            &json!({"assessment_id": "a", "tool_call_id": "tool", "status": "approved",
+                    "reviewer": "model"})
+            .to_string(),
+            1,
+        );
+        assert!(
+            crate::store::list_approval_assessments(&f.run.id)
+                .unwrap()
+                .is_empty(),
+            "a refused payload records nothing"
+        );
+    }
+
     #[test]
     fn live_and_replayed_assessments_never_create_pending_requests() {
         let f = fixture("auto_projection");

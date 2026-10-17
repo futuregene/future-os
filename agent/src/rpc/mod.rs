@@ -1080,6 +1080,240 @@ mod tests {
     }
 
     #[test]
+    fn provider_reconcile_keeps_a_model_less_session_when_no_replacement_exists() {
+        let _reload_lock = TEST_RELOAD_LOCK.lock();
+
+        // An empty registry offers neither a default nor a same-provider
+        // candidate, so a model-less session has nothing to be reconciled to.
+        // It must stay resident with its empty model instead of being failed,
+        // dropped, or left with a model that does not exist.
+        let (_dir, state) = bare_app_state();
+        // `Registry::new()` reads the user's on-disk models and the built-in
+        // catalogue, so it is never actually empty: force the state this arm
+        // describes.
+        *state.model_registry.write() = crate::models::Registry::from_models_and_auth(vec![], "{}");
+        let session = crate::rpc::ServerSession::new_with_queue_budget(
+            "no-replacement".to_string(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
+                std::sync::Arc::new(crate::test_support::EmptyProvider),
+                "",
+            ))),
+            state.session_manager.clone(),
+            "/tmp",
+            std::sync::Arc::new(SseBroadcaster::new()),
+            state.approval_gate.clone(),
+            state.model_registry.clone(),
+            state.queue_budget.clone(),
+        );
+        state.create_session(session);
+        let state = std::sync::Arc::new(state);
+
+        state.reconcile_provider_references();
+
+        let session = state
+            .sessions
+            .read()
+            .get("no-replacement")
+            .cloned()
+            .expect("the session stays resident");
+        assert_eq!(
+            session.read().model,
+            "",
+            "no replacement configured means no model is invented"
+        );
+    }
+
+    #[test]
+    fn provider_reconcile_waits_out_a_busy_session_loop() {
+        let _reload_lock = TEST_RELOAD_LOCK.lock();
+
+        // A replaced model is applied through `set_model`, which reports
+        // "busy" while a run holds the loop lock. The control-plane
+        // reconciliation must wait that short window out rather than abandon
+        // the session on a stale model reference.
+        let (_dir, state) = bare_app_state();
+        *state.model_registry.write() = crate::models::Registry::from_models_and_auth(
+            vec![crate::models::Model {
+                id: "replacement".to_string(),
+                name: "Replacement".to_string(),
+                provider: "provider-a".to_string(),
+                api: "chat".to_string(),
+                base_url: "https://api.example".to_string(),
+                input: vec!["text".to_string()],
+                output: vec!["text".to_string()],
+                ..Default::default()
+            }],
+            r#"{"provider-a":{"type":"api_key","key":"key"}}"#,
+        );
+        let session = crate::rpc::ServerSession::new_with_queue_budget(
+            "busy-loop".to_string(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
+                std::sync::Arc::new(crate::test_support::EmptyProvider),
+                "",
+            ))),
+            state.session_manager.clone(),
+            "/tmp",
+            std::sync::Arc::new(SseBroadcaster::new()),
+            state.approval_gate.clone(),
+            state.model_registry.clone(),
+            state.queue_budget.clone(),
+        );
+        state.create_session(session);
+        let state = std::sync::Arc::new(state);
+        let handle = state
+            .sessions
+            .read()
+            .get("busy-loop")
+            .cloned()
+            .expect("created above");
+        let agent_loop = handle.read().agent_loop.clone();
+
+        // Hold the loop's exclusive lock: the first `set_model` attempt must
+        // report busy, and the loop must keep retrying until this is released.
+        let guard = agent_loop.try_write().expect("exclusive loop lock");
+        let reload_state = state.clone();
+        let worker = std::thread::spawn(move || reload_state.reconcile_provider_references());
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        drop(guard);
+        worker.join().unwrap();
+
+        assert_eq!(handle.read().model, "provider-a/replacement");
+    }
+
+    #[test]
+    fn create_session_replaces_a_foreign_broadcaster_and_reports_a_failed_rebind() {
+        let (_dir, state) = bare_app_state();
+        // A broadcaster whose journal belongs to another session: registration
+        // must not adopt it, and it must install a private one instead.
+        let foreign = std::sync::Arc::new(SseBroadcaster::new());
+        foreign
+            .configure_journal("other-session", &state.session_manager)
+            .unwrap();
+        assert_eq!(foreign.journal_session_id(), "other-session");
+        let mut session = crate::rpc::ServerSession::new_with_queue_budget(
+            "foreign-journal".to_string(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
+                std::sync::Arc::new(crate::test_support::EmptyProvider),
+                "mock",
+            ))),
+            state.session_manager.clone(),
+            "/tmp",
+            foreign,
+            state.approval_gate.clone(),
+            state.model_registry.clone(),
+            state.queue_budget.clone(),
+        );
+        // `ServerSession::new` already bound the broadcaster to its own id, so
+        // put the foreign owner back: this is the shape a session arrives in
+        // when it was built against another session's journal.
+        {
+            let foreign = std::sync::Arc::new(SseBroadcaster::new());
+            foreign
+                .configure_journal("other-session", &state.session_manager)
+                .unwrap();
+            session.broadcaster = foreign;
+        }
+
+        let id = state.create_session(session);
+
+        assert_eq!(id, "foreign-journal");
+        let registered = state.sessions.read()["foreign-journal"].clone();
+        // The private replacement is bound to this session, and its rebind
+        // failure (the old owner refuses the id) is logged rather than fatal.
+        assert_eq!(
+            registered.read().broadcaster.journal_session_id(),
+            "foreign-journal",
+            "registration must install a private broadcaster, not adopt the foreign one"
+        );
+
+        // The rebind itself can also fail. A session whose legacy import was
+        // skipped cannot bind an event journal (`bind_events` refuses it), so
+        // the replacement broadcaster stays unconfigured and the failure is
+        // reported rather than fatal.
+        state.session_manager.test_execute(
+            "INSERT INTO legacy_imports(session_id,status,fingerprint) \
+             VALUES('skipped-journal','skipped','hash')",
+        );
+        let foreign = std::sync::Arc::new(SseBroadcaster::new());
+        foreign
+            .configure_journal("other-session", &state.session_manager)
+            .unwrap();
+        let session = crate::rpc::ServerSession::new_with_queue_budget(
+            "skipped-journal".to_string(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
+                std::sync::Arc::new(crate::test_support::EmptyProvider),
+                "mock",
+            ))),
+            state.session_manager.clone(),
+            "/tmp",
+            foreign,
+            state.approval_gate.clone(),
+            state.model_registry.clone(),
+            state.queue_budget.clone(),
+        );
+        assert_eq!(
+            state.create_session(session),
+            "skipped-journal",
+            "a session whose journal cannot be configured is still registered"
+        );
+    }
+
+    #[test]
+    fn provider_reconcile_reports_a_replacement_whose_protocol_cannot_be_built() {
+        let _reload_lock = TEST_RELOAD_LOCK.lock();
+
+        // The reconciliation is a control-plane repair: it must surface a
+        // replacement it cannot use rather than abandoning the session
+        // silently, and it must stop trying (the retry loop is for busy, not
+        // for a model whose provider protocol cannot even be constructed).
+        let (_dir, state) = bare_app_state();
+        *state.model_registry.write() = crate::models::Registry::from_models_and_auth(
+            vec![crate::models::Model {
+                id: "replacement".to_string(),
+                name: "Replacement".to_string(),
+                provider: "provider-a".to_string(),
+                // An unknown protocol: `ResolvedModelTarget::from_model`
+                // rejects it, which is the non-busy `set_model` failure.
+                api: "bogus".to_string(),
+                base_url: "https://api.example".to_string(),
+                input: vec!["text".to_string()],
+                output: vec!["text".to_string()],
+                ..Default::default()
+            }],
+            r#"{"provider-a":{"type":"api_key","key":"key"}}"#,
+        );
+        let session = crate::rpc::ServerSession::new_with_queue_budget(
+            "bad-replacement".to_string(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
+                std::sync::Arc::new(crate::test_support::EmptyProvider),
+                "",
+            ))),
+            state.session_manager.clone(),
+            "/tmp",
+            std::sync::Arc::new(SseBroadcaster::new()),
+            state.approval_gate.clone(),
+            state.model_registry.clone(),
+            state.queue_budget.clone(),
+        );
+        state.create_session(session);
+        let state = std::sync::Arc::new(state);
+        let handle = state
+            .sessions
+            .read()
+            .get("bad-replacement")
+            .cloned()
+            .expect("created above");
+
+        state.reconcile_provider_references();
+
+        assert_eq!(
+            handle.read().model,
+            "",
+            "a replacement whose protocol cannot be built must not be adopted"
+        );
+    }
+
+    #[test]
     fn provider_reconcile_waits_only_when_a_model_reference_needs_replacement() {
         let _reload_lock = TEST_RELOAD_LOCK.lock();
 
@@ -1229,6 +1463,21 @@ mod tests {
         );
         let (_dir, state) = bare_app_state();
         let mut rx = state.control_plane.global_events_broadcaster().subscribe();
+        // Overflow the global ring before the announcement: the drain below must
+        // tolerate a lag and unrelated events, not only the happy path.
+        for index in 0..=BROADCAST_RING_CAPACITY {
+            state
+                .control_plane
+                .global_events_broadcaster()
+                .broadcast(SseEvent::new(
+                    "text_chunk",
+                    serde_json::json!({"text": index.to_string()}),
+                ));
+        }
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_))
+        ));
         let mut session = crate::rpc::ServerSession::new_with_queue_budget(
             "announce-me".to_string(),
             std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
@@ -1248,7 +1497,7 @@ mod tests {
 
         // The instance owns this stream; inspect its session announcement.
         // drain until THIS session's announcement arrives.
-        for _ in 0..64 {
+        for _ in 0..(BROADCAST_RING_CAPACITY + 64) {
             match rx.try_recv() {
                 Ok(event)
                     if event.event_type == "session_created"
@@ -1281,7 +1530,20 @@ mod tests {
         let state = ControlPlane::default();
         let mut rx = state.global_events_broadcaster().subscribe();
         state.publish_session_created("wrapper-session", "cli", "/tmp/wrapper");
-        for _ in 0..64 {
+        // One unrelated event and a lag before the announcement: both arms of
+        // the drain are exercised, not just the happy path.
+        state.global_events_broadcaster().broadcast(SseEvent::new(
+            "text_chunk",
+            serde_json::json!({"text": "other"}),
+        ));
+        for index in 0..BROADCAST_RING_CAPACITY {
+            state.global_events_broadcaster().broadcast(SseEvent::new(
+                "text_chunk",
+                serde_json::json!({"text": index.to_string()}),
+            ));
+        }
+        state.publish_session_created("wrapper-session", "cli", "/tmp/wrapper");
+        for _ in 0..(BROADCAST_RING_CAPACITY + 64) {
             match rx.try_recv() {
                 Ok(event)
                     if event.event_type == "session_created"
@@ -1751,5 +2013,102 @@ mod tests {
         let html = generate_session_html("s1", "model", "/cwd", &messages);
         assert!(html.contains("user"));
         assert!(html.contains("text"));
+    }
+    /// A stored model the registry does not know, with no default to replace it:
+    /// hydration keeps the unresolved identity (so the next request fails
+    /// cleanly instead of reusing the startup template's client) and logs the
+    /// failed write instead of failing the hydrate.
+    #[test]
+    fn hydrating_a_session_whose_model_is_gone_keeps_an_unresolved_identity() {
+        // Sink subscriber so the warn! region of the unresolved-identity arm is
+        // actually evaluated (a disabled callsite does not run its arguments).
+        let _sink = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .with_ansi(false)
+                .finish(),
+        );
+        let _home = crate::test_support::TestHome::new();
+        let (_dir, state) = bare_app_state(); // empty registry: no replacement
+                                              // The record entry carries the model, so hydration loads it (a snapshot
+                                              // without one hydrates to the empty template model and never asks the
+                                              // registry for a replacement).
+        let snapshot = crate::session::Session::snapshot(
+            "hyd-gone".to_string(),
+            "/tmp".to_string(),
+            "gone/model".to_string(),
+            String::new(),
+            String::new(),
+            vec![crate::session::SessionEntry::session_info(
+                serde_json::json!({ "cwd": "/tmp", "model": "gone/model" }),
+                "gone/model".to_string(),
+                "low".to_string(),
+            )],
+        );
+        state.session_manager.save(&snapshot).unwrap();
+        // The unresolved identity must survive even when the persist step of
+        // `set_model` cannot write: the closure logs and the hydrate continues.
+        state.session_manager.test_execute("CREATE TRIGGER fail_entries BEFORE INSERT ON entries BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;");
+
+        let session = state.get_session("hyd-gone").expect("hydrated from disk");
+        assert_eq!(
+            session.read().model,
+            "gone/model",
+            "an unresolved identity is kept rather than silently emptied"
+        );
+        // Second fetch hits the live map, not the disk.
+        assert!(state.get_session("hyd-gone").is_some());
+    }
+    /// The other half of the hydrate model fix-up: the stored model is gone but
+    /// the registry *does* offer a replacement, so the session is moved onto it
+    /// — and when that write cannot land, the hydrate still succeeds with the
+    /// replacement in memory rather than failing the whole load.
+    #[test]
+    fn hydrating_onto_a_replacement_model_survives_a_failed_write() {
+        let _sink = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .with_ansi(false)
+                .finish(),
+        );
+        let (_dir, state) = bare_app_state();
+        let replacement = crate::models::Model {
+            id: "replacement".to_string(),
+            name: "Replacement".to_string(),
+            provider: "provider-a".to_string(),
+            api: "chat".to_string(),
+            base_url: "https://api.example".to_string(),
+            input: vec!["text".to_string()],
+            output: vec!["text".to_string()],
+            ..Default::default()
+        };
+        *state.model_registry.write() = crate::models::Registry::from_models_and_auth(
+            vec![replacement],
+            r#"{"provider-a":{"type":"api_key","key":"key"}}"#,
+        );
+        let snapshot = crate::session::Session::snapshot(
+            "hyd-replaced".to_string(),
+            "/tmp".to_string(),
+            "gone/model".to_string(),
+            String::new(),
+            String::new(),
+            vec![crate::session::SessionEntry::session_info(
+                serde_json::json!({ "cwd": "/tmp", "model": "gone/model" }),
+                "gone/model".to_string(),
+                "low".to_string(),
+            )],
+        );
+        state.session_manager.save(&snapshot).unwrap();
+        // The replacement write cannot land: logged, and the hydrate continues.
+        state.session_manager.test_execute("CREATE TRIGGER fail_entries BEFORE INSERT ON entries BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;");
+
+        let session = state
+            .get_session("hyd-replaced")
+            .expect("a failed model write must not fail the hydrate");
+        assert_eq!(
+            session.read().model,
+            "provider-a/replacement",
+            "the replacement is applied in memory even when persisting it fails"
+        );
     }
 }

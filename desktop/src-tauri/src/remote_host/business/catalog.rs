@@ -423,6 +423,183 @@ mod dispatch_tests {
         );
     }
 
+    /// The catalogue is read *after* a write to answer with the new state. When
+    /// that read fails, the write is not reported as applied with a stale list:
+    /// the phone is told the catalogue is unavailable, exactly as the pin path
+    /// does. The fixture is the same out-of-band row the pin test writes: the
+    /// store's own write path cannot produce a row that fails to decode, but a
+    /// database from another schema version can.
+    #[tokio::test]
+    async fn a_created_or_renamed_workspace_is_not_confirmed_from_a_catalogue_we_cannot_read() {
+        use crate::remote::test_support::{init_store, raw_store_connection, HomeGuard};
+        let _home = HomeGuard::new("catalog-unavailable-after-write");
+        init_store();
+        let dir = std::env::temp_dir().join(format!(
+            "futureos-catalog-write-unreadable-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("make the host directory");
+        // The directory the write targets already has a row, so the write's own
+        // lookup resolves by path and never has to scan the list — while the
+        // undecodable neighbour still makes the catalogue read fail.
+        let path =
+            crate::store::strip_verbatim_prefix(std::fs::canonicalize(&dir).expect("canonicalize"))
+                .display()
+                .to_string();
+        {
+            let conn = raw_store_connection();
+            conn.execute_batch(&format!(
+                "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at) VALUES
+                     ('ws_good', 'Good', 'user', '{path}', 1, 1),
+                     ('ws_poison', X'00FF', 'user', '/tmp/poison', 1, 1);"
+            ))
+            .expect("write the undecodable row");
+        }
+        assert!(
+            crate::store::list_workspaces().is_err(),
+            "the fixture must make the workspace list unreadable"
+        );
+
+        let sink = crate::remote::test_support::RecordingSink::default();
+        execute(
+            &IncomingCmd {
+                cmd_type: "create_workspace".into(),
+                path: dir.display().to_string(),
+                name: "Handpicked".into(),
+                ..Default::default()
+            },
+            &sink,
+        )
+        .await;
+        let (success, _data, error) = sink.last();
+        assert!(
+            !success,
+            "a create must not be confirmed from an unreadable list"
+        );
+        assert_eq!(error.as_deref(), Some("catalog_unavailable"));
+
+        let sink = crate::remote::test_support::RecordingSink::default();
+        execute(
+            &IncomingCmd {
+                cmd_type: "rename_workspace".into(),
+                workspace_id: "ws_good".into(),
+                name: "Renamed".into(),
+                ..Default::default()
+            },
+            &sink,
+        )
+        .await;
+        let (success, _data, error) = sink.last();
+        assert!(
+            !success,
+            "a rename must not be confirmed from an unreadable list"
+        );
+        assert_eq!(error.as_deref(), Some("catalog_unavailable"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A store that cannot be read at all is the same answer as a store that
+    /// cannot be read *again*: the phone is told the catalogue is unavailable
+    /// rather than that the fork source does not exist, which would make it
+    /// re-map its local conversation to the wrong thread.
+    #[tokio::test]
+    async fn a_fork_whose_source_lookup_fails_is_not_reported_as_a_missing_source() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-fork-unreadable");
+        // No store: every `crate::store::` read fails, which is the state the
+        // phone can reach while the desktop is still starting.
+        assert!(
+            crate::store::find_thread_by_agent_session("sess-fork-parent").is_err(),
+            "the fixture must put the parent lookup in a failing state"
+        );
+
+        let sink = crate::remote::test_support::RecordingSink::default();
+        execute(
+            &IncomingCmd {
+                cmd_type: "fork_session".into(),
+                id: "fork-request".into(),
+                session_id: "sess-fork-parent".into(),
+                source_entry_id: "entry-1".into(),
+                ..Default::default()
+            },
+            &sink,
+        )
+        .await;
+        let (success, _data, error) = sink.last();
+        assert!(!success, "a fork cannot start from a store we cannot read");
+        let error = error.expect("a failed reply carries the reason");
+        assert!(
+            !error.contains("could not be loaded"),
+            "an unreadable store is not a missing conversation: {error}"
+        );
+        assert!(
+            error.contains("no such table"),
+            "the store's own fault is surfaced: {error}"
+        );
+    }
+
+    /// A fork the Agent refuses is reported to the phone as the failure it is,
+    /// with the Agent's own reason — not as a fork that produced a conversation
+    /// the phone cannot open.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // mock_agent_lock serializes this family
+    async fn a_refused_fork_is_reported_with_the_agents_reason() {
+        use crate::remote::test_support::{ensure_mock_agent, init_store, mock_agent_lock};
+        let _lock = mock_agent_lock();
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-fork-refused");
+        init_store();
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("Parent".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some("sess-fork-refused".to_string()),
+        })
+        .expect("seed the parent conversation");
+        agent.script_for(
+            "fork",
+            "sess-fork-refused",
+            false,
+            json!({}),
+            "the turn is not forkable",
+        );
+
+        let sink = crate::remote::test_support::RecordingSink::default();
+        execute(
+            &IncomingCmd {
+                cmd_type: "fork_session".into(),
+                id: "fork-request-refused".into(),
+                session_id: "sess-fork-refused".into(),
+                source_entry_id: "entry-1".into(),
+                ..Default::default()
+            },
+            &sink,
+        )
+        .await;
+        let (success, _data, error) = sink.last();
+        assert!(!success, "a refused fork must not be reported as created");
+        let error = error.expect("a failed reply carries the reason");
+        assert!(
+            error.contains("not forkable"),
+            "the Agent's own refusal is surfaced, got {error:?}"
+        );
+        assert!(
+            crate::store::list_threads()
+                .expect("list")
+                .iter()
+                .all(|thread| !thread
+                    .agent_session_id
+                    .as_deref()
+                    .unwrap_or_default()
+                    .is_empty()),
+            "a refused fork leaves the parent as the only conversation"
+        );
+        agent.clear_scripts();
+    }
+
     /// A rename writes the host's own store, and answers with the fresh catalogue.
     ///
     /// The same write as the Desktop's own rename (it goes through the command, so

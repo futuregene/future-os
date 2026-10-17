@@ -1000,6 +1000,18 @@ mod tests {
 
     const VALID_SUMMARY: &str = "## Objective\n- ship it\n\n## Important Details\n- preserve data\n\n## Work State\n### Completed\n- audit\n\n### Active\n- implementation\n\n### Blocked\n- (none)\n\n## Next Move\n1. test\n\n## Relevant Files\n- agent/src/compaction/semantic.rs";
 
+    /// The per-poll cancellation guard is what makes a compaction call unable to
+    /// outlive the run's cancellation-acknowledgement window: a run that is
+    /// already cancelled must be reported before any provider work is polled.
+    #[tokio::test]
+    async fn await_or_interrupt_reports_an_already_cancelled_run() {
+        let interrupted = AtomicBool::new(true);
+        let error = await_or_interrupt(std::future::pending::<()>(), &interrupted)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, SummaryCallError::Cancelled));
+    }
+
     /// The raw journal a projection was built from. These tests used to reach the legacy
     /// semantic entry points, which took only the projection; `prepare_evidence` takes the
     /// raw messages as well, and for a projection with no checkpoint that is exactly the

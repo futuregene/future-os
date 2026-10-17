@@ -98,6 +98,14 @@ pub(crate) enum StreamScript {
 #[derive(Default)]
 struct MockState {
     replies: HashMap<String, VecDeque<Reply>>,
+    /// Command types answered with a rejection whenever no scripted reply is
+    /// queued. A one-shot `Reply::Reject` cannot express "this call must fail"
+    /// when the caller is a *spawned* task: a leftover reply from an earlier
+    /// test, or a lingering spawn from one, can consume it first (measured in
+    /// this crate — a test that pushed one `new_session` rejection had its
+    /// failure arm read `DA:0` for a whole segment because another caller took
+    /// the reply). This map is keyed by command type and survives the call.
+    reject_defaults: HashMap<String, String>,
     atomic_streams: VecDeque<StreamScript>,
     plain_streams: VecDeque<StreamScript>,
     requests: Vec<RpcCommand>,
@@ -176,7 +184,11 @@ impl FutureAgent for MockAgent {
             } else {
                 take(&cmd.r#type)
             };
-            reply.unwrap_or_else(|| Reply::Data(default_reply_data(&cmd)))
+            let reject_default = state.reject_defaults.get(&cmd.r#type).cloned();
+            reply.unwrap_or_else(|| match reject_default {
+                Some(error) => Reply::Reject(error),
+                None => Reply::Data(default_reply_data(&cmd)),
+            })
         };
         match reply {
             Reply::Data(data) => Ok(tonic::Response::new(rpc_response(
@@ -362,6 +374,7 @@ pub(crate) fn mock_agent() -> MockAgentGuard {
     {
         let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.replies.clear();
+        state.reject_defaults.clear();
         state.atomic_streams.clear();
         state.plain_streams.clear();
         state.requests.clear();
@@ -380,6 +393,25 @@ impl MockAgentGuard {
             .entry(command_type.to_string())
             .or_default()
             .push_back(reply);
+    }
+
+    /// Make every *unscripted* reply for `command_type` a rejection until
+    /// cleared with [`MockAgentGuard::clear_reject_defaults`]. Deterministic for
+    /// spawned callers, which a one-shot reply is not.
+    pub(crate) fn reject_default(&self, command_type: &str, error: &str) {
+        STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .reject_defaults
+            .insert(command_type.to_string(), error.to_string());
+    }
+
+    pub(crate) fn clear_reject_defaults(&self) {
+        STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .reject_defaults
+            .clear();
     }
 
     /// Queue a successful reply whose `data` is the JSON rendering of `value`.
@@ -674,6 +706,43 @@ mod tests {
     use super::*;
     use crate::agent_proto::RpcCommand;
 
+    /// A `Deferred` reply whose answering end is dropped mid-flight must surface
+    /// as a **cancelled RPC**, not as a hang and not as a success with an empty
+    /// body: a test that forgets to answer (or a fixture that panics before it
+    /// does) has to fail the caller loudly, which is what this arm exists for.
+    #[tokio::test]
+    async fn a_deferred_reply_whose_answerer_disappears_cancels_the_rpc() {
+        let _mock = mock_agent();
+        let mut client = super::super::client::connect_agent()
+            .await
+            .expect("connect to the mock");
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (answer_tx, answer_rx) = tokio::sync::oneshot::channel();
+        _mock.push(
+            "list_session_ids",
+            Reply::Deferred {
+                entered: entered_tx,
+                data: answer_rx,
+            },
+        );
+        // The answering end goes away without ever sending: exactly the state a
+        // test leaves behind when it panics between `push` and `send`.
+        drop(answer_tx);
+
+        let error = client
+            .execute_command(super::super::client::list_session_ids_command())
+            .await
+            .expect_err("an unanswered deferred reply must cancel the RPC");
+
+        assert_eq!(error.code(), tonic::Code::Cancelled, "{error}");
+        assert_eq!(error.message(), "test reply dropped");
+        // The mock did reach the deferred branch, so the arm was exercised and
+        // not merely unreachable behind an earlier failure.
+        entered_rx
+            .await
+            .expect("the mock entered the deferred reply");
+    }
+
     /// `default_reply_data` echoes the requested run id when present and
     /// falls back to `mock-run` when a prompt carries an empty one (headless
     /// callers that let the pipeline pick the id still get a consistent
@@ -707,10 +776,16 @@ mod tests {
     /// itself, so the guard is only held around the two raw `HOME` touches.
     #[test]
     fn test_home_drop_removes_home_when_unset_before() {
+        // The arm under test is the one for a process that never had a HOME (a
+        // bare `cargo test`, without this campaign's HOME override). This suite
+        // always has one, so the precondition is produced here — under the same
+        // lock — and the real value is restored after the arm has run.
+        let real_home = std::env::var("HOME").ok();
         let saved = {
             let _lock = crate::TEST_HOME_LOCK
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
+            std::env::remove_var("HOME");
             std::env::var("HOME").ok()
         };
         let mut home = TestHome::new("no-prev-home");
@@ -722,6 +797,9 @@ mod tests {
         match saved {
             Some(saved) => std::env::set_var("HOME", saved),
             None => std::env::remove_var("HOME"),
+        }
+        if let Some(real_home) = real_home {
+            std::env::set_var("HOME", real_home);
         }
     }
 }

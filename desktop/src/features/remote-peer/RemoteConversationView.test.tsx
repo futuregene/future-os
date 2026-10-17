@@ -317,6 +317,46 @@ it("skips a tool reply to reach the prompt that started the turn", async () => {
 });
 
 /**
+ * A fork on a reply rebuilt from a run's log branches at the run's prompt.
+ *
+ * A rebuilt reply is appended after the transcript's own last turn, because the
+ * record's copy of its run is not in this page (`stripRunCopies` hides it): the
+ * two rows that end up adjacent are both replies, so the backward walk cannot
+ * stop at the first one it meets — that reply belongs to the *previous* turn,
+ * and sending its entry id would branch at the wrong prompt. This is the only
+ * transcript shape in which two adjacent rows are both non-user (a
+ * compaction-only marker renders as a bare divider, with no fork affordance at
+ * all).
+ */
+it("walks past an adjacent reply to the prompt the rebuilt run belongs to", async () => {
+  const onFork = vi.fn();
+  const rebuilt: AgentMessage = {
+    id: "m_run_2",
+    role: "assistant",
+    authorKey: "author.researchCopilot",
+    content: "rebuilt reply",
+    status: "complete",
+    createdAt: new Date(1_700_000_000_000).toISOString(),
+    runId: "run_2",
+  };
+  const view = await mount({
+    entries: [entry("u1", "user", "hello"), entry("a1", "assistant", "done", "run_0")],
+    liveReplies: [{ message: rebuilt, fromReplay: true }],
+    onFork,
+  });
+
+  // The transcript's own reply and the rebuilt one, both non-user.
+  expect(view.rows()).toHaveLength(3);
+  expect(view.forkButtons()).toHaveLength(2);
+  await act(async () => view.forkButtons()[1]!.click());
+
+  // `u1`, not `a1`: the rebuilt reply is not a stored turn of its own, and the
+  // reply above it belongs to the turn before.
+  expect(onFork).toHaveBeenCalledWith("u1", true);
+  await view.unmount();
+});
+
+/**
  * A turn that arrived as a live push is not in the host's store, so the action
  * reports that instead of sending an id the host cannot resolve.
  */

@@ -633,6 +633,71 @@ mod tests {
         assert!(lock_path(dir.path()).exists());
     }
 
+    /// The `MAX_LOCK_ATTEMPTS` contention bail (line 270) needs a path that
+    /// `create_new` refuses while the classification still reads the file as
+    /// gone. `create_new(true)` *is* `O_CREAT|O_EXCL`, so **a dangling symlink**
+    /// is exactly that: the create fails with `AlreadyExists` (contention,
+    /// `create_is_contention`) while `read_to_string` follows the link, finds no
+    /// target and answers `NotFound` → `LockState::Released`, which `continue`s
+    /// **without sleeping**. The loop therefore burns the whole
+    /// `MAX_LOCK_ATTEMPTS` budget and falls out at the bail — with no holder,
+    /// no second process and no race.
+    ///
+    /// Unix-only: creating the symlink is what needs the platform call (on
+    /// Windows that needs a privilege this suite must not require).
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_symlink_lock_spins_the_attempt_budget_and_reports_contention() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = lock_path(dir.path());
+        let missing = dir.path().join("no-such-lock-target");
+        std::os::unix::fs::symlink(&missing, &lock).unwrap();
+
+        // Precondition, asserted rather than assumed: the two syscalls really
+        // do disagree about this path — that disagreement is the whole
+        // mechanism the bail needs.
+        let create = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock)
+            .unwrap_err();
+        assert_eq!(
+            create.kind(),
+            std::io::ErrorKind::AlreadyExists,
+            "O_CREAT|O_EXCL must call a dangling symlink contention"
+        );
+        let read = std::fs::read_to_string(&lock).unwrap_err();
+        assert_eq!(
+            read.kind(),
+            std::io::ErrorKind::NotFound,
+            "the classification must follow the link into nothing"
+        );
+
+        let started = std::time::Instant::now();
+        let error = acquire_active_state_lock(dir.path()).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("could not acquire"),
+            "the bail, not an earlier failure: {message}"
+        );
+        // `Released` continues without sleeping, so 512 attempts are cheap: a
+        // slow acquire here would mean a sleep crept into that arm. The elapsed
+        // time is bound first so it is not a format argument evaluated only on
+        // failure (the shape this ledger files as `unreachable-by-construction`).
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the sleepless `Released` arm took {elapsed:?}"
+        );
+        // The link was never a lock: nothing was created at its target, and it
+        // is still a dangling link afterwards.
+        assert!(!missing.exists());
+        assert!(std::fs::symlink_metadata(&lock)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
     /// Spawn a child and reap it — its pid is now guaranteed dead.
     fn reaped_child_pid() -> u32 {
         #[cfg(unix)]

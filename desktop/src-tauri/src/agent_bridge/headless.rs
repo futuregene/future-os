@@ -341,6 +341,63 @@ mod tests {
         execution.await.expect("join").expect("execution");
     }
 
+    /// A remote command id that cannot be recorded is reported through the
+    /// receipt instead of being invented — and the run still executes: the
+    /// Agent already accepted it, so a bookkeeping failure must not turn into a
+    /// lost run. The commit is retried once the prompt has finished (there is no
+    /// further durable work to race then).
+    #[tokio::test]
+    async fn a_remote_receipt_that_cannot_be_persisted_is_reported_and_retried_after_the_run() {
+        let home = TestHome::new("headless-receipt-retry");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-headless-receipt-retry"));
+        // `mark_remote_prompt_accepted` refuses an empty command id, which is
+        // how a receipt commit is made to fail without a hostile store.
+        let prepared = prepare_prompt_persisted_with_trigger(
+            &thread,
+            "hello".to_string(),
+            None,
+            None,
+            vec![],
+            Some(String::new()),
+        )
+        .expect("prepare");
+        let run_id = prepared.run_id.clone();
+
+        mock.push_data(
+            "get_state",
+            serde_json::json!({ "sessionId": "sess-headless-receipt-retry", "cwd": workspace.path }),
+        );
+        mock.push_stream(StreamScript::Events(
+            vec![stream_event(
+                &run_id,
+                0,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
+            None,
+        ));
+
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        let execution = tokio::spawn(run_prepared_prompt_with_acceptance(prepared, accepted_tx));
+        assert!(
+            accepted_rx.await.expect("acceptance channel").is_err(),
+            "an unpersistable command id is reported, not silently accepted"
+        );
+        execution
+            .await
+            .expect("join")
+            .expect("the run still executed despite the failed receipt commit");
+        assert_eq!(
+            store::get_run(&run_id)
+                .expect("get run")
+                .expect("some")
+                .status,
+            "completed"
+        );
+    }
+
     #[tokio::test]
     async fn run_prepared_prompt_marks_an_incomplete_run_failed() {
         let home = TestHome::new("headless-incomplete");

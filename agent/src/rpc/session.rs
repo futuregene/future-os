@@ -1892,6 +1892,63 @@ mod tests {
 
     // ─── default_workspace ──────────────────────────────────────────────────
 
+    /// A compaction signal belongs to the session scope when the compaction has
+    /// no run (standalone) and to the run scope when it happens inside one:
+    /// only the run-stamped form carries `run_id`/`idx`, and the session form
+    /// clears them so a client cannot mistake it for a run event. An event the
+    /// projector has no wire form for is dropped instead of being published as
+    /// an empty frame.
+    #[test]
+    fn compaction_events_are_published_to_the_scope_their_phase_belongs_to() {
+        use crate::compaction::CompactionPhase;
+
+        let session = make_test_session("compaction-broadcast");
+        let mut subscriber = session.broadcaster.subscribe();
+
+        session.broadcast_compaction_event(
+            CompactionPhase::Standalone,
+            crate::agent::RunEvent::CompactionStarted {
+                operation_id: "op-session".into(),
+                trigger: crate::compaction::CompactionTrigger::Manual,
+                phase: CompactionPhase::Standalone,
+            },
+        );
+        let event = subscriber
+            .try_recv()
+            .expect("a standalone compaction is published");
+        assert_eq!(event.event_type, "compaction_started");
+        assert_eq!(event.idx, -1, "the session scope has no run index");
+        assert!(event.run_id.is_empty(), "{}", event.run_id);
+
+        session.broadcast_compaction_event(
+            CompactionPhase::PreTurn,
+            crate::agent::RunEvent::CompactionStarted {
+                operation_id: "op-run".into(),
+                trigger: crate::compaction::CompactionTrigger::Automatic,
+                phase: CompactionPhase::PreTurn,
+            },
+        );
+        let event = subscriber
+            .try_recv()
+            .expect("an in-run compaction is published");
+        assert_eq!(event.event_type, "compaction_started");
+        assert!(
+            event.idx >= 0,
+            "an in-run compaction keeps the run stamp: idx {}",
+            event.idx
+        );
+
+        // `text_start` has no wire form: it must not reach subscribers at all.
+        session.broadcast_compaction_event(
+            CompactionPhase::Standalone,
+            crate::agent::RunEvent::Model(ModelStreamEvent::TextStart { id: "t".into() }),
+        );
+        assert!(
+            subscriber.try_recv().is_err(),
+            "an event without a wire projection must not be published"
+        );
+    }
+
     #[test]
     fn default_workspace_is_not_empty() {
         let ws = default_workspace();
@@ -2185,6 +2242,32 @@ mod tests {
         });
         // The foreign active run is left untouched.
         assert!(session.scheduler.active().is_some());
+    }
+
+    /// After the work boundary closes, a finished scheduled run must not
+    /// dequeue the next one: whatever is still queued belongs to the shutdown
+    /// drain, which is the only owner allowed to start or cancel it.
+    #[test]
+    fn on_scheduled_run_finished_stops_dequeuing_once_work_is_closed() {
+        let mut session = make_test_session("closed-work");
+        let queue = crate::runtime::InMemoryRunQueue::new("closed-work", 0);
+        queue
+            .accept(
+                "req-a",
+                Some("run-a"),
+                crate::runtime::BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({"bogus": true}),
+            )
+            .unwrap();
+        session.scheduler = Arc::new(queue);
+        session.service_work.close();
+        session.on_scheduled_run_finished(&crate::runtime::RunLease {
+            run_id: "run-a".to_string(),
+            epoch: 1,
+            run_sequence: None,
+        });
+        // Left in the queue for the drain instead of being dequeued here.
+        assert_eq!(session.scheduler.queued().len(), 1);
     }
 
     #[test]
@@ -3468,6 +3551,105 @@ mod tests {
         // Resolution succeeds (the model is in the registry) but the unknown
         // API protocol makes provider construction fail → the error propagates.
         assert!(session.set_model("test/bad").is_err());
+    }
+
+    #[test]
+    fn compact_reports_a_checkpoint_whose_usage_baseline_cannot_be_persisted() {
+        let mut session = make_test_session("compact-baseline");
+        session.model = "glm-4.5v".to_string();
+        session
+            .last_prompt_tokens
+            .store(50_000, std::sync::atomic::Ordering::Relaxed);
+        {
+            let mut messages = session.messages.write();
+            for i in 0..5 {
+                messages.push(crate::types::AgentMessage::new_user(
+                    "user",
+                    serde_json::json!(format!("question {i}")),
+                ));
+                messages.push(crate::types::AgentMessage {
+                    role: "assistant".into(),
+                    content: vec![
+                        crate::types::ContentBlock::text(format!("answer {i}")),
+                        crate::types::ContentBlock::tool_call(
+                            format!("read-{i}"),
+                            "read",
+                            serde_json::json!({"path":"large.rs"}),
+                            Default::default(),
+                        ),
+                    ],
+                    ..Default::default()
+                });
+                messages.push(crate::types::AgentMessage {
+                    role: "tool".into(),
+                    content: vec![crate::types::ContentBlock::tool_result(
+                        format!("read-{i}"),
+                        format!("tool result {i} ").repeat(2000),
+                        false,
+                    )],
+                    ..Default::default()
+                });
+            }
+            for message in messages.iter_mut() {
+                message.ensure_journal_entry_id();
+            }
+        }
+        persist_transcript(&session);
+
+        // The baseline is zeroed in memory and persisted immediately after the
+        // checkpoint commits, and the persist is the only write in between. What
+        // the stored entry shows is what makes this the *baseline* write failing
+        // rather than some earlier one: the key is absent, where a successful
+        // baseline write would have added it as 0.
+        session.persistence.fail_next_info();
+        let result = session.compact("").unwrap();
+
+        assert!(
+            result["checkpointId"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty()),
+            "the checkpoint itself must still commit: {result}"
+        );
+        assert_eq!(
+            session
+                .last_prompt_tokens
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "the in-memory baseline is reset even when persisting it fails"
+        );
+        let stored = session.session_manager.load(&session.session_id).unwrap();
+        let info = stored
+            .entries
+            .iter()
+            .find(|entry| entry.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO)
+            .and_then(|entry| entry.content.clone())
+            .expect("the session info entry");
+        assert!(
+            info.get("last_prompt_tokens").is_none(),
+            "the baseline whose write failed must not have landed: {info}"
+        );
+
+        // Why the sibling `_ => None` arm of the same `filter_map` (line 979) is
+        // unreachable: the summarizer builds every checkpoint summary out of
+        // text (`compaction/semantic.rs` ends in `vec![ContentBlock::text(..)]`),
+        // so no non-text block can arrive there. Asserted rather than assumed —
+        // if that ever changes, this fails and that arm becomes coverable work.
+        let checkpoint = session
+            .agent_loop
+            .try_read()
+            .expect("the loop is idle after a manual compaction")
+            .active_checkpoint
+            .lock()
+            .clone()
+            .expect("the committed checkpoint is installed on the loop");
+        assert!(
+            checkpoint
+                .summary
+                .iter()
+                .all(|block| matches!(block, crate::types::ContentBlock::Text { .. })),
+            "a non-text summary block would make line 979 reachable: {:?}",
+            checkpoint.summary
+        );
     }
 
     #[test]
@@ -5844,5 +6026,121 @@ mod tests {
             .filter(|m| m.role == "assistant")
             .count();
         assert_eq!(assistant_count, 2, "both runs completed");
+    }
+    /// A session whose pricing journal cannot be read still opens: the replayed
+    /// cost split falls back to the default rather than failing the switch,
+    /// because a damaged event table must not make the whole session unusable —
+    /// and the fallback is a whole default, never a partially-read figure a
+    /// client could be shown.
+    #[test]
+    fn a_session_whose_pricing_journal_is_unreadable_opens_with_a_default_split() {
+        let mut session = make_test_session("cost-unreadable");
+        session.model = "test/cheap".to_string();
+        session.model_registry = two_priced_models();
+        // A record with no cached split puts the load on the *replay* path: a
+        // complete cached split would be trusted and the journal never read.
+        session
+            .session_manager
+            .save(&crate::session::Session::snapshot(
+                session.session_id.clone(),
+                session.cwd.clone(),
+                session.model.clone(),
+                String::new(),
+                String::new(),
+                vec![crate::session::SessionEntry::session_info(
+                    serde_json::json!({"cwd": session.cwd, "model": session.model}),
+                    session.model.clone(),
+                    session.thinking_level.clone(),
+                )],
+            ))
+            .unwrap();
+        session
+            .session_manager
+            .storage()
+            .unwrap()
+            .append_event(
+                &session.session_id,
+                serde_json::json!({
+                    "run_id": "run-1", "epoch": 1, "idx": 0, "event_type": "usage",
+                    "data": serde_json::json!({
+                        "type": "usage",
+                        "usage": { "prompt_tokens": 1_000_000, "completion_tokens": 0 }
+                    })
+                    .to_string(),
+                }),
+            )
+            .unwrap();
+        // The event table is gone: reading is now an error, not an empty result.
+        session
+            .session_manager
+            .test_execute("DROP TABLE run_events");
+
+        let id = session.session_id.clone();
+        session
+            .switch_session(&id)
+            .expect("a damaged pricing journal must not fail the session open");
+        let split = *session.cumulative_cost_split.lock();
+        assert_eq!(
+            split,
+            crate::models::CostSplit::default(),
+            "an unreadable journal yields the default split, never a partial one: {split:?}"
+        );
+    }
+
+    /// The two journal shapes the replay must accept beyond its own wire format:
+    /// `data` carried as an **object** (rows written by an older build, where
+    /// `data` was not yet a JSON string) and an event type it does not price
+    /// (skipped, not mistaken for a usage row).
+    #[test]
+    fn the_replay_reads_object_style_data_and_ignores_unpriced_event_types() {
+        let mut session = make_test_session("object-style-cost-journal");
+        session.model = "test/cheap".to_string();
+        session.model_registry = two_priced_models();
+        session
+            .session_manager
+            .save(&crate::session::Session::snapshot(
+                session.session_id.clone(),
+                session.cwd.clone(),
+                session.model.clone(),
+                String::new(),
+                String::new(),
+                vec![crate::session::SessionEntry::session_info(
+                    serde_json::json!({"cwd": session.cwd, "model": session.model}),
+                    session.model.clone(),
+                    session.thinking_level.clone(),
+                )],
+            ))
+            .unwrap();
+        let storage = session.session_manager.storage().unwrap();
+        storage
+            .append_event(
+                &session.session_id,
+                serde_json::json!({
+                    "run_id": "run-1", "epoch": 1, "idx": 0, "event_type": "text_chunk",
+                    "data": serde_json::json!({"text": "hello"}).to_string(),
+                }),
+            )
+            .unwrap();
+        storage
+            .append_event(
+                &session.session_id,
+                serde_json::json!({
+                    "run_id": "run-1", "epoch": 1, "idx": 1, "event_type": "usage",
+                    "data": {
+                        "type": "usage",
+                        "usage": { "prompt_tokens": 1_000_000, "completion_tokens": 0 }
+                    },
+                }),
+            )
+            .unwrap();
+
+        let id = session.session_id.clone();
+        session.switch_session(&id).unwrap();
+        let split = *session.cumulative_cost_split.lock();
+        // `test/cheap` prices input at 1.0 per token.
+        assert!(
+            (split.input - 1.0).abs() < 1e-9,
+            "the object-style usage row is priced like any other: {split:?}"
+        );
     }
 }

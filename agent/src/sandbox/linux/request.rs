@@ -512,4 +512,40 @@ mod tests {
             Err(RequestError::InvalidJson(_))
         ));
     }
+
+    /// A mount that hands the helper a descriptor below 3 would collide with
+    /// stdin/stdout/stderr inside bwrap, so the inner phase rejects it rather
+    /// than passing a stream descriptor the helper never opened.
+    #[test]
+    fn a_mount_descriptor_below_the_helper_reserved_range_is_rejected() {
+        let mut candidate = request();
+        candidate.phase = HelperPhase::Inner;
+        candidate.status_fd = Some(3);
+        candidate.mounts[0].source_fd = Some(2);
+        candidate.mounts[0].expected = Some(identity());
+        assert_eq!(candidate.validate(), Err(RequestError::InvalidFd));
+    }
+
+    /// Every per-object bound `validate` enforces can be respected while the
+    /// *serialized* request still exceeds the wire ceiling: the glob snapshot
+    /// ceiling is per snapshot, so four maximal snapshots of long absolute
+    /// matches pass validation and then fail the JSON budget. The pipeline
+    /// must refuse the payload rather than hand bwrap a truncated descriptor.
+    #[test]
+    fn a_validated_request_over_the_json_ceiling_is_refused() {
+        use crate::sandbox::linux::plan::GlobSnapshot;
+
+        let long_match = abs(&format!("/{}", "a".repeat(1_200)));
+        let mut candidate = request();
+        candidate.glob_snapshots = (0..4)
+            .map(|index| GlobSnapshot {
+                pattern: abs(&format!("/tmp/s{index}/**/*.pem"))
+                    .to_string_lossy()
+                    .into_owned(),
+                matches: vec![long_match.clone(); MAX_MOUNTS],
+            })
+            .collect();
+        assert_eq!(candidate.validate(), Ok(()));
+        assert_eq!(candidate.to_json_bytes(), Err(RequestError::TooLarge));
+    }
 }

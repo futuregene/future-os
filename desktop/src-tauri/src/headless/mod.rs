@@ -901,4 +901,357 @@ mod tests {
         assert!(pairing_link(&status).is_none());
         assert!(invitation_link(&status).is_none());
     }
+
+    /// A `future` CLI fixture: answers `version --json` with a compatible
+    /// capability contract (so discovery accepts it) and records the fact that
+    /// `init` ran by touching a marker file.
+    #[cfg(unix)]
+    fn cli_fixture(
+        directory: &std::path::Path,
+        marker: &std::path::Path,
+        init: &str,
+    ) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let capabilities = future_rpc::cli_capabilities::CliCapabilities {
+            commands: vec!["skills.init".into()],
+            ..Default::default()
+        };
+        let reply = serde_json::json!({ "version": "1.2.3", "desktopCapabilities": capabilities })
+            .to_string();
+        std::fs::create_dir_all(directory).unwrap();
+        let path = directory.join("future");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\n\
+                 if [ \"$1\" = version ]; then printf '%s' '{reply}'; exit 0; fi\n\
+                 printf 'ran' > '{marker}'\n{init}\n",
+                marker = marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    /// Serialize the tests that replace the process-global `PATH` and the agent
+    /// endpoint, and restore both.
+    fn with_path_and_broken_agent<T>(directory: &std::path::Path, body: impl FnOnce() -> T) -> T {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let saved_path = std::env::var_os("PATH");
+        let saved_addr = std::env::var_os("FUTURE_AGENT_GRPC_ADDR");
+        std::env::set_var("PATH", directory.as_os_str());
+        // Unparseable on purpose: `refresh_skills` must fail fast instead of
+        // reaching for a real local Agent.
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+        let result = body();
+        match saved_path {
+            Some(value) => std::env::set_var("PATH", value),
+            None => std::env::remove_var("PATH"),
+        }
+        match saved_addr {
+            Some(value) => std::env::set_var("FUTURE_AGENT_GRPC_ADDR", value),
+            None => std::env::remove_var("FUTURE_AGENT_GRPC_ADDR"),
+        }
+        result
+    }
+
+    /// The server has no Tauri shell plugin, so it spawns the same `future init`
+    /// the window's onboarding uses — after the Agent, because the install
+    /// writes the Agent's own skill database. The marker is the proof that the
+    /// CLI really ran rather than that the call merely returned.
+    #[cfg(unix)]
+    #[test]
+    fn the_builtin_skill_bootstrap_runs_the_cli() {
+        let root = tempfile::tempdir().unwrap();
+        let marker = root.path().join("init-ran");
+        let directory = root.path().join("bin");
+        let cli = cli_fixture(&directory, &marker, "printf 'installed 2 skills\\n'");
+        assert!(
+            !marker.exists(),
+            "the marker must only appear once `init` has run"
+        );
+        let outcome = with_path_and_broken_agent(&directory, || {
+            crate::cli_tool::resolve_for("skills.init").map_err(|error| error.to_string())
+        });
+        match outcome {
+            Ok(path) => assert_eq!(path, cli, "discovery must return the fixture CLI"),
+            Err(error) => panic!("the fixture CLI must be accepted by discovery: {error}"),
+        }
+        with_path_and_broken_agent(&directory, || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(bootstrap_builtin_skills());
+        });
+        assert!(
+            marker.exists(),
+            "the bootstrap must have executed the CLI's `init`"
+        );
+    }
+
+    /// A failed install is reported and then ignored: the phone can still
+    /// install skills from its own page, and a server must not refuse to start
+    /// because the catalogue fetch failed.
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_builtin_skill_bootstrap_is_ignored() {
+        let root = tempfile::tempdir().unwrap();
+        let marker = root.path().join("init-ran");
+        let directory = root.path().join("bin");
+        cli_fixture(&directory, &marker, "printf 'boom\\n' >&2; exit 3");
+        with_path_and_broken_agent(&directory, || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            // Must return normally: a non-zero exit may not become a startup
+            // failure by any route.
+            runtime.block_on(bootstrap_builtin_skills());
+        });
+        assert!(
+            marker.exists(),
+            "the CLI ran and failed, as the fixture says"
+        );
+    }
+
+    /// No usable CLI means the step is skipped with a diagnostic, not a panic
+    /// and not a startup failure.
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_cli_skips_the_builtin_skill_bootstrap() {
+        let empty = tempfile::tempdir().unwrap();
+        with_path_and_broken_agent(empty.path(), || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(bootstrap_builtin_skills());
+        });
+    }
+
+    /// A key the platform still accepts short-circuits the whole login flow:
+    /// `ensure_login` must return without ever asking for a terminal, so a
+    /// server that is already authorized starts unattended.
+    #[test]
+    fn an_accepted_platform_key_needs_no_terminal() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("headless-login-ok");
+        let (url, server) = mock_http_server(200, r#"{"email":"operator@example.com"}"#);
+        crate::auth_store::set_future_login("sekret", &format!("{url}/api")).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime
+            .block_on(ensure_login(&Options::default()))
+            .expect("an accepted key must not require an interactive terminal");
+        let _ = server.join();
+    }
+
+    /// A platform that rejects the stored key is named as such, and the entry
+    /// point then stops at the terminal requirement it cannot satisfy headless.
+    #[test]
+    fn a_rejected_platform_key_is_reported_as_expired_authorization() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("headless-login-401");
+        let (url, server) = mock_http_server(401, r#"{"message":"expired"}"#);
+        crate::auth_store::set_future_login("sekret", &format!("{url}/api")).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let error = runtime
+            .block_on(ensure_login(&Options::default()))
+            .expect_err("a redirected login must fail");
+        assert!(
+            error.to_string().contains("interactive terminal"),
+            "a rejected key falls through to the terminal requirement: {error}"
+        );
+        let _ = server.join();
+    }
+
+    /// A network failure while checking the profile is not a logout: the key
+    /// must survive, and the error must reach the operator.
+    #[test]
+    fn a_network_failure_while_checking_the_platform_login_is_not_a_logout() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("headless-login-net");
+        crate::auth_store::set_future_login("sekret", "http://127.0.0.1:1/api").unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let error = runtime
+            .block_on(ensure_login(&Options::default()))
+            .expect_err("an unreachable platform must be an error");
+        assert!(
+            error
+                .to_string()
+                .contains("Failed to fetch account profile"),
+            "{error}"
+        );
+        assert_eq!(
+            crate::auth_store::read()
+                .unwrap()
+                .get("future")
+                .and_then(|future| future.get("key"))
+                .and_then(|key| key.as_str()),
+            Some("sekret"),
+            "a network failure must never discard the stored key"
+        );
+    }
+
+    /// Minimal single-response HTTP server for the profile check.
+    fn mock_http_server(status: u16, body: &'static str) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            // Bounded accept: a request that never arrives must not leave this
+            // thread (and the test's `join`) blocked for the whole run.
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut request = [0_u8; 4096];
+                        let _ = stream.read(&mut request);
+                        let response = format!(
+                            "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                        let _ = stream.flush();
+                        return;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => return,
+                }
+            }
+        });
+        (url, handle)
+    }
+
+    /// Persistent malformed replies stop the wait instead of looping until the
+    /// authorization code expires, and the message says why.
+    #[tokio::test(start_paused = true)]
+    async fn login_wait_gives_up_after_persistent_malformed_replies() {
+        let error = wait_for_login(Duration::from_secs(1), Duration::from_secs(600), || async {
+            Ok(future_login::FutureLoginPoll {
+                status: "malformed".into(),
+                message: None,
+                retry_after_seconds: None,
+            })
+        })
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("invalid responses"), "{error}");
+    }
+
+    /// A malformed reply is backed off like any transient failure — the next
+    /// poll has to wait the doubled interval, not hammer the server.
+    #[tokio::test(start_paused = true)]
+    async fn login_wait_backs_off_after_a_malformed_reply() {
+        let started = tokio::time::Instant::now();
+        let mut replies = ["malformed", "authorized"].into_iter();
+        wait_for_login(Duration::from_secs(1), Duration::from_secs(600), || {
+            let status = replies.next().unwrap().to_string();
+            async move {
+                Ok(future_login::FutureLoginPoll {
+                    status,
+                    message: None,
+                    retry_after_seconds: None,
+                })
+            }
+        })
+        .await
+        .unwrap();
+        // 1s (first interval) + 2s (the transient interval a malformed reply sets).
+        assert_eq!(started.elapsed(), Duration::from_secs(3));
+    }
+
+    /// An invitation that cannot be encoded gets the link-only fallback instead
+    /// of an error: the operator still has to be able to authorize.
+    #[test]
+    fn an_unencodable_invitation_falls_back_to_the_link() {
+        let link = "x".repeat(8_000);
+        let text = invitation_text("PLATFORM LOGIN", &link, true, Some(80));
+        assert!(text.contains("Cannot render a QR code"), "{text}");
+        assert!(text.contains(&link), "the link must still be printable");
+    }
+
+    /// A non-`v2` (or foreign) pairing code is not offered as an invitation: the
+    /// terminal must not hand a user something the app cannot consume.
+    #[test]
+    fn pairing_link_rejects_codes_that_are_not_v2_invitations() {
+        let mut status = remote::RemoteStatus {
+            client: None,
+            phase: remote::RemotePhase::Ready,
+            reason: None,
+            recovery: None,
+            agent_available: true,
+            nats_url: String::new(),
+            pair_id: "pair".into(),
+            pairing_code: Some("futureos://remote/pair?v=1&code=a".into()),
+            pairing_code_expires_at: Some(unix_seconds() + 300),
+            desktop_id: "desktop_test".into(),
+            desktop_public_key: "UTEST".into(),
+            web_url: None,
+            web_lan_url: None,
+            warning_code: None,
+        };
+        assert!(pairing_link(&status).is_none(), "v1 is not offered");
+        status.pairing_code = Some("futureos://elsewhere/pair?v=2".into());
+        assert!(
+            pairing_link(&status).is_none(),
+            "a foreign host is not offered"
+        );
+        status.pairing_code = Some("https://example.com/device?v=2".into());
+        assert!(
+            pairing_link(&status).is_none(),
+            "a foreign scheme is not offered"
+        );
+        status.pairing_code = Some("not a url".into());
+        assert!(
+            pairing_link(&status).is_none(),
+            "an unparseable code is not offered"
+        );
+        status.pairing_code = None;
+        assert!(pairing_link(&status).is_none(), "nothing to offer");
+        status.pairing_code = Some("futureos://remote/pair?v=2&code=a".into());
+        status.agent_available = false;
+        assert!(
+            pairing_link(&status).is_none(),
+            "an unavailable Agent is not offered"
+        );
+    }
+
+    /// The invitation writer is the one place the terminal prints pairing or
+    /// authorization material; with `--no-qr` it must print the link itself.
+    #[test]
+    fn print_invitation_writes_the_link_and_the_qr_only_when_asked() {
+        let options = Options {
+            no_qr: true,
+            re_pair: false,
+        };
+        print_invitation(
+            "PLATFORM LOGIN",
+            "https://example.com/device?code=ABCD",
+            &options,
+        )
+        .expect("writing to the test's captured stdout must succeed");
+        let options = Options {
+            no_qr: false,
+            re_pair: false,
+        };
+        print_invitation(
+            "PLATFORM LOGIN",
+            "https://example.com/device?code=ABCD",
+            &options,
+        )
+        .expect("the QR rendering path must not fail");
+    }
 }

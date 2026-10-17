@@ -43,3 +43,34 @@ pub(crate) fn report(message: &str) {
         mirror.write_stripped(&format!("FutureOS: {message}\n"));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A host with no resolvable CLI still starts logging: the missing tool is
+    /// *reported* through the log and the version line is written either way, so
+    /// an uninstalled CLI never fails the launch. Whether `cli_tool::resolve()`
+    /// succeeds is what selects the arm, so the fixture pins it instead of
+    /// leaving this line at the mercy of the host's PATH.
+    #[test]
+    fn a_host_without_a_resolvable_cli_still_starts_logging() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("host-start-logging");
+        let empty = tempfile::tempdir().expect("an empty directory to search");
+        // A PATH to restore is a precondition of this fixture, not a branch: the
+        // `None` arm would be a line no run executes.
+        let saved = std::env::var_os("PATH").expect("this host has a PATH to restore");
+        // The test rebuild's candidates are the executable's own directory and
+        // PATH; neither holds a `future` here (the dev fallbacks are
+        // `#[cfg(not(test))]`).
+        std::env::set_var("PATH", empty.path());
+        let unresolvable = crate::cli_tool::resolve().is_err();
+        let result = start_logging();
+        std::env::set_var("PATH", saved);
+        assert!(
+            unresolvable,
+            "the fixture needs a host where `future` cannot resolve"
+        );
+        assert!(result.is_ok(), "{result:?}");
+    }
+}

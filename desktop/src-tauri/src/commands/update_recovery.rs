@@ -34,12 +34,23 @@ impl ProgramFingerprint {
         Ok(())
     }
     pub(super) fn capture() -> std::io::Result<Self> {
-        let executable = std::env::current_exe()?;
+        Self::capture_under(std::env::current_exe()?, crate::cli_tool::resolve().ok())
+    }
+    /// `capture` with its two environment probes supplied by the caller: the
+    /// executable whose installation is fingerprinted, and the resolved CLI (or
+    /// `None` when there is none). Splitting them out is what lets a test take a
+    /// fingerprint of a throwaway installation tree instead of the running build
+    /// tree, which is what `capture` itself would hash. The production call site
+    /// and the resulting fingerprint are unchanged.
+    pub(super) fn capture_under(
+        executable: PathBuf,
+        cli: Option<PathBuf>,
+    ) -> std::io::Result<Self> {
         #[cfg(target_os = "macos")]
         let executable = tauri_plugin_updater::extract_path_from_executable(&executable)
             .map_err(std::io::Error::other)?;
         let mut roots = vec![executable];
-        if let Ok(cli) = crate::cli_tool::resolve() {
+        if let Some(cli) = cli {
             let canonical = cli.canonicalize()?;
             if canonical != cli {
                 roots.push(canonical);
@@ -128,5 +139,112 @@ mod tests {
         assert!(!fingerprint.unchanged());
         std::fs::remove_file(file).unwrap();
         assert!(!fingerprint.unchanged());
+    }
+
+    /// A directory is fingerprinted by its mode and a symlink by the path it
+    /// points at, so replacing a link after a failed install is a change.
+    #[cfg(unix)]
+    #[test]
+    fn fingerprinting_records_directories_files_and_symlink_targets() {
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("program");
+        std::fs::write(&program, b"original").unwrap();
+        let link = directory.path().join("current");
+        std::os::unix::fs::symlink(&program, &link).unwrap();
+
+        let mut files = BTreeMap::new();
+        fingerprint(directory.path(), &mut files).unwrap();
+        assert!(files.contains_key(directory.path()));
+        assert!(files.contains_key(program.as_path()));
+        assert_eq!(
+            files.get(link.as_path()).expect("the symlink is recorded"),
+            &program.as_os_str().as_encoded_bytes().to_vec()
+        );
+    }
+
+    /// Anything in the program tree that is neither a file, a directory nor a
+    /// symlink is unknown state: the fingerprint must fail closed rather than
+    /// treat it as intact.
+    #[cfg(unix)]
+    #[test]
+    fn an_unexpected_installation_file_type_fails_closed() {
+        let directory = tempfile::tempdir().unwrap();
+        let pipe = directory.path().join("pipe");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .expect("mkfifo");
+        assert!(status.success());
+
+        let error = match ProgramFingerprint::from_roots(vec![pipe]) {
+            Ok(_) => panic!("a FIFO in the program tree is not a program file"),
+            Err(error) => error,
+        };
+        assert!(error
+            .to_string()
+            .contains("Unexpected installation file type"));
+    }
+
+    /// `capture_under` fingerprints the installation it is *given* — the whole
+    /// point of the parameter, since `capture`'s own tree is the running build
+    /// directory. The captured fingerprint is then a real contract: it stays
+    /// `unchanged()` until a byte of the program changes.
+    #[test]
+    fn capture_under_fingerprints_the_installation_it_is_given() {
+        let directory = tempfile::tempdir().unwrap();
+        // A macOS bundle shape, so the platform extraction resolves a root
+        // *above* the executable rather than the executable itself.
+        let macos = directory
+            .path()
+            .join("FutureOS.app")
+            .join("Contents")
+            .join("MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        let executable = macos.join("futureos");
+        std::fs::write(&executable, b"the desktop binary").unwrap();
+        let cli = directory.path().join("future-cli");
+        std::fs::write(&cli, b"the cli binary").unwrap();
+
+        let fingerprint =
+            ProgramFingerprint::capture_under(executable.clone(), Some(cli.clone())).unwrap();
+        assert!(
+            fingerprint.files.contains_key(&executable),
+            "the program itself is fingerprinted: {:?}",
+            fingerprint.files.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            fingerprint
+                .files
+                .keys()
+                .any(|root| executable.starts_with(root)),
+            "the fingerprint carries the installation root, not just the file"
+        );
+        assert!(fingerprint.unchanged(), "a fresh capture is intact");
+
+        std::fs::write(&executable, b"a tampered desktop binary").unwrap();
+        assert!(
+            !fingerprint.unchanged(),
+            "a changed installation is no longer the captured one"
+        );
+    }
+
+    /// A CLI probe that failed contributes no root: the fingerprint is only the
+    /// program the updater is about to replace.
+    #[test]
+    fn capture_under_without_a_cli_fingerprints_only_the_program() {
+        let directory = tempfile::tempdir().unwrap();
+        let install = directory.path().join("install");
+        std::fs::create_dir_all(&install).unwrap();
+        let executable = install.join("futureos");
+        std::fs::write(&executable, b"the desktop binary").unwrap();
+        let absent_cli = directory.path().join("future-cli");
+        std::fs::write(&absent_cli, b"the cli binary").unwrap();
+
+        let fingerprint = ProgramFingerprint::capture_under(executable, None).unwrap();
+        assert!(
+            !fingerprint.files.contains_key(&absent_cli),
+            "a probe that returned nothing is not a root"
+        );
+        assert!(fingerprint.unchanged());
     }
 }

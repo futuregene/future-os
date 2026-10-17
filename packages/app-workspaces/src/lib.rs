@@ -331,11 +331,18 @@ pub fn chat_workspaces_root() -> Result<PathBuf, Error> {
 /// Whether a cwd is a chat scratch directory (the agent-side spelling of the
 /// app's own scratch root). A tilde spelling counts, as does a Windows one.
 pub fn is_chat_directory(cwd: &str) -> bool {
+    is_chat_directory_at(cwd, chat_workspaces_root())
+}
+
+/// [`is_chat_directory`] with the scratch root injected. A root that cannot be
+/// resolved (no usable FutureOS home) is not a chat directory: claiming one
+/// would move a project's conversation into a scratch directory nobody owns.
+fn is_chat_directory_at(cwd: &str, root: Result<PathBuf, Error>) -> bool {
     if cwd.is_empty() {
         return false;
     }
     let cwd = cwd.replace('\\', "/");
-    let Ok(root) = chat_workspaces_root() else {
+    let Ok(root) = root else {
         return false;
     };
     let prefix = format!(
@@ -877,6 +884,99 @@ mod tests {
 
     /// Ids are opaque, but they keep the desktop's shape: prefix, local time,
     /// three random bytes — and two ids never collide.
+    /// A cwd that cannot be classified against a root must never be classified
+    /// as a scratch directory: "the home is unknown" is not "it is a chat".
+    #[test]
+    fn a_cwd_is_not_a_chat_directory_when_the_home_cannot_be_resolved() {
+        assert!(!is_chat_directory_at(
+            "/home/user/.future/workspaces/chat/sess-1",
+            Err(Error::Invalid(
+                "HOME/USERPROFILE environment variable is not set.".into()
+            ))
+        ));
+        // The empty cwd is refused before the root is even considered.
+        assert!(!is_chat_directory_at(
+            "",
+            Ok(chat_workspaces_root().expect("the test host has a home"))
+        ));
+        // And a real root still classifies its own children.
+        let root = chat_workspaces_root().expect("the test host has a home");
+        assert!(is_chat_directory_at(
+            &root.join("sess-1").display().to_string(),
+            Ok(root.clone())
+        ));
+        assert!(!is_chat_directory_at(
+            &std::env::temp_dir().join("project").display().to_string(),
+            Ok(root)
+        ));
+    }
+
+    /// Workspace identity is the canonical directory when it exists, and the
+    /// given spelling when it does not — a workspace may be stored before its
+    /// directory is created, and it must still be one row.
+    #[test]
+    fn identity_falls_back_to_the_given_spelling_for_a_missing_directory() {
+        let dir = temp_dir("normalize");
+        let canonical = dir.canonicalize().expect("canonicalize");
+        assert_eq!(normalize_path(&dir), canonical);
+        // The same directory, spelled one level deeper and through `.`/`..`.
+        let spelled = dir.join(".").join("..").join(dir.file_name().unwrap());
+        assert_eq!(
+            normalize_path(&spelled),
+            canonical,
+            "an existing directory resolves to one identity however it is spelled"
+        );
+
+        let missing = dir.join("not-there");
+        assert_eq!(
+            normalize_path(&missing),
+            missing,
+            "a directory that does not exist keeps the spelling it was given"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Windows canonicalization returns the extended-length spelling; the crate
+    /// stores the ordinary one. The rule is purely textual, so it is the same
+    /// rule on every platform.
+    #[test]
+    fn the_verbatim_prefix_is_stripped_from_both_drive_and_unc_spellings() {
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(r"\\?\UNC\server\share\dir")),
+            PathBuf::from(r"\\server\share\dir")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(r"\\?\D:\projects\app")),
+            PathBuf::from(r"D:\projects\app")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from("/tmp/project")),
+            PathBuf::from("/tmp/project"),
+            "a POSIX path is a no-op"
+        );
+    }
+
+    /// A store that cannot be read must say why and keep the cause reachable:
+    /// the CLI prints these messages and the desktop renders them.
+    #[test]
+    fn every_error_variant_renders_its_cause_and_keeps_it_as_its_source() {
+        let sqlite_message = Error::Database(rusqlite::Error::InvalidQuery).to_string();
+        let sqlite = Error::from(rusqlite::Error::InvalidQuery);
+        assert_eq!(sqlite.to_string(), sqlite_message);
+        assert!(std::error::Error::source(&sqlite).is_some());
+
+        let io = Error::from(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "denied",
+        ));
+        assert!(io.to_string().contains("denied"), "{io}");
+        assert!(std::error::Error::source(&io).is_some());
+
+        let invalid = Error::Invalid("no home".into());
+        assert_eq!(invalid.to_string(), "no home");
+        assert!(std::error::Error::source(&invalid).is_none());
+    }
+
     #[test]
     fn new_id_keeps_the_shared_shape_and_does_not_repeat() {
         let id = new_id("ws");

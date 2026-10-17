@@ -94,9 +94,74 @@ fn configure_environment() {
 
 #[cfg(test)]
 mod tests {
+    /// Suppressing the macOS activity log is an *effect*, and the function is
+    /// compiled into the test build on purpose (`cfg(any(feature = "gui", test))`),
+    /// so assert the effect instead of only taking its address: a launch that
+    /// stopped applying it would otherwise stay green.
     #[test]
-    fn configure_environment_is_available() {
-        // Do not detach the test runner's console.
-        let _: fn() = super::configure_environment;
+    fn configure_environment_suppresses_macos_activity_logs() {
+        std::env::remove_var("OS_ACTIVITY_MODE");
+        super::configure_environment();
+        #[cfg(target_os = "macos")]
+        assert_eq!(std::env::var("OS_ACTIVITY_MODE").as_deref(), Ok("disable"));
+        #[cfg(not(target_os = "macos"))]
+        assert!(std::env::var("OS_ACTIVITY_MODE").is_err());
+    }
+
+    /// The sandbox helper is dispatched from `main` before any Desktop or
+    /// headless state is built, and a refused request must be *reported* rather
+    /// than swallowed — the exit code and the stderr line are the contract the
+    /// sandbox host checks. The flag is Linux-only, so on Linux the same argv
+    /// would run the real helper (agent/src/cli.rs:213-218); the refusal asserted
+    /// here is every other platform's behaviour, which is why this test is gated.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn a_sandbox_helper_request_is_dispatched_before_any_startup() {
+        let home = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(launcher_binary("futureos"))
+            .arg("--linux-sandbox-helper")
+            .arg("probe")
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .env("FUTURE_HOME", home.path().join(".future"))
+            .env_remove("FUTURE_AGENT_SOCKET")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run the graphical entry point");
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(
+            stderr.contains("Linux sandbox helper is unavailable on this platform"),
+            "{stderr}"
+        );
+        assert!(output.stdout.is_empty(), "{stderr}");
+        // Dispatch happens before the data directory is resolved or created.
+        assert!(!home.path().join(".future").exists());
+    }
+
+    /// The binary cargo built next to this test harness. The integration tests
+    /// reach the same artifact through `CARGO_BIN_EXE_*`, a variable cargo only
+    /// defines for integration targets; a unit test inside the bin gets the path
+    /// from its own location instead (`<target>/<profile>/deps/<test-bin>` →
+    /// `<target>/<profile>/<name>`), which is the layout `cargo test` uses.
+    ///
+    /// Requires the package's normal test build: `cargo test` builds the bins
+    /// because `tests/headless_cli.rs` exists, but `cargo test --bin futureos`
+    /// alone does not.
+    #[cfg(not(target_os = "linux"))]
+    fn launcher_binary(name: &str) -> std::path::PathBuf {
+        let path = std::env::current_exe()
+            .expect("the test harness path")
+            .parent()
+            .and_then(|deps| deps.parent())
+            .expect("the cargo profile directory")
+            .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+        let expected = path.display().to_string();
+        assert!(
+            path.is_file(),
+            "expected the built launcher at {expected} (run `cargo test` for the package)"
+        );
+        path
     }
 }

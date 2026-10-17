@@ -1400,7 +1400,10 @@ mod tests {
     /// whitelist stays read-and-add, so the fixture's `init`/`commit`/`branch`
     /// calls live here instead of in a builder.
     fn git_in(dir: &Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
+        // Pinned: `git` is resolved from the standard locations, not from the
+        // process-global `PATH`, which a peer test in this binary swaps while it
+        // runs (see `test_env::absolute_tool` and `docs/testing/flaky-tui.md` §13).
+        let out = std::process::Command::new(crate::test_env::absolute_tool("git"))
             .arg("-C")
             .arg(dir)
             .args(args)
@@ -1420,11 +1423,11 @@ mod tests {
     fn location(path: &str) -> String {
         let slashed = path.replace('\\', "/");
         let stripped = slashed.strip_prefix("//?/").unwrap_or(slashed.as_str());
-        if cfg!(windows) {
-            stripped.to_ascii_lowercase()
-        } else {
-            stripped.to_string()
-        }
+        #[cfg(windows)]
+        let normalized = stripped.to_ascii_lowercase();
+        #[cfg(not(windows))]
+        let normalized = stripped.to_string();
+        normalized
     }
 
     /// A throwaway repository with one commit on `main`, removed on drop.
@@ -1473,7 +1476,12 @@ mod tests {
     #[test]
     fn real_git_lists_creates_and_reports_a_worktree() {
         let repo = TempRepo::new();
-        let cli = GitCli::new();
+        // Pinned: this test spawns the real `git` and does not take the env lock,
+        // so a peer test's `PATH` swap (autocomplete's completion stubs) must not
+        // decide whether the spawn succeeds. Measured: with the bare name this
+        // pair fails 2 of 2 whenever it runs beside `components::autocomplete`
+        // (see `docs/testing/flaky-tui.md` §13).
+        let cli = GitCli::with_program(crate::test_env::absolute_tool("git"));
         let cwd = repo.path();
 
         // A fresh repository: one worktree, on the branch just created, clean.
@@ -1529,7 +1537,8 @@ mod tests {
     #[test]
     fn real_git_attaches_a_branch_that_already_exists() {
         let repo = TempRepo::new();
-        let cli = GitCli::new();
+        // Pinned for the same reason as the test above.
+        let cli = GitCli::with_program(crate::test_env::absolute_tool("git"));
         // A branch with no worktree of its own (cut by hand, as the fixture).
         git_in(&repo.root, &["branch", "feat/taken"]);
 

@@ -1,5 +1,19 @@
 # Module: `desktop-tauri` (`desktop/src-tauri`)
 
+> **Record form: prose-only, declared 2026-10-16 (user gate `todo_6a850a842666`, answered
+> "prose-only, and say so in the final report").** This is a **round-1 record** from the previous
+> coverage campaign. It carries **no machine-readable per-line ledger**: `250` table rows, **3**
+> `path:LINE` citations in the whole document, and **0** rows whose first cell is a claim shape.
+> So `reconcile.py`'s MISSING half reports it as mostly-missing and its STALE half has nothing to read —
+> a property of this record's **form**, not a defect, and deliberately not repaired: measured, adding
+> claim-shaped rows here would **invent** claims rather than recover them
+> (`.future/cov100/LEDGER-REWORK.md`, `blindrework.py`).
+>
+> **This round's per-line guarantee for the same subtrees lives in:** the four round-2 src-tauri records (module-tauri-appdata.md, -shell.md, -headless.md, -remote.md).
+> The final report classifies every module as *machine-checkable* or *prose-only*; this one is
+> **prose-only**, and its historical numbers are kept as history rather than re-verified this round.
+
+
 Status: **not at target**. Measured line coverage **94.2945 % (46771/49601)**
 with **2830 uncovered lines in 104 files** (the gate's metric — see §2). This
 document is a *progress ledger plus plan*, not a completed waiver ledger: rows

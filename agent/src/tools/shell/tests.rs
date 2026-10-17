@@ -28,6 +28,13 @@ fn validates_single_command_before_approval() {
         json!({"command":"echo a","escalated":true}),
         json!({"command":"x".repeat(65_537)}),
         json!({"command":"echo a","justification":"x".repeat(131_072)}),
+        // Over the justification ceiling but under the serialized-input ceiling,
+        // so it reaches the justification bound rather than the size bound.
+        json!({"command":"echo a","justification":"x".repeat(2_049)}),
+        // Escalation and a file grant are mutually exclusive: an approved
+        // escalation applies to the whole command, and must not be mixed with
+        // a per-path grant the approval card would then have to describe.
+        json!({"command":"echo a","escalated":true,"justification":"needed","additional_permissions":{"read":[]}}),
     ] {
         assert!(validate(&args).is_err(), "{args}");
     }
@@ -540,4 +547,154 @@ async fn recovery_executes_only_remaining_work_inside_sandbox() {
         let (_, later) = capture(execute(json!({"command": format!("printf later > '{}'", file.display())}))).await;
         assert!(later.unwrap().is_error, "the grant must not persist into another call");
     }).await;
+}
+
+/// A cancelled approval gate recorded in the scope must outrank the process
+/// status the attempt reports: the user stopped the call, so the projected
+/// verdict is `Cancelled` even though the command itself exited.
+#[tokio::test]
+async fn cancelled_gate_outcome_outranks_the_process_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, facts) = with_workspace_scope(
+        dir.path().to_string_lossy().into_owned(),
+        "all".into(),
+        capture(async {
+            record_gate_outcome("cancelled");
+            execute(json!({"command":"echo hi"})).await
+        }),
+    )
+    .await;
+    let facts = facts.unwrap();
+    assert_eq!(facts.approval.as_deref(), Some("cancelled"));
+    assert_eq!(facts.status, ShellStatus::Cancelled);
+}
+
+/// JSON escaping can expand a bounded raw payload past the 1 MiB result
+/// budget on its own (each C0 control byte becomes `\u0001`), so the result
+/// path must re-truncate the recorded attempts rather than emit a document
+/// the transport rejects. `\x01` is escaped as 6 bytes, so 200 000 raw bytes
+/// serialize to about 1.2 MiB.
+#[cfg(unix)]
+#[tokio::test]
+async fn json_escaping_expansion_is_retruncated_to_the_result_budget() {
+    let facts = captured(json!({"command":"head -c 200000 /dev/zero | tr '\\0' '\\001'"})).await;
+    let attempt = &facts.attempts[0];
+    assert_eq!(attempt.status, ShellStatus::Exited);
+    assert!(
+        attempt.output_truncated,
+        "the escaped payload must be halved"
+    );
+    assert!(attempt.output.len() <= 100_000);
+    assert!(serde_json::to_vec(&facts).unwrap().len() <= 1_048_576);
+}
+
+/// The workspace string is echoed into every result as `cwd`; a workspace whose
+/// JSON form exceeds the documented metadata budget is refused before any
+/// process is spawned, so the model never receives a truncated workspace. The
+/// path uses C0 control bytes because serde escapes each of them to six bytes,
+/// which crosses the 262 144-byte budget with a 44 000-character path.
+#[tokio::test]
+async fn oversized_workspace_metadata_is_refused_before_execution() {
+    let oversized = "\u{1}".repeat(44_000);
+    assert!(serde_json::to_string(&oversized).unwrap().len() > 262_144);
+    let error = with_workspace_scope(oversized, "all".into(), async {
+        execute(json!({"command":"echo hi"}))
+            .await
+            .unwrap_err()
+            .to_string()
+    })
+    .await;
+    assert!(error.contains("result budget"), "{error}");
+}
+
+/// A call whose total budget is already spent (a shared deadline in the past)
+/// must be refused before any process is launched: the model gets the typed
+/// "budget exhausted" verdict instead of a command that runs with no budget.
+/// The deadline is set on the call rather than through `execute`, which
+/// installs its own deadline scope for the requested timeout.
+#[tokio::test]
+async fn an_exhausted_total_budget_refuses_before_launching() {
+    let dir = tempfile::tempdir().unwrap();
+    let expired = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .expect("the monotonic clock is past its first second");
+    let error = with_workspace_scope(
+        dir.path().to_string_lossy().into_owned(),
+        "all".into(),
+        DEADLINE.scope(expired, async {
+            run_shell("echo changed > done", 10, false, "")
+                .await
+                .unwrap_err()
+                .to_string()
+        }),
+    )
+    .await;
+    assert!(
+        error.contains("Total execution budget exhausted"),
+        "{error}"
+    );
+    assert!(!dir.path().join("done").exists());
+}
+
+/// A sandboxed shell run through the tool: the wrapper is announced, the command
+/// executes inside the sandbox, and the process facts reach the result.
+///
+/// Portable by construction rather than by `#[cfg]`: the guard is a *runtime
+/// measurement* (`wraps_shell()`), so the same body runs under seatbelt here and —
+/// on Linux — drives the **helper-report** wiring in `spawn_shell_impl`, the branch
+/// that exists only when the resolved backend is `LinuxBubblewrap`
+/// (`expects_report`; see the module record's §6.2). A `#[cfg(target_os = "linux")]`
+/// twin would be uncompilable on this host (the crate's build scripts need a Linux
+/// `cc`), so this test is the form that can be *verified* here and still measure
+/// those lines on a Linux runner.
+#[allow(clippy::await_holding_lock)] // HOME is process-global during policy resolution.
+#[tokio::test(flavor = "current_thread")]
+async fn a_sandboxed_run_announces_the_wrapper_and_reports_process_facts() {
+    let _home_guard = crate::test_support::home_env_lock();
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_string_lossy().into_owned();
+    let sandbox = ResolvedSandbox::resolve(
+        &crate::sandbox::SandboxPolicy {
+            tier: crate::sandbox::SandboxTier::Sandbox,
+            model_reviewer: false,
+        },
+        &workspace,
+    );
+    if !sandbox.wraps_shell() {
+        // No OS sandbox on this host: the wiring is measured where one exists.
+        eprintln!("skipping the sandboxed-run test: no OS sandbox backend on this host");
+        return;
+    }
+    let announced = Arc::new(Mutex::new(Vec::new()));
+    let seen = announced.clone();
+    let command = "printf 'sandboxed-%s' ok";
+    let (result, facts) = with_tool_scope(
+        ScopeOptions {
+            workspace,
+            permission_level: "all".into(),
+            interrupt_flag: Arc::new(AtomicBool::new(false)),
+            sandbox: Arc::new(sandbox),
+            escalation: None,
+            on_sandboxed: Some(Arc::new(move |command: &str| {
+                seen.lock().push(command.to_string());
+            })),
+        },
+        capture(execute(json!({"command": command}))),
+    )
+    .await;
+    let facts = facts.expect("a shell run records its process facts");
+    assert!(
+        !facts.is_error,
+        "a benign sandboxed command must not be reported as an error: {:?}",
+        facts.attempts
+    );
+    assert_eq!(facts.exit_code, Some(0), "{:?}", facts.attempts);
+    assert_eq!(facts.status, ShellStatus::Exited);
+    let output = result.expect("a benign sandboxed command must succeed");
+    assert!(output.contains("sandboxed-ok"), "{output}");
+    assert_eq!(
+        announced.lock().as_slice(),
+        [command],
+        "the sandboxed path must be announced exactly once, with the command it wraps"
+    );
 }

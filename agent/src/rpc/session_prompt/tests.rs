@@ -2182,6 +2182,70 @@ async fn prompt_journal_loss_marks_run_persistence_degraded() {
     assert!(degraded, "journal loss marked the run persistence_degraded");
 }
 
+/// Run completion asks for journal compaction only after draining the writer's
+/// pending batch, and a drain that fails must not stop the run from finishing or
+/// from asking for compaction — its failure is reported instead.
+///
+/// The guard that decides this reads the journal's *health*, so reaching the
+/// warning needs a drain that fails **while the journal is still healthy**. That
+/// combination cannot be provoked from the outside: every way a live drain fails
+/// (a dead worker, a store that cannot commit the batch) makes an *append* fail
+/// first, and an append failure marks the journal unhealthy — which takes the
+/// guard's other branch and never reaches the warning. So the drain error is
+/// armed through the broadcaster's test-only fail point, exactly as the existing
+/// append-failure tests arm theirs, and what this test asserts is the behaviour
+/// around the warning: the run finishes, the transcript is intact, the journal is
+/// not marked unhealthy by a drain failure, and compaction is still requested.
+#[tokio::test(flavor = "current_thread")]
+async fn a_failed_journal_drain_before_compaction_still_finishes_the_run() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("drained late")]),
+        "drain-failure",
+    );
+    let mut session = fixture.session;
+    // Armed before the run: it is consumed by the completion-time drain, which
+    // happens once per run, after every append has already succeeded.
+    session.broadcaster.fail_next_flush();
+    session.prompt("hi", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+
+    // The run finished with its reply, and the failed drain did not mark the
+    // journal unhealthy — the difference between a drain failure and a storage
+    // failure, and the reason the guard let the drain run at all.
+    assert_eq!(
+        session.messages.read().last().unwrap().text(),
+        "drained late"
+    );
+    assert!(
+        session.runtime.snapshot().is_none(),
+        "a failed drain must not leave the run active"
+    );
+    assert!(
+        session.broadcaster.persistence_error().is_none(),
+        "an injected drain failure is not reported as a journal health failure"
+    );
+
+    // The drain's failure did not skip the compaction that follows it: the run's
+    // journal is compacted into a snapshot, which is what the request produces.
+    let store = session.session_manager.storage().unwrap();
+    let run_id = session.broadcaster.current_run_id();
+    let mut compacted = false;
+    for _ in 0..300 {
+        if store
+            .replay_page("s1", &run_id, -1, false, None)
+            .is_ok_and(|page| page.snapshot.is_some())
+        {
+            compacted = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        compacted,
+        "compaction must still be requested after a failed drain"
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn prompt_mid_run_append_failure_heals_via_full_rewrite() {
     let gate = Arc::new(tokio::sync::Notify::new());
@@ -2676,6 +2740,38 @@ fn persist_user_message_with_empty_history_takes_slow_path() {
     assert!(!loaded.entries.is_empty());
 }
 
+/// The creator identity reaches the persisted `session_info` on **both** write
+/// paths — the user-message persistence at the run's start (`persist_user_message`,
+/// ~1617) and the end-of-turn persistence inside `prompt_internal`'s blocking
+/// commit task (~1178) — and each is gated on the identity being non-empty, so
+/// neither line had ever executed. The existing provenance test sets
+/// `cmd.creator_id` and asserts the *in-memory* session
+/// (`new_session_honors_explicit_id_cwd_model_level_and_provenance`), and nothing
+/// had ever run a prompt on a session carrying one.
+#[tokio::test(flavor = "current_thread")]
+async fn a_run_records_the_creator_identity_on_both_persistence_paths() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("done")]),
+        "creator-identity",
+    );
+    let mut session = fixture.session;
+    session.creator_id = "desktop-creator-1".to_string();
+    session.prompt("hi", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+
+    let loaded = session.session_manager.load("s1").unwrap();
+    let info = loaded
+        .entries
+        .iter()
+        .find(|entry| entry.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO)
+        .expect("the run must persist its session info");
+    assert_eq!(
+        info.content.as_ref().unwrap()["creator_id"],
+        "desktop-creator-1",
+        "the creator identity must survive both persistence paths"
+    );
+}
+
 #[test]
 fn rewrite_snapshot_reinserts_compaction_checkpoints() {
     use crate::compaction::{CompactionTrigger, ContextCheckpoint};
@@ -2970,4 +3066,148 @@ async fn sandboxed_notifier_broadcasts_tool_sandboxed_for_the_run() {
     assert_eq!(published["command"], "printf sandboxed-run");
     gate.notify_one();
     wait_for_run_end(&session).await;
+}
+
+/// A run whose policy asks the *automatic* reviewer to gate commands rebuilds
+/// the run gate (`ApprovalGate::for_run`) instead of reusing the session's, and
+/// a credential is present so the reviewer policy survives the account policy.
+///
+/// A sandbox-wrapped plain shell command is auto-allowed (the OS sandbox is the
+/// protection), so the gate is only *consulted* for a file-permission request —
+/// which needs approval even when the shell is wrapped. That request is reviewed
+/// automatically: an assessment is broadcast, no human request is parked, and a
+/// review that cannot reach a verdict refuses the command.
+///
+/// `TestHome::new()` takes the process-global HOME lock itself and holds it for
+/// its lifetime — taking `home_env_lock()` first *and* then constructing a
+/// `TestHome` self-deadlocks (`std::sync::Mutex` is not reentrant). That is what
+/// an earlier attempt at this test hung on; do not add the extra guard.
+#[cfg(target_os = "macos")]
+#[allow(clippy::await_holding_lock)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_automatic_reviewer_policy_reviews_a_sandboxed_run_without_asking_the_user() {
+    if !crate::sandbox::platform_sandbox_available() {
+        return;
+    }
+    let home = crate::test_support::TestHome::new();
+    // A reviewer that is reachable and answers "server error" at once, so the
+    // review completes fast (and fails: no verdict is reachable).
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let mut scratch = [0u8; 4096];
+            let _ = socket.read(&mut scratch).await;
+            let _ = socket
+                .write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await;
+            let _ = socket.shutdown().await;
+        }
+    });
+    std::fs::create_dir_all(home.path().join(".future/agent")).unwrap();
+    std::fs::write(
+        home.auth_path(),
+        format!(
+            r#"{{"future":{{"type":"api_key","key":"fixture-key","base_url":"http://127.0.0.1:{port}"}}}}"#
+        ),
+    )
+    .unwrap();
+    assert!(
+        crate::system_one::endpoint().is_some(),
+        "the fixture credential must resolve to an endpoint, or the account policy strips the reviewer"
+    );
+
+    let target_dir = tempfile::tempdir().unwrap();
+    let target = target_dir.path().join("report.txt");
+    std::fs::write(&target, "old").unwrap();
+    let command = format!("printf new > '{}'", target.display());
+    let provider = ScriptedProvider::new(vec![
+        Script::Events(vec![
+            tool_start_event(
+                "reviewed-call",
+                "shell",
+                serde_json::json!({
+                    "command": command,
+                    "additional_permissions": {
+                        "write": [{"path": target, "scope": "file", "reason": "Save the report the user asked for"}]
+                    }
+                }),
+            ),
+            tool_end_event(),
+            finish_event(),
+        ]),
+        text_turn("done"),
+    ]);
+    let fixture = run_fixture(provider, "run-auto-review");
+    let workspace = fixture.workspace().to_path_buf();
+    let mut session = fixture.session;
+    // An "ask" rule on the target directory is what makes the write need
+    // approval at all.
+    std::fs::create_dir_all(workspace.join(".future")).unwrap();
+    std::fs::write(
+        workspace.join(".future/approval_rule.json"),
+        serde_json::json!({"rules": [{"path": target_dir.path(), "access": "write", "action": "ask"}]})
+            .to_string(),
+    )
+    .unwrap();
+    session.set_sandbox_policy(crate::sandbox::SandboxPolicy {
+        tier: crate::sandbox::SandboxTier::Sandbox,
+        model_reviewer: true,
+    });
+    let mut events = session.broadcaster.subscribe();
+    session
+        .prompt("create the report", &[], &[], None, None)
+        .unwrap();
+
+    // The review happens inside the tool call, so bound the wait on the
+    // assessment rather than on the whole run.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut assessed = None;
+    let mut seen: std::collections::BTreeMap<String, u32> = Default::default();
+    while std::time::Instant::now() < deadline {
+        while let Ok(event) = events.try_recv() {
+            *seen.entry(event.event_type.clone()).or_insert(0) += 1;
+            match event.event_type.as_str() {
+                "approval_assessment" => assessed = Some(event.data.clone()),
+                "approval_request" => panic!("an automatic policy must not ask the user"),
+                _ => {}
+            }
+        }
+        if assessed.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let assessment = assessed.unwrap_or_else(|| {
+        panic!(
+            "the run must review the file-permission request through the automatic gate; \
+             events seen: {seen:?}, messages: {:?}",
+            session
+                .messages
+                .read()
+                .iter()
+                .map(|message| (
+                    message.role.clone(),
+                    message.text().chars().take(80).collect::<String>()
+                ))
+                .collect::<Vec<_>>()
+        )
+    });
+    // The reviewer answered 500, so the policy refuses instead of running: the
+    // command did not touch the file, and the refusal is reported in the
+    // assessment the client receives.
+    assert!(
+        assessment.contains("review_error") || assessment.contains("stderr"),
+        "a failed review is reported as a review error: {assessment}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "old",
+        "a command whose review failed must not run"
+    );
+    assert!(
+        session.approval_gate.pending_for_session("s1").is_empty(),
+        "an automatic policy never parks a human request"
+    );
 }

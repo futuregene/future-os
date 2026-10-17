@@ -1,4 +1,45 @@
 use super::*;
+
+#[test]
+fn an_unknown_choice_is_a_review_error_and_never_an_approval() {
+    // The classifier must answer with a label from the catalogue it was given;
+    // a label outside it is a review error, not a silent deny or allow.
+    for (risk, authorization, reason) in [
+        ("catastrophic", "high", "routine_bounded_action"),
+        ("low", "root", "routine_bounded_action"),
+        ("low", "high", "made_up_reason"),
+    ] {
+        let verdict = decide(assessment(risk, authorization, reason));
+        assert_eq!(
+            verdict.status,
+            ReviewStatus::ReviewError,
+            "{risk}/{authorization}/{reason}"
+        );
+        assert_eq!(verdict.error_code.as_deref(), Some("invalid_choice"));
+        assert!(!verdict.approved());
+        assert!(verdict.reported.is_none());
+    }
+}
+
+#[test]
+fn every_status_code_has_its_wire_spelling() {
+    for (status, wire) in [
+        (ReviewStatus::Approved, "approved"),
+        (ReviewStatus::Rejected, "rejected"),
+        (ReviewStatus::ReviewUncertain, "review_uncertain"),
+        (ReviewStatus::ReviewError, "review_error"),
+        (ReviewStatus::Cancelled, "cancelled"),
+        (ReviewStatus::StaleRequest, "stale_request"),
+    ] {
+        assert_eq!(status.as_str(), wire);
+        assert_eq!(
+            serde_json::to_value(status).unwrap(),
+            serde_json::json!(wire),
+            "the event/journalled spelling is the same code"
+        );
+    }
+}
+
 #[test]
 fn matrix_and_reason_invariants_are_deterministic() {
     for (ri, (risk, _)) in RISKS.iter().enumerate() {

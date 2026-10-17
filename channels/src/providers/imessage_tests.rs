@@ -472,12 +472,30 @@ mod supported {
 
     // ─── chat.db against a real sqlite3 ──────────────────────────────────
 
+    /// The `date` value (Apple epoch, nanoseconds) for a row the poll loop must
+    /// still deliver.
+    ///
+    /// `macos::run_polling` takes its watermark from *its own* `now` when the
+    /// loop starts (so enabling the channel does not replay the whole history),
+    /// and the SQL keeps only rows strictly newer than it. A fixture row must
+    /// therefore be stamped ahead of the moment the loop starts, or it is
+    /// indistinguishable from history and nothing is ever delivered — which is
+    /// exactly what the three polling tests below were asserting against when
+    /// this fixture stamped a fixed date (Apple epoch 812464800 = 2026-09-30)
+    /// and the loop's watermark was "today".
+    ///
+    /// A minute of headroom is far beyond any spawn/schedule delay between
+    /// building the fixture and the loop reading its watermark.
+    fn fresh_row_apple_ns() -> i64 {
+        (crate::bridge::dedup::now_ms() + 60_000 - APPLE_EPOCH_OFFSET_MS) * 1_000_000
+    }
+
     /// Build a minimal chat.db fixture with one inbound and one outbound
     /// message, plus one textless row the poll must skip.
     fn fixture_db(label: &str) -> std::path::PathBuf {
         let dir = crate::test_support::temp_dir(label);
         let db = dir.join("chat.db");
-        let apple_ns: i64 = 812_464_800_000_000_000;
+        let apple_ns: i64 = fresh_row_apple_ns();
         let sql = format!(
             "CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);\
              CREATE TABLE message (ROWID INTEGER PRIMARY KEY, handle_id INTEGER, text TEXT, date INTEGER, is_from_me INTEGER);\
@@ -665,6 +683,17 @@ mod supported {
                 .all(|line| line.contains("Cannot reach the agent")),
             "{sent:?}"
         );
+        // …and the two rows that were delivered are the two inbound ones:
+        // answering the own-send row (103, same handle as 101) would make the
+        // first conversation appear twice.
+        let mut conversations: Vec<String> =
+            sender.sent_to().into_iter().map(|(id, _)| id).collect();
+        conversations.sort();
+        assert_eq!(
+            conversations,
+            vec!["+15551234567".to_string(), "buddy@example.com".to_string()],
+            "only rows 101 and 102 may be delivered"
+        );
     }
 
     #[tokio::test]
@@ -721,6 +750,11 @@ mod supported {
         // Only the allowlisted handle's row became a prompt; row 102
         // (buddy@example.com) was filtered by the allowlist.
         assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(
+            sender.sent_to()[0].0,
+            "+15551234567",
+            "the allowlisted handle is the one that may be answered"
+        );
     }
 
     #[tokio::test]
@@ -792,7 +826,7 @@ mod supported {
         // A row whose JOIN finds no handle must be skipped, not answered.
         let dir = crate::test_support::temp_dir("imsg-nohandle");
         let db = dir.join("chat.db");
-        let apple_ns: i64 = 812_464_800_000_000_000;
+        let apple_ns: i64 = fresh_row_apple_ns();
         let sql = format!(
             "CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);\
              CREATE TABLE message (ROWID INTEGER PRIMARY KEY, handle_id INTEGER, text TEXT, date INTEGER, is_from_me INTEGER);\
@@ -860,11 +894,21 @@ mod supported {
 
     #[derive(Default)]
     struct PollRecordingSender {
-        sent: std::sync::Mutex<Vec<String>>,
+        sent: std::sync::Mutex<Vec<(String, String)>>,
     }
 
     impl PollRecordingSender {
         fn sent(&self) -> Vec<String> {
+            self.sent
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(_, text)| text.clone())
+                .collect()
+        }
+
+        /// (conversation id, text) in delivery order.
+        fn sent_to(&self) -> Vec<(String, String)> {
             self.sent.lock().unwrap().clone()
         }
     }
@@ -877,10 +921,13 @@ mod supported {
 
         async fn send_text(
             &self,
-            _conversation: &ConversationRef,
+            conversation: &ConversationRef,
             text: &str,
         ) -> Result<Option<String>> {
-            self.sent.lock().unwrap().push(text.to_string());
+            self.sent
+                .lock()
+                .unwrap()
+                .push((conversation.id.clone(), text.to_string()));
             Ok(None)
         }
     }

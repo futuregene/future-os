@@ -687,6 +687,20 @@ pub fn plan_reset(entries: &[SessionEntry], selectors: &ResetSelectors) -> Resul
 #[path = "reset_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[allow(clippy::type_complexity)]
+static RESET_RACE_HOOK: parking_lot::Mutex<Option<(String, Box<dyn Fn(&super::Manager) + Send>)>> =
+    parking_lot::Mutex::new(None);
+
+/// Test-only hook fired by `reset_history` in the window between the digest it
+/// captured and the rewrite transaction that re-reads the history — the one
+/// place a concurrent writer can slip in. It makes that race deterministic
+/// instead of hoping for one, so the refusal path is tested rather than assumed.
+#[cfg(test)]
+pub(crate) fn set_reset_race_hook(session: &str, hook: Box<dyn Fn(&super::Manager) + Send>) {
+    *RESET_RACE_HOOK.lock() = Some((session.to_string(), hook));
+}
+
 /// Result of one reset call: the plan that was computed (and, when applied, the
 /// plan that was written), plus where the lossless backup went.
 #[derive(Debug)]
@@ -724,6 +738,16 @@ impl super::Manager {
             });
         }
         let digest = super::compaction_ops::canonical_hash(&serde_json::Value::Array(raw.clone()))?;
+        #[cfg(test)]
+        {
+            // Id-gated so unrelated resets never consume the hook.
+            let mut slot = RESET_RACE_HOOK.lock();
+            if matches!(slot.as_ref(), Some((sid, _)) if sid == id) {
+                if let Some((_, hook)) = slot.take() {
+                    hook(self);
+                }
+            }
+        }
         let backup = self.write_reset_backup(id, selectors, &planned.plan, &raw)?;
         let plan = self.storage()?.reset_transcript(id, &digest, selectors)?;
         // The display projection cache is keyed by transcript revision, which

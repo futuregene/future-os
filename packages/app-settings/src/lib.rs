@@ -887,7 +887,7 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         let previous_future_home = std::env::var_os("FUTURE_HOME");
         std::env::remove_var("FUTURE_HOME");
-        let previous_home = std::env::var("HOME").ok();
+        let previous_home = std::env::var_os("HOME");
         let root = tempfile::tempdir().expect("tempdir");
         std::env::set_var("HOME", root.path());
 
@@ -920,14 +920,8 @@ mod tests {
         );
         drop(conn);
 
-        match previous_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
-        match previous_future_home {
-            Some(value) => std::env::set_var("FUTURE_HOME", value),
-            None => std::env::remove_var("FUTURE_HOME"),
-        }
+        restore_env("HOME", previous_home);
+        restore_env("FUTURE_HOME", previous_future_home);
     }
 
     #[test]
@@ -936,8 +930,8 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         let previous_future_home = std::env::var_os("FUTURE_HOME");
         std::env::remove_var("FUTURE_HOME");
-        let previous_home = std::env::var("HOME").ok();
-        let previous_profile = std::env::var("USERPROFILE").ok();
+        let previous_home = std::env::var_os("HOME");
+        let previous_profile = std::env::var_os("USERPROFILE");
         let root = tempfile::tempdir().expect("tempdir");
 
         std::env::set_var("HOME", root.path());
@@ -970,17 +964,140 @@ mod tests {
         std::env::set_var("USERPROFILE", "");
         assert!(app_dir().is_err(), "no usable home must be an error");
 
-        match previous_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
+        restore_env("HOME", previous_home);
+        restore_env("USERPROFILE", previous_profile);
+        restore_env("FUTURE_HOME", previous_future_home);
+    }
+
+    /// Restore one environment variable to exactly what a test found: a value
+    /// it had, or its absence. Both arms are the contract these tests rely on,
+    /// so the helper is exercised for each instead of depending on whatever the
+    /// ambient environment happens to hold for the run.
+    fn restore_env(name: &str, previous: Option<std::ffi::OsString>) {
+        match previous {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
         }
-        match previous_profile {
-            Some(value) => std::env::set_var("USERPROFILE", value),
-            None => std::env::remove_var("USERPROFILE"),
+    }
+
+    #[test]
+    fn the_environment_restore_helper_puts_back_a_value_and_an_absence() {
+        const PROBE: &str = "FUTURE_APP_SETTINGS_RESTORE_PROBE";
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+
+        std::env::set_var(PROBE, "set by the test");
+        restore_env(PROBE, None);
+        assert!(
+            std::env::var_os(PROBE).is_none(),
+            "a variable that was absent must be absent again"
+        );
+
+        std::env::set_var(PROBE, "clobbered");
+        restore_env(PROBE, Some("original".into()));
+        assert_eq!(std::env::var(PROBE).unwrap(), "original");
+        std::env::remove_var(PROBE);
+    }
+
+    /// A settings reader has to survive a broken store: the error must render
+    /// the underlying failure and keep it reachable as its source, because
+    /// callers (including the desktop's IPC layer) show the message to a user.
+    #[test]
+    fn every_error_variant_renders_its_cause_and_keeps_it_as_its_source() {
+        let sqlite_message = Error::Database(rusqlite::Error::InvalidQuery).to_string();
+        let sqlite = Error::from(rusqlite::Error::InvalidQuery);
+        assert_eq!(sqlite.to_string(), sqlite_message);
+        assert!(std::error::Error::source(&sqlite).is_some());
+
+        let inner = serde_json::from_str::<i32>("nope").expect_err("invalid json");
+        let expected = inner.to_string();
+        let json = Error::from(inner);
+        assert_eq!(json.to_string(), expected);
+        assert_eq!(
+            std::error::Error::source(&json)
+                .expect("the json failure stays reachable")
+                .to_string(),
+            expected
+        );
+
+        let io = Error::from(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "denied",
+        ));
+        assert!(io.to_string().contains("denied"), "{io}");
+        assert!(std::error::Error::source(&io).is_some());
+
+        // A rejected value is written for a user and has no cause to chain.
+        let invalid = Error::Invalid("Unsupported title language".into());
+        assert_eq!(invalid.to_string(), "Unsupported title language");
+        assert!(std::error::Error::source(&invalid).is_none());
+    }
+
+    /// `future desktop settings set` prints `accepted()` as its help, so it has
+    /// to be true: every value it advertises must be accepted by the parser,
+    /// and the parser must reject what is not advertised.
+    #[test]
+    fn every_value_kind_documents_exactly_what_it_accepts() {
+        let documented: [(ValueKind, &[&str]); 3] = [
+            (ValueKind::Bool, &["true", "false"]),
+            (ValueKind::Tier, &["off", "manual", "sandbox", "auto"]),
+            (ValueKind::Language, &["en", "zh"]),
+        ];
+        for (kind, accepted) in documented {
+            for value in accepted {
+                assert!(
+                    kind.accepted().contains(value),
+                    "{value:?} is accepted but not documented as {:?}",
+                    kind.accepted()
+                );
+                assert!(
+                    kind.parse(value).is_ok(),
+                    "{value:?} is documented as accepted but rejected"
+                );
+            }
         }
-        match previous_future_home {
-            Some(value) => std::env::set_var("FUTURE_HOME", value),
-            None => std::env::remove_var("FUTURE_HOME"),
+        assert!(ValueKind::Models.accepted().contains("JSON array"));
+        assert!(ValueKind::Models.parse(r#"["future/x"]"#).is_ok());
+        assert!(
+            ValueKind::Tier.parse("permissive").is_err(),
+            "an undocumented tier must not be accepted"
+        );
+        assert!(ValueKind::Language.parse("fr").is_err());
+        assert!(ValueKind::Bool.parse("yes").is_err());
+    }
+
+    /// Every optional field of an update is written, including the title
+    /// contract. A field added to the struct but missing from `apply` would
+    /// silently never persist, which is what this test watches for.
+    #[test]
+    fn apply_persists_the_title_contract_and_the_remaining_switches() {
+        let conn = conn();
+        let updated = apply(
+            &conn,
+            &UpdateAppSettingsInput {
+                auto_title_first_turn: Some(false),
+                skill_recommend: Some(false),
+                bell_on_complete: Some(false),
+                title_language: Some("zh".into()),
+                ..Default::default()
+            },
+            3,
+        )
+        .expect("apply");
+        assert!(!updated.auto_title_first_turn);
+        assert_eq!(updated.title_language, "zh");
+        assert!(!updated.skill_recommend);
+        assert!(!updated.bell_on_complete);
+        for (key, value) in [
+            (KEY_AUTO_TITLE_FIRST_TURN, "false"),
+            (KEY_TITLE_LANGUAGE, "zh"),
+            (KEY_SKILL_RECOMMEND, "false"),
+            (KEY_BELL_ON_COMPLETE, "false"),
+        ] {
+            assert_eq!(
+                read_value(&conn, key).expect("read row"),
+                Some(value.to_string()),
+                "{key} must be persisted by apply"
+            );
         }
     }
 

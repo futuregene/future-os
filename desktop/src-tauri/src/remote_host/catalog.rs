@@ -520,4 +520,25 @@ mod tests {
         assert_eq!(first["version"]["revision"], 2);
         assert_eq!(first["version"]["epoch"], "source");
     }
+
+    /// A snapshot that is not a list has nothing to strip, so both signatures
+    /// describe the same shape: the structural signature must not claim a
+    /// change the publisher would then send as "content moved".
+    #[test]
+    fn a_snapshot_that_is_not_a_list_has_one_signature() {
+        let (whole, structural) = row_signatures(&json!({"sessions": "not a list"}));
+        assert_eq!(whole, structural);
+        assert_eq!(whole, json!({"sessions": "not a list"}).to_string());
+
+        // A list still gets its recency stripped from the structural form, and
+        // only from that one.
+        let (whole, structural) = row_signatures(&json!([
+            {"sessionId": "s1", "lastMessageAt": 7},
+        ]));
+        assert!(whole.contains("lastMessageAt"));
+        assert!(
+            !structural.contains("lastMessageAt"),
+            "the structural signature drops recency: {structural}"
+        );
+    }
 }

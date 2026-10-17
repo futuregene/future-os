@@ -312,4 +312,30 @@ mod tests {
         // so the round-trip is exact rather than merely the same length.
         assert_eq!(request.argv, shell_argv(&command));
     }
+
+    #[test]
+    fn incomplete_probe_receipts_are_refused_before_any_argv_is_built() {
+        // The receipt is the only proof that this plan was compiled against a
+        // bwrap binary the probe accepted. A receipt that is missing its path
+        // or identity, or that reports the binary as unavailable, must never
+        // produce a helper invocation.
+        let mut no_identity = probe();
+        no_identity.identity = None;
+        assert!(matches!(
+            prepare(&no_identity, plan(), "true", &abs("/tmp/work")),
+            Err(LinuxSandboxRunnerError::InvalidProbeReceipt)
+        ));
+        let mut no_path = probe();
+        no_path.path = None;
+        assert!(matches!(
+            prepare(&no_path, plan(), "true", &abs("/tmp/work")),
+            Err(LinuxSandboxRunnerError::InvalidProbeReceipt)
+        ));
+        let mut unavailable = probe();
+        unavailable.available = false;
+        assert!(matches!(
+            prepare(&unavailable, plan(), "true", &abs("/tmp/work")),
+            Err(LinuxSandboxRunnerError::InvalidProbeReceipt)
+        ));
+    }
 }

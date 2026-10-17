@@ -56,3 +56,34 @@ pub(crate) fn parse_tcp_bind(addr: &str) -> Result<(String, u16)> {
     })?;
     Ok((socket.ip().to_string(), socket.port()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// HOME is captured once, at configuration time, and the service refuses to
+    /// run if it moved afterwards: a later `HOME` change would make every path
+    /// this instance reports disagree with where its data actually is.
+    #[test]
+    fn validate_environment_rejects_a_home_that_changed_after_configuration() {
+        // Captured against the ambient HOME, before the isolated one below.
+        let configured = AgentConfig::default();
+        let _isolated = crate::test_support::TestHome::new();
+
+        let error = configured
+            .validate_environment()
+            .expect_err("a moved FutureOS home must be refused");
+        let message = error.to_string();
+        assert!(
+            message.contains("FutureOS home changed"),
+            "the refusal names the problem: {message}"
+        );
+
+        // A config captured against the *current* home validates.
+        let matching = AgentConfig::default();
+        matching
+            .validate_environment()
+            .expect("an unchanged home validates");
+        assert_eq!(matching.future_home(), crate::utils::future_home());
+    }
+}

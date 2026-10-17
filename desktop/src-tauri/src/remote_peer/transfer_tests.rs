@@ -410,6 +410,88 @@ fn the_preview_cache_drops_what_is_old_or_excess() {
     );
 }
 
+/**
+ * A half-written file is not a cache entry, and a cache that cannot be read is
+ * not a failure.
+ *
+ * The first half is what makes the count bound honest: `write_atomically` leaves
+ * a `.part` neighbour while a preview is being written, and counting that as an
+ * entry would evict a *real* preview to make room for a temporary one — the
+ * cache would shrink under a burst of writes and pull the same files again.
+ *
+ * The second half is the pruning contract: this runs on the preview path, where
+ * a cache it cannot read (no home yet, a directory that does not exist) must be
+ * a no-op rather than an error the user's preview would surface. Both are
+ * asserted by their *effect* — the `.part` file survives a prune, and a prune
+ * against a home with no cache directory leaves that state exactly as it found
+ * it.
+ */
+#[test]
+fn the_prune_keeps_a_partial_write_and_tolerates_a_cache_it_cannot_read() {
+    // (1) A `.part` neighbour is not an entry. Scoped, because `HomeGuard` holds
+    // a non-reentrant global lock: a second guard created while the first is
+    // alive would block forever.
+    {
+        let _home = crate::remote::test_support::HomeGuard::new("peer-xfer-preview-part");
+        let root = crate::store::remote_previews_dir().expect("previews dir");
+        std::fs::create_dir_all(&root).expect("create the cache root");
+        let partial = root.join("0123456789abcdef__clipboard.png.part");
+        std::fs::write(&partial, b"half a preview").expect("write the partial file");
+        let real = root.join("fedcba9876543210__clipboard.png");
+        std::fs::write(&real, b"a whole preview").expect("write the real entry");
+
+        transfer::prune_preview_cache();
+
+        assert!(
+            partial.exists(),
+            "a half-written file must not be counted as an entry, and must not be deleted"
+        );
+        assert!(real.exists(), "and the real entry stays");
+        assert_eq!(
+            std::fs::read_to_string(&partial).expect("read the partial file"),
+            "half a preview",
+            "pruning does not rewrite it either"
+        );
+    }
+
+    // (2) A cache directory that does not exist yet is a no-op, not an error.
+    let _home = crate::remote::test_support::HomeGuard::new("peer-xfer-preview-absent");
+    let absent = crate::store::remote_previews_dir().expect("previews dir");
+    assert!(!absent.exists(), "the fixture must start without a cache");
+    transfer::prune_preview_cache();
+    assert!(
+        !absent.exists(),
+        "pruning an absent cache leaves it absent rather than creating or failing on it"
+    );
+}
+
+/// With no home to resolve, the preview cache is not reachable at all and the
+/// prune is a no-op: it must not panic, and it must not create anything. This is
+/// the state the app can be in before its home is resolved (and the reason the
+/// pruning contract is "best effort" rather than a failure the preview would
+/// carry). The environment is process-global, so the global test-home lock is
+/// held — which is exactly what `HomeGuard` exists for — and restored before it
+/// is released.
+#[test]
+fn the_prune_is_a_no_op_when_no_home_can_be_resolved() {
+    let _home = crate::remote::test_support::HomeGuard::new("peer-xfer-preview-no-home");
+    let previous = std::env::var_os("HOME");
+    std::env::remove_var("HOME");
+    std::env::remove_var("USERPROFILE");
+    std::env::remove_var("FUTURE_HOME");
+
+    transfer::prune_preview_cache();
+
+    match previous {
+        Some(value) => std::env::set_var("HOME", value),
+        None => std::env::remove_var("HOME"),
+    }
+    assert!(
+        std::env::var_os("HOME").is_some(),
+        "the fixture must put HOME back"
+    );
+}
+
 #[test]
 fn a_chunk_subject_yields_its_transfer_and_index() {
     assert_eq!(
@@ -580,20 +662,36 @@ async fn a_pull_without_a_connection_is_refused() {
 /// turn up is the host having published somewhere this client is not listening —
 /// a wedged or dead subscription. The pull has to give up on its own rather than
 /// leave the user with a download that never finishes.
+///
+/// The budget for that give-up is passed in here rather than the whole suite
+/// running on a shortened one: production's is 15 s, and a test-only 500 ms was
+/// measured reporting a *lost* publish for a chunk a loaded host had served
+/// (FLAKES.md item 8). This call cannot be affected by that mistake — the stream
+/// task is stopped before the pull starts, so no chunk can arrive at any load —
+/// which is exactly what makes it the right place to exercise the arm.
 #[tokio::test]
 async fn a_chunk_that_never_arrives_gives_up() {
     let (_home, fx) = fixture("peer-xfer-no-chunk").await;
     let desktop_id = fx.paired.creds.desktop_id.clone();
     connect_with_stream(&desktop_id).await;
-    let (_transfer_id, info) = serve(&scratch("no-chunk").join("f.txt"), b"bytes");
+    let (transfer_id, info) = serve(&scratch("no-chunk").join("f.txt"), b"bytes");
+    assert!(
+        info.size > 0 && info.chunk_bytes > 0,
+        "the host must have a chunk to serve for this to be a missing-delivery test"
+    );
 
     // Everything still works except delivery: the host will publish the chunk
     // and acknowledge the pull, and nothing will hand it to the waiter.
     runtime::stop_stream_for_test(&desktop_id).await;
 
-    let error = transfer::fetch(&desktop_id, &info)
-        .await
-        .expect_err("a chunk that never arrives cannot be reported as a download");
+    let error = runtime::pull_chunk_within(
+        &desktop_id,
+        &transfer_id,
+        0,
+        std::time::Duration::from_millis(200),
+    )
+    .await
+    .expect_err("a chunk that never arrives cannot be reported as a download");
     assert!(
         error.to_string().contains("remote_download_chunk_missing"),
         "got: {error}"
@@ -1022,18 +1120,95 @@ async fn a_chunk_write_on_a_dead_socket_is_recorded() {
     // next write on it fails as a transport fault.
     runtime::close_socket_for_test(&desktop_id).await;
 
-    let error = runtime::put_chunk(&desktop_id, "upload_1", 0, b"bytes")
-        .await
-        .expect_err("a dead socket cannot carry a chunk");
+    // A short budget on purpose: the socket is already closed, and what this
+    // test asserts is that the failure is *recorded as a transport fault* — not
+    // how long the client waits for an answer that cannot come. Leaving it on
+    // the fixture budget would make the same assertion take a minute on a
+    // loaded machine.
+    let error = runtime::put_chunk_within(
+        &desktop_id,
+        "upload_1",
+        0,
+        b"bytes",
+        std::time::Duration::from_millis(200),
+    )
+    .await
+    .expect_err("a dead socket cannot carry a chunk");
     assert!(
         !error.to_string().is_empty(),
         "the failure must carry a reason"
     );
 
-    // The connection is no longer believed in, and something is retrying it.
+    // The connection is no longer believed in. (No supervisor assertion here:
+    // this seam removes the session itself, so the call that follows never
+    // reaches `on_transport_failure` — `a_chunk_write_on_a_dropped_broker_is_recorded`
+    // is the test that pins the drop-and-retry arm.)
     assert!(
         !find(&runtime::list().await.expect("list"), &desktop_id).connected,
         "a dead socket must not keep looking connected"
+    );
+    teardown().await;
+}
+
+/// A command that **timed out** does not, by itself, condemn the connection.
+///
+/// The two states are indistinguishable from the caller's seat and they want
+/// opposite responses: a slow host must keep its socket and its subscriptions
+/// (dropping them is what turned a busy host into `peer_not_connected`, the
+/// shape CI reports — `docs/testing/flaky-tauri.md` §13.6.6), while a dead one
+/// must be dropped and retried. So the client asks the transport, and this test
+/// pins the "alive but slow" half against the same `on_transport_failure`
+/// the dead-socket test pins the other half of.
+///
+/// The timeout is induced deterministically rather than by load: the request goes
+/// to a subject **nobody is subscribed to**, which the in-process broker accepts
+/// and cannot answer (it never sends a no-responders header), over a connection
+/// whose socket is fine. Both halves of the discrimination are therefore
+/// asserted: the error is a timeout, and the connection survives it.
+#[tokio::test]
+async fn a_request_that_times_out_keeps_a_connection_that_is_still_up() {
+    let (_home, fx) = fixture("peer-xfer-live-timeout").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    connect_with_stream(&desktop_id).await;
+    assert!(
+        find(&runtime::list().await.expect("list"), &desktop_id).connected,
+        "the fixture must start connected for this to be a timeout test"
+    );
+
+    let error = runtime::request_at(
+        &desktop_id,
+        serde_json::json!({}),
+        // No host subscribes to this: the broker accepts the publish and nothing
+        // answers it, so the request times out with the socket untouched.
+        &format!("p.{}_nobody.cmd.unanswered", fx.pair_id),
+        std::time::Duration::from_millis(200),
+    )
+    .await
+    .expect_err("an unanswered request must fail");
+    assert!(
+        error.to_string().contains("timed out"),
+        "the fixture must produce a timeout for this to be the right arm: {error}"
+    );
+
+    // The connection, and therefore every subscription on it, is still there...
+    assert!(
+        find(&runtime::list().await.expect("list"), &desktop_id).connected,
+        "one slow command must not drop a live connection"
+    );
+    // ...and nothing was started to "recover" a host that never went away.
+    assert_eq!(
+        runtime::supervisor_count().await,
+        0,
+        "a live connection must not get a retry loop"
+    );
+
+    // And the connection still works: the peer answers the next command, which is
+    // the property the old behaviour destroyed (after the timeout it was gone).
+    let (transfer_id, info) = serve(&scratch("live-timeout").join("f.txt"), b"still here");
+    assert_eq!(
+        transfer::fetch(&desktop_id, &info).await.expect("fetch"),
+        b"still here",
+        "the transfer lane must still work after one timed-out command ({transfer_id})"
     );
 
     teardown().await;
@@ -1076,9 +1251,18 @@ async fn a_chunk_write_on_a_dropped_broker_is_recorded() {
     // Sever every connection and stop accepting, under a live session.
     fx.nats.kill();
 
-    let error = runtime::put_chunk(&desktop_id, "upload_1", 0, b"bytes")
-        .await
-        .expect_err("a broker that is gone cannot carry a chunk");
+    // Same short budget as the dead-socket sibling, and for the same reason: the
+    // broker is gone, so the assertion is "the failure is recorded", not "it
+    // took the production budget to notice".
+    let error = runtime::put_chunk_within(
+        &desktop_id,
+        "upload_1",
+        0,
+        b"bytes",
+        std::time::Duration::from_millis(200),
+    )
+    .await
+    .expect_err("a broker that is gone cannot carry a chunk");
     assert!(
         !error.to_string().is_empty(),
         "the failure must carry a reason"
@@ -1087,6 +1271,16 @@ async fn a_chunk_write_on_a_dropped_broker_is_recorded() {
     assert!(
         !find(&runtime::list().await.expect("list"), &desktop_id).connected,
         "a dead socket must not keep looking connected"
+    );
+
+    // This test is the arm that reaches `on_transport_failure` with a session
+    // still in the map — the dead-socket sibling's seam removes it first — so it
+    // is the one that pins "a timeout over a transport that is *actually* down
+    // still drops the connection and starts the retry". The other half of the
+    // discrimination is `a_request_that_times_out_keeps_a_connection_that_is_still_up`.
+    assert!(
+        runtime::supervisor_count().await > 0,
+        "a dropped connection must be retried, not left looking merely idle"
     );
 
     teardown().await;

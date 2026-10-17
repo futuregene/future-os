@@ -360,6 +360,46 @@ mod tests {
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_transient_replace_failure_is_retried_until_the_budget_runs_out() {
+        // The retry exists for the Windows `MoveFileEx` ACCESS_DENIED, which no
+        // unix rename produces — but a *unix* rename into a directory the user
+        // may not write still reports `EACCES`, i.e. the same transient
+        // `PermissionDenied` kind. That drives the retry body here, and the
+        // bounded budget means the failure is reported rather than spun on.
+        //
+        // The temp file lives in its own writable directory because a rename
+        // needs write permission on the destination directory only.
+        use std::os::unix::fs::PermissionsExt;
+        let source = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let pending = tempfile::NamedTempFile::new_in(source.path()).unwrap();
+        let path = destination.path().join("sessions.json");
+        std::fs::set_permissions(destination.path(), std::fs::Permissions::from_mode(0o555))
+            .unwrap();
+
+        let started = std::time::Instant::now();
+        let error = persist_with_retry(pending, &path).expect_err("an unwritable destination");
+        let elapsed = started.elapsed();
+
+        // Restore write permission so the temp dirs can be cleaned up.
+        std::fs::set_permissions(destination.path(), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+
+        let kind = error
+            .downcast_ref::<std::io::Error>()
+            .map(|error| error.kind());
+        assert_eq!(kind, Some(std::io::ErrorKind::PermissionDenied), "{error}");
+        assert!(!path.exists(), "nothing may be published on a refusal");
+        // The retry sleeps between attempts, so a give-up on the first refusal
+        // (the non-transient arm) would come back in well under one delay.
+        assert!(
+            elapsed >= PERSIST_RETRY_DELAY * (PERSIST_RETRIES - 1),
+            "the transient refusal must be retried: {elapsed:?}"
+        );
+    }
+
     #[test]
     fn a_replace_that_cannot_publish_is_reported_not_swallowed() {
         // The write succeeds (the temp file goes in the same parent) but the

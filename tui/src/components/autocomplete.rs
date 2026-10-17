@@ -1287,6 +1287,12 @@ mod tests {
         assert!(provider.r#match("hello world", 11).is_none());
     }
 
+    /// A path completion's value repeats its label verbatim, and its description
+    /// is the empty string for a file or "dir" for a directory.
+    fn is_well_formed_path_item(item: &AutocompleteItem) -> bool {
+        item.value == item.label && matches!(item.description.as_deref(), Some("") | Some("dir"))
+    }
+
     #[test]
     fn file_path_match_refuses_slash_command_context() {
         let provider = FilePathProvider::new(Some("/tmp".into()));
@@ -1306,10 +1312,15 @@ mod tests {
         // closure. Both variables are cleared: Windows shells set no `HOME`
         // and resolve the profile through `USERPROFILE` instead.
         let _g = crate::test_env::lock();
-        let old_home = env::var_os("HOME");
-        let old_userprofile = env::var_os("USERPROFILE");
-        env::remove_var("HOME");
-        env::remove_var("USERPROFILE");
+        // RAII: HOME/USERPROFILE are process-global and this body has 7
+        // panic-capable calls, so a restore at the end would leave both removed
+        // for every *later* test in this binary (`FLAKES.md` §4c; the same rule as
+        // `with_stubbed_path` below, one variable over). Reachable: the home is
+        // resolved by anything that reads the user's `.future` without setting it
+        // (`crate::home`, `tui_settings_path`, the crash log path), and those tests
+        // do not all take `test_env::lock()`.
+        let _home = crate::test_env::EnvVarGuard::remove("HOME");
+        let _userprofile = crate::test_env::EnvVarGuard::remove("USERPROFILE");
 
         // The cwd deliberately contains a file the token would match, so the
         // assertion can tell the two resolutions apart: `~/x` must expand
@@ -1329,17 +1340,38 @@ mod tests {
             !items.iter().any(|item| item.label.contains("x-ray.txt")),
             "a `~` token must not resolve against the cwd: {items:?}"
         );
-        for item in &items {
-            assert_eq!(item.value, item.label);
-            assert!(
-                matches!(item.description.as_deref(), Some("") | Some("dir")),
-                "unexpected description {:?}",
-                item.description
-            );
-        }
+        // Any completion that *did* resolve must be a well-formed path item.
+        assert!(
+            items.iter().all(is_well_formed_path_item),
+            "unexpected path completion shape: {items:?}"
+        );
 
-        restore_env_var("HOME", old_home);
-        restore_env_var("USERPROFILE", old_userprofile);
+        // The same token with a home that exists resolves to it — which is what
+        // makes the empty list above the *fallback's* doing rather than the
+        // provider's, and it runs the item shape on a real listing.
+        // The guard keeps the *removal* above; this nested guard sets HOME for the
+        // second phase and restores on drop — a raw `set_var` here would be the
+        // same leak the first half of this test exists to prevent.
+        let _home_set = crate::test_env::EnvVarGuard::set("HOME", cwd.path());
+        let resolved = provider.get_completions(&AutocompleteContext {
+            text: "~/x".into(),
+            cursor_pos: 3,
+            token: "~/x".into(),
+            token_start: 0,
+        });
+        assert_eq!(
+            resolved
+                .iter()
+                .map(|item| (
+                    item.value.as_str(),
+                    item.label.as_str(),
+                    item.description.as_deref()
+                ))
+                .collect::<Vec<_>>(),
+            vec![("x-ray.txt", "x-ray.txt", Some(""))],
+            "with a home set, `~/x` completes the file inside it"
+        );
+        assert!(resolved.iter().all(is_well_formed_path_item));
     }
 
     #[test]
@@ -1622,8 +1654,9 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let home_str = home.path().to_str().unwrap().to_string();
         std::fs::write(home.path().join("note.txt"), "x").unwrap();
-        let old = env::var_os("HOME");
-        env::set_var("HOME", &home_str);
+        // RAII for the same reason (10 panic-capable calls before the old
+        // restore at the end of this body).
+        let _home = crate::test_env::EnvVarGuard::set("HOME", &home_str);
 
         let provider = FilePathProvider::new(Some("/tmp".into()));
         let ctx = AutocompleteContext {
@@ -1636,7 +1669,6 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert!(items[0].label.ends_with("note.txt"));
 
-        restore_env_var("HOME", old);
         drop(_guard);
 
         // An absolute token outside the cwd keeps its absolute display.
@@ -1690,10 +1722,13 @@ mod tests {
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
         }
-        let old = env::var_os("PATH");
-        env::set_var("PATH", dir.path());
+        // RAII, not a restore at the end of the closure: `PATH` is process-global
+        // and a panic here would otherwise leave this stub directory as the whole
+        // `PATH` for every *later* test in this binary (`FLAKES.md` §4c, item 27:
+        // one leaked `PATH` produced 27 cascading failures). The lock above
+        // serialises the tests that take it; it does not put the value back.
+        let _path = crate::test_env::EnvVarGuard::set("PATH", dir.path());
         f();
-        restore_env_var("PATH", old);
     }
 
     #[cfg(unix)]
@@ -1868,10 +1903,9 @@ mod tests {
             joined.push(PATH_SEPARATOR);
             joined.push_str(&existing.to_string_lossy());
         }
-        env::set_var("PATH", joined);
-        let result = body();
-        restore_env_var("PATH", old);
-        result
+        // RAII for the same reason as `with_stubbed_path`.
+        let _path = crate::test_env::EnvVarGuard::set("PATH", joined);
+        body()
     }
 
     #[cfg(windows)]
@@ -1896,6 +1930,9 @@ mod tests {
     /// separator (a pattern starting with `-` must not be read as a flag).
     #[test]
     fn attachment_completions_run_fd_and_parse_its_stdout() {
+        #[cfg(unix)]
+        let source = argv_echoing_exe().expect("every POSIX system has an argv-echoing `echo`");
+        #[cfg(windows)]
         let Some(source) = argv_echoing_exe() else {
             // No argv-echoing program on this host, so the tool cannot be
             // stubbed and this arm is not observable here (see §waivers in
@@ -1946,6 +1983,38 @@ mod tests {
             items.is_empty(),
             "an empty token completes nothing: {items:?}"
         );
+    }
+
+    /// The `find` fallback, with the provider's cwd applied: `fd` is missing
+    /// from `PATH` entirely, so the second tool is the one that runs — and it
+    /// runs *inside* the cwd the provider was told about (asserted through the
+    /// stub's own `pwd -P`, not through the argv it echoes).
+    #[cfg(unix)]
+    #[test]
+    fn attachment_completions_fall_back_to_find_inside_the_cwd() {
+        let _guard = crate::test_env::lock();
+        let tools = tempfile::tempdir().unwrap();
+        let stub = tools.path().join("find");
+        std::fs::write(&stub, "#!/bin/sh\npwd -P\n").unwrap();
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+
+        // A `PATH` holding the stub and nothing else: `fd` cannot be found, and
+        // the fallback is the only tool left.
+        let items = {
+            // RAII: the closure below can panic (it walks the filesystem), and a
+            // leaked stub `PATH` would reach every later test in this binary.
+            let _path = crate::test_env::EnvVarGuard::set("PATH", tools.path());
+            let mut provider = AttachmentProvider::default();
+            provider.update_state(cwd.path().to_str().unwrap(), &[], &[]);
+            provider.get_completions(&attachment_context("Src"))
+        };
+
+        let expected = std::fs::canonicalize(cwd.path()).unwrap();
+        assert_eq!(items.len(), 1, "the stub prints one line: {items:?}");
+        assert_eq!(items[0].label, expected.display().to_string());
+        assert_eq!(items[0].value, format!("@{}", items[0].label));
     }
 
     /// With neither tool usable the provider reports no completions rather than
@@ -2118,6 +2187,13 @@ mod tests {
     fn reference_provider_offers_nothing_until_sessions_arrive() {
         // The manager falls through to the next provider on an empty list, so a
         // `#` typed before the session list lands must not swallow the trigger.
+        // `default()` is the empty provider (the same value as `new()`), and its
+        // name is the id the popup registers it under.
+        let provider = SessionReferenceProvider::default();
+        assert_eq!(provider.name(), "session-reference");
+        assert!(provider
+            .get_completions(&provider.r#match("#", 1).unwrap())
+            .is_empty());
         let provider = SessionReferenceProvider::new();
         assert!(provider
             .get_completions(&provider.r#match("#", 1).unwrap())

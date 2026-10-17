@@ -16,6 +16,8 @@ pub(crate) mod pairing;
 mod presence;
 pub(crate) mod protocol;
 mod publisher;
+#[cfg(test)]
+mod real_network;
 pub(crate) mod secure;
 pub(crate) mod services;
 mod supervisor;

@@ -1039,9 +1039,10 @@ async fn run_interactive(args: &CliArgs) -> u8 {
             }
             notice = &mut update_check, if !update_checked => {
                 update_checked = true;
-                if let Some(notice) = notice {
-                    app.handle_cmd(UiCmd::UpdateAvailable(notice));
-                }
+                // The arm always runs (once per session); applying the answer is
+                // the app's, so "a notice arrived" is testable on its own
+                // (`App::apply_update_notice`) without a manifest fetch.
+                app.apply_update_notice(notice);
             }
             Some(cmd) = op_rx.recv() => app.handle_cmd(cmd),
             Some(event) = event_rx.recv() => app.handle_agent_event(&event),
@@ -1065,8 +1066,11 @@ async fn run_interactive(args: &CliArgs) -> u8 {
 /// `main()` equivalent — mirrors index.ts's top-level flow and exit codes.
 pub fn run(args: &[String]) -> ExitCode {
     // Restore the terminal + capture evidence on panic, before anything can
-    // enter raw mode / the alternate screen.
-    crate::crash::install();
+    // enter raw mode / the alternate screen. Test builds install nothing: the
+    // hook is a single process-global slot, so a test-build install would replace
+    // libtest's capturing hook and every later panic in the suite would lose its
+    // message — see `crash::install_scoped_for_entry_point`.
+    let _hook = crate::crash::install_scoped_for_entry_point();
 
     let args = match parse_args(args) {
         ParseOutcome::Args(a) => a,
@@ -1219,6 +1223,9 @@ mod tests {
                 true,
             ),
             ("--mode", "json", |a| a.mode.clone(), true),
+            // `-p`/`--print` refuses a following flag or `@file` as its message,
+            // so it is the guarded case: the flag after it still parses.
+            ("-p", "hello", |a| a.messages.first().cloned(), false),
         ];
         for (flag, value, get, consumes_next) in cases {
             let with = args(&[flag, value]);
@@ -1453,23 +1460,57 @@ mod tests {
     }
 
     /// With no mode flags at all, `run` falls through to the interactive TUI.
-    /// A test must **not** drive that: the event loop would talk to a real agent
-    /// and never return. Only the pre-connection path is asserted, and only where
-    /// no console exists — in a redirected runner like CI, `Terminal::new` fails
-    /// and `run` reports 1 instead of entering the loop. Where a console *is*
-    /// available the test declines rather than risk the user's session.
+    /// The loop owns the calling thread, so the test gives it a way out: a PTY
+    /// as stdin, a mock agent behind `--grpc-addr`, and ctrl+c typed through the
+    /// terminal by a driver thread once startup has talked to the agent. A clean
+    /// exit (0) is only reachable through the loop's input arm.
+    #[cfg(unix)]
     #[test]
-    fn run_without_flags_reports_a_missing_console_instead_of_entering_the_loop() {
-        // Drain the injected-failure seam so this probe reflects reality.
-        crate::terminal::FORCE_NEW_FAILURE.swap(false, std::sync::atomic::Ordering::SeqCst);
-        if crate::terminal::Terminal::new().is_ok() {
-            eprintln!(
-                "[skip] a console is available here; the interactive loop must not be \
-                 driven from a test"
-            );
-            return;
-        }
-        assert!(exit_code_is_one(run(&[])));
+    fn run_without_flags_drives_the_interactive_loop_and_exits_cleanly() {
+        let _guard = crate::test_env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let old_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", home.path());
+
+        let mock_rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let addr = mock_rt.block_on(spawn_mock(MockAgent {
+            state_data: "{\"sessionId\":\"s1\"}".into(),
+            events: vec![stream_event("ping", "{}")],
+            hold_open: true,
+            seen_commands: seen.clone(),
+            ..Default::default()
+        }));
+        let pty = PtyStdin::install();
+        let master = pty.master;
+        let driver = std::thread::spawn(move || {
+            // Startup is done once `new_session` and both `get_state` calls
+            // have been received (the same handshake `await_startup_complete`
+            // waits for); then ctrl+c quits the main loop.
+            for _ in 0..400 {
+                let done = {
+                    let seen = seen.lock().unwrap();
+                    let states = seen.iter().filter(|t| *t == "get_state").count();
+                    seen.iter().any(|t| t == "new_session") && states >= 2
+                };
+                if done {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            std::thread::sleep(Duration::from_millis(400));
+            let byte = b"\x03";
+            unsafe { libc::write(master, byte.as_ptr() as *const libc::c_void, 1) };
+        });
+
+        let code = run(&["--grpc-addr".to_string(), addr]);
+        driver.join().unwrap();
+        drop(pty);
+        restore_env("HOME", old_home);
+        assert_eq!(code, ExitCode::SUCCESS);
     }
 
     /// `-p --mode json` with no prompt is the machine-readable path: it must
@@ -2485,6 +2526,68 @@ mod tests {
     }
 
     #[test]
+    fn run_reports_a_list_models_failure_from_the_agent() {
+        let mock_rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // The default mock answers `get_available_models` with an empty body,
+        // which the table cannot parse — so the command fails on a *reachable*
+        // agent. That is the `Err` tail `run_list_models_unreachable_agent`
+        // cannot reach: an endpoint with nothing listening never gets past the
+        // agent supervisor.
+        let addr = mock_rt.block_on(spawn_mock(MockAgent::default()));
+        let code = run(&["--list-models".to_string(), "--grpc-addr".to_string(), addr]);
+        assert_eq!(code, ExitCode::from(1));
+    }
+
+    /// `--print` with no message, against a *reachable* agent: the refusal is
+    /// reported in text mode and stays silent in json mode (the caller parses
+    /// stdout as JSON).
+    #[test]
+    fn run_print_without_a_message_reaches_the_usage_path_with_a_live_agent() {
+        let mock_rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let addr = mock_rt.block_on(spawn_mock(MockAgent::default()));
+        for extra in [vec![], vec!["--mode".to_string(), "json".to_string()]] {
+            let mut argv = vec![
+                "--print".to_string(),
+                "--grpc-addr".to_string(),
+                addr.clone(),
+            ];
+            argv.extend(extra.iter().cloned());
+            assert!(exit_code_is_one(run(&argv)), "{argv:?}");
+        }
+    }
+
+    /// Print mode against a mock that cannot mint a session: `run_print_mode`
+    /// reports the agent's own message and `run` turns it into exit 1 — with
+    /// the message on stderr in text mode, silently in json mode.
+    #[test]
+    fn run_reports_a_print_mode_failure_from_the_agent() {
+        let mock_rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let addr = mock_rt.block_on(spawn_mock(MockAgent {
+            fail_types: HashSet::from(["new_session".to_string()]),
+            ..Default::default()
+        }));
+        for extra in [vec![], vec!["--mode".to_string(), "json".to_string()]] {
+            let mut argv = vec![
+                "-p".to_string(),
+                "hi".to_string(),
+                "--grpc-addr".to_string(),
+                addr.clone(),
+            ];
+            argv.extend(extra.iter().cloned());
+            assert!(exit_code_is_one(run(&argv)), "{argv:?}");
+        }
+    }
+
+    #[test]
     fn run_print_failure_json_mode_stays_quiet() {
         // The error message is suppressed in json mode.
         let code = run(&[
@@ -2891,6 +2994,36 @@ mod tests {
         };
         let mut args = fx.args();
         args.messages = vec!["hello agent".to_string()];
+        let (code, ()) = tokio::join!(run_interactive(&args), driver);
+        fx.finish();
+        assert_eq!(code, 0);
+    }
+
+    /// Without `--offline` the main loop also polls the startup update check
+    /// once (the arm the offline fixtures skip). This build's version is a dev
+    /// build (`0.0.2-<hash><+local>`), which is in no published channel, so
+    /// `update::check` answers immediately and fetches nothing.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // env-var serialization across awaits
+    async fn interactive_polls_the_update_check_when_not_offline() {
+        let _guard = crate::test_env::lock();
+        assert!(
+            !crate::version::is_release()
+                && !crate::version::VERSION.ends_with("+test")
+                && !crate::version::VERSION.ends_with("+nightly"),
+            "a published-channel build ({}) would really fetch the manifest from \
+             a unit test; the check below is only side-effect-free for a \
+             commit-hash build",
+            crate::version::VERSION
+        );
+        let fx = InteractiveFixture::new().await;
+        let driver = async {
+            fx.await_startup_complete().await;
+            fx.pty.write_input("\x03");
+        };
+        let mut args = fx.args();
+        args.offline = false;
         let (code, ()) = tokio::join!(run_interactive(&args), driver);
         fx.finish();
         assert_eq!(code, 0);

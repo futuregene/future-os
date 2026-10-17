@@ -12,6 +12,25 @@ the ledger is `channels/src/policy.rs` (2 lines, both inside `#[cfg(test)] mod
 tests`): its uncovered lines are measured, classified per line in §6, and **no
 product line was touched** to make them look covered.
 
+> **Round 2 (2026-10-16, macOS arm64) is §10** — the section below measured this
+> crate on Windows. §10 re-measured it by per-line LCOV `DA:0` after the cov100
+> campaign's drift and took it from **85 to 24 uncovered lines of 25 740**
+> (99.9068 %), fixed the iMessage fixture defect that had made three macOS-only
+> poll tests red since 2026-09-30, and fixed a process-test harness bug that could
+> hang the test binary forever.
+>
+> **Round 2b (§10.7) is the rework the adversarial review forced.** `rev-ch`
+> (`docs/testing/review-rust.md`, round 2) falsified **16 of the 24 rows** in
+> §10.4 by building an executing counterexample for each in a scratch tree; this
+> pass executed that rework and the crate now reads **8 uncovered lines of
+> 25 841 = 99.9690 %** (`/tmp/chan-lcov-r2rework2.info`, §10.7.1). Every one of
+> the 16 is covered by a test named in §10.7.2; the 8 that stand are re-registered
+> in §10.4, two of them with the corrected reasons the review demanded
+> (`providers/qq.rs` 626, `outbox.rs` 210), and the two categories that the fallen
+> rows had occupied — `attribution-artifact` and `unreachable-in-this-environment`
+> — are now **empty for this crate**. Quote §10.7's numbers for the current state,
+> and §10.4 for the per-line ledger.
+
 ## 1. Measurement
 
 Measurement platform: **Windows 11 (x86-64, MSVC)**, the platform this task runs
@@ -460,6 +479,13 @@ reads too low, with missing files as its only visible fingerprint.
 
 ## 6. Waiver ledger (only defensible entries)
 
+> **Read this with §1's platform note.** The tables below are the **Windows**
+> measurement's ledger. The current macOS per-line ledger — 8 lines — is §10.4,
+> and two rows below (`providers/slack.rs` 934–936 and `transport/webhook.rs`
+> 149–151, both "the environment cannot produce it") are *covered* on macOS since
+> round 2b, because the fixtures that reach them are unix-only and are shipped
+> (§10.7.2). Where the two ledgers disagree, §10.4 and its artifact win.
+
 Format: file + the specific lines, the category, and the reason. "Attribution"
 entries are the repo's third class: a zero region on a line whose statement the
 named test drives — the same mechanism the existing `channels-test-coverage.md`
@@ -545,12 +571,18 @@ predicate was changed to make Windows compile.
 
 ## 8. Next useful checks (priority order)
 
-1. **Drive the session end-of-stream arms** (`providers/slack.rs` 733,
-   `mattermost.rs` 527): call the provider's session against
-   `spawn_ws([SendText(hello), WaitForReceived{count: 1}, ShutdownWrite, Delay(700ms)])`
-   and assert the session reports "closed by the platform/server". The stimulus
-   is deterministic (proved by the drained-close test); this would convert two
-   `unreachable-in-this-environment` lines into covered ones.
+1. ~~**Drive the session end-of-stream arms** (`providers/slack.rs` 733,
+   `mattermost.rs` 527) with
+   `spawn_ws([SendText(hello), WaitForReceived{count: 1}, ShutdownWrite, Delay(700ms)])`.~~
+   **Withdrawn — the step cannot work, as the round-2 review measured.** The
+   session cannot observe `None` before the `Close` message: with `[Close]` alone
+   the stream does not even yield `None` while the peer stays open (the poll
+   pends), `[Close, FIN]` yields `Close` *then* `None` (too late — the loop has
+   already returned), `[FIN]` alone is `Err(ResetWithoutClosingHandshake)`, and a
+   reset is `Err(Connection reset)`. Ten session constructions across both
+   providers all land on the `Close` arm, the read-error arm or a bail. Both rows
+   therefore stay registered as `unreachable-by-construction` with that evidence
+   (§10.4). A next step that promises to cover them would be a false mechanism.
 2. **Windows process-level coverage.** `tests/channel_bin.rs` is one `cfg(unix)`
    away from covering 81 lines of §5a (`lib.rs` 42, `cli.rs` 16, `cli_cmd.rs` 7,
    feishu/dingtalk `mod.rs` 8+8). Windows cannot send `SIGINT` through
@@ -631,3 +663,505 @@ python .future/cov100/verify.py windows-red-baseline future-channel
 The worker proposed a further successor: convert `providers/slack.rs` 733 and `providers/mattermost.rs` 527 (the `Stream::next() -> None` arms, currently waived `unreachable-by-construction`) into real tests using the deterministic `ShutdownWrite` half-close script, and give the two load-flaky tests an event-ordered premise.
 
 **Not created now, deliberately.** It bounds to ~2 lines plus two flakes, while ~4500 uncovered lines remain elsewhere and the binding constraint on this machine is worker count / memory (it has already lost three workers to gRPC timeouts under over-subscription). Creating a task per worker suggestion is a way to stay busy, not to converge. Recorded here so it is not lost; the `ShutdownWrite` mechanism it relies on does exist (`channels/src/test_support.rs`), so it remains cheap to pick up if the line-coverage work finishes with room to spare.
+
+**Resolved in round 2 (§10): the two lines are not reachable.** The proposed
+experiment was run, in both directions — the drained close handshake yields
+`Close` *before* `None` (so the session returns at the arms above 733/527, which
+are covered), and a half-close *without* a close frame is not `None` at all but
+`Err(Protocol(ResetWithoutClosingHandshake))`. Both lines are now registered
+`unreachable-by-construction` with that evidence instead of "reachable, not yet
+driven".
+
+---
+
+## 10. Round 2 (cov100) — macOS re-measurement, 85 → 24 → 8 lines
+
+### 10.1 Run identity
+
+| | value |
+|---|---|
+| revision | `8449acf6` (the campaign baseline, `origin/main` at campaign start), worktree `.worktrees/cov100-r2`, branch `test/cov100-r2`; only `channels/src`, `channels/tests` and the two channel docs were edited |
+| host | macOS 26.6.2, arm64 (Apple silicon); rustc 1.97.0, the toolchain pinned by `rust-toolchain.toml` |
+| metric | per-line LCOV `DA:<line>,0` (口径 A), read with `.future/cov100/covlines.py` — never `summary.lines`, never "statements" |
+| command | `cargo llvm-cov -p future-channel --no-fail-fast --lcov --output-path /tmp/chan-lcov.info -j 4`, with `CARGO_TARGET_DIR=target/cov-channels` (private, deleted the moment the lcov was copied out — PLAN §2 rule 1), `HOME=$PWD/target/test-home` (isolated), `ulimit -n 10240` |
+| scope filter | the report's paths are absolute, so the filter is `--under .worktrees/cov100-r2/channels/src` |
+| the measured artifact | `/tmp/chan-lcov-r2final.info` (= `/tmp/chan-lcov.info`), **1 427 272 B, sha256 `3634680c9c9c6388e8f20b5c4130b7e0fbaaafdfbd9494d67e887077978d634b`**. No file under `channels/` is newer than it (`find channels -newer` is empty), so it describes exactly the sources in HEAD |
+| suite state under measurement | `--lib` **1492 passed / 0 failed** (38.21 s), `tests/channel_bin.rs` **15 passed** (1.75 s), `tests/agent_integration_test.rs` 0 passed / 2 ignored (pre-existing: needs a real agent and model), `src/main.rs` 0 tests. Every target printed `test result: ok` — the precondition for quoting anything (§1 rule 1) |
+| also verified uninstrumented | `cargo test -p future-channel -j 4 --no-fail-fast` in the shared `target/debug` (PLAN §2 rule 3) = **TEST_EXIT=0**, lib 1489 passed, channel_bin 15 passed, on the pre-false-edge sources; the four tests added afterwards are green in both the uninstrumented inner loop and the instrumented run above |
+| before (same command, baseline sources) | **85 uncovered / 25 531 measured = 99.6671 %**, 15 files |
+| after | **24 uncovered / 25 740 measured = 99.9068 %**, 11 files |
+| covered by this pass | 61 of those 85 lines |
+| residual | one row per line in §10.4: 4 `attribution-artifact`, 10 `unreachable-by-construction`, 9 `unreachable-in-this-environment`, 1 `platform-unmeasured`. No guard was deleted, no assertion weakened, nothing `#[ignore]`d, no `--skip` |
+
+Exact totals:
+
+```
+$ python3 .future/cov100/covlines.py total /tmp/chan-lcov-r2final.info --under .worktrees/cov100-r2/channels/src
+covered=25716 measured=25740 uncovered=24 lines%=99.9068
+```
+
+This is the seventh measurement run of the pass and the one the artifact above
+belongs to. The intermediate runs, in order: 85 (baseline) → 85 (first green
+run after the fixture fix; shows the fixture change alone did not move the
+measured line set beyond the poll loop) → 29 → 28 → **24**. Every one of them
+printed `test result: ok` for every target, which is the precondition for
+comparing them at all.
+
+Two things about this metric that matter before comparing runs:
+
+* **`feishu/feishu_ws.rs` 254 moves on its own.** It is the `warn!` inside the
+  pong send, executed only when the pong send wins a race against the read
+  error; its test deliberately tolerates both orderings. It was uncovered in one
+  of this pass's fully green runs and covered in the final one (the artifact
+  above does not contain it, and the file list of the run that did read 13 files
+  instead of 11). A crate total that differs by exactly one line, with this line
+  as the difference, is therefore that race — not a regression. The
+  `unreachable-in-this-environment` group of `channels-test-coverage.md` keeps a
+  row for it so the wobble is not rediscovered as a bug.
+* The numbers above come from a fully green run. A run with a failing lib test
+  still produces a report here, but the lib target's coverage is then
+  incomplete, and comparing such a report against a green one produces phantom
+  "newly uncovered" lines.
+
+### 10.2 What is covered now, and by which test
+
+| file:lines | what the lines do | test that now executes them |
+|---|---|---|
+| `providers/imessage.rs` 464–498 (33 lines) | the whole poll-loop body: row iteration, `newest` watermark, own-send skip, empty-handle skip, allowlist decision, `Inbound` construction, `ctx.handle`, the debug log | `the_poll_loop_delivers_new_rows_and_stops_on_shutdown`, `…_honours_the_sender_allowlist`, `…_skips_rows_without_a_handle`, `…_marks_a_query_failure_and_keeps_polling` — all four were red or vacuous before §10.3(a) |
+| `providers/cli.rs` 362–368 (7) | the `Read` half of the `EndlessLines` test fixture (`pump_lines` reads through `BufRead`, so the pump never reaches it) | `the_endless_reader_mock_honours_the_read_contract` (new; asserts the empty-buffer, one-byte and budget-exhausted behaviour of the fixture itself) |
+| `session_store.rs` 199–202 (4) | the bounded retry body of `persist_with_retry` (decrement, re-arm the temp file, sleep) plus the `remaining == 0` give-up operand | `a_transient_replace_failure_is_retried_until_the_budget_runs_out` (new, unix: a rename into a write-protected directory is `EACCES`, i.e. the `PermissionDenied` kind the retry exists for, so the retry runs 20 times and then reports; asserted by the error kind, the absence of a published file and an elapsed-time floor) |
+| `lib.rs` (was 514) | the `Some(Running)` operand of the started-channels assertion | `up_state_is_claimed_by_both_live_states` (new: both live states and the three dead ones) + the rewritten `_ =>` arm in `starting_publishes_a_state_for_every_channel` |
+| `lib.rs` 386 | the brace closing the status flusher's flush-failure block | `the_status_flusher_publishes_and_then_stops` now lets one 2 s tick pass with a writable path (the healthy bridge's arm) instead of stopping before the first tick |
+| `policy.rs` 427 + the assertion region below it | a `match` arm and a `matches!` region inside two `#[cfg(test)]` tests | `denial()` (new decomposition, both arms driven: a refusal *and* an allowed control) + the mention-gate refusal now asserted by its exact reason string |
+| `feishu/mod.rs` 54, 55, 68 (3), `dingtalk/mod.rs` 56, 57, 70 (3) | the two startup/backoff arms of the reconnect loop | `run_stops_when_shutdown_landed_before_the_agent_connection` (a pre-fired shutdown wins the first `select!`) and `run_retries_the_agent_connection_after_the_backoff_elapses` (one full 20 s backoff is allowed to elapse, so the loop demonstrably comes back around) |
+| `feishu/bridge.rs` 139 | the `break` of the ingress worker when the bridge is already gone | `a_dropped_bridge_ends_its_queued_worker` (new; current-thread runtime so the ordering is deterministic) |
+| `feishu/bridge.rs` 880 | the `?`-error branch of `save_received_file` inside `handle_image_message` | `an_image_that_cannot_be_saved_reports_instead_of_prompting` (new: a regular file where the image directory belongs; asserts the error surfaces and nothing is prompted) |
+| `test_support.rs` 724 | the `WaitForReceived` timeout exit | `a_silent_peer_ends_wait_for_received_at_its_deadline` (new; a client that connects and never speaks, then asserts the script continued) |
+| `feishu/bridge.rs` 933 | the `}` closing the image carve-out of `handle_media_message` | `an_empty_post_falls_through_the_image_carve_out` (new: a `post` with no text and no image element must fall through to the file extraction and no-op — asserted on the agent, the resource download and the replies) |
+| `feishu/prompt_loop.rs` 53 | the `}` closing the reaction cleanup of the pre-stream supersede arm | `a_superseded_turn_without_an_ack_reaction_still_stops_before_prompting` (new: the platform's reaction call failed, so the turn was given no ack id — it must still stop before prompting and send no reaction request) |
+| `providers/slack.rs` 763 | the `}` after the Socket Mode `dispatch_event` | `an_events_envelope_without_a_payload_event_is_acked_and_dropped` (new: acked, and the sender standing untouched proves nothing was dispatched) |
+| `providers/slack.rs` 903 | the `}` after the events-webhook dispatch spawn | the extended `the_events_webhook_verifies_signatures_and_answers_the_challenge` (a signed `event_callback` with no `event` field: 200, and no second acknowledgement) |
+
+### 10.2b Closing the brace-shaped lines: what worked and what did not
+
+Eight of the round-1 residuals were closing braces whose enclosing statements
+already ran. Four of them were closed here by writing a test for the **other
+edge** of the construct, and four were not — the split is measured, not argued:
+
+| line | other edge taken | result |
+|---|---|---|
+| `feishu/bridge.rs` 933 | a `post` with no image element | **covered** |
+| `feishu/prompt_loop.rs` 53 | a superseded turn with no ack reaction id | **covered** |
+| `providers/slack.rs` 763 | an `events_api` envelope with no `payload.event` | **covered** |
+| `providers/slack.rs` 903 | an `event_callback` with no `event` field | **covered** |
+| `feishu/mod.rs` 68, `dingtalk/mod.rs` 70 (also braces) | the backoff elapsing instead of a shutdown arriving | **covered** (earlier in this pass) |
+| `feishu/mod.rs` 111, `dingtalk/mod.rs` 110 | a *clean* WebSocket close (so `retry_delay` is `None`) | **still 0 in round 2 — corrected and covered in round 2b (§10.7.2)**. The edge taken here was the **outer** `if let Some(delay)` false edge, which by construction jumps past the brace's region; the edge the region needs is the **inner** `if wait_or_shutdown(...)` being false — the 5 s backoff *elapsing* — which no test in round 2 allowed (both backoff tests cancel that wait). `run_reconnect_backoff_elapses_and_retries` now lets it elapse: `111 → 1` (`108 → 4` vs `109/110 → 3`). The round-2 verdict "falsified hypothesis, the region is a span end" was wrong in both directions, as `rev-ch` showed. |
+| `providers/qq.rs` 626 | a gateway tick on which the heartbeat is not yet due | **stays uncovered, category and reason corrected (§10.4, §10.7.3).** `rev-ch` built exactly that tick shape (a 30 s interval held open for 600 ms ≈ 11 ticks; `625 → 11` in its control run) and 626 did not move — the hypothesis was refuted by measurement, not left untested. The region is the skip edge of `if let Some(interval) = heartbeat_interval`, which the enclosing `select!` arm's own guard (`if heartbeat_interval.is_some()`) makes impossible to take: guard-guaranteed `unreachable-by-construction`. |
+| `feishu/prompt_loop.rs` 449 | an errored `AgentEnd` with no CardKit card id (streaming off) | **covered in round 2b.** `rev-ch` built the fixture and measured `449 → 1`; this pass ships it as `an_errored_agent_end_without_a_stream_card_still_reports_the_error` (`449 → 1`, neighbours `442–448 → 3`, `450 → 52`). The hypothesis was right and only the fixture was missing. |
+
+### 10.3 Real defects found and fixed
+
+#### (a) The iMessage fixture stamped rows *older* than the poll watermark
+
+`providers/imessage_tests.rs::fixture_db` stamped every row at Apple epoch
+`812464800` = **2026-09-30**, while `macos::run_polling` starts its watermark at
+`now` when the loop starts (`providers/imessage.rs`: *"The watermark starts at
+'now' so enabling the channel does not replay the user's whole history"*) and
+`poll_query` keeps only `m.date > since`. Measured on 2026-10-16 the fixture was
+15 days old, so no row was ever newer than the watermark and nothing was
+delivered:
+
+```
+---- providers::imessage::tests::supported::the_poll_loop_delivers_new_rows_and_stops_on_shutdown stdout ----
+panicked at channels/src/providers/imessage_tests.rs:662:9:
+assertion `left == right` failed: []
+  left: 0
+ right: 2
+```
+
+Three tests failed on clean `main` for that reason (`…_delivers_new_rows…`,
+`…_honours_the_sender_allowlist`, `…_skips_rows_without_a_handle`), and the same
+fixture left 33 lines of the poll loop unexecuted.
+
+**Fix:** `fresh_row_apple_ns()` stamps a fixture row relative to `now`
+(`now_ms() + 60_000`, one minute of headroom for the spawn/schedule gap between
+building the fixture and the loop reading its watermark; the fixture is built
+just before `run_polling` is spawned, and `poll_seconds: 1`). The assertions were
+**kept**, and two of them were tightened so "the intended rows were delivered"
+is actually proven:
+
+* `the_poll_loop_delivers_new_rows_and_stops_on_shutdown` now asserts the
+  *conversations* answered are exactly `{+15551234567, buddy@example.com}`, not
+  just "two replies happened" — row 103 is an own-send row on the same handle as
+  row 101, so a leaked own-send row would show up as a duplicate conversation.
+* `the_poll_loop_honours_the_sender_allowlist` asserts the single answer went to
+  the allowlisted handle.
+
+`PollRecordingSender` records `(conversation id, text)` for that (`sent_to()`),
+so both the count and the recipient are pinned. All four poll tests pass; the
+whole macOS-only module is 40/40 green.
+
+#### (b) The process-test SIGINT harness could hang the test binary forever — two mechanisms
+
+Running the measurement on a loaded machine (load average ~11) showed the six
+`#[cfg(unix)]` SIGINT cases in `channels/tests/channel_bin.rs` "running for over
+60 seconds" and never finishing. Diagnosis, with evidence:
+
+1. **A missed SIGINT waits forever.** The old harness sent exactly one
+   `libc::kill(SIGINT)` after a fixed `sleep(1200 ms)` and then
+   `child.wait()` with **no timeout**. A child that had not yet reached
+   tokio's Ctrl-C listener kept running: `sample <pid>` showed the main future
+   parked in `run_async`'s `block_on` with the runtime idle, and sending a second
+   SIGINT by hand made it exit cleanly — so the first signal was lost, and the
+   test had no way to notice. A whole measurement run could only be unblocked by
+   signalling the children manually.
+2. **A SIGINT that arrives before the listener exists *kills* the child.** The
+   OS handler is installed when `ctrl_c()` is first polled, so a signal in the
+   startup window has the default disposition: the child dies from the signal
+   (`ExitStatus(2)`) instead of shutting down, and the test fails on a child that
+   was simply shot early. A loaded machine widens that window past 1.2 s.
+3. **A terminal-channel child hangs in its *own* shutdown if stdin stays open**
+   (found while fixing 1/2, and independently a real product-shaped bug):
+   `pump_lines` reads stdin on a blocking-pool thread, and `Runtime::drop` waits
+   for that thread. `sample` showed `BlockingPool::shutdown` parked on the stdin
+   read while the Ctrl-C path had already logged `Shutting down…`.
+
+**Fix (test-only, in `channels/tests/channel_bin.rs`):**
+
+* `sigint_until_exit` re-sends SIGINT every 500 ms until the child exits, with a
+  30 s deadline that turns a wedged child into a failure with a message. This is
+  also the product's contract: Ctrl-C is a level-triggered request to stop.
+* `sigint_scenario` retries the whole case with a longer margin (1.2 s → 4.8 s
+  → …) when the child was killed *by* the signal, i.e. when the listener did not
+  exist yet; a child that exits by itself with a non-zero code or fails an
+  assertion is returned on the first attempt, so a regression still fails.
+* the piped stdin handle is closed (`drop(child.stdin.take())`) once the scripted
+  input is written, which is what lets the blocking-pool thread finish.
+* stdout is drained on its own thread so a full pipe cannot wedge the child.
+
+Result: `cargo test -p future-channel --test channel_bin` = **15 passed,
+0 failed, 1.2 s**, on a machine with load average ~10, and the coverage run then
+completes unattended (`COV_EXIT=0`).
+
+### 10.4 Residual uncovered lines (one row per line)
+
+**This is the round-2b ledger: 8 lines.** Line numbers are those of this
+revision; the parenthesised `DA` counts are from the round-2b run
+(`/tmp/chan-lcov-r2rework2.info`, §10.7.1). Every row here is one the adversarial
+review (`rev-ch`, `docs/testing/review-rust.md` round 2) either left standing or
+**corrected** — no row states a mechanism that a counterexample has refuted.
+
+| path:line | category | mechanism / evidence |
+|---|---|---|
+| `providers/imessage.rs` 282 | `platform-unmeasured` | `sender()`'s `!platform_supported()` arm; the predicate is `cfg!(target_os = "macos")` (`imessage.rs` 256–259), a compile-time constant, and this measurement *is* macOS, so no test input can reach the arm — the Windows/Linux build executes it. Nothing in the tree stubs the predicate (`unsupported` is a separate `Maturity::Planned` definition, not a build-mode switch). Unchanged by the review, which confirmed the row as the one category that needed no correction. |
+| `providers/mattermost.rs` 527 | `unreachable-by-construction` | the session's `stream.next() -> None` arm. `None` needs a drained close handshake *and* the peer's FIN, and tungstenite hands the `Close` message to the loop first, which returns at the `Ok(WsMessage::Close(_))` arm (555, covered, `555 → 2`). Measured directly by the review with a raw stream: `[Close]` → `Close(None)` then the poll **pends**; `[Close, FIN]` → `Close(None)` then `None`; `[FIN]` alone → `Err(ResetWithoutClosingHandshake)`; a reset → `Err(Connection reset)`. Ten session constructions (both providers, close/fin/both/ping+reset) all landed on the `Close` arm, the read-error arm (`557 → 6`) or a bail — never here (`526 → 28`). |
+| `providers/slack.rs` 733 | `unreachable-by-construction` | the same argument for Slack's session loop (`732 → 14`, `775` the covered `Close` arm). The review enumerated the call sites and the raw sequences above; the earlier "the premise is reachable but no test drives it" next step is retired as wrong — the *mock* can half-close, but the session cannot observe `None` before the `Close` message. |
+| `providers/qq.rs` 626 | `unreachable-by-construction` | **category and reason corrected by the review.** It is the skip edge of `if let Some(interval) = heartbeat_interval` (`qq.rs` 615–626), and the enclosing `select!` arm's own guard — `_ = tokio::time::sleep(50 ms), if heartbeat_interval.is_some()` (`qq.rs` 612) — means entering the arm implies `Some`, so the false edge cannot be taken. The round-2 row called this `attribution-artifact` and offered the "+a tick where `due` is false" hypothesis; that is **refuted by measurement**: the review took exactly those ticks (30 s interval, 600 ms open ≈ 11 ticks, `625 → 11` in its control) and 626 did not move — and the round-2b run reproduces the shape (`615/616/617 → 56`, `624 → 3`, `625 → 52`, `628 → 109`). The round-2 row also mis-quoted the neighbouring counts (`625 → 54`, `628 → 111`); the frozen artifact reads 52 and 109, and 52 due-false ticks are what it already contained. |
+| `outbox.rs` 210 | `unreachable-by-construction` | the "channel not built" guard in `Outbox::context`. **Reason corrected by the review: this is a data-dependent dead guard, not a type-system impossibility.** `registry::find` returns entries that are all `is_implemented()` and the registry ships no `Planned` channel, so `ensure_usable()` cannot fail on this path while the shipped data is what it is (`209 → 19`, `211 → 19`); the review proved it by *executed enumeration* (every definition in `providers::all_definitions()` is either implemented or absent from the registry, and the absent ones bail one line earlier at 203–208, `208 → 2`). What the guard also is, is a **duplicate**: the same check is covered where a definition can be handed in directly (`lib.rs::entry_action`, `an_enabled_channel_that_is_not_built_is_reported_and_skipped`). |
+| `test_support.rs` 770 | `unreachable-by-construction` | `_ => unreachable!("tests dial plain ws only")` in `kill_write_half`: the mock's sockets are always `MaybeTlsStream::Plain` (`769 → 4`), and the arm exists to fail loudly if that changes. Source-level result only: the review enumerated all three call sites (`slack_tests.rs` 1477/1503, `mattermost_tests.rs` 652) and did **not** build a TLS mock — but the crate does own a real TLS client path (`feishu_ws.rs` 183, `dingtalk_ws.rs` 131 use `crate::tls::ws_connector()`), so the missing piece is a TLS-capable mock server, not a property of the type system. |
+| `feishu/mod.rs` 95, `dingtalk/mod.rs` 94 | `unreachable-by-construction` | the `Ok(())` arm of the connection monitor. `AgentClient::wait_for_disconnect` (`grpc_client.rs` 108–125) drains the stream and then returns `Err(anyhow!("Agent connection closed"))` unconditionally: there is no return statement that yields `Ok(())`, so no stream shape can select the arm. The `Err` twin carries the count (96 / 95 → 1) and the framework's own `an_ended_stream_is_a_disconnect` asserts the error for an ended stream. Both the row and the mechanism **survived** the review. |
+
+Per category: **0 `attribution-artifact`, 7 `unreachable-by-construction`,
+0 `unreachable-in-this-environment`, 1 `platform-unmeasured` = 8.** The two
+categories that the falsified rows had occupied are empty for this crate.
+
+Machine-checkable form of the same set (diff this against `covlines.py detail`):
+
+```
+dingtalk/mod.rs: 94
+feishu/mod.rs: 95
+outbox.rs: 210
+providers/imessage.rs: 282
+providers/mattermost.rs: 527
+providers/qq.rs: 626
+providers/slack.rs: 733
+test_support.rs: 770
+```
+
+```
+$ python3 .future/cov100/covlines.py detail /tmp/chan-lcov-r2rework2.info --under .worktrees/cov100-r2/channels/src
+channels/src/dingtalk/mod.rs: 94 · channels/src/feishu/mod.rs: 95 · channels/src/outbox.rs: 210 ·
+channels/src/providers/imessage.rs: 282 · channels/src/providers/mattermost.rs: 527 ·
+channels/src/providers/qq.rs: 626 · channels/src/providers/slack.rs: 733 · channels/src/test_support.rs: 770
+```
+
+Where the round-2 `attribution-artifact` class went: its four rows were all
+*executable* once the right input was built, not span ends. Seven brace-shaped
+lines of that shape were already closed in round 2 by driving the other edge of
+their construct (`feishu/mod.rs` 68, `dingtalk/mod.rs` 70, `lib.rs` 386,
+`feishu/bridge.rs` 933, `feishu/prompt_loop.rs` 53, `providers/slack.rs` 763/903);
+the remaining three (`feishu/mod.rs` 111, `dingtalk/mod.rs` 110,
+`feishu/prompt_loop.rs` 449) are closed in round 2b by the inputs named in
+§10.7.2, and `qq.rs` 626 turned out not to be a brace-region row at all. §10.7.3
+records what that implies for the vocabulary.
+
+### 10.5 Reproduction
+
+```bash
+# everything below runs in .worktrees/cov100-r2
+ulimit -n 10240
+export PATH=/Users/geilige/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin:$PATH
+export CARGO_HOME=/Users/geilige/.cargo RUSTUP_HOME=/Users/geilige/.rustup
+export HOME=$PWD/target/test-home CARGO_TARGET_DIR=target/cov-channels
+mkdir -p "$HOME"
+df -h . | tail -1           # PLAN §2 rule 4: under 40 GB free, delete your own dir first
+
+# the measurement: one atomic run (build + test + report), must be green, -j 4
+cargo llvm-cov -p future-channel --no-fail-fast --lcov --output-path /tmp/chan-lcov.info -j 4
+# ... the lcov is the artifact; copy it out and drop the 5.5 GB instrumented dir
+cp /tmp/chan-lcov.info /tmp/chan-lcov-r2final.info && rm -rf target/cov-channels
+shasum -a 256 /tmp/chan-lcov-r2final.info   # 3634680c9c9c6388...
+python3 .future/cov100/covlines.py total  /tmp/chan-lcov-r2final.info --under .worktrees/cov100-r2/channels/src
+python3 .future/cov100/covlines.py detail /tmp/chan-lcov-r2final.info --under .worktrees/cov100-r2/channels/src
+# -> covered=25716 measured=25740 uncovered=24 lines%=99.9068
+
+# inner loop, no instrumentation (PLAN §2 rule 3): shared target/debug
+unset CARGO_TARGET_DIR
+cargo test -p future-channel -j 4 --no-fail-fast          # TEST_EXIT=0, 1492 + 15 passed
+
+# the per-line tripwire (the campaign's machine check): every uncovered line must
+# be mentioned, and no cited line may have become covered
+python3 .future/cov100/reconcile.py --label channels \
+  --report /tmp/chan-lcov-r2final.info \
+  --scope /Users/geilige/future-os/.worktrees/cov100-r2/channels/src \
+  --doc docs/testing/module-channels.md --section "Round 2 (cov100)"
+# -> files with uncovered lines=10 uncovered lines=24 / mentioned: 24 / MISSING: 0  (exit 0)
+# the same check against the policy page:
+python3 .future/cov100/reconcile.py --label channels-arch \
+  --report /tmp/chan-lcov-r2final.info \
+  --scope /Users/geilige/future-os/.worktrees/cov100-r2/channels/src \
+  --doc docs/architecture/channels-test-coverage.md \
+  --section "Uncovered lines in the framework"
+# -> MISSING: 0  (exit 0)
+
+# the defect this pass is named for: three macOS-only tests, green
+cargo test -p future-channel --lib providers::imessage
+
+# the process tests that used to hang (see §10.3(b)); 15 passed, ~1-6 s
+cargo test -p future-channel --test channel_bin
+```
+
+Two things about that tripwire worth knowing, both hit while running it here:
+
+* It groups by **basename**, so `feishu/mod.rs` and `dingtalk/mod.rs` collapse
+  into one `mod.rs` row: it reports "10 files" where `covlines.py files` reports
+  11. That is the tool's accounting, not a missing file.
+* It found a real defect in `docs/architecture/channels-test-coverage.md`: two
+  rows cited their lines as **ranges** (`149–151`, `934–936`), so the middle
+  numbers (150, 935) were never mentioned as themselves and the page scored
+  22/24. Both rows now list every line explicitly, and the page scores 24/24.
+
+### 10.6 Disk compliance (the campaign's hard rule)
+
+This unit's instrumented dir is `target/cov-channels`. It was deleted twice
+—once after the intermediate lcov and once after the final one — and did not
+exist while the false-edge tests were written or while the uninstrumented suite
+ran. `df -h .` was read before each heavy build: the second deletion was
+triggered by the volume sitting at 40 GB free (96 % full) when the rule's
+threshold is 40 GB. Peak observed size of the dir: 5.5 GB; the plain runs used
+the shared `target/debug` that the plan names for exactly that purpose, so no
+second instrumented tree was ever built. The measurement is reproducible by
+rebuilding — the lcov in `/tmp` (sha256 above) is the artifact, not the
+directory.
+
+Round 2b reused `target/cov-channels` for its two instrumented runs and deleted
+it after the second (`rm -rf target/cov-channels`; `du -sh` read **2.2 GB** just
+before the deletion, far below the 5.5 GB peak round 2 recorded). `df -h .` read
+**63 GB free (94 % full)** before the first run and **50 GB (95 %)** before the
+second, both above the rule's 40 GB threshold; each run was preceded by an
+uninstrumented inner-loop run in the shared `target/debug`, per PLAN §2 rule 3.
+After the deletion the volume was back to 52 GB free, and no instrumented tree
+exists now.
+
+### 10.7 Round 2b (cov100) — the adversarial review's 16 rows, executed
+
+`docs/testing/review-rust.md` (round 2, reviewer `rev-ch`) attacked every row of
+the round-2 §10.4 ledger by building a counterexample test for it in a scratch
+tree, and its verdict was **16 of the 24 rows fall, 8 survive**. A fallen row is
+one whose line *executes* under an input the reviewer demonstrated; a row that
+"falls" is therefore a **coverage gap**, not a waiver. This pass executed that
+rework: every fallen line is covered by a test in the shipped suite (§10.7.2), the
+8 survivors are re-registered in §10.4 with the corrected reasons the review
+demanded (§10.7.3), and the one test the review found *named for a line it never
+reached* is fixed (§10.7.4).
+
+#### 10.7.1 Run identity
+
+| | value |
+|---|---|
+| command | `cargo llvm-cov -p future-channel --no-fail-fast --lcov --output-path /tmp/chan-lcov-r2rework2.info -j 4` — the same family as §10.1 (`CARGO_TARGET_DIR=target/cov-channels`, `HOME=$PWD/target/test-home`, `ulimit -n 10240`), one atomic run, **no filter** (so a `DA → 1` below means the shipped suite covers the line, not a scratch probe) |
+| artifact | `/tmp/chan-lcov-r2rework2.info`, sha256 `e701f669f20acfa010abf4e09fd828729eea7d6d7313ade810aa45ac05673641` |
+| suite state under measurement | `--lib` **1497 passed / 0 failed**, `tests/channel_bin.rs` **16 passed**, `tests/imessage_send_success.rs` **1 passed**, `tests/webhook_emfile.rs` **1 passed**, `tests/agent_integration_test.rs` 2 ignored (pre-existing), `src/main.rs` 0 tests. Every target printed `test result: ok` — §1 rule 1 |
+| before (§10.1 artifact, re-verified by hash) | **24 uncovered / 25 740 measured = 99.9068 %**, 11 files |
+| after | **8 uncovered / 25 841 measured = 99.9690 %**, 8 files |
+| covered by this pass | **all 16 fallen lines** |
+| residual | §10.4: 7 `unreachable-by-construction`, 1 `platform-unmeasured`, and **nothing in the two categories the falsified rows occupied** |
+| test-code added | 5 lib tests, 1 new integration-test file for the descriptor-limit fixture, 1 new integration-test file for the `osascript` shim, 1 process test in `channel_bin.rs` with a log-marker wait, and one *existing* test strengthened (§10.7.4). No production line was changed in this pass: `git diff --stat` touches test modules, `channels/tests/` and this doc only |
+
+Exact totals:
+
+```
+$ python3 .future/cov100/covlines.py total /tmp/chan-lcov-r2rework2.info --under .worktrees/cov100-r2/channels/src
+covered=25833 measured=25841 uncovered=8 lines%=99.9690
+```
+
+The measurement was taken twice. The first run (`/tmp/chan-lcov-r2rework.info`,
+sha256 `5bf7fb1131abdcb73c52266edb174905ad67f3d566426752fff8454cdc48c33e`) preceded
+`cargo fmt -p future-channel`, which reformatted two statements inside
+`test_support.rs`'s test module — *later in the file than every line this ledger
+names*, so no measured line number moved. The second run, after formatting, is the
+artifact quoted everywhere in this section; it reproduces the same **8** uncovered
+lines, the same 99.9690 %, and the same per-line `DA` counts for every line quoted
+in §10.4 and §10.7.2 (checked line by line, not only in aggregate). Its
+`covered=25833 measured=25841` differs from the first run's `25835/25843` by
+exactly the two lines `fmt` added to that test module. Both runs printed
+`test result: ok` for every target, which is the precondition for quoting either
+(§1 rule 1).
+
+The denominator grew 25 740 → 25 841 because the new tests live in files the
+report measures (`lib.rs`, `feishu/mod.rs`, `dingtalk/mod.rs`,
+`feishu/prompt_loop.rs`, `test_support.rs`); the per-line *count* is what this
+ledger quotes. Nothing was `#[ignore]`d, no assertion weakened, no guard deleted
+to make a line disappear.
+
+#### 10.7.2 The 16 fallen rows: what covers each line now
+
+Every row below is a construction the review demonstrated in its scratch tree
+(`/tmp/rev-ch`) and that this pass ships as a normal test. The `before → after`
+column is the line's `DA` record: `0` in the frozen artifact
+(`/tmp/chan-lcov-r2final.info`) versus its count in the round-2b artifact.
+
+| line | construction (test that now executes it) | before → after |
+|---|---|---|
+| `lib.rs` 172, 173 | `the_native_supervisors_finish_on_their_own_after_shutdown`: start Feishu+DingTalk, pre-fire the starter's shutdown, and **await the join handles** instead of aborting them — the other way a supervisor ends. Proves the tasks really terminate on Ctrl-C and reaches the Ok path of the spawn closures. | 0 → 1, 1 (neighbours 170/171 → 3, 174 → 13) |
+| `lib.rs` 190, 191 | the same test, DingTalk arm | 0 → 1, 1 |
+| `feishu/mod.rs` 111 | `run_reconnect_backoff_elapses_and_retries`: the WS bootstrap fails (500) so `retry_delay = Some(5 s)`, and this test lets that 5 s **elapse** with no shutdown — the inner `if wait_or_shutdown(…)` false edge. Asserts the second bootstrap attempt was actually made (≥ 2 requests to `/callback/ws/endpoint`), then shuts down. | 0 → 1 (`108 → 4` vs `109/110 → 3`) |
+| `dingtalk/mod.rs` 110 | `run_backoff_elapses_and_retries`: same, for the gateway open | 0 → 1 |
+| `feishu/prompt_loop.rs` 449 | `an_errored_agent_end_without_a_stream_card_still_reports_the_error`: an errored `AgentEnd` driven with `streaming = false`, so no CardKit card exists and the finalize block is skipped while the error card is still sent | 0 → 1 (442–448 → 3, 450 → 52) |
+| `providers/slack.rs` 934, 935, 936 | `slack_events_webhook_starts_in_the_binary` (in `tests/channel_bin.rs`): runs the **binary** with Slack's Events API fallback enabled (`signing_secret` set, `webhook_port: 0`, unreachable agent) and waits for the server's own `events API webhook listening` line before SIGINT. The binary is the only build in which the `#[cfg(not(test))]` twin exists. | 0 → 1, 1, 1 (`858 → 4`, test twin 929–931 → 3) |
+| `transport/webhook.rs` 149, 150, 151 | `a_full_fd_table_turns_a_queued_connection_into_an_accept_error` (new file `channels/tests/webhook_emfile.rs`, one test, own process): bind, queue one connection, `setrlimit(RLIMIT_NOFILE)` to the number of descriptors this process already holds, fill the table, then `serve()` with a 500 ms shutdown. `147 → 34` vs `148 → 33` shows the `match` went to the `Err` arm exactly once. | 0 → 1, 1, 1 |
+| `test_support.rs` 780 | `kill_write_half_reports_an_error_that_is_not_notconnected` (in `test_support`'s own tests, `#[should_panic(expected = …)]`): the test dials the mock itself, `dup2(/dev/null)` over the descriptor it owns, then calls `kill_write_half` — `shutdown(Write)` answers ENOTSOCK, i.e. a kind other than `NotConnected`. | 0 → 1 (777/778/779 → 2 each) |
+| `providers/mattermost.rs` 552 | the **existing** `a_reset_socket_fails_the_pong_reply`, re-ordered (§10.7.4): `[WaitForReceived{1}, SendPing, ResetTcp]` | 0 → 1 (550 → 2, 551 → 2, and `516 → 1` — the challenge bail is now taken by the *other* test only) |
+| `providers/imessage.rs` 391 | `a_zero_exit_osascript_is_a_successful_send` (new file `channels/tests/imessage_send_success.rs`): a `PATH` shim whose `osascript` exits 0, driven through the public provider (`IMessage::provider()` → `sender()` → `send_text`). No message is sent, and the success half is asserted (`Ok(None)`). | 0 → 1 (388–390 → 3) |
+
+Two of these fixtures are deliberately invasive, so the containment argument is
+part of the evidence rather than a footnote:
+
+* **The descriptor-limit test is its own process.** `RLIMIT_NOFILE` is
+  per-process, so the fixture cannot disturb a peer test, and the process ends
+  with the test. The review's original objection ("forcing it would break the
+  parallel suite") is a property of running it *inside* the shared lib test
+  binary, and it is what the new integration-test target removes. The
+  alternative construction — closing the listener's fd behind `serve`'s back —
+  was measured and does **not** work: the kernel drops the kqueue registration
+  with the fd, so the poll pends instead of erroring. That negative result is why
+  the row needed a real fd exhaustion.
+* **The `PATH` shim is its own process too** (`channels/tests/imessage_send_success.rs`,
+  one test), and it restores `PATH` on drop. It is the ordinary way to make an
+  external tool succeed, and — unlike the round-2 tests, which tolerate either
+  outcome — it is the only construction that pins the *success* half without
+  sending a real iMessage. It does not weaken the pre-existing
+  `send_text_refuses_when_messages_app_does_not_answer`; that test asserts the
+  failure half and is unchanged.
+
+#### 10.7.3 The 8 rows that stand — and the two corrections the review demanded
+
+`providers/qq.rs` 626 and `outbox.rs` 210 were **too strong, not false**: the
+lines stay uncovered, but the reasons the round-2 ledger gave could not survive
+their own measurement. Both are re-registered in §10.4 with the corrected reason
+and, for `qq.rs`, the corrected category (`attribution-artifact` →
+`unreachable-by-construction`, because the enclosing `select!` arm's guard makes
+the false edge unreachable by construction), and with the neighbouring `DA` counts
+read from the artifact rather than mis-quoted (`625 → 52`, `628 → 109`, not
+`54`/`111`). The other six rows — `feishu/mod.rs` 95, `dingtalk/mod.rs` 94,
+`providers/mattermost.rs` 527, `providers/slack.rs` 733, `test_support.rs` 770,
+`providers/imessage.rs` 282 — stand as the review left them, with its extra
+evidence folded into their reasons.
+
+The third thing the review corrected in the vocabulary: `lib.rs` 172/173/190/191
+were registered `unreachable-by-construction`, and the *line* is reachable (the
+Ok path runs it) even though the `inspect_err` **closure body** is not — the
+review's region-level export showed the call region at count 1 and the closure
+body region at 0. Both halves are now on the record: the lines are covered by the
+test above, and the closure bodies are recorded as unreachable dead weight. They
+are **kept, not deleted**: the tails log a supervisor failure if `run` ever grows
+an `Err` path, and deleting code so a line stops existing is the policy's
+forbidden inverse. Their removal is a follow-up candidate for the crate owner, not
+something this coverage pass may do.
+
+#### 10.7.4 The test the review found named for a line it never reached (F1)
+
+`mattermost_tests.rs::a_reset_socket_fails_the_pong_reply` asserted only
+`error.contains("not writable")` — a string the **challenge** bail (516) produces
+identically, and the round-2 run shows which arm it actually took (`516 → 2`,
+`552 → 0`, `557 → 6`). The fix is the one the review named: order the frames so
+the mock first waits for the auth challenge (`WaitForReceived{1}`), then sends the
+ping, then resets. The assertion is unchanged and *now* means what its name says;
+a positive control was added (the challenge frame must be in the mock's received
+log) so the ordering cannot silently degrade again. In the round-2b run the
+challenge bail is taken once (by `a_reset_socket_fails_the_auth_challenge_send`,
+its correct owner) and 552 once.
+
+#### 10.7.5 Tripwire
+
+```bash
+python3 .future/cov100/reconcile.py --label channels-r2b \
+  --report /tmp/chan-lcov-r2rework2.info \
+  --scope /Users/geilige/future-os/.worktrees/cov100-r2/channels/src \
+  --doc docs/testing/module-channels.md --section "Round 2 (cov100)"
+python3 .future/cov100/reconcile.py --label channels-arch-r2b \
+  --report /tmp/chan-lcov-r2rework2.info \
+  --scope /Users/geilige/future-os/.worktrees/cov100-r2/channels/src \
+  --doc docs/architecture/channels-test-coverage.md --section "Uncovered lines in the framework"
+```
+
+Results (both `MISSING: 0` and `STALE: 0`, exit 0) are quoted in §10.7.6 with the
+rest of the run's evidence.
+
+#### 10.7.6 What was observed, including the one thing that did not go green
+
+* **The measurement run was green.** Every target printed `test result: ok`
+  (§10.7.1), so the report is quotable (§1 rule 1).
+* **The tripwire is clean on both documents**: `files with uncovered lines=8
+  uncovered lines=8 / mentioned: 8 / MISSING: 0` and no STALE for
+  `module-channels.md`, and `MISSING: 0 / STALE: 0` for
+  `channels-test-coverage.md`. The ledger's machine-checkable list and
+  `covlines.py detail` agree line for line.
+* **Each fallen line was verified individually**, not just in aggregate: a
+  per-line reader over both artifacts shows the 16 target lines at `0` in
+  `/tmp/chan-lcov-r2final.info` and at `≥ 1` in
+  `/tmp/chan-lcov-r2rework2.info`, with the same line numbers (the new tests were
+  appended to the ends of their files, so no numbering drifted).
+* **One pre-existing flake, not introduced by this pass.** On a machine at load
+  average 14–44,
+  `bridge::queue::tests::an_idle_conversation_is_evicted_and_its_worker_stops`
+  failed in **2 of the 4 uninstrumented full-suite runs** this pass ran
+  (`an evicted conversation's worker must exit`, `queue.rs` 709 — the 20 s budget
+  §3b case 4 raised from 5 s), while the two instrumented runs and the final
+  uninstrumented run were green. The failure mode is "the 20 s wait expired on a
+  saturated machine", exactly as §3b's record predicted, and it is untouched by
+  this pass (no line of `bridge/queue.rs` changed; the instrumented runs — the
+  ones whose numbers are quoted — were green both times). It belongs to the flake
+  workstream, which measures flake rates over N runs; this pass records the
+  observation rather than claiming a rate.
+* **Disk**: §10.6.
+
+#### 10.7.7 Reproduction
+
+```bash
+# from .worktrees/cov100-r2, same environment as §10.5
+sh /tmp/chan-measure-r2b.sh      # ulimit -n 10240, isolated HOME, private target dir
+# -> /tmp/chan-lcov-r2rework2.info, sha256 e701f669f20acfa010abf4e09fd828729eea7d6d7313ade810aa45ac05673641
+python3 .future/cov100/covlines.py total  /tmp/chan-lcov-r2rework2.info --under .worktrees/cov100-r2/channels/src
+python3 .future/cov100/covlines.py detail /tmp/chan-lcov-r2rework2.info --under .worktrees/cov100-r2/channels/src
+# -> covered=25833 measured=25841 uncovered=8 lines%=99.9690
+
+# the two process-global fixtures are their own test processes (never in the lib binary)
+cargo test -p future-channel --test webhook_emfile
+cargo test -p future-channel --test imessage_send_success
+# the process test that waits for the webhook's own log line
+cargo test -p future-channel --test channel_bin slack_events_webhook
+# the inner loop: everything, uninstrumented, shared target/debug
+cargo test -p future-channel -j 4 --no-fail-fast
+```
+

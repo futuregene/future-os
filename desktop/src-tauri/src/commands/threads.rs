@@ -530,6 +530,111 @@ mod tests {
                 serde_json::json!({ "threadId": "t", "sourceEntryId": "e" }),
             )],
         );
+        // The same last-argument rule for the other multi-argument commands:
+        // the title generator and the paged history reader each fail on their
+        // *last* argument once the earlier ones are satisfied.
+        crate::commands::ipc_harness::assert_all_reject_bodies(
+            tauri::generate_handler![generate_thread_title, get_session_entries_page],
+            &[
+                (
+                    "generate_thread_title",
+                    serde_json::json!({ "threadId": "t" }),
+                ),
+                (
+                    "get_session_entries_page",
+                    serde_json::json!({ "threadId": "t", "before": null }),
+                ),
+            ],
+        );
+    }
+
+    /// A store failure while preparing one selection is reported against *that*
+    /// thread and must not stop the others from being handled: the user asked
+    /// for a batch, and the per-thread result is what the UI renders.
+    #[tokio::test]
+    async fn batch_delete_reports_a_failed_selection_and_keeps_going() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_batch_delete_failure");
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript::default());
+
+        // Break the store the same way the title-failure test does: the closure
+        // lookup for every selection then fails, which is the arm that reports
+        // a per-thread failure instead of aborting the batch.
+        let home = std::env::var("HOME").expect("test home");
+        let conn =
+            rusqlite::Connection::open(std::path::Path::new(&home).join(".future/app/app.db"))
+                .expect("open db");
+        conn.execute_batch("DROP TABLE threads;").unwrap();
+        drop(conn);
+
+        let result = batch_delete_threads(store::BatchDeleteThreadsInput {
+            thread_ids: vec!["first".into(), "second".into()],
+            delete_files: false,
+        })
+        .await
+        .expect("a broken selection is reported, not propagated");
+
+        assert_eq!(result.deleted_count, 0, "nothing could be prepared");
+        assert_eq!(
+            result.failed.len(),
+            2,
+            "every selection is accounted for: {:?}",
+            result.failed
+        );
+        assert!(
+            result.failed[0].starts_with("first: "),
+            "{:?}",
+            result.failed
+        );
+        assert!(
+            result.failed[1].starts_with("second: "),
+            "{:?}",
+            result.failed
+        );
+        script_mock_agent(MockScript::default());
+    }
+
+    /// The other per-selection failure: the selection is well-formed but the
+    /// Agent will not confirm its session stopped. Deletion must be cancelled for
+    /// *that* thread and reported, never executed against a live session.
+    #[tokio::test]
+    async fn a_selection_whose_session_will_not_stop_is_reported() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_batch_delete_stop_failure");
+        crate::commands::agent_mock::ensure_mock_agent();
+        let thread = make_thread(&_home, Some("sess-busy"));
+        // A non-terminal run makes this session "active", so the batch asks the
+        // Agent to stop it before deleting — and the Agent refuses the abort.
+        let run = crate::agent_bridge::test_support::seed_run(&thread.id);
+        script_mock_agent(MockScript {
+            errors: HashMap::from([("abort".to_string(), "session is mid-answer".to_string())]),
+            ..Default::default()
+        });
+
+        let result = batch_delete_threads(store::BatchDeleteThreadsInput {
+            thread_ids: vec![thread.id.clone()],
+            delete_files: false,
+        })
+        .await
+        .expect("a refused stop is reported, not propagated");
+
+        assert_eq!(result.deleted_count, 0, "nothing may be deleted");
+        assert_eq!(result.failed.len(), 1);
+        assert!(
+            result.failed[0].starts_with(&format!("{}: ", thread.id)),
+            "{:?}",
+            result.failed
+        );
+        assert!(
+            crate::store::get_thread(&thread.id).unwrap().is_some(),
+            "the conversation survives a cancelled deletion"
+        );
+        assert!(
+            crate::store::get_run(&run.id).unwrap().is_some(),
+            "its run survives too"
+        );
+        script_mock_agent(MockScript::default());
     }
 
     #[test]

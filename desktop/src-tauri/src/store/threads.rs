@@ -1517,6 +1517,32 @@ mod tests {
         assert_eq!(ws.cleanup_status, "cleaned");
     }
 
+    /// The **batch** path does the same post-commit physical cleanup as the
+    /// single delete, and it reports a failure per tree instead of failing the
+    /// whole batch: a blocker at the chat path leaves a retryable
+    /// `pending_cleanup` intent and one named failure, while the thread's own
+    /// rows are already gone (the commit happened first by design).
+    #[test]
+    fn batch_delete_reports_a_file_cleanup_failure_per_tree() {
+        let (_home, _conn) = guarded_conn("threads_batch_file_failure");
+        let chat = create_thread(chat_input()).expect("chat thread");
+        let chat_path = super::super::db::chat_workspace_path(&chat.id).expect("chat path");
+        let _ = std::fs::remove_dir_all(&chat_path);
+        std::fs::write(&chat_path, b"not a directory").expect("create blocker");
+
+        let result =
+            delete_thread_trees(std::slice::from_ref(&chat.id), true).expect("batch delete");
+
+        assert!(get_thread(&chat.id).expect("lookup").is_none());
+        assert_eq!(result.deleted_count, 0, "{result:?}");
+        assert_eq!(result.failed.len(), 1, "{result:?}");
+        assert!(result.failed[0].contains(&chat.id), "{result:?}");
+        let workspace = get_workspace(&chat.workspace_id)
+            .expect("workspace")
+            .expect("row remains for the cleanup reconciler");
+        assert_eq!(workspace.cleanup_status, "pending_cleanup");
+    }
+
     #[test]
     fn failed_directory_removal_stays_pending_cleanup() {
         let (_home, _conn) = guarded_conn("threads_delete_file_failure");
@@ -1587,6 +1613,119 @@ mod tests {
         assert_eq!(result.failed.len(), 31);
         assert!(get_thread(&parent.id).unwrap().is_none());
         assert!(get_thread(&child.id).unwrap().is_none());
+    }
+
+    /// A commit that fails after every savepoint succeeded rolls the batch back
+    /// and reports each selected thread — the batch must not claim a deletion the
+    /// database refused.
+    ///
+    /// The failure is planted as a **schema-level deferred** foreign key: a probe
+    /// table references `threads(id)` `DEFERRABLE INITIALLY DEFERRED`, and a
+    /// trigger on `AFTER DELETE` records the deleted id into it. A deferred
+    /// constraint is checked at COMMIT, not at statement time, so the savepoints
+    /// commit cleanly and the violation surfaces exactly where this arm lives.
+    /// (`PRAGMA defer_foreign_keys` would not do: it is per-connection, and the
+    /// connection belongs to `delete_thread_trees`.)
+    #[test]
+    fn a_batch_whose_commit_fails_is_reported_and_rolled_back() {
+        let (_home, conn) = guarded_conn("threads_commit_failure");
+        let first = session_chat_thread("sess_commit_a", None);
+        let second = session_chat_thread("sess_commit_b", None);
+        conn.execute_batch(
+            "CREATE TABLE hostile_probe (
+                 id INTEGER PRIMARY KEY,
+                 thread_id TEXT REFERENCES threads(id) DEFERRABLE INITIALLY DEFERRED
+             );
+             CREATE TRIGGER hostile_probe_capture AFTER DELETE ON threads
+             BEGIN
+                 INSERT INTO hostile_probe (thread_id) VALUES (OLD.id);
+             END;",
+        )
+        .expect("plant the deferred constraint");
+
+        let result = delete_thread_trees(&[first.id.clone(), second.id.clone()], false)
+            .expect("a refused commit is reported, not propagated");
+
+        assert_eq!(result.deleted_count, 0, "nothing was committed");
+        assert_eq!(result.failed.len(), 2, "{:?}", result.failed);
+        assert!(
+            result.failed[0].starts_with(&format!("{}: ", first.id))
+                && result.failed[1].starts_with(&format!("{}: ", second.id)),
+            "each selected thread is named: {:?}",
+            result.failed
+        );
+        assert!(
+            crate::store::get_thread(&first.id).expect("get").is_some()
+                && crate::store::get_thread(&second.id).expect("get").is_some(),
+            "the rollback puts every conversation back"
+        );
+    }
+
+    /// The losing half of the documented create race, made deterministic.
+    ///
+    /// `get_or_create_thread_for_agent_session` looks up first and only then
+    /// inserts; if another discovery task wins in between, the losing insert must
+    /// return the **winner's** row with `created = false` rather than surfacing the
+    /// unique-index violation (two concurrent announcements converging on one
+    /// thread instead of one of them failing).
+    ///
+    /// The ordering is forced with a real second connection holding the write lock:
+    /// the winner's row is inserted inside an `IMMEDIATE` transaction and left
+    /// **uncommitted**, so this call's pre-check cannot see it (WAL isolation) and it
+    /// proceeds to insert — where it blocks on the lock. Releasing the lock commits
+    /// the winner, and our insert then hits the unique agent-session index, which is
+    /// exactly the race the function is written for.
+    #[test]
+    fn a_create_that_loses_the_race_returns_the_winners_row() {
+        let (_home, _conn) = guarded_conn("threads_create_race");
+        let workspace_dir =
+            std::env::temp_dir().join(format!("futureos-race-{}", std::process::id()));
+        std::fs::create_dir_all(&workspace_dir).expect("workspace dir");
+        let workspace = crate::store::create_workspace(crate::store::CreateWorkspaceInput {
+            name: Some("race".into()),
+            path: workspace_dir.display().to_string(),
+            description: None,
+            create_directory: Some(false),
+        })
+        .expect("workspace");
+
+        // The competing writer: holds the write lock with the winning row staged.
+        let mut other = super::super::connect().expect("second connection");
+        let tx = other
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .expect("write lock");
+        tx.execute(
+            "INSERT INTO threads (id, workspace_id, mode, title, status, pinned, readonly,
+                                 agent_session_id, asset_root_id, last_opened_at, created_at, updated_at)
+             VALUES ('thread-winner', ?1, 'chat', 'Winner', 'active', 0, 0, 'sess_race',
+                     'thread-winner', 1, 1, 1)",
+            rusqlite::params![workspace.id],
+        )
+        .expect("stage the winner");
+
+        let caller = std::thread::spawn(|| {
+            get_or_create_thread_for_agent_session(CreateThreadInput {
+                mode: "chat".into(),
+                title: Some("Loser".into()),
+                workspace_id: None,
+                workspace_path: None,
+                workspace_name: None,
+                agent_session_id: Some("sess_race".into()),
+            })
+        });
+        // Let the caller get past its lookup and block on the write lock.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        tx.commit()
+            .expect("release the lock with the winner committed");
+
+        let (thread, created) = caller
+            .join()
+            .expect("join")
+            .expect("a lost race is not an error");
+
+        assert!(!created, "the row came from the winner, not this call");
+        assert_eq!(thread.id, "thread-winner");
+        assert_eq!(thread.title, "Winner");
     }
 
     /// The mirror removal a reconciliation uses must leave the Agent session
@@ -1748,6 +1887,42 @@ mod tests {
         assert!(get_thread("t2").unwrap().is_none());
         assert!(!super::super::is_agent_session_tombstoned("sess1").unwrap());
         assert!(super::super::is_agent_session_tombstoned("t2").unwrap());
+    }
+
+    /// The per-tree workspace write-back is a *second* failure point, after the
+    /// row delete has already committed: the tree is gone, but the cleanup intent
+    /// cannot be closed out. Plant a hostile trigger that refuses exactly the
+    /// `cleanup_status = 'cleaned'` update (the `pending_cleanup` write inside the
+    /// transaction must be left alone, or the savepoint would fail first), then
+    /// assert the batch reports it per tree and still counts the delete.
+    #[test]
+    fn a_workspace_cleanup_write_back_that_fails_is_reported_per_tree() {
+        let (_home, conn) = guarded_conn("threads_cleanup_writeback");
+        let thread = session_chat_thread("sess_cleanup_writeback", None);
+        conn.execute_batch(
+            "CREATE TRIGGER hostile_cleanup_writeback BEFORE UPDATE ON workspaces
+             WHEN NEW.cleanup_status = 'cleaned'
+             BEGIN SELECT RAISE(ABORT, 'hostile cleanup write-back'); END;",
+        )
+        .expect("plant the hostile cleanup trigger");
+
+        let result = delete_thread_trees(std::slice::from_ref(&thread.id), true)
+            .expect("a refused cleanup write-back is reported, not propagated");
+
+        assert_eq!(
+            result.deleted_count, 0,
+            "a tree whose cleanup failed is not counted as fully deleted: {result:?}"
+        );
+        assert_eq!(result.failed.len(), 1, "{result:?}");
+        assert!(
+            result.failed[0].starts_with(&format!("{}: ", thread.id)),
+            "the failing tree is named: {:?}",
+            result.failed
+        );
+        assert!(
+            get_thread(&thread.id).expect("get").is_none(),
+            "the row delete itself already committed"
+        );
     }
 
     #[test]

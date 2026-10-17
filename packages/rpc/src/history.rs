@@ -134,6 +134,8 @@ where
 mod tests {
     use super::*;
     use crate::payloads::{HistoryEntryFragment, SessionEntryPayload};
+    use serde::de::DeserializeOwned;
+    use serde_json::Value;
 
     fn fragment(offset: i64, text: &str, full: &str) -> SessionEntriesPage {
         SessionEntriesPage {
@@ -190,5 +192,345 @@ mod tests {
             .await;
             assert!(result.is_err(), "{corruption} must fail closed");
         }
+    }
+
+    fn frag(offset: i64, text: &str, full: &str, entry_id: &str) -> HistoryEntryFragment {
+        HistoryEntryFragment {
+            entry_id: entry_id.into(),
+            ordinal: 0,
+            offset,
+            total_bytes: full.len() as i64,
+            json: text.into(),
+            sha256: format!("{:x}", Sha256::digest(full.as_bytes())),
+        }
+    }
+
+    fn page<Entry>(
+        fragment: Option<HistoryEntryFragment>,
+        entries: Vec<Entry>,
+        has_more: bool,
+        next_offset: i64,
+    ) -> SessionEntriesPage<Entry> {
+        SessionEntriesPage {
+            entries,
+            has_more,
+            next_offset,
+            fragment,
+        }
+    }
+
+    /// Drive `read_page` from a scripted list of pages, one per call, and report
+    /// both the outcome and the commands the executor actually received.
+    async fn scripted<Entry>(
+        command: RpcCommand,
+        pages: Vec<SessionEntriesPage<Entry>>,
+    ) -> (Result<SessionEntriesPage<Entry>, String>, Vec<RpcCommand>)
+    where
+        Entry: HistoryEntry + DeserializeOwned,
+    {
+        let mut pages = std::collections::VecDeque::from(pages);
+        let seen = std::cell::RefCell::new(Vec::new());
+        let result = {
+            let mut execute = |command: RpcCommand| {
+                seen.borrow_mut().push(command);
+                std::future::ready(Ok(pages.pop_front().expect("scripted page")))
+            };
+            read_page::<Entry, _, _>(command, &mut execute).await
+        };
+        (result, seen.into_inner())
+    }
+
+    /// A two-chunk fragmented read of `json`, whose first fragment claims
+    /// `entry_id`.
+    async fn assemble<Entry>(
+        entry_id: &str,
+        json: &str,
+    ) -> Result<SessionEntriesPage<Entry>, String>
+    where
+        Entry: HistoryEntry + DeserializeOwned,
+    {
+        let first_len = json.len() / 2 + 1;
+        let (first, second) = json.split_at(first_len);
+        scripted::<Entry>(
+            RpcCommand {
+                offset: Some(0),
+                ..Default::default()
+            },
+            vec![
+                page(Some(frag(0, first, json, entry_id)), vec![], false, 9),
+                page(
+                    Some(frag(first_len as i64, second, json, entry_id)),
+                    vec![],
+                    false,
+                    9,
+                ),
+            ],
+        )
+        .await
+        .0
+    }
+
+    /// The typed desktop shape and the legacy terminal shape must both assemble
+    /// an oversized entry, and both must report the assembled entry's own id as
+    /// the page's identity.
+    #[tokio::test]
+    async fn oversized_entries_are_assembled_for_both_entry_shapes() {
+        let typed = serde_json::to_string(&SessionEntryPayload {
+            id: "large".into(),
+            role: "assistant".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let assembled = assemble::<SessionEntryPayload>("large", &typed)
+            .await
+            .expect("typed entry assembles");
+        assert_eq!(assembled.entries.len(), 1);
+        assert_eq!(assembled.entries[0].id, "large");
+        assert_eq!(assembled.entries[0].role, "assistant");
+        assert!(assembled.fragment.is_none(), "a fragment is not a page");
+
+        let legacy = serde_json::json!({"id": "legacy-entry", "role": "assistant"}).to_string();
+        let assembled = assemble::<Value>("legacy-entry", &legacy)
+            .await
+            .expect("legacy entry assembles");
+        assert_eq!(assembled.entries.len(), 1);
+        assert_eq!(assembled.entries[0]["id"], "legacy-entry");
+    }
+
+    /// Every fragment agrees on the entry id, so only the assembled document can
+    /// reveal that the server reassembled a different entry (an overwritten
+    /// session, not a torn page).
+    #[tokio::test]
+    async fn a_reassembled_entry_with_a_different_identity_is_refused() {
+        let error = assemble::<Value>("renamed", &serde_json::json!({"id": "actual"}).to_string())
+            .await
+            .err()
+            .expect("identity mismatch must fail closed");
+        assert!(error.contains("identity mismatch"), "{error}");
+    }
+
+    /// The first fragment defines the whole entry: a non-zero offset or a page
+    /// that already carries entries means the server is not answering the read
+    /// that was issued.
+    #[tokio::test]
+    async fn a_first_fragment_that_is_not_the_entry_start_is_refused() {
+        let full = r#"{"id":"large"}"#;
+        for scripted_page in [
+            page(
+                Some(frag(4, full, full, "large")),
+                Vec::<Value>::new(),
+                false,
+                9,
+            ),
+            page(
+                Some(frag(0, full, full, "large")),
+                vec![serde_json::json!({"id": "large"})],
+                false,
+                9,
+            ),
+        ] {
+            let (result, seen) = scripted::<Value>(
+                RpcCommand {
+                    offset: Some(0),
+                    ..Default::default()
+                },
+                vec![scripted_page],
+            )
+            .await;
+            let error = result
+                .err()
+                .expect("an invalid first fragment must fail closed");
+            assert!(
+                error.contains("invalid initial history fragment"),
+                "{error}"
+            );
+            assert_eq!(seen.len(), 1, "the reader must stop instead of paging on");
+        }
+    }
+
+    /// A fragment that lies about its size (or is empty) can never be trusted to
+    /// terminate the read.
+    #[tokio::test]
+    async fn a_fragment_that_contradicts_its_declared_size_is_refused() {
+        for fragment in [
+            frag(0, &"x".repeat(20), "short", "large"),
+            frag(0, "", r#"{"id":"large"}"#, "large"),
+        ] {
+            let (result, _) = scripted::<Value>(
+                RpcCommand {
+                    offset: Some(0),
+                    ..Default::default()
+                },
+                vec![page(Some(fragment), Vec::new(), false, 9)],
+            )
+            .await;
+            let error = result
+                .err()
+                .expect("an impossible fragment size must fail closed");
+            assert!(error.contains("invalid history fragment size"), "{error}");
+        }
+    }
+
+    /// A continuation the reader asked for as a fragment must be a fragment.
+    #[tokio::test]
+    async fn a_continuation_without_the_requested_fragment_is_refused() {
+        let (result, seen) = scripted::<Value>(
+            RpcCommand {
+                offset: Some(0),
+                fragment_offset: Some(8),
+                ..Default::default()
+            },
+            vec![page(None, Vec::new(), false, 9)],
+        )
+        .await;
+        let error = result.err().expect("a missing fragment must fail closed");
+        assert!(error.contains("missing history fragment"), "{error}");
+        assert_eq!(seen.len(), 1);
+    }
+
+    /// Backward paging must fetch the missing user prefix: an exchange whose
+    /// first visible entry is an assistant answer is incomplete on its own.
+    /// Both entry shapes go through the same rule.
+    #[tokio::test]
+    async fn backward_paging_extends_the_page_with_the_missing_user_prefix() {
+        let command = RpcCommand {
+            before: Some(10),
+            limit: Some(5),
+            ..Default::default()
+        };
+
+        let (typed, seen) = scripted::<SessionEntryPayload>(
+            command.clone(),
+            vec![
+                page(
+                    None,
+                    vec![SessionEntryPayload {
+                        id: "a1".into(),
+                        role: "assistant".into(),
+                        ..Default::default()
+                    }],
+                    true,
+                    3,
+                ),
+                page(
+                    None,
+                    vec![SessionEntryPayload {
+                        id: "u1".into(),
+                        role: "user".into(),
+                        ..Default::default()
+                    }],
+                    false,
+                    2,
+                ),
+            ],
+        )
+        .await;
+        let typed = typed.expect("the prefix must be fetched");
+        let ids: Vec<&str> = typed.entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["u1", "a1"], "oldest first, prefix included");
+        assert_eq!(
+            seen[1],
+            RpcCommand {
+                before: Some(3),
+                limit: Some(1),
+                ..Default::default()
+            },
+            "the follow-up asks for exactly one more entry before the page"
+        );
+
+        let (legacy, _) = scripted::<Value>(
+            command,
+            vec![
+                page(
+                    None,
+                    vec![serde_json::json!({"id": "a2", "role": "assistant"})],
+                    true,
+                    3,
+                ),
+                page(
+                    None,
+                    vec![serde_json::json!({"id": "u2", "role": "user"})],
+                    false,
+                    2,
+                ),
+            ],
+        )
+        .await;
+        let legacy = legacy.expect("the prefix must be fetched");
+        assert_eq!(legacy.entries[0]["id"], "u2");
+        assert_eq!(legacy.entries[1]["id"], "a2");
+    }
+
+    /// A follow-up cursor that does not move would page forever.
+    #[tokio::test]
+    async fn a_backward_cursor_that_does_not_advance_is_refused() {
+        let (result, seen) = scripted::<SessionEntryPayload>(
+            RpcCommand {
+                before: Some(10),
+                ..Default::default()
+            },
+            vec![page(
+                None,
+                vec![SessionEntryPayload {
+                    id: "a1".into(),
+                    role: "assistant".into(),
+                    ..Default::default()
+                }],
+                true,
+                10,
+            )],
+        )
+        .await;
+        let error = result.err().expect("a stalled cursor must fail closed");
+        assert!(error.contains("non-advancing backward cursor"), "{error}");
+        assert_eq!(seen.len(), 1);
+    }
+
+    /// The exchange rule: only an assistant/tool entry opens a standalone
+    /// exchange, and an automatic in-turn checkpoint does not.
+    #[test]
+    fn only_a_standalone_exchange_needs_a_user_prefix() {
+        let checkpoint = |value: serde_json::Value| {
+            needs_user_prefix(Some("user"), Some("compaction"), Some(&value))
+        };
+        assert!(needs_user_prefix(Some("assistant"), Some("message"), None));
+        assert!(needs_user_prefix(Some("tool"), Some("message"), None));
+        assert!(!needs_user_prefix(Some("user"), Some("message"), None));
+        assert!(!needs_user_prefix(None, None, None));
+        // Not a compaction: the checkpoint is irrelevant.
+        assert!(!needs_user_prefix(
+            Some("user"),
+            Some("message"),
+            Some(&serde_json::json!({"schemaVersion": 2, "phase": "pre_turn"}))
+        ));
+        // Legacy checkpoints (schema 1) have no automatic phase to reason about.
+        assert!(!checkpoint(serde_json::json!({
+            "schemaVersion": 1,
+            "phase": "pre_turn"
+        })));
+        // A standalone compaction IS a user-visible exchange.
+        assert!(!checkpoint(serde_json::json!({
+            "schemaVersion": 2,
+            "phase": "standalone"
+        })));
+        assert!(checkpoint(serde_json::json!({
+            "schemaVersion": 2,
+            "phase": "pre_turn"
+        })));
+        assert!(checkpoint(serde_json::json!({
+            "schemaVersion": 2,
+            "phase": "mid_turn"
+        })));
+        // Any other phase is automatic unless a manual compaction asked for it.
+        assert!(checkpoint(serde_json::json!({
+            "schemaVersion": 2,
+            "phase": "post_turn",
+            "trigger": "auto"
+        })));
+        assert!(!checkpoint(serde_json::json!({
+            "schemaVersion": 2,
+            "phase": "post_turn",
+            "trigger": "manual"
+        })));
     }
 }

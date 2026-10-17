@@ -5324,3 +5324,449 @@ while iterating was deleted).
 
 
 
+
+---
+
+# Segment 50 — **cov100 round 2** (revision `8449acf6`, worktree `cov100-r2`): 131 → 13 uncovered lines, every residual classified
+
+*Scope note:* everything above is the **2026-08-27 round-1 campaign** (a Windows
+worktree, the `verify.py` `extra` gate, ~739 commits ago). This segment is a
+different campaign with a different metric — do not mix the numbers. Round 2's
+criterion is **口径 A: per-line LCOV `DA:<line>,0`** counted by
+`.future/cov100/covlines.py`; never the llvm-cov `summary`, never statements,
+never regions. `verify.py`, `_recon.py` and `mobile/coverage/_*.py` do not exist
+in this worktree.
+
+## 1. Run identity
+
+| | |
+|---|---|
+| worktree / branch | `/Users/geilige/future-os/.worktrees/cov100-r2`, `test/cov100-r2` |
+| revision | `8449acf6` (unchanged; **no production code was modified in this pass**) |
+| host | macOS `Darwin arm64` |
+| exact command | `cd mobile && npm run gen-version && timeout 420 npx jest --runInBand --coverage; echo "exit=$?"` |
+| report | `mobile/coverage/lcov.info` (`SF:` paths are relative to `mobile/`) |
+| metric command | `python3 .future/cov100/covlines.py total mobile/coverage/lcov.info --under src` |
+| baseline report | `.future/cov100/baseline/mobile-lcov.info` (same revision, supervisor-measured) |
+
+Jest exits **0**; a leaked timer is this suite's known hang mode and the exit code
+is the judgement (`.future/memory/testing-gotchas.md`) — no hang occurred.
+
+## 2. Before / after (the only numbers that matter)
+
+```
+baseline   covered=9728 measured=9859 uncovered=131 lines%=98.6713
+after      covered=9846 measured=9859 uncovered=13  lines%=99.8681
+```
+
+Suites/tests: **160 → 163 suites, 3206 → 3246 tests, all green.**
+
+## 3. The residual: 13 lines, all classified
+
+Every remaining uncovered line in `mobile/src` is listed below with a category
+from `docs/testing/waiver-ledger.md` and the mechanism that makes its input
+unreachable. **There is no "reachable but not yet covered" bucket** — the four
+left in that state at the end of the first half of this segment
+(`useComposerDraft` 8, `useQuestionNav` 10, `useDesktopConnection` 8, `ChatScreen`
+2, `SessionList` 1, `TasksSettingsPage` 3) were all closed by tests instead, and the
+seven that remain are the ones a construction cannot reach.
+
+| file:line | category | mechanism (and the measurement behind it) |
+|---|---|---|
+| `src/components/MarkdownText.tsx:139` | `unreachable-by-construction` | **The predicate is evaluated twice and can only differ once.** `inlineRuns` (line 171) peels every image whose `remoteMarkdownImageUrl(src) \|\| localFilePath(src)` is truthy into its own `MarkdownImage` run *before* `renderInline` is ever called with the parent's children; `renderInline`'s `"image"` case (136) evaluates the **same** `localFilePath(src)` and its `if (!path) return label` (138) takes the null arm. So the arm that renders a chip for a *local* image is the one no input reaches. Measured across the whole suite: line 171 evaluated **417×**, the peel at 172 taken **24×** (→ `MarkdownImage` at 204, 24 hits), while the inline arm was entered **once** (136 = 1 hit) and returned at 138 (`hits=1`) — with 139/140 at **0**. The one inline arrival is a `data:` image, for which `localFilePath` is null by its own scheme check. |
+| `src/components/MarkdownText.tsx:140` | `unreachable-by-construction` | Same invariant: it is the `onPress={() => openTarget(node.src)}` of the chip line 139 never renders. |
+| `src/features/chat/questionNav.ts:67` | `unreachable-by-construction` | `QuestionRung` is a closed two-member union (`{kind:"question";question:number}` \| `{kind:"replyTail";index:number}`). Line 62 rejects unequal kinds; 63 consumes both-`question` and returns; 65 consumes both-`replyTail` and returns. With `left.kind === right.kind` over two members, both are already handled, so no value of the declared type reaches the fallback. Measured: 62 taken 140× / its `return` 60×, 63 taken 80×, 65 taken 43×, **67 = 0**. |
+| `src/features/chat/useMinimumVisible.ts:11` | `unreachable-by-construction` | Single writer + paired clear. `timerRef` is written in exactly three places: line 27 (arming, this same effect) and lines 35–36 (this effect's **own cleanup**, which clears and nulls it). React runs that cleanup immediately before every re-run of the effect, so at line 10 the ref is null. Measured: the effect ran **91×** (line 10 = 91 hits), lines 11/12 = **0**, while the cleanup's own `clearTimeout` (35) ran 8× and its nulling (36) 8×. |
+| `src/features/chat/useMinimumVisible.ts:12` | `unreachable-by-construction` | Same single-writer/paired-cleanup invariant; line 12 is the same clear the cleanup at 35 performs. **Observation (REV-FE §R2.4 item 3):** lines 10–13 are *redundant* — the cleanup at 34–37 already cancels and nulls, so this guard has no behaviour of its own; that redundancy is precisely why it cannot be covered. If the arming ever moves out of this effect, the line becomes both reachable and load-bearing, so do not delete it as dead weight without checking that. |
+| `src/features/chat/files/useChatFiles.ts:201` | `unreachable-by-construction` | **`handle.visible` is already true whenever this transport reports.** `openAttachment` calls `showDownload(handle, …)` at line 184 and only then `remote.downloadAttachment` at 191 — with **no `await` between them** — and `showDownload` sets `handle.visible = true` synchronously. The only writer of `visible = false` in the module is `hideDownload` (`useTransferOperation.ts:129`), whose sole caller is `confirmDownloadFor`, reached at line 171 — i.e. *before* 184. Measured: line 200 evaluated **7×** with its `else` (201) at **0**; and a probe that drove the large-file/metered path end to end (where `hideDownload` really does run) still measured 200's true arm `hits=1` and **201 = 0**. **Scope of the invariant (REV-FE §R2.4 item 1):** line 184 is a child of `if (!file)` — a cache miss — *not* part of the confirmation/warning path, so `visible` is set on the no-warning path too and the argument is stronger than the grouping above suggests. A future editor should read it that way rather than as a warning-only guard. |
+| `src/features/chat/files/useChatFiles.ts:208` | `unreachable-by-construction` | The waiting-callback sibling of 201, same invariant, same flow: line 207 evaluated **8×**, 208 = **0**. |
+| `src/features/chat/files/useChatFiles.ts:305` | `unreachable-by-construction` | `fetchDownload` is **private** (it is not in the hook's returned API) and both of its call sites pass a handle — line 362 with `openOrShare`'s `handle` (guarded non-null at 332) and line 546 with the preview stack's own (guarded at 511). The arm needs `handle === undefined`, which nothing supplies. The neighbouring arm at 303 shows why the *other* precondition is reachable and this one is not: "a handle that is present but invisible" **is** constructible, because `openOrShare` takes a **public** `existingHandle` parameter (`useFileDownload.test.ts`'s foreign-handle tests use exactly that, giving 303 **1 hit**), whereas "no handle at all" has no public supplier. Measured: line 304 (`if (handle)`) evaluated **22×**, 305 = **0**. |
+| `src/remote/client.ts:70` | `unreachable-by-construction` | `failureSupportCode(category)` is called only from `recordFailure`, and `recordFailure`'s eight call sites (677, 688, 725, 756, 780, 1074, 1077, 1081) pass literals from the closed set `{credential_revoked, generation_unhealthy, service_authorization, network, credential_expired, protocol}`. None passes `"local"`, so the `LC001` arm has no input. Measured: line 69 (`generation_unhealthy`) reached 16× and 70/71 = 0. **Boundary (REV-FE, §R2.4 item 4):** this is *visibility-closed*, not construction-closed — `failureSupportCode` is module-private, and REV-FE reached this line (70 = 3) only by casting past the modifier. A new in-module caller passing a non-literal category revives it. |
+| `src/remote/client.ts:71` | `unreachable-by-construction` | The same closed set from the other side: the `LC999` fallback needs a category no call site produces. `category` is typed `string`, so the type cannot exclude a *future* one — the invariant is about the call sites, and today's code has none. |
+| `src/remote/useTimelineController.ts:79` | `unreachable-by-construction` | `hydrateAttachmentsRef`'s **initializer body** is dead: its only reader is line 170, reached from a client event, and the effect at 632 overwrites the ref in the same commit that mounts the hook — before the socket those events arrive on has even opened. Measured: the ref is created 838× (`hits=838` at 78), the initializer body **0**. **Governing reason corrected (REV-FE §R2.4 item 2):** the socket is *not* the invariant. The client is constructed in an effect that is registered **after** this hook's effects (`useDesktopRuntime.ts:144` vs `:204`), so React runs this hook's mount-commit write first — hook order, not connection state. That distinction matters: hoisting the client into a longer-lived provider (or reordering the effects) would put this initializer back in play, whereas 'the socket is closed' would still read as reassuring. |
+| `src/remote/useTimelineController.ts:207` | `unreachable-by-construction` | `loadHistory`'s `laneIsCurrent` default is an arity convenience. The function is handed to the engine as `requestHistory` (line 552) and `syncEngine.ts:598` is its **only** call site, always passing the predicate; no in-repo caller omits the argument. Measured: `loadHistory` created 838× (206), the default-arg body (207) **0**. |
+| `src/screens/SessionsScreen.tsx:1166` | `unreachable-by-construction` | **Dead prop wiring, and a finding (see §6.1).** The only page that calls `onOpenConversation` is `TasksSettingsPage`, and its sole route is `SettingsScreen`'s `renderLevel()` `case "tasks"` — reached only from `renderDeviceHome()`, i.e. only when `deviceMode === true`, i.e. only when a `deviceId` **prop** is passed (`SettingsScreen.tsx:133`). This screen renders `<SettingsScreen>` with **no** `deviceId` (1160–1167), so `deviceMode` is false, `renderPhoneHome()` renders instead, and the only `push({ name: "tasks" })` in the app (`SettingsScreen.tsx:377`) lives in the device home. The arrow's body therefore cannot be invoked from this stack. Measured: 1166 = 0 hits in both statements, in every suite. |
+
+**Self-check on honesty.** Seven of these are the ones the first half of this
+segment also had; the six `useChatFiles`/`MarkdownText` rows replace what that
+draft listed as "reachable, construction needed" — and each was *attempted* before
+being waived (the standing round-1 rule: a statement is unreachable only once the
+construction has been attempted and failed). Two attempts are recorded in §6.3.
+Everything else in the file was closed by a test.
+
+## 4. Lines covered this pass, and the tests that cover them
+
+131 → 13 (**118 lines** closed); the suite grew by **40 tests** (3206 → 3246) across
+15 test files. New suites:
+`remote/timeline/__tests__/historyPagingCommit.test.ts`,
+`features/chat/__tests__/useMinimumVisible.test.ts`,
+`features/chat/files/__tests__/useTransferOperation.test.ts`. Extended:
+`remote/__tests__/{RemoteContext,storage,useDesktopRuntime,useDesktopConnection,useTimelineController}.test.ts`,
+`screens/__tests__/{SessionsScreen,DesktopsScreen,SessionList,sessionTree}.test.ts`,
+`features/chat/__tests__/{ChatScreen,useComposerDraft,useQuestionNav}.test.ts`,
+`features/settings/__tests__/TasksSettingsPage.test.ts`,
+`components/__tests__/{MarkdownText,TimelineCard}.test.ts`.
+
+Per-file ledger of the lines now executed (each row's owner is the test named in
+§4.1):
+
+| file | lines closed | what executes them |
+|---|---|---|
+| `src/remote/RemoteContext.tsx` | 451, 496–531 (18), 603–608, 753–755, 803–812, 832–861 | the no-runtime surface's verb fallbacks (each *called*); `recoverAll`/`setRuntimesActive` from a real AppState background→active; `unpair`; `catalogs.refresh/reconnect`; every `commandsFor` body incl. the missing-title refusal |
+| `src/remote/useTimelineController.ts` | 357, 358, 385–389, 395, 399, 400, 409, 410 | the parked older-history page: re-parked on a second dark drop, re-offered by the user's own pull, dropped for a conversation the user left, and reported when its window goes away |
+| `src/remote/useDesktopConnection.ts` | 244–247, 329, 358, 487, 494 | pairing-changed reset; agent-back re-read; session activity sink; recovery whose socket was replaced; failed recovery |
+| `src/features/chat/useComposerDraft.ts` | 62–68, 93–95 | the late restore's temporary-file cleanup; `rememberSessionRef` on the current draft and the refusal for a stale one |
+| `src/features/chat/useQuestionNav.ts` | 387–389, 460, 491–499, 505 | the realign timer's landing pass; a page that fails releasing ↑; `onScrollToIndexFailed` (live jump, foreign row, attempt cap) |
+| `src/screens/SessionsScreen.tsx` | 331–333, 340–343, 765 | choosing the machine the phone is already on; a refused workspace read; the disconnected empty state's retry |
+| `src/screens/DesktopPicker.tsx` | 49, 50, 72, 95, 110, 123, 124 | the sheet's rows: merged option, a machine's row, manage, request-close |
+| `src/features/settings/TasksSettingsPage.tsx` | 355, 747, 874 | back at the list answering `false`; the pinned-model chip; the yearly month field |
+| `src/remote/storage.ts` | 305, 314–318 | `loadActiveDesktopId` / `setActiveDesktop` (store, already-focused no-op, unpaired refusal) |
+| `src/remote/timeline/historyPaging.ts` | 133, 134, 148–155 | `commitHistoryPage`'s three refusals against a hand-built lane |
+| `src/components/MarkdownText.tsx` | — | (the local-image chip test is a regression guard; see §3 — it does not move the metric) |
+| `src/components/…/TimelineCard` + `ToolRow.tsx` | `ToolRow:181` | a burst child whose command cannot be fetched |
+| `src/features/chat/files/useTransferOperation.ts` | 53 | `beginDownload`'s visible arm |
+| `src/features/chat/ChatScreen.tsx` | 369, 386 | the `#` reference's switch and a lean tool row's fetch |
+| `src/screens/SessionList.tsx` | 687 | a foreign row whose machine refuses to open reports it |
+| `src/screens/DesktopsScreen.tsx` | 228, 229 | the device page's `onDismiss` / `onRequestClose` |
+| `src/remote/useDesktopRuntime.ts` | 287 | `captureConversationOperation()` |
+| `src/screens/sessionTree.ts` | 189 | `groupMergedRows`'s key tie-break |
+
+### 4.1 Test names (grouped by file)
+
+* `remote/__tests__/RemoteContext.test.ts` (+6): *a machine with no runtime answers
+  every verb itself* · *unpairing tells the open machine and drops the pairing* · *the
+  merged list refreshes and reaches every machine on its own connection* · *a named
+  machine runs each of its commands on its own connection* · *a generated title is read
+  out of the machine's answer, and a missing one is a refusal* · *going to the
+  background and back holds and recovers every machine*.
+* `remote/__tests__/useDesktopConnection.test.ts` (+5): *a recovery whose socket is
+  replaced mid-probe does not refresh the new one* · *a failed recovery is reported
+  instead of leaving the machine silently stale* · *a session activity frame reaches
+  this machine's own sink* · *a desktop whose agent comes back re-reads the catalogue
+  it missed* · *connecting to a different pairing clears what the old one mirrored*.
+* `remote/__tests__/useTimelineController.test.ts` (+4 + `parkPageForBackgrounding`):
+  *a page the lane drops twice is parked again, and is still not a failure* · *a parked
+  page is re-offered by the user's own pull once the app is back* · *a page parked for
+  a conversation the user has left is dropped, not committed* · *a recommit the user
+  left behind is reported, not installed*.
+* `remote/timeline/__tests__/historyPagingCommit.test.ts` (new, 3): the two refusals
+  plus the cancelled-on-a-late-turn case.
+* `remote/__tests__/storage.test.ts` (+1): *the focused desktop is stored, and a focus
+  with nothing behind it is refused*.
+* `remote/__tests__/useDesktopRuntime.test.ts` (+1): *a captured conversation lifetime
+  follows the client it was taken with*.
+* `screens/__tests__/SessionsScreen.test.ts` (+4): *each picker row commits its own
+  choice and closes the sheet* · *the list's disconnected empty state carries a retry
+  that reaches the connection* · *a workspace step on the machine the phone is on reads
+  that machine's own list* · *a machine whose workspaces cannot be read reports it
+  instead of waiting on it*.
+* `screens/__tests__/SessionList.test.ts` (+1): *a row whose machine refuses to open
+  reports the refusal by name*.
+* `screens/__tests__/DesktopsScreen.test.ts` (+1): *the device page closes on a
+  dismissal, and back leaves it to the page*.
+* `screens/__tests__/sessionTree.test.ts` (+1): *merged groups with the same place and
+  machine are ordered by their key*.
+* `features/chat/__tests__/ChatScreen.test.ts` (+2): *a `#` reference in a sent message
+  opens the conversation it names* · *a lean tool row asks this machine for the command
+  the page dropped*.
+* `features/chat/__tests__/useComposerDraft.test.ts` (+3): *a recovery that lands after
+  the reader left takes its own temporary files with it* · *a remembered reference
+  rides with the draft it was made in* · *a reference remembered for a draft the reader
+  has left is dropped*.
+* `features/chat/__tests__/useQuestionNav.test.ts` (+3): *a page that fails releases the
+  reader's ↑ instead of wedging it* · *a landing outside the measured window is
+  estimated, then re-issued while it settles* · *an endless run of failed scrolls stops
+  asking for more landings*.
+* `features/chat/__tests__/useMinimumVisible.test.ts` (new, 2): the floor's
+  cancellation and its elapse — the measurement behind two waivers in §3.
+* `features/chat/files/__tests__/useTransferOperation.test.ts` (new, 1): a visible
+  transfer is announced as preparing, a quiet one is not.
+* `features/settings/__tests__/TasksSettingsPage.test.ts` (+3 assertions in existing
+  tests): back at the list returns `false`; the pinned-model chip is selectable; the
+  yearly month field patches the trigger.
+* `components/__tests__/{MarkdownText,TimelineCard}.test.ts` (+2): a `file://` image is
+  a chip that opens it; a burst child whose command cannot be fetched keeps its label.
+
+## 5. Why the numbers are trustworthy
+
+* **No production file was touched.** Every path this pass changed under `mobile/src`
+  is a `__tests__` file — `git status --short -- mobile/src` is empty now that the
+  supervisor has snapshotted the unit (`git log --name-only` on the `test(M1)` commits
+  lists only test paths, plus this document). No guard was deleted, widened or
+  `#[allow]`-ed, and no assertion was weakened.
+* **The metric reads the report, not a tool summary.** Every count above comes from
+  `covlines.py` over the LCOV that the run in §1 wrote.
+* **Every waiver mechanism is a measured counter or a named identifier**, not a state
+  argument — §3's right-hand column cites the hit counts and the lines/identifiers
+  that make the arm impossible. Two of the waivers carry an explicit *attempt* record
+  (§6.3).
+
+## 6. Findings, and what was rejected
+
+1. **`SessionsScreen.tsx:1166` is dead prop wiring, and it hints at a latent UX
+   gap.** The screen hands `onOpenConversation` to a `SettingsScreen` that can never
+   reach the page using it: the phone-level settings stack has no device pages, while
+   the run's-conversation affordance lives in `TasksSettingsPage`, which only the
+   *device* page's stack reaches (from `DesktopsScreen`, which passes the same prop
+   and *can* reach it). So the feature works from the devices screen and silently does
+   nothing from the session list's own settings — a wiring question for the owners of
+   those two screens, not a coverage bug. **Reported, not changed**: it is production
+   code and this task forbids edits made for coverage.
+2. **`usePromptOutbox`'s lane is enforced on one side only** (round-1 §Segment 43) —
+   unchanged, still worth a decision: `recoverPendingPrompt` checks `sendingRef.current`
+   (395) but `sendMessage` does not (275-276).
+3. **Attempts that failed, recorded so the next pass does not repeat them:**
+   * `MarkdownText:139/140` — a `file://` image *was* driven through `MarkdownText`
+     (that test is kept, as a regression guard for the normalised path) and it renders
+     through the **block** renderer at 171, never the inline arm; the inline arm was
+     also driven directly with a `data:` src, which returns at 138. No input produces a
+     local `src` inside the inline arm.
+   * `useChatFiles:201/208` — driving the whole large-file/metered confirm path (so
+     that `hideDownload` really runs mid-flow) still reports `handle.visible === true`
+     by the time the transport calls back, and the probe's final `activeDownload`
+     (`phase: waiting_network`) is the `updateDownload` arm, not `showDownload`. The
+     probe file was deleted afterwards (no coverage-only test remains in the tree).
+   * `TasksSettingsPage` — `renderPhoneHome` was inspected for a route to the tasks
+     page before `SessionsScreen:1166` was called dead; there is exactly one
+     `push({ name: "tasks" })` and it is in `renderDeviceHome`.
+4. **A harness trap that produced a wrong conclusion earlier in this campaign, worth
+   recording:** `renderer.update(...)` from `react-test-renderer` returns **void**, so
+   the common shorthand `renderer = renderer.update(createElement(Harness, props))`
+   drops the renderer — every later render then `create(...)`s a *fresh* instance whose
+   state, effects and timers are unmanaged, while a shared spy variable is rewritten by
+   either tree so assertions still pass. Write
+   `if (renderer) renderer.update(el); else renderer = create(el);`. (This is how the
+   minimum-visible floor briefly looked as though it failed to cancel its timer.)
+5. **`docs/testing/waiver-ledger.md`** still prints "(see its own §waiver ledger)" for
+   module-mobile; the 13 rows above are that ledger. The file itself is outside this
+   task's write scope, so it is left for the supervisor to point at this segment.
+
+## 7. Verdict against this todo's acceptance contract
+
+*tests-green* — yes. `cd mobile && npm run gen-version && timeout 420 npx jest
+--runInBand --coverage; echo "exit=$?"` → **`exit=0`, `Test Suites: 163 passed, 163
+total`, `Tests: 3246 passed, 3246 total`** (no timer hang; a hang would be `124`).
+
+*residual-classified* — yes. **13 uncovered lines remain, and all 13 carry a
+category + mechanism in §3**: 13 × `unreachable-by-construction`, in five kinds of
+invariant — predicate identity evaluated in two places (`MarkdownText:139/140`),
+a closed two-member type union (`questionNav:67`), a closed set of literals at the
+call sites (`client:70/71`), single writer + paired cleanup
+(`useMinimumVisible:11/12`) or a private function with no handle-omitting caller
+(`useChatFiles:201/208/305`), a ref whose initializer is overwritten before any
+reader (`useTimelineController:79`) and a default-arg no caller omits
+(`useTimelineController:207`), and a page reachable only in a mode this screen
+never enters (`SessionsScreen:1166`). Every row cites the measured counters behind
+it. Zero lines sit in an unclassified bucket; no line was covered by deleting or
+weakening production code.
+
+*measurement-recorded* — yes.
+`python3 .future/cov100/covlines.py total mobile/coverage/lcov.info --under src`
+→ **before `covered=9728 measured=9859 uncovered=131 lines%=98.6713`**, **after
+`covered=9846 measured=9859 uncovered=13 lines%=99.8681`**; per-line detail from
+`covlines.py detail mobile/coverage/lcov.info --under src`.
+
+Reproduce all of it:
+
+```bash
+cd mobile && npm run gen-version
+timeout 420 npx jest --runInBand --coverage; echo "exit=$?"     # exit=0, 163 suites / 3246 tests
+cd .. && python3 .future/cov100/covlines.py total  mobile/coverage/lcov.info --under src
+cd .. && python3 .future/cov100/covlines.py detail mobile/coverage/lcov.info --under src
+```
+
+## 8. Re-verification on the current tree, and the artifact's location
+
+This segment was re-measured after the worktree had moved past `8449acf6` (the
+supervisor snapshotted this unit as `test(M1)` commits, and other units have since
+landed their own snapshots). The numbers in §2 hold on that tree:
+
+```
+cd mobile && npm run gen-version && timeout 420 npx jest --runInBand --coverage; echo "exit=$?"
+  exit=0   Test Suites: 163 passed, 163 total   Tests: 3246 passed, 3246 total
+python3 .future/cov100/covlines.py total /tmp/mobile-lcov.info --under src
+  covered=9846 measured=9859 uncovered=13 lines%=99.8681
+```
+
+**Artifact:** `/tmp/mobile-lcov.info` (385 204 bytes; the supervisor's copy of the
+run's `mobile/coverage/lcov.info`) plus `/tmp/mobile-coverage-summary.json`. Its
+integrity is checkable from the file itself, which matters because a truncated
+instrumented run is the false-100 % trap: it carries **187 `SF:` records, 9859 `DA:`
+records and 187 `end_of_record` markers**, i.e. exactly the `measured=9859` the
+metric reports, and the same 187 files as the baseline report — a complete run, not
+a partial one. The generated `mobile/coverage/lcov-report/` HTML tree (6.2 MB,
+regenerated by the `lcov` reporter on every run) was deleted after the copy, per
+PLAN §2 (the lcov is the artifact, not the directory); this unit has **no
+instrumented target dir at all** — it is a JS unit, so there is nothing of this
+unit's under `target/cov-*` for anyone to reclaim.
+
+## 9. Measurement-guard compliance (tool exit codes)
+
+Per the campaign's measurement guard, both numbers below were taken only after
+confirming the **tool exited 0** — a nonzero exit means the number is invalid
+whatever it says, and exit 3 means the report is unusable (no per-line records for
+the scope, or ≥95 % of lines at zero), not that coverage failed.
+
+| measurement | command | tool exit | attempt |
+|---|---|---|---|
+| baseline (131) | `python3 .future/cov100/covlines.py total .future/cov100/baseline/mobile-lcov.info --under src` | **0** | 1 |
+| final (13) | `python3 .future/cov100/covlines.py total /tmp/mobile-lcov.info --under src` | **0** | 1 |
+
+No exit 3 occurred on any attempt, so no number was retried or carried over from a
+previous run. The report is provably not zeroed or truncated: 13 of 9859 measured
+lines are at zero (**0.13 %**, far below the guard's 95 % threshold), it carries 187
+`SF:` records / 9859 `DA:` records / 187 `end_of_record` markers — exactly the
+`measured=9859` the metric reports — and the run that wrote it was green
+(`exit=0`, 163 suites / 3246 tests). Mobile is a jest unit, so it consumes
+`covlines.py` over LCOV; `covlines-js.py` (the statement-based desktop tool) is not
+part of this unit's measurement.
+
+## 10. The CI typecheck gate was RED behind a green suite — six `tsc` errors, now fixed
+
+Jest strips types, so §7's `Tests: 3246 passed` never spoke to `tsc`. CI's Mobile
+job runs `npm run typecheck` (`npm run gen-version && tsc --noEmit`) and
+`npm run lint` as their **own** required steps, so this segment's mobile handoff
+was red at the gate while every test was green. It was found by the *flake-mobile*
+unit running its own final gate, not by this unit's final check — the follow-up
+todo is the repair documented here. No production file, no test name and no line
+number changed; the metric is untouched (§10.2 proves it).
+
+**Before** (on this worktree, with `mobile/src/version.generated.ts` present, so all
+six are this campaign's and not a stale-generation artifact):
+
+```
+cd mobile && npx tsc --noEmit          # exit 1
+src/features/chat/__tests__/ChatScreen.test.ts(1053,58): error TS2345: Argument of type 'string' is not assignable to parameter of type 'Promise<null>'.
+src/features/chat/__tests__/useComposerDraft.test.ts(299,51): error TS2353: Object literal may only specify known properties, and 'kind' does not exist in type 'SessionReferenceTarget'.
+src/features/chat/__tests__/useComposerDraft.test.ts(315,30): error TS2353: (same, second call site)
+src/remote/__tests__/useDesktopConnection.test.ts(520,36): error TS2339: Property 'onSessionActivity' does not exist on type 'MockClientCallbacks'.
+src/screens/__tests__/SessionsScreen.test.ts(268,39): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'ReactNode | ReactNode[]'.
+src/screens/__tests__/SessionsScreen.test.ts(271,27): error TS2339: Property 'onPress' does not exist on type '{ label?: string | undefined; }'.
+```
+
+All six are **test-side**: the fixtures were typed more loosely — and twice shaped
+differently — than the APIs they exercise. No `as any` and no `@ts-expect-error`
+was used; each site is typed against the real declaration:
+
+| site | what the test claimed | the real type | repair |
+|---|---|---|---|
+| `ChatScreen.test.ts:1053` | `mockRemote.resolveToolCallTarget` inferred `Promise<null>` from `jest.fn(async () => null)`, so `mockResolvedValueOnce("ls -la /tmp")` was illegal — the fixture was **narrower** than the API, not wider | `resolveToolCallTarget(toolCallId: string, runId: string): Promise<string \| null>` — `src/remote/RemoteContext.tsx:182` | declare the mock `jest.fn<Promise<string \| null>, [string, string]>(async () => null)` |
+| `ChatScreen.test.ts:1042/1051` (same fixtures) | `findAllByType("TimelineCard" as never)` leaves `props` as `any`, so the callback calls were checked against nothing | `TimelineCardProps` — `src/features/chat/messages/types.ts:11` (`onOpenSession?(sessionId: string): void`, `onResolveToolTarget?: ToolTargetResolver`) | take the callback from the row's own props type (`NonNullable<TimelineCardProps[...]>`) so the two calls are really checked |
+| `useComposerDraft.test.ts:299/315` | `{ kind: "session", sessionId: "s-9" }` | **no discriminator exists** — see §10.1 | pass the shape the picker builds |
+| `useDesktopConnection.test.ts:520` | a `Record<string, string>` (`{ "s1": "running" }`) and a numeric version (`7`) | `onSessionActivity?(activity: SessionActivity[], version?: SnapshotVersion): void` — `src/remote/client.ts:55`; see §10.1 | add the member to `MockClientCallbacks` with its real signature and send a real frame |
+| `SessionsScreen.test.ts:268` | `empty` cast to `{ props: { children: unknown } }` | `SessionList`'s own prop `empty: ReactNode` — `src/screens/SessionList.tsx:121` | `ReactElement<{ children?: ReactNode }>` |
+| `SessionsScreen.test.ts:271` | the retry child typed `{ label?: string }` (no `onPress`) | the child is a `Button`, `src/components/Button.tsx:6`: `{ label: string; icon?...; onPress(): void }` | `ReactElement<ComponentProps<typeof Button>>[]` |
+
+### 10.1 Two of the six were a permissive/different fixture, not a missing cast
+
+**(2) `useComposerDraft.test.ts:299/315`.** The literal was checked against
+`SessionReferenceTarget` (`src/remote/types.ts:171`):
+
+```ts
+/**
+ * A conversation the composer's draft refers to. The draft carries it as a
+ * compact token (`#title`) and the message it sends carries the link
+ * `[title](futureos://session/<id>)` — the id is the payload.
+ */
+export interface SessionReferenceTarget {
+  sessionId: string;
+  title: string;
+}
+```
+
+There is no `kind` field and no other discriminator — a `#` reference can only
+name a conversation. The single production producer is the picker
+(`src/features/chat/components/SessionPicker.tsx:76-79`):
+
+```ts
+onPress={() => onSelect({
+  sessionId: session.sessionId,
+  title: session.title.trim() || t("sessions.unnamed"),
+})}
+```
+
+and the single consumer is `useComposerCompletion.ts:92` (`selectSession: (picked:
+SessionReferenceTarget) => … sessionReference?.remember(next.token, picked)`),
+which hands the same object straight to `rememberSessionRef`
+(`useComposerDraft.ts:92`) — the hook stores it verbatim. So the test was asserting
+a shape the app **cannot produce**: the "fixture more permissive than reality"
+class of `.future/cov100/GOTCHAS.md`. The premise was corrected (the real
+`{ sessionId, title }` is now both passed and asserted), not merely the type —
+with `toEqual` still comparing the stored map, so the token→id mapping this test
+exists for is unchanged. `expandSessionReferences`/`sessionReferenceToken` only
+read `.sessionId` and `.title`, so nothing downstream depended on the phantom key.
+
+**(3) `useDesktopConnection.test.ts:520`.** Two independent shape errors, same
+class. `MockClientCallbacks` (the harness's own list of what
+`useDesktopConnection` wires) was missing `onSessionActivity` altogether, and the
+frame it sent — a session→state **map** plus a numeric version — is not what the
+client decodes. The real declarations (`src/remote/types.ts:113/127`,
+`src/remote/client.ts:55`):
+
+```ts
+export interface SnapshotVersion { epoch: string; revision: number; }
+export interface SessionActivity { sessionId: string; lastMessageAt: number; }
+// client.ts, RemoteClientCallbacks:
+onSessionActivity?(activity: SessionActivity[], version?: SnapshotVersion): void;
+```
+
+and the only producer is the `p.<pair>.state.activity` packet
+(`src/remote/client.ts:1015`): `decodeRemoteJson<{ activity?: SessionActivity[];
+version?: SnapshotVersion }>` → `onSessionActivity?.(data.activity ?? [],
+data.version)`. The fix adds the member with that real signature and sends
+`[{ sessionId: "s1", lastMessageAt: 7 }]` + `{ epoch: "epoch", revision: 3 }`; the
+test's subject (the generation-fenced passthrough to *this* machine's
+`applySessionActivity`) is unchanged.
+
+### 10.2 Gates after the repair — and why the metric did not move
+
+| gate | command | exit | result |
+|---|---|---|---|
+| typecheck | `cd mobile && npx tsc --noEmit` | **0** | 0 errors (was 6 in 4 files) |
+| lint | `cd mobile && npx eslint .` | **0** | 0 problems (also clean before) |
+| suite | `cd mobile && timeout 420 npx jest --runInBand --coverage; echo exit=$?` | **0** | `163 passed, 163 total` suites, `3246 passed, 3246 total` tests; the process exited on its own (**not** `124`, so no leaked timer) |
+| metric | `python3 .future/cov100/covlines.py total mobile/coverage/lcov.info --under src` | **0** | `covered=9846 measured=9859 uncovered=13 lines%=99.8681` — identical to §2/§8 |
+| tripwire | `python3 .future/cov100/reconcile.py --report mobile/coverage/lcov.info --scope src/ --doc docs/testing/module-mobile.md --section "Segment 50"` | **0** | `files with uncovered lines=7 uncovered lines=13`, `mentioned: 13`, `MISSING: 0`, `STALE: 0` |
+
+No test was added or removed (3246 before and after) and no production file was
+touched, so the line set could not move — verified rather than assumed: the
+**`DA:<line>,0` set of the fresh report is byte-identical** to the one recorded in
+§8. The two reports differ only in execution **counts** (`diff` shows 470 changed
+lines, all `DA:<line>,<n>` with `n > 0`), which the count-based runner cannot be
+stable about:
+
+```
+# the 口径 A line set, extracted from both reports and compared
+for r in /tmp/mobile-lcov.info mobile/coverage/lcov.info; do
+  awk '/^SF:/{f=$0} /^DA:.*,0$/{print f" "$0}' "$r" | sort > "/tmp/zeros.$(basename $(dirname $r))"
+done
+diff /tmp/zeros.tmp /tmp/zeros.coverage        # no output: the two zero-sets are identical
+# → the same 13 lines as §8: MarkdownText.tsx 139/140, useChatFiles.ts 201/208/305,
+#   questionNav.ts 67, useMinimumVisible.ts 11/12, client.ts 70/71,
+#   useTimelineController.ts 79/207, SessionsScreen.tsx 1166
+```
+
+`reconcile.py` was run against **both** `/tmp/mobile-lcov.info` (the §8 artifact,
+unchanged, 385 204 bytes) and the fresh `mobile/coverage/lcov.info`
+(385 204 bytes, 187 `SF:` / 9859 `DA:` / 187 `end_of_record`), with the same
+13-mentioned / 0-MISSING / 0-STALE result — so the repair is reconciled against the
+artifact the supervisor already holds, not just against a new one. This unit's js
+run leaves `mobile/coverage/` (gitignored) holding `lcov.info`,
+`coverage-final.json` and `coverage-summary.json`; the regenerated
+`lcov-report/` HTML tree (6.2 MB) was deleted again, per §2.
+
+## 11. Known residual from §10, recorded not fixed
+
+Seven lookups in `mobile/src/features/chat/__tests__/ChatScreen.test.ts` still reach
+their props through `findAllByType("TimelineCard" as never)` — lines 788, 844, 885,
+921, 927 (the `#` reference and tool-row sites that are now typed are 1044/1058).
+The mock at `ChatScreen.test.ts:98` replaces the card with the **host string**
+`"TimelineCard"`, whose props no type checks, so the props those sites read are
+`any`. Every prop they touch was read by hand against `TimelineCardProps`
+(`src/features/chat/messages/types.ts:11`) and is real — `isLatestAssistant`,
+`onOpenAttachment`, `onOpenFile`, `onRetry`, `onContinue`, `onFork`,
+`onReplyTailAnchor` — so **no test is asserting a phantom prop** and no gate is red
+for this. The residual is forward-looking: a rename of any of those props would
+make those assertions silently vacuous (the mock forwards anything) instead of
+failing. Typing them the way 1044/1058 now are is a five-line change whenever
+someone touches that file; it is not needed for CI or for the metric.

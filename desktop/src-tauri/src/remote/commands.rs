@@ -2498,6 +2498,93 @@ mod bridge_tests {
             .contains("Unsupported command"));
     }
 
+    /// The mock's *own* default answer for the lazy fetch, unscripted: a call
+    /// identity the recorded page does not contain comes back with a null name
+    /// and null arguments — the shape the real Agent gives for a call it cannot
+    /// resolve. A mock that invented a body would let a client-side fetch bug
+    /// look like a working fetch, which is why the empty answer is asserted
+    /// rather than left to whatever the default happens to do.
+    #[tokio::test]
+    async fn the_mock_answers_an_unknown_tool_call_identity_with_nothing() {
+        use crate::remote_host::lean::LEAN_EVENTS_FEATURE;
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-tool-args-unknown").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let session = unique("sess-args-unknown");
+        let run = unique("run-args-unknown");
+        // A page that *does* carry a call, so the miss is the identity and not
+        // an empty page.
+        agent.set_session_entries(
+            &session,
+            json!({ "entries": [{
+                "id": "a1", "kind": "assistant", "role": "assistant",
+                "runId": run, "blocks": [
+                    {"kind": "tool_call", "name": "shell", "toolCallId": "c-recorded",
+                     "arguments": {"command": "ls -la"}},
+                ],
+            }] }),
+        );
+        apply_declared_features(
+            &bridge.handshake,
+            &bridge.pair_id,
+            &[LEAN_EVENTS_FEATURE.to_string()],
+        );
+
+        let reply = bridge
+            .call(json!({
+                "id": unique("args-unknown"),
+                "type": "get_tool_call_args",
+                "sessionId": session,
+                "runId": run,
+                "toolCallId": "c-absent",
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["toolCallId"], json!("c-absent"));
+        assert_eq!(
+            reply["data"]["name"],
+            json!(null),
+            "an unresolvable call has no name to report: {reply}"
+        );
+        assert_eq!(
+            reply["data"]["arguments"],
+            json!(null),
+            "and nothing to hand back: {reply}"
+        );
+
+        // The same request for the recorded identity *does* answer with the
+        // arguments, so the empty answer above is a miss and not a broken mock.
+        let reply = bridge
+            .call(json!({
+                "id": unique("args-recorded"),
+                "type": "get_tool_call_args",
+                "sessionId": session,
+                "runId": run,
+                "toolCallId": "c-recorded",
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["name"], json!("shell"));
+        assert_eq!(reply["data"]["arguments"]["command"], json!("ls -la"));
+
+        // Withdraw the declaration before returning: the lean feed is a
+        // process-global flag (`remote_host::lean`), so a test that leaves it on
+        // silently turns every later test in this binary into a declared client
+        // — the sibling test above ends the same way, for the same reason. (This
+        // is what a first cut of this test got wrong: it passed on its own and
+        // reddened `a_client_that_did_not_declare_keeps_the_full_lane`.)
+        apply_declared_features(
+            &bridge.handshake,
+            &bridge.pair_id,
+            &["event_coalescing_v1".to_string()],
+        );
+        assert!(
+            !crate::remote_host::lean::enabled(),
+            "the declaration must not outlive the test"
+        );
+    }
+
     #[tokio::test]
     async fn presence_and_catalog_commands() {
         let _lock = mock_agent_lock();

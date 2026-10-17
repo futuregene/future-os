@@ -10,7 +10,7 @@ per-file inventory and the current ledger live in
 [`../testing/module-channels.md`](../testing/module-channels.md), which is the
 document the goal gate reads (`verify.py crate future-channels …`).
 
-Two things this page predates and that you should know before quoting it:
+Four things this page predates and that you should know before quoting it:
 
 1. **Platform.** The counts below were produced on Linux, using the LCOV
    `DA:<line>,0` records the `chan-*` scripts read. On Windows the same crate
@@ -27,6 +27,23 @@ Two things this page predates and that you should know before quoting it:
    error text — and one was a harness bug (`WsAction::SendClose` silently ended
    the script). See `docs/testing/module-channels.md` §2, and re-run them with
    `python .future/cov100/verify.py windows-red-baseline future-channel`.
+3. **Round 2 (2026-10-16).** The campaign after this page was written measured
+   the crate on **macOS arm64** by per-line LCOV `DA:<line>,0`, found **85**
+   uncovered lines of 25 531, and took them to **24 of 25 740** (99.9068 %).
+   That pass fixed a real defect in the iMessage fixture (three macOS-only
+   polling tests had been asserting against messages older than the poll
+   loop's watermark) and a real defect in the process-test harness (a SIGINT
+   that is missed hangs the test binary forever). Run identity, the covered
+   list and the per-line ledger are in `docs/testing/module-channels.md` §10;
+   the tables below are that measurement.
+4. **Round 2b (2026-10-16).** The adversarial review `rev-ch`
+   (`docs/testing/review-rust.md`, round 2) then falsified **16 of the 24** rows
+   by building an executing counterexample for each, and that rework is now
+   shipped: the crate reads **8 uncovered lines of 25 841 = 99.9690 %**, with
+   `attribution-artifact` and `unreachable-in-this-environment` empty for the
+   framework and two rows re-registered with corrected reasons. The tables below
+   are the round-2b state; `docs/testing/module-channels.md` §10.7 has the
+   covering test of every row that fell, §10.4 the current ledger.
 
 ## The measure
 
@@ -71,60 +88,97 @@ here instead of being hidden:
 
 ## Uncovered lines in the framework
 
-Measured on the channel crate. 22 lines, in four groups. **Line numbers on this
-page drift**; the authoritative, freshly measured per-file inventory (Windows:
-222 lines in 39 files by llvm-cov's `summary.lines`, 117 by the DA records this
-page uses) is `docs/testing/module-channels.md` §5–§6. The groups below are the
-*reasons* that survive measurement on either platform.
+**Round-2b measurement (2026-10-16, macOS arm64, `cargo llvm-cov -p
+future-channel --lcov`, per-line `DA:<line>,0`): 8 lines in 8 files.** That is the
+current state, and it is the result of two rounds: round 2 took this crate from
+85 to 24 uncovered lines, and round 2b executed the rework that the adversarial
+review `rev-ch` forced by falsifying **16 of those 24 rows** with an executing
+counterexample each (`docs/testing/review-rust.md`; the covering test of every
+fallen row is named in `docs/testing/module-channels.md` §10.7.2, the current
+per-line ledger is §10.4, and a race line that wobbles on its own is discussed at
+the end of this section). **Two of the three groups below are now empty for this
+crate**: every `attribution-artifact` and every `unreachable-in-this-environment`
+row this page used to carry was *executable* once the right input was built. What
+remains is one platform row and seven control-flow rows, each with the invariant
+that makes every input avoid it.
 
-### Environmental (8)
+### `platform-unmeasured` (1)
 
-| Lines | Why it cannot be executed by a test |
+| Line | Why it cannot be executed by a test here |
 |---|---|
-| `transport/webhook.rs` 149–151 | The `accept()` failure arm. It needs the listener to break or the process to run out of file descriptors — not reproducible deterministically in-process, and forcing it (fd exhaustion) would break other tests running in parallel. |
-| `providers/imessage.rs` 282 | `sender()`'s `!platform_supported()` arm. Coverage is measured on macOS, where the predicate is true by definition. |
-| `providers/imessage.rs` 391 | The tail of `send()` after `run_osascript`. Reaching it runs the real `osascript` and would send a real iMessage. |
-| `providers/slack.rs` 934–936 | `#[cfg(not(test))] webhook_test_slot`. The measured binary is a test build, so this body is not compiled into it. |
+| `providers/imessage.rs` 282 | `sender()`'s `!platform_supported()` arm. The predicate is `cfg!(target_os = "macos")` (`imessage.rs` 256–259), a compile-time constant, and coverage is measured on macOS, where it is true by definition; the Windows/Linux build executes this line. The other macOS-only arms of the same file are covered (`run_polling`'s whole body, `probe`, `send_text`). The review confirmed this as the one row whose category needed no correction, and nothing in the tree stubs the predicate. |
 
-### Unreachable by construction (4)
+### `unreachable-in-this-environment` (0)
 
-| Lines | Why |
+This group is empty for the framework. What used to be in it, and what covered
+each line in round 2b:
+
+| Former row | Now covered by |
 |---|---|
-| `providers/slack.rs` 733, `providers/mattermost.rs` 527 | `let Some(message) = stream.next() else { bail!("… closed by the platform") }`. The original experiment here concluded the `None` arm was unreachable, because a server that drops the connection **without** a close frame yields `Err(Protocol(ResetWithoutClosingHandshake))` on the read arm. That is true of an abrupt drop but **not** of a drained close handshake: `a_drained_close_handshake_ends_the_message_stream_with_none` now drives a close frame, waits for the client's reply, half-closes the server's write half, and the client's stream yields `None` (proved against tungstenite 0.24's `ConnectionClosed → None` mapping). The `None` arm is therefore **reachable**; the *session*-level arm is simply not driven by a test yet, and it is listed as OPEN in the module ledger rather than waived here. |
-| `test_support.rs` 741 | `unreachable!("tests dial plain ws only")` in `kill_write_half`: the tests hand it a plain socket, so the TLS arm cannot be taken. This helper moved out of `providers/slack.rs` (where it was `#[cfg(all(test, unix))]`) into `channels/src/test_support.rs` with `#[cfg(unix)]`/`#[cfg(windows)]` branches, so the Mattermost auth-challenge test can use it on Windows. |
-| `outbox.rs` 210 | The "not built" guard in `Outbox::context`. Resolving a channel by id goes through the registry, which ships no planned channel, so the guard cannot fire. The same guard **is** covered in the starter, where a definition can be handed in directly (see below). |
+| `transport/webhook.rs` 149, 150, 151 | `channels/tests/webhook_emfile.rs` — one test in its own process: `RLIMIT_NOFILE` lowered to the number of descriptors the process already holds, the table filled, one connection queued, then `serve()`. The per-process limit is why the fixture is contained; `147 → 34` against `148 → 33` shows the `Err` arm really was taken. (Closing the listener's fd behind `serve`'s back was measured and does *not* reach the arm — the poll pends.) |
+| `providers/imessage.rs` 391 | `channels/tests/imessage_send_success.rs` — a `PATH` shim whose `osascript` exits 0, driven through the public provider API, so the success half is asserted with **no message sent**. |
+| `providers/mattermost.rs` 552 | `a_reset_socket_fails_the_pong_reply`, with the frame order the review named (`WaitForReceived{1}` → ping → reset), plus a positive control that the auth challenge reached the mock. |
+| `test_support.rs` 780 | `kill_write_half_reports_an_error_that_is_not_notconnected` — `dup2(/dev/null)` over the test's own socket descriptor makes `shutdown(Write)` answer ENOTSOCK; the `#[should_panic]` message *is* the assertion. |
+| `providers/slack.rs` 934, 935, 936 | `slack_events_webhook_starts_in_the_binary` (`tests/channel_bin.rs`) — runs the **binary**, the only build that compiles the `#[cfg(not(test))]` twin, and waits for the server's own log line before SIGINT. |
 
-### Ordering and environment (1)
+### `unreachable-by-construction` (7)
 
-| Line | Why |
+| Lines | The invariant that makes every input avoid them |
 |---|---|
-| `providers/mattermost.rs` 552 | The pong write on a socket that died between the frame being read and the reply being written. The mock cannot order those two events: a socket that is already dead fails the earlier authentication write instead (covered), and a reset that arrives while the session is reading is reported by the read arm first. The existing reset tests assert the same user-visible outcome (the session reports an unwritable socket). |
+| `feishu/mod.rs` 95, `dingtalk/mod.rs` 94 | The `Ok(())` arm of the connection monitor. `AgentClient::wait_for_disconnect` has no success path: after the stream ends it returns `Err(anyhow!("Agent connection closed"))` (`grpc_client.rs` 108–125) — there is no statement that yields `Ok(())`, so no stream shape can select the arm. The `Err` arm below is the only one that runs (it carries count 1), and `an_ended_stream_is_a_disconnect` asserts the error for an ended stream. |
+| `providers/mattermost.rs` 527, `providers/slack.rs` 733 | The session-level `stream.next() -> None` arm. `None` needs a drained close handshake **and** the peer's FIN, and tungstenite hands the `Close` message to the loop first — the session returns at the `Ok(WsMessage::Close(_))` arm above (mattermost 555 / slack 775, both covered by the session close tests) and never reaches the `None` test. Measured directly by the review with a raw stream: `[Close]` → `Close(None)` then the poll **pends**; `[Close, FIN]` → `Close(None)` then `None`; `[FIN]` alone → `Err(ResetWithoutClosingHandshake)`; a reset → `Err(Connection reset)`. Ten session constructions in total (both providers: close, fin, both, ping+reset) all landed on the `Close` arm, the read-error arm or a bail. Both facts are why the earlier "drive it with `ShutdownWrite`" next step cannot work. |
+| `providers/qq.rs` 626 | The skip edge of `if let Some(interval) = heartbeat_interval` (`qq.rs` 615–626). The enclosing `select!` arm's own guard — `_ = tokio::time::sleep(50 ms), if heartbeat_interval.is_some()` (`qq.rs` 612) — means entering the arm implies `Some`, so the false edge is unreachable **by construction**. The round-2 page called this an `attribution-artifact` and offered the "a tick where `due` is false" hypothesis; the review took exactly those ticks (a 30 s interval held open 600 ms ≈ 11 ticks, `625 → 11`) and 626 did not move, so the hypothesis is refuted by measurement rather than left untested. **Category and mechanism corrected here.** |
+| `outbox.rs` 210 | The "channel not built" guard in `Outbox::context`. Resolving a channel by id goes through the registry, whose entries are all `is_implemented()` and which ships no `Planned` channel, so `ensure_usable()` cannot fail there — a **data-dependent dead guard, not a type-system impossibility**, and it is a **duplicate**: the same check *is* covered where a definition can be handed in directly (`lib.rs::entry_action`, `an_enabled_channel_that_is_not_built_is_reported_and_skipped`). The review proved it by executed enumeration over `providers::all_definitions()` — everything is either implemented or absent from the registry, and the absent ones bail one line earlier (`208 → 2`). |
+| `test_support.rs` 770 | `_ => unreachable!("tests dial plain ws only")` in `kill_write_half`: the mock's sockets are always `MaybeTlsStream::Plain` (`769 → 4`), so the TLS arm cannot be taken. The `unreachable!` exists to fail loudly if that ever changes. Source-level result only: the three call sites (`slack_tests.rs` 1477/1503, `mattermost_tests.rs` 652) all dial `ws://`, and no TLS-capable mock exists — the crate does own a real TLS client path (`feishu_ws.rs` 183, `dingtalk_ws.rs` 131 use `crate::tls::ws_connector()`), so the missing piece is a mock server, not a property of the type system. |
 
-### Attribution artifacts (9)
+### `attribution-artifact` (0)
 
-Each of these is a brace or a span end; the neighbouring statements are covered
-by the named test.
+Empty for this crate. All four rows this page used to carry were **executable, not
+span ends**: `feishu/mod.rs` 111 and `dingtalk/mod.rs` 110 needed the *inner*
+backoff wait to elapse (the round-2 "other edge" taken was the `if let`'s
+**outer** false edge, which skips the region entirely), `feishu/prompt_loop.rs`
+449 needed an errored `AgentEnd` with streaming off, and `providers/qq.rs` 626 was
+misclassified outright (see the guard above). Seven other lines of this shape
+**were** closed in round 2 by writing a test for the other edge of the construct
+and no longer appear on this page: `feishu/bridge.rs` 933 (a `post` with no image
+element), `feishu/prompt_loop.rs` 53 (a superseded turn with no ack reaction),
+`providers/slack.rs` 763 (an `events_api` envelope with no `payload.event`) and
+763's sibling 903 (an `event_callback` with no `event` field).
 
-| Lines | What they are | Proof the code runs |
-|---|---|---|
-| `lib.rs` 172–173, 190–191 | The `inspect_err` closures of the Feishu and DingTalk supervisors | Both bridges retry on error and return `Ok` on shutdown, so the closure only runs if a bridge is aborted before its first exit. Nothing in the suite aborts them mid-run (the process-level SIGINT tests that would are `#[cfg(unix)]`). |
-| `lib.rs` 386 | `}` closing the flusher's flush-failure block | `the_flusher_survives_an_unwritable_snapshot` makes the flush fail and asserts the flusher keeps running. |
-| `lib.rs` 514 | The `Some(Running)` operand of the state assertion in `starting_publishes_a_state_for_every_channel` | The snapshot is taken before the supervisors run, so every enabled row is `Starting` and the second operand is never evaluated. It stays in the assertion so the test remains valid if that changes. |
-| `providers/slack.rs` 763, 903 | The `}` after the webhook's `if let Some(event)` and after the dispatch spawn | `the_events_webhook_verifies_signatures_and_answers_the_challenge` waits for the accepted prompt's acknowledgement, which `dispatch_event` only sends once the event has been through the bridge pipeline. |
-| `providers/qq.rs` 626 | `}` closing the heartbeat branch | `heartbeats_echo_the_last_sequence_and_stop_after_a_missed_ack` and `an_ack_clears_the_heartbeat_flag_and_the_connection_survives` assert the heartbeat frame and the cleared ack flag. |
+Lines this page used to waive that are **now covered** and no longer appear:
+`lib.rs` 172, 173, 190, 191 (the supervisor spawn closures — the review showed
+that awaiting the join handles executes the line; the `inspect_err` *closure body*
+stays dead because `run` has no `Err` path, which is recorded in
+`docs/testing/module-channels.md` §10.7.3), `lib.rs` 386 and 514 (the flusher's
+failure brace and the `Started`-vs-`Running` operand), `providers/imessage.rs`
+464–498 (the whole poll-loop body, which the fixed fixture uncovered),
+`providers/cli.rs` 362–368, `session_store.rs` 199–202, `policy.rs` 427/447,
+`feishu/bridge.rs` 139/880, `providers/slack.rs` 763/903 and the task-level
+shutdown arms.
+
+### The one race line (not a framework line)
+
+`feishu/feishu_ws.rs` 254 is the `warn!` inside the pong send: its test tolerates
+both orderings of a pong-send/read race on purpose, so the line executes only when
+the send wins. A crate-wide total that moves by exactly one line, with this line
+as the difference, is that race — not a regression. It is covered in the round-2b
+run (which is why it is not in the 8 above) and was uncovered in earlier ones; the
+row is kept here so the wobble is not rediscovered as a bug.
+
 
 ## Lines outside this scope
 
-The Feishu and DingTalk bridges (`channels/src/feishu/`, `channels/src/dingtalk/`)
-and the agent gRPC client (`channels/src/grpc_client.rs`) carry **25 or 26**
-further uncovered lines — the count moves by one on its own, for a reason worth
-knowing. `feishu/feishu_ws.rs:254` is the `warn!` inside the pong send, and its
-test tolerates both orderings of a race on purpose ("either the pong-send warn
-fires and the read errors, or the read errors first"); the line is executed only
-when the send wins. A measurement of 47 and one of 48 can therefore both be
-right, and a single line appearing there is not evidence that a change added it.
-They predate the channel framework and are not part of it; they are listed here
-only so the crate-wide number is not mistaken for framework debt.
+The Feishu and DingTalk bridges (`channels/src/feishu/`,
+`channels/src/dingtalk/`) and the agent gRPC client (`channels/src/grpc_client.rs`)
+predate the channel framework and are not part of it. **As of round 2b none of
+them has an uncovered line**: the whole `channels/src` subtree reads 8 uncovered
+lines, all of them listed in the groups above, and the round-2 measurement had
+already cleared this surface (the 24 lines of that run contained no
+`feishu/bridge.rs`, `dingtalk/` or `grpc_client.rs` line either). The one line
+that can appear here is the race at `feishu/feishu_ws.rs` 254 discussed
+above: it is executed only when the pong send wins a race its own test tolerates
+in both orders, so two measurements of this crate can differ by exactly that line
+and neither is wrong.
 
 ## Keeping the guard testable
 

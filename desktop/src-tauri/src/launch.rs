@@ -547,6 +547,7 @@ fn await_reply_with(
 mod tests {
     use super::*;
     use crate::auth_store::test_support::HomeGuard;
+    use crate::remote::{RemoteFailureReason, RemotePhase, RemoteStatus};
 
     fn parse(args: &[&str]) -> Result<Launch, String> {
         Launch::parse(&args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>())
@@ -666,6 +667,82 @@ mod tests {
         assert!(another_desktop_is_running());
         drop(held);
         assert!(!another_desktop_is_running());
+    }
+
+    /// Both launch stages hydrate the host environment, and the Desktop hydrates
+    /// again at startup (`lib.rs` calls `initialize` itself), so the wrapper must
+    /// be idempotent: the second call answers exactly what the first one did
+    /// instead of re-running the login-shell harvest or failing on a second pass.
+    #[test]
+    fn prepare_host_environment_is_idempotent() {
+        // The harvest mutates this process's PATH and adds missing vars; keep it
+        // away from the developer's real HOME.
+        let _home = HomeGuard::new("launch-host-environment");
+        let first = prepare_host_environment();
+        let second = prepare_host_environment();
+        assert_eq!(first, second);
+    }
+
+    /// The reply an operator sees is the headless entry point's own invitation
+    /// rule applied to a start status: a status that would yield no printable
+    /// link is reported as a reason, never as a link the phone cannot use.
+    #[test]
+    fn the_reply_is_either_the_invitation_or_why_there_is_none() {
+        let invitation = "futureos://remote/pair?v=2&code=x";
+        let expiry = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 600;
+
+        let accepted = Reply::of_status(&remote_status(
+            RemotePhase::Ready,
+            Some(invitation),
+            Some(expiry),
+        ));
+        assert_eq!(accepted.link.as_deref(), Some(invitation));
+        assert_eq!(accepted.expires_at, Some(expiry));
+        assert!(accepted.error.is_none());
+
+        // Ready, with an invitation code that is *not* a v2 pairing link: the
+        // headless rule refuses it, so the reply must carry the reason instead.
+        let mut refused = remote_status(
+            RemotePhase::Ready,
+            Some("https://example.com/not-a-pair"),
+            None,
+        );
+        refused.reason = Some(RemoteFailureReason::Network);
+        let reply = Reply::of_status(&refused);
+        assert!(reply.link.is_none(), "{reply:?}");
+        assert_eq!(reply.expires_at, None);
+        let error = reply.error.expect("a refusal carries a reason");
+        assert!(error.contains("Ready"), "{error}");
+        assert!(error.contains("Network"), "{error}");
+    }
+
+    /// A minimal status for the reply tests: every field the invitation rule and
+    /// its message read, and nothing this test does not assert.
+    fn remote_status(
+        phase: RemotePhase,
+        pairing_code: Option<&str>,
+        pairing_code_expires_at: Option<i64>,
+    ) -> RemoteStatus {
+        RemoteStatus {
+            agent_available: true,
+            phase,
+            reason: None,
+            recovery: None,
+            nats_url: String::new(),
+            pair_id: String::new(),
+            pairing_code: pairing_code.map(str::to_string),
+            pairing_code_expires_at,
+            desktop_id: String::new(),
+            desktop_public_key: String::new(),
+            web_url: None,
+            web_lan_url: None,
+            warning_code: None,
+            client: None,
+        }
     }
 
     /// The hand-off is only correct if the child's command line reads back as the
@@ -857,6 +934,64 @@ mod tests {
         // Neither half present: still an explicit "nothing was issued".
         let empty = invitation_notice(&Reply::default(), true);
         assert!(empty.contains("No pairing invitation"), "{empty}");
+
+        // An invitation with no expiry is still a complete notice: say when it
+        // runs out instead of dropping the sentence a user relies on.
+        let open_ended = invitation_notice(
+            &Reply {
+                link: Some("futureos://remote/pair?v=2&code=x".into()),
+                expires_at: None,
+                error: None,
+            },
+            true,
+        );
+        assert!(open_ended.contains("It expires shortly"), "{open_ended}");
+        assert!(
+            open_ended.contains("futureos://remote/pair?v=2&code=x"),
+            "{open_ended}"
+        );
+    }
+
+    /// The wrapper around the injected loop is what production runs: it reads a
+    /// real file and polls a real `Child`. An answer already on disk ends the wait
+    /// on the first attempt; a hand-off process that died without answering is
+    /// conclusive, so the launcher reports it instead of burning the 60s budget.
+    #[test]
+    fn the_wrapper_reads_a_real_answer_and_gives_up_on_a_dead_hand_off() {
+        let home = HomeGuard::new("launch-await-reply");
+        let root = PathBuf::from(std::env::var("HOME").unwrap());
+        let answer = Reply {
+            link: Some("futureos://remote/pair?v=2&code=x".into()),
+            expires_at: None,
+            error: None,
+        };
+        let answer_path = root.join("answer.json");
+        write_reply(&answer_path, &answer).expect("write the answer");
+        let mut alive = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--list")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn a live hand-off process");
+        assert_eq!(await_reply(&answer_path, &mut alive), Ok(answer));
+        let _ = alive.kill();
+        let _ = alive.wait();
+
+        let missing = root.join("missing.json");
+        let mut dead = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--definitely-not-a-libtest-flag")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn a failing hand-off process");
+        let status = dead.wait().expect("the hand-off process exits");
+        assert!(
+            !status.success(),
+            "the fixture must have failed to hand off"
+        );
+        let error = await_reply(&missing, &mut dead).expect_err("no answer is coming");
+        assert!(error.contains("did not accept the request"), "{error}");
+        drop(home);
     }
 
     /// The QR code is what the flag is for: the default prints it, `--no-qr` does

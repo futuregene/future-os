@@ -16,6 +16,7 @@ import { ChatScreen } from "../ChatScreen";
 import { JUMP_VIEW_OFFSET } from "../useQuestionNav";
 import { ComposerDock } from "../components/ComposerDock";
 import type { PendingSuggestion } from "../useSkillRecommendation";
+import type { TimelineCardProps } from "../messages/types";
 import { FloatingTimelineButton } from "../components/FloatingTimelineButton";
 import type { TimelineSyncStatus } from "../../../remote/syncEngine";
 import type { RemoteSession, RemoteSessionUsage, RemoteWorkspace, TimelineItem } from "../../../remote/types";
@@ -65,6 +66,12 @@ const mockRemote = {
   // A failed history read and the listing the file panel asks for.
   timelineError: null as string | null,
   retryTimeline: jest.fn(),
+  // A `#` reference in a sent message opens that conversation, and a lean tool
+  // row asks this machine for the command the page left out.
+  selectSession: jest.fn(async () => {}),
+  // The machine's own resolver, which answers with the command or null when the
+  // row has none (see `RemoteControls.resolveToolCallTarget`).
+  resolveToolCallTarget: jest.fn<Promise<string | null>, [string, string]>(async () => null),
   listSessionFiles: jest.fn(async () => null),
   desktopOnline: true,
   // The model's own generation state, separate from the lane's sync status.
@@ -1033,6 +1040,30 @@ describe("ChatScreen wiring", () => {
     act(() => sheet.props.onClose());
     expect(mockFileDownload.setFileAction).toHaveBeenCalledWith(null);
   });
+test("a `#` reference in a sent message opens the conversation it names", () => {
+  const card = view().findAllByType("TimelineCard" as never)[0]!;
+  // `findAllByType` types every element's `props` loosely, so take the callback
+  // from the row's own props type: the call below is then checked against the
+  // prop the screen really passes rather than against an inferred `any`.
+  const openSession = card.props.onOpenSession as NonNullable<TimelineCardProps["onOpenSession"]>;
+  expect(typeof openSession).toBe("function");
+  act(() => openSession("s-9"));
+  // The transcript did not change the conversation by itself: the screen routed
+  // the chip's own request through the controls, which is what makes the tap a
+  // conversation switch rather than a dead link.
+  expect(mockRemote.selectSession).toHaveBeenCalledWith("s-9");
+});
+
+test("a lean tool row asks this machine for the command the page dropped", async () => {
+  const card = view().findAllByType("TimelineCard" as never)[0]!;
+  const resolveToolTarget = card.props.onResolveToolTarget as NonNullable<TimelineCardProps["onResolveToolTarget"]>;
+  expect(typeof resolveToolTarget).toBe("function");
+  mockRemote.resolveToolCallTarget.mockResolvedValueOnce("ls -la /tmp");
+  let resolved: string | null = null;
+  await act(async () => { resolved = await resolveToolTarget("call_1", "run_1"); });
+  expect(mockRemote.resolveToolCallTarget).toHaveBeenCalledWith("call_1", "run_1");
+  expect(resolved).toBe("ls -la /tmp");
+});
 });
 
 
@@ -1072,3 +1103,4 @@ test("the bar carries the desktop this conversation is on, named the way the lis
   expect(tree.root.findByType(ChatTopBar).props.machine)
     .toEqual({ glyph: "🖥️", label: "desktop" });
 });
+

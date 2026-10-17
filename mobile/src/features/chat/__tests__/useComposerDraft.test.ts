@@ -7,7 +7,7 @@ import {
   loadSessionDraft,
   scheduleSessionDraft,
 } from "../../../remote/draftStorage";
-import { recoverPendingImagePickerAttachments } from "../../../remote/files";
+import { deleteTemporaryAttachment, recoverPendingImagePickerAttachments } from "../../../remote/files";
 import type { MobileAttachment } from "../../../remote/types";
 import { showToast } from "../utils";
 import { useComposerDraft, type ComposerDraftApi } from "../useComposerDraft";
@@ -29,6 +29,7 @@ const load = loadSessionDraft as jest.Mock;
 const schedule = scheduleSessionDraft as jest.Mock;
 const flush = flushSessionDraft as jest.Mock;
 const recover = recoverPendingImagePickerAttachments as jest.Mock;
+const deleteTemporary = deleteTemporaryAttachment as jest.Mock;
 const toast = showToast as jest.Mock;
 
 /** `t` is passed in as a prop (the hook only ever calls it for toast copy). */
@@ -194,6 +195,31 @@ describe("Android pending image-picker results", () => {
     expect(recover).not.toHaveBeenCalled();
     expect(current.attachments).toEqual([attachment]);
   });
+
+  test("a recovery that lands after the reader left takes its own temporary files with it", async () => {
+    const original: MobileAttachment = { ...attachment, localUri: "file:///tmp/original.png" };
+    const recovered: MobileAttachment = {
+      ...attachment, localUri: "file:///tmp/picked.png", temporary: true,
+    };
+    const pendingLoad = deferred<{ attachments: MobileAttachment[]; text: string }>();
+    const pendingRecovery = deferred<MobileAttachment[]>();
+    load.mockReturnValueOnce(pendingLoad.promise).mockResolvedValue(null);
+    recover.mockReturnValueOnce(pendingRecovery.promise);
+
+    render({ sessionId: "A" });
+    await act(async () => { pendingLoad.resolve({ attachments: [original], text: "A" }); await Promise.resolve(); });
+    // The picker's result is still coming back when the reader moves on.
+    render({ sessionId: "B" });
+    await act(async () => { pendingRecovery.resolve([original, recovered]); await Promise.resolve(); });
+
+    // The file the picker just copied exists only for the draft that asked for
+    // it: once that draft can no longer be installed, the copy is the hook's to
+    // delete, and the attachment the draft already had is left alone.
+    expect(deleteTemporary).toHaveBeenCalledTimes(1);
+    expect(deleteTemporary).toHaveBeenCalledWith(recovered);
+    expect(current.attachments).toEqual([]);
+    expect(current.message).toBe("");
+  });
 });
 
 test("a switch to another conversation discards the late load of the old one", async () => {
@@ -263,4 +289,35 @@ test("changing the UI language preserves edits without rereading the draft", asy
   await settle();
   expect(load).toHaveBeenCalledTimes(1);
   expect(current.message).toBe("unsaved edit");
+});
+
+test("a remembered reference rides with the draft it was made in", async () => {
+  load.mockResolvedValue({ attachments: [], text: "look at @a" });
+  render();
+  await settle();
+
+  // The target the picker hands over is exactly this shape (see `SessionPicker`
+  // and `SessionReferenceTarget`): the id, plus the title the token is built
+  // from. There is no discriminator to carry — a `#` reference can only name a
+  // conversation.
+  act(() => current.rememberSessionRef("tok-1", { sessionId: "s-9", title: "Session nine" }));
+  // The token the composer wrote is kept, so the sent message can resolve it.
+  expect(current.sessionRefs).toEqual({ "tok-1": { sessionId: "s-9", title: "Session nine" } });
+  expect(current.restoring).toBe(false);
+});
+
+test("a reference remembered for a draft the reader has left is dropped", async () => {
+  load.mockResolvedValue({ attachments: [], text: "look at @a" });
+  render({ sessionId: "A" });
+  await settle();
+  // The screen keeps the copy of `rememberSessionRef` it was drawn with, so a
+  // late completion can still call the previous conversation's one.
+  const stale = current.rememberSessionRef;
+
+  render({ sessionId: "B" });
+  await settle();
+  act(() => stale("tok-2", { sessionId: "s-9", title: "Session nine" }));
+  // The token names a conversation the composer is no longer writing: keeping it
+  // would resolve `@a` in B's text against A's session.
+  expect(current.sessionRefs).toEqual({});
 });

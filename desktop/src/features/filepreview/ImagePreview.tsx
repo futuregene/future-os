@@ -80,6 +80,15 @@ export function ImagePreview({
   }, [path, src]);
 
   // Observe container size so the zoom math stays correct across resizes.
+  //
+  // This effect must re-run once the container exists: on the first commit the
+  // overlay renders *nothing* (the bytes are still being read, and the loading
+  // notice has not appeared yet), so `containerRef.current` is null and the
+  // measurement — the observer and the resize listener with it — was skipped for
+  // the rest of the mount. With no box measured, `fit` is 0, every zoom anchor
+  // is computed against a 0x0 container and the transform becomes
+  // `scale(NaN)` (dropped by the browser), so double-click/zoom/pan silently did
+  // nothing until something else happened to resize the window.
   useEffect(() => {
     const el = containerRef.current;
     if (!el)
@@ -91,14 +100,18 @@ export function ImagePreview({
     };
     update();
 
-    const observer = new ResizeObserver(update);
-    observer.observe(el);
+    // `ResizeObserver` is not present in every embedder (jsdom, for one): the
+    // initial `update()` above is what the zoom math needs at all, and the
+    // window `resize` listener below still follows the overlay. Same guard as
+    // `useComposerInset` / `useStickyAutoScroll`.
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
+    observer?.observe(el);
     window.addEventListener("resize", update);
     return () => {
-      observer.disconnect();
+      observer?.disconnect();
       window.removeEventListener("resize", update);
     };
-  }, []);
+  }, [readySrc]);
 
   const fit = fitScale(containerSize, naturalSize);
   const actualScale = fit * zoom.scale;

@@ -60,6 +60,12 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 /// Lines of a server's stderr kept for diagnostics.
 const STDERR_TAIL_LINES: usize = 40;
 
+/// How long a failed handshake waits for the server's stderr to reach EOF
+/// before reporting without it: the wait ends at the server's own exit, and the
+/// bound is a backstop for a server that closed stdout while keeping stderr
+/// open (or left it open behind a child of its own).
+const STDERR_DRAIN_GRACE: Duration = Duration::from_secs(2);
+
 /// One configured MCP server, as `~/.future/mcp.json` describes it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -379,14 +385,25 @@ impl ServerProcess {
             .ok_or_else(|| format!("server '{name}': stdout was not piped"))?;
 
         let stderr_tail: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
-        if let Some(stderr) = child.stderr.take() {
+        let stderr_drain = child.stderr.take().map(|stderr| {
             let tail = Arc::clone(&stderr_tail);
-            tokio::spawn(async move { drain_stderr(stderr, tail).await });
-        }
+            tokio::spawn(async move { drain_stderr(stderr, tail).await })
+        });
 
         let mut session =
             Session::new(stdout, stdin, timeout).with_max_frame_bytes(max_frame_bytes);
         if let Err(error) = session.initialize().await {
+            // The tail is written by a task of its own, so nothing orders it
+            // before this read: a server that dies during its handshake is
+            // exactly the case where its own stderr is the explanation, and on a
+            // busy host this error path can run before the drain task has ever
+            // been polled. Join it first: it ends when the server's stderr
+            // reaches EOF, which the server's exit produces (the bound is a
+            // backstop for a server that closed stdout but kept stderr open, or
+            // left it open behind a child of its own).
+            if let Some(drain) = stderr_drain {
+                let _ = tokio::time::timeout(STDERR_DRAIN_GRACE, drain).await;
+            }
             let mut message = format!("the MCP server '{name}' failed its handshake: {error}");
             let tail = tail_of(&stderr_tail);
             if !tail.trim().is_empty() {
@@ -464,6 +481,31 @@ mod tests {
     struct FakeServer {
         session: Session<tokio::io::DuplexStream, tokio::io::DuplexStream>,
         seen: Arc<Mutex<Vec<Value>>>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    /// Let a fake server's task run to its own end: dropping the client half
+    /// makes its read loop see EOF, so it finishes instead of being cancelled by
+    /// the runtime at teardown. Awaiting it is what makes the loop's last line an
+    /// executed line rather than a span the runtime aborts mid-await; it is also
+    /// how a leak would surface (a task that never ends fails the test instead of
+    /// vanishing quietly).
+    async fn finish(server: FakeServer) {
+        let FakeServer { session, task, .. } = server;
+        drop(session);
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("the fake server must end when the client hangs up")
+            .expect("the fake server task panics rather than ends");
+    }
+
+    /// A snapshot of the requests the fake server has seen, cloned out of the
+    /// lock inside this call. Tests assert on the snapshot rather than holding a
+    /// guard, so no `MutexGuard` can be live at the `await` in `finish` — which
+    /// is what `clippy::await_holding_lock` (a syntactic lint: it does not see an
+    /// explicit `drop`) demands.
+    fn seen_messages(server: &FakeServer) -> Vec<Value> {
+        server.seen.lock().unwrap().clone()
     }
 
     /// Start a fake server on an in-memory duplex and return a client session
@@ -474,7 +516,7 @@ mod tests {
         let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
 
         let seen_server = Arc::clone(&seen);
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let mut lines = BufReader::new(server_in).lines();
             let mut output = server_out;
             let mut page = 0usize;
@@ -527,6 +569,7 @@ mod tests {
         FakeServer {
             session: Session::new(client_in, client_out, Duration::from_secs(5)),
             seen,
+            task,
         }
     }
 
@@ -539,12 +582,13 @@ mod tests {
         // (asserting straight after `initialize` would race the server task).
         server.session.list_tools().await.unwrap();
 
-        let seen = server.seen.lock().unwrap();
+        let seen = seen_messages(&server);
         assert_eq!(seen[0]["method"], "initialize");
         assert_eq!(seen[0]["params"]["protocolVersion"], PROTOCOL_VERSION);
         assert_eq!(seen[0]["params"]["clientInfo"]["name"], "future");
         assert_eq!(seen[1]["method"], "notifications/initialized");
         assert!(seen[1].get("id").is_none(), "a notification carries no id");
+        finish(server).await;
     }
 
     #[tokio::test]
@@ -564,13 +608,14 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["first", "second"]);
 
-        let seen = server.seen.lock().unwrap();
+        let seen = seen_messages(&server);
         let pages: Vec<&Value> = seen
             .iter()
             .filter(|message| message["method"] == "tools/list")
             .collect();
         assert_eq!(pages.len(), 2, "the second page must be requested");
         assert_eq!(pages[1]["params"]["cursor"], "page-2");
+        finish(server).await;
     }
 
     #[tokio::test]
@@ -585,6 +630,7 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("-32601"), "{error}");
         assert!(error.contains("resources/list"), "{error}");
+        finish(server).await;
     }
 
     #[tokio::test]
@@ -685,5 +731,390 @@ mod tests {
         }
         std::env::set_var(MAX_FRAME_BYTES_ENV, "1048576");
         assert_eq!(max_frame_bytes_from_env(), 1_048_576);
+    }
+
+    // ── The failure shapes the JSON fake cannot express ────────────────────
+
+    /// A server that writes `payload` verbatim once the request has arrived and
+    /// then holds the channel open until the client hangs up. Staying open is the
+    /// point: closing the write end is the *EOF* failure, a different arm from
+    /// "no answer came" — and unlike a `sleep`, the read loop gives the task a
+    /// real end, which `close` below waits for.
+    ///
+    /// Returns the session plus its task, so a test can hang up and await the end
+    /// instead of leaving the runtime to cancel it at teardown.
+    fn raw_server(
+        payload: String,
+        timeout: Duration,
+    ) -> (
+        Session<tokio::io::DuplexStream, tokio::io::DuplexStream>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let (client_out, server_in) = tokio::io::duplex(64 * 1024);
+        let (mut server_out, client_in) = tokio::io::duplex(64 * 1024);
+        let task = tokio::spawn(async move {
+            let mut lines = BufReader::new(server_in).lines();
+            let _ = lines.next_line().await;
+            server_out.write_all(payload.as_bytes()).await.unwrap();
+            server_out.flush().await.unwrap();
+            while let Ok(Some(_)) = lines.next_line().await {}
+        });
+        (Session::new(client_in, client_out, timeout), task)
+    }
+
+    /// Hang up a [`raw_server`] session and wait for its task to end.
+    async fn close<W>(
+        session: Session<tokio::io::DuplexStream, W>,
+        task: tokio::task::JoinHandle<()>,
+    ) where
+        W: AsyncWrite + Unpin,
+    {
+        drop(session);
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("the fixture server must end when the client hangs up")
+            .expect("the fixture server task panics rather than ends");
+    }
+
+    /// A server every one of whose pages carries another cursor. Its read loop
+    /// ends when the client hangs up, so `close` can await a real end.
+    fn endless_cursor_server() -> (
+        Session<tokio::io::DuplexStream, tokio::io::DuplexStream>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let (client_out, server_in) = tokio::io::duplex(256 * 1024);
+        let (mut server_out, client_in) = tokio::io::duplex(256 * 1024);
+        let task = tokio::spawn(async move {
+            let mut lines = BufReader::new(server_in).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let message: Value = serde_json::from_str(&line).unwrap();
+                let body = json!({
+                    "jsonrpc": "2.0",
+                    "id": message["id"].clone(),
+                    "result": { "tools": [], "nextCursor": "always-more" },
+                });
+                let mut bytes = serde_json::to_vec(&body).unwrap();
+                bytes.push(b'\n');
+                server_out.write_all(&bytes).await.unwrap();
+                server_out.flush().await.unwrap();
+            }
+        });
+        (
+            Session::new(client_in, client_out, Duration::from_secs(30)),
+            task,
+        )
+    }
+
+    /// A request that is never answered must fail at its own deadline, and the
+    /// message must name the budget the caller can raise.
+    #[tokio::test]
+    async fn a_silent_server_times_out_with_the_budget_it_was_given() {
+        let (mut session, task) = raw_server(String::new(), Duration::from_secs(1));
+        let error = session.request("tools/call", json!({})).await.unwrap_err();
+        assert!(error.contains("'tools/call' timed out after 1s"), "{error}");
+        assert!(error.contains("raise --timeout"), "{error}");
+        close(session, task).await;
+    }
+
+    /// A server that keeps handing back a cursor must not spin forever: the
+    /// page cap ends it, with an error that says so.
+    #[tokio::test]
+    async fn list_tools_gives_up_when_the_pages_never_end() {
+        let (mut session, task) = endless_cursor_server();
+        let error = session.list_tools().await.unwrap_err();
+        assert!(error.contains("did not finish after 200 pages"), "{error}");
+        assert!(error.contains("nextCursor"), "{error}");
+        close(session, task).await;
+    }
+
+    /// A bare newline is a frame with nothing in it, which is skipped; a frame
+    /// that is not JSON at all is an error naming the method being awaited.
+    #[tokio::test]
+    async fn an_empty_frame_is_skipped_and_an_unreadable_frame_is_reported() {
+        let answer = json!({ "jsonrpc": "2.0", "id": 1, "result": { "ok": true } });
+        let (mut session, task) = raw_server(format!("\n{answer}\n"), Duration::from_secs(5));
+        let result = session.request("tools/list", json!({})).await.unwrap();
+        assert_eq!(result["ok"], json!(true));
+        close(session, task).await;
+
+        let (mut session, task) =
+            raw_server("not json at all\n".to_string(), Duration::from_secs(5));
+        let error = session.request("tools/list", json!({})).await.unwrap_err();
+        assert!(error.contains("unreadable frame"), "{error}");
+        assert!(error.contains("answering 'tools/list'"), "{error}");
+        close(session, task).await;
+    }
+
+    /// Every shape an `error` member can take is described rather than dropped:
+    /// a numeric code, a string code, no code, no message, with data, and with
+    /// an explicit `null` where the data would be.
+    #[test]
+    fn every_error_code_shape_is_described() {
+        assert_eq!(
+            describe_error(&json!({ "code": -32601, "message": "no such method" })),
+            "code=-32601, message=no such method"
+        );
+        assert_eq!(
+            describe_error(&json!({ "code": "EPARSE", "message": "bad" })),
+            "code=EPARSE, message=bad"
+        );
+        assert_eq!(
+            describe_error(&json!({ "message": "bad" })),
+            "code=unknown, message=bad"
+        );
+        assert_eq!(
+            describe_error(&json!({ "code": 1 })),
+            "code=1, message=no message"
+        );
+        assert_eq!(
+            describe_error(&json!({ "code": 1, "data": { "hint": "x" } })),
+            "code=1, message=no message — {\"hint\":\"x\"}"
+        );
+        assert_eq!(
+            describe_error(&json!({ "code": 1, "message": "m", "data": Value::Null })),
+            "code=1, message=m"
+        );
+    }
+
+    #[tokio::test]
+    async fn call_tool_sends_the_name_and_arguments_it_was_given() {
+        let mut server = fake_server(vec![]);
+        let result = server
+            .session
+            .call_tool("plain", json!({ "path": "/bin/ls" }))
+            .await
+            .unwrap();
+        assert_eq!(result["content"][0]["text"], "called");
+
+        let seen = seen_messages(&server);
+        let call = seen
+            .iter()
+            .find(|message| message["method"] == "tools/call")
+            .expect("a tools/call request");
+        assert_eq!(call["params"]["name"], "plain");
+        assert_eq!(call["params"]["arguments"]["path"], "/bin/ls");
+        finish(server).await;
+    }
+
+    #[test]
+    fn every_json_kind_is_named_in_the_environment_error() {
+        assert_eq!(json_kind(&Value::Null), "null");
+        assert_eq!(json_kind(&json!(true)), "a boolean");
+        assert_eq!(json_kind(&json!(7)), "a number");
+        assert_eq!(json_kind(&json!("text")), "a string");
+        assert_eq!(json_kind(&json!([1])), "an array");
+        assert_eq!(json_kind(&json!({ "a": 1 })), "an object");
+    }
+
+    /// The environment is validated *before* anything is spawned: a JSON
+    /// number is a configuration mistake, not something to stringify.
+    #[tokio::test]
+    async fn a_non_string_environment_value_is_refused_before_spawning() {
+        let mut spec = ServerSpec {
+            command: "definitely-not-a-real-program".to_string(),
+            args: Vec::new(),
+            env: Map::new(),
+            cwd: None,
+            enabled: true,
+        };
+        spec.env.insert("COUNT".to_string(), json!(5));
+        // Not `unwrap_err`: the `Ok` type is not `Debug`, and the point is that
+        // a started process would make this assertion unobservable.
+        let error = ServerProcess::start("counted", &spec, Duration::from_secs(5))
+            .await
+            .err()
+            .expect("a non-string environment value must be refused before spawning");
+        assert_eq!(
+            error,
+            "server 'counted': environment variable COUNT must be a string, not a number"
+        );
+    }
+
+    /// A minimal POSIX MCP server: answers `initialize` and `tools/list`, and
+    /// exits when its stdin closes.
+    #[cfg(unix)]
+    const SERVE_ONCE: &str = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *notifications/initialized*) ;;
+    *'"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    *'"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[]}}\n' "$id" ;;
+  esac
+done
+"#;
+
+    #[cfg(unix)]
+    mod process {
+        use super::*;
+
+        fn sh_spec(script: String, env: Map<String, Value>, cwd: Option<String>) -> ServerSpec {
+            ServerSpec {
+                command: "/bin/sh".to_string(),
+                args: vec!["-c".to_string(), script],
+                env,
+                cwd,
+                enabled: true,
+            }
+        }
+
+        /// The configured environment and working directory must reach the
+        /// child: a server that cannot read its own settings is unusable, and a
+        /// silently dropped one is impossible to debug.
+        #[tokio::test]
+        async fn the_configured_environment_and_working_directory_reach_the_child() {
+            let work = tempfile::tempdir().unwrap();
+            let log = tempfile::tempdir().unwrap();
+            let log_file = log.path().join("probe.log");
+            let mut env = Map::new();
+            env.insert("MCP_PROBE".to_string(), json!("value"));
+            env.insert(
+                "MCP_PROBE_LOG".to_string(),
+                json!(log_file.display().to_string()),
+            );
+            let spec = sh_spec(
+                r#"printf '%s|%s' "$MCP_PROBE" "$(pwd -P)" > "$MCP_PROBE_LOG""#.to_string(),
+                env,
+                Some(work.path().display().to_string()),
+            );
+
+            // The script records its settings and exits without answering, so
+            // the handshake fails: what is under test was on disk before that.
+            let error = ServerProcess::start("probe", &spec, Duration::from_secs(5))
+                .await
+                .err()
+                .expect("a script that never answers cannot complete a handshake");
+            assert!(error.contains("failed its handshake"), "{error}");
+
+            let canonical = std::fs::canonicalize(work.path()).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&log_file).unwrap(),
+                format!("value|{}", canonical.display())
+            );
+        }
+
+        /// Closing stdin is not enough for a server that ignores it: `shutdown`
+        /// waits out its grace period and then kills what is left.
+        #[tokio::test]
+        async fn shutdown_kills_a_server_that_ignores_its_closed_stdin() {
+            let spec = sh_spec(format!("{SERVE_ONCE}\nsleep 30"), Map::new(), None);
+            let process = ServerProcess::start("stubborn", &spec, Duration::from_secs(10))
+                .await
+                .expect("the handshake is a normal one");
+
+            let started = std::time::Instant::now();
+            process.shutdown().await;
+            let elapsed = started.elapsed();
+            assert!(
+                elapsed >= SHUTDOWN_GRACE,
+                "the grace period must be waited out: {elapsed:?}"
+            );
+            assert!(
+                elapsed < Duration::from_secs(20),
+                "the kill must end it: {elapsed:?}"
+            );
+        }
+
+        /// Only the last lines of stderr are kept: the oldest are dropped, and
+        /// the newest are what explains a failure.
+        #[tokio::test]
+        async fn the_stderr_tail_keeps_the_last_lines_and_drops_the_oldest() {
+            const CHATTY: &str = r#"
+i=1
+while [ $i -le 45 ]; do
+  printf 'stderr-%02d\n' "$i" >&2
+  i=$((i + 1))
+done
+"#;
+            let spec = sh_spec(format!("{CHATTY}{SERVE_ONCE}"), Map::new(), None);
+            let process = ServerProcess::start("chatty", &spec, Duration::from_secs(10))
+                .await
+                .expect("the handshake is a normal one");
+
+            // The drain is a background task: wait (bounded) for the tail to
+            // fill rather than guessing how long it needs.
+            crate::test_env::wait_for(|| {
+                process.stderr_tail().lines().count() == STDERR_TAIL_LINES
+            })
+            .await;
+
+            let tail = process.stderr_tail();
+            let lines: Vec<&str> = tail.lines().collect();
+            assert_eq!(lines.len(), STDERR_TAIL_LINES, "{tail}");
+            assert_eq!(
+                lines[0], "stderr-06",
+                "the oldest lines are dropped: {tail}"
+            );
+            assert_eq!(lines[STDERR_TAIL_LINES - 1], "stderr-45", "{tail}");
+            process.shutdown().await;
+        }
+
+        /// A poisoned tail is a state both of its users must survive. Nothing in
+        /// this crate panics while holding that lock — `drain_stderr` guards its
+        /// own lock and `tail_of` falls back — so the only way to produce the
+        /// state is to poison it deliberately, and that is what this does.
+        ///
+        /// The server writes a stderr line on every `tools/call`, so lines keep
+        /// arriving *after* the poison: the drain must skip them instead of
+        /// panicking (a panic there would stop reading the pipe and block the
+        /// child on a full stderr buffer), and the caller-visible tail must stay
+        /// readable rather than panicking a `future mcp status`.
+        #[tokio::test]
+        async fn a_poisoned_stderr_tail_is_tolerated_by_the_drain_and_the_reader() {
+            const ON_DEMAND_STDERR: &str = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *notifications/initialized*) ;;
+    *'"initialize"'*)
+      printf 'first\n' >&2
+      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    *'"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[]}}\n' "$id" ;;
+    *'"tools/call"'*)
+      printf 'later\n' >&2
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[]}}\n' "$id" ;;
+  esac
+done
+"#;
+            let spec = sh_spec(ON_DEMAND_STDERR.to_string(), Map::new(), None);
+            let mut process = ServerProcess::start("gated", &spec, Duration::from_secs(10))
+                .await
+                .expect("the handshake is a normal one");
+
+            // Before the poison the drain keeps what the server wrote, which is
+            // what makes the assertions below about a real tail rather than an
+            // empty one. (No `{:?}` argument here: an assertion message is only
+            // evaluated on failure, so it would be a line no passing test can
+            // cover — the same class as module-cli.md §6.1's `auth.rs:988`.)
+            let kept = crate::test_env::wait_for(|| process.stderr_tail().contains("first")).await;
+            assert!(kept, "the drain must keep the handshake's stderr");
+
+            // Poison it the way a panicking reader would: hold the lock, unwind.
+            let tail = Arc::clone(&process.stderr_tail);
+            let poisoned = std::thread::spawn(move || {
+                let _held = tail.lock().expect("a fresh lock");
+                panic!("poison the stderr tail deliberately");
+            })
+            .join();
+            assert!(poisoned.is_err(), "unwinding while holding it poisons it");
+
+            // Lines arriving after the poison are dropped, not fatal, and the
+            // session is unaffected. Several calls, because the drain task is
+            // woken by each write — the point is that a lock *failure* never
+            // stops the drain, which a single line could leave to timing.
+            for _ in 0..3 {
+                let result = process
+                    .session()
+                    .call_tool("probe", json!({}))
+                    .await
+                    .expect("the session does not depend on the diagnostics lock");
+                assert_eq!(result["content"], json!([]));
+            }
+
+            // What the caller sees: a readable (empty) tail, not a panic.
+            assert_eq!(process.stderr_tail(), "");
+            process.shutdown().await;
+        }
     }
 }

@@ -310,3 +310,34 @@ fn out_of_range_search_and_read_requests_are_rejected_before_touching_storage() 
         .to_string();
     assert!(error.contains("readable bytes"), "{error}");
 }
+
+/// The session gate every history read goes through. A damaged `sessions` table
+/// and a damaged `legacy_imports` table must both surface their own cause: the
+/// gate exists so a reader never treats "I cannot tell" as "this session is
+/// empty", and a skipped import must never look like readable history.
+#[test]
+fn the_session_gate_reports_each_damaged_table_it_needs() {
+    use rusqlite::Connection;
+
+    let db = Connection::open_in_memory().unwrap();
+    let error = require_session(&db, "s").unwrap_err();
+    assert!(format!("{error:#}").contains("sessions"), "{error:#}");
+
+    // `sessions` is there, the import bookkeeping is not: still an error, and
+    // it names the table it could not consult.
+    db.execute_batch("CREATE TABLE sessions(id TEXT, revision INTEGER)")
+        .unwrap();
+    let error = require_session(&db, "s").unwrap_err();
+    assert!(format!("{error:#}").contains("legacy_imports"), "{error:#}");
+
+    // With both tables intact the gate answers for a real session and refuses
+    // for an unknown one.
+    db.execute_batch(
+        "CREATE TABLE legacy_imports(session_id TEXT, status TEXT);
+         INSERT INTO sessions VALUES ('known', 1);",
+    )
+    .unwrap();
+    require_session(&db, "known").unwrap();
+    let error = require_session(&db, "missing").unwrap_err();
+    assert!(error.to_string().contains("session not found"), "{error:#}");
+}

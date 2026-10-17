@@ -1484,6 +1484,144 @@ mod tests {
             .unwrap();
         assert_eq!(markers, 0, "a failed migration must not record itself");
     }
+
+    /// Every migration records itself with an `INSERT INTO schema_migrations`, and
+    /// that insert is a failure point of its own: a corrupt or hostile database can
+    /// refuse it *after* the migration's real work has run. The contract is the same
+    /// one the repair tests above assert — surface the error, roll the transaction
+    /// back, and never leave a marker behind, because a recorded marker means the
+    /// next startup skips the migration forever.
+    #[test]
+    fn a_marker_insert_that_is_refused_is_reported_and_rolled_back() {
+        type MigrationCase = (&'static str, fn(&Connection) -> Result<(), crate::AppError>);
+        let cases: [MigrationCase; 3] = [
+            ("v1.2.2-auto-approval", apply_approval_assessments_migration),
+            (
+                AGENT_SESSION_BINDING_MIGRATION_VERSION,
+                apply_agent_session_binding_migration,
+            ),
+            (
+                REMOTE_PROMPT_RECEIPT_MIGRATION_VERSION,
+                apply_remote_prompt_receipt_migration,
+            ),
+        ];
+
+        for (version, migrate) in cases {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            // Refuse exactly this migration's marker: an earlier failure would prove
+            // nothing about the statement under test.
+            conn.execute_batch(&format!(
+                "CREATE TRIGGER hostile_marker BEFORE INSERT ON schema_migrations
+                 WHEN NEW.version = '{version}'
+                 BEGIN SELECT RAISE(ABORT, 'hostile marker'); END;"
+            ))
+            .unwrap();
+
+            let error = migrate(&conn)
+                .expect_err("a marker that cannot be written must be reported")
+                .to_string();
+            assert!(error.contains("hostile marker"), "{version}: {error}");
+
+            let markers: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
+                    [version],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                markers, 0,
+                "{version}: a failed migration must not record itself"
+            );
+
+            // The same database migrates cleanly once the statement can succeed: the
+            // rollback left nothing half-applied.
+            conn.execute_batch("DROP TRIGGER hostile_marker").unwrap();
+            migrate(&conn).expect("the migration succeeds once the marker is writable");
+        }
+    }
+
+    /// `apply_schema` runs the versioned migrations as a sequence of `apply_migrations`
+    /// calls; a migration that fails *inside* one of them must abort the bootstrap
+    /// rather than continue into the next one on a half-migrated database.
+    #[test]
+    fn apply_schema_reports_a_versioned_migration_that_cannot_record_itself() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER hostile_versioned BEFORE INSERT ON schema_migrations
+             WHEN NEW.version = 'v1.1.6-thread-parent-session'
+             BEGIN SELECT RAISE(ABORT, 'hostile versioned marker'); END;",
+        )
+        .unwrap();
+
+        let error = apply_schema(&conn)
+            .expect_err("the bootstrap must surface the failed migration")
+            .to_string();
+        assert!(error.contains("hostile versioned marker"), "{error}");
+    }
+
+    /// The deletion-index migration's first statement is a probe of
+    /// `schema_migrations`. If that table cannot be read at all, the probe's error must
+    /// be reported rather than taken as "not applied" (which would re-run the migration
+    /// against a database whose bookkeeping is broken).
+    #[test]
+    fn the_deletion_index_migration_reports_an_unreadable_marker_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        let error = apply_session_delete_indexes_migration(&conn)
+            .expect_err("an unreadable marker table must be reported")
+            .to_string();
+        assert!(
+            error.contains("schema_migrations"),
+            "the probe's own error must surface: {error}"
+        );
+    }
+
+    /// The binding repair writes twice: it nulls the losing duplicate bindings, then
+    /// normalises the survivors with `TRIM`. The second write is a separate failure
+    /// point, and a database that refuses it must be reported (the whole transaction
+    /// rolls back, marker included).
+    #[test]
+    fn the_binding_repair_reports_a_refused_normalisation_write() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        // rusqlite enables foreign keys by default, so the thread needs its workspace.
+        conn.execute(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+             VALUES ('ws_norm', 'Norm', 'user', '/tmp/ws_norm', 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO threads (id, workspace_id, mode, title, status, agent_session_id,
+                                  created_at, updated_at)
+             VALUES ('t_trim', 'ws_norm', 'chat', 'Trimmed', 'active', 'sess_trim', 1, 1)",
+            [],
+        )
+        .unwrap();
+        // Refuse only a write that *sets* a non-null binding: the first statement
+        // (which nulls duplicates) must be allowed through, so the failure lands on
+        // the normalisation write.
+        conn.execute_batch(
+            "CREATE TRIGGER hostile_normalise BEFORE UPDATE ON threads
+             WHEN NEW.agent_session_id IS NOT NULL
+             BEGIN SELECT RAISE(ABORT, 'hostile normalise'); END;",
+        )
+        .unwrap();
+
+        let error = apply_agent_session_binding_migration(&conn)
+            .expect_err("a refused normalisation must be reported")
+            .to_string();
+        assert!(error.contains("hostile normalise"), "{error}");
+
+        let markers: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(markers, 0, "the rollback takes the marker with it");
+    }
 }
 
 /// Required, transactional migration shared with fresh-install schema tests.

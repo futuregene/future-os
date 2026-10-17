@@ -186,6 +186,14 @@ mod tests {
         assert_eq!(get_future_environment().unwrap().environment, "production");
     }
 
+    // `set_future_environment`'s `#[tauri::command]` attribute line stays
+    // uncovered, and it is not reachable from a test: the command takes a
+    // concrete `tauri::AppHandle` (Wry), which does not implement
+    // `CommandArg<'_, MockRuntime>`, so `tauri::generate_handler!` cannot even be
+    // instantiated for the mock runtime — the IPC harness (which covers the
+    // other modules' multi-argument commands) fails to compile against it. It is
+    // the same class as `acknowledge_update_repair` and `prepare_image_preview`.
+
     #[test]
     fn resolve_environment_maps_known_selectors_and_rejects_unknown() {
         assert_eq!(

@@ -137,7 +137,9 @@ pub(crate) static FORCE_NEW_FAILURE: AtomicBool = AtomicBool::new(false);
 /// A `Terminal` for tests that only need an instance. Windows refuses to build
 /// one without real console handles — the interactive TUI needs a console — so
 /// a redirected runner (an IDE, CI, an agent harness) cannot construct one and
-/// the test skips instead of failing. POSIX construction is infallible.
+/// the test skips instead of failing. POSIX construction is infallible, so the
+/// unix tests never skip: they build a `Terminal` directly (`terminal_for_methods`)
+/// or run against a PTY of their own (`with_pty_stdin`).
 ///
 /// Inside the console child spawned by `console_harness`, a console *is*
 /// available and the skip is not an option: the test must run for real, so a
@@ -157,27 +159,8 @@ pub(crate) fn terminal_or_skip() -> Option<Terminal> {
     }
 }
 
-#[cfg(all(test, not(windows)))]
-pub(crate) fn terminal_or_skip() -> Option<Terminal> {
-    // A console is not guaranteed on unix either: CI is headless, where `Terminal::new()`
-    // can still succeed while the reader's start path fails with "stdin is not a TTY".
-    // Check the tty as well as construction, and return None so callers skip instead of
-    // panicking -- the same contract the Windows helper above honours.
-    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        eprintln!("[skip] terminal test needs a tty on stdin");
-        return None;
-    }
-    match Terminal::new() {
-        Ok(terminal) => Some(terminal),
-        Err(error) => {
-            eprintln!("[skip] terminal test needs a console: {error}");
-            None
-        }
-    }
-}
-
 /// Terminal platform backend for tests. See [`terminal_or_skip`] for why this
-/// can be unavailable on Windows.
+/// can be unavailable on Windows (on unix it never is: `backend_for_methods`).
 #[cfg(all(test, windows))]
 pub(crate) fn backend_or_skip() -> Option<platform::Backend> {
     if crate::console_harness::in_console_child() {
@@ -185,23 +168,6 @@ pub(crate) fn backend_or_skip() -> Option<platform::Backend> {
         return Some(
             platform::Backend::new().expect("console child must be able to build a Backend"),
         );
-    }
-    match platform::Backend::new() {
-        Ok(backend) => Some(backend),
-        Err(error) => {
-            eprintln!("[skip] terminal test needs a console: {error}");
-            None
-        }
-    }
-}
-
-#[cfg(all(test, not(windows)))]
-pub(crate) fn backend_or_skip() -> Option<platform::Backend> {
-    // Same reasoning as `terminal_or_skip` above: headless CI has no tty, so skip rather
-    // than panic in a helper whose entire purpose is to make a missing console tolerable.
-    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        eprintln!("[skip] terminal test needs a tty on stdin");
-        return None;
     }
     match platform::Backend::new() {
         Ok(backend) => Some(backend),
@@ -842,6 +808,135 @@ fn restore_terminal_for_exit(
     write_str(write_lock, "\r\n");
 }
 
+// ─── Test-only PTY fixture ────────────────────────────────────────────────
+
+/// A PTY pair with fd 0 redirected to the slave until dropped.
+///
+/// This is how a unix terminal test gets a real tty of its own: a `cargo test`
+/// harness normally inherits a pipe (or nothing) as stdin, so anything that has
+/// to ask the OS about "the terminal" — `isatty`, raw mode, the reader loop —
+/// would otherwise have to skip. Installing a PTY makes those tests run for
+/// real on any host, headless CI included.
+#[cfg(all(test, unix))]
+struct PtyStdin {
+    /// The master fd, held in an atomic so that `close_master` and `Drop` can
+    /// agree on closing it **exactly once**: a second `close` of a number that
+    /// has been recycled in the meantime closes whatever another thread opened
+    /// as that number (this suite forks, opens files and makes sockets while
+    /// tests run in parallel). `-1` means "already closed".
+    master: std::sync::atomic::AtomicI32,
+    slave: i32,
+    saved: i32,
+}
+
+#[cfg(all(test, unix))]
+impl PtyStdin {
+    fn install() -> Self {
+        unsafe {
+            let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+            assert!(master >= 0);
+            assert_eq!(libc::grantpt(master), 0);
+            assert_eq!(libc::unlockpt(master), 0);
+            let slave_name = libc::ptsname(master);
+            assert!(!slave_name.is_null());
+            let slave = libc::open(slave_name, libc::O_RDWR | libc::O_NOCTTY);
+            assert!(slave >= 0);
+            let saved = libc::dup(0);
+            assert!(saved >= 0);
+            assert_ne!(libc::dup2(slave, 0), -1);
+            Self {
+                master: std::sync::atomic::AtomicI32::new(master),
+                slave,
+                saved,
+            }
+        }
+    }
+
+    fn write(&self, data: &str) {
+        unsafe {
+            libc::write(
+                self.master.load(Ordering::Relaxed),
+                data.as_ptr() as *const libc::c_void,
+                data.len(),
+            );
+        }
+    }
+
+    /// Close the master side, at most once. `Drop` closes it through this same
+    /// function, so the fd number can never be closed twice — the test above
+    /// that closes the master early (`reader_loop_full_cycle_on_pty`) otherwise
+    /// had `Drop` close the same number again several hundred milliseconds
+    /// later (measured: `close(6)[CHR]` … `close(6)[CLOSED(EBADF)]`, i.e. a no-op
+    /// only while nothing had taken that number back).
+    fn close_master(&self) {
+        let fd = self.master.swap(-1, Ordering::Relaxed);
+        if fd >= 0 {
+            unsafe {
+                libc::close(fd);
+            }
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+impl Drop for PtyStdin {
+    fn drop(&mut self) {
+        unsafe {
+            libc::dup2(self.saved, 0);
+            libc::close(self.saved);
+            libc::close(self.slave);
+        }
+        // Idempotent: a no-op when the test already closed the master.
+        self.close_master();
+    }
+}
+
+/// The master side of the PTY [`with_pty_stdin`] installed: write to it to type
+/// into the terminal under test.
+#[cfg(all(test, unix))]
+pub(crate) struct TestPty {
+    stdin: PtyStdin,
+}
+
+#[cfg(all(test, unix))]
+impl TestPty {
+    /// Type `data` into the terminal under test.
+    pub(crate) fn write(&self, data: &str) {
+        self.stdin.write(data);
+    }
+
+    /// Resize the PTY's window and deliver the `SIGWINCH` a terminal emulator
+    /// sends with it, so the reader under test refreshes its cached size and
+    /// fires the resize callback it was started with.
+    pub(crate) fn resize(&self, cols: u16, rows: u16) {
+        unsafe {
+            let mut winsize: libc::winsize = std::mem::zeroed();
+            winsize.ws_col = cols;
+            winsize.ws_row = rows;
+            assert_eq!(
+                libc::ioctl(
+                    self.stdin.master.load(Ordering::Relaxed),
+                    libc::TIOCSWINSZ,
+                    &mut winsize,
+                ),
+                0
+            );
+            libc::raise(libc::SIGWINCH);
+        }
+    }
+}
+
+/// Run `body` with fd 0 pointed at a fresh PTY (the master is handed over), so
+/// the body may call `Terminal::start` and friends for real.
+///
+/// The redirection is process-global: the caller must hold
+/// `crate::test_env::lock()`.
+#[cfg(all(test, unix))]
+pub(crate) fn with_pty_stdin<R>(body: impl FnOnce(&TestPty) -> R) -> R {
+    let stdin = PtyStdin::install();
+    body(&TestPty { stdin })
+}
+
 // ─── Tests (shared logic; POSIX primitives live in terminal_posix.rs) ─────
 
 #[cfg(test)]
@@ -852,6 +947,53 @@ mod tests {
     /// handlers, env) against each other and against other files' tests.
     fn terminal_test_lock() -> std::sync::MutexGuard<'static, ()> {
         crate::test_env::lock()
+    }
+
+    /// A `Terminal` for the method-level tests below. POSIX construction needs
+    /// no console at all, so those tests run everywhere instead of skipping on
+    /// a harness whose stdin is not a tty (which is every `cargo test` run).
+    #[cfg(unix)]
+    fn terminal_for_methods() -> Terminal {
+        // Another test may have tripped the one-shot seam without consuming it.
+        FORCE_NEW_FAILURE.swap(false, Ordering::SeqCst);
+        Terminal::new().expect("POSIX terminal construction is infallible")
+    }
+
+    /// The POSIX backend, which needs no console either.
+    #[cfg(unix)]
+    fn backend_for_methods() -> platform::Backend {
+        platform::Backend::new().expect("POSIX backend construction is infallible")
+    }
+
+    /// Drain a PTY master in the background until `stop` is set, returning the
+    /// drainer's handle so the caller can join it before closing the master.
+    ///
+    /// The two tests below point fd 1 at a slave (the size is read from stdout),
+    /// and a slave whose master nobody reads is a *buffer*: once it fills, every
+    /// writer to fd 1 blocks — including this test's panic path and the harness
+    /// reporting another test. That is a deadlock the suite must not be able to
+    /// enter (measured: it hung a full `cargo llvm-cov` run for 20+ minutes with
+    /// fd 0 and fd 1 both still pointing at the slave). `O_NONBLOCK` keeps the
+    /// drainer out of a blocking `read` while it is asked to stop, and joining
+    /// it before the master is closed means no fd number is ever reused out from
+    /// under it.
+    #[cfg(unix)]
+    fn drain_pty_master(master: i32, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
+        unsafe {
+            let flags = libc::fcntl(master, libc::F_GETFL);
+            libc::fcntl(master, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+        std::thread::spawn(move || {
+            let mut sink = [0u8; 4096];
+            while !stop.load(Ordering::SeqCst) {
+                let n = unsafe {
+                    libc::read(master, sink.as_mut_ptr() as *mut libc::c_void, sink.len())
+                };
+                if n <= 0 {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            }
+        })
     }
 
     /// Shared no-op start callbacks: one closure instance each (kept honest
@@ -901,66 +1043,6 @@ mod tests {
         }
     }
 
-    /// A PTY pair with fd 0 redirected to the slave until dropped.
-    #[cfg(unix)]
-    struct PtyStdin {
-        master: i32,
-        slave: i32,
-        saved: i32,
-    }
-
-    #[cfg(unix)]
-    impl PtyStdin {
-        fn install() -> Self {
-            unsafe {
-                let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
-                assert!(master >= 0);
-                assert_eq!(libc::grantpt(master), 0);
-                assert_eq!(libc::unlockpt(master), 0);
-                let slave_name = libc::ptsname(master);
-                assert!(!slave_name.is_null());
-                let slave = libc::open(slave_name, libc::O_RDWR | libc::O_NOCTTY);
-                assert!(slave >= 0);
-                let saved = libc::dup(0);
-                assert!(saved >= 0);
-                assert_ne!(libc::dup2(slave, 0), -1);
-                Self {
-                    master,
-                    slave,
-                    saved,
-                }
-            }
-        }
-
-        fn write(&self, data: &str) {
-            unsafe {
-                libc::write(
-                    self.master,
-                    data.as_ptr() as *const libc::c_void,
-                    data.len(),
-                );
-            }
-        }
-
-        fn close_master(&self) {
-            unsafe {
-                libc::close(self.master);
-            }
-        }
-    }
-
-    #[cfg(unix)]
-    impl Drop for PtyStdin {
-        fn drop(&mut self) {
-            unsafe {
-                libc::dup2(self.saved, 0);
-                libc::close(self.saved);
-                libc::close(self.slave);
-                libc::close(self.master);
-            }
-        }
-    }
-
     #[test]
     fn columns_fallback_prefers_ioctl_then_env_then_80() {
         let _guard = crate::test_env::lock();
@@ -996,6 +1078,15 @@ mod tests {
 
     #[test]
     fn terminal_default_simple_methods_and_progress() {
+        // These methods write escape sequences straight to fd 1, and a sibling
+        // test in this file points fd 1 at a full pipe on purpose (`write_stdout`
+        // retries). Serialize with those through the shared lock, or this test
+        // can block on a full pipe (or take an EPIPE once the pipe's reader
+        // closes) — a whole `cargo llvm-cov` run was lost to exactly that.
+        let _guard = crate::test_env::lock();
+        #[cfg(unix)]
+        let mut t = terminal_for_methods();
+        #[cfg(windows)]
         let Some(mut t) = terminal_or_skip() else {
             return;
         };
@@ -1034,6 +1125,9 @@ mod tests {
         let old_home = std::env::var_os("HOME");
         std::env::set_var("PI_TUI_WRITE_LOG", "1");
         std::env::set_var("HOME", home.path());
+        #[cfg(unix)]
+        let t = terminal_for_methods();
+        #[cfg(windows)]
         let Some(t) = terminal_or_skip() else {
             return;
         };
@@ -1094,16 +1188,24 @@ mod tests {
     }
 
     /// `Terminal::default()` is the `impl Default` the app's own construction
-    /// path uses (`Self::new().expect(...)`); it is only reachable where a
-    /// console exists, so this runs in the harness child and skips elsewhere
-    /// (`terminal_or_skip` is what makes the difference explicit).
+    /// path uses (`Self::new().expect(...)`). POSIX construction is infallible,
+    /// so it runs here for real; Windows needs a console object and still skips
+    /// outside the `console_harness` child.
     #[test]
     fn default_constructs_a_terminal_from_a_real_console() {
-        let Some(probe) = terminal_or_skip() else {
-            return;
+        let _guard = crate::test_env::lock();
+        #[cfg(unix)]
+        let columns = terminal_for_methods().columns();
+        #[cfg(windows)]
+        let columns = {
+            let Some(probe) = terminal_or_skip() else {
+                return;
+            };
+            probe.columns()
         };
-        let columns = probe.columns();
-        drop(probe);
+        // Drain the one-shot fault-injection seam so this construction cannot
+        // unwrap an injected error (same guard as the size test above).
+        FORCE_NEW_FAILURE.swap(false, Ordering::SeqCst);
         let terminal = Terminal::default();
         assert_eq!(terminal.columns(), columns);
         assert!(terminal.rows() > 0);
@@ -1115,6 +1217,19 @@ mod tests {
     /// reports a failed terminal init; this asserts the seam itself, on every
     /// platform, including that it is **one-shot** — a seam that stayed set would
     /// poison every later construction in the process.
+    ///
+    /// Hazard, for whoever edits these tests next: the seam is a
+    /// **process-global one-shot**, and it is consumed two instructions after
+    /// this store, so a test that constructs a `Terminal` inside that window
+    /// takes the value this test wanted and the `Ok(_) => panic!` arm below then
+    /// fires — the suite goes *red*, not covered. What makes the window
+    /// unreachable today is the lock, not the store: **every** test that
+    /// constructs a `Terminal` holds [`terminal_test_lock`] (the same lock
+    /// `crate::test_env::lock()` hands out, which `index.rs`'s injection test
+    /// also takes). Do not add a construction without it. The reverse symptom —
+    /// a flag tripped but never consumed, by a test that failed before its own
+    /// construction — is why `columns_rows_read_cached_size` drains the flag
+    /// first (recorded there as a CI flake).
     #[test]
     fn the_injected_terminal_failure_is_reported_once() {
         let _guard = terminal_test_lock();
@@ -1149,16 +1264,43 @@ mod tests {
     /// which would hang the suite.
     #[test]
     fn a_zero_byte_console_read_is_not_eof() {
-        let Some(backend) = backend_or_skip() else {
-            return;
-        };
-        assert!(
-            !backend.eof_is_terminal(),
-            "a Windows console read of 0 bytes means 'no key data', so the reader \
-             loop must continue rather than break"
-        );
-        // Whatever `wait` reports, it must be one of the outcomes the loop
-        // handles — and a size change stays edge-triggered.
+        let _g = terminal_test_lock();
+        #[cfg(windows)]
+        {
+            let Some(backend) = backend_or_skip() else {
+                return;
+            };
+            assert!(
+                !backend.eof_is_terminal(),
+                "a Windows console read of 0 bytes means 'no key data', so the reader \
+                 loop must continue rather than break"
+            );
+            wait_outcomes_stay_handled(&backend);
+        }
+        #[cfg(unix)]
+        {
+            // POSIX answers the same predicate from the other side: a zero read
+            // means the pty is gone, so EOF *is* terminal and the loop breaks.
+            // The predicate and the loop must still agree about *reading* —
+            // `wait` is driven here on a real pty, which `enable_raw` requires.
+            let _pty = PtyStdin::install();
+            let backend =
+                platform::Backend::new().expect("POSIX backend construction is infallible");
+            backend
+                .enable_raw()
+                .expect("a pty on stdin accepts raw mode");
+            assert!(
+                backend.eof_is_terminal(),
+                "POSIX: a zero-byte read of stdin is EOF, so the reader loop must break"
+            );
+            wait_outcomes_stay_handled(&backend);
+            backend.restore_raw();
+        }
+    }
+
+    /// Whatever `wait` reports, it must be one of the outcomes the reader loop
+    /// handles — and a size change stays edge-triggered.
+    fn wait_outcomes_stay_handled(backend: &platform::Backend) {
         let mut previous_was_resize = false;
         for _ in 0..3 {
             match backend.wait(0) {
@@ -1170,14 +1312,56 @@ mod tests {
                     previous_was_resize = true;
                 }
                 ReadWait::Timeout | ReadWait::Input => previous_was_resize = false,
-                other => panic!("unexpected wait outcome on Windows: {other:?}"),
+                other => panic!("unexpected wait outcome: {other:?}"),
             }
         }
+    }
+
+    /// [`wait_outcomes_stay_handled`]'s own failure arm. The helper enumerates
+    /// the outcomes the reader loop handles, so anything else must fail the test
+    /// loudly instead of being absorbed — and the arm is reachable, because the
+    /// "no signal arrives while it polls" invariant is a *timing* argument and
+    /// the polling test can supply the signal itself: POSIX decodes a resize as
+    /// `Signal(SIGWINCH)`, `enable_raw` installs the handler and the self-pipe,
+    /// and the byte is there for the very next `wait(0)`.
+    ///
+    /// `catch_unwind` rather than `#[should_panic]`: the helper's panic is the
+    /// contract being asserted, and unwinding past `restore_raw` would leave this
+    /// process's signal handlers installed and its pipe write end registered.
+    #[cfg(unix)]
+    #[test]
+    fn a_signal_arriving_mid_poll_reaches_the_failure_arm() {
+        let _g = terminal_test_lock();
+        let _pty = PtyStdin::install();
+        let backend = platform::Backend::new().expect("POSIX backend construction is infallible");
+        backend
+            .enable_raw()
+            .expect("a pty on stdin accepts raw mode");
+        // The lock that serialises this test against the others does not forbid
+        // *this* one from delivering a signal, and the outcome it produces is
+        // one the helper's arm list does not enumerate.
+        unsafe { libc::raise(libc::SIGWINCH) };
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            wait_outcomes_stay_handled(&backend);
+        }));
+        backend.restore_raw();
+        let payload = outcome.expect_err("an unhandled wait outcome must not be absorbed");
+        let message = payload
+            .downcast_ref::<String>()
+            .cloned()
+            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+        assert!(
+            message.contains("unexpected wait outcome: Signal("),
+            "the arm must name the outcome it does not handle: {message}"
+        );
     }
 
     #[test]
     fn drain_input_with_and_without_protocols() {
         let _g = terminal_test_lock();
+        #[cfg(unix)]
+        let mut t = terminal_for_methods();
+        #[cfg(windows)]
         let Some(mut t) = terminal_or_skip() else {
             return;
         };
@@ -1243,12 +1427,29 @@ mod tests {
             ws.ws_col = 99;
             ws.ws_row = 55;
             assert_eq!(libc::ioctl(slave, libc::TIOCSWINSZ, &mut ws), 0);
+            // fd 1 is process-global, so hold the process-global stdout lock
+            // (the one the production `write_stdout` and every Rust-stdout
+            // writer take) for the whole window: no other thread's write can be
+            // inside fd 1 while it points at this PTY slave. Safe here — this
+            // test starts no reader thread and writes nothing of its own, and
+            // the drainer below only reads.
+            let stdout_lock = io::stdout().lock();
             let saved = libc::dup(1);
             assert_ne!(libc::dup2(slave, 1), -1);
+            let drain_stop = Arc::new(AtomicBool::new(false));
+            let drainer = drain_pty_master(master, Arc::clone(&drain_stop));
             let t = Terminal::new().unwrap();
             t.refresh_size();
             assert_eq!(*t.size.lock(), (99, 55));
+            // Hand fd 1 back *before* the drainer stops: the drainer has to be
+            // alive for the whole time fd 1 points at the slave, or a writer
+            // blocked in a full PTY buffer would be the one the restore breaks
+            // (the fd-1 trap's other face — see
+            // `write_stdout_retries_on_eintr`).
             libc::dup2(saved, 1);
+            drain_stop.store(true, Ordering::SeqCst);
+            drainer.join().unwrap();
+            drop(stdout_lock);
             libc::close(saved);
             libc::close(slave);
             libc::close(master);
@@ -1481,6 +1682,9 @@ mod tests {
     #[test]
     fn restore_terminal_for_exit_writes_teardown() {
         let _g = terminal_test_lock();
+        #[cfg(unix)]
+        let backend = backend_for_methods();
+        #[cfg(windows)]
         let Some(backend) = backend_or_skip() else {
             return;
         };
@@ -1692,10 +1896,22 @@ mod tests {
             ws.ws_row = 40;
             assert_eq!(libc::ioctl(slave, libc::TIOCSWINSZ, &mut ws), 0);
             // fd 0 and fd 1 both on the PTY (size is read from stdout).
+            //
+            // Unlike the other fd-1 windows in this suite, this one cannot hold
+            // the process-global stdout lock: the reader thread `t.start`
+            // spawns writes to fd 1 by itself (the kitty-query fallback
+            // `\x1b[>4;2m` 150 ms in, the kitty response `\x1b[>7u`), so a lock
+            // held by this thread would block that write and hang `t.stop`'s
+            // join of the reader. What keeps the window breakable-free instead
+            // is the ordering at the bottom: the drainer stays alive until fd 1
+            // is handed back, so a foreign write into the slave is *absorbed*
+            // (it can neither fail nor stay queued for the restore to break).
             let saved0 = libc::dup(0);
             let saved1 = libc::dup(1);
             assert_ne!(libc::dup2(slave, 0), -1);
             assert_ne!(libc::dup2(slave, 1), -1);
+            let drain_stop = Arc::new(AtomicBool::new(false));
+            let drainer = drain_pty_master(master, Arc::clone(&drain_stop));
 
             let mut t = Terminal::new().unwrap();
             t.start(noop_input_cb(), noop_resize_cb()).unwrap();
@@ -1705,11 +1921,13 @@ mod tests {
             ws.ws_row = 55;
             assert_eq!(libc::ioctl(slave, libc::TIOCSWINSZ, &mut ws), 0);
             libc::raise(libc::SIGWINCH);
-            assert!(spin_until(&mut || *t.size.lock() == (99, 55), 2000));
+            assert!(spin_until(&mut || *t.size.lock() == (99, 55), 5000));
             t.stop();
 
             libc::dup2(saved0, 0);
             libc::dup2(saved1, 1);
+            drain_stop.store(true, Ordering::SeqCst);
+            drainer.join().unwrap();
             libc::close(saved0);
             libc::close(saved1);
             libc::close(slave);

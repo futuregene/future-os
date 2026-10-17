@@ -293,10 +293,10 @@ mod tests {
             &sink,
         )
         .await;
+        let refusal = sink.error_text();
         assert!(
-            sink.error_text().contains("removed"),
-            "the write is refused, not stored: {}",
-            sink.error_text()
+            refusal.contains("removed"),
+            "the write is refused, not stored: {refusal}"
         );
 
         let sink = RecordingSink::default();
@@ -310,10 +310,10 @@ mod tests {
             &sink,
         )
         .await;
+        let refusal = sink.error_text();
         assert!(
-            sink.error_text().contains("removed"),
-            "removal is refused too: {}",
-            sink.error_text()
+            refusal.contains("removed"),
+            "removal is refused too: {refusal}"
         );
 
         let sink = RecordingSink::default();

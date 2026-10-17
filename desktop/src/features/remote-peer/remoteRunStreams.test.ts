@@ -383,4 +383,95 @@ describe("remoteRunStreams", () => {
     // gone while its position in the log is still known.
     expect(streams.cursorFor("r2")?.highWater).toBe(0);
   });
+
+  /**
+   * A frame that names no run, or carries no index, is not part of a reply's log.
+   *
+   * The host's envelope is parsed by hand upstream, so this is the boundary the
+   * lane states for itself rather than inherits from the type: it reports
+   * `untracked` and creates nothing — a nameless frame must not open a projector
+   * or move a cursor, or the *next*, well-formed frame for that run would be read
+   * as a duplicate of something that never happened.
+   */
+  it("does not track a frame that names no run or no index", () => {
+    const streams = new RemoteRunStreams();
+
+    expect(streams.apply(event("", "text_chunk", { text: "nameless" }))).toBe("untracked");
+    expect(streams.apply(event("r1", "text_chunk", { text: "unindexed" }, { idx: null as unknown as number }))).toBe("untracked");
+
+    expect(streams.replies()).toEqual([]);
+    expect(streams.cursorFor("r1")).toBeUndefined();
+
+    // The run's first real frame is therefore its beginning: `applied`, drawn,
+    // and startable from index zero.
+    expect(streams.apply(event("r1", "text_chunk", { text: "the real start" }, { idx: 0 }))).toBe("applied");
+    expect(streams.replies().map(reply => reply.message.content)).toEqual(["the real start"]);
+    expect(streams.cursorFor("r1")?.highWater).toBe(0);
+  });
+
+  /**
+   * A terminal frame for a run this lane never tracked is not an error.
+   *
+   * A `run_finished` can arrive for a run whose frames this window never saw — it
+   * joined after the fact, or the projection was evicted — and the settle path has
+   * to be a no-op then rather than creating a run out of the terminal frame alone
+   * (which would draw an empty reply for a run nothing else knows).
+   */
+  it("ignores a settle for a run it never tracked", () => {
+    const streams = new RemoteRunStreams();
+
+    streams.settle("r_never_seen");
+
+    expect(streams.replies()).toEqual([]);
+    expect(streams.knownRuns()).toEqual([]);
+    expect(streams.cursorFor("r_never_seen")).toBeUndefined();
+  });
+
+  /**
+   * A whole-run read whose log carries no indexed frame still moves the cursor.
+   *
+   * The read is authoritative (`completePrefix`) even when every frame in it is
+   * index-less, so the cursor has to be advanced to "everything through here" —
+   * otherwise the next read of that run would be a tail from a position the client
+   * has already superseded, and the reply would be re-read in pieces for ever.
+   */
+  it("advances the cursor for a complete read with nothing indexed in it", () => {
+    const streams = new RemoteRunStreams();
+    streams.restore("r1", {
+      events: [{ type: "text_chunk", data: JSON.stringify({ text: "read" }), runId: "r1" }],
+      completePrefix: true,
+    });
+
+    // Nothing indexed, so there is no position to move to — but the read *is*
+    // authoritative, and the cursor records that with the position it already
+    // held rather than leaving the run looking unread (which is what
+    // `cursorFor` returning `undefined` would mean).
+    expect(streams.cursorFor("r1")?.highWater).toBe(-1);
+    expect(streams.cursorFor("r1")?.prefixComplete).toBe(true);
+    // And a frame with no index is not projected: the projector orders by the
+    // event's own sequence, so there is no bubble to draw from this read.
+    expect(streams.replies()).toEqual([]);
+  });
+
+  /**
+   * A settled run whose log holds nothing to show draws no bubble.
+   *
+   * `agent_start` is a frame, not a word: an empty bubble with an author line is
+   * worse than none, and the rule has to hold on the settled path as well as while
+   * the run is being written — that is the state a rebuilt run reaches when its log
+   * was structural only.
+   */
+  it("draws no settled bubble for a log that holds nothing renderable", () => {
+    const streams = new RemoteRunStreams();
+    streams.restore("r1", projection("r1", [["agent_start", {}]]));
+    expect(streams.replies()).toEqual([]);
+
+    streams.settle("r1");
+
+    expect(streams.replies()).toEqual([]);
+    // Still tracked: it is a run the record will name, so it stands aside rather
+    // than being forgotten.
+    expect(streams.replayedRuns().has("r1")).toBe(true);
+    expect(streams.knownRuns()).toEqual(["r1"]);
+  });
 });

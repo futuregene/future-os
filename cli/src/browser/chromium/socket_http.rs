@@ -213,6 +213,88 @@ mod imp {
             assert_eq!(parse_http_response(b"not http at all"), None);
         }
 
+        /// A socket the caller can talk to exactly once, answering with `reply`
+        /// and then closing. The path is returned so the test can unlink it.
+        #[cfg(unix)]
+        async fn serve_and_close(reply: &'static [u8]) -> (SocketSpec, std::path::PathBuf) {
+            use tokio::io::AsyncWriteExt;
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "future-socket-http-{}-{nanos}.sock",
+                std::process::id()
+            ));
+            let listener = tokio::net::UnixListener::bind(&path).expect("bind");
+            let spec = SocketSpec::Path(path.display().to_string());
+            tokio::spawn(async move {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                if !reply.is_empty() {
+                    let _ = stream.write_all(reply).await;
+                }
+                // Closing without a full response is the failure the caller has
+                // to tell apart from a timeout.
+                let _ = stream.shutdown().await;
+            });
+            (spec, path)
+        }
+
+        /// A peer that closes without answering is reported as that, not as a
+        /// deadline: "nothing came back" and "it is still thinking" need
+        /// different fixes.
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn get_reports_a_peer_that_closed_without_answering() {
+            let (spec, path) = serve_and_close(b"").await;
+            let error = get(&spec, "/json/version").await.unwrap_err();
+            assert!(error.contains("closed without a response"), "{error}");
+            let _ = std::fs::remove_file(&path);
+        }
+
+        /// A body that under-runs its own framing is incomplete, and saying so
+        /// names the framing rather than pretending the body was the response.
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn get_reports_an_under_run_body_as_incomplete() {
+            let (spec, path) =
+                serve_and_close(b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nab").await;
+            let error = get(&spec, "/json/version").await.unwrap_err();
+            assert!(error.contains("incomplete HTTP response"), "{error}");
+            assert!(
+                error.contains("bytes)"),
+                "the byte count of what did arrive is the evidence: {error}"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+
+        /// Chunked bodies end when the peer closes, so the reader has to accept
+        /// that framing too — `Connection: close` plus no `Content-Length` is
+        /// what a hand-written mock (and some proxies) produce.
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn get_reads_an_unframed_body_to_eof() {
+            let (spec, path) = serve_and_close(b"HTTP/1.1 200 OK\r\n\r\nplain").await;
+            let (status, body) = get(&spec, "/json/version").await.expect("read");
+            assert_eq!(status, 200);
+            assert_eq!(body, b"plain".to_vec());
+            let _ = std::fs::remove_file(&path);
+        }
+
+        /// A head that frames a body but has no parseable status line passes the
+        /// completeness check, so the malformed-response arm is what catches it
+        /// instead of it being parsed as some other status.
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn get_reports_a_malformed_status_line() {
+            let (spec, path) = serve_and_close(b"BOGUS\r\nContent-Length: 0\r\n\r\n").await;
+            let error = get(&spec, "/json/version").await.unwrap_err();
+            assert!(error.contains("malformed HTTP response"), "{error}");
+            let _ = std::fs::remove_file(&path);
+        }
+
         #[test]
         fn chunk_extensions_and_upper_case_hex_are_accepted() {
             let body =
@@ -226,6 +308,15 @@ mod imp {
             assert_eq!(dechunk_prefix(b"5\r\nab"), Ok(None));
             assert_eq!(dechunk_prefix(b"zz\r\n"), Err(()));
             assert_eq!(dechunk_prefix(b"5\r\nabcdeXX"), Err(()));
+        }
+
+        #[test]
+        fn an_unterminated_chunk_asks_for_more_input() {
+            // The data arrived but the CRLF that ends it did not: that is "more
+            // is coming", not malformed framing, so the reader keeps reading
+            // rather than failing the request.
+            assert_eq!(dechunk_prefix(b"5\r\nabcde"), Ok(None));
+            assert_eq!(dechunk_prefix(b"5\r\nabcde\r"), Ok(None));
         }
 
         /// A complete response is recognised without waiting for the peer to

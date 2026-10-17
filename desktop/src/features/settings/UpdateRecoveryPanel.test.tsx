@@ -37,3 +37,33 @@ it.each(["installed", "failed-restored", null, "repair-required"])("offers resta
     act(() => root.unmount());
   }
 });
+
+it("surfaces a failed restart instead of leaving the button silently inert", async () => {
+  // The restart is the last thing this window can do, and it can fail (the
+  // supervisor is gone, the command is refused). Saying so is what keeps the
+  // user from pressing a button that appears to do nothing.
+  mocks.invoke.mockReset().mockRejectedValue(new Error("supervisor unavailable"));
+  mocks.status = { maintenance: { update: {
+    operationId: "update-fixture",
+    stage: "finished",
+    outcome: "installed",
+    restartSafe: true,
+    diagnostic: null,
+  } }, maintenanceError: null };
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<UpdateRecoveryPanel />));
+    const button = container.querySelector("button")!;
+    expect(button.textContent).toBe("Restart FutureOS");
+
+    await act(async () => button.click());
+
+    expect(container.querySelector("[role='alert']")?.textContent).toContain("supervisor unavailable");
+    // The button comes back: a failed restart is retryable.
+    expect(container.querySelector("button")!.disabled).toBe(false);
+  }
+  finally {
+    act(() => root.unmount());
+  }
+});

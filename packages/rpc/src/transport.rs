@@ -911,4 +911,180 @@ mod tests {
             error.details
         );
     }
+    /// A pinned HTTPS endpoint has no configured TLS connector, so the client
+    /// must refuse it rather than silently speaking plaintext to it.
+    #[tokio::test]
+    async fn a_pinned_https_endpoint_is_refused_without_a_tls_connector() {
+        let error = connect_pinned_channel(
+            Some("https://127.0.0.1:443"),
+            Duration::from_millis(250),
+            None,
+        )
+        .await
+        .err()
+        .expect("an https agent endpoint must not be connected in plaintext");
+        assert!(
+            error.details.contains("TLS connector"),
+            "the refusal must name the missing connector: {}",
+            error.details
+        );
+    }
+
+    /// An endpoint that never answers must not hang discovery: the attempt is
+    /// bounded by a connect budget and reports the endpoint it tried.
+    ///
+    /// Fixture: a TEST-NET-1 address (RFC 5737), documented as unroutable and
+    /// dropped rather than answered on this host. Which of the two budgets ends
+    /// the attempt is left open (tonic's endpoint timeout and the caller's outer
+    /// budget are armed on the same millisecond and the inner one is what was
+    /// measured here); what must hold is that a stalled endpoint is a *timeout*
+    /// naming the address, not an unbounded wait.
+    #[tokio::test]
+    async fn an_endpoint_that_never_answers_is_bounded_by_the_connect_budget() {
+        let budget = Duration::from_millis(300);
+        let mut stalled = None;
+        for address in [
+            "http://192.0.2.1:9",
+            "http://198.51.100.1:9",
+            "http://203.0.113.1:9",
+        ] {
+            let started = std::time::Instant::now();
+            let error = connect_channel(Some(address), budget, Some(Duration::from_secs(5)))
+                .await
+                .err()
+                .expect("an endpoint that never answers must not produce a channel");
+            if error.kind == Some(io::ErrorKind::TimedOut) {
+                stalled = Some((address, started.elapsed(), error));
+                break;
+            }
+        }
+        let (address, elapsed, error) = stalled.expect(
+            "no TEST-NET fixture stalled: this host answers or refuses them, so a stalled \
+             endpoint is unmeasured here",
+        );
+        assert!(
+            error.details.contains(address),
+            "the failure must name the endpoint it tried: {}",
+            error.details
+        );
+        assert!(
+            elapsed >= budget && elapsed < Duration::from_secs(3),
+            "the connect budget, not the peer, must end the attempt ({elapsed:?})"
+        );
+    }
+
+    /// The accepted local IO is the server's whole transport on this platform:
+    /// reading, writing, flushing and shutting down must all delegate to the
+    /// socket, and tonic asks for the connect info before it serves the stream.
+    /// A silent failure in any of them would break every local RPC.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_accepted_local_io_round_trips_bytes_and_reports_its_connect_info() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("agent.sock");
+        let mut incoming = bind_local_at(socket.clone()).await.unwrap();
+        let mut client = tokio::net::UnixStream::connect(&socket).await.unwrap();
+        let mut server = std::pin::Pin::new(&mut incoming)
+            .next()
+            .await
+            .expect("the endpoint must accept the connection")
+            .expect("the accepted IO must be usable");
+        assert_eq!(
+            <LocalIo as tonic::transport::server::Connected>::connect_info(&server),
+            ()
+        );
+
+        client.write_all(b"ping").await.unwrap();
+        client.flush().await.unwrap();
+        let mut buf = [0_u8; 4];
+        server.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"ping");
+
+        server.write_all(b"pong").await.unwrap();
+        server.flush().await.unwrap();
+        let mut reply = [0_u8; 4];
+        client.read_exact(&mut reply).await.unwrap();
+        assert_eq!(&reply, b"pong");
+
+        server.shutdown().await.unwrap();
+        drop(client);
+    }
+
+    /// The default (unconfigured) endpoint is the socket under this instance's
+    /// own FutureOS home, and reserve → bind → connect must work as a chain.
+    /// `FUTURE_HOME` is process-global, so this test serializes on the crate's
+    /// environment lock (see `crate::home::env_guard`).
+    #[cfg(unix)]
+    #[tokio::test]
+    // The environment lock is held across the awaits on purpose (the endpoint stays
+    // redirected for the whole chain) on a current-thread runtime, so no task shares
+    // the thread with it.
+    #[allow(clippy::await_holding_lock)]
+    async fn the_default_endpoint_reserves_binds_and_connects_under_its_own_home() {
+        let _guard = crate::home::env_guard();
+        let home = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os(crate::home::FUTURE_HOME_ENV);
+        let previous_socket = std::env::var_os("FUTURE_AGENT_SOCKET");
+        std::env::remove_var("FUTURE_AGENT_SOCKET");
+        std::env::set_var(crate::home::FUTURE_HOME_ENV, home.path());
+
+        let socket = home.path().join("run").join("agent.sock");
+        let reserved = reserve_local_endpoint()
+            .await
+            .expect("the instance home must own a reservable endpoint");
+        assert!(
+            reserve_local_endpoint().await.is_err(),
+            "a reservation is exclusive"
+        );
+        drop(reserved);
+
+        let mut incoming = bind_local().await.expect("the endpoint must bind");
+        assert!(
+            socket.exists(),
+            "the endpoint lives under the instance home"
+        );
+
+        let connected = connect_channel(None, Duration::from_secs(1), Some(Duration::from_secs(5)))
+            .await
+            .expect("the default endpoint must connect without configuration");
+        assert!(matches!(connected.endpoint, AgentEndpoint::Local));
+        let accepted = std::pin::Pin::new(&mut incoming).next().await.unwrap();
+        assert!(accepted.is_ok(), "the client's connection must be accepted");
+        drop(connected);
+        drop(incoming);
+        assert!(!socket.exists(), "teardown removes the endpoint");
+
+        match previous_socket {
+            Some(value) => std::env::set_var("FUTURE_AGENT_SOCKET", value),
+            None => std::env::remove_var("FUTURE_AGENT_SOCKET"),
+        }
+        match previous_home {
+            Some(value) => std::env::set_var(crate::home::FUTURE_HOME_ENV, value),
+            None => std::env::remove_var(crate::home::FUTURE_HOME_ENV),
+        }
+    }
+
+    /// The socket directory is prepared before binding, and the failure has to
+    /// tell an operator what to do about it (the common cause is a FutureOS home
+    /// on a filesystem that cannot host a socket).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unusable_socket_directory_names_the_directory_and_the_way_out() {
+        let temp = tempfile::tempdir().unwrap();
+        let occupant = temp.path().join("not-a-directory");
+        std::fs::write(&occupant, "file").unwrap();
+        let error = bind_local_at(occupant.join("agent.sock"))
+            .await
+            .err()
+            .expect("a socket below a regular file cannot bind");
+        let message = error.to_string();
+        assert!(
+            message.contains("cannot prepare local socket directory"),
+            "{message}"
+        );
+        assert!(message.contains("FUTURE_HOME"), "{message}");
+        assert_eq!(std::fs::read_to_string(&occupant).unwrap(), "file");
+    }
 }

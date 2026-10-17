@@ -58,12 +58,16 @@ mod tests {
             .env(CHILD_MARKER, "1")
             .output()
             .expect("spawn the isolated test process");
-        assert!(
-            output.status.success(),
+        // Rendered before the assertion so the child's output is decoded on
+        // every run, not only on failure: the diagnostic is the only place a
+        // non-zero exit is explained, and a lazily-built message is never
+        // exercised by a passing run.
+        let child_report = format!(
             "the isolated process must pass:\n{}\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+        assert!(output.status.success(), "{child_report}");
     }
 
     /// Once the listener is bound the command hands the webview the secret, the

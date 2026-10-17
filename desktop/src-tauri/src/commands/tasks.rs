@@ -493,6 +493,92 @@ mod tests {
         }
     }
 
+    /// The three `parse_*` helpers are the form's normalization layer: an
+    /// unknown or absent value must land on the default, and only the exact
+    /// wire string selects the non-default variant. `delete` retention is
+    /// meaningful only for a run that opens a new conversation.
+    #[test]
+    fn unknown_task_form_values_normalize_to_the_default() {
+        assert_eq!(
+            parse_conversation_mode(Some("chat")),
+            ConversationMode::Chat
+        );
+        for raw in [None, Some("bogus"), Some("")] {
+            assert_eq!(parse_conversation_mode(raw), ConversationMode::Workspace);
+        }
+        assert_eq!(
+            parse_session_policy(Some("existing")),
+            SessionPolicy::Existing
+        );
+        for raw in [None, Some("bogus"), Some("")] {
+            assert_eq!(parse_session_policy(raw), SessionPolicy::New);
+        }
+        assert_eq!(parse_trigger_kind(Some("schedule")), TriggerKind::Schedule);
+        for raw in [None, Some("bogus")] {
+            assert_eq!(parse_trigger_kind(raw), TriggerKind::Manual);
+        }
+        assert_eq!(
+            parse_session_retention(Some("delete"), SessionPolicy::New),
+            SessionRetention::Delete
+        );
+        assert_eq!(
+            parse_session_retention(Some("delete"), SessionPolicy::Existing),
+            SessionRetention::Keep,
+            "a reused conversation is never deleted by a retention choice"
+        );
+        assert_eq!(
+            parse_session_retention(None, SessionPolicy::New),
+            SessionRetention::Keep
+        );
+    }
+
+    /// `FUTURE_HOME` relocates the whole root; the command surface must resolve
+    /// the tasks store from the same override the tick loop uses, or the GUI
+    /// would show one task list while the loop runs another.
+    #[test]
+    fn the_task_store_home_follows_a_future_home_override() {
+        let _home = init("cmd_tasks_home_override");
+        let dir = std::env::temp_dir().join("futureos-task-home-override");
+        std::env::set_var("FUTURE_HOME", &dir);
+        assert_eq!(future_home(), dir);
+        std::env::remove_var("FUTURE_HOME");
+    }
+
+    /// `enabled` is optional on the update payload; when present it must reach
+    /// the stored row (both directions), and when absent the existing value has
+    /// to survive the edit.
+    #[test]
+    fn updating_a_task_carries_an_explicit_enabled_flag() {
+        let _home = init("cmd_tasks_disable");
+        let created = create_task(input("daily")).expect("create");
+        assert!(created.enabled, "a new task is enabled by default");
+
+        let mut disable = input("daily");
+        disable.enabled = Some(false);
+        let disabled = update_task(created.id.clone(), disable).expect("disable");
+        assert!(!disabled.enabled);
+        let listed = list_tasks()
+            .expect("list")
+            .into_iter()
+            .find(|task| task.id == created.id)
+            .expect("the task is still listed");
+        assert!(
+            !listed.enabled,
+            "the update must be persisted, not just viewed"
+        );
+
+        // An edit that leaves `enabled` unset keeps the stored false.
+        let edit = input("daily renamed");
+        assert!(edit.enabled.is_none());
+        let kept = update_task(created.id.clone(), edit).expect("edit");
+        assert!(!kept.enabled, "an absent flag must not re-enable the task");
+        assert_eq!(kept.name, "daily renamed");
+
+        let mut enable = input("daily renamed");
+        enable.enabled = Some(true);
+        assert!(update_task(created.id, enable).expect("enable").enabled);
+    }
+
     #[test]
     fn async_command_wrappers_reject_malformed_bodies() {
         crate::commands::ipc_harness::assert_all_reject_bad_body(

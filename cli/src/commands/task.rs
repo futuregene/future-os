@@ -3455,4 +3455,221 @@ mod tests {
         assert_eq!(agent.seen_of("get_last_assistant_text").len(), 2);
         let _ = home;
     }
+
+    /// A run whose advice is stored on it: the note must name *both* facts a
+    /// reader needs — that the conversation is gone (so they stop looking for
+    /// it) and that the text they are about to read is a capped head…tail (so
+    /// they do not treat a truncated answer as the whole one).
+    #[tokio::test]
+    async fn output_says_when_a_deleted_runs_answer_was_capped() {
+        use future_tasks::kernel::RUN_OUTPUT_CHARS;
+
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let (setup, _c) = Output::memory();
+        add(
+            &args(&["--name", "reads", "--prompt", "p", "--cwd", "/tmp"]),
+            &setup,
+        )
+        .unwrap();
+        let store = open_store().unwrap();
+        let task = find_task(&store, "reads").unwrap();
+        let run = future_tasks::TaskRun {
+            id: "trn_capped".to_string(),
+            task_id: task.id.clone(),
+            kind: future_tasks::RunKind::Manual,
+            origin: future_tasks::RunOrigin::Cli,
+            actor: None,
+            due_at: None,
+            status: future_tasks::RunStatus::Completed,
+            thread_id: Some("thr_1".to_string()),
+            session_id: Some("sess_1".to_string()),
+            run_id: None,
+            prompt_version: Some(1),
+            result_summary: Some("summary".to_string()),
+            feedback: None,
+            feedback_note: None,
+            started_at: Some(1_000),
+            finished_at: Some(2_000),
+            error_message: None,
+            session_deleted: false,
+        };
+        store.insert_run(&run).unwrap();
+        let full = "x".repeat(RUN_OUTPUT_CHARS);
+        store.set_run_output("trn_capped", &full).unwrap();
+        store
+            .mark_run_conversation_deleted("trn_capped")
+            .expect("deleted");
+
+        let (out, captured) = Output::memory();
+        output(&args(&["trn_capped"]), &out).await.unwrap();
+        let shown = text(captured.out);
+        assert!(
+            shown.contains(&format!(
+                "(capped at {RUN_OUTPUT_CHARS} characters, head…tail)"
+            )),
+            "{shown}"
+        );
+        assert_eq!(
+            shown.matches('x').count(),
+            RUN_OUTPUT_CHARS,
+            "the whole saved answer is printed, not the summary"
+        );
+
+        // One character short of the cap is *not* capped — the threshold is
+        // the boundary the kernel truncates at, not "long-ish".
+        let mut short = store.get_run("trn_capped").unwrap().unwrap();
+        short.id = "trn_short".to_string();
+        store.insert_run(&short).unwrap();
+        store
+            .set_run_output("trn_short", &"y".repeat(RUN_OUTPUT_CHARS - 1))
+            .unwrap();
+        let (out, captured) = Output::memory();
+        output(&args(&["trn_short"]), &out).await.unwrap();
+        let shown = text(captured.out);
+        assert!(shown.contains("was deleted after it settled"), "{shown}");
+        assert!(!shown.contains("capped at"), "{shown}");
+
+        // An empty saved answer is "no answer yet", never a blank line: the
+        // reader otherwise cannot tell an empty run from a broken command.
+        let mut empty = store.get_run("trn_capped").unwrap().unwrap();
+        empty.id = "trn_empty".to_string();
+        store.insert_run(&empty).unwrap();
+        store.set_run_output("trn_empty", "").unwrap();
+        let (out, captured) = Output::memory();
+        output(&args(&["trn_empty"]), &out).await.unwrap();
+        let shown = text(captured.out);
+        assert!(
+            shown.contains("(the run's conversation has no assistant answer yet)"),
+            "{shown}"
+        );
+    }
+
+    /// A conversation that a *later* run also used holds every run's answer, so
+    /// `output` has to say which run the text it prints belongs to.
+    #[tokio::test]
+    async fn output_notes_a_conversation_a_later_run_reused() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let agent = crate::test_server::MockAgent::respond(
+            "get_last_assistant_text",
+            &serde_json::json!({ "text": "the latest answer" }).to_string(),
+        );
+        let addr = crate::test_server::spawn_mock(agent.clone()).await;
+        let _env = EnvGuard::set(&[("FUTURE_AGENT_GRPC_ADDR", std::ffi::OsString::from(addr))]);
+
+        let (setup, _c) = Output::memory();
+        add(
+            &args(&["--name", "shared", "--prompt", "p", "--cwd", "/tmp"]),
+            &setup,
+        )
+        .unwrap();
+        let store = open_store().unwrap();
+        let task = find_task(&store, "shared").unwrap();
+        let run = |id: &str, started_at: i64| future_tasks::TaskRun {
+            id: id.to_string(),
+            task_id: task.id.clone(),
+            kind: future_tasks::RunKind::Manual,
+            origin: future_tasks::RunOrigin::Cli,
+            actor: None,
+            due_at: None,
+            status: future_tasks::RunStatus::Completed,
+            thread_id: None,
+            session_id: Some("sess_shared".to_string()),
+            run_id: None,
+            prompt_version: Some(1),
+            result_summary: None,
+            feedback: None,
+            feedback_note: None,
+            started_at: Some(started_at),
+            finished_at: None,
+            error_message: None,
+            session_deleted: false,
+        };
+        // The run asked for is the earlier one and has no saved answer, so the
+        // text comes from the conversation — which the later run also wrote to.
+        store.insert_run(&run("trn_first", 1_000)).unwrap();
+        store.insert_run(&run("trn_second", 2_000)).unwrap();
+
+        let (out, captured) = Output::memory();
+        output(&args(&["trn_first"]), &out).await.unwrap();
+        let shown = text(captured.out);
+        assert!(
+            shown.contains("this conversation was used again by run trn_second"),
+            "{shown}"
+        );
+        assert!(shown.contains("the latest answer"), "{shown}");
+
+        // The later run itself has no *later* run, so it carries no note: the
+        // warning is about a mismatch, not about reuse in general.
+        let (out, captured) = Output::memory();
+        output(&args(&["trn_second"]), &out).await.unwrap();
+        let shown = text(captured.out);
+        assert!(!shown.contains("used again by run"), "{shown}");
+        assert_eq!(agent.seen_of("get_last_assistant_text").len(), 2);
+    }
+
+    /// `edit` carries every `add` setting, including the retention switch — and
+    /// refuses a value nobody understands instead of storing it verbatim.
+    #[tokio::test]
+    async fn edit_switches_session_retention_and_refuses_an_unknown_value() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let (out, _c) = Output::memory();
+        add(
+            &args(&[
+                "--name",
+                "ephemeral",
+                "--prompt",
+                "p",
+                "--cwd",
+                "/tmp",
+                "--session",
+                "new",
+            ]),
+            &out,
+        )
+        .unwrap();
+
+        let (out, captured) = Output::memory();
+        edit(&args(&["ephemeral", "--session-retention", "delete"]), &out).unwrap();
+        assert_eq!(
+            open_store()
+                .unwrap()
+                .find_task_by_name("ephemeral")
+                .unwrap()
+                .unwrap()
+                .session_retention,
+            future_tasks::SessionRetention::Delete
+        );
+        assert!(
+            text(captured.out).contains("Updated task"),
+            "edit reports it"
+        );
+        let (out, captured) = Output::memory();
+        show(&args(&["ephemeral"]), &out).unwrap();
+        assert!(
+            text(captured.out).contains("new per run, deleted after it"),
+            "the switch is visible where the next run reads it"
+        );
+
+        let (out, _captured) = Output::memory();
+        let error = edit(
+            &args(&["ephemeral", "--session-retention", "sometimes"]),
+            &out,
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown --session-retention"), "{error}");
+        assert!(error.contains("keep|delete"), "{error}");
+        assert_eq!(
+            open_store()
+                .unwrap()
+                .find_task_by_name("ephemeral")
+                .unwrap()
+                .unwrap()
+                .session_retention,
+            future_tasks::SessionRetention::Delete,
+            "a refused value is not stored"
+        );
+    }
 }

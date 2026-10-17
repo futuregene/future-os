@@ -156,6 +156,104 @@ mod tests {
         assert_eq!(drain_skill_events(rx, None), Some(2));
     }
 
+    /// A sidecar that closes its event channel without ever reporting a
+    /// termination ends the drain with the (absent) exit code it saw instead of
+    /// spinning on an empty channel.
+    #[test]
+    fn drain_skill_events_ends_when_the_channel_closes_without_termination() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(tx);
+        assert_eq!(drain_skill_events(rx, None), None);
+    }
+
+    /// The CLI fixture used by the spawn tests: answers the `version --json`
+    /// probe with a compatible capability contract, and records the fact that
+    /// `init` ran — the bootstrap never returns anything, so the marker is the
+    /// only honest evidence that the CLI was really executed.
+    #[cfg(unix)]
+    fn cli_fixture(directory: &std::path::Path, marker: &std::path::Path, init: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let capabilities = future_rpc::cli_capabilities::CliCapabilities {
+            commands: vec!["skills.init".into()],
+            ..Default::default()
+        };
+        let reply = serde_json::json!({ "version": "1.2.3", "desktopCapabilities": capabilities })
+            .to_string();
+        std::fs::create_dir_all(directory).unwrap();
+        let path = directory.join("future");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\n\
+                 if [ \"$1\" = version ]; then printf '%s' '{reply}'; exit 0; fi\n\
+                 printf 'ran' > '{marker}'\n{init}\n",
+                marker = marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn mock_app() -> tauri::App<tauri::test::MockRuntime> {
+        tauri::test::mock_builder()
+            .plugin(tauri_plugin_shell::init())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build mock app")
+    }
+
+    /// The onboarding step really spawns the CLI through the shell plugin: the
+    /// marker is the proof that `future init` ran as a child of this app.
+    #[cfg(unix)]
+    #[test]
+    fn the_bootstrap_spawns_the_cli_through_the_shell_plugin() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("bootstrap-spawn");
+        let root = std::env::temp_dir().join(format!("futureos-bootstrap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let marker = root.join("init-ran");
+        let directory = root.join("bin");
+        cli_fixture(&directory, &marker, "printf 'installed 2 skills\\n'");
+        let saved = std::env::var_os("PATH");
+        std::env::set_var("PATH", directory.as_os_str());
+
+        let app = mock_app();
+        run_builtin_skills(app.handle());
+
+        match saved {
+            Some(value) => std::env::set_var("PATH", value),
+            None => std::env::remove_var("PATH"),
+        }
+        assert!(
+            marker.exists(),
+            "the spawned CLI must have run its `init` (drain loop exit {:?})",
+            marker
+        );
+    }
+
+    /// A CLI that cannot be reached by the spawn is reported and the drain is
+    /// skipped entirely — the onboarding step never blocks or panics when the
+    /// sidecar is unusable.
+    #[cfg(unix)]
+    #[test]
+    fn a_cli_outside_the_runnable_contract_is_reported_and_ignored() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("bootstrap-unusable");
+        let root = std::env::temp_dir().join(format!("futureos-unusable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        // A *directory* named `future`: every candidate is judged unusable, so
+        // discovery fails before any child is spawned.
+        std::fs::create_dir_all(root.join("bin").join("future")).unwrap();
+        let saved = std::env::var_os("PATH");
+        std::env::set_var("PATH", root.join("bin").as_os_str());
+
+        let app = mock_app();
+        run_builtin_skills(app.handle());
+
+        match saved {
+            Some(value) => std::env::set_var("PATH", value),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+
     #[test]
     fn run_builtin_skills_logs_spawn_failure() {
         let _home = crate::auth_store::test_support::HomeGuard::new("bootstrap-no-cli");

@@ -986,6 +986,59 @@ mod tests {
         let _ = server.await;
     }
 
+    /// A client that disappears mid-stream (the tab was closed, the phone lost
+    /// the network) must end the SSE task cleanly: the heartbeat write fails, and
+    /// "nobody is listening" is an ordinary end of a stream, not an error to
+    /// log or a task to leak. Kept separate from the ping test because the two
+    /// guards live on the same statement: that one asserts the ping is written,
+    /// this one asserts a failed ping is not propagated.
+    #[tokio::test(start_paused = true)]
+    async fn serve_sse_ends_cleanly_when_the_client_vanishes_before_a_ping() {
+        let (root, _dir) = store_root();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        // The sender stays ALIVE so the loop reaches the heartbeat arm rather
+        // than the "broadcaster gone" one.
+        let (tx, rx) = watch::channel(String::new());
+        let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        let server = tokio::spawn(async move { serve_sse(stream, Arc::new(root), rx).await });
+        // Let the head + initial snapshot be written, then take the reader away.
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+        drop(client);
+        // Drive the heartbeat until the failed write ends the task. A write to a
+        // peer that closed is not refused synchronously: the first write after the
+        // close can still be accepted locally, and the reset that makes a later
+        // write fail is a *kernel* event, not a virtual-time one — so a single
+        // `advance(16 s)` is not enough in general (measured: this test reddened 3
+        // of 4 instrumented whole-suite runs at 1-min load 16–55 while passing
+        // standalone). The two assertions below are unchanged: the task must END,
+        // and it must end successfully.
+        for _ in 0..64 {
+            if server.is_finished() {
+                break;
+            }
+            tokio::time::advance(std::time::Duration::from_secs(16)).await;
+            for _ in 0..5 {
+                tokio::task::yield_now().await;
+            }
+            // Real time, so the kernel can deliver the peer's close before the
+            // next heartbeat write is attempted.
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(
+            server.is_finished(),
+            "the heartbeat write to a vanished client must end the task"
+        );
+        assert!(
+            server.await.unwrap().is_ok(),
+            "a vanished client is an ordinary end of stream, not an error"
+        );
+        drop(tx);
+    }
+
     #[tokio::test]
     async fn run_server_bind_failure_returns_err() {
         let (root, _dir) = store_root();
@@ -1005,13 +1058,19 @@ mod tests {
         let server_root = root.clone();
         let handle = tokio::spawn(async move { run_server(server_root, port, false).await });
 
-        // Poll until the server has bound and is accepting.
+        // Poll until the server has bound and is accepting. One yield per attempt,
+        // and no early `break`: the loop must not spin on a hot socket, and writing
+        // it this way exercises the retry path on every run instead of only on the
+        // runs where the server happens to lose the bind race (measured: this
+        // loop's retry arm was covered in four earlier runs of this suite and
+        // uncovered in a fifth, purely on that race).
         let mut client = None;
-        for _ in 0..500 {
-            if let Ok(c) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
-                client = Some(c);
-                break;
-            }
+        let mut attempt = 0;
+        while client.is_none() && attempt < 500 {
+            attempt += 1;
+            client = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .ok();
             tokio::task::yield_now().await;
         }
         let mut client = client.expect("server binds and accepts");

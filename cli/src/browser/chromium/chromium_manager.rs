@@ -163,6 +163,16 @@ mod tests {
         let base = spawn_http(vec![HttpRoute::json("/json/version", 500, "{}")]).await;
         assert!(!endpoint_reachable(&base).await);
         assert!(!endpoint_reachable("http://127.0.0.1:1").await);
+
+        // An endpoint the tool cannot parse has nothing to probe, so it is not
+        // reachable — and the probe must not be attempted at all (no scheme
+        // guessing: `127.0.0.1:9222` is not a URL).
+        for unparseable in ["", "   ", "127.0.0.1:9222", "unix:", "abstract:"] {
+            assert!(
+                !endpoint_reachable(unparseable).await,
+                "{unparseable:?} is not an endpoint"
+            );
+        }
     }
 
     #[tokio::test]

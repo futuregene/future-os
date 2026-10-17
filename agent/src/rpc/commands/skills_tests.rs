@@ -136,6 +136,90 @@ fn uninstall_skill_removes_the_directory_and_is_idempotent() {
     assert!(installed_rows(&state).is_empty());
 }
 
+/// The install command's *success* path end to end: the platform serves a real
+/// package, the handler installs it, and the result is visible in the installed
+/// list. The two existing install tests are failure paths (a rejected id and an
+/// unreachable platform), so nothing proved the handler's success arm — or that
+/// a successful install republishes discovery for the client's next get_state.
+#[test]
+fn install_skill_publishes_the_installed_skill_after_a_platform_download() {
+    use std::io::{Read, Write};
+
+    let home = crate::test_support::TestHome::new();
+
+    // A minimal valid package: one SKILL.md whose frontmatter matches the
+    // requested id and version (the manager verifies both).
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    {
+        let mut archive = zip::ZipWriter::new(&mut cursor);
+        archive
+            .start_file("SKILL.md", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        archive
+            .write_all(b"---\nname: demo\nversion: 1.0.0\n---\n\n# Demo\n")
+            .unwrap();
+        archive.finish().unwrap();
+    }
+    let bytes = cursor.into_inner();
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 2048];
+            let count = stream.read(&mut request).unwrap();
+            let is_catalogue =
+                String::from_utf8_lossy(&request[..count]).contains("/client/v1/skills ");
+            let body = if is_catalogue {
+                b"[]".to_vec()
+            } else {
+                bytes.clone()
+            };
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(header.as_bytes()).unwrap();
+            stream.write_all(&body).unwrap();
+        }
+    });
+    std::fs::create_dir_all(home.path().join(".future/agent")).unwrap();
+    std::fs::write(
+        home.auth_path(),
+        format!(r#"{{"future":{{"base_url":"{address}"}}}}"#),
+    )
+    .unwrap();
+    let state = make_app_state();
+
+    let mut cmd = make_cmd("install_skill");
+    cmd.skill_id = "demo".into();
+    cmd.skill_version = "1.0.0".into();
+    let response = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(
+        response["success"], true,
+        "install must succeed: {response}"
+    );
+    assert_eq!(response["data"], serde_json::json!({}));
+
+    // The skill is on disk, recorded as managed, and republished for the
+    // client's next get_state.
+    let installed = home.path().join(".future/agent/skills/demo");
+    assert!(
+        installed.join("SKILL.md").exists(),
+        "the package must be extracted into the installed skills directory"
+    );
+    let rows = installed_rows(&state);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["id"], "demo");
+    assert_eq!(rows[0]["version"], "1.0.0");
+    assert_eq!(
+        *state.welcome_skills.read(),
+        vec!["demo".to_string()],
+        "a successful install must republish discovery"
+    );
+}
+
 #[test]
 fn invalid_skill_identifiers_are_rejected_before_any_state_changes() {
     let home = crate::test_support::TestHome::new();

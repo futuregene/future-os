@@ -364,4 +364,138 @@ mod tests {
         };
         assert!(prepare(&sandbox, "read declared directory", &directory).is_ok());
     }
+
+    /// Every remaining rejection in `prepare` is a fail-closed guard: an
+    /// unusable rule layer, an oversized grant set, a non-literal or
+    /// unspecified request, the wrong scope for the target's kind, and a
+    /// duplicated target. Each asserts its own message so a reordering that
+    /// lets one through cannot pass as "some error".
+    #[test]
+    fn prepare_rejects_every_unusable_grant_shape() {
+        let (_dir, sandbox, secret) = fixture();
+
+        // A rule layer that could not be resolved (a malformed rule file) must
+        // never be turned into a grant: the unknown layer might deny anything.
+        let broken = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(broken.path().join(".future")).unwrap();
+        std::fs::write(
+            broken.path().join(".future/approval_rule.json"),
+            r#"{"rules":[{"path":"typo","action":"dney"}]}"#,
+        )
+        .unwrap();
+        let degraded = ResolvedSandbox::with_rules_for_test(
+            super::super::rules::RuleSet::resolve_isolated_with_home(
+                broken.path(),
+                &broken.path().join("home"),
+            ),
+        );
+        let permissions = AdditionalPermissions {
+            read: vec![request(&secret, WriteScope::File)],
+            ..Default::default()
+        };
+        let error = prepare(&degraded, "cat key", &permissions).unwrap_err();
+        assert!(error.to_string().contains("could not be loaded"), "{error}");
+
+        // More than eight targets in total (reads and writes share the ceiling).
+        let many = crate::sandbox::paths::canonicalize_existing(&secret).unwrap();
+        let oversized = AdditionalPermissions {
+            read: (0..5).map(|_| request(&many, WriteScope::File)).collect(),
+            write: (0..4).map(|_| request(&many, WriteScope::File)).collect(),
+        };
+        let error = prepare(&sandbox, "cat key", &oversized).unwrap_err();
+        assert!(error.to_string().contains("at most 8"), "{error}");
+
+        // A wildcard is not a literal path: the grant is per-object by design.
+        let wildcard = AdditionalPermissions {
+            read: vec![request(&sandbox.workspace.join("*.env"), WriteScope::File)],
+            ..Default::default()
+        };
+        let error = prepare(&sandbox, "cat *.env", &wildcard).unwrap_err();
+        assert!(
+            error.to_string().contains("nonempty literal path"),
+            "{error}"
+        );
+
+        // A reason is what the user sees; an empty or overlong one is refused.
+        for reason in [String::new(), "  ".to_string(), "x".repeat(241)] {
+            let mut entry = request(&secret, WriteScope::File);
+            entry.reason = reason;
+            let permissions = AdditionalPermissions {
+                read: vec![entry],
+                ..Default::default()
+            };
+            let error = prepare(&sandbox, "cat key", &permissions).unwrap_err();
+            assert!(error.to_string().contains("1..240"), "{error}");
+        }
+
+        // Scope must match the target's kind.
+        let directory = AdditionalPermissions {
+            read: vec![request(&sandbox.workspace, WriteScope::File)],
+            ..Default::default()
+        };
+        let error = prepare(&sandbox, "read workspace", &directory).unwrap_err();
+        assert!(
+            error.to_string().contains("existing regular file"),
+            "{error}"
+        );
+
+        // An exact duplicate is one grant, not two, and does not consume the
+        // ceiling twice.
+        let duplicate = AdditionalPermissions {
+            read: vec![
+                request(&secret, WriteScope::File),
+                request(&secret, WriteScope::File),
+            ],
+            ..Default::default()
+        };
+        let prepared = prepare(&sandbox, "cat key", &duplicate).unwrap();
+        assert_eq!(prepared.targets.len(), 1);
+    }
+    /// A permission request whose resolved target sits under a parent whose name is
+    /// not valid UTF-8 must be refused **before** an approval can be shown: the
+    /// canonical path cannot be displayed to the user (`path.to_str().is_none()`).
+    ///
+    /// The guard is a *measurement* of the filesystem, not a platform assumption:
+    /// the fixture tries to create the byte-named directory first, and on a
+    /// filesystem that refuses such names (APFS returns `EILSEQ`/92 — measured in
+    /// Rust as well as Python) nothing can be asserted. The test is therefore
+    /// gated to the platform where the branch can execute, which is also this
+    /// repository's convention for its other platform-bound sandbox tests (and it
+    /// keeps a never-taken tail out of the macOS report, where the guard would
+    /// otherwise leave fifteen lines at count 0).
+    ///
+    /// Verification status: the body below was compiled and executed on this macOS
+    /// host with the attribute **absent** (it then took the guard and skipped with
+    /// its message), so its API use is verified; only the Linux execution is
+    /// unverified here — a `#[cfg(target_os = "linux")]` body cannot even be
+    /// type-checked on this host, because the crate's build scripts need a Linux
+    /// `cc` (`x86_64-linux-gnu-gcc: not found`).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_target_under_a_non_utf8_parent_is_refused_before_an_approval() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join(OsStr::from_bytes(b"work-\xff\xfe"));
+        std::fs::create_dir_all(&workspace).expect("this test runs only where byte names exist");
+        std::fs::write(workspace.join("key.txt"), "secret").unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let sandbox = ResolvedSandbox::with_rules_for_test(
+            super::super::rules::RuleSet::resolve_isolated_with_home(&workspace, &home),
+        );
+        assert!(
+            sandbox.wraps_shell(),
+            "the test backend must look like an active OS sandbox, or prepare() refuses earlier"
+        );
+        let permissions = AdditionalPermissions {
+            read: vec![request(std::path::Path::new("key.txt"), WriteScope::File)],
+            ..Default::default()
+        };
+        let error = prepare(&sandbox, "cat key", &permissions).unwrap_err();
+        assert!(
+            error.to_string().contains("losslessly as UTF-8"),
+            "a target that cannot be displayed must be refused, not shown: {error}"
+        );
+    }
 }

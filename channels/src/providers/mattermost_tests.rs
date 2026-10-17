@@ -661,7 +661,18 @@ async fn a_reset_socket_fails_the_auth_challenge_send() {
 async fn a_reset_socket_fails_the_pong_reply() {
     // A ping arrives while the socket is already dead: answering it must
     // fail, and the session must surface that as an unwritable socket.
-    let (url, _) = spawn_ws(vec![
+    //
+    // The order matters and is the only thing that makes this test about the
+    // *pong*: the first action waits until the mock has received the auth
+    // challenge, so the challenge write demonstrably succeeded and the only
+    // write left to fail is the pong. Without that wait the reset can land
+    // first and the test passes on the challenge bail, which reports the same
+    // message (see `a_reset_socket_fails_the_auth_challenge_send`).
+    let (url, received) = spawn_ws(vec![
+        WsAction::WaitForReceived {
+            count: 1,
+            timeout: std::time::Duration::from_secs(5),
+        },
         WsAction::SendPing(b"keepalive".to_vec()),
         WsAction::ResetTcp,
     ])
@@ -673,6 +684,17 @@ async fn a_reset_socket_fails_the_pong_reply() {
     let result = websocket_session(&ctx, sender, "token-1", "bot-id", &allowlist, socket).await;
     let error = result.expect_err("a pong on a dead socket must fail");
     assert!(error.to_string().contains("not writable"), "{error}");
+    // Positive control for the ordering: the challenge did reach the platform,
+    // so the failure above cannot be the auth write.
+    let messages = received.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let first = messages
+        .first()
+        .and_then(|frame| frame.to_text().ok())
+        .expect("the client must send its auth challenge");
+    assert!(
+        first.contains("authentication_challenge"),
+        "the challenge must have been written before the reset: {first}"
+    );
 }
 
 #[tokio::test]

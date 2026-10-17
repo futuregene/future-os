@@ -10,7 +10,7 @@ use crate::commands::skills::{
 };
 use crate::output::Output;
 use crate::rpc::{grpc_addr, RunClient};
-use crate::utils::files::which;
+use crate::utils::files::{which, PathLookup};
 use crate::utils::platform::get_platform_url;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -203,18 +203,29 @@ fn check_sandbox() -> CheckResult {
 }
 
 async fn check_component(bin: &str, label: &str) -> CheckResult {
-    let bin_path = which(bin).await;
-    let Some(bin_path) = bin_path else {
-        return CheckResult {
-            name: label.to_string(),
-            status: Status::Warn,
-            lines: vec![format!("{bin} not found on PATH — run `make install`")],
-        };
+    let bin_path = match which(bin).await {
+        PathLookup::Found(bin_path) => bin_path,
+        PathLookup::NotFound => {
+            return CheckResult {
+                name: label.to_string(),
+                status: Status::Warn,
+                lines: vec![format!("{bin} not found on PATH — run `make install`")],
+            };
+        }
+        // Not "not installed": the lookup itself failed, so this report cannot
+        // say whether the component is there (and says so).
+        PathLookup::NotLookedUp(error) => {
+            return CheckResult {
+                name: label.to_string(),
+                status: Status::Warn,
+                lines: vec![format!(
+                    "{bin} could not be looked up on PATH ({error}) — run `make install` if it is missing"
+                )],
+            };
+        }
     };
     let version = get_binary_version(&bin_path).await;
-    let lines = vec![version
-        .map(|v| format!("{bin_path}  {DIM}({v}){RESET}"))
-        .unwrap_or_else(|| bin_path.clone())];
+    let lines = vec![render_version_line(&bin_path, version)];
     CheckResult {
         name: label.to_string(),
         status: Status::Ok,
@@ -222,23 +233,97 @@ async fn check_component(bin: &str, label: &str) -> CheckResult {
     }
 }
 
+/// What the `--version` probe produced.
+///
+/// Three outcomes, kept apart because the reader of the report needs to tell
+/// them apart: a version was captured, the probe ran and found none, or the
+/// probe could not be started at all. The first two render as a version suffix
+/// and a bare path; the third is a probe failure and says so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum VersionProbe {
+    Captured(String),
+    NoVersion,
+    NotStarted(String),
+}
+
+/// The doctor's line for a probe outcome.
+fn render_version_line(bin_path: &str, probe: VersionProbe) -> String {
+    match probe {
+        VersionProbe::Captured(version) => format!("{bin_path}  {DIM}({version}){RESET}"),
+        VersionProbe::NoVersion => bin_path.to_string(),
+        VersionProbe::NotStarted(error) => {
+            format!("{bin_path}  {YELLOW}(version probe could not be started: {error}){RESET}")
+        }
+    }
+}
+
+/// How long the `--version` probe may run before the child is killed.
+///
+/// `Some(budget)` is the production rule (Node's `execFile(..., { timeout:
+/// 5000 })`): SIGKILL `budget` after the spawn, keeping whatever was written.
+/// `None` is a test-only seam: no deadline, wait for the child to exit. It
+/// exists so the tests that assert *capture* are decided by the child's own end
+/// rather than by a race between a saturated host's scheduler and this clock;
+/// the kill arm keeps the production 5 s (`binary_version_kills_a_probe_that_
+/// never_exits`).
+fn probe_budget() -> Option<Duration> {
+    #[cfg(test)]
+    if let Some(override_budget) = *PROBE_BUDGET_OVERRIDE.lock().unwrap() {
+        return override_budget;
+    }
+    Some(Duration::from_secs(5))
+}
+
+/// Test-only override for [`probe_budget`]: `None` = not overridden (production
+/// 5 s), `Some(None)` = no deadline, `Some(Some(d))` = a `d` deadline. Read per
+/// loop iteration, so a test can arm the deadline itself (see the partial-output
+/// test) once its fixture has provably written.
+#[cfg(test)]
+static PROBE_BUDGET_OVERRIDE: std::sync::Mutex<Option<Option<Duration>>> =
+    std::sync::Mutex::new(None);
+
+/// Sets [`PROBE_BUDGET_OVERRIDE`] and restores it on drop, so a panicking test
+/// cannot leak "no deadline" into the rest of the binary.
+#[cfg(test)]
+struct ProbeBudgetGuard;
+
+#[cfg(test)]
+impl ProbeBudgetGuard {
+    fn set(budget: Option<Duration>) -> Self {
+        *PROBE_BUDGET_OVERRIDE.lock().unwrap() = Some(budget);
+        ProbeBudgetGuard
+    }
+}
+
+#[cfg(test)]
+impl Drop for ProbeBudgetGuard {
+    fn drop(&mut self) {
+        *PROBE_BUDGET_OVERRIDE.lock().unwrap() = None;
+    }
+}
+
 /// `getBinaryVersion(binPath)` — run `<bin> --version` with a 5s timeout and
 /// pick the first plausible version line from stdout+stderr.
-async fn get_binary_version(bin_path: &str) -> Option<String> {
+async fn get_binary_version(bin_path: &str) -> VersionProbe {
     // Node's `execFile(..., { timeout: 5000 })` kills the child at the
     // deadline (SIGTERM) but still resolves with the output accumulated so
     // far — some binaries, like the GUI sidecar, print one line and never
     // exit. So: spawn with piped stdio, drain the pipes on background tasks
     // (preserving partial output), and on timeout kill + reap the child.
-    let mut child = tokio::process::Command::new(bin_path)
+    let mut child = match tokio::process::Command::new(bin_path)
         .arg("--version")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .ok()?;
-    let stdout = child.stdout.take()?;
-    let stderr = child.stderr.take()?;
+    {
+        Ok(child) => child,
+        // A child that could not be started is not a binary without a version.
+        Err(error) => return VersionProbe::NotStarted(error.to_string()),
+    };
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        return VersionProbe::NotStarted("the probe's pipes are not piped".to_string());
+    };
     let out_task = tokio::spawn(async move {
         let mut buf: Vec<u8> = Vec::new();
         let mut stdout = stdout;
@@ -252,26 +337,25 @@ async fn get_binary_version(bin_path: &str) -> Option<String> {
         buf
     });
 
-    // Poll exit; at the 5s deadline kill + reap (SIGKILL vs Node's SIGTERM —
+    // Poll exit; at the deadline kill + reap (SIGKILL vs Node's SIGTERM —
     // output is already captured either way, so this only tightens cleanup).
-    let deadline = tokio::time::sleep(Duration::from_secs(5));
-    tokio::pin!(deadline);
+    let started = std::time::Instant::now();
     loop {
-        tokio::select! {
-            _ = &mut deadline => {
+        if let Some(budget) = probe_budget() {
+            if started.elapsed() >= budget {
                 let _ = child.kill().await;
                 let _ = child.wait().await; // reap; closes pipes → readers finish
                 break;
             }
-            _ = tokio::time::sleep(Duration::from_millis(50)) => {
-                if child.try_wait().ok().flatten().is_some() {
-                    break;
-                }
-            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if child.try_wait().ok().flatten().is_some() {
+            break;
         }
     }
-    let out_buf = out_task.await.ok()?;
-    let err_buf = err_task.await.ok()?;
+    let (Ok(out_buf), Ok(err_buf)) = (out_task.await, err_task.await) else {
+        return VersionProbe::NoVersion;
+    };
 
     let mut candidates: Vec<String> = String::from_utf8_lossy(&out_buf)
         .trim()
@@ -284,9 +368,13 @@ async fn get_binary_version(bin_path: &str) -> Option<String> {
             .split('\n')
             .map(str::to_string),
     );
-    candidates
+    match candidates
         .into_iter()
         .find(|line| is_version_candidate(line))
+    {
+        Some(version) => VersionProbe::Captured(version),
+        None => VersionProbe::NoVersion,
+    }
 }
 
 /// `/^\d{4}-\d{2}-\d{2}T/` — a timestamp-prefixed line.
@@ -327,18 +415,20 @@ fn is_version_candidate(line: &str) -> bool {
 
 async fn check_agent() -> CheckResult {
     let grpc_addr = grpc_addr();
-    let bin_path = which("future-agent").await;
+    let lookup = which("future-agent").await;
     let mut lines: Vec<String> = Vec::new();
 
-    if let Some(bin_path) = &bin_path {
-        let version = get_binary_version(bin_path).await;
-        lines.push(
-            version
-                .map(|v| format!("{bin_path}  {DIM}({v}){RESET}"))
-                .unwrap_or_else(|| bin_path.clone()),
-        );
-    } else {
-        lines.push("Standalone future-agent is optional; Desktop embeds Agent, and the CLI provides `future agent`".to_string());
+    match &lookup {
+        PathLookup::Found(bin_path) => {
+            let version = get_binary_version(bin_path).await;
+            lines.push(render_version_line(bin_path, version));
+        }
+        PathLookup::NotFound => lines.push("Standalone future-agent is optional; Desktop embeds Agent, and the CLI provides `future agent`".to_string()),
+        // The lookup could not run, so "future-agent is not installed" is not
+        // known — and this must not read as the optional-component note.
+        PathLookup::NotLookedUp(error) => lines.push(format!(
+            "{YELLOW}Standalone future-agent could not be looked up on PATH ({error}){RESET}"
+        )),
     }
 
     let client = RunClient::new(&grpc_addr);
@@ -357,7 +447,10 @@ async fn check_agent() -> CheckResult {
         }
         Err(error) => {
             lines.push(format!("Connection check: {error}"));
-            if bin_path.is_none() {
+            // Only "the binary is genuinely not on PATH" is the optional-host
+            // case. A lookup that could not run, or a binary that is there but
+            // not answering, is an issue the reader has to act on.
+            if lookup == PathLookup::NotFound {
                 lines.push(
                     "Open Desktop for embedded hosting, or run `future agent` explicitly".into(),
                 );
@@ -788,11 +881,16 @@ mod tests {
         // Header + all 12 check sections present.
         assert!(stdout.starts_with("\u{1b}[1mFuture Doctor\u{1b}[0m — checking environment...\n"));
         assert!(stdout.contains("Not logged in — run `future auth login`"));
-        assert!(stdout.contains("Standalone future-agent is optional"));
-        assert!(stdout.contains("future not found on PATH — run `make install`"));
-        assert!(stdout.contains("future-tui not found on PATH"));
-        assert!(stdout.contains("future-desktop not found on PATH"));
-        assert!(stdout.contains("future-channel not found on PATH"));
+        // `isolate_env`'s PATH holds no `which`, so nothing could be looked up:
+        // that is the honest line, and it is why the unreachable agent below is
+        // an issue rather than the optional-component note.
+        assert!(stdout.contains("Standalone future-agent could not be looked up on PATH"));
+        assert!(stdout.contains("future could not be looked up on PATH"));
+        assert!(stdout.contains("future-tui could not be looked up on PATH"));
+        assert!(stdout.contains("future-desktop could not be looked up on PATH"));
+        assert!(stdout.contains("future-channel could not be looked up on PATH"));
+        assert!(stdout.contains("Agent unavailable — open Desktop or start `future agent`"));
+        assert!(stdout.contains("[!!]"), "{stdout}");
         assert!(stdout.contains("Auth config"));
         assert!(stdout.contains("not found — run `future auth login` or create manually"));
         assert!(stdout.contains("Models config"));
@@ -807,6 +905,53 @@ mod tests {
         assert!(!stdout.contains("All checks passed."));
     }
 
+    /// The other half of the lookup contract (the test above): with a lookup
+    /// that *runs* and reports no match, the components read as absent, and an
+    /// absent optional component stays a warning — no issue is invented for it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn doctor_reports_components_not_found_when_the_lookup_runs() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        tokio::fs::create_dir_all(&bin).await.unwrap();
+        let which = bin.join("which");
+        tokio::fs::write(&which, "#!/bin/sh\nexit 1\n")
+            .await
+            .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(&which, std::fs::Permissions::from_mode(0o755))
+                .await
+                .unwrap();
+        }
+        let _env = EnvGuard::set(&[
+            ("HOME", dir.path().as_os_str().to_owned()),
+            ("PATH", bin.as_os_str().to_owned()),
+            ("FUTURE_AGENT_GRPC_ADDR", OsString::from("127.0.0.1:1")),
+        ]);
+
+        let (code, stdout, _) = run_doctor().await;
+        assert_eq!(code, 0);
+        assert!(
+            stdout.contains("future not found on PATH — run `make install`"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("future-tui not found on PATH"), "{stdout}");
+        assert!(
+            stdout.contains("Standalone future-agent is optional"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Open Desktop for embedded hosting, or run `future agent` explicitly"),
+            "{stdout}"
+        );
+        assert!(
+            !stdout.contains("[!!]"),
+            "a component that is genuinely absent is not an issue: {stdout}"
+        );
+    }
+
     // The fake `future-agent` is a `#!/bin/sh` script: Windows can neither
     // resolve it through PATHEXT nor execute it. Windows binary discovery is
     // covered by the environment tests above.
@@ -814,8 +959,10 @@ mod tests {
     #[tokio::test]
     async fn doctor_detects_agent_binary_not_running_as_issue() {
         let _guard = crate::test_env::lock_env().await;
-        // Isolate HOME + gRPC address but keep the real PATH so `which` and
-        // the fake agent script resolve.
+        // Isolate HOME + gRPC address. PATH is the fake bin directory plus the
+        // system directories that hold `which` — NOT the whole host PATH: this
+        // test's only probe must be its own fixture, so that the capture seam
+        // below cannot make the doctor wait on some unrelated host binary.
         let dir = tempfile::tempdir().unwrap();
         let _env = EnvGuard::set(&[
             ("HOME", dir.path().as_os_str().to_owned()),
@@ -835,12 +982,21 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let mut paths = vec![bin_dir.clone()];
-        if let Some(p) = std::env::var_os("PATH") {
-            paths.extend(std::env::split_paths(&p));
-        }
-        std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+        let _path = EnvGuard::set(&[(
+            "PATH",
+            std::env::join_paths([
+                bin_dir.as_path(),
+                std::path::Path::new("/usr/bin"),
+                std::path::Path::new("/bin"),
+            ])
+            .unwrap(),
+        )]);
 
+        // No deadline: the fixture's line is captured because the child ends,
+        // not because a starved host managed to run it inside 5 s. The kill arm
+        // keeps the production budget (`binary_version_kills_a_probe_that_
+        // never_exits`).
+        let _budget = ProbeBudgetGuard::set(None);
         let (code, stdout, _) = run_doctor().await;
         assert_eq!(code, 0);
         assert!(
@@ -857,8 +1013,13 @@ mod tests {
     async fn doctor_captures_partial_version_from_hanging_binary() {
         // execFile-parity: a binary that prints one line then never exits
         // (like the GUI sidecar when the agent is reachable) must still
-        // contribute its line — the 5s timeout keeps partial output and
-        // kills the child rather than dropping everything.
+        // contribute its line — the timeout keeps partial output and kills the
+        // child rather than dropping everything.
+        //
+        // The fixture signals (by touching `written.txt`) that its line is in
+        // the pipe, and only then does the test let the probe's deadline fire:
+        // the kill provably happens after the write, instead of racing a
+        // saturated host's scheduler against a wall-clock budget.
         let _guard = crate::test_env::lock_env().await;
         let dir = tempfile::tempdir().unwrap();
         let _env = EnvGuard::set(&[
@@ -867,10 +1028,14 @@ mod tests {
         ]);
         let bin_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap()).join("fake-bin");
         tokio::fs::create_dir_all(&bin_dir).await.unwrap();
+        let written = dir.path().join("written.txt");
         let desktop = bin_dir.join("future-desktop");
         tokio::fs::write(
             &desktop,
-            "#!/bin/sh\necho \"FutureOS: agent already reachable at 127.0.0.1:50051\"\nsleep 30\n",
+            format!(
+                "#!/bin/sh\necho \"FutureOS: agent already reachable at 127.0.0.1:50051\"\ntouch '{}'\nsleep 30\n",
+                written.display()
+            ),
         )
         .await
         .unwrap();
@@ -881,17 +1046,82 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let mut paths = vec![bin_dir.clone()];
-        if let Some(p) = std::env::var_os("PATH") {
-            paths.extend(std::env::split_paths(&p));
-        }
-        std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+        let _path = EnvGuard::set(&[(
+            "PATH",
+            std::env::join_paths([
+                bin_dir.as_path(),
+                std::path::Path::new("/usr/bin"),
+                std::path::Path::new("/bin"),
+            ])
+            .unwrap(),
+        )]);
+
+        // Wait for the fixture's write, then let the probe's own SIGKILL arm
+        // fire (a zero budget = "the deadline has passed").
+        //
+        // The arming is proof-carrying: the marker is written by the fixture
+        // *after* its line is in the pipe, so arming off the marker means the
+        // deadline can only fire after the write. The bound exists so a fixture
+        // that never writes cannot hang the wait; when it expires the probe is
+        // left on its own budget (no deadline — it waits for the child to end)
+        // and the assertion below reports what the probe actually captured.
+        // Arming unconditionally on expiry hands the "the deadline has passed"
+        // budget to whatever probe is in flight — including one whose child has
+        // not written, or has not even started — so the product kills the child
+        // before its line reaches the pipe and the test reads a bare path while
+        // the product behaved correctly (F-CLI-4 item b).
+        let _budget = ProbeBudgetGuard::set(None);
+        let arm = tokio::spawn(async move {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while !written.exists() && std::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            let marker_seen = written.exists();
+            if marker_seen {
+                *PROBE_BUDGET_OVERRIDE.lock().unwrap() = Some(Some(Duration::ZERO));
+            }
+            marker_seen
+        });
 
         let (code, stdout, _) = run_doctor().await;
+        let fixture_wrote = arm.await.expect("the deadline armer finished");
         assert_eq!(code, 0);
         assert!(
             stdout.contains("(FutureOS: agent already reachable at 127.0.0.1:50051)"),
-            "expected partial --version output to survive the timeout: {stdout}"
+            "expected partial --version output to survive the timeout (fixture wrote: {fixture_wrote}): {stdout}"
+        );
+    }
+
+    /// A probe that could not be started is not a binary without a version.
+    /// The two used to be the same `None`, which is why a transient failure to
+    /// run the probe read as "this binary prints no version".
+    #[tokio::test]
+    async fn a_probe_that_cannot_be_started_is_reported_as_such() {
+        let probe = get_binary_version("/no/such/binary-for-the-version-probe").await;
+        match probe {
+            VersionProbe::NotStarted(error) => assert!(!error.is_empty()),
+            other => panic!("a missing executable is not a probe without output: {other:?}"),
+        }
+        let line = render_version_line(
+            "/no/such/binary-for-the-version-probe",
+            VersionProbe::NotStarted("No such file or directory".to_string()),
+        );
+        assert!(
+            line.contains("version probe could not be started"),
+            "{line}"
+        );
+    }
+
+    /// The third outcome of the same contract: a probe that *ran* and produced
+    /// no plausible version renders as the bare path — no empty parentheses, no
+    /// "(version probe could not be started)". The component rendering goes
+    /// through this arm whenever `get_binary_version` returns `NoVersion`, and
+    /// the arm had no test of its own.
+    #[test]
+    fn a_probe_that_found_no_version_renders_the_bare_path() {
+        assert_eq!(
+            render_version_line("/opt/future-agent", VersionProbe::NoVersion),
+            "/opt/future-agent"
         );
     }
 
@@ -1315,7 +1545,7 @@ mod tests {
         if let Some(p) = std::env::var_os("PATH") {
             paths.extend(std::env::split_paths(&p));
         }
-        std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+        let _path = EnvGuard::set(&[("PATH", std::env::join_paths(paths).unwrap())]);
 
         let (code, stdout, _) = run_doctor().await;
         assert_eq!(code, 0);
@@ -1630,6 +1860,52 @@ mod tests {
         );
     }
 
+    /// A `future` entry whose `key` is *present but empty* reads as not logged
+    /// in — and it takes the same path as a missing `key` member, because the
+    /// accessor drops an empty key before `check_login` sees it
+    /// (`FutureAuthEntry::key` is only `Some(k)` for non-empty `k`). That is why
+    /// `check_login`'s own `key.is_empty()` guard is unreachable: the value it
+    /// guards against cannot come out of the accessor.
+    #[tokio::test]
+    async fn login_with_an_empty_key_reads_as_not_logged_in() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::set(&[("FUTURE_HOME", dir.path().as_os_str().to_owned())]);
+        let auth = dir.path().join("agent").join("auth.json");
+        tokio::fs::create_dir_all(auth.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&auth, r#"{"future":{"type":"api_key","key":""}}"#)
+            .await
+            .unwrap();
+
+        // The accessor is the reason: an empty key is not a credential.
+        let loaded = load_auth_file().await.unwrap();
+        assert_eq!(get_future_auth_entry(&loaded).unwrap().key, None);
+
+        let result = check_login().await;
+        assert_eq!(result.name, "Login");
+        assert_eq!(result.status, Status::Warn, "{:?}", result.lines);
+        assert!(
+            result.lines[0].contains("Not logged in"),
+            "{:?}",
+            result.lines
+        );
+
+        // One character is a credential, and the report names the platform it
+        // is for — the boundary is emptiness, not length.
+        tokio::fs::write(&auth, r#"{"future":{"type":"api_key","key":"k"}}"#)
+            .await
+            .unwrap();
+        let result = check_login().await;
+        assert_eq!(result.status, Status::Ok, "{:?}", result.lines);
+        assert!(
+            result.lines[0].starts_with("Logged in to "),
+            "{:?}",
+            result.lines
+        );
+    }
+
     /// `get_binary_version`'s deadline: a binary that prints nothing and never
     /// exits must be killed and reaped at the 5 s mark rather than awaited, and
     /// the command must still return (no version) instead of hanging.
@@ -1679,8 +1955,9 @@ mod tests {
         let version = get_binary_version(script.to_str().expect("utf8 path")).await;
         let elapsed = started.elapsed();
 
-        assert!(
-            version.is_none(),
+        assert_eq!(
+            version,
+            VersionProbe::NoVersion,
             "a silent probe has no version: {version:?}"
         );
         assert!(

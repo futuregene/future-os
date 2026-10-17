@@ -455,6 +455,38 @@ mod tests {
         assert_eq!(outcome.ignored, 0);
     }
 
+    /// A candidate `git add` refuses is re-checked against the ignore rules
+    /// before the whole snapshot is given up on. Here the file is *not*
+    /// ignored — a mode-000 file is unreadable, not excluded — so the original
+    /// error must surface: omitting a changed file silently would be worse than
+    /// failing the capture.
+    #[cfg(unix)]
+    #[test]
+    fn stage_reports_the_git_error_when_a_refused_path_is_not_ignored() {
+        use std::os::unix::fs::PermissionsExt;
+        let s = setup("stage-refused");
+        let path = s.repo.workspace_path.join("locked.txt");
+        std::fs::write(&path, "unreadable\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let index = s.repo.prepare_temp_index("stage-refused").unwrap();
+
+        let error = stage(&s.repo, &index, &["locked.txt".to_string()])
+            .expect_err("a path git cannot index must be an error");
+
+        assert!(
+            error.to_string().contains("shadow git add failed"),
+            "{error}"
+        );
+        assert!(
+            s.repo
+                .git(&["ls-files"], Some(&index))
+                .unwrap_or_default()
+                .is_empty(),
+            "nothing was staged for the refused path"
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
     #[test]
     fn stage_surfaces_unexpected_git_error() {
         let s = setup("stage-err");
@@ -508,5 +540,31 @@ mod tests {
             .expect_err("a failing check-ignore must not look like an empty ignore set")
             .to_string();
         assert!(error.contains("shadow git check-ignore failed"), "{error}");
+    }
+
+    /// The *other* failure of that call: `git` cannot be spawned at all. The test
+    /// above reaches the non-zero-status arm; this one reaches the `?` on
+    /// `repo.run(..)`, which is the only path that reports a spawn failure rather
+    /// than an exit code. Reading it as "nothing is ignored" would snapshot files
+    /// the Workspace excludes, so the error must surface.
+    ///
+    /// The fixture is the campaign's sanctioned one — `cli_tool::EnvGuard` restores
+    /// `PATH` on drop (including on unwind). No explicit `TEST_HOME_LOCK` here:
+    /// `HomeGuard` (inside `setup`) **holds that lock for the whole test**, so
+    /// taking it first self-deadlocks on a non-reentrant mutex — measured, the
+    /// first version of this test hung for the full 500 s.
+    #[test]
+    fn filter_ignored_reports_a_git_that_cannot_be_spawned() {
+        let s = setup("filter-ignored-spawn");
+        std::fs::write(s.repo.workspace_path.join("keep.txt"), "keep\n").unwrap();
+        let index = s.repo.prepare_temp_index("filter-ignored-spawn").unwrap();
+        // A `PATH` with no `git` in it: the spawn itself fails.
+        let empty = tempfile::tempdir().unwrap();
+        let _path = crate::cli_tool::EnvGuard::set("PATH", empty.path().as_os_str());
+
+        let error = filter_ignored(&s.repo, &index, &["keep.txt".to_string()])
+            .expect_err("a git that cannot be spawned must be reported")
+            .to_string();
+        assert!(error.contains("failed to spawn"), "{error}");
     }
 }

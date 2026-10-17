@@ -414,6 +414,34 @@ mod tests {
         assert_eq!(rx.try_recv().expect("first line forwarded"), "\n");
     }
 
+    #[test]
+    fn the_endless_reader_mock_honours_the_read_contract() {
+        // `pump_lines` reads through `BufRead` (`fill_buf`/`consume`), so the
+        // `Read` half of this fixture — required by `BufRead`'s supertrait — is
+        // never reached by a pump. It is still a claim about the fixture, so it
+        // is exercised here directly: the empty buffer must report end-of-read
+        // and any other buffer must take exactly one byte from `next_byte`.
+        use std::io::Read as _;
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut reader = EndlessLines {
+            reads: reads.clone(),
+            budget: 1,
+        };
+        assert_eq!(reader.read(&mut []).expect("empty buffer"), 0);
+        assert_eq!(
+            reads.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "an empty buffer must not draw a byte"
+        );
+        let mut one = [0u8; 1];
+        assert_eq!(reader.read(&mut one).expect("one byte"), 1);
+        assert_eq!(one[0], b'\n');
+        // The budget is spent, so the next byte surfaces as an error rather
+        // than a silent EOF.
+        let error = reader.read(&mut one).expect_err("budget exhausted");
+        assert!(error.to_string().contains("budget"), "{error}");
+    }
+
     #[tokio::test]
     async fn an_input_that_ends_immediately_finishes_the_session() {
         let ctx = ctx("cli-serve-eof");

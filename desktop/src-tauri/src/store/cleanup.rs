@@ -670,6 +670,20 @@ mod tests {
         assert!(agent_terminal_settlement("future-state").is_none());
     }
 
+    /// The live-root read is a `prepare` of a statement that names `threads`. A
+    /// database whose `threads` table is unreadable (dropped, renamed, corrupt) must
+    /// surface that error: read as "no live roots" it would let a cleanup pass delete
+    /// attachment roots that are still in use by live threads.
+    #[test]
+    fn live_thread_ids_reports_an_unreadable_threads_table() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        let error = live_thread_ids(&conn).expect_err("a missing threads table must be reported");
+        assert!(
+            error.to_string().contains("threads"),
+            "the failing statement names the table: {error}"
+        );
+    }
+
     fn insert_thread(conn: &Connection, id: &str, agent_session_id: Option<&str>) {
         conn.execute(
             "INSERT INTO threads

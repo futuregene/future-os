@@ -363,3 +363,24 @@ test("busy follows this machine's own send and open work", () => {
   expect(runtime.current.busy).toBe(true);
   mockConversation.openingSession = false;
 });
+
+/**
+ * A capture taken before an asynchronous step is what says whether that step may
+ * still write: navigation and a replaced client end the conversation, while a
+ * credential renewal keeps it.
+ */
+test("a captured conversation lifetime follows the client it was taken with", () => {
+  mount();
+  const capture = runtime.current.captureConversationOperation();
+  expect(capture()).toBe(true);
+
+  // The machine's transport was replaced under the step that is still running,
+  // so its write belongs to a conversation that no longer exists.
+  const ref = (connectionOptions as unknown as { clientRef: { current: unknown } }).clientRef;
+  ref.current = { requestRetry: jest.fn() };
+  expect(capture()).toBe(false);
+
+  // A renewal that keeps the same pair and client leaves the step valid.
+  ref.current = null;
+  expect(capture()).toBe(true);
+});

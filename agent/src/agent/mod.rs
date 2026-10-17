@@ -1178,6 +1178,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sequential_tool_messages_carry_the_review_annotation() {
+        // A review verdict produced out of band (the approval/review layer
+        // stores it by tool-call id) must travel with the tool result the model
+        // sees, and must be consumed so a later call cannot inherit it.
+        let mut loop_ = make_loop();
+        loop_.tools = vec![cov_tool("read", true)];
+        loop_.tool_review_annotations.lock().insert(
+            "c1".to_string(),
+            serde_json::json!({"verdict": "needs_review"}),
+        );
+        let calls = vec![cov_tool_call(
+            "c1",
+            "read",
+            serde_json::json!({"path": "SKILL.md"}),
+        )];
+        let mut messages = Vec::new();
+        loop_
+            .execute_tools_sequential(0, &calls, &mut messages, &|_| {}, &None)
+            .await;
+        assert_eq!(messages.len(), 1);
+        let annotations = messages[0]
+            .metadata
+            .as_ref()
+            .expect("the tool result must carry metadata")
+            .get("context_annotations")
+            .expect("the annotation must be attached to its own tool result");
+        assert_eq!(
+            annotations,
+            &serde_json::json!([{"verdict": "needs_review"}])
+        );
+        assert!(
+            loop_.tool_review_annotations.lock().is_empty(),
+            "the annotation belongs to exactly one tool call"
+        );
+    }
+
+    #[tokio::test]
     async fn sequential_tools_interrupt_placeholders_serialize_object_args() {
         let loop_ = make_loop();
         loop_.abort(); // interrupted before the first tool runs
@@ -1243,9 +1280,15 @@ mod shell_validation_tests {
     use super::*;
     #[tokio::test]
     async fn invalid_command_is_rejected_before_any_approval_or_handler() {
+        // The hook records that it ran instead of panicking: a rejected command
+        // must never reach the approval hook, and that claim is the assertion
+        // rather than an unreachable panic the passing test could never execute.
+        let hook_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = hook_calls.clone();
         let config = crate::types::AgentConfig {
-            before_tool_call: Some(Arc::new(|_, _, _| {
-                panic!("Invalid command must never reach approval")
+            before_tool_call: Some(Arc::new(move |_, _, _| {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                None
             })),
             ..Default::default()
         };
@@ -1260,5 +1303,10 @@ mod shell_validation_tests {
         let (_, error, _) =
             Loop::execute_one_tool_impl_static(&call, &[crate::tools::shell_tool()], &config).await;
         assert!(error.unwrap().contains("nonempty"));
+        assert_eq!(
+            hook_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "an invalid command must not reach the approval hook"
+        );
     }
 }

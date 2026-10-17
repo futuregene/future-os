@@ -375,6 +375,96 @@ fn a_second_watcher_returns_immediately_while_the_lock_is_held() {
     outcome.expect("watch returns Ok for a cancelled goal");
 }
 
+/// The outbox lock is what keeps the outbox SINGULAR: a background watchdog and
+/// a foreground embedder (a `future goal run` that notices a dead holder) can
+/// both decide to flush the same pending notes, and whoever loses the race must
+/// return immediately with no side effect - not prepare a second batch, and
+/// certainly not deliver the same note twice.
+///
+/// The lock is held here the way the other holder would hold it (the same file,
+/// a second open file description), not by racing a second flusher.
+#[test]
+fn a_locked_out_outbox_flush_is_a_noop_rather_than_a_second_delivery() {
+    use fs2::FileExt;
+    use sha2::{Digest, Sha256};
+
+    let cr = cli_root();
+    let rt = rt();
+    let (gid, mut store) = supervised_goal(&cr, "outbox lock is singular");
+    supervision::queue(&mut store, &gid, "completed", "t1", "result", "key-1").unwrap();
+
+    let name = format!("{:x}.outbox.lock", Sha256::digest(gid.as_bytes()));
+    let lock_path = std::path::PathBuf::from(store.root_path())
+        .join("supervision")
+        .join(name);
+    std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+    let held = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .unwrap();
+    held.try_lock_exclusive()
+        .expect("the test takes the outbox lock first");
+
+    let (addr, _shared) = rt.block_on(spawn_mock(MockState::default()));
+    std::env::set_var("FUTURE_GOAL_AGENT_ADDR", &addr);
+    rt.block_on(async {
+        let mut client = future_goal::agent_client::AgentClient::connect(&addr)
+            .await
+            .unwrap();
+        let started = std::time::Instant::now();
+        supervision::flush(&mut store, &gid, &mut client)
+            .await
+            .expect("a locked-out flush returns Ok, not an error");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "a locked-out flush must return immediately, took {:?}",
+            started.elapsed()
+        );
+    });
+
+    // Nothing was prepared and nothing was delivered: the pending note is still
+    // there for whoever holds the lock.
+    let events = store.events(&gid).unwrap();
+    assert!(
+        !events.iter().any(|e| matches!(
+            e.event,
+            Event::SupervisorBatchPrepared { .. } | Event::SupervisorBatchDelivered { .. }
+        )),
+        "a locked-out flush must not touch the outbox"
+    );
+    let still_pending = events
+        .iter()
+        .filter(|e| matches!(e.event, Event::SupervisorNote { .. }))
+        .count();
+    assert_eq!(
+        still_pending, 1,
+        "the note stays queued for the real holder"
+    );
+    drop(held);
+
+    // And with the lock free the same call does deliver it - which is what
+    // proves the no-op above was the lock and not an empty outbox.
+    rt.block_on(async {
+        let mut client = future_goal::agent_client::AgentClient::connect(&addr)
+            .await
+            .unwrap();
+        supervision::flush(&mut store, &gid, &mut client)
+            .await
+            .unwrap();
+    });
+    assert!(
+        store
+            .events(&gid)
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e.event, Event::SupervisorBatchDelivered { .. })),
+        "the unlocked flush delivers the note"
+    );
+}
+
 /// A batch must be bounded: an unbounded batch would build one ever-growing
 /// prompt out of a long outage. The cap is asserted on the PREPARED batch's
 /// note_keys against a literal limit, so a silent change to the private constant

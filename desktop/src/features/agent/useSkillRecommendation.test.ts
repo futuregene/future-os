@@ -414,3 +414,57 @@ it("bounds the daily-state read and ignores its answer after timeout", async () 
     vi.useRealTimers();
   }
 });
+
+/**
+ * A card is not published for a draft the reader left while it was recorded.
+ *
+ * `record` is the last await before the card is shown, and it is a round trip:
+ * the reader can switch conversations (the hook is keyed by thread, so the
+ * instance unmounts) in that window. The card belongs to a composer that is
+ * gone, and `evaluate` must resolve to null rather than to the candidate it
+ * decided on a moment earlier.
+ */
+it("does not publish a card for a draft the reader left during the record call", async () => {
+  let settled!: () => void;
+  record.mockReturnValue(new Promise<void>((resolve) => {
+    settled = resolve;
+  }));
+  suggest.mockResolvedValue({ name: "future-web", description: "web" });
+  const hook = await renderActive();
+
+  const evaluation = hook.current.evaluate(LONG_ENOUGH);
+  await act(async () => {});
+  expect(record).toHaveBeenCalledWith("future-web", expect.any(String));
+
+  hook.unmount();
+  settled();
+  await expect(evaluation).resolves.toBeNull();
+});
+
+/**
+ * A day read that rejects outright leaves submit working instead of throwing.
+ *
+ * The hook wraps `suggest` and `record` itself but deliberately leaves `today`
+ * to this last-resort fence: `SkillRecoSource` is an interface another machine's
+ * implementation satisfies, and the interface promises nothing about a rejecting
+ * day read. Because the fence is the only thing between that and the composer,
+ * the assertion is the resolution value — with the fence removed the rejection
+ * would surface at submit time.
+ */
+it("resolves to null rather than throwing when the source's day read rejects", async () => {
+  const hooked = vi.fn(async () => null);
+  const hook = await renderActive({
+    ...baseOptions(),
+    source: {
+      accountGated: true,
+      today: async () => {
+        throw new Error("day read failed");
+      },
+      suggest: hooked,
+      record: vi.fn(async () => {}),
+    },
+  });
+
+  await expect(act(() => hook.current.evaluate(LONG_ENOUGH))).resolves.toBeNull();
+  expect(hooked).not.toHaveBeenCalled();
+});

@@ -345,11 +345,12 @@ mod tests {
         let _guard = crate::test_env::lock();
         let old = env::var_os("HOME");
         let sep = std::path::MAIN_SEPARATOR;
-        let home = if cfg!(windows) {
-            "C:\\home\\tester".to_string()
-        } else {
-            "/home/tester".to_string()
-        };
+        // Absolute for the host platform: a POSIX path is not absolute on
+        // Windows.
+        #[cfg(windows)]
+        let home = "C:\\home\\tester".to_string();
+        #[cfg(not(windows))]
+        let home = "/home/tester".to_string();
         env::set_var("HOME", &home);
         let line = render_footer(
             FooterData {

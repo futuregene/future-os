@@ -1,17 +1,59 @@
 //! Endpoint ownership is independent of the Agent data-directory lock. The
 //! lease file is never unlinked: all cooperating binders lock the same inode.
+//!
+//! Ownership ends when the owning process drops its lease, so the lease is
+//! released explicitly (`LOCK_UN`) rather than left to `close()`: a `fork()`ed
+//! child inherits the lease's *file description*, and `flock` locks belong to
+//! the description, not to the descriptor. See [`LeaseFile`].
 use super::{LocalIncoming, LocalIo};
 use std::{
     fs::File,
     io,
+    os::fd::{AsRawFd, RawFd},
     os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::PathBuf,
     time::Duration,
 };
 
+/// The lease file, held open while this process owns the endpoint.
+///
+/// `flock` locks belong to the open *file description*: a `fork()`ed child
+/// inherits a reference to the description, so closing our own descriptor does
+/// not release the lock until the child `exec`s (which closes the inherited
+/// descriptor, opened `O_CLOEXEC`). During that fork→exec window the endpoint
+/// still reads as occupied to the next binder, and dropping the reservation is
+/// expected to hand the endpoint over immediately — measured on this host:
+/// ~70 µs when the child's image is warm, and hundreds of milliseconds when it
+/// is cold and the host is loaded. Releasing with `LOCK_UN` ends ownership at
+/// the drop, whatever the child still references (which is also what `fork(2)`
+/// documents: "if a process holding a lock on a file forks and the child
+/// explicitly unlocks the file, the parent will lose its lock").
+struct LeaseFile(File);
+
+impl LeaseFile {
+    fn fd(&self) -> RawFd {
+        self.0.as_raw_fd()
+    }
+
+    /// Take the exclusive, non-blocking lease. `false` means another binder
+    /// owns the endpoint.
+    fn try_lock(&self) -> bool {
+        unsafe { libc::flock(self.fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
+    }
+}
+
+impl Drop for LeaseFile {
+    fn drop(&mut self) {
+        // Unlock before the descriptor is closed: `close()` alone is not a
+        // release while another descriptor — a `dup`, or a `fork()`ed child that
+        // has not exec'd yet — still references this file description.
+        unsafe { libc::flock(self.fd(), libc::LOCK_UN) };
+    }
+}
+
 pub struct LocalEndpointReservation {
     path: PathBuf,
-    lease: File,
+    lease: LeaseFile,
 }
 
 fn identity(metadata: &std::fs::Metadata) -> (u64, u64) {
@@ -42,15 +84,17 @@ impl LocalEndpointReservation {
         let mut lease_path = path.as_os_str().to_os_string();
         lease_path.push(".owner.lock");
         let lease_path = PathBuf::from(lease_path);
-        let lease = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&lease_path)?;
-        let metadata = lease.metadata()?;
+        let lease = LeaseFile(
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(&lease_path)?,
+        );
+        let metadata = lease.0.metadata()?;
         if !metadata.is_file()
             || metadata.uid() != unsafe { libc::geteuid() }
             || metadata.nlink() != 1
@@ -60,13 +104,7 @@ impl LocalEndpointReservation {
                 "untrusted local endpoint lease",
             ));
         }
-        if unsafe {
-            libc::flock(
-                std::os::fd::AsRawFd::as_raw_fd(&lease),
-                libc::LOCK_EX | libc::LOCK_NB,
-            )
-        } != 0
-        {
+        if !lease.try_lock() {
             return Err(conflict(format!(
                 "local endpoint ownership is occupied: {}",
                 path.display()
@@ -148,7 +186,7 @@ impl LocalEndpointReservation {
 struct SocketCleanup {
     path: PathBuf,
     socket_identity: (u64, u64),
-    _lease: File,
+    _lease: LeaseFile,
 }
 impl Drop for SocketCleanup {
     fn drop(&mut self) {
@@ -163,6 +201,46 @@ impl Drop for SocketCleanup {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A descriptor duplicated from another one, closed on drop so a failed
+    /// assertion cannot leak the endpoint's lease into the rest of the suite.
+    struct SharedFd(RawFd);
+
+    impl Drop for SharedFd {
+        fn drop(&mut self) {
+            unsafe { libc::close(self.0) };
+        }
+    }
+
+    /// The same open file description under a second descriptor — what a
+    /// `fork()`ed child holds until it `exec`s, reproduced in-process. `flock`
+    /// belongs to the description, so this is what makes `close()` a release
+    /// only when nothing else references it.
+    fn dup_of(fd: RawFd) -> SharedFd {
+        let duplicate = unsafe { libc::dup(fd) };
+        assert!(duplicate >= 0, "dup failed: {}", io::Error::last_os_error());
+        SharedFd(duplicate)
+    }
+
+    /// Serializes the tests that `fork` with the tests whose assertion depends on
+    /// a descriptor actually being released.
+    ///
+    /// `fork(2)` copies the *whole* descriptor table into the child, and until
+    /// that child `exec`s — which is what closes the inherited, `O_CLOEXEC`
+    /// descriptors — every descriptor another test holds is duplicated: dropping
+    /// a listener is not a release while the window lasts. Measured on this host:
+    /// ~70 µs when the child's image is warm, still holding after 300 ms when it
+    /// is cold and the host is loaded. A test that spawns a process therefore
+    /// holds this guard for the child's whole fork window, and so does the test
+    /// that asserts a released listener is reclaimable. (The lease tests need no
+    /// guard: releasing a lease is an explicit `LOCK_UN`, see [`LeaseFile`].)
+    fn fork_guard() -> std::sync::MutexGuard<'static, ()> {
+        static FORK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        FORK_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
     #[test]
     fn lease_child_fixture() {
         let Some(path) = std::env::var_os("FUTURE_ENDPOINT_LEASE_FIXTURE") else {
@@ -180,7 +258,12 @@ mod tests {
     }
 
     #[tokio::test]
+    // The fork guard is held across the awaits on purpose (no other test may
+    // release a descriptor while this child's fork window is open) on a
+    // current-thread runtime, so no task shares the thread with it.
+    #[allow(clippy::await_holding_lock)]
     async fn endpoint_lease_is_exclusive_across_processes_even_before_binding() {
+        let fork_window = fork_guard();
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("agent.sock");
         let _reserved = LocalEndpointReservation::acquire(path.clone())
@@ -208,6 +291,7 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        drop(fork_window);
     }
 
     #[tokio::test]
@@ -228,6 +312,107 @@ mod tests {
             .await
             .is_err());
         assert_eq!(std::fs::read_to_string(path).unwrap(), "occupant");
+    }
+
+    /// The lease is opened without following symlinks and must be a private,
+    /// singly-linked regular file of the current user. A second hard link is how
+    /// another local user could keep a handle on this endpoint's lease, so it is
+    /// refused before the lock is even attempted.
+    #[tokio::test]
+    async fn a_multiply_linked_lease_is_refused_as_untrusted() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("agent.sock");
+        let lease = root.path().join("agent.sock.owner.lock");
+        std::fs::write(&lease, "").unwrap();
+        std::fs::hard_link(&lease, root.path().join("lease-alias")).unwrap();
+
+        let error = LocalEndpointReservation::acquire(path)
+            .await
+            .err()
+            .expect("a shared lease must not be trusted");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(
+            error.to_string().contains("untrusted local endpoint lease"),
+            "{error}"
+        );
+        // Nothing was created for the endpoint itself.
+        assert!(!root.path().join("agent.sock").exists());
+    }
+
+    /// A path with no parent directory can never own a socket directory, and
+    /// saying so is better than creating something at the filesystem root.
+    #[tokio::test]
+    async fn an_endpoint_without_a_parent_directory_is_refused() {
+        for path in [PathBuf::from("/"), PathBuf::from("")] {
+            let error = LocalEndpointReservation::acquire(path.clone())
+                .await
+                .err()
+                .expect("a path with no parent cannot be reserved");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(error.to_string().contains("no parent directory"), "{error}");
+        }
+    }
+
+    /// Dropping a reservation must free the endpoint even when another
+    /// descriptor still references the lease's file description — which is what a
+    /// `fork()`ed child holds until it `exec`s, and what `dup` reproduces here.
+    /// `flock` lives on the description, so without the explicit `LOCK_UN` in
+    /// [`LeaseFile::drop`] the next binder reports `AddrInUse: local endpoint
+    /// ownership is occupied` for as long as the window lasts: the shape (and the
+    /// message) these tests used to flake with at ~5 % of runs.
+    #[tokio::test]
+    async fn dropping_a_reservation_releases_the_lease_a_shared_description_references() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("agent.sock");
+        let reserved = LocalEndpointReservation::acquire(path.clone())
+            .await
+            .unwrap();
+        let shared = dup_of(reserved.lease.fd());
+
+        drop(reserved);
+        let listener = LocalEndpointReservation::acquire(path.clone())
+            .await
+            .expect("the owner's release must free the endpoint")
+            .bind()
+            .await
+            .unwrap();
+        drop(listener);
+        drop(shared);
+        assert!(!path.exists());
+    }
+
+    /// `stale_socket` classifies an endpoint by connecting to it, and a listener
+    /// whose descriptor another descriptor still references (here a `dup`; in a
+    /// fork window, a child) is not released by dropping the listener: the socket
+    /// stays connectable. This is why [`fork_guard`] serializes that
+    /// classification against the tests that spawn a process — a run that fails
+    /// here means a released listener was really still reachable.
+    #[tokio::test]
+    // The fork guard is held across the awaits on purpose (the listener dropped
+    // below must really be released) on a current-thread runtime, so no task
+    // shares the thread with it.
+    #[allow(clippy::await_holding_lock)]
+    async fn a_duplicated_listener_descriptor_keeps_a_dropped_socket_connectable() {
+        let _fork_window = fork_guard();
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("agent.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let shared = dup_of(listener.as_raw_fd());
+
+        drop(listener);
+        assert!(
+            tokio::net::UnixStream::connect(&path).await.is_ok(),
+            "the duplicated descriptor must keep the socket connectable"
+        );
+        drop(shared);
+        assert_eq!(
+            tokio::net::UnixStream::connect(&path)
+                .await
+                .err()
+                .map(|error| error.kind()),
+            Some(io::ErrorKind::ConnectionRefused),
+            "with the last descriptor gone the socket must be refused"
+        );
     }
 
     #[tokio::test]
@@ -255,7 +440,12 @@ mod tests {
         );
     }
     #[tokio::test]
+    // The fork guard is held across the awaits on purpose (the listener must
+    // really be released before the stale-socket classification below runs) on a
+    // current-thread runtime, so no task shares the thread with it.
+    #[allow(clippy::await_holding_lock)]
     async fn active_legacy_listener_is_preserved_but_stale_socket_is_reclaimed() {
+        let _fork_window = fork_guard();
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("agent.sock");
         let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
@@ -275,6 +465,105 @@ mod tests {
         );
         assert!(!path.exists());
     }
+    /// `bind` re-reads the socket's identity after the `stale_socket()` probe and
+    /// refuses to remove a socket that changed in between (155-157). The window is
+    /// the two syscalls around the probe — real, but far too narrow to hit by
+    /// chance in a handful of drives — so this is the campaign's *biased race*
+    /// fixture shape (the same shape that covers AG-A's `activity.rs:71`): a
+    /// churner thread **atomically replaces** the socket path with a freshly bound
+    /// (then dropped, hence refused) socket, and the assertion is "at least one
+    /// refusal in N drives", reported with its tally.
+    ///
+    /// `rename` is what biases it: the path is never absent (so the drive cannot
+    /// fall into the neighbouring `NotFound` arm) and every replacement carries a
+    /// new inode, so every replacement that lands inside the window is a hit
+    /// rather than a 50/50. The drive is the module's own entry point,
+    /// `acquire`+`bind`, on this test's private path — no environment variable,
+    /// no other process.
+    #[tokio::test]
+    async fn a_socket_replaced_between_the_probe_and_the_cleanup_is_refused() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        // Per-attempt fixture: a fresh endpoint holding a stale socket, a churner
+        // thread whose FIRST replacement races this attempt's drive, and one
+        // drive. Repeating the whole setup (rather than spinning one drive
+        // against one long-lived churner) is what keeps the race live: the two
+        // threads then start together, and each attempt is independent.
+        let attempts_budget = 100_000usize;
+        let mut attempts = 0usize;
+        let mut hits = 0usize;
+        let mut drives = 0usize;
+        let mut churn_total = 0usize;
+        let mut first_hit_at = 0usize;
+        while attempts < attempts_budget {
+            attempts += 1;
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("agent.sock");
+            // Start from a stale socket: bound and closed, so connects are refused.
+            drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+
+            let stop = Arc::new(AtomicBool::new(false));
+            let rounds = Arc::new(AtomicUsize::new(0));
+            // Four churners, not one: on this host a single churner ends up
+            // *co-scheduled* with the drive (measured ~1 churn round per drive),
+            // so its replacements and the drive's two-syscall window almost never
+            // overlap; several threads keep at least one inside the window.
+            let mut churners = Vec::new();
+            for churner_id in 0..4 {
+                let scratch = root.path().join(format!("scratch{churner_id}.sock"));
+                let (path, stop, rounds) = (path.clone(), stop.clone(), rounds.clone());
+                churners.push(std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        if let Ok(listener) = std::os::unix::net::UnixListener::bind(&scratch) {
+                            drop(listener); // the socket file stays behind, refusing connects
+                            let _ = std::fs::rename(&scratch, &path);
+                        }
+                        rounds.fetch_add(1, Ordering::Relaxed);
+                    }
+                }));
+            }
+
+            // No other binder holds this fixture's lease, so a contention here is
+            // a bug in the fixture, not a case to route around — stated as an
+            // assertion rather than a `match` arm whose body would never run.
+            let reservation = LocalEndpointReservation::acquire(path.clone())
+                .await
+                .expect("no other binder holds this fixture's lease");
+            // Count only *this* guard's message: `stale_socket` refuses an active
+            // or unclassifiable endpoint with a different text.
+            let hit = match reservation.bind().await {
+                Ok(listener) => {
+                    drop(listener);
+                    false
+                }
+                Err(error) => error.to_string().contains("changed before stale cleanup"),
+            };
+
+            stop.store(true, Ordering::Relaxed);
+            for churner in churners {
+                churner.join().unwrap();
+            }
+            drives += 1;
+            churn_total += rounds.load(Ordering::Relaxed);
+            if hit {
+                hits += 1;
+                first_hit_at = attempts;
+                break;
+            }
+        }
+        println!(
+            "STALE-CLEANUP GUARD: drives={drives} attempts={attempts} churn_rounds={churn_total} \
+             guard_157={hits} first_hit_at={first_hit_at}"
+        );
+        assert!(
+            hits > 0,
+            "the stale-cleanup identity guard must be reachable: {drives} drives over \
+             {attempts} fresh attempts against {churn_total} churner rounds never produced \
+             \"changed before stale cleanup\""
+        );
+    }
+
     #[tokio::test]
     async fn old_cleanup_cannot_delete_a_replacement_socket() {
         let root = tempfile::tempdir().unwrap();

@@ -487,6 +487,13 @@ mod tests {
         assert!(parse(&args(&[])).is_err(), "a session id is required");
         assert!(parse(&args(&["s1", "s2"])).is_err(), "one id only");
         assert!(parse(&args(&["--bogus"])).is_err());
+        // `--` is rejected as an unknown option *before* the duplicate-option
+        // guard below it can see it, which is why `duplicate option: --` is not
+        // reachable (the guard is `flag == "--"`, and every such flag has
+        // already returned). Pinned here as the invariant, not as dead code to
+        // delete: the guard is what makes a future `--`-taking option safe.
+        let error = parse(&args(&["--", "--"])).unwrap_err();
+        assert!(error.contains("unknown option: --"), "{error}");
     }
 
     #[test]
@@ -686,6 +693,92 @@ mod tests {
         let mut state = state_payload();
         state["sandboxTier"] = serde_json::json!("");
         assert!(format_status(&state, None).contains("Sandbox:       (default)"));
+    }
+
+    /// Compaction is a state a reader must be able to see: the session looks
+    /// idle (`Streaming: no`) while the agent is in fact rewriting its history,
+    /// and a prompt sent now waits behind that.
+    #[test]
+    fn a_compacting_session_says_so_next_to_the_streaming_flag() {
+        let mut state = state_payload();
+        state["isCompacting"] = json!(true);
+        let rendered = format_status(&state, None);
+        assert!(
+            rendered.contains("Streaming:     no (compacting)"),
+            "{rendered}"
+        );
+
+        // Not compacting keeps the plain line — the marker is a state, not
+        // decoration.
+        let rendered = format_status(&state_payload(), None);
+        assert!(rendered.contains("Streaming:     no\n"), "{rendered}");
+        assert!(!rendered.contains("compacting"), "{rendered}");
+    }
+
+    /// A forked session names its parent: without the line a reader cannot tell
+    /// a fork from a session that was continued (`new --continue`) or reset.
+    #[test]
+    fn a_forked_session_names_its_parent() {
+        let mut state = state_payload();
+        state["parentSessionId"] = json!("parent-1");
+        let rendered = format_status(&state, None);
+        assert!(rendered.contains("Parent:        parent-1"), "{rendered}");
+
+        // The empty string is the unset value the payload carries, not a parent
+        // whose id is "".
+        let rendered = format_status(&state_payload(), None);
+        assert!(!rendered.contains("Parent:"), "{rendered}");
+
+        // A payload with no `parentSessionId` member at all (an older agent)
+        // takes the same reading, and the rest of the panel is unaffected.
+        let mut state = state_payload();
+        state.as_object_mut().unwrap().remove("parentSessionId");
+        let rendered = format_status(&state, None);
+        assert!(!rendered.contains("Parent:"), "{rendered}");
+        assert!(rendered.contains("Queries:       4"), "{rendered}");
+    }
+
+    /// An interrupted run is reported because it is not visible anywhere else:
+    /// it is not active, not queued, and its answer may be half-written.
+    #[test]
+    fn an_interrupted_run_is_reported_distinctly_from_active_and_queued() {
+        let mut state = state_payload();
+        state["activeRun"] = Value::Null;
+        state["queuedRuns"] = json!([]);
+        state["interruptedRun"] = json!({"runId": "run-3", "state": "interrupted"});
+        let rendered = format_status(&state, None);
+        assert!(
+            rendered.contains("Interrupted:   run-3 (interrupted)"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("Active run:"), "{rendered}");
+
+        // A null interruptedRun is the normal case and prints nothing.
+        let mut state = state_payload();
+        state["interruptedRun"] = Value::Null;
+        assert!(!format_status(&state, None).contains("Interrupted:"));
+    }
+
+    /// `--metrics` on a healthy session says so: the section's whole point is
+    /// that a *degraded* journal is told apart from a missing report, so the
+    /// healthy branch has to be reachable and named.
+    #[test]
+    fn metrics_without_a_journal_error_read_as_healthy() {
+        let metrics = json!({
+            "eventJournalHealthy": true,
+            "broadcastLag": 0,
+            "ringTruncations": 0,
+            "staleEpochDrops": 0,
+        });
+        let rendered = format_status(&state_payload(), Some(&metrics));
+        assert!(rendered.contains("Journal:       healthy"), "{rendered}");
+        assert!(!rendered.contains("degraded"), "{rendered}");
+
+        // An empty error string is not a failure: the field's presence alone
+        // must not print "degraded ()".
+        let metrics = json!({"eventJournalError": ""});
+        let rendered = format_status(&state_payload(), Some(&metrics));
+        assert!(rendered.contains("Journal:       healthy"), "{rendered}");
     }
 
     #[test]

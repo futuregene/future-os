@@ -193,4 +193,38 @@ mod tests {
         assert!(list_under_root(&root, "escape").is_err());
         assert!(list_under_root(&root, "").unwrap().entries.is_empty());
     }
+
+    /// An entry the boundary cannot describe is skipped, not reported: a
+    /// dangling symlink resolves to nothing, and a FIFO is neither a file nor a
+    /// directory, so neither is something the phone can open. Skipping one must
+    /// not cost the listing its readable neighbours — a working directory that
+    /// holds a pipe is ordinary.
+    #[cfg(unix)]
+    #[test]
+    fn entries_that_are_neither_files_nor_directories_are_skipped() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("real.txt"), "hello").unwrap();
+        // A symlink whose target does not exist: `canonicalize` fails.
+        std::os::unix::fs::symlink(root.join("gone"), root.join("dangling")).unwrap();
+        // A FIFO: metadata says neither `is_file` nor `is_dir`.
+        let fifo = root.join("pipe");
+        let path = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+
+        let listing = list_under_root(&root, "").unwrap();
+        let names: Vec<&str> = listing
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["real.txt"],
+            "only the readable file is listed: {names:?}"
+        );
+        assert_eq!(listing.entries[0].size, 5);
+    }
 }

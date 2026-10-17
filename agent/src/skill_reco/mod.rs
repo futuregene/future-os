@@ -877,6 +877,20 @@ mod tests {
         );
     }
 
+    /// Which gateway statuses are worth asking again is a product decision:
+    /// only the account-level ones stand the recommender down on the first hit,
+    /// and everything else — including a 5xx and a 400 — counts as a blip that
+    /// needs a streak. Asserted as a matrix so a reordered arm cannot pass.
+    #[test]
+    fn only_account_statuses_stand_the_recommender_down_immediately() {
+        for status in [401u16, 402, 403, 429] {
+            assert_eq!(status_kind(status), FailureKind::Account, "{status}");
+        }
+        for status in [400u16, 404, 408, 500, 502, 503, 504, 529] {
+            assert_eq!(status_kind(status), FailureKind::Transient, "{status}");
+        }
+    }
+
     #[test]
     fn prices_a_call_from_its_input_tokens_when_the_gateway_omits_the_cost() {
         // 8.8k input tokens is the measured shape of a 141-skill catalogue:

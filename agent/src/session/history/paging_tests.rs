@@ -129,3 +129,257 @@ async fn a_backward_exchange_larger_than_the_budget_is_complete_before_projectio
     assert_eq!(full["nextOffset"], 0);
     assert_eq!(full["hasMore"], false);
 }
+
+/// A display index that is missing (a partially migrated or damaged file) must
+/// be reported, never paged as "no history": an empty page would look to the
+/// caller like a session with nothing in it.
+/// A client that resumed a fragmented read passes the byte offset it already
+/// has. `materialize_display_page` must then return the *next* fragment, and
+/// because a JSON string can be cut through a multi-byte character, it has to
+/// walk the end back to a real UTF-8 boundary before slicing — otherwise the
+/// fragment is invalid JSON and the client cannot concatenate it.
+///
+/// The offset is derived from the entry's own serialized form rather than
+/// guessed: the answer is deterministic precisely because the text is one
+/// repeated three-byte character, so `offset + ENTRY_FRAGMENT_BYTE_BUDGET` can
+/// only land mid-character (1048576 % 3 == 1) once `offset` is a character
+/// start.
+#[tokio::test]
+async fn a_resumed_fragment_stops_on_a_character_boundary() {
+    const HAN: &str = "中";
+    let dir = tempfile::tempdir().unwrap();
+    let manager = Manager::new(dir.path().join("sessions"));
+    let mut session = Session::new("/synthetic", "mock");
+    session
+        .entries
+        .push(SessionEntry::new_user("user", json!("question")));
+    // 3 bytes per character, comfortably past the page budget so the page can
+    // only be transported as a fragment.
+    let huge = SessionEntry::new_assistant(json!(HAN.repeat(3_000_000)), Vec::new());
+    let huge_id = huge.id.clone();
+    session.entries.push(huge);
+    session
+        .entries
+        .push(SessionEntry::new_user("user", json!("next")));
+    manager.save(&session).unwrap();
+
+    // The same projection the transport slices, so the offset is a real one.
+    let stored = manager.load(&session.id).unwrap();
+    let entry = stored
+        .entries
+        .iter()
+        .find(|entry| entry.id == huge_id)
+        .expect("the oversized entry")
+        .clone();
+    let payload = project_entries(&[entry]).pop().unwrap();
+    let serialized = serde_json::to_string(&payload).unwrap();
+    let offset = serialized.find(HAN).expect("the text") as i64;
+    assert!(
+        !serialized.is_char_boundary(offset as usize + ENTRY_FRAGMENT_BYTE_BUDGET),
+        "the fixture must place the budget cut inside a character"
+    );
+
+    // Ordinal 1 is the oversized entry, and a one-row page cannot be paged
+    // normally, so this must come back as a fragment.
+    let page = manager
+        .read_history_page(&session.id, None, Some(1), Some(1), Some(offset))
+        .unwrap();
+    assert_eq!(page["entries"], json!([]), "a lone oversized row fragments");
+    let fragment = &page["fragment"];
+    assert_eq!(fragment["offset"], offset);
+    assert_eq!(fragment["totalBytes"], serialized.len());
+    assert!(
+        fragment["totalBytes"].as_u64().unwrap() > ENTRY_FRAGMENT_BYTE_BUDGET as u64,
+        "the entry must be larger than one fragment: {fragment}"
+    );
+    // The walk ran: the slice stops before the budget, on a boundary.
+    let json = fragment["json"].as_str().unwrap();
+    assert!(json.len() < ENTRY_FRAGMENT_BYTE_BUDGET, "{json:.40}");
+    assert!(
+        !json.is_empty() && json.ends_with('中'),
+        "the fragment must end on a whole character"
+    );
+
+    // Resuming from where the fragment ended is accepted and continues from
+    // there, which is what makes the client-side concatenation possible.
+    let resumed = manager
+        .read_history_page(
+            &session.id,
+            None,
+            Some(1),
+            Some(1),
+            Some(offset + json.len() as i64),
+        )
+        .unwrap();
+    assert_eq!(
+        resumed["fragment"]["offset"].as_i64(),
+        Some(offset + json.len() as i64)
+    );
+    // The contract that matters is concatenation: the two fragments must be
+    // adjacent slices of the entry, so a client can join them. (Comparing the
+    // fragments to each other would prove nothing here — the text is one
+    // repeated character, so two fragments of equal length are equal strings.)
+    let resumed_json = resumed["fragment"]["json"].as_str().unwrap();
+    let joined = format!("{json}{resumed_json}");
+    let start = offset as usize;
+    assert_eq!(
+        &serialized[start..start + joined.len()],
+        joined.as_str(),
+        "the resumed fragment must continue where the first one stopped"
+    );
+}
+
+/// The two byte budgets agree on one point that decides an entire arm of
+/// `materialize_display_page`: `read_display_page` already caps a page's
+/// **raw** size at `HISTORY_PAGE_BYTE_BUDGET` (overlay + stored body per row),
+/// while the materializer counts each row's **re-serialized projection**. A page
+/// with several rows therefore cannot reach the materializer's budget unless its
+/// raw size does too — so only a lone oversized row can be cut there, which is
+/// the fragment path.
+#[tokio::test]
+async fn a_multi_row_page_never_takes_the_oversized_entry_cut() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = Manager::new(dir.path().join("sessions"));
+    let mut session = Session::new("/synthetic", "mock");
+    session
+        .entries
+        .push(SessionEntry::new_user("user", json!("question")));
+    // Four ~1 MiB bodies: the raw accounting exceeds the 8 MiB budget well
+    // before the materializer's own budget can be crossed.
+    for _ in 0..6 {
+        session.entries.push(SessionEntry::new_assistant(
+            json!("x".repeat(1024 * 1024)),
+            Vec::new(),
+        ));
+    }
+    manager.save(&session).unwrap();
+
+    let page = manager
+        .history_page(&session.id, None, Some(0), Some(1000))
+        .unwrap();
+    let rows = page["entries"].as_array().unwrap();
+    assert!(
+        rows.len() >= 2,
+        "the fixture must produce a multi-row page: {}",
+        rows.len()
+    );
+    assert!(
+        page["fragment"].is_null(),
+        "a multi-row page is transported whole: {}",
+        page["fragment"]
+    );
+    let serialized: usize = rows
+        .iter()
+        .map(|row| serde_json::to_string(row).unwrap().len())
+        .sum();
+    assert!(
+        serialized <= HISTORY_PAGE_BYTE_BUDGET,
+        "the materializer's budget was never crossed, so its cut arm cannot run: \
+         {serialized} serialized bytes over {} rows",
+        rows.len()
+    );
+}
+
+/// A display row can exist with **no entry body**: `history_display.source_position`
+/// is nullable, and an index that outlived (or never had) its source produces
+/// exactly that. For such a row the materializer's payload *is* the indexed
+/// payload, so its serialized size equals what `read_display_page` counted —
+/// which is the only way the page reader's budget can be spent before the
+/// materializer's own. This is the arm that cuts a page at an entry too large to
+/// fit, and it must report the cut honestly in both directions.
+#[test]
+fn a_page_of_bodyless_rows_can_be_cut_at_the_materializer_budget() {
+    use rusqlite::Connection;
+
+    // Both budgets are 8 MiB. Eight 1_048_570-byte rows are accepted by the page
+    // reader (8 * 1_048_570 = 8_388_560 <= 8_388_608) and then cross the
+    // materializer's check on the eighth row, because it also counts the
+    // separators and the page envelope.
+    const PAYLOAD: usize = 1_048_570;
+    let db = Connection::open_in_memory().unwrap();
+    db.execute_batch(
+        "CREATE TABLE history_display(session_id TEXT, ordinal INTEGER, \
+         source_position INTEGER, is_user INTEGER, payload TEXT);
+         CREATE TABLE entry_records(session_id TEXT, position INTEGER, payload TEXT);",
+    )
+    .unwrap();
+    // A JSON string of exactly PAYLOAD bytes.
+    let payload = serde_json::to_string(&json!("x".repeat(PAYLOAD - 2))).unwrap();
+    assert_eq!(payload.len(), PAYLOAD);
+    for ordinal in 0..8 {
+        db.execute(
+            "INSERT INTO history_display(session_id,ordinal,source_position,is_user,payload) \
+             VALUES ('s',?1,NULL,?2,?3)",
+            params![ordinal, ordinal % 2, payload],
+        )
+        .unwrap();
+    }
+
+    // The page reader accepts all eight (8 * PAYLOAD fits its raw budget)…
+    let forward = read_display_page(&db, "s", None, Some(0), Some(1000)).unwrap();
+    assert_eq!(
+        forward.rows.len(),
+        8,
+        "the reader's raw budget admits them all"
+    );
+    assert!(!forward.has_more);
+    // …and the materializer is where the page is cut, one row earlier.
+    assert_eq!(forward.next_offset, 8);
+    let forward = materialize_display_page(forward, None, None).unwrap();
+    assert_eq!(forward["entries"].as_array().unwrap().len(), 7);
+    assert_eq!(forward["hasMore"], true);
+    assert_eq!(forward["nextOffset"], 7);
+
+    // Backward: the cursor walks down from the end, so the row that does not fit
+    // is the lowest ordinal and the next offset moves *past* it.
+    let backward = read_display_page(&db, "s", Some(8), None, Some(1000)).unwrap();
+    assert_eq!(backward.rows.len(), 8);
+    let backward = materialize_display_page(backward, Some(8), None).unwrap();
+    assert_eq!(backward["entries"].as_array().unwrap().len(), 7);
+    assert_eq!(backward["hasMore"], true);
+    assert_eq!(backward["nextOffset"], 1);
+    // The two directions are the same cut, mirrored: 7 + 1 row.
+    assert_eq!(forward["nextOffset"], 7);
+}
+
+#[test]
+fn a_damaged_display_index_is_reported_instead_of_paging_a_blank_history() {
+    use rusqlite::Connection;
+
+    let page = |db: &Connection, before: Option<i64>| match read_display_page(
+        db,
+        "s",
+        before,
+        None,
+        Some(5),
+    ) {
+        Ok(_) => panic!("a damaged index must not page as an empty history"),
+        Err(error) => format!("{error:#}"),
+    };
+
+    // No history_display table at all: both directions report it.
+    let db = Connection::open_in_memory().unwrap();
+    assert!(
+        page(&db, None).contains("history_display"),
+        "{}",
+        page(&db, None)
+    );
+    assert!(
+        page(&db, Some(10)).contains("history_display"),
+        "{}",
+        page(&db, Some(10))
+    );
+
+    // The table exists but is half-migrated (no `is_user`, no `payload`, and no
+    // body store to join): the forward page reaches the join and names what it
+    // cannot read…
+    let db = Connection::open_in_memory().unwrap();
+    db.execute_batch("CREATE TABLE history_display(session_id TEXT, ordinal INTEGER)")
+        .unwrap();
+    let forward = page(&db, None);
+    assert!(forward.contains("entry_records"), "{forward}");
+    // …while the backward cursor fails earlier, on the column it needs to find
+    // the exchange boundary, rather than silently paginating from zero.
+    let backward = page(&db, Some(10));
+    assert!(backward.contains("is_user"), "{backward}");
+}

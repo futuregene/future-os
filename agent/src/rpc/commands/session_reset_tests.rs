@@ -260,6 +260,58 @@ fn an_apply_rewrites_the_transcript_backs_it_up_and_refreshes_memory() {
 }
 
 #[test]
+fn a_reset_that_applies_but_cannot_be_reloaded_reports_reload_failed() {
+    let state = make_app_state();
+    seed(&state, "s1");
+    hydrate(&state, "s1");
+
+    // Damage the store in the window between the rewrite committing and the
+    // reload reading it back. The read path is the `entry_records` **view**; the
+    // reset's own planning read goes through the same view, which is why the
+    // damage has to land in that window — see the hook's own note and F-53.
+    let damage = state.clone();
+    super::session_reset::set_reload_failure_hook(
+        "s1",
+        Box::new(move || {
+            damage
+                .session_manager
+                .test_execute("DROP VIEW entry_records")
+        }),
+    );
+    let response = run(&state, "s1", apply(keep_last(2)));
+
+    assert_eq!(response["success"], false, "{response}");
+    assert_eq!(response["error_code"], json!("reload_failed"), "{response}");
+    assert_eq!(
+        response["error_data"]["retryable"],
+        json!(true),
+        "a reload failure is retryable: the rewrite is already durable"
+    );
+    // The reset really did apply, and the report says so — that is what makes
+    // this arm different from `reset_failed`: the caller must know the store was
+    // rewritten even though the in-memory history could not follow it, and the
+    // backup path is how they recover.
+    assert!(
+        super::session_reset::RELOAD_FAILURE_HOOK.lock().is_none(),
+        "the hook consumed itself"
+    );
+    assert_eq!(backup_files(&state).len(), 1);
+    assert!(
+        response["error_data"]["backup"].is_string(),
+        "the reload failure must still report where the backup went: {response}"
+    );
+    // The rewrite really reached the disk: the lossless backup records the plan
+    // that was applied (10 entries kept to 6), and it is only written once the
+    // store accepted the reset. The store cannot be read through the view any
+    // more — that is the damage this test injected — so the backup is the
+    // evidence, exactly as in the sibling apply test.
+    let backup: Value =
+        serde_json::from_str(&std::fs::read_to_string(&backup_files(&state)[0]).unwrap()).unwrap();
+    assert_eq!(backup["entriesBefore"], json!(10));
+    assert_eq!(backup["entriesAfter"], json!(6));
+}
+
+#[test]
 fn the_session_record_survives_every_selector() {
     let state = make_app_state();
     seed(&state, "s1");
@@ -398,6 +450,96 @@ fn selectors_are_validated_before_anything_is_written() {
     }
     assert_eq!(stored_ids(&state, "s1").len(), 10);
     assert!(backup_files(&state).is_empty());
+}
+
+#[test]
+fn a_reset_without_selectors_is_rejected_before_the_store_is_touched() {
+    let state = make_app_state();
+    save_via(&state, "s1", "mock-model", seeded_entries());
+    hydrate(&state, "s1");
+    let before = stored_ids(&state, "s1");
+    // A command that carries no `reset_history` payload at all.
+    let response = parse_response(&handle_command_internal(
+        &state,
+        make_cmd_for("reset_session_history", "s1"),
+    ));
+    assert_eq!(response["success"], false, "{response}");
+    assert_eq!(response["error_code"], json!("invalid_selectors"));
+    assert!(
+        response["error"]
+            .as_str()
+            .unwrap()
+            .contains("selectors are required"),
+        "{response}"
+    );
+    assert_eq!(stored_ids(&state, "s1"), before);
+    assert!(backup_files(&state).is_empty());
+}
+
+/// The dispatcher rejects compaction conflicts before dispatch, so the handler's
+/// own guard is only reachable by calling it directly. Both layers must agree:
+/// a session that is compacting never has its history rewritten.
+#[test]
+fn the_handler_itself_refuses_a_reset_while_a_compaction_is_in_progress() {
+    use std::sync::atomic::Ordering;
+
+    let state = make_app_state();
+    save_via(&state, "s1", "mock-model", seeded_entries());
+    hydrate(&state, "s1");
+    let session = state.sessions.read().get("s1").cloned().unwrap();
+    session
+        .read()
+        .compaction_in_progress
+        .store(true, Ordering::Release);
+
+    let response = parse_response(
+        &crate::rpc::commands::session_reset::handle_reset_session_history(
+            &state,
+            &session,
+            &reset_cmd(
+                "s1",
+                apply(HistoryReset {
+                    all: Some(true),
+                    ..Default::default()
+                }),
+            ),
+            "direct-call",
+        ),
+    );
+    assert_eq!(response["success"], false, "{response}");
+    assert_eq!(response["error_code"], json!("session_busy"));
+    assert_eq!(response["error_data"]["busy_reason"], json!("compaction"));
+    assert_eq!(response["error_data"]["retryable"], json!(true));
+    assert_eq!(stored_ids(&state, "s1").len(), 10);
+    assert!(backup_files(&state).is_empty());
+
+    // The dispatcher agrees, with the same code and reason.
+    let described = run(
+        &state,
+        "s1",
+        apply(HistoryReset {
+            all: Some(true),
+            ..Default::default()
+        }),
+    );
+    assert_eq!(described["success"], false, "{described}");
+    assert_eq!(described["error_code"], json!("session_busy"));
+    assert_eq!(described["error_data"]["busy_reason"], json!("compaction"));
+
+    session
+        .read()
+        .compaction_in_progress
+        .store(false, Ordering::Release);
+    // With the compaction finished the same reset goes through.
+    let allowed = run(
+        &state,
+        "s1",
+        dry(HistoryReset {
+            all: Some(true),
+            ..Default::default()
+        }),
+    );
+    assert_eq!(allowed["success"], true, "{allowed}");
 }
 
 #[test]
@@ -582,4 +724,124 @@ fn kept_entries_are_written_back_unchanged() {
     );
     expected[index] = after[index].clone();
     assert_eq!(after, expected);
+}
+
+/// A store failure that is neither a concurrent write nor an empty result is
+/// reported as its own retryable `reset_failed` code — not silently as
+/// `history_changed` (which would tell the caller to simply retry the same
+/// rewrite) and not as `nothing_retained` (which would deny a real error).
+#[test]
+fn a_reset_that_the_store_refuses_is_reported_as_reset_failed() {
+    let state = make_app_state();
+    seed(&state, "s1");
+    hydrate(&state, "s1");
+    let before = stored_ids(&state, "s1");
+    // Every write to the transcript is refused from here on.
+    state.session_manager.test_execute("CREATE TRIGGER fail_entries BEFORE INSERT ON entries BEGIN SELECT RAISE(ABORT, 'injected rewrite failure'); END;");
+
+    let response = run(
+        &state,
+        "s1",
+        apply(HistoryReset {
+            keep_last: Some(1),
+            ..Default::default()
+        }),
+    );
+    assert_eq!(response["success"], false, "{response}");
+    assert_eq!(response["error_code"], json!("reset_failed"), "{response}");
+    assert_eq!(response["error_data"]["retryable"], json!(true));
+    assert_eq!(
+        stored_ids(&state, "s1"),
+        before,
+        "a refused rewrite leaves the stored transcript untouched"
+    );
+    // The backup is taken *before* the store is asked to rewrite, so a failure
+    // at the rewrite step leaves the pre-reset copy on disk. That is the useful
+    // state (the backup is the transcript the caller still has) and is recorded
+    // as §0.4 F-3 rather than asserted away.
+    let backups = backup_files(&state);
+    assert_eq!(backups.len(), 1, "the pre-reset copy is kept: {backups:?}");
+    let backup = std::fs::read_to_string(&backups[0]).unwrap();
+    assert!(
+        backup.contains("FIRST-QUESTION"),
+        "the backup holds the pre-reset transcript"
+    );
+
+    // The same selectors still work once the store accepts writes again.
+    state
+        .session_manager
+        .test_execute("DROP TRIGGER fail_entries");
+    let ok = run(
+        &state,
+        "s1",
+        apply(HistoryReset {
+            keep_last: Some(1),
+            ..Default::default()
+        }),
+    );
+    assert_eq!(ok["success"], true, "{ok}");
+}
+
+/// The handler's own mapping for a history that moved under it: `history_changed`
+/// is retryable by design (the caller re-plans and re-runs), and it must not be
+/// confused with `nothing_retained` — the difference between "try again" and
+/// "this request can never succeed".
+#[test]
+fn a_reset_whose_history_moved_is_reported_as_history_changed() {
+    let state = make_app_state();
+    // A session id no other test resets: the race hook is process-global and
+    // fires only for the id it was registered for.
+    save_via(&state, "race-1", "mock-model", seeded_entries());
+    hydrate(&state, "race-1");
+    let before = stored_ids(&state, "race-1");
+    // The concurrent writer slips in between the plan's digest and the rewrite
+    // transaction, which is the only window where this can happen.
+    crate::session::reset::set_reset_race_hook(
+        "race-1",
+        Box::new(|manager: &crate::session::Manager| {
+            let extra = entry(json!({"id": "u5", "type": "user", "role": "user",
+                    "timestamp": "2026-01-01T00:00:09Z",
+                    "content": [{"type": "text", "text": "FIFTH-QUESTION"}],
+                    "meta": {"run_id": "r5"}}));
+            manager
+                .storage()
+                .unwrap()
+                .append("race-1", vec![serde_json::to_value(extra).unwrap()])
+                .unwrap();
+        }),
+    );
+
+    let response = run(
+        &state,
+        "race-1",
+        apply(HistoryReset {
+            keep_last: Some(1),
+            ..Default::default()
+        }),
+    );
+    assert_eq!(response["success"], false, "{response}");
+    assert_eq!(
+        response["error_code"],
+        json!("history_changed"),
+        "{response}"
+    );
+    assert_eq!(response["error_data"]["retryable"], json!(true));
+    let after = stored_ids(&state, "race-1");
+    assert_eq!(
+        after.len(),
+        before.len() + 1,
+        "the concurrent entry survived: {after:?}"
+    );
+    assert!(after.contains(&"u5".to_string()));
+
+    // The same rewrite succeeds once the caller re-plans against the new history.
+    let retry = run(
+        &state,
+        "race-1",
+        apply(HistoryReset {
+            keep_last: Some(1),
+            ..Default::default()
+        }),
+    );
+    assert_eq!(retry["success"], true, "{retry}");
 }

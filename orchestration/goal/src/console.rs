@@ -10642,6 +10642,14 @@ mod workspace_guard_cli_tests {
             })
             .collect();
         assert_eq!(reported.len(), 1);
+        // Loud guard before the `if let` below: without it, a shape change in
+        // the projection would make the pattern fail and the test would pass
+        // having asserted nothing (docs/testing/module-goal.md §11.11).
+        assert!(
+            matches!(reported[0], Event::ProgressReported { .. }),
+            "the single collected event must be a ProgressReported, got: {:?}",
+            reported[0]
+        );
         if let Event::ProgressReported {
             agent_id,
             todo_id,
@@ -11815,6 +11823,219 @@ mod residual_branch_tests {
     }
 }
 
+/// The rate-limit cool-down in `run_turns` (`console.rs:5104, 5108-5111`).
+///
+/// The row's old objection was the *price*: `executor::RATE_LIMIT_BACKOFF_SECS`
+/// is 45 s of wall clock, so an in-band drive used to mean a 45 s test. The
+/// cool-down is observable without paying it, because the wait sits BETWEEN the
+/// turn's stream and the turn's writeback: a drive wrapped in
+/// `tokio::time::timeout` must still be pending when the wrapper expires, and
+/// the ledger must still hold neither the run record nor a failure
+/// classification — which is exactly the ordering the sleep's own comment
+/// claims ("Sleep before the writeback/exit so the orchestrator's relaunch lands
+/// on a cooled-down engine").
+///
+/// The control is the other half of that claim: the identical drive, differing
+/// ONLY in the error text, finishes inside the same budget and writes its
+/// record. So the pending-ness comes from `is_rate_limit_error` accepting the
+/// text, not from a slow or stuck drive.
+///
+/// Measured and rejected first: `#[tokio::test(start_paused = true)]` does NOT
+/// carry this loop. `AgentClient::connect` dies in 0.01 s with
+/// `Agent readiness could not be verified: status: Cancelled, message: "Timeout
+/// expired"` — the paused clock auto-advances to the pending tonic deadline
+/// whenever the driver parks with no I/O ready, which is the same hazard the
+/// webui tests record for their header-read timeout, one layer down. The pause
+/// therefore cannot be aimed at the cool-down without arming every gRPC call in
+/// the turn.
+///
+/// Why this drive lives in-crate rather than in `tests/`: `run_turns` is
+/// private. The agent side is the crate's shared scripted mock (`tests/common/
+/// mock_agent.rs`), included by path so the tree keeps exactly one mock fixture
+/// instead of a second, divergent one for unit tests. The path is declared at
+/// the top level of this file because `#[path]` inside a nested inline module
+/// resolves against a directory that does not exist on disk, and a `..` walk
+/// through it fails with ENOENT.
+#[cfg(test)]
+#[path = "../tests/common/mock_agent.rs"]
+#[allow(dead_code)]
+mod scripted_agent;
+
+#[cfg(test)]
+mod rate_limit_backoff_tests {
+    use super::*;
+    use crate::state::{FailureKind, Goal, Todo, TodoStatus};
+    use crate::store::{Event, Store};
+    use scripted_agent::{ev, spawn_mock, MockState};
+    use std::time::Duration;
+
+    /// The inner-loop budget: an order of magnitude above the whole in-process
+    /// turn (the control below completes its drive in milliseconds) and far
+    /// below the 45 s cool-down it is there to catch.
+    const WATCH: Duration = Duration::from_secs(5);
+
+    struct Drive {
+        _dir: tempfile::TempDir,
+        store: Store,
+        /// `None` when the run was still going when `WATCH` expired.
+        completed: Option<Result<(), String>>,
+        /// Prompts the scripted agent actually served — the turn reached the model.
+        prompts: u64,
+        /// `None` while the run has not reached the failure classification, which
+        /// happens after the cool-down.
+        failure_kind: Option<FailureKind>,
+    }
+
+    /// Drive one error turn through the real run loop against the scripted mock.
+    async fn drive_error_turn(error_payload: &str) -> Drive {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().to_str().unwrap()).unwrap();
+        store.register(&Goal::new("g", "obj", "/tmp")).unwrap();
+        store
+            .append(Event::GoalStarted {
+                goal_id: "g".into(),
+                ts: 1,
+            })
+            .unwrap();
+        // The decision kernel fails closed on an unregistered identity
+        // (`decision/identity.rs`): an `--agent-id` run needs a registered peer,
+        // otherwise the run never reaches a turn and nothing below is under test.
+        store
+            .append(Event::AgentRegistered {
+                goal_id: "g".into(),
+                agent_id: "agent-a".into(),
+                workspaces: vec![],
+                ts: 2,
+            })
+            .unwrap();
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t1", "work"),
+                ts: 3,
+            })
+            .unwrap();
+
+        // The turn: one run whose stream ends on an `error` event carrying
+        // `error_payload` — that text is what `record.error` becomes.
+        let (addr, state) = spawn_mock(MockState {
+            events: vec![
+                ev("mock-run-1", 0, "text_chunk", "{\"text\":\"partial\"}"),
+                ev("mock-run-1", 1, "error", error_payload),
+            ],
+            ..Default::default()
+        })
+        .await;
+        let mut client = crate::agent_client::AgentClient::connect(&addr)
+            .await
+            .expect("the scripted mock is reachable");
+
+        let mut last_failure_kind = None;
+        let mut executed = false;
+        // `max-turns 1`: the failing turn is the whole run.
+        let run = run_turns(
+            &mut client,
+            &mut store,
+            "g",
+            "session-1",
+            1,
+            3600,
+            Some("agent-a"),
+            0,
+            false,
+            &mut last_failure_kind,
+            &mut executed,
+            false,
+            true,
+        );
+        // The wrapper is the observation: a run that returns inside WATCH did
+        // not wait out the cool-down.
+        let completed = tokio::time::timeout(WATCH, run)
+            .await
+            .ok()
+            .map(|result| result.map_err(|e| format!("{e:#}")));
+        let prompts = state.lock().unwrap_or_else(|e| e.into_inner()).prompts;
+        Drive {
+            _dir: dir,
+            store,
+            completed,
+            prompts,
+            failure_kind: last_failure_kind,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_throttled_turn_holds_the_writeback_for_the_whole_cool_down() {
+        let drive = drive_error_turn("{\"error\":\"HTTP 429 too many requests\"}").await;
+
+        assert_eq!(
+            drive.prompts, 1,
+            "the drive must reach the model, otherwise nothing about the cool-down is under test"
+        );
+        assert!(
+            drive.completed.is_none(),
+            "a 429 turn must still be inside RATE_LIMIT_BACKOFF_SECS after {WATCH:?}; the run returned {:?}",
+            drive.completed
+        );
+        // The cool-down precedes the writeback: no run record, no failure
+        // classification, no completion.
+        assert!(
+            drive.failure_kind.is_none(),
+            "the failure classification is stamped after the cool-down (console.rs:5153)"
+        );
+        let goal = drive.store.replay("g").unwrap().unwrap();
+        assert!(
+            goal.history.is_empty(),
+            "no run record may be written before the cool-down elapses: {:?}",
+            goal.history
+        );
+        assert!(
+            !drive
+                .store
+                .events("g")
+                .unwrap()
+                .iter()
+                .any(|entry| matches!(entry.event, Event::RunRecorded { .. })),
+            "the run record reaches the ledger only after the cool-down"
+        );
+        assert_eq!(
+            goal.todo("t1").unwrap().status,
+            TodoStatus::Open,
+            "a throttled turn is not a delivered slice"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_non_throttled_error_drives_the_same_path_without_the_cool_down() {
+        let drive = drive_error_turn("{\"error\":\"validator exited 1\"}").await;
+
+        // The control: the identical drive with a non-throttle error must finish
+        // inside the same WATCH budget, so the positive test's pending-ness is
+        // caused by the error text rather than by a slow drive.
+        let outcome = drive
+            .completed
+            .expect("only a throttle earns the cool-down; this drive must finish inside WATCH");
+        let err = outcome.expect_err("a run whose only turn failed must not report success");
+        assert!(
+            err.contains("max-turns"),
+            "the run stops on its bound, not on the throttle: {err}"
+        );
+        assert_eq!(
+            drive.failure_kind,
+            Some(FailureKind::HardError),
+            "an error with no recoverable cause is a hard error for budget purposes"
+        );
+        let goal = drive.store.replay("g").unwrap().unwrap();
+        let record = goal
+            .history
+            .last()
+            .expect("the completed drive writes its run record");
+        assert_eq!(record.terminal_state, "error");
+        assert_eq!(record.error.as_deref(), Some("validator exited 1"));
+        assert_eq!(record.failure_kind, Some(FailureKind::HardError));
+    }
+}
+
 #[cfg(test)]
 mod todo_verify_hint_tests {
     use super::looks_like_code_todo;
@@ -11985,6 +12206,78 @@ mod todo_verify_hint_tests {
         .unwrap();
         let (stopped_anon, _) = super::worker_stop_requested(&events, 0, None);
         assert!(!stopped_anon, "anonymous caller ignores targeted stops");
+    }
+
+    /// The down-channel poll only interrupts the running turn for an
+    /// instruction that (a) is aimed at this worker or broadcast, and (b) is an
+    /// INTERRUPT. A `control_issued` line without `interrupt: true` is an
+    /// instruction the next turn drains into its envelope on its own, so
+    /// aborting for it would kill a turn that is doing useful work; the same
+    /// rule keeps another worker's steer out of this worker's turn.
+    #[tokio::test]
+    async fn the_steer_poll_interrupts_only_for_an_interrupting_instruction_to_this_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let events = dir.path().join("events.jsonl");
+        let line = |value: serde_json::Value| format!("{value}\n");
+
+        // Nothing to deliver: a soft instruction for this worker (no
+        // `interrupt`), a `worker_steered` for another worker, and noise.
+        let soft = line(serde_json::json!({
+            "kind": "control_issued",
+            "instruction": {"text": "consider X", "agent_id": "worker-a"},
+            "ts": 1
+        }));
+        let other = line(serde_json::json!({
+            "kind": "worker_steered",
+            "agent_id": "worker-b",
+            "ts": 2
+        }));
+        std::fs::write(&events, format!("{soft}{other}")).unwrap();
+        let mut client = None;
+        let end = std::fs::metadata(&events).unwrap().len();
+        let next =
+            super::steer_worker_poll_once(&events, 0, Some("worker-a"), &mut client, "sess-1")
+                .await;
+        assert_eq!(
+            next, end,
+            "the new offset advances past lines that targeted nobody"
+        );
+
+        // An interrupt for THIS worker: the poll reaches the delivery path. The
+        // agent is unreachable here (an isolated HOME has no socket), so the
+        // poll must NOT advance the offset — an undelivered interrupt is
+        // retried rather than lost.
+        let hard = line(serde_json::json!({
+            "kind": "control_issued",
+            "instruction": {"text": "stop now", "interrupt": true, "agent_id": "worker-a"},
+            "ts": 3
+        }));
+        std::fs::write(&events, format!("{soft}{other}{hard}")).unwrap();
+        let pending =
+            super::steer_worker_poll_once(&events, 0, Some("worker-a"), &mut client, "sess-1")
+                .await;
+        assert_eq!(
+            pending, 0,
+            "an interrupt that could not be delivered must be retried, not dropped"
+        );
+
+        // A broadcast interrupt reaches an anonymous worker too.
+        let broadcast = line(serde_json::json!({
+            "kind": "control_issued",
+            "instruction": {"text": "everyone stop", "interrupt": true},
+            "ts": 4
+        }));
+        std::fs::write(&events, broadcast).unwrap();
+        let mut anon = None;
+        let pending = super::steer_worker_poll_once(&events, 0, None, &mut anon, "sess-1").await;
+        assert_eq!(pending, 0, "a broadcast interrupt is an interrupt");
+
+        // A stale offset (nothing new since the last poll) is a no-op.
+        std::fs::write(&events, soft.clone()).unwrap();
+        let mut fresh = None;
+        let unchanged =
+            super::steer_worker_poll_once(&events, 0, Some("worker-a"), &mut fresh, "sess-1").await;
+        assert_eq!(unchanged, soft.len() as u64);
     }
 
     #[test]

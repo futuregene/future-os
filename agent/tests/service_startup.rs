@@ -147,6 +147,40 @@ fn connection_gate_blocks_held_locks_and_startup_races_before_storage() {
     run_case("gated-lock");
     run_case("gated-race");
     run_case("gated-fresh");
+    run_case("gated-auto-addr");
+}
+
+/// A host that panics is a host that never tore its runtime down; the scoped
+/// instance must be resumed to the caller rather than swallowed, so the process
+/// does not continue as if startup had simply failed.
+#[test]
+fn a_panicking_host_is_resumed_and_leaves_the_instance_reusable() {
+    run_case("host-panic");
+}
+
+/// The instance lock is the first thing a service touches. When it cannot even
+/// be opened the host must never run, and the offending path must be left as it
+/// was found rather than replaced with a directory.
+#[test]
+fn an_unopenable_instance_lock_stops_startup_before_any_host_code() {
+    run_case("unopenable-instance-lock");
+}
+
+/// A host error and a failed cleanup are different failures and both have to
+/// survive: the returned error carries the host's cause and the cleanup report
+/// is attached to it, rather than one silently replacing the other.
+#[test]
+fn a_host_error_and_a_failed_cleanup_are_reported_together() {
+    run_case("host-error-and-dropped-server");
+}
+
+/// A host that starts serving and then stops polling `serve` leaves the
+/// listener stage of the drain permanently unsettled: the deadline is what ends
+/// that shutdown, the report names the stage, and instance ownership is retained
+/// instead of being released while connections are still draining.
+#[test]
+fn an_unpolled_serve_future_times_out_the_listener_stage() {
+    run_case("shutdown-without-polling-server");
 }
 
 #[test]
@@ -195,6 +229,21 @@ fn service_fixture() {
             let future_rpc::connection::AgentSelection::LocalStart(permit) = selection else {
                 panic!("unexpected external service")
             };
+            if case == "gated-auto-addr" {
+                // `" AUTO "` (surrounding whitespace, different case) must be
+                // recognized as the automatic endpoint, so the local-start gate
+                // admits it instead of refusing an explicit TCP endpoint.
+                config.grpc_addr = Some(" AUTO ".to_owned());
+                let mut entered = false;
+                AgentService::with_local_start(config, permit, |_| {
+                    entered = true;
+                    Ok(())
+                })
+                .unwrap();
+                assert!(entered, "an automatic endpoint must be admitted");
+                assert_released(&root);
+                return;
+            }
             if case == "gated-race" {
                 AgentService::with_instance(config.clone(), |_| {
                     let mut entered = false;
@@ -262,6 +311,142 @@ fn service_fixture() {
     } else {
         None
     };
+
+    if case == "host-panic" {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            AgentService::with_instance(config, |_| -> Result<()> { panic!("injected host panic") })
+        }));
+        let payload = match result {
+            Ok(_) => panic!("a host panic must be resumed, not swallowed"),
+            Err(payload) => payload,
+        };
+        let text = payload
+            .downcast_ref::<&str>()
+            .map(|text| (*text).to_owned())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        assert!(text.contains("injected host panic"), "{text}");
+        // The scope was released on unwind, so a later service can take the
+        // same data root in this process.
+        assert_released(&root);
+        return;
+    }
+
+    if case == "unopenable-instance-lock" {
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("agent"), "not a directory").unwrap();
+        let mut entered = false;
+        let error = AgentService::with_instance(config, |_| {
+            entered = true;
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(
+            !entered,
+            "the host must not run without the instance lock: {error:#}"
+        );
+        assert!(
+            root.join("agent").is_file(),
+            "the foreign file is left as it was found: {error:#}"
+        );
+        return;
+    }
+
+    if case == "host-error-and-dropped-server" {
+        let result = AgentService::with_instance(config, |service| -> Result<()> {
+            let cancellation = StartupCancellation::default();
+            let prepared = service.prepare(cancellation)?;
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let running = prepared.initialize().await?;
+                let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+                let mut server = Box::pin(running.serve(Some(ready_tx)));
+                // Readiness first, then drop the serving future without letting
+                // it drain: that is what makes the cleanup report a failure.
+                tokio::select! {
+                    result = server.as_mut() => {
+                        result?;
+                        anyhow::bail!("the service stopped before readiness");
+                    }
+                    ready = ready_rx => {
+                        ready.context("the service never announced readiness")?;
+                    }
+                }
+                drop(server);
+                anyhow::bail!("injected host failure after an undrained server");
+            })
+        });
+        let text = format!("{:#}", result.unwrap_err());
+        assert!(text.contains("injected host failure"), "{text}");
+        assert!(
+            text.contains("failed to stop") || text.contains("dropped without draining"),
+            "the cleanup failure must be attached, not replaced: {text}"
+        );
+        return;
+    }
+
+    if case == "shutdown-without-polling-server" {
+        // A host that starts serving and then stops polling `serve` while it
+        // shuts down: the serving future still owns the server (so the drain's
+        // listener stage cannot settle), and the deadline — not a clean stop —
+        // is what ends the shutdown. The report must name that stage, and the
+        // scope must retain instance ownership rather than release a root whose
+        // connection drain never finished.
+        let result = AgentService::with_instance(config, |service| -> Result<()> {
+            let prepared = service.prepare(StartupCancellation::default())?;
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let running = prepared.initialize().await?;
+                let handle = running.handle();
+                let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+                let mut server = Box::pin(running.serve(Some(ready_tx)));
+                tokio::select! {
+                    result = server.as_mut() => {
+                        result?;
+                        anyhow::bail!("the service stopped before readiness");
+                    }
+                    ready = ready_rx => {
+                        ready.context("the service never announced readiness")?;
+                    }
+                }
+                let report = handle.shutdown(Duration::from_millis(150)).await;
+                assert_eq!(
+                    report.status,
+                    future_agent::service::ShutdownStatus::FailedStopping,
+                    "a serve future that is neither polled nor dropped is not a clean stop: {:?}",
+                    report.errors
+                );
+                assert!(
+                    report
+                        .errors
+                        .iter()
+                        .any(|error| error.contains("RPC listener and streams")),
+                    "the report must name the stage that never settled: {:?}",
+                    report.errors
+                );
+                // Deliberately still holding the future: this is what the host
+                // did wrong, and the retained ownership below is the consequence.
+                drop(server);
+                Ok(())
+            })
+        });
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(
+            error.contains("failed to stop") || error.contains("Agent failed to stop"),
+            "ownership must be retained after an undrained listener: {error}"
+        );
+        assert!(
+            root.join("agent").join("agent-instance.json").exists(),
+            "the metadata of a retained instance must survive"
+        );
+        return;
+    }
 
     let result = AgentService::with_instance(config, |service| {
         let cancellation = StartupCancellation::default();

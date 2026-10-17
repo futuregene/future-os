@@ -831,6 +831,16 @@ mod util_tests {
 
     #[test]
     fn default_config_dir_exists() {
+        // This is the one accessor here whose value depends on `FUTURE_HOME`
+        // (`default_session_dir`'s assertion only checks its leaf, and
+        // `default_settings_paths_are_valid` checks a filename): a concurrent
+        // test that redirects the root under `test_support::home_env_lock()`
+        // makes `$HOME/.future` become its temp directory, and `.contains(".future")`
+        // then fails for a reason that has nothing to do with this function.
+        // Every other reader of a home-derived path in this crate takes this
+        // lock; this test was the one that did not (observed failing once in a
+        // gate run under parallel load).
+        let _guard = crate::test_support::home_env_lock();
         let dir = default_config_dir();
         assert!(dir.to_string_lossy().contains(".future"));
     }

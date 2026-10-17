@@ -47,14 +47,25 @@ fn known(value: &str) -> Option<&str> {
 /// reading?" answerable. `dirty` is only meaningful when `commit` is set: a
 /// build without a checkout has no working tree to be dirty.
 pub fn build_info() -> Value {
-    let commit = known(GIT_COMMIT);
+    build_info_from(known(GIT_COMMIT), GIT_COMMIT_SHORT, GIT_DIRTY)
+}
+
+/// [`build_info`] over an explicitly supplied commit identity.
+///
+/// `FUTURE_GIT_COMMIT` and friends are injected by `build.rs` at compile time,
+/// so within one build the "no checkout" shape cannot be produced by any input:
+/// a build made in a checkout always reports a commit, and the arm that
+/// describes its absence would be dead. It is still a shape this projection has
+/// to get right (a tarball or vendored build reports it), so the identity is a
+/// parameter and both shapes are asserted through this one function.
+fn build_info_from(commit: Option<&str>, commit_short: &str, dirty: &str) -> Value {
     json!({
         "version": VERSION,
         "isRelease": is_release(VERSION),
         "bundleVersion": bundle_version(VERSION),
         "gitCommit": commit,
-        "gitCommitShort": commit.and(known(GIT_COMMIT_SHORT)),
-        "gitDirty": commit.map(|_| GIT_DIRTY == "1"),
+        "gitCommitShort": commit.and(known(commit_short)),
+        "gitDirty": commit.map(|_| dirty == "1"),
         "buildTarget": known(BUILD_TARGET),
         "buildProfile": known(BUILD_PROFILE),
         "desktopCapabilities": future_rpc::cli_capabilities::CliCapabilities::default(),
@@ -72,12 +83,11 @@ pub fn build_info_json() -> String {
 mod tests {
     use super::*;
 
-    /// The reported commit must be a real object name, since callers compare it
-    /// against `git rev-parse HEAD` of a checkout. `unknown` (no checkout) is
-    /// the one legitimate absence, and then it is reported as null.
-    #[test]
-    fn the_commit_is_either_a_real_object_name_or_absent() {
-        let info = build_info();
+    /// The two shapes `gitCommit`/`gitCommitShort`/`gitDirty` may take in a
+    /// build identity document. Shared by the two tests below, so a build made
+    /// in a checkout measures the other shape as well instead of leaving it to
+    /// a build nobody runs in CI.
+    fn assert_identity_shape(info: &Value) {
         match info["gitCommit"].as_str() {
             Some(commit) => {
                 assert_eq!(commit.len(), 40, "{commit} is not a full object name");
@@ -99,6 +109,30 @@ mod tests {
                 assert!(info["gitDirty"].is_null());
             }
         }
+    }
+
+    /// The reported commit must be a real object name, since callers compare it
+    /// against `git rev-parse HEAD` of a checkout. `unknown` (no checkout) is
+    /// the one legitimate absence, and then it is reported as null.
+    #[test]
+    fn the_commit_is_either_a_real_object_name_or_absent() {
+        assert_identity_shape(&build_info());
+    }
+
+    /// The no-checkout half of the same contract: a tarball or vendored build
+    /// must report an absent commit and *unknown* dirtiness rather than a stale
+    /// or empty string. `build.rs` injects the identity at compile time, so the
+    /// id this build carries is fixed before any test runs; the other shape is
+    /// asserted through the same projection the binary uses.
+    #[test]
+    fn a_build_without_a_checkout_reports_no_commit_and_unknown_dirtiness() {
+        let info = build_info_from(None, "unknown", "0");
+        assert_identity_shape(&info);
+        assert!(info["gitCommit"].is_null(), "{info}");
+        // The injected `short`/`dirty` values must not leak through as fields
+        // of their own once there is no commit to qualify.
+        assert!(info["gitCommitShort"].is_null(), "{info}");
+        assert!(info["gitDirty"].is_null(), "{info}");
     }
 
     /// The version string and the structured fields describe the same build.

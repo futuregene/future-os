@@ -11,6 +11,8 @@ import type {
   Presence,
   PresenceSession,
   RemoteCredentials,
+  SessionActivity,
+  SnapshotVersion,
   StreamEvent,
 } from "../types";
 import { useDesktopConnection } from "../useDesktopConnection";
@@ -79,6 +81,10 @@ interface MockClientCallbacks {
   onCatalogEpoch(epoch: string | undefined): void;
   onPresence(p: Presence): void;
   onSessions(s: PresenceSession[]): void;
+  // A catalog activity packet: the rows that moved, and the version they moved
+  // to (see `RemoteClientCallbacks`). `useDesktopConnection` always wires this
+  // one, so the harness keeps it required and the frames below are real ones.
+  onSessionActivity(activity: SessionActivity[], version?: SnapshotVersion): void;
   onWorkspaces(w: unknown[], version: number): void;
   onFeatures(f: string[]): void;
   onConnectionState(s: ConnectionState): void;
@@ -479,6 +485,103 @@ describe("useDesktopConnection", () => {
       expect(c.recoverNow).not.toHaveBeenCalled();
     });
 
+    test("a recovery whose socket is replaced mid-probe does not refresh the new one", async () => {
+      await mountConnected();
+      const c = client();
+      cast<jest.Mock>(options.refreshModels).mockClear();
+      let release!: () => void;
+      c.recoverNow.mockImplementationOnce(() => new Promise<void>(done => { release = done; }));
+
+      let pending!: Promise<void>;
+      act(() => { pending = result.current.recover("foreground"); });
+      // The phone moved on while the old socket was still being probed: the
+      // refresh belongs to the connection that asked for it, not to whatever
+      // replaced it.
+      options.clientRef.current = cast({ close: jest.fn(), requestRetry: jest.fn() });
+      await act(async () => { release(); await pending; });
+      expect(options.refreshModels).not.toHaveBeenCalled();
+    });
+
+    test("a failed recovery is reported instead of leaving the machine silently stale", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await mountConnected();
+        client().recoverNow.mockRejectedValueOnce(
+          new RemoteApiError("probe exploded", "remote_service_misconfigured", 503));
+        await act(async () => { await result.current.recover("network-restored"); });
+        // A probe that failed for a reason the machine cannot retry past is the
+        // user's to know about; swallowing it would leave a stale screen with no
+        // way to find out why.
+        expect(warn).toHaveBeenCalledWith(
+          "[remote] unexpected non-transport error", expect.anything(),
+        );
+        expect(result.current.error).toBe("probe exploded");
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    test("a session activity frame reaches this machine's own sink", async () => {
+      await mountConnected();
+      const activity: SessionActivity[] = [{ sessionId: "s1", lastMessageAt: 7 }];
+      const version: SnapshotVersion = { epoch: "epoch", revision: 3 };
+      act(() => client().callbacks.onSessionActivity(activity, version));
+      expect(options.applySessionActivity).toHaveBeenCalledWith(activity, version);
+    });
+
+    test("a desktop whose agent comes back re-reads the catalogue it missed", async () => {
+      await mountConnected();
+      const c = client();
+      cast<jest.Mock>(options.refreshModels).mockClear();
+      // The machine answered while its agent was down: nothing was readable.
+      act(() => c.callbacks.onPresence({ ...presence, agentAvailable: false }));
+      expect(options.refreshModels).not.toHaveBeenCalled();
+
+      // The agent is back and the connection is ready, so the missed state is
+      // read now rather than waiting for the next heartbeat to notice.
+      await act(async () => {
+        c.callbacks.onPresence({ ...presence, agentAvailable: true });
+        await drain();
+      });
+      expect(options.refreshModels).toHaveBeenCalled();
+      expect(options.refreshSessions).toHaveBeenCalled();
+    });
+
+    /**
+     * Re-pointing this runtime at a different pairing is not a reconnection.
+     *
+     * The credentials name a different pair, so everything this runtime mirrored
+     * from the old one — the catalogue, the open conversation, the transcript —
+     * belongs to a machine the phone is no longer on. Carrying it across would
+     * show one machine's sessions under another's name.
+     */
+    test("connecting to a different pairing clears what the old one mirrored", async () => {
+      await mountConnected();
+      // The old pairing leaves content behind that must not survive the move.
+      act(() => client().callbacks.onConnectionState("ready"));
+      cast<jest.Mock>(options.refreshSettings).mockClear();
+
+      options.desktopId = "desktop-2";
+      cast<jest.Mock>(loadCredentials).mockResolvedValue({
+        ...credentials, pairId: "pair-2", expectedDesktopId: "desktop-2",
+      });
+      cast<jest.Mock>(options.resetCatalog).mockClear();
+      await act(async () => {
+        renderer!.update(createElement(Harness));
+        await drain();
+      });
+
+      expect(options.resetCatalog).toHaveBeenCalledTimes(1);
+      expect(options.resetConversation).toHaveBeenCalledTimes(1);
+      expect(options.resetTimeline).toHaveBeenCalledTimes(1);
+      // The mirror is gone and the new pairing's own connection took its place:
+      // whatever the phone reads now is read from the machine it moved to.
+      expect(result.current.credentials?.pairId).toBe("pair-2");
+      expect(client().credentials).toEqual(
+        expect.objectContaining({ pairId: "pair-2" }),
+      );
+    });
+
     test("unmount closes this machine's socket", async () => {
       await mountConnected();
       const c = client();
@@ -563,3 +666,4 @@ describe("useDesktopConnection", () => {
     });
   });
 });
+

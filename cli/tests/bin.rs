@@ -396,6 +396,52 @@ fn browser_start_with_a_missing_launcher_reports_the_launch_failure() {
     );
 }
 
+/// The unix twin of the Windows test above: the same invocation drives the
+/// *non-test* launched-child arm, `#[cfg(not(test))] drop(child)`, which exists
+/// in no test build (the test build records the pid instead). It cannot assert
+/// Windows' "Failed to launch browser" report here, because on unix the spawn
+/// result is dropped on purpose (`child.unref()` semantics), so the command
+/// waits out the 10 s readiness window and reports `starting` with exit 0. That
+/// discrepancy is recorded as a product question in module-cli.md §6.9 — this
+/// test asserts the unix outcome as it is rather than pretending otherwise.
+///
+/// No browser is launched: the launcher path does not exist, which is what
+/// makes the spawn fail while still executing the drop.
+#[cfg(not(windows))]
+#[test]
+fn browser_start_with_a_missing_launcher_waits_out_the_readiness_window_on_unix() {
+    // A port nothing holds: the scan must not be what picks it.
+    let free = std::net::TcpListener::bind("127.0.0.1:0").expect("bind port");
+    let port = free.local_addr().expect("addr").port();
+    drop(free);
+    let home = tempfile::tempdir().expect("tempdir");
+    let bogus = home.path().join("no-such-browser");
+    let (code, stdout, stderr) = future_with_home(
+        &[
+            "tools",
+            "call",
+            "browser",
+            "--command",
+            "start",
+            "--port",
+            &port.to_string(),
+            "--executablePath",
+            bogus.to_str().expect("utf8 path"),
+        ],
+        home.path(),
+    );
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    let result: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("the tool result is json: {e}"));
+    assert_eq!(result["status"], "starting", "{result}");
+    assert_eq!(
+        result["launcher"]["command"],
+        bogus.to_str().expect("utf8 path"),
+        "the launcher is taken at face value: {result}"
+    );
+    assert_eq!(result["requestedPort"], port);
+}
+
 // ── in-process mock agent ───────────────────────────────────────────────────
 //
 // The binary's credential commands only exist outside `cfg(test)`
@@ -612,4 +658,563 @@ fn embedded_channel_invalid_config_errors() {
         .output()
         .expect("run future channel");
     assert_eq!(output.status.code(), Some(1));
+}
+
+// ── the shipped binary's `#[cfg(not(test))]` halves ─────────────────────────
+//
+// `save_auth`, `provider_rpc`, `save_custom_provider`'s agent branch and
+// `StdioPrompter`'s console reads exist in the BINARY and in no test
+// translation unit, so no unit test can reach them at all — the only route is
+// to run the real executable, which is what this section does. `cargo-llvm-cov`
+// picks the child's lines up through the `LLVM_PROFILE_FILE` the test process
+// inherits.
+
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+/// `--linux-sandbox-helper` is dispatched by `main.rs` before any CLI runtime,
+/// logging or service initialization, and the embedded agent then either
+/// refuses the flag (off Linux) or fails to decode "probe" as a request
+/// (Linux). Both exits are non-zero and neither writes to stdout, so a
+/// dispatch that fell through to the ordinary CLI would fail this test.
+#[test]
+fn the_hidden_linux_sandbox_helper_entry_is_dispatched_by_the_binary() {
+    let (code, stdout, stderr) = future(&["--linux-sandbox-helper", "probe"]);
+    assert!(stdout.is_empty(), "stdout: {stdout}");
+    #[cfg(target_os = "linux")]
+    {
+        // The helper's infrastructure exit code for an undecodable request.
+        assert_eq!(code, Some(125), "stderr: {stderr}");
+        assert!(stderr.contains("future-linux-sandbox-helper:"), "{stderr}");
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        assert_eq!(code, Some(1), "stderr: {stderr}");
+        assert!(
+            stderr.contains("Linux sandbox helper is unavailable on this platform"),
+            "{stderr}"
+        );
+    }
+}
+
+/// `login` against a platform that does not answer: the device-code POST fails
+/// first and the binary reports a network error. This runs the non-test half of
+/// `login` (the `#[cfg(not(test))] let auth_data = Value::Null` binding and the
+/// request after it), which no unit test compiles.
+#[test]
+fn auth_login_against_an_unreachable_platform_reports_a_network_error() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let (code, stdout, stderr) = future_with_home(
+        &["auth", "login", "--url", "http://127.0.0.1:1"],
+        home.path(),
+    );
+    assert_eq!(code, Some(1), "stdout: {stdout}");
+    assert!(stderr.contains("Network error"), "stderr: {stderr}");
+    assert!(stdout.is_empty(), "stdout: {stdout}");
+    assert!(
+        !home
+            .path()
+            .join(".future")
+            .join("agent")
+            .join("auth.json")
+            .exists(),
+        "a failed login stores nothing"
+    );
+}
+
+/// The custom-provider wizard's answers: provider 2, the provider, its protocol
+/// and base URL, the secret API key, and **two** models — the first text-only,
+/// the second accepting images, so both arms of the `modalities` projection the
+/// agent-side writer applies are executed by one run — then "no more models".
+/// Each model is: id, display name, context window, output-token limit, image
+/// support, four per-1M prices.
+const CUSTOM_WIZARD_ANSWERS: &[&str] = &[
+    "2",
+    "revprobe",
+    "",
+    "",
+    "http://127.0.0.1:9/v1",
+    "sk-revprobe-secret",
+    "y",
+    "rev-model",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "y",
+    "rev-vision",
+    "",
+    "",
+    "",
+    "y",
+    "",
+    "",
+    "",
+    "",
+    "",
+];
+
+/// Run the shipped binary under a pseudo-terminal, because
+/// `StdioPrompter::read_secret` reads the *console device* (`rpassword`), not
+/// stdin: with no controlling terminal the wizard stops at the API-key prompt
+/// with "Failed to read API key: Device not configured". `script(1)` is the
+/// portable way to give the child one, and it is in util-linux (Linux) and in
+/// BSD/macOS.
+///
+/// Two details cost an iteration each to get right:
+///   * the command line is OS-specific — `script -q /dev/null cmd args...` on
+///     BSD/macOS, `script -q -e -c "<cmd args>" /dev/null` on util-linux;
+///   * `script(1)` forwards ITS OWN stdin EOF to the pty as an EOT, which the
+///     line discipline turns into `read() == 0` — the wizard then reports
+///     "Input closed before configuration completed." at its first prompt. The
+///     answer pipe is therefore taken out of the `Child` and held open by a
+///     thread until the child has exited, because `wait_with_output` drops
+///     (and so closes) whatever is left in `child.stdin`.
+#[cfg(unix)]
+fn run_under_a_pty(
+    args: &[&str],
+    answers: &[&str],
+    home: &Path,
+    env: &[(&str, &str)],
+) -> (Option<i32>, String, String) {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let exe = env!("CARGO_BIN_EXE_future");
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let line = std::iter::once(exe)
+            .chain(args.iter().copied())
+            .map(|part| format!("'{}'", part.replace('\'', r"'\''")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut command = Command::new("script");
+        command.args(["-q", "-e", "-c", &line, "/dev/null"]);
+        command
+    };
+    #[cfg(not(target_os = "linux"))]
+    let mut command = {
+        let mut command = Command::new("script");
+        command.arg("-q").arg("/dev/null").arg(exe).args(args);
+        command
+    };
+
+    let mut child = command
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .envs(env.iter().copied())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn script(1)");
+    let mut answer_pipe = child.stdin.take().expect("the answer pipe");
+    let mut script = answers.join("\n");
+    script.push('\n');
+    answer_pipe
+        .write_all(script.as_bytes())
+        .expect("write the wizard's answers");
+    answer_pipe.flush().expect("flush the answers");
+
+    let finished = Arc::new(AtomicBool::new(false));
+    let holder = {
+        let finished = Arc::clone(&finished);
+        std::thread::spawn(move || {
+            while !finished.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            drop(answer_pipe);
+        })
+    };
+    let output = child.wait_with_output().expect("wait for the pty session");
+    finished.store(true, Ordering::Relaxed);
+    holder.join().expect("the answer-pipe holder");
+    (
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+/// The wizard without a console: `read_line` is answered by an ordinary pipe
+/// (the whole custom-provider questionnaire is), and only the API-key prompt,
+/// which reads the console device, fails — with the CLI's own message, not a
+/// panic and not a hang. This is the half of `StdioPrompter` a pipe can reach.
+#[test]
+fn config_wizard_reports_the_missing_console_at_the_secret_prompt() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let home = tempfile::tempdir().expect("tempdir");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_future"))
+        .arg("config")
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("FUTURE_AGENT_GRPC_ADDR", "127.0.0.1:1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn future config");
+    // Everything up to and including "Base URL" — the answers `read_line`
+    // consumes over a pipe.
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(b"2\nrevprobe\n\n\nhttp://127.0.0.1:9/v1\n")
+        .expect("write the wizard's answers");
+    let output = child.wait_with_output().expect("wait");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout.contains("API key (leave blank for a keyless local endpoint):"),
+        "every piped answer was consumed before the secret prompt: {stdout}"
+    );
+    assert!(
+        stderr.contains("Failed to read API key"),
+        "the missing console is named: {stderr}"
+    );
+    assert!(
+        !home
+            .path()
+            .join(".future")
+            .join("agent")
+            .join("models.json")
+            .exists(),
+        "an aborted wizard configures nothing"
+    );
+}
+
+/// The same wizard under a real console: the API key is read, the provider is
+/// written by the CLI's own validated, atomic writer (no agent is reachable on
+/// the isolated home), and both files it names are asserted.
+#[cfg(unix)]
+#[test]
+fn config_wizard_writes_a_custom_provider_when_no_agent_is_running() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let (code, stdout, stderr) = run_under_a_pty(
+        &["config"],
+        CUSTOM_WIZARD_ANSWERS,
+        home.path(),
+        &[("FUTURE_AGENT_GRPC_ADDR", "127.0.0.1:1")],
+    );
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains("Configured custom provider 'revprobe' with 2 model(s): revprobe/rev-model, revprobe/rev-vision."),
+        "{stdout}"
+    );
+    let models: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            home.path()
+                .join(".future")
+                .join("agent")
+                .join("models.json"),
+        )
+        .expect("models.json was written"),
+    )
+    .expect("models.json is json");
+    assert_eq!(
+        models["providers"]["revprobe"]["api"], "openai-completions",
+        "{models}"
+    );
+    assert_eq!(
+        models["providers"]["revprobe"]["baseUrl"],
+        "http://127.0.0.1:9/v1"
+    );
+    assert_eq!(
+        models["providers"]["revprobe"]["models"][0]["id"],
+        "rev-model"
+    );
+    assert_eq!(
+        models["providers"]["revprobe"]["models"][0]["maxTokens"],
+        16_384
+    );
+    // Both `modalities` shapes: a text-only model, and one that takes images.
+    assert_eq!(
+        models["providers"]["revprobe"]["models"][0]["modalities"],
+        serde_json::json!(["text"]),
+        "{models}"
+    );
+    assert_eq!(
+        models["providers"]["revprobe"]["models"][1]["modalities"],
+        serde_json::json!(["text", "image"]),
+        "{models}"
+    );
+    let auth: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.path().join(".future").join("agent").join("auth.json"))
+            .expect("auth.json was written"),
+    )
+    .expect("auth.json is json");
+    assert_eq!(auth["revprobe"]["key"], "sk-revprobe-secret", "{auth}");
+    assert_eq!(auth["revprobe"]["type"], "api_key");
+}
+
+/// The same wizard with the agent up: the provider is registered through the
+/// agent's sole-writer RPC (`upsert_provider`, carrying the `provider_rpc`
+/// projection), the CLI writes no file of its own, and the whole projection —
+/// not just the call — is asserted field by field.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn config_wizard_saves_through_a_running_agent() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let (addr, seen) = spawn_mock_agent(r#"{"builtin":[]}"#, false).await;
+    let (code, stdout, stderr) = run_under_a_pty(
+        &["config"],
+        CUSTOM_WIZARD_ANSWERS,
+        home.path(),
+        &[("FUTURE_AGENT_GRPC_ADDR", addr.as_str())],
+    );
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains("Configured custom provider 'revprobe' with 2 model(s): revprobe/rev-model, revprobe/rev-vision."),
+        "{stdout}"
+    );
+    assert!(
+        !home
+            .path()
+            .join(".future")
+            .join("agent")
+            .join("models.json")
+            .exists(),
+        "the agent is the provider writer, not the CLI"
+    );
+    let seen = seen.lock().expect("seen");
+    let upserts: Vec<_> = seen
+        .iter()
+        .filter(|command| command.r#type == "upsert_provider")
+        .collect();
+    assert_eq!(upserts.len(), 1, "exactly one provider upsert");
+    let provider = upserts[0]
+        .provider_config
+        .as_ref()
+        .expect("upsert_provider carries the provider");
+    assert_eq!(provider.id, "revprobe");
+    assert_eq!(provider.name, "revprobe");
+    assert_eq!(provider.api, "openai-completions");
+    assert_eq!(provider.base_url, "http://127.0.0.1:9/v1");
+    assert_eq!(provider.api_key, "sk-revprobe-secret");
+    assert!(
+        provider.replace_models,
+        "the wizard's provider replaces its models"
+    );
+    assert_eq!(provider.models.len(), 2);
+    assert_eq!(provider.models[0].id, "rev-model");
+    assert_eq!(provider.models[0].modalities, vec!["text".to_string()]);
+    assert_eq!(provider.models[0].context_window, 128_000);
+    assert_eq!(provider.models[0].max_tokens, 16_384);
+    assert_eq!(provider.models[1].id, "rev-vision");
+    assert_eq!(
+        provider.models[1].modalities,
+        vec!["text".to_string(), "image".to_string()]
+    );
+}
+
+/// A stand-in for the Future platform during `auth login`: the two POSTs the
+/// device-code flow makes, with fixed answers, and a record of the paths it was
+/// asked for (so a login that never consulted the platform cannot pass).
+struct MockPlatform {
+    base_url: String,
+    paths: Arc<Mutex<Vec<String>>>,
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl MockPlatform {
+    fn start() -> Self {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the mock platform");
+        let addr = listener.local_addr().expect("mock platform addr");
+        listener
+            .set_nonblocking(true)
+            .expect("non-blocking listener");
+        let paths = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = {
+            let paths = Arc::clone(&paths);
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let (mut socket, _) = match listener.accept() {
+                        Ok(connection) => connection,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                            continue;
+                        }
+                        Err(_) => break,
+                    };
+                    // The request line is all this mock needs: both answers are
+                    // fixed and `login` sends no other request.
+                    let mut request = [0u8; 4096];
+                    let read = socket.read(&mut request).unwrap_or(0);
+                    let head = String::from_utf8_lossy(&request[..read]).into_owned();
+                    let path = head
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split_whitespace().nth(1))
+                        .unwrap_or_default()
+                        .to_string();
+                    paths.lock().expect("paths").push(path.clone());
+                    let (status, body) = match path.as_str() {
+                        "/client/v1/oauth/device/code" => (
+                            "200 OK",
+                            r#"{"device_code":"rev-device-code","user_code":"REV-CODE","verification_uri":"http://127.0.0.1:1/verify","expires_in":60,"interval":0}"#,
+                        ),
+                        "/client/v1/oauth/device/token" => (
+                            "200 OK",
+                            r#"{"api_key":"k-from-the-mock-platform","api_key_id":"rev-key-id","token_type":"bearer"}"#,
+                        ),
+                        _ => ("404 Not Found", r#"{"message":"no such endpoint"}"#),
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = socket.write_all(response.as_bytes());
+                }
+            })
+        };
+        Self {
+            base_url: format!("http://127.0.0.1:{}", addr.port()),
+            paths,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    fn requested_paths(&self) -> Vec<String> {
+        self.paths.lock().expect("paths").clone()
+    }
+
+    fn stop(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// `future auth login` against `base_url`, with an isolated home and no way to
+/// spawn a browser: `PATH` points at an empty directory, so the platform opener
+/// (`open` / `xdg-open`) cannot be resolved and the CLI prints the verification
+/// URL instead of opening a window on whoever runs the suite. The callers
+/// assert that printed line, which is what proves no browser was launched.
+/// `FUTURE_AGENT_GRPC_ADDR` is always set — to a dead loopback port by default —
+/// so the agent probe cannot depend on the host's own agent.
+fn login_against(
+    base_url: &str,
+    home: &Path,
+    agent_addr: Option<&str>,
+) -> (Option<i32>, String, String) {
+    let empty_path = home.join("empty-path");
+    std::fs::create_dir_all(&empty_path).expect("empty PATH directory");
+    let output = Command::new(env!("CARGO_BIN_EXE_future"))
+        .args(["auth", "login", "--url", base_url])
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("PATH", &empty_path)
+        .env(
+            "FUTURE_AGENT_GRPC_ADDR",
+            agent_addr.unwrap_or("127.0.0.1:1"),
+        )
+        .output()
+        .expect("run future auth login");
+    (
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+/// `save_auth` without an agent: the credential the platform handed out is
+/// written to `auth.json` by the CLI's own writer, and the fallback line says
+/// so. The two request paths are asserted, so a login that never consulted the
+/// platform cannot pass by writing a file for another reason.
+#[test]
+fn auth_login_writes_the_key_itself_when_no_agent_is_running() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let platform = MockPlatform::start();
+    let (code, stdout, stderr) = login_against(&platform.base_url, home.path(), None);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains("Open this URL in your browser:"),
+        "the opener is unavailable in this fixture: {stdout}"
+    );
+    assert!(stdout.contains("Waiting for authorization..."), "{stdout}");
+    assert!(
+        stdout.contains("Future Agent is not running — it will pick up the key when it starts."),
+        "the fallback names why the file is written: {stdout}"
+    );
+    assert_eq!(
+        platform.requested_paths(),
+        vec![
+            "/client/v1/oauth/device/code".to_string(),
+            "/client/v1/oauth/device/token".to_string()
+        ]
+    );
+    let stored: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.path().join(".future").join("agent").join("auth.json"))
+            .expect("auth.json was written"),
+    )
+    .expect("auth.json is json");
+    assert_eq!(
+        stored["future"]["key"], "k-from-the-mock-platform",
+        "{stored}"
+    );
+    assert_eq!(
+        stored["future"]["base_url"],
+        format!("{}/api", platform.base_url),
+        "the stored base URL is the platform's /api endpoint: {stored}"
+    );
+    assert_eq!(stored["future"]["type"], "api_key");
+    platform.stop();
+}
+
+/// The same login with the agent up: the credential goes through the agent's
+/// sole-writer RPC, and the CLI writes no file of its own (the agent owns
+/// `auth.json`), which is the assertion that tells the two branches apart.
+#[tokio::test(flavor = "multi_thread")]
+async fn auth_login_saves_through_a_running_agent() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let platform = MockPlatform::start();
+    let (addr, seen) = spawn_mock_agent(r#"{"builtin":[]}"#, false).await;
+    let (code, stdout, stderr) =
+        login_against(&platform.base_url, home.path(), Some(addr.as_str()));
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.contains("Saved Future API key to"), "{stdout}");
+    assert!(
+        !stdout.contains("Future Agent is not running"),
+        "the agent took the credential: {stdout}"
+    );
+    assert!(
+        !home
+            .path()
+            .join(".future")
+            .join("agent")
+            .join("auth.json")
+            .exists(),
+        "the agent is the sole writer"
+    );
+    let seen = seen.lock().expect("seen");
+    let mutations: Vec<_> = seen
+        .iter()
+        .filter(|command| command.r#type == "set_auth")
+        .collect();
+    assert_eq!(mutations.len(), 1, "exactly one credential mutation");
+    let update = mutations[0]
+        .auth_update
+        .as_ref()
+        .expect("set_auth carries an AuthUpdate");
+    assert_eq!(update.provider, "future");
+    assert_eq!(update.key, "k-from-the-mock-platform");
+    assert_eq!(update.base_url, format!("{}/api", platform.base_url));
+    assert!(!update.clear_key, "the login sets a key: {update:?}");
+    drop(seen);
+    platform.stop();
 }

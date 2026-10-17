@@ -634,6 +634,30 @@ describe("mentionEditor # session menu", () => {
     expect(highlightedIndex()).toBe(0);
   });
 
+  /**
+   * ↓ walks the session menu forward, and the list is a list, not a fixed pair:
+   * the first press highlights the *next* row rather than the first or the last.
+   *
+   * (↑ is asserted above; the two directions are separate branches, and only the
+   * upward one was covered — so "the menu responds to the arrows" was a claim
+   * about half the control.)
+   */
+  it("walks the session menu forward with ArrowDown", () => {
+    render({ sessions: SESSIONS });
+    editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
+    type("#");
+    expect(highlightedIndex()).toBe(0);
+
+    press("ArrowDown");
+    expect(highlightedIndex()).toBe(1);
+
+    // boundary: past the last row wraps back to the first, as ↑ wraps the other
+    // way — the reader is never stuck at an end of the list.
+    press("ArrowDown");
+    press("ArrowDown");
+    expect(highlightedIndex()).toBe(0);
+  });
+
   it("closes on Escape and does not fire for a bare # in prose", () => {
     render({ sessions: SESSIONS });
     editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;

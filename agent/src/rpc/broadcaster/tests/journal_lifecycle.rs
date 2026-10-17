@@ -365,6 +365,29 @@ fn flush_journal_puts_the_buffered_batch_in_the_store() {
     assert_eq!(b.read_journal("run-flush").unwrap().len(), 1);
 }
 
+/// A broadcaster that never bound a journal is a supported state — the doc on
+/// `configure_journal` says tests and short-lived utility broadcasters may stay
+/// memory-only on purpose. Both journal lifecycle calls a host makes anyway
+/// (the per-run completion flush and the drain's shutdown) must therefore be
+/// no-ops that succeed, rather than reporting a failure the caller cannot fix.
+#[test]
+fn journal_lifecycle_calls_are_no_ops_without_a_configured_journal() {
+    let broadcaster = SseBroadcaster::new();
+    assert!(
+        broadcaster.flush_journal().is_ok(),
+        "flushing a memory-only broadcaster must succeed"
+    );
+    assert!(
+        broadcaster.shutdown_journal().is_ok(),
+        "shutting down a memory-only broadcaster must succeed"
+    );
+    // Shutdown is terminal and still idempotent: a second call, and a flush
+    // afterwards, must not resurrect a journal or report an error.
+    assert!(broadcaster.shutdown_journal().is_ok());
+    assert!(broadcaster.flush_journal().is_ok());
+    assert_eq!(broadcaster.journal_commit_count(), 0);
+}
+
 #[test]
 fn attach_beyond_ring_without_journal_returns_projection() {
     let broadcaster = SseBroadcaster::new();

@@ -971,11 +971,7 @@ mod tests {
         let models = root["providers"]["acme"]["models"].as_array().unwrap();
         assert_eq!(models.len(), 1);
         assert_eq!(models[0]["id"], json!("new"));
-        assert!(
-            models[0].get("compat").is_none(),
-            "a new id starts clean: {:?}",
-            models[0]
-        );
+        assert!(models[0].get("compat").is_none(), "a new id starts clean");
     }
 
     #[test]

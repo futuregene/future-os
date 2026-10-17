@@ -435,4 +435,41 @@ mod tests {
         assert!(plan.writable_roots.contains(&parent));
         assert!(!plan.writable_roots.contains(&child));
     }
+
+    /// A per-run file grant (`additional_permissions` with file scope) compiles
+    /// to a *literal* matcher, and NTFS cannot express a single file as a
+    /// subtree root. It must therefore be surfaced as an unenforceable write
+    /// rule — naming exactly that one path — instead of being widened into the
+    /// directory it lives in.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_literal_file_grant_stays_visible_as_an_unenforceable_write_rule() {
+        let ws = temp_workspace();
+        let workspace = crate::sandbox::paths::canonicalize_lenient(Path::new(&ws));
+        let target = workspace.join("report.txt");
+        std::fs::write(&target, "x").unwrap();
+        let rules = crate::sandbox::rules::RuleSet::resolve_isolated_with_home(
+            &workspace,
+            &workspace.join("home"),
+        );
+        let rules = rules.with_execution_grants(&[crate::sandbox::file_request::FileTarget {
+            path: target.clone(),
+            scope: super::super::windows_request::WriteScope::File,
+            access: Access::Write,
+        }]);
+        let sandbox = ResolvedSandbox::with_rules_for_test(rules);
+        let plan = build_plan(&sandbox);
+
+        let expected = format!("^{}$", regex::escape(&target.to_string_lossy()));
+        let found = plan.unsupported_write_globs.iter().any(|rule| {
+            rule.decision == Decision::Allow
+                && rule.access == Access::Write
+                && matches!(&rule.matcher, WindowsRuleMatcher::Regex(expression) if *expression == expected)
+        });
+        assert!(found, "literal grant must stay visible: {plan:?}");
+        assert!(
+            !plan.write_carveouts.iter().any(|rule| rule.path == target),
+            "a single file must not become a subtree carveout: {plan:?}"
+        );
+    }
 }

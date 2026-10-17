@@ -520,3 +520,523 @@ two red-line crates) · `lines-100-or-waived` (the gate is structurally green; �
 rows where "waived" is currently a false statement) · `dimensions` (`verify.py dimensions` exit 0;
 each module doc carries its own matrix, and the only dimension claim I attacked — tau-remote's
 concurrency rows — names the exact interleaving each test performs).
+
+---
+
+# rev-rust — round 2 (cov100): adversarial review of the channels residue (REV-CH)
+
+Reviewer `rev-ch`, session `20261016-184836-99d249c6a5b94bcda68cd47d928fb9a6`, 2026-10-16.
+Host macOS 26.6.2 arm64, rustc 1.97.0 (the pinned toolchain). Subject: the frozen channels unit
+(`todo_92651f89c2af`) — `docs/testing/module-channels.md` §10.4 (24 residual lines) and the per-line
+page `docs/architecture/channels-test-coverage.md`. Nothing under `channels/`, and neither reviewed
+doc, was edited; the only write target of this review is this file. Counterexample tests were built
+in a scratch tree (`/tmp/rev-ch`, made with `git archive HEAD` plus a copy of the working tree's
+`channels/src` and `channels/tests`), never inside the campaign worktree.
+
+## 0. Verdict
+
+**16 of the 24 rows FALL; 8 SURVIVE.** A fallen row here means: an input exists that executes the
+line, so the line belongs in the "add a test" column, not the "registered unreachable" column. By the
+ledger's own categories: **`unreachable-in-this-environment` fell 9 of 9**, **`attribution-artifact` 3
+of its 4**, **`unreachable-by-construction` 4 of its 10**; `platform-unmeasured` (1 line) and the four
+control-flow/invariant rows stand.
+
+| # | line | registered as | input that executes it (probe) | frozen DA → probe DA |
+|---|---|---|---|---|
+| 1 | `lib.rs` 172 | unreachable-by-construction | await the supervisor `JoinHandle` with the starter's shutdown pre-fired | 0 → 1 |
+| 2 | `lib.rs` 173 | unreachable-by-construction | same | 0 → 1 |
+| 3 | `lib.rs` 190 | unreachable-by-construction | same | 0 → 1 |
+| 4 | `lib.rs` 191 | unreachable-by-construction | same | 0 → 1 |
+| 5 | `feishu/mod.rs` 111 | attribution-artifact | let the 5 s WebSocket backoff elapse (no shutdown during it) | 0 → 1 |
+| 6 | `dingtalk/mod.rs` 110 | attribution-artifact | same | 0 → 1 |
+| 7 | `feishu/prompt_loop.rs` 449 | attribution-artifact | errored `AgentEnd` with `streaming = false` | 0 → 1 |
+| 8 | `providers/slack.rs` 934 | unreachable-in-this-environment | run the **binary** (non-test cfg) with Slack's Events API fallback enabled | 0 → 1 |
+| 9 | `providers/slack.rs` 935 | unreachable-in-this-environment | same | 0 → 1 |
+| 10 | `providers/slack.rs` 936 | unreachable-in-this-environment | same | 0 → 1 |
+| 11 | `transport/webhook.rs` 149 | unreachable-in-this-environment | `RLIMIT_NOFILE` = current usage, fd table filled, one connection queued, in a dedicated test process | 0 → 1 |
+| 12 | `transport/webhook.rs` 150 | unreachable-in-this-environment | same | 0 → 1 |
+| 13 | `transport/webhook.rs` 151 | unreachable-in-this-environment | same | 0 → 1 |
+| 14 | `test_support.rs` 780 | unreachable-in-this-environment | `dup2(/dev/null)` over the socket's own fd → `shutdown(Write)` answers ENOTSOCK | 0 → 1 (the panic fires) |
+| 15 | `providers/mattermost.rs` 552 | unreachable-in-this-environment | mock script `[WaitForReceived{1}, SendPing, ResetTcp]` | 0 → 1 |
+| 16 | `providers/imessage.rs` 391 | unreachable-in-this-environment | PATH shim: an `osascript` that exits 0 | 0 → 1 |
+
+| line | registered as | why it stands |
+|---|---|---|
+| `feishu/mod.rs` 95, `dingtalk/mod.rs` 94 | unreachable-by-construction | `AgentClient::wait_for_disconnect` has no `Ok` path at all (`grpc_client.rs` 119-125: it drains the stream and then returns `Err(anyhow!("Agent connection closed"))`); the `Err` twin is the one with a count (96 / 95 → 1). No input can select the `Ok(())` arm. |
+| `providers/mattermost.rs` 527, `providers/slack.rs` 733 | unreachable-by-construction | 10 session constructions (close / fin / close+fin / ping+reset, both providers) all reach the `Close` arm (555 / 775), the read-error arm (557 / 777), the challenge bail (516) or the pong bail (552/772) — never the `None` arm. The raw stream probe shows why: `[Close]` then (peer open) the next poll *times out*; `[Close, FIN]` yields `Close` **then** `None`; `[FIN]` alone is `Err(ResetWithoutClosingHandshake)`; a reset is `Err(Connection reset)`. `None` can only be produced after the `Close` message has already been handed to the loop, and the loop returns at that arm. |
+| `providers/qq.rs` 626 | attribution-artifact | measurement refutes the row's own "untested hypothesis" (see §3.10): the due-false edge was taken 52 times in the frozen run and 11 more times in my control, and the line did not move. The row's *category* is wrong, the line is not coverable as written. |
+| `outbox.rs` 210 | unreachable-by-construction | executed enumeration: every definition `Outbox::context` can resolve is either implemented or absent from the registry (the native ids bail one line earlier, at 203-208), so `ensure_usable()` cannot fail on this path. |
+| `providers/imessage.rs` 282 | platform-unmeasured | `platform_supported()` is `cfg!(target_os = "macos")` (`imessage.rs` 256-259); on the measured host the arm is statically false and only a Windows/Linux build can execute it. |
+| `test_support.rs` 770 | unreachable-by-construction | needs a `MaybeTlsStream::Rustls`; all three `kill_write_half` call sites (`slack_tests.rs` 1477, 1503, `mattermost_tests.rs` 652) dial the plain `ws://` mock, and the arm is a deliberate `unreachable!` panic. Source-level result only — see §5. |
+
+## 1. The frozen artifact, re-verified before attacking it
+
+```
+$ shasum -a 256 /tmp/chan-lcov-r2final.info
+3634680c9c9c6388e8f20b5c4130b7e0fbaaafdfbd9494d67e887077978d634b   # matches §10.1
+$ find channels -newer /tmp/chan-lcov-r2final.info     # empty: no source newer than the report
+$ python3 .future/cov100/covlines.py total  /tmp/chan-lcov-r2final.info --under .worktrees/cov100-r2/channels/src
+covered=25716 measured=25740 uncovered=24 lines%=99.9068
+$ python3 .future/cov100/covlines.py detail /tmp/chan-lcov-r2final.info --under .worktrees/cov100-r2/channels/src
+dingtalk/mod.rs: 94,110 · feishu/mod.rs: 95,111 · feishu/prompt_loop.rs: 449 · lib.rs: 172,173,190,191 ·
+outbox.rs: 210 · providers/imessage.rs: 282,391 · providers/mattermost.rs: 527,552 · providers/qq.rs: 626 ·
+providers/slack.rs: 733,934,935,936 · test_support.rs: 770,780 · transport/webhook.rs: 149,150,151
+```
+
+The **inventory** in §10.4 is exact — same 24 lines, same files, and the `DA` counts for the lines I
+quote below (e.g. `516 → 2`, `147 → 33`, `778 → 2 / 779 → 1`) reproduce the rows'
+parenthesised evidence — one exception, the `qq.rs` row, which quotes `625 → 54` where the frozen
+artifact reads 52 (§3.10, where it changes nothing about the verdict). What I attacked is the
+**categories**, and 16 of them do not hold.
+
+The review's own machine check (the per-line tripwire, run against the *frozen* report so it checks my
+line inventory rather than my probes):
+
+```
+$ python3 .future/cov100/reconcile.py --label rev-ch-frozen \
+    --report /tmp/chan-lcov-r2final.info \
+    --scope /Users/geilige/future-os/.worktrees/cov100-r2/channels/src \
+    --doc docs/testing/review-rust.md --section "REV-CH"
+[rev-ch-frozen] files with uncovered lines=11 uncovered lines=24
+  mentioned in review-rust.md: 24
+  MISSING (uncovered, not mentioned): 0                      # exit 0; no STALE
+```
+
+The probe tests quoted in §3 live in the scratch tree `/tmp/rev-ch` (ephemeral; §6 rebuilds it), and
+the report was produced from the frozen sources with the campaign worktree untouched.
+
+## 2. Method
+
+* Scratch tree: `git archive HEAD | tar -x -C /tmp/rev-ch`, then the working tree's `channels/src`
+  and `channels/tests` copied over it (the frozen sources; `git status` is clean for `channels/`, so
+  HEAD and the measured tree are the same bytes).
+* Only `rev_probe_*` tests were added there: ten existing files (`providers/{mattermost,slack,qq,imessage}_tests.rs`,
+  `transport/webhook.rs`, `feishu/mod.rs`, `feishu/prompt_loop.rs`, `dingtalk/mod.rs`, `outbox.rs`, `lib.rs`),
+  one new integration test (`channels/tests/rev_probe_emfile.rs`) and one new test in
+  `channels/tests/channel_bin.rs`. The campaign worktree's `channels/` was never written to.
+* One instrumented target dir (`/tmp/rev-ch-target`, outside both worktrees), `HOME=/tmp/rev-ch-home`,
+  `PATH` on the pinned toolchain, `ulimit -n 10240`, `-j 4`; filtered with `-- rev_probe` so the
+  shipped suite is not disturbed and the report isolates my inputs.
+* Four report-producing runs (all green, `--no-fail-fast`): full probe suite ×3
+  (`/tmp/rev-ch-lcov{,2,3}.info`), one per-test run for the mattermost ordering question
+  (`/tmp/rev_probe_mm_challenge_then_ping_then_reset.info`), and one region-level JSON export for the
+  `lib.rs` pair (`/tmp/rev-ch-sup.json`).
+* Per-line verdicts come from `DA:<line>,0` in those reports (`.future/cov100/covlines.py` /
+  a 30-line local reader), never from `summary.lines`.
+
+## 3. Per line: mechanism as claimed, the attack, and what was observed
+
+### 3.1 `lib.rs` 172, 173, 190, 191 — FELL
+
+**As claimed.** "The `inspect_err` closures of the Feishu and DingTalk supervisors … `run` has no
+`Err` return path … the other way a supervisor ends is `Started::stop` → `JoinHandle::abort`, which
+*drops* the future at an await point — a drop cannot run `inspect_err`."
+
+**Attempt.** All three statements were re-read and are true except the conclusion. `grep -n '?' ` over
+both run bodies (`feishu/mod.rs` 36-115, `dingtalk/mod.rs` 33-114) is empty, and `Started::stop`
+(`lib.rs` 117-132) does trigger + abort. But **nothing in the suite ever awaits those handles**:
+`stop()` aborts them. A test that takes the *other* ending — pre-fire the starter's shutdown and await
+the join handle — makes `run` return `Ok(())`, which is not an abort, so `.inspect_err(...)` is called
+on that value.
+
+```rust
+// added in the scratch tree (channels/src/lib.rs tests, rev_probe_supervisors_are_awaited_on_their_ok_path)
+let (started, _root) = start(config, "rev-probe-supervisor-ok").await;   // feishu + dingtalk enabled
+let Started { handles, shutdown, .. } = started;
+shutdown.trigger();
+for handle in handles { let _ = tokio::time::timeout(Duration::from_secs(5), handle).await; }
+```
+
+```
+$ cd /tmp/rev-ch && cargo llvm-cov -p future-channel --no-fail-fast --lcov \
+    --output-path /tmp/rev-ch-lcov3.info -j 4 -- rev_probe --nocapture    # all green, 15 + 1 + 1 passed
+channels/src/lib.rs: 172:1 173:1 190:1 191:1       (frozen report: 172:0 173:0 190:0 191:0)
+```
+
+Region-level export (`cargo llvm-cov --json -- rev_probe_supervisors_are_awaited_on_their_ok_path`)
+pins the nuance exactly: on line 172 the region at col 18 (the `inspect_err` **call**) is 1, the region
+at col 34 (the **closure body**) is 0 — same on 190. So the closure can indeed never log anything, but
+the *line* is not unreachable: the ledger's own metric reads 1. Both halves are a finding: the row is a
+coverage gap, and since `run` has no `Err` path the two `inspect_err` tails are dead weight worth
+deleting rather than testing.
+
+**Verdict: FELL** (line region executes with a test; the closure body stays dead).
+
+### 3.2 `feishu/mod.rs` 111, `dingtalk/mod.rs` 110 — FELL
+
+**As claimed.** `attribution-artifact`: "the `}` closing `if let Some(delay) = retry_delay { if
+wait_or_shutdown(...) { … return Ok(()) } }` … the body ran and its other edge was taken too:
+`run_reconnects_after_clean_close` makes `retry_delay` `None` and the line still does not move".
+
+**Attempt.** The "other edge" the author took is the *outer* `if let`'s false edge, which by
+construction skips the whole block and therefore cannot reach the inner statement's continuation. The
+edge the region needs is the **inner** `if wait_or_shutdown(delay, &shutdown)` being **false** — the
+5 s backoff elapsing with no shutdown — which no test in the suite ever lets happen (the two existing
+backoff tests cancel that wait: `110 → 2` in the frozen report is the `return Ok(())` half).
+
+```rust
+// channels/{feishu,dingtalk}/mod.rs tests, rev_probe_run_lets_the_websocket_backoff_elapse
+// WS bootstrap fails (500) → retry_delay = Some(5 s); sleep 6 s → the wait elapses → the loop
+// continues; assert the task is still alive, then shut it down and assert a clean Ok.
+```
+
+```
+$ cargo llvm-cov … -- rev_probe_run_lets_the_websocket_backoff_elapse   # feishu + dingtalk, both ok
+channels/src/feishu/mod.rs:   111:1        (frozen: 0)
+channels/src/dingtalk/mod.rs: 110:1        (frozen: 0)
+```
+
+**Verdict: FELL.** The §10.2b table's entry for this pair ("still 0 — falsified hypothesis") is wrong
+in both directions: the hypothesis tested was not the right edge, and the right edge costs a 6 s test.
+
+### 3.3 `feishu/prompt_loop.rs` 449 — FELL
+
+**As claimed.** `attribution-artifact`, with an "untested hypothesis for the next pass": an errored
+`AgentEnd` with no CardKit id (`behavior.streaming = false`).
+
+**Attempt.** Built exactly that fixture (same events as `agent_end_error_sends_error_card`, streaming
+off: `drive(&env, false, None)`, so `cardkit_card_id` is `None`).
+
+```
+$ cargo llvm-cov … -- rev_probe_errored_agent_end_without_a_cardkit_card
+rev_probe prompt_loop streaming-off error replies: ["{...\"update_multi\":false...\"model exploded\"...}"]
+channels/src/feishu/prompt_loop.rs: 449:1     (frozen: 0; neighbours 442-448 → 3, 450 → 52)
+```
+
+The author's own hypothesis was right; only the fixture was missing. Note the sibling brace at 432
+carries 4 (the *outer* `if needs_flush` false edge), which is how the row was mis-read as an artifact.
+
+**Verdict: FELL.**
+
+### 3.4 `providers/slack.rs` 934, 935, 936 — FELL
+
+**As claimed.** `unreachable-in-this-environment`: "`#[cfg(not(test))] webhook_test_slot` … the non-test
+variant only runs if a *non-test* code path starts Slack's events webhook, and no process test
+configures one."
+
+**Attempt.** That last clause is a fixture gap, not an environment limit: the non-test code path is the
+**binary**, and `channels/tests/channel_bin.rs` already knows how to run it with an isolated HOME. One
+process test, no platform, no network (a failing `auth.test` is warned and ignored:
+
+```rust
+// channels/tests/channel_bin.rs, rev_probe_slack_events_webhook_starts_in_the_binary (unix)
+config = r#"{"agent": {"grpc_addr": "http://127.0.0.1:1"},
+            "providers": {"slack": {"enabled": true, "bot_token": "xoxb-x",
+                                    "signing_secret": "shh", "webhook_port": 0}}}"#;
+spawn the binary, wait 10 s, SIGINT (sigint_until_exit), assert exit 0.
+```
+
+```
+$ cargo llvm-cov … -- rev_probe           # the bin target runs it
+test rev_probe_slack_events_webhook_starts_in_the_binary ... ok     (1 passed, 10.04 s)
+channels/src/providers/slack.rs: 858:1 934:1 935:1 936:1     (frozen: 858:3 934:0 935:0 936:0)
+```
+
+**Verdict: FELL** — three lines, one process test, the same harness the unit already uses.
+
+### 3.5 `transport/webhook.rs` 149, 150, 151 — FELL
+
+**As claimed.** `unreachable-in-this-environment`: "needs the listener to break or the process to run
+out of file descriptors — not reproducible deterministically in-process, and forcing it (fd
+exhaustion, closing the listener's fd behind `serve`'s back) would break other tests running in
+parallel."
+
+**Attempt 1 (closing the fd) — the *other* mechanism holds, this one does not.** A unit test binding an
+ephemeral port, `dup2(/dev/null)` over the listener's own fd (atomic, so the number is never unowned),
+then `serve()` with a 300 ms shutdown: `serve` returned `Ok(())` and lines 149-151 stayed 0. The reason
+is worth recording: tokio's `TcpListener::accept` waits for a reactor readiness event, and replacing the
+fd removes the epoll/kqueue registration, so the future *pends* instead of reporting an error — a closed
+fd does not produce an accept error here.
+
+**Attempt 2 (fd exhaustion, in a dedicated process) — succeeds.** The "would break tests running in
+parallel" objection is a property of running it *inside* the shared lib test binary; as its own
+integration test it is contained (`RLIMIT_NOFILE` is per-process, and the process ends with the test):
+
+```rust
+// channels/tests/rev_probe_emfile.rs (new file, one test, own process)
+let server = WebhookServer::bind("127.0.0.1:0").await?;
+let _client = std::net::TcpStream::connect(server.local_addr()?)?;   // one connection queued
+setrlimit(RLIMIT_NOFILE, current_open_fds + 1);                      // then fill the table
+while File::open("/dev/null").is_ok() {}                             // next allocation fails
+spawn a 500 ms shutdown timer; serve() …
+```
+
+```
+$ cargo llvm-cov … -- rev_probe
+rev_probe emfile: used=16 held=5 next allocation must fail
+rev_probe emfile serve outcome: Ok(Ok(()))
+test rev_probe_accept_fails_when_the_process_runs_out_of_fds ... ok      (0.51 s)
+channels/src/transport/webhook.rs: 140:4 141:4 142:4 144:2 147:1 148:0 149:1 150:1 151:1
+                                    (frozen: 140:51 141:51 142:51 144:18 147:33 148:33 149:0 150:0 151:0)
+```
+
+`147 → 1` / `148 → 0` show the `match` entered and the `Ok` arm never taken: the accept really did
+return `Err`. Reproduced in both full probe runs (runs 2 and 3).
+
+**Verdict: FELL** (3 lines; the honest note is that the fixture is invasive — a whole test process with
+a lowered fd limit — so the supervisor may reasonably prefer to keep the waiver and fix its *reason*
+instead of its classification).
+
+### 3.6 `test_support.rs` 780 — FELL
+
+**As claimed.** `unreachable-in-this-environment`: the `panic!` arm of `expect_write_half_closed` fires
+"only when `shutdown(Write)` fails with a kind other than `NotConnected` … a third kind needs a socket
+state the harness cannot build".
+
+**Attempt.** The harness *can* build it: replace the socket's own descriptor with `/dev/null`
+(`dup2`, one atomic step, the number stays owned by the test) and hand the socket to `kill_write_half`.
+`shutdown(2)` then answers ENOTSOCK — a kind other than `NotConnected` — and the line fires.
+
+```rust
+#[cfg(unix)] #[tokio::test(flavor = "multi_thread")]
+#[should_panic(expected = "shutdown the client socket's write half")]
+async fn rev_probe_kill_write_half_reports_a_non_notconnected_error() { … dup2 … kill_write_half(&socket) }
+```
+
+```
+$ cargo llvm-cov … -- rev_probe
+thread '…rev_probe_kill_write_half_reports_a_non_notconnected_error' panicked at channels/src/test_support.rs:780:27:
+shutdown the client socket's write half: Socket operation on non-socket (os error 38)
+test … - should panic ... ok
+channels/src/test_support.rs: 770:0 780:1      (frozen: 770:0 780:0)
+```
+
+**Verdict: FELL.** The panic message is the line's own text, at its own line number.
+
+### 3.7 `providers/mattermost.rs` 552 — FELL
+
+**As claimed.** `unreachable-in-this-environment`: "the mock can order *frames* but cannot kill the
+client's write half at that instant: `test_support::kill_write_half` needs the socket, which the
+session owns by then, and the reset scripts make the earlier authentication write fail instead".
+
+**Attempt.** No write-half trick is needed. Order the *frames* so the mock resets **after** it has
+received the auth challenge (so the challenge write demonstrably succeeded) and **after** it has sent a
+ping: the client reads the ping and its pong write then fails.
+
+```
+mattermost script: [WaitForReceived{count:1, timeout:5s}, SendPing(b"keepalive"), ResetTcp]
+
+$ cargo llvm-cov … -- rev_probe_mm_challenge_then_ping_then_reset
+rev_probe mattermost[isolated-challenge-reset-then-ping]: Err(mattermost websocket is not writable)
+channels/src/providers/mattermost.rs: 511:1 516:0 550:1 551:1 552:1 557:0     (516:0 proves it is not the challenge write)
+```
+
+Hit in all three full probe runs and in the isolated run (`552 → 1` each time; `516` was 2, 1, 0
+respectively, i.e. the unordered reset scripts are the racy ones, the ordered one is not).
+
+**Verdict: FELL.**
+
+### 3.8 `providers/imessage.rs` 391 — FELL
+
+**As claimed.** `unreachable-in-this-environment`: "Reaching it runs the real `osascript` and would send
+a real iMessage to a real handle."
+
+**Attempt.** A PATH shim — the ordinary way a test makes an external tool succeed — reaches the
+product's own success path with no message sent:
+
+```rust
+let shim = tmp.join("osascript"); std::fs::write(&shim, "#!/bin/sh\nexit 0\n"); chmod 0o755
+std::env::set_var("PATH", format!("{}:{}", tmp.display(), old));
+macos::send("+15551230000", "rev probe").await   // → Ok(())
+```
+
+```
+rev_probe imessage send with a zero-exit osascript: Ok(())
+channels/src/providers/imessage.rs: 282:0 391:1        (frozen: 282:0 391:0)
+```
+
+**Verdict: FELL.** (The predicate-arm line 282 next to it stands — see §3.13.)
+
+### 3.9 `providers/mattermost.rs` 527 and `providers/slack.rs` 733 — SURVIVED
+
+**As claimed.** `unreachable-by-construction`: "`None` is only produced after a drained close handshake,
+and tungstenite yields the `Close` message **first** — the session returns at the `Ok(WsMessage::Close(_))`
+arm above and never reaches the `None` test. A half-close *without* a close frame is not `None` but
+`Err(Protocol(ResetWithoutClosingHandshake))`".
+
+**Attempt.** First the library-level sequence, with a raw `ws::connect` + `SplitSink`/`SplitStream`
+(no session), printing everything the stream yields:
+
+```
+rev_probe raw[close_frame_only]: ["msg:Close(None)", "timeout"]
+rev_probe raw[close_then_fin]:  ["msg:Close(None)", "NONE"]
+rev_probe raw[fin_only]:        ["err:WebSocket protocol error: Connection reset without closing handshake"]
+rev_probe raw[reset]:           ["err:IO error: Connection reset by peer (os error 54)"]
+```
+
+So the claim is right but for a sharper reason than stated: after `Close` the stream does not even
+yield `None` while the peer keeps the connection open (the poll pends); `None` needs the close
+handshake *and* the peer's FIN, i.e. it can only appear after the `Close` message has already been
+handed to the loop. Then ten real session constructions:
+
+```
+mattermost: [Close]·[Close,FIN]·[FIN]·[Close+FIN] → "closed by the server" (555) ×2,
+            "read failed: ResetWithoutClosingHandshake" (557) ×1, challenge bail (516)…
+slack:      [Close]·[FIN]·[Close,FIN]·[Ping,Reset] → "closed by the platform" (775), "read failed" (777),
+            "socket is not writable" (773)
+→ the `else` line itself was reached by every construction (526: 27 in the frozen run / 5 in mine;
+732: 14 / 4), while 527:0 and 733:0 in both.
+```
+
+**Verdict: SURVIVED** (state the input and how it failed to reach the line: the ten scripts above; the
+`None` arm needs a stream that yields `None` before any `Close`, which tungstenite cannot produce for a
+fresh client socket).
+
+### 3.10 `providers/qq.rs` 626 — SURVIVED, with the row's mechanism corrected
+
+**As claimed.** `attribution-artifact`: "the `}` closing the heartbeat branch: 624 → 3, 625 → 54,
+628 → 111 … **Untested hypothesis:** a tick on which `due` is false would take the other edge; the QQ
+heartbeat tests have no fake clock, so this was not attempted."
+
+**Attempt.** A positive control that produces exactly that tick shape: a 30 s `heartbeat_interval`
+(so `due` is false on every tick) held open for 600 ms (≈11 ticks).
+
+```
+rev_probe qq not-due ticks: frames=1 heartbeats=0
+channels/src/providers/qq.rs: 615:11 616:11 617:11 620:11 625:11 626:0
+(frozen artifact: 615:56 616:56 617:56 620:55 624:3 625:52 626:0)
+```
+
+11 due-false ticks moved 625 (whose frozen count of 52 already *was* 52 due-false ticks) and 626 did not
+move in either run. So the row's hypothesis is refuted by measurement: the region at 626 is not the
+`if due` false edge (I took it 63 times across the two runs). The consistent explanation is the false
+edge of `if let Some(interval) = heartbeat_interval`, which the select arm's own guard —
+`_ = tokio::time::sleep(50 ms), if heartbeat_interval.is_some()` (`qq.rs` 612) — makes impossible to
+take. That is `unreachable-by-construction` (guard-guaranteed), not `attribution-artifact`; the line
+stays uncovered either way.
+
+**Verdict: SURVIVED, mechanism/category corrected.** (Minor: the row quotes 625 → 54 and 628 → 111;
+the frozen artifact reads 52 and 109. Both are "the due-false edge ran", so nothing hinges on it, but
+the row's numbers are not the frozen run's.)
+
+### 3.11 `feishu/mod.rs` 95 and `dingtalk/mod.rs` 94 — SURVIVED
+
+**As claimed.** `unreachable-by-construction`: "`AgentClient::wait_for_disconnect` has no success path:
+after the stream ends it returns `Err(anyhow!("Agent connection closed"))`, so the `Err` arm below is
+the only one that can run".
+
+**Attempt.** Read the callee end to end (`grpc_client.rs` 108-125): `stream_events(...)?`, then
+`while stream.message().await…? .is_some() {}`, then the unconditional `Err(...)`. There is no return
+statement that yields `Ok(())`, so no mock and no stream shape can select the arm. The covered twin
+(`Err` arm) carries 1 in the frozen report, and the framework's own test
+(`an_ended_stream_is_a_disconnect`) asserts the error for an ended stream.
+
+**Verdict: SURVIVED.** Category and mechanism both hold.
+
+### 3.12 `outbox.rs` 210 — SURVIVED (category "by construction" is too strong)
+
+**As claimed.** `unreachable-by-construction`: "Resolving a channel by id goes through the registry,
+whose entries are all `is_implemented()`, so `ensure_usable()` cannot fail there."
+
+**Attempt.** Executed enumeration instead of argument (scratch test
+`rev_probe_no_definition_can_reach_the_ensure_usable_guard`, passed): for every definition in
+`providers::all_definitions()` (13 registry entries + 2 native), either it is implemented or
+`registry::find(id)` is `None` — and the `None` case bails one line earlier, at 203-208 (frozen
+count 2), exactly as the shipped run shows. The registry contains no `Planned` entry, so the guard's
+condition is unreachable *for the shipped data*.
+
+**Verdict: SURVIVED**, with a correction: this is a data-dependent dead guard, not something the type
+system makes impossible, and it duplicates the guard that *is* covered in `lib.rs::entry_action`. A row
+that says "by construction" here is imprecise; "dead duplicate, unreachable while the registry ships no
+planned channel" is what the evidence supports.
+
+### 3.13 `providers/imessage.rs` 282 — SURVIVED
+
+**As claimed.** `platform-unmeasured`: `sender()`'s `!platform_supported()` arm; the predicate is
+`cfg!(target_os = "macos")`, and this measurement is macOS.
+
+**Attempt.** `imessage.rs` 256-259: `pub(crate) fn platform_supported() -> bool { cfg!(target_os = "macos") }`.
+A compile-time constant, so on this host the branch is statically false and no test input can reach it;
+the Windows/Linux build is the only input. Nothing in the tree stubs it (`unsupported` is a separate
+`Maturity::Planned` definition, not a build-mode switch).
+
+**Verdict: SURVIVED.** The one row whose category needs no change.
+
+### 3.14 `test_support.rs` 770 — SURVIVED (source-level only)
+
+**As claimed.** `unreachable-by-construction`: the `_ => unreachable!("tests dial plain ws only")` arm;
+the mock's sockets are always `MaybeTlsStream::Plain`.
+
+**Attempt.** Enumerated the call sites: `kill_write_half` is called from `slack_tests.rs` 1477 and 1503
+and `mattermost_tests.rs` 652, and all three dial `spawn_ws`, i.e. `ws://127.0.0.1:…`. I did **not**
+build a TLS mock, so this is reading, not execution. Worth recording that the crate does own a real TLS
+client path (`feishu_ws.rs` 183, `dingtalk_ws.rs` 131 use `crate::tls::ws_connector()`), so the missing
+piece is a TLS-capable mock server, not a property of the type system.
+
+**Verdict: SURVIVED** (unexecuted; see §5).
+
+## 4. Findings that are not line verdicts
+
+* **F1 — a test named for a line it does not reach.** `mattermost_tests.rs::a_reset_socket_fails_the_pong_reply`
+  (line 661) asserts only `error.contains("not writable")`, which the *challenge* bail (516) produces
+  with the identical string. In the frozen run it does not test the pong: `516 → 2`, `552 → 0`, `557 → 6`.
+  The fix is one script change — put `WaitForReceived{1}` before the ping — which §3.7 shows reaches 552.
+  (`slack_tests.rs::socket_mode_fails_when_the_pong_cannot_be_written`, line 1494, is the correctly
+  distinguished analogue: Slack's session writes nothing before the loop, so killing the write half up
+  front is unambiguous.)
+* **F2 — the two `attribution-artifact` rows that fell were false-edge gaps** (§3.2, §3.3). The
+  §10.2b method (drive the other edge) is sound; the pair at 111/110 simply had the wrong other edge
+  chosen, which made a reachable line look like a span artifact. Worth applying the same scepticism to
+  the remaining `attribution-artifact` rows in other modules.
+* **F3 — `inspect_err` on a function with no `Err` path is dead code** (§3.1). Either delete the two
+  tails (2 lines each) or await the handles in `Started::stop`; registering them as unreachable hides
+  the smell.
+* **F4 — the category vocabulary is doing real work, so it should be used precisely.** Of the 16 rows
+  that fell, 9 were `unreachable-in-this-environment` (an *environment* claim: false — everything needed
+  is in-process), 4 were `unreachable-by-construction` (a *type/control-flow* claim: false — the line's
+  region runs) and 3 were `attribution-artifact` (a *region* claim: false — a real false edge). The
+  remaining "by construction" rows I would accept are the ones with a control-flow invariant (95/94,
+  527/733, 770) and the two cfg/platform rows (282, and 770's TLS half).
+* **F5 — size of the rework.** 16 lines are executable by 8 new tests, one of which is a 10 s process
+  test, one a dedicated fd-limit integration test, and one a 6 s backoff test (×2 channels). A reopen
+  can take the module from 24 residual lines to 8 without weakening any existing assertion.
+
+## 5. What I could not check
+
+* `test_support.rs:770` was not attacked by execution — no TLS-capable WS mock exists to build, and the
+  arm is a deliberate panic. Verdict there is a call-site enumeration only.
+* My runs are filtered to my own probes, so every "DA → 1" above means "this input executes the line",
+  not "the shipped suite covers it". The frozen unit's own numbers are quoted from its report.
+* Region-level attribution was inspected for the `lib.rs` pair only (that is where "the line ran" and
+  "the closure body ran" come apart). For the other fallen lines the covered region *is* the statement
+  whose `DA` was 0, so no such distinction applies.
+* Outside the framework scope and not reviewed: `feishu/feishu_ws.rs:254` (the deliberate race line,
+  outside the 24), the Feishu/DingTalk bridge internals and `grpc_client.rs` beyond the three functions
+  named above.
+* Platform: everything was measured on macOS arm64. `imessage.rs:282`'s Windows/Linux twin is executed
+  only in a non-macOS build and remains unmeasured here (that is what `platform-unmeasured` says).
+* The EMFILE and PATH-shim probes mutate process-global state (fd limit, `PATH`). They are safe only in
+  a run where the shipped tests are filtered out; they must not be dropped into the shared lib test
+  binary or into a suite run, and the EMFILE one already lives in its own integration-test process.
+* I did not re-run the shipped suite, so I cannot say whether any of my 8 probes is flaky under a loaded
+  machine (the 10 s process test and the 6 s ×2 backoff tests are the candidates).
+
+## 6. Reproduction
+
+```bash
+# scratch tree (never inside the campaign worktree)
+cd /Users/geilige/future-os/.worktrees/cov100-r2
+git archive HEAD | (mkdir -p /tmp/rev-ch && tar -x -C /tmp/rev-ch)
+cp -R channels/src /tmp/rev-ch/channels/src && cp -R channels/tests /tmp/rev-ch/channels/tests
+# + the rev_probe_* tests quoted above (scratch only; not in this repo)
+
+# the four report-producing runs
+export PATH=/Users/geilige/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin:$PATH
+export CARGO_HOME=/Users/geilige/.cargo RUSTUP_HOME=/Users/geilige/.rustup
+export HOME=/tmp/rev-ch-home CARGO_TARGET_DIR=/tmp/rev-ch-target; mkdir -p "$HOME"; ulimit -n 10240
+cd /tmp/rev-ch
+cargo llvm-cov -p future-channel --no-fail-fast --lcov --output-path /tmp/rev-ch-lcov3.info \
+  -j 4 -- rev_probe --nocapture                        # 15 lib + 1 bin + 1 emfile test, all green
+cargo llvm-cov -p future-channel --no-fail-fast --lcov \
+  --output-path /tmp/rev_probe_mm_challenge_then_ping_then_reset.info \
+  -j 4 -- rev_probe_mm_challenge_then_ping_then_reset  # isolates the mattermost ordering
+cargo llvm-cov -p future-channel --no-fail-fast --json --output-path /tmp/rev-ch-sup.json \
+  -j 4 -- rev_probe_supervisors_are_awaited_on_their_ok_path   # region counts for lib.rs 172/190
+
+# read the verdicts
+python3 .future/cov100/covlines.py total /tmp/chan-lcov-r2final.info --under .worktrees/cov100-r2/channels/src
+```
+
+Disk: the campaign's `target/cov-channels` was not touched by this review; my instrumented dir was
+`/tmp/rev-ch-target` (2.8 GB, one private dir, deleted after the review) and the artifacts that remain
+are the lcov/JSON reports in `/tmp`.

@@ -608,6 +608,15 @@ describe("SyncEngine", () => {
   });
 
   test("reports the failed stage and scheduled retry for diagnostics", async () => {
+    // Fake timers, like every other retry test here: this lane fails
+    // *permanently* (the replay always throws), so its retry chain re-arms for
+    // as long as the process lives. With real timers a failing assertion below
+    // left that chain armed — `npm test` runs jest with `--runInBand`, so CI
+    // then hung for 30+ minutes with the failure only in a log nobody reads
+    // (measured: exit 124 instead of exit 1). Fake timers hold no real handle,
+    // so the assertion below can fail without taking the process with it; the
+    // clock is also deterministic, where the old 20 ms real sleep was not.
+    jest.useFakeTimers();
     const onFailure = jest.fn();
     const engine = new SyncEngine({
       requestGetState: async () => ({ activeRun: { runId: "run-1" } }),
@@ -618,20 +627,27 @@ describe("SyncEngine", () => {
       onFailure,
     });
 
-    engine.reconcile("s1", "open");
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    try {
+      engine.reconcile("s1", "open");
+      await jest.advanceTimersByTimeAsync(20);
 
-    expect(onFailure).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionId: "s1",
-        runId: "run-1",
-        reason: "open",
-        stage: "replay",
-        attempt: 1,
-        retryInMs: 500,
-      }),
-    );
-    engine.clear();
+      expect(onFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "s1",
+          runId: "run-1",
+          reason: "open",
+          stage: "replay",
+          attempt: 1,
+          retryInMs: 500,
+        }),
+      );
+    } finally {
+      // The clear is still the owner of the chain: it stops further work even if
+      // an assertion above failed (the old shape cleared in the test body, so
+      // one failure skipped it).
+      engine.clear();
+      jest.useRealTimers();
+    }
   });
 
   test("mid-run join replays the prefix from -1 (H3)", async () => {

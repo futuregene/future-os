@@ -198,6 +198,45 @@ fn has_glob(pattern: &str) -> bool {
     pattern.contains(['*', '?'])
 }
 
+/// Longest rule pattern accepted from any source that carries arbitrary text: a
+/// rule file's `path` field, and a client-supplied "allow in this workspace"
+/// pattern. The bound is on the **byte length of the pattern itself**
+/// (`str::len`), not on a path length — a pattern is a glob, which need not
+/// name any single filesystem object.
+///
+/// 4096 is a generous round bound, not a platform constant, and is deliberately
+/// **not** a `PATH_MAX` claim: the two are different quantities, and `PATH_MAX`
+/// is not 4096 everywhere (1024 on macOS — measured on this host via
+/// `getconf PATH_MAX /` — 4096 on Linux, 260/32767 on Windows), while the
+/// platforms that motivated this bound are macOS and Windows. As a bound on a
+/// pattern it sits well above macOS's `PATH_MAX`, so no path nameable there is
+/// refused, and it keeps a wide margin below the size at which the glob→regex
+/// compile was measured to fail (~64x). Windows extended-length paths can name
+/// more than 4096 bytes; a pattern that long is refused rather than compiled,
+/// which is the fail-closed direction.
+///
+/// The bound exists because the glob→regex compile below builds a
+/// case-insensitive program on macOS and Windows whose size grows with the
+/// literal text in the pattern: a 262 145-character pattern already fails
+/// `RegexBuilder::build` with `CompiledTooBig(10485760)` (measured; the old
+/// `.expect()` turned that into a process panic, aborting the agent — and on the
+/// startup path, before it could serve anything). Refusing the pattern is the
+/// fail-closed answer: a rule file records a resolution error, which every
+/// sandbox compiler rejects, and a session grant is simply not created. The
+/// refusal is worded as a size error; see [`rule_pattern_rejection`].
+pub const MAX_RULE_PATTERN_BYTES: usize = 4096;
+
+/// The rejection reason for a pattern the rule layer refuses to compile, or
+/// `None` when the pattern is acceptable.
+fn rule_pattern_rejection(pattern: &str) -> Option<String> {
+    (pattern.len() > MAX_RULE_PATTERN_BYTES).then(|| {
+        format!(
+            "rule pattern is {} bytes, over the {MAX_RULE_PATTERN_BYTES}-byte limit; the rule is refused rather than compiled",
+            pattern.len()
+        )
+    })
+}
+
 fn compile_matcher(abs_pattern: &str) -> Matcher {
     if !has_glob(abs_pattern) {
         let lexical = PathBuf::from(abs_pattern);
@@ -264,10 +303,18 @@ fn build_glob_regex(glob: &str) -> Regex {
         }
     }
     re.push('$');
+    // The pattern reaching this point is bounded by `MAX_RULE_PATTERN_BYTES` at
+    // every admission that carries arbitrary text (rule files, session grants),
+    // and the built-in rule patterns are constants joined to a workspace path
+    // (bounded by `PATH_MAX`): the largest accepted pattern compiles to well
+    // under the 10 MiB program ceiling, which
+    // `the_largest_accepted_pattern_still_compiles_and_one_more_is_refused` pins.
+    // An unbounded pattern would fail with `CompiledTooBig` — see that
+    // constant's comment for the measured case and why refusing beats panicking.
     RegexBuilder::new(&re)
         .case_insensitive(cfg!(any(target_os = "macos", windows)))
         .build()
-        .expect("glob regex is built from escaped literals only")
+        .expect("pattern length is bounded at admission; the escaping above cannot fail")
 }
 
 // ─── Rule file parsing ──────────────────────────────────────────────────────
@@ -329,6 +376,12 @@ fn parse_rule_file_diagnostics(
                 return None;
             }
             let path = raw.path?;
+            if let Some(reason) = rule_pattern_rejection(&path) {
+                let error = format!("approval rule {} ignored: {reason}", index + 1);
+                tracing::warn!("{error}");
+                errors.push(error);
+                return None;
+            }
             let decision = Decision::parse(&action)?;
             let access = Access::parse(&access);
             Some(PathRule::new(
@@ -683,10 +736,17 @@ impl RuleSet {
     }
 
     /// Add a runtime allow rule (same-run "allow in this workspace/chat").
-    pub fn add_session_rule(&self, abs_pattern: &str, access: Access, decision: Decision) {
+    /// Add a session rule, refusing a pattern the glob compiler cannot be trusted
+    /// with (see [`MAX_RULE_PATTERN_BYTES`]). Returns whether the rule was added.
+    pub fn add_session_rule(&self, abs_pattern: &str, access: Access, decision: Decision) -> bool {
+        if let Some(reason) = rule_pattern_rejection(abs_pattern) {
+            tracing::warn!("session rule refused: {reason}");
+            return false;
+        }
         self.session
             .lock()
             .push(PathRule::new(abs_pattern, access, decision));
+        true
     }
 
     /// Whether `path` matches a built-in secret guard (either op). Used to
@@ -822,17 +882,28 @@ pub enum MatcherSbpl<'a> {
 /// Push a runtime allow rule into a shared session-rules handle, resolving
 /// `raw_pattern` against `workspace` (same rules as file entries). Used by the
 /// RPC layer for same-run "allow in this workspace/chat".
+///
+/// Returns `false` when the pattern is refused (see
+/// [`MAX_RULE_PATTERN_BYTES`]): an over-long pattern is a malformed grant, not a
+/// path, and creating a *grant* it cannot compile would either panic or widen
+/// access. Refusing it keeps the previous verdict (the caller asks again), which
+/// is the fail-closed direction for an allow rule.
 pub fn push_session_allow(
     session: &SessionRules,
     workspace: &Path,
     raw_pattern: &str,
     access: Access,
-) {
+) -> bool {
+    if let Some(reason) = rule_pattern_rejection(raw_pattern) {
+        tracing::warn!("session allow rule refused: {reason}");
+        return false;
+    }
     session.lock().push(PathRule::new(
         &absolutize(workspace, raw_pattern),
         access,
         Decision::Allow,
     ));
+    true
 }
 
 impl Access {
@@ -1340,5 +1411,120 @@ mod tests {
             set.evaluate(&workspace.join("src/main.rs"), Op::Write),
             Decision::Allow
         );
+    }
+
+    /// The largest pattern the rule layer accepts must still compile, and one
+    /// byte more must be refused instead of reaching the regex builder. This is
+    /// the invariant that justifies the builder's `expect`: a 262 145-character
+    /// pattern used to reach it and abort the process with
+    /// `CompiledTooBig(10485760)` (measured while writing the AG-B module
+    /// record); the bound is what makes that unreachable.
+    #[test]
+    fn the_largest_accepted_pattern_still_compiles_and_one_more_is_refused() {
+        let workspace = ws();
+        let long = "a".repeat(MAX_RULE_PATTERN_BYTES - 8);
+        let at_limit = format!("**/{long}*.key");
+        assert_eq!(at_limit.len(), MAX_RULE_PATTERN_BYTES);
+        // Matching is a pure string operation, so the fixture needs no
+        // filesystem object with a 4 KiB name (which no filesystem allows).
+        let rule = PathRule::new(
+            &absolutize(&workspace, &at_limit),
+            Access::Read,
+            Decision::Ask,
+        );
+        assert!(
+            rule.matches(&workspace.join(format!("{long}payload.key")), Op::Read),
+            "the largest accepted pattern must compile and keep working"
+        );
+
+        let over = format!("{}x", at_limit);
+        assert!(rule_pattern_rejection(&at_limit).is_none());
+        assert!(rule_pattern_rejection(&over).is_some());
+
+        // Rule file: refused with a resolution error, and the sandbox refuses
+        // rather than running with a silently dropped rule (fail closed).
+        let mut errors = Vec::new();
+        let rules = parse_rule_file_diagnostics(
+            &format!(r#"{{"rules":[{{"path":"{over}","access":"read","action":"deny"}}]}}"#),
+            &workspace,
+            &mut errors,
+        )
+        .unwrap();
+        assert!(rules.is_empty(), "an over-long rule must not be loaded");
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("over the"), "{errors:?}");
+
+        // The refusal is what the sandbox acts on: a rule file that could not be
+        // loaded makes the set carry a resolution error, and both consumers of it
+        // fail closed — the shell profile is deny-everything, and a per-path
+        // grant preparation refuses before showing an approval.
+        let workspace_rules = workspace.join(".future/approval_rule.json");
+        std::fs::create_dir_all(workspace.join(".future")).unwrap();
+        std::fs::write(
+            &workspace_rules,
+            format!(r#"{{"rules":[{{"path":"{over}","access":"read","action":"deny"}}]}}"#),
+        )
+        .unwrap();
+        let mut degraded = crate::sandbox::ResolvedSandbox::with_rules_for_test(
+            RuleSet::resolve_isolated(&workspace),
+        );
+        degraded.set_linux_backend_available_for_test();
+        assert_eq!(
+            degraded.rule_set().snapshot().resolution_errors.len(),
+            1,
+            "the refused rule must be reported to the snapshot"
+        );
+        assert_eq!(
+            crate::sandbox::seatbelt::build_profile(&degraded),
+            "(version 1)\n(deny default)\n",
+            "an unloadable rule layer must deny everything"
+        );
+        let refusal = crate::sandbox::file_request::prepare(
+            &degraded,
+            "cat key",
+            &crate::sandbox::file_request::AdditionalPermissions::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(refusal.contains("could not be loaded"), "{refusal}");
+
+        // The session layer refuses the same shape, so a grant can never be the
+        // way around the rule-file refusal.
+        let clean = RuleSet::resolve_isolated(&workspace);
+        assert!(!clean.add_session_rule(&over, Access::Read, Decision::Allow));
+        assert!(clean.add_session_rule(&at_limit, Access::Read, Decision::Allow));
+    }
+
+    /// A client-supplied "allow in this workspace" pattern is the other
+    /// arbitrary-text admission: refusing it must report failure, leave the rule
+    /// set unchanged, and never panic.
+    #[test]
+    fn an_over_long_session_allow_is_refused_without_changing_the_verdict() {
+        let workspace = ws();
+        let rules = RuleSet::resolve_isolated_with_home(&workspace, &workspace.join("home"));
+        // A path outside the workspace and outside the temp roots: the write
+        // fallback asks, so a grant is the only way it can become Allow.
+        let target = Path::new("/futureos-ungranted/secret.txt");
+        assert_eq!(rules.evaluate(target, Op::Write), Decision::Ask);
+
+        let over = format!("/futureos-ungranted/{}", "x".repeat(MAX_RULE_PATTERN_BYTES));
+        assert!(!push_session_allow(
+            &rules.session,
+            &workspace,
+            &over,
+            Access::Write
+        ));
+        assert_eq!(
+            rules.evaluate(target, Op::Write),
+            Decision::Ask,
+            "a refused grant must not widen access"
+        );
+        assert!(push_session_allow(
+            &rules.session,
+            &workspace,
+            "/futureos-ungranted/*.txt",
+            Access::Write
+        ));
+        assert_eq!(rules.evaluate(target, Op::Write), Decision::Allow);
     }
 }

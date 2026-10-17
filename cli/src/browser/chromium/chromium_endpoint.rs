@@ -320,6 +320,30 @@ mod tests {
         assert!(err.contains("definitely-not-there-cdp.sock"), "{err}");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_socket_endpoint_reporting_a_pathless_web_socket_url_is_refused() {
+        let (socket, listener) = bind_temp_socket("nopath");
+
+        // Over a socket only the path identifies the target, and the host:port
+        // Chrome reports is not reachable at all — so a report with no path is
+        // unusable rather than something to fall back to.
+        let body = version_json("ws://127.0.0.1:9222");
+        let server = tokio::spawn(serve_one_http_over_socket(listener, http_response(&body)));
+
+        let err = resolve_cdp_endpoint(&format!("unix:{}", socket.display()), 5_000)
+            .await
+            .unwrap_err();
+        assert!(err.contains("has no path"), "{err}");
+        assert!(
+            err.contains("ws://127.0.0.1:9222"),
+            "the offending value is echoed so it can be compared: {err}"
+        );
+
+        server.await.unwrap();
+        cleanup(&socket);
+    }
+
     /// A complete response is recognised without waiting for the peer to close.
     ///
     /// Chrome's DevTools HTTP server keeps the connection alive even when asked

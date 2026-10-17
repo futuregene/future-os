@@ -1,4 +1,4 @@
-import { buildSessionTree, catalogRows } from "../sessionTree";
+import { buildSessionTree, catalogRows, groupMergedRows } from "../sessionTree";
 import type { RemoteSession, RemoteWorkspace } from "../../remote/types";
 
 const session = (
@@ -189,4 +189,28 @@ test("workspace sessions remain accessible if their workspace is absent", () => 
       ),
     ),
   ).toEqual(["workspace:gone", "s"]);
+});
+
+/**
+ * Two groups with nothing else to tell them apart are ordered by their key.
+ *
+ * The host orders workspaces by their own place, and two workspaces of the same
+ * machine can share that place — or have none at all, which is what a workspace
+ * registered but never used looks like. Without a final tie-break their order
+ * would come from whichever row happened to arrive first, so the same list could
+ * be drawn two ways.
+ */
+test("merged groups with the same place and machine are ordered by their key", () => {
+  const row = (desktopId: string, workspaceId: string, key: string) => ({
+    key,
+    desktopId,
+    lastMessageAt: null,
+    session: session(key, undefined, { mode: "workspace", workspaceId }),
+  });
+  const { workspaces } = groupMergedRows([
+    row("desktop_1", "w2", "b"),
+    row("desktop_1", "w", "a"),
+  ]);
+  expect(workspaces.map(group => group.key)).toEqual(["desktop_1::w", "desktop_1::w2"]);
+  expect(workspaces.flatMap(group => group.rows.map(item => item.key))).toEqual(["a", "b"]);
 });

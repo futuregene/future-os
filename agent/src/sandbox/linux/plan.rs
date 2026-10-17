@@ -1093,4 +1093,97 @@ mod tests {
         assert!(plan.read_only_paths.contains(&parent));
         assert!(plan.reopened_paths.contains(&child));
     }
+
+    /// A literal rule names one exact object. Both the mount plan and the
+    /// protected-path helpers must treat it by equality — a literal target is
+    /// never widened into the subtree it lives in.
+    #[test]
+    fn literal_rules_are_exact_mount_targets_for_allow_and_deny() {
+        let root = root();
+        let secret = root.join("work/secret.txt");
+        std::fs::write(&secret, "fixture").unwrap();
+        let literal = |path: PathBuf, access: Access, decision: Decision| RuleSnapshot {
+            matcher: RuleMatcherSnapshot::Literal { path },
+            access,
+            decision,
+        };
+        let input = snapshot(
+            &root,
+            vec![
+                RuleLayerSnapshot {
+                    layer: RuleLayer::Session,
+                    rules: vec![literal(secret.clone(), Access::Read, Decision::Allow)],
+                },
+                RuleLayerSnapshot {
+                    layer: RuleLayer::Workspace,
+                    rules: vec![literal(secret.clone(), Access::Read, Decision::Deny)],
+                },
+            ],
+        );
+        let plan = LinuxSandboxPlan::compile(&input).unwrap();
+        assert_eq!(
+            plan.reopened_read_only_paths,
+            std::slice::from_ref(&secret),
+            "the narrower allow reopens exactly the file the later deny protects"
+        );
+        assert!(
+            !plan.unreadable_paths.iter().any(|path| path != &secret),
+            "a literal rule cannot mask a sibling: {:?}",
+            plan.unreadable_paths
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A reopen of a path that no longer exists cannot be expressed as a mount,
+    /// so the plan must refuse it instead of emitting a mount the helper would
+    /// have to create (or silently drop).
+    #[test]
+    fn a_reopen_of_an_absent_path_fails_closed() {
+        let root = root();
+        let absent = root.join("work/secret.txt");
+        let literal = |path: PathBuf, access: Access, decision: Decision| RuleSnapshot {
+            matcher: RuleMatcherSnapshot::Literal { path },
+            access,
+            decision,
+        };
+        let input = snapshot(
+            &root,
+            vec![
+                RuleLayerSnapshot {
+                    layer: RuleLayer::Session,
+                    rules: vec![literal(absent.clone(), Access::Read, Decision::Allow)],
+                },
+                RuleLayerSnapshot {
+                    layer: RuleLayer::Workspace,
+                    rules: vec![literal(absent.clone(), Access::Read, Decision::Deny)],
+                },
+            ],
+        );
+        assert!(matches!(
+            LinuxSandboxPlan::compile(&input),
+            Err(LinuxSandboxPlanError::MissingReopen(path)) if path == absent
+        ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The explicit expansion entry point must return the pattern's own matches
+    /// (not another pattern's) and preserve its key, so callers can replay the
+    /// original rule order without re-walking the filesystem.
+    #[test]
+    fn an_explicit_expansion_returns_that_patterns_matches() {
+        let root = root();
+        std::fs::create_dir_all(root.join("work/vendor")).unwrap();
+        std::fs::write(root.join("work/vendor/a.pem"), "fixture").unwrap();
+        let pattern = root
+            .join("work")
+            .join("**")
+            .join("*.pem")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            expand_glob(&pattern).unwrap(),
+            [root.join("work/vendor/a.pem")]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

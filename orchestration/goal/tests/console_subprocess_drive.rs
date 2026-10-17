@@ -236,6 +236,219 @@ fn worker_bridge_rejects_a_result_for_a_different_todo() {
     );
 }
 
+/// The bridge decides which todo a turn is for BEFORE it reads the worker's
+/// result line, and it re-reads the goal at writeback. An out-of-band operator
+/// action inside that window (here: the goal's state is replaced, so the ids the
+/// turn was decided against no longer exist) must be recorded as an error
+/// against that turn — never written back as a delivery for a todo that is not
+/// there.
+///
+/// This is the failure the round-1 record called unreachable ("both derived from
+/// the same replayed goal"); the two replays are separated by the whole worker
+/// turn, so the goal can change between them.
+#[test]
+fn worker_bridge_reports_a_selected_todo_that_vanished_mid_turn() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    let gid = init_goal(root, "bridge todo vanishes");
+    let store = future_goal::store::Store::open(root).unwrap();
+    let bootstrap = store.replay(&gid).unwrap().unwrap().todos[0].id.clone();
+    assert_eq!(
+        run(
+            root,
+            &[
+                "todo",
+                "supersede",
+                "--goal",
+                &gid,
+                "--todo-id",
+                &bootstrap,
+                "--reason",
+                "setup",
+            ],
+        )
+        .2,
+        0
+    );
+    assert_eq!(
+        run(
+            root,
+            &["todo", "add", "--goal", &gid, "--text", "selected work"]
+        )
+        .2,
+        0
+    );
+    let selected = store
+        .replay(&gid)
+        .unwrap()
+        .unwrap()
+        .todos
+        .iter()
+        .find(|t| t.text.contains("selected work"))
+        .unwrap()
+        .id
+        .clone();
+
+    // Spawn the bridge and wait for the packet: the turn is now decided and the
+    // process is blocked reading its worker's result line.
+    let mut child = Command::new(bin())
+        .env("FUTURE_GOAL_ROOT", root)
+        .args(["worker-bridge", "--goal", &gid])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("bridge spawns");
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let packet = loop {
+        let line = lines
+            .next()
+            .expect("the bridge prints a packet or closes")
+            .expect("the bridge's stdout is utf-8");
+        if line.contains("BRIDGE packet:") {
+            break line;
+        }
+        assert!(
+            !line.contains("BRIDGE terminal") && !line.contains("BRIDGE stop"),
+            "the turn must be a worker turn, got {line}"
+        );
+    };
+    assert!(
+        packet.contains(&selected),
+        "the packet names the todo this turn is for: {packet}"
+    );
+
+    // The worker "runs", and while it does, the goal's state is replaced: the
+    // same goal id, a fresh ledger whose todos are new ids.
+    assert_eq!(
+        run(root, &["goal", "delete", "--goal", &gid, "--force"]).2,
+        0
+    );
+    assert_eq!(
+        run(
+            root,
+            &[
+                "goal",
+                "init",
+                "--objective",
+                "recreated while the worker ran",
+                "--goal-id",
+                &gid,
+                "--cwd",
+                root,
+            ],
+        )
+        .2,
+        0
+    );
+
+    let mut stdin = child.stdin.take().unwrap();
+    stdin
+        .write_all(
+            format!(
+                "{}\nBRIDGE done\n",
+                serde_json::json!({
+                    "todo_id": selected,
+                    "terminal_state": "completed",
+                    "evidence": "artifact written",
+                })
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    drop(stdin);
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let after = future_goal::store::Store::open(root)
+        .unwrap()
+        .replay(&gid)
+        .unwrap()
+        .unwrap();
+    let record = after
+        .history
+        .last()
+        .expect("the turn must still be recorded");
+    assert_eq!(
+        record.todo_id, selected,
+        "the record is for the todo the turn was decided for"
+    );
+    assert_eq!(
+        record.error.as_deref(),
+        Some("worker result names a missing todo"),
+        "a delivery for a todo that is gone must be reported, not accepted"
+    );
+    assert!(
+        !future_goal::executor::turn_succeeded(record),
+        "it must not count as a success"
+    );
+    // The recreated goal has its own bootstrap todo, and nothing claimed the
+    // vanished id.
+    assert!(
+        after.todo(&selected).is_none(),
+        "the vanished todo must not be resurrected by the writeback"
+    );
+}
+
+/// A watchdog that dies before it can take its lock must be REPORTED: the
+/// caller asked for the goal's automation to be alive, and a silently accepted
+/// dead watchdog is exactly the failure the readiness check exists for.
+///
+/// Fixture: a directory where the watchdog's lock file belongs. The parent's
+/// `running()` probe reports "not running" (it cannot open the lock either), its
+/// own log file opens normally, and the spawned `supervisor watch` then fails to
+/// take the lock and exits non-zero - which the parent must surface.
+#[test]
+fn a_watchdog_that_dies_before_its_lock_is_reported_not_accepted() {
+    use sha2::{Digest, Sha256};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    let gid = init_goal(root, "watchdog cannot take its lock");
+
+    let supervision = std::path::Path::new(root).join("supervision");
+    std::fs::create_dir_all(&supervision).unwrap();
+    let lock = supervision.join(format!("{:x}.watch.lock", Sha256::digest(gid.as_bytes())));
+    std::fs::create_dir(&lock).expect("a directory where the lock file belongs");
+
+    let (_, err, code) = run(
+        root,
+        &[
+            "supervisor",
+            "register",
+            "--goal",
+            &gid,
+            "--session-id",
+            "supervisor-session",
+        ],
+    );
+    assert_ne!(
+        code, 0,
+        "a watchdog that never became ready is not a success"
+    );
+    assert!(
+        err.contains("exited before acquiring its lock"),
+        "the failure must say the watchdog never took its lock: {err}"
+    );
+    // The registration itself DID happen (it is the durable part); only the
+    // watchdog failed to come up.
+    let store = future_goal::store::Store::open(root).unwrap();
+    let goal = store.replay(&gid).unwrap().unwrap();
+    assert_eq!(
+        goal.supervisor_session_id.as_deref(),
+        Some("supervisor-session"),
+        "the registration is durable even when the watchdog fails to start"
+    );
+}
+
 #[test]
 fn owner_diagnostics_frontier_and_completion_lease_views_agree() {
     let dir = tempfile::tempdir().unwrap();

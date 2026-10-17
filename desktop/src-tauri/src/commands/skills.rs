@@ -104,6 +104,28 @@ mod tests {
     use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
     use std::collections::HashMap;
 
+    /// The bootstrap command and its background spawner, against a mock handle.
+    /// In a test home no bundled CLI resolves, so the body's documented
+    /// "skipping built-in skill setup" path runs — which is exactly the arm that
+    /// must not panic on a machine without a CLI. The command wrapper is called
+    /// directly (it is generic over `Runtime`, so a mock handle instantiates it).
+    ///
+    /// Its `#[tauri::command]` attribute line (96) is **not** covered and is
+    /// waived with the family in §4.1: the only argument is an `AppHandle<R>`,
+    /// and `AppHandle::from_command` is infallible, so no body can reach that
+    /// error region — measured here, not assumed: the IPC harness's
+    /// `assert_all_reject_bad_body` fails its own assertion for this command
+    /// ("should reject a malformed body") because the malformed body is accepted.
+    #[tokio::test]
+    async fn the_bootstrap_spawns_the_cli_runner_and_tolerates_a_missing_cli() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-bootstrap");
+        let app = tauri::test::mock_app();
+        bootstrap_builtin_skills(app.handle().clone()).await;
+        spawn_builtin_skills(app.handle().clone());
+        // Let the native thread reach the CLI probe before the fixture drops.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
     #[test]
     fn command_wrappers_reject_malformed_bodies() {
         crate::commands::ipc_harness::assert_all_reject_bad_body(
@@ -113,6 +135,20 @@ mod tests {
         crate::commands::ipc_harness::assert_all_reject_bodies(
             tauri::generate_handler![install_skill],
             &[("install_skill", serde_json::json!({ "id": "x" }))],
+        );
+        // Two-argument commands: the empty body fails on the *first* argument,
+        // whose error arm is attributed to the signature line. Supplying the
+        // first argument makes the last one fail, which is the arm attributed
+        // to the `#[tauri::command]` attribute line.
+        crate::commands::ipc_harness::assert_all_reject_bodies(
+            tauri::generate_handler![suggest_skill, record_skill_reco],
+            &[
+                (
+                    "suggest_skill",
+                    serde_json::json!({ "query": "write a test" }),
+                ),
+                ("record_skill_reco", serde_json::json!({ "skillId": "s" })),
+            ],
         );
     }
 

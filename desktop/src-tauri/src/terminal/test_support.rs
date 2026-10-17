@@ -66,6 +66,14 @@ pub fn idle_command() -> (PathBuf, Vec<String>) {
     }
 }
 
+/// A child that stays alive, reads whatever is written to it and writes it back
+/// (`cat`): the proof another test needs that bytes reached the shell's *stdin*
+/// rather than merely the PTY layer, independently of a shell's own echo.
+#[cfg(unix)]
+pub fn shell_command() -> (PathBuf, Vec<String>) {
+    script_command("cat")
+}
+
 /// A child that prints `text` to stdout and exits: the PTY reader thread must
 /// surface these bytes.
 ///
@@ -96,6 +104,37 @@ pub fn exit_command(code: i32) -> (PathBuf, Vec<String>) {
 #[cfg(windows)]
 pub fn interactive_command() -> (PathBuf, Vec<String>) {
     (shell_program(), Vec::new())
+}
+
+/// A child that asks for the cursor position *and then reads the answer*: the
+/// unix counterpart of the Windows ConPTY handshake (`DSR_QUERY`).
+///
+/// A ConPTY child emits `ESC [ 6 n` on its own and blocks until a client
+/// replies; a unix shell neither asks nor blocks. The tests that must exercise
+/// the *answer* path therefore drive it here: the child asks, then waits in a
+/// canonical-mode `read` for a whole line. The reply itself has no newline, so
+/// the caller sends the terminator — and the child prints the byte count of
+/// what it read, which is what proves the reply really arrived on its stdin
+/// (`answered:6` for the six-byte [`DSR_REPLY`]). The trailing `sleep` keeps the
+/// child alive while the waiting helpers answer the (still buffered) query, so
+/// their write cannot race the child's exit.
+#[cfg(unix)]
+pub fn cursor_query_command() -> (PathBuf, Vec<String>) {
+    script_command(
+        "printf '\\033[6n'; IFS= read -r line; \
+         printf 'answered:%s' \"$(printf %s \"$line\" | wc -c | tr -d ' ')\"; sleep 2",
+    )
+}
+
+/// A child that asks for the cursor position and then finishes on its own,
+/// without ever reading the answer.
+///
+/// The waiting helpers (`Session::wait_for_child_exit`, the test `wait_until` /
+/// `answer_dsr`) answer the query as a courtesy; this fixture exercises that
+/// answer path without depending on the child consuming the reply.
+#[cfg(unix)]
+pub fn query_then_marker_command() -> (PathBuf, Vec<String>) {
+    script_command("printf '\\033[6n'; sleep 1; printf 'answered'")
 }
 
 /// The `cwd` these fixtures run in — a directory that always exists.

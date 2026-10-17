@@ -317,6 +317,16 @@ impl crate::remote::services::ReplySink for RecordingSink {
 /// families agree on a single serialization point.
 static MOCK_SER: Mutex<()> = Mutex::new(());
 
+/// The one way to take [`MOCK_SER`] — and it must be taken **before** any
+/// `HomeGuard` (`auth_store::test_support`) in the same test.
+///
+/// Both locks are process-global, and a test that takes them the other way round
+/// deadlocks the whole binary against a test that takes them this way. Measured
+/// 2026-10-17: `cargo test --lib -- remote_host::business::settings::tests
+/// remote::commands::bridge_tests` hung for the full 300 s budget with every
+/// thread at 0 % CPU: HOME held on one side waiting for MOCK, MOCK held on the
+/// other side waiting for HOME (`settings.rs` was the inverted site).
+/// `tests::no_body_takes_the_home_guard_before_the_mock_lock` enforces the order.
 pub(crate) fn mock_agent_lock() -> MutexGuard<'static, ()> {
     MOCK_SER.lock().unwrap_or_else(|poison| poison.into_inner())
 }
@@ -1584,10 +1594,457 @@ async fn serve_http(mut stream: tokio::net::TcpStream, state: Arc<Mutex<Platform
     let _ = stream.shutdown().await;
 }
 
+// ── A fake bridge in the process-global supervisor ──────────────────────────
+
+/// A [`RemoteState`](crate::remote::RemoteState) wired to `nats`, with
+/// placeholder tasks (pending forever) for the loops a test does not drive.
+///
+/// Kept here rather than in `tests::runtime_tests` because it is shared: the
+/// in-module suite installs it directly, and [`install_fake_state`] installs it
+/// for tests **outside** `src/remote/**` (the Tauri shell's remote-dependent
+/// rows). One implementation, so the two fixtures cannot drift.
+pub(in crate::remote) async fn fake_state(
+    nats: &FakeNats,
+    pair_id: &str,
+) -> crate::remote::RemoteState {
+    use crate::remote::{
+        secure, spawn_event_publisher, DropCounters, NatsHealth, RemoteState, EVENT_QUEUE_CAPACITY,
+    };
+
+    let client = nats_connect(nats).await;
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(EVENT_QUEUE_CAPACITY);
+    let event_task = spawn_event_publisher(client.clone(), event_rx);
+    RemoteState {
+        security: secure::Transport::legacy_fixture(),
+        generation_id: 1,
+        client,
+        nats_health: Arc::new(NatsHealth::default()),
+        nats_url: nats.url().to_string(),
+        pair_id: pair_id.to_string(),
+        desktop_id: format!("desktop_{}", unique("rt")),
+        desktop_public_key: "UPUBKEY".to_string(),
+        bridge_instance_id: format!("bridge_{}", unique("rt")),
+        event_tx,
+        drop_counters: Arc::new(DropCounters::new()),
+        event_task,
+        cmd_task: tokio::spawn(std::future::pending()),
+        transfer_task: tokio::spawn(std::future::pending()),
+        heartbeat_task: tokio::spawn(std::future::pending()),
+        refresh_task: tokio::spawn(std::future::pending()),
+        web_task: None,
+        web_url: None,
+        web_lan_url: None,
+        pairing_code: None,
+        pairing_code_expires_at: None,
+        pairing_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    }
+}
+
+/// A fake bridge installed into the process-global supervisor by
+/// [`install_fake_state`], which clears it — the state and the broker behind
+/// it — when dropped.
+///
+/// The restore is a `Drop` and not a lock for a measured reason: `FLAKES.md`
+/// item 27 / §4c records a leaked process-global failing **27 unrelated tests**,
+/// and a mutex that merely serialises global-state tests is not a restore. A
+/// test that panics halfway through must still leave `SUPERVISOR.state` empty.
+pub(crate) struct InstalledFakeState {
+    /// The broker the installed bridge is connected to; held so the installer
+    /// owns the whole lifetime. `Drop` takes it down with the state.
+    broker: Option<FakeNats>,
+}
+
+impl Drop for InstalledFakeState {
+    fn drop(&mut self) {
+        // This runs while a panicking test unwinds, so it must not itself
+        // panic: every lock below is poison-tolerant (an `assert!` that panics
+        // while holding `SUPERVISOR.state` poisons it), and the teardown is the
+        // synchronous task-abort path. In particular this is NOT `remote::stop()`:
+        // that locks with `unwrap()` and may publish, either of which aborts the
+        // process when a panic is already in flight.
+        let installed = super::SUPERVISOR
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take();
+        if let Some(state) = installed {
+            super::abort_generation(state);
+        }
+        // A test that drove `remote::start` left start intent behind (and, on a
+        // successful start, a shared runtime); reset exactly what `stop()`
+        // resets so the next test in this process starts from the same
+        // baseline instead of inheriting a bridge that is half there.
+        // Deliberately not reset: `last_error_code`, which `remote::stop()` also
+        // keeps — a test that asserts on it must arrange its own baseline.
+        super::SUPERVISOR
+            .start_requested
+            .store(false, std::sync::atomic::Ordering::Release);
+        super::SUPERVISOR
+            .suspended
+            .store(false, std::sync::atomic::Ordering::Release);
+        *super::SUPERVISOR
+            .bridge_shared
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = None;
+        if let Some(broker) = self.broker.take() {
+            broker.kill();
+        }
+    }
+}
+
+/// Install a complete fake remote bridge — its own in-process NATS broker,
+/// a connected client, and the placeholder generation tasks — into the
+/// process-global supervisor, for a test that lives **outside**
+/// `src/remote/**`.
+///
+/// Why this exists: the Tauri shell's remote-dependent rows (`lib.rs`'s
+/// auto-connect pass, `desktop_shutdown.rs`'s shutdown-deadline arm) need
+/// `SUPERVISOR.state` to be `Some`, and both `RemoteState` and `SUPERVISOR` are
+/// `pub(in crate::remote)` — a shell test can neither build nor install one.
+/// This is the single supported route, so the shell does not replicate the
+/// fixture.
+///
+/// Call it from inside a Tokio runtime context (the state owns spawned tasks
+/// and the broker accepts connections on the caller's runtime) and hold the
+/// returned guard for as long as the bridge is needed:
+///
+/// ```ignore
+/// let _bridge = remote::test_support::install_fake_state("shell-row").await;
+/// ```
+///
+/// The pair id is [`unique`]`(tag)`, so two tests can never share a subject.
+/// Panics if a previous test leaked a bridge — the guard makes that a bug worth
+/// failing on, not a state to inherit — and the guard, not the caller, is what
+/// removes the bridge again.
+pub(crate) async fn install_fake_state(tag: &str) -> InstalledFakeState {
+    let broker = FakeNats::start().await;
+    let state = fake_state(&broker, &unique(tag)).await;
+    {
+        let mut slot = super::SUPERVISOR
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        assert!(
+            slot.is_none(),
+            "a previous test leaked SUPERVISOR.state; fix that test instead of \
+             inheriting its bridge"
+        );
+        *slot = Some(state);
+    }
+    InstalledFakeState {
+        broker: Some(broker),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// The two process-global test locks have one legal acquisition order:
+    /// `mock_agent_lock()` first, `HomeGuard` second.
+    ///
+    /// Both locks serialize process-global state (the mock agent's script queue
+    /// here, `HOME`/the SQLite pool in `auth_store::test_support`), and a test
+    /// that takes them in one order deadlocks against a test that takes them in
+    /// the other: each holds what the other is waiting for. It is a *total*
+    /// deadlock - every thread at 0 % CPU, no panic, no `test result:` line - and
+    /// the harness can only report it as a timeout. Measured 2026-10-17 on this
+    /// host: `cargo test --lib -- remote_host::business::settings::tests
+    /// remote::commands::bridge_tests` hung for its full 300 s budget, 32 tests
+    /// "running for over 60 seconds", and a stack sample showed
+    /// `settings.rs` blocked in `mock_agent_lock` while holding the HOME guard and
+    /// `commands::bridge_tests::active_bridge` (commands.rs) blocked in
+    /// `HomeGuard::new` while holding MOCK.
+    ///
+    /// So the order is fixture contract, and this test enforces it by reading the
+    /// crate's own sources: no function body may mention the HOME guard before its
+    /// `mock_agent_lock(` call. Reading the source rather than the runtime state is
+    /// deliberate - the failure this prevents cannot be reported from inside the
+    /// test that is stuck, and a stack sample is what it costs to diagnose.
+    ///
+    /// **Scope of the check, stated so it is not mistaken for more:** it sees the
+    /// shape within ONE body, which is what both known inversions had
+    /// (`settings.rs`). An inversion routed through a *helper* (a body that builds
+    /// a `HomeGuard`, called before a `mock_agent_lock` in its caller) is invisible
+    /// here. The census that covered those walks the call graph over all 191 files
+    /// of `src/`: 89 bodies take both locks, 2 were inverted, both in
+    /// `remote_host/business/settings.rs` (recorded with the algorithm in
+    /// docs/testing/flaky-tauri.md §1).
+    #[test]
+    fn no_body_takes_the_home_guard_before_the_mock_lock() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut violations = Vec::new();
+        let mut scanned = 0_usize;
+        for path in rust_sources(&root) {
+            let source = std::fs::read_to_string(&path).expect("a crate source file readable");
+            scanned += 1;
+            for (name, body) in function_bodies(&source) {
+                let home = ["HomeGuard::new", "TEST_HOME_LOCK"]
+                    .iter()
+                    .filter_map(|token| body.find(token))
+                    .min();
+                let mock = body.find("mock_agent_lock(");
+                if let (Some(home), Some(mock)) = (home, mock) {
+                    if home < mock {
+                        violations.push(format!("{}: fn {name}", path.display()));
+                    }
+                }
+            }
+        }
+        assert!(
+            scanned > 100,
+            "the scan must see the crate: {scanned} files"
+        );
+        assert!(
+            violations.is_empty(),
+            "these bodies take the HOME guard before the mock lock, which deadlocks \
+             this test binary against `commands::bridge_tests` (take `mock_agent_lock()` \
+             first; see this test's doc comment):\n  {}",
+            violations.join("\n  ")
+        );
+    }
+
+    /// Every `.rs` file under `dir`, depth-first. Sorted so a failure report is
+    /// stable across runs and filesystems.
+    fn rust_sources(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(next) = stack.pop() {
+            for entry in std::fs::read_dir(&next).expect("a readable directory") {
+                let path = entry.expect("a directory entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// Each `fn` name with the text of its body, over a copy of `source` in which
+    /// comments and string/char literals are blanked - so a doc comment that
+    /// *names* a lock (this module is full of them) cannot be read as a call site.
+    fn function_bodies(source: &str) -> Vec<(String, String)> {
+        let text = blank_comments_and_literals(source);
+        let mut out = Vec::new();
+        let mut from = 0_usize;
+        while let Some(rel) = text[from..].find("fn ") {
+            let at = from + rel;
+            from = at + 3;
+            let Some(open_rel) = text[at..].find('{') else {
+                break;
+            };
+            let open = at + open_rel;
+            // A body-less declaration (`fn f();`) is not a site.
+            if text[at..open].contains(';') {
+                continue;
+            }
+            let mut depth = 0_usize;
+            let mut close = text.len();
+            for (index, ch) in text[open..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = open + index;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let name = text[at + 3..]
+                .trim_start()
+                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            out.push((name, text[at..close].to_string()));
+        }
+        out
+    }
+
+    /// `source` with `//`, `/* */`, `"…"`, `r#"…"#` and `'c'` replaced by spaces
+    /// (newlines kept, so byte offsets and bodies stay aligned).
+    fn blank_comments_and_literals(source: &str) -> String {
+        let bytes = source.as_bytes();
+        let mut out = source.to_string().into_bytes();
+        let blank = |out: &mut Vec<u8>, range: std::ops::Range<usize>| {
+            for byte in &mut out[range] {
+                if *byte != b'\n' {
+                    *byte = b' ';
+                }
+            }
+        };
+        let mut i = 0_usize;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                    let end = source[i..].find('\n').map_or(bytes.len(), |off| i + off);
+                    blank(&mut out, i..end);
+                    i = end;
+                }
+                b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                    let mut end = i + 2;
+                    let mut depth = 1_usize;
+                    while end < bytes.len() && depth > 0 {
+                        if bytes[end..].starts_with(b"/*") {
+                            depth += 1;
+                            end += 2;
+                        } else if bytes[end..].starts_with(b"*/") {
+                            depth -= 1;
+                            end += 2;
+                        } else {
+                            end += 1;
+                        }
+                    }
+                    blank(&mut out, i..end.min(bytes.len()));
+                    i = end;
+                }
+                b'r' if matches!(bytes.get(i + 1), Some(b'#') | Some(b'"')) => {
+                    let mut cursor = i + 1;
+                    let mut hashes = 0_usize;
+                    while bytes.get(cursor) == Some(&b'#') {
+                        hashes += 1;
+                        cursor += 1;
+                    }
+                    if bytes.get(cursor) == Some(&b'"') {
+                        let close = format!("\"{}", "#".repeat(hashes));
+                        let end = source[cursor + 1..]
+                            .find(&close)
+                            .map_or(bytes.len(), |off| cursor + 1 + off + close.len());
+                        blank(&mut out, i..end);
+                        i = end;
+                    } else {
+                        i += 1;
+                    }
+                }
+                b'"' => {
+                    let mut end = i + 1;
+                    while end < bytes.len() {
+                        match bytes[end] {
+                            b'\\' => end += 2,
+                            b'"' => {
+                                end += 1;
+                                break;
+                            }
+                            _ => end += 1,
+                        }
+                    }
+                    blank(&mut out, i..end.min(bytes.len()));
+                    i = end;
+                }
+                b'\'' => {
+                    // A char literal (`'a'`, `'\n'`) is blanked; a lifetime (`'a`)
+                    // is not a literal and stays as it is.
+                    let rest = &source[i + 1..];
+                    let len = rest
+                        .char_indices()
+                        .take(3)
+                        .find(|(_, ch)| *ch == '\'')
+                        .map(|(off, _)| off + 1);
+                    match len {
+                        Some(len) if len <= 4 => {
+                            blank(&mut out, i..i + 1 + len);
+                            i += 1 + len;
+                        }
+                        _ => i += 1,
+                    }
+                }
+                _ => i += 1,
+            }
+        }
+        String::from_utf8(out).expect("blanking only replaces bytes with spaces")
+    }
+
+    /// The scan's own control: it must flag the shape it exists to catch, and it
+    /// must not be fooled by a doc comment that names the locks in the wrong
+    /// order (which this module contains by construction).
+    #[test]
+    fn the_lock_order_scan_flags_an_inverted_body() {
+        let inverted = "// mock_agent_lock() must come first\n\
+             fn bad() {\n\
+             let _home = crate::auth_store::test_support::HomeGuard::new(\"x\");\n\
+             let _lock = mock_agent_lock();\n\
+             }\n";
+        let bodies = function_bodies(inverted);
+        assert_eq!(bodies.len(), 1, "one body: {bodies:?}");
+        let body = &bodies[0].1;
+        assert!(
+            body.find("HomeGuard::new") < body.find("mock_agent_lock("),
+            "the scan must see HOME before MOCK in that body"
+        );
+
+        // The right order, and the wrong order *inside a doc comment or a
+        // string*, must both stay unflagged.
+        let fine = "fn good() {\n\
+             let _lock = mock_agent_lock();\n\
+             let _home = crate::auth_store::test_support::HomeGuard::new(\"x\");\n\
+             }\n\
+             fn commented() {\n\
+             let _note = \"HomeGuard::new then mock_agent_lock\";\n\
+             let _lock = mock_agent_lock();\n\
+             }\n";
+        for (name, body) in function_bodies(fine) {
+            let home = ["HomeGuard::new", "TEST_HOME_LOCK"]
+                .iter()
+                .filter_map(|token| body.find(token))
+                .min();
+            let mock = body.find("mock_agent_lock(");
+            assert!(
+                home.is_none_or(|home| mock.is_none_or(|mock| home > mock)),
+                "{name} must not look inverted: {body}"
+            );
+        }
+    }
+
+    /// A `fn` token with no `{` after it is not a call site.
+    ///
+    /// `function_bodies` finds the name and then the body's opening brace; the
+    /// scan has to stop at the end of the text when there is no brace rather
+    /// than slicing the rest of the file into one body. That body would then be
+    /// attributed the wrong name and could hide (or invent) an inversion, which
+    /// is the one failure this whole test exists to prevent. The crate's own
+    /// sources contain no such token, so the branch is driven with one here.
+    #[test]
+    fn a_fn_without_a_body_is_not_a_call_site() {
+        assert!(function_bodies("fn f").is_empty());
+        assert!(
+            function_bodies("fn declaration();").is_empty(),
+            "a body-less declaration is not a site either"
+        );
+    }
+
+    /// A nested block comment is one comment, not the outer two.
+    ///
+    /// Rust allows `/* /* */ */`, and the scanner has to skip the whole thing:
+    /// stopping at the first `*/` would leave the tail of an inner comment
+    /// looking like code, where a lock name could be read as a call site. The
+    /// depth counter is what prevents that, and no comment in this crate is
+    /// nested, so the input is crafted.
+    #[test]
+    fn a_nested_block_comment_is_blanked_whole() {
+        let source = "a /* b /* c */ d */ e";
+        let blanked = blank_comments_and_literals(source);
+
+        assert_eq!(
+            blanked.len(),
+            source.len(),
+            "blanking keeps offsets aligned"
+        );
+        assert!(
+            !blanked.contains("/*") && !blanked.contains("*/"),
+            "the whole nested comment must be gone, got {blanked:?}"
+        );
+        assert!(
+            blanked.starts_with("a ") && blanked.ends_with(" e"),
+            "only the comment may be blanked, got {blanked:?}"
+        );
+    }
 
     /// Read one CRLF-terminated line from a raw socket (with a deadline).
     async fn read_line(stream: &mut tokio::net::TcpStream) -> String {
@@ -1925,5 +2382,159 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status().as_u16(), 404);
+    }
+
+    /// The mock's backward page is selected the way the Agent selects it: the
+    /// newest `limit` *user* entries ending at the cursor, with everything after
+    /// the oldest of them. A harness that ignored the limit would fill the byte
+    /// budget instead and overstate every lean page it measured.
+    #[test]
+    fn paginate_backward_takes_the_newest_user_exchanges_up_to_the_limit() {
+        let entries = json!({ "entries": [
+            {"id": "u1", "role": "user", "blocks": []},
+            {"id": "a1", "role": "assistant", "blocks": []},
+            {"id": "u2", "role": "user", "blocks": []},
+            {"id": "a2", "role": "assistant", "blocks": []},
+            {"id": "u3", "role": "user", "blocks": []},
+            {"id": "a3", "role": "assistant", "blocks": []},
+        ] });
+
+        // Two exchanges from the newest page: it starts at the second user row.
+        let page = paginate_backward(entries.clone(), Some(6), Some(2));
+        assert_eq!(
+            page["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| entry["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["u2", "a2", "u3", "a3"],
+            "the page starts at the second newest user row"
+        );
+        assert_eq!(page["hasMore"], json!(true));
+        assert_eq!(page["nextOffset"], json!(2));
+
+        // The whole history in one exchange: nothing more to scroll back to.
+        let first = paginate_backward(entries.clone(), Some(6), Some(1));
+        assert_eq!(first["nextOffset"], json!(4));
+        let start_of_history = paginate_backward(entries, Some(2), Some(5));
+        assert_eq!(start_of_history["hasMore"], json!(false));
+        assert_eq!(start_of_history["nextOffset"], json!(0));
+
+        // No cursor is the whole list: the first paint asks without `before`.
+        let whole = paginate_backward(json!({ "entries": [] }), None, Some(3));
+        assert_eq!(whole["entries"], json!([]));
+    }
+
+    // ── install_fake_state: the fixture the Tauri shell rows wait on ────────
+
+    /// The install is a *live* bridge, not a stub that merely makes
+    /// `state.is_some()` true, and `remote::start` — the call whose result the
+    /// auto-connect pass matches on — is driveable from it.
+    ///
+    /// Outcome driven here: the **deferred** arm (`Ok(status)` with a phase
+    /// other than `Ready`). In an isolated HOME there is no persisted pairing
+    /// and no sign-in, so `establish` cannot mint an invitation and
+    /// `remote::start` reports `Failed`/`account_authorization` instead of
+    /// `Err`.
+    #[tokio::test]
+    async fn install_fake_state_installs_a_live_bridge_and_drives_the_deferred_arm() {
+        let _home = HomeGuard::new("remote-install-fake-state");
+        init_store();
+        assert!(crate::remote::SUPERVISOR.state.lock().unwrap().is_none());
+
+        let installed = install_fake_state("shell-deferred").await;
+        {
+            let guard = crate::remote::SUPERVISOR.state.lock().unwrap();
+            let state = guard.as_ref().expect("the fake bridge is installed");
+            assert!(
+                state.pair_id.starts_with("shell-deferred-"),
+                "pair id must be unique per install, got {}",
+                state.pair_id
+            );
+        }
+        // A connected client, live tasks and no terminal health error: the
+        // shell rows sit behind a *running* bridge, so the fixture has to be one.
+        assert!(matches!(
+            crate::remote::status().phase,
+            crate::remote::RemotePhase::Ready
+        ));
+
+        let outcome = crate::remote::start(crate::remote::RemoteStartInput {}).await;
+        match outcome {
+            // The auto-connect pass's deferred arm.
+            Ok(status) => {
+                assert!(
+                    !matches!(status.phase, crate::remote::RemotePhase::Ready),
+                    "arm driven was Ready, not deferred: {status:?}"
+                );
+                assert_eq!(
+                    status.reason,
+                    Some(crate::remote::RemoteFailureReason::AccountAuthorization),
+                    "arm driven was {status:?}"
+                );
+            }
+            Err(error) => panic!("expected the deferred arm, got the failed arm: {error}"),
+        }
+
+        drop(installed);
+        assert!(
+            crate::remote::SUPERVISOR.state.lock().unwrap().is_none(),
+            "the guard must clear the bridge it installed"
+        );
+        assert!(!crate::remote::SUPERVISOR
+            .start_requested
+            .load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    /// The second arm reachable without starting a real bridge: a persisted
+    /// pairing whose stored NKey cannot be read fails *before* any HTTP or NATS
+    /// call, and the error carries no category — so `remote::start` returns
+    /// `Err`, which is exactly the arm the pass's `Err(error) => eprintln!`
+    /// branch matches. (The `Ready` arm is the remaining one; it needs a full
+    /// successful start — mock platform, broker and a real web listener — which
+    /// is the route this fixture deliberately does not provide.)
+    #[tokio::test]
+    async fn install_fake_state_drives_the_failed_arm() {
+        let _home = HomeGuard::new("remote-install-fake-state-failed");
+        init_store();
+        let mut creds = pairing_creds("pair_shell_failed");
+        creds.nkey_seed = "this-is-not-a-seed".to_string();
+        crate::remote::pairing::save_creds(&creds).expect("persist unusable pairing");
+
+        let installed = install_fake_state("shell-failed").await;
+        let outcome = crate::remote::start(crate::remote::RemoteStartInput {}).await;
+        assert!(
+            outcome.is_err(),
+            "a local, uncategorized fault must reach the failed arm, got {outcome:?}"
+        );
+        drop(installed);
+        assert!(crate::remote::SUPERVISOR.state.lock().unwrap().is_none());
+    }
+
+    /// The restore must happen while a test unwinds, not only on the happy
+    /// path: this is the destructive-leak shape (`FLAKES.md` item 27) the guard
+    /// exists to rule out.
+    #[test]
+    fn install_fake_state_restores_when_the_test_panics() {
+        let _home = HomeGuard::new("remote-install-fake-state-panic");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runtime.block_on(async {
+                let _installed = install_fake_state("shell-panic").await;
+                assert!(crate::remote::SUPERVISOR.state.lock().unwrap().is_some());
+                panic!("intentional: the guard must restore while unwinding");
+            })
+        }));
+
+        assert!(outcome.is_err(), "the closure above panics by construction");
+        assert!(
+            crate::remote::SUPERVISOR.state.lock().unwrap().is_none(),
+            "a panicking test leaked the bridge into every later test"
+        );
     }
 }

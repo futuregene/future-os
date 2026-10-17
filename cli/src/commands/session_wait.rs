@@ -300,4 +300,53 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("Timed out waiting for run r-1"));
     }
+
+    /// The parse errors that are not the `--help` sentinel reach the caller:
+    /// a second positional is a mistake, not a target.
+    #[tokio::test]
+    async fn a_second_positional_and_an_unknown_option_are_reported() {
+        assert_eq!(
+            parse(&args(&["s1", "s2"])).unwrap_err(),
+            "too many positional arguments"
+        );
+        assert_eq!(
+            parse(&args(&["s1", "--bogus"])).unwrap_err(),
+            "unknown option: --bogus"
+        );
+        let (out, cap) = Output::memory();
+        let error = run(&args(&["s1", "s2"]), &out).await.unwrap_err();
+        assert_eq!(error, "too many positional arguments");
+        assert!(
+            cap.out.lock().unwrap().is_empty(),
+            "a usage error goes to stderr, not stdout"
+        );
+    }
+
+    /// `--mode json` reports the run as a document a pipeline can read, with the
+    /// events and the text side by side.
+    #[tokio::test]
+    async fn json_mode_reports_the_run_as_a_document() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent = MockAgent {
+            events: vec![
+                stream_event_with_run("text_chunk", "{\"text\":\"hi\"}", "r-1"),
+                stream_event_with_run("agent_end", "{}", "r-1"),
+            ],
+            ..MockAgent::default()
+        };
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        run(&args(&["s1", "--run", "r-1", "--mode", "json"]), &out)
+            .await
+            .expect("wait");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let report: Value = serde_json::from_str(&stdout).expect("json document");
+        assert_eq!(report["sessionId"], "s1");
+        assert_eq!(report["runId"], "r-1");
+        assert_eq!(report["text"], "hi");
+        assert!(
+            report["messages"].as_array().is_some_and(|m| !m.is_empty()),
+            "{stdout}"
+        );
+    }
 }

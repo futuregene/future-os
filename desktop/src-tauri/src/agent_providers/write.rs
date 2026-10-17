@@ -661,3 +661,68 @@ pub(super) fn provider_base_url_override(models: &Value, id: &str) -> Option<Str
         .filter(|value| !value.is_empty())
         .map(str::to_string)
 }
+
+#[cfg(test)]
+mod preserve_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The merge is a *guard chain*: an element that is not an object, an object
+    /// with no string `id`, and a model whose id matches nothing in the stored
+    /// entry all have to fall through to `continue` — each one would otherwise
+    /// panic on `as_object_mut`/`get` or clone a foreign entry's fields onto a
+    /// renamed model.
+    #[test]
+    fn preserve_unmanaged_model_fields_skips_whatever_it_cannot_merge() {
+        let mut models = vec![
+            json!("not a model object"),
+            json!({ "name": "no id at all" }),
+            json!({ "id": "renamed", "name": "Renamed" }),
+        ];
+        let existing = vec![json!({
+            "id": "old-id",
+            "name": "Stored",
+            "compat": { "thinkingFormat": "qwen" }
+        })];
+
+        preserve_unmanaged_model_fields(&mut models, Some(&existing));
+
+        assert_eq!(models[0], json!("not a model object"));
+        assert_eq!(models[1], json!({ "name": "no id at all" }));
+        assert_eq!(
+            models[2],
+            json!({ "id": "renamed", "name": "Renamed" }),
+            "a renamed model has no previous entry and must start clean"
+        );
+
+        // The positive control: the same id *does* keep its unmanaged fields.
+        let mut models = vec![json!({ "id": "keep-me", "name": "Kept" })];
+        preserve_unmanaged_model_fields(&mut models, Some(&existing));
+        assert_eq!(
+            models[0],
+            json!({ "id": "keep-me", "name": "Kept" }),
+            "an id that matches nothing is still left alone"
+        );
+
+        let existing = vec![json!({
+            "id": "keep-me",
+            "name": "Stored",
+            "compat": { "thinkingFormat": "qwen" }
+        })];
+        preserve_unmanaged_model_fields(&mut models, Some(&existing));
+        assert_eq!(
+            models[0]["compat"],
+            json!({ "thinkingFormat": "qwen" }),
+            "unmanaged fields ride along on the same-id entry"
+        );
+        assert_eq!(
+            models[0]["name"],
+            json!("Kept"),
+            "managed fields stay exactly as the edit wrote them"
+        );
+
+        // No previous entry at all: nothing is merged (the early return).
+        preserve_unmanaged_model_fields(&mut models, None);
+        assert_eq!(models[0]["name"], json!("Kept"));
+    }
+}

@@ -483,6 +483,10 @@ mod tests {
     fn runtime_failure_still_drops_background_work_and_blocks_retry() {
         let _home = crate::auth_store::test_support::HomeGuard::new("shutdown-runtime-failure");
         let _mock = crate::agent_bridge::test_support::mock_agent();
+        // Open the process-global runtime registry first: a sibling test that froze
+        // it would make `runtime::spawn` below a no-op, so this fixture's spawned
+        // future would never run and the test would assert about nothing.
+        crate::runtime::cancel_test_tasks();
         struct Done(std::sync::mpsc::Sender<()>);
         impl Drop for Done {
             fn drop(&mut self) {
@@ -507,6 +511,36 @@ mod tests {
         assert!(super::is_stopping());
     }
 
+    /// Reconcile must **retain** a run whose state could not be read: a transport
+    /// failure is not evidence of a terminal state, so the row stays owned and the
+    /// next pass retries it instead of releasing work that may still be running.
+    #[tokio::test]
+    async fn reconcile_keeps_runs_whose_state_could_not_be_read() {
+        use crate::agent_bridge::test_support::Reply;
+        let _home = crate::auth_store::test_support::HomeGuard::new("shutdown-reconcile-down");
+        super::reset_for_test();
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let client = future_rpc::connection::connect_verified(
+            &crate::agent_bridge::raw_agent_addr(),
+            future_rpc::connection::EXPECTED_AGENT_VERSION,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        super::own_run("session".into(), "run".into(), client);
+        mock.push(
+            "get_state#run",
+            Reply::Status(tonic::Code::Unavailable, "agent transport down"),
+        );
+        super::reconcile_owned_runs().await;
+        assert_eq!(
+            super::owned_count(),
+            1,
+            "an unreadable state must not release the run"
+        );
+    }
+
     #[test]
     fn closing_admission_rejects_new_commands_without_losing_active_guards() {
         let _home = crate::auth_store::test_support::HomeGuard::new("shutdown-admission");
@@ -516,5 +550,48 @@ mod tests {
         assert!(super::admit().is_err());
         drop(command);
         assert!(super::is_stopping());
+    }
+
+    /// A run whose cancellation cannot be confirmed must say *why* in the message
+    /// the installer barrier shows: a transport status and a per-command timeout are
+    /// both evidence, and neither may be replaced by the "no verified terminal
+    /// state" default — that default only describes a run that answered normally.
+    #[tokio::test]
+    async fn unconfirmed_runs_report_the_transport_outcome() {
+        use crate::agent_bridge::test_support::Reply;
+        let _home = crate::auth_store::test_support::HomeGuard::new("shutdown-transport");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let client = future_rpc::connection::connect_verified(
+            &crate::agent_bridge::raw_agent_addr(),
+            future_rpc::connection::EXPECTED_AGENT_VERSION,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        super::own_run("session".into(), "run".into(), client);
+        // A transport-level rejection for the first command, and a command that
+        // never answers for the second: both are recorded as the run's reason.
+        mock.push(
+            "cancel_queued_run",
+            Reply::Status(tonic::Code::Unavailable, "agent transport down"),
+        );
+        let (entered, _arrived) = tokio::sync::oneshot::channel();
+        let (_response, data) = tokio::sync::oneshot::channel();
+        mock.push("abort", Reply::Deferred { entered, data });
+
+        let errors = super::stop_owned_runs(std::time::Duration::from_millis(800)).await;
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        // Hoisted: an `assert!` argument that is only an expression (here
+        // `errors[0]`) is evaluated on failure alone, so a passing run would
+        // never execute it.
+        let reason = errors[0].clone();
+        assert!(reason.contains("session/run"), "{reason}");
+        assert!(
+            !reason.contains("no verified terminal state"),
+            "a transport outcome must replace the default reason: {reason}"
+        );
+        // The run is retained: an unconfirmed cancel is not a stop.
+        assert_eq!(super::owned_count(), 1);
     }
 }

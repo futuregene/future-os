@@ -128,4 +128,25 @@ mod tests {
             "\"upstream failed\""
         );
     }
+
+    /// `app-settings` / `app-workspaces` surface their own error type; the
+    /// conversions here are what keep an IO/JSON failure from being flattened
+    /// into a `Message` (callers match on `AppError::Io`/`Json`). Each source
+    /// variant is mapped by hand, so each arm needs its own conversion.
+    #[test]
+    fn converts_shared_crate_errors_into_typed_app_errors() {
+        let json = serde_json::from_str::<u8>("not json").unwrap_err();
+        let settings_json: AppError = future_app_settings::Error::Json(json).into();
+        assert!(matches!(settings_json, AppError::Json(_)));
+
+        let settings_io: AppError =
+            future_app_settings::Error::Io(std::io::Error::other("settings io")).into();
+        assert!(matches!(settings_io, AppError::Io(_)));
+        assert!(settings_io.to_string().contains("settings io"));
+
+        let workspaces_io: AppError =
+            future_app_workspaces::Error::Io(std::io::Error::other("workspaces io")).into();
+        assert!(matches!(workspaces_io, AppError::Io(_)));
+        assert!(workspaces_io.to_string().contains("workspaces io"));
+    }
 }

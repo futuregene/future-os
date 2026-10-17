@@ -75,6 +75,44 @@ describe("runs panel", () => {
     container.remove();
   });
 
+  /**
+   * A repeated end-scroll at the last page leaves the window alone.
+   *
+   * End-scrolls arrive faster than a re-render — two dispatches in one batch both
+   * read the same committed window — so the second `setRenderWindow` finds the
+   * count already at `runs.length`. It returns the *same* state object there, so
+   * React bails out instead of re-rendering a list that did not change; the rows
+   * are the observable: every run on screen exactly once, and nothing past the
+   * end of the list.
+   */
+  it("ignores a second end-scroll once the window is already at the last page", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    // Exactly two pages, so the first end-scroll lands on the last run.
+    act(() => root.render(<RunsPanel {...props(80)} />));
+
+    // The list reads newest-first, so the first page is runs 79…40.
+    expect(container.querySelector("[title=\"command-40\"]")).not.toBeNull();
+    expect(container.querySelector("[title=\"command-39\"]")).toBeNull();
+
+    const scroll = container.querySelector<HTMLElement>("[data-runs-scroll]")!;
+    Object.defineProperties(scroll, {
+      clientHeight: { configurable: true, value: 400 },
+      scrollHeight: { configurable: true, value: 2400 },
+      scrollTop: { configurable: true, value: 1800, writable: true },
+    });
+    act(() => {
+      scroll.dispatchEvent(new Event("scroll", { bubbles: true }));
+      scroll.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+
+    expect(container.querySelector("[title=\"command-79\"]")).not.toBeNull();
+    expect(container.querySelectorAll("[title=\"command-0\"]")).toHaveLength(1);
+    act(() => root.unmount());
+    container.remove();
+  });
+
   it("wraps full file targets and clamps only shell commands to ten lines", () => {
     const fileRun = run(1);
     const shellRun = run(2);

@@ -356,6 +356,45 @@ mod tests {
     }
 
     #[test]
+    fn owner_description_covers_host_only_pid_only_and_neither() {
+        let lock = std::path::Path::new("/h/.future/agent/agent-instance.lock");
+        let home = std::path::Path::new("/h/.future");
+
+        // Host without a pid, on another host: the owner is named by host alone
+        // and the cross-host wording follows (no pid is needed to explain it).
+        let only_host = lock_conflict_message_from(
+            lock,
+            home,
+            Some(&serde_json::json!({"host": "intel080"})),
+            Some("login01"),
+        );
+        assert!(only_host.contains("held by: host intel080"), "{only_host}");
+        assert!(only_host.contains("different host"), "{only_host}");
+
+        // Pid without a host, same host as ours: the owner is named by pid, and
+        // the local advice uses the pid we have.
+        let only_pid = lock_conflict_message_from(
+            lock,
+            home,
+            Some(&serde_json::json!({"pid": 7})),
+            host_name().as_deref(),
+        );
+        assert!(only_pid.contains("held by: pid 7"), "{only_pid}");
+        assert!(only_pid.contains("kill 7"), "{only_pid}");
+
+        // Neither: there is no owner to name, so the message must not invent a
+        // "held by" line — the location advice stays, with a placeholder pid.
+        let neither = lock_conflict_message_from(
+            lock,
+            home,
+            Some(&serde_json::json!({"pid": null, "host": null})),
+            Some("login01"),
+        );
+        assert!(!neither.contains("held by:"), "{neither}");
+        assert!(neither.contains("kill <pid>"), "{neither}");
+    }
+
+    #[test]
     fn missing_or_unreadable_metadata_degrades_to_the_plain_message() {
         let lock = std::path::Path::new("/h/.future/agent/agent-instance.lock");
         let home = std::path::Path::new("/h/.future");
@@ -434,5 +473,29 @@ mod tests {
         drop(first);
         assert!(second.acquire(dir.path()).is_ok());
         assert!(InstanceFile::open(dir.path().to_owned()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod open_tests {
+    use super::*;
+
+    /// The instance lock file may live in a directory that does not exist yet
+    /// (`--home` pointed at a fresh path). Opening must create it, because the
+    /// alternative is failing the Agent's startup on a path the user just chose.
+    #[test]
+    fn opening_the_lock_file_creates_its_missing_parent_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("fresh/futureos/agent/agent-instance.lock");
+        assert!(!nested.parent().unwrap().exists());
+        let opened = InstanceFile::open(nested.clone()).expect("the parent is created");
+        assert!(nested.exists(), "the lock file itself is created");
+        drop(opened);
+        // And the created file is usable as a lock: acquiring twice fails.
+        let mut first = InstanceFile::open(nested.clone()).unwrap();
+        let guard = first.acquire(dir.path()).unwrap();
+        let mut second = InstanceFile::open(nested).unwrap();
+        assert!(second.acquire(dir.path()).is_err());
+        drop(guard);
     }
 }

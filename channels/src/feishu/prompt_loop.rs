@@ -1039,6 +1039,28 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn an_errored_agent_end_without_a_stream_card_still_reports_the_error() {
+        // The error flush when no CardKit card exists (streaming off): the
+        // `if let Some(ref cid)` finalize block is skipped and the error card
+        // is the only thing sent. `agent_end_error_sends_error_card` above takes
+        // the other edge of that same branch (streaming on).
+        let events = vec![
+            ts::ev("", 0, "text_chunk", r#"{"text":"partial"}"#),
+            ts::ev("", 1, "agent_end", r#"{"error":"model exploded"}"#),
+        ];
+        let (env, _) = setup(events).await;
+        drive(&env, false, None).await.unwrap();
+        let replies = bodies(&env.http, "/im/v1/messages/om_user/reply");
+        assert!(
+            replies.iter().any(|b| b.contains("model exploded")),
+            "{replies:?}"
+        );
+        // Nothing was ever asked of CardKit: no card to finalize.
+        assert!(bodies(&env.http, "/cardkit/v1/cards").is_empty());
+        assert!(bodies(&env.http, "/cardkit/v1/cards/card_1").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn agent_end_cancelled_or_interrupted_stays_silent() {
         for data in [
             r#"{"state":"cancelled"}"#,

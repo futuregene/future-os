@@ -482,3 +482,59 @@ it("closes the confirmation on Escape without unpairing", async () => {
   expect(view.container.querySelector("[role='dialog']")).toBeNull();
   await view.unmount();
 });
+
+/**
+ * The three actions on this screen all reach another machine, and all three can
+ * fail. Each failure has to be *said*: the machine's own row would otherwise look
+ * unchanged, and a user who pressed "Reconnect all" or "Connect" would have no
+ * way to tell a slow round trip from one that never left.
+ *
+ * The read is the third: the credential book is local, and a failure to read it
+ * is the difference between "no machines are paired" and "I could not find out".
+ */
+it("reports a peer list it cannot read", async () => {
+  listRemotePeers.mockRejectedValue(new Error("keystore unavailable"));
+  const view = await mount();
+
+  expect(view.text()).toContain("keystore unavailable");
+  await view.unmount();
+});
+
+it("reports a failed connect, and reports a failed disconnect the same way", async () => {
+  connectRemotePeer.mockRejectedValue(new Error("bridge_unreachable"));
+  // An offline machine is the one that offers "Connect".
+  listRemotePeers.mockResolvedValue([peer({ connected: false })]);
+  const offline = await mount();
+  await act(async () => offline.rowButton("Connect")!.click());
+  await offline.settle();
+  expect(offline.text()).toContain("bridge_unreachable");
+  await offline.unmount();
+
+  disconnectRemotePeer.mockRejectedValue(new Error("already_gone"));
+  // A fresh list: the offline machine above is not the one this half is about.
+  listRemotePeers.mockResolvedValue([peer()]);
+  const online = await mount();
+  await act(async () => online.rowButton("Disconnect")!.click());
+  await online.settle();
+  expect(online.text()).toContain("already_gone");
+  await online.unmount();
+});
+
+it("reports a reconnect-all the shell could not carry out", async () => {
+  // The pass itself is the shell's, so its failure arrives as a rejection from
+  // `onReconnectAll` — this screen's job is to say so rather than to look like
+  // nothing happened.
+  // The control appears once there is more than one machine (below that the
+  // count says nothing), so the list answers with two.
+  listRemotePeers.mockResolvedValue([
+    peer({ desktopId: "desktop_a" }),
+    peer({ desktopId: "desktop_b", connected: false }),
+  ]);
+  const view = await mount();
+  view.onReconnectAll.mockRejectedValue(new Error("no bridge"));
+  await act(async () => view.button("Reconnect all")!.click());
+  await view.settle();
+
+  expect(view.text()).toContain("no bridge");
+  await view.unmount();
+});

@@ -866,6 +866,188 @@ mod tests {
         assert!(bwrap_version_is_supported("1.0"));
     }
 
+    /// A version string that is not `major.minor[.patch]` numerics must never
+    /// be treated as a version: the parser rejects a non-numeric part in the
+    /// middle (`1.x.2`) and the comparator rejects anything it cannot parse
+    /// (`x.y`, a trailing dot). Both are fail-closed.
+    #[test]
+    fn unparseable_version_shapes_are_rejected() {
+        assert_eq!(parse_bwrap_version("bwrap 1.x.2"), None);
+        assert_eq!(parse_bwrap_version("not-a-version"), None);
+        assert_eq!(parse_bwrap_version("bwrap"), None);
+        assert!(!bwrap_version_is_supported("x.y"));
+        assert!(!bwrap_version_is_supported("0.8"));
+        assert!(!bwrap_version_is_supported(""));
+        assert_eq!(
+            parse_bwrap_version("bubblewrap 0.11.1"),
+            Some("0.11.1".into())
+        );
+    }
+
+    /// Every probe stage has its own failure report: a `--version` that prints
+    /// a version but exits non-zero is unreadable, and a hang at the help or
+    /// baseline stage is a timeout — never a "feature missing" verdict, which
+    /// would mislabel a slow host as an unsupported one.
+    #[test]
+    fn each_probe_stage_reports_its_own_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let system = root.path().join("system");
+        executable(&system);
+        let path = Some(std::env::join_paths([system]).unwrap());
+        let timed_out = || ProbeCommandOutput {
+            success: false,
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: true,
+        };
+
+        for (outputs, expected) in [
+            (
+                VecDeque::from([output(false, "bwrap 1.0.0", "warning: deprecated")]),
+                LinuxSandboxProbeCode::VersionUnreadable,
+            ),
+            (
+                VecDeque::from([output(true, "bwrap 1.0.0", ""), timed_out()]),
+                LinuxSandboxProbeCode::ProbeTimeout,
+            ),
+            (
+                VecDeque::from([
+                    output(true, "bwrap 1.0.0", ""),
+                    output(true, &REQUIRED_BWRAP_OPTIONS.join(" "), ""),
+                    timed_out(),
+                ]),
+                LinuxSandboxProbeCode::ProbeTimeout,
+            ),
+            (
+                VecDeque::from([
+                    output(true, "bwrap 1.0.0", ""),
+                    output(true, &REQUIRED_BWRAP_OPTIONS.join(" "), ""),
+                    output(
+                        false,
+                        "",
+                        "bwrap: Can't mount procfs on /proc: No such file",
+                    ),
+                ]),
+                LinuxSandboxProbeCode::ProcMountRestricted,
+            ),
+            (
+                VecDeque::from([
+                    output(true, "bwrap 1.0.0", ""),
+                    output(true, &REQUIRED_BWRAP_OPTIONS.join(" "), ""),
+                    output(false, "", "bwrap: unexpected io error"),
+                ]),
+                LinuxSandboxProbeCode::ProbeFailed,
+            ),
+        ] {
+            let host = FakeHost {
+                now: UNIX_EPOCH,
+                outputs: Mutex::new(outputs),
+                root_owned: true,
+            };
+            assert_eq!(
+                probe_with_host(&host, path.clone(), &workspace, &workspace).code,
+                expected
+            );
+        }
+    }
+
+    /// Candidate discovery fails closed for each unusable PATH shape: no PATH
+    /// at all, an entry whose `bwrap` cannot be resolved, and a resolvable
+    /// `bwrap` that is not an executable regular file (which is what makes the
+    /// executable-identity helper return `None`).
+    #[test]
+    fn unusable_path_shapes_never_yield_an_available_probe() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let host = FakeHost {
+            now: UNIX_EPOCH,
+            outputs: Mutex::new(VecDeque::new()),
+            root_owned: true,
+        };
+
+        let unset = probe_with_host(&host, None, &workspace, &workspace);
+        assert_eq!(unset.code, LinuxSandboxProbeCode::BinaryMissing);
+        assert!(unset
+            .diagnostic
+            .as_deref()
+            .unwrap()
+            .contains("PATH is unset"));
+
+        let absent = root.path().join("absent-bin");
+        std::fs::create_dir(&absent).unwrap();
+        let nowhere = probe_with_host(
+            &host,
+            Some(std::env::join_paths([absent]).unwrap()),
+            &workspace,
+            &workspace,
+        );
+        assert_eq!(nowhere.code, LinuxSandboxProbeCode::BinaryMissing);
+        assert!(nowhere
+            .diagnostic
+            .as_deref()
+            .unwrap()
+            .contains("no bwrap executable"));
+
+        let data = root.path().join("data-bin");
+        std::fs::create_dir(&data).unwrap();
+        let candidate = data.join("bwrap");
+        std::fs::write(&candidate, "not executable").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let not_executable = probe_with_host(
+            &host,
+            Some(std::env::join_paths([data]).unwrap()),
+            &workspace,
+            &workspace,
+        );
+        assert_eq!(
+            not_executable.code,
+            LinuxSandboxProbeCode::PathRejected,
+            "a non-executable bwrap must be rejected, not probed"
+        );
+        // The helper itself is the arm under test: a non-executable regular
+        // file has no usable identity.
+        assert!(executable_identity(&host, &candidate).is_none());
+    }
+
+    /// A success receipt is cached for the TTL; past it the probe runs again
+    /// rather than serving an expired verdict to a caller that then spawns a
+    /// helper with a stale identity.
+    #[test]
+    fn an_expired_success_receipt_is_reprobed() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let system = root.path().join("system");
+        executable(&system);
+        let path = Some(std::env::join_paths([system]).unwrap());
+        let mut host = FakeHost {
+            now: UNIX_EPOCH,
+            outputs: Mutex::new(success_outputs()),
+            root_owned: true,
+        };
+        let mut cache = LinuxProbeCache::default();
+        let first = cache.get_or_probe(&host, path.clone(), &workspace, &workspace);
+        assert!(first.available);
+
+        host.now += CACHE_TTL + Duration::from_secs(1);
+        *host.outputs.lock().unwrap() = success_outputs();
+        let second = cache.get_or_probe(&host, path, &workspace, &workspace);
+        assert!(second.available);
+        assert_eq!(
+            host.outputs.lock().unwrap().len(),
+            0,
+            "an expired receipt must be re-probed, not reused"
+        );
+        assert!(second.expires_at_unix_ms > first.expires_at_unix_ms);
+    }
+
     #[test]
     fn rejects_bwrap_not_owned_by_root_before_executing_it() {
         let root = tempfile::tempdir().unwrap();

@@ -448,3 +448,75 @@ mod tests {
         assert!(entry_to_checkpoint(&user).is_none());
     }
 }
+
+#[cfg(test)]
+mod torn_checkpoint_tests {
+    use super::*;
+    use crate::compaction::CompactionTrigger;
+
+    fn checkpoint(
+        entry_id: &str,
+        covered_from: Option<&str>,
+        cutoff: Option<&str>,
+    ) -> ContextCheckpoint {
+        ContextCheckpoint {
+            entry_id: entry_id.to_string(),
+            protected_entry_ids: Vec::new(),
+            checkpoint_id: "cp".into(),
+            covered_from_entry_id: covered_from.map(str::to_owned),
+            cutoff_entry_id: cutoff.map(str::to_owned),
+            summary: vec![ContentBlock::text("summary")],
+            tokens_before: 100,
+            tokens_after: 10,
+            trigger: CompactionTrigger::Automatic,
+            phase: None,
+            algorithm_version: "v2".into(),
+            summary_outcome: None,
+            model: "model".into(),
+            context_window: 200,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    /// A checkpoint whose own entry is not in the history is dangling: the entry
+    /// it claims to be was dropped (or belongs to another session), so using it
+    /// as a cutoff would expand the prompt from a boundary nobody can point at.
+    /// Each dangling reference is rejected on its own, so a partially repaired
+    /// history falls back to the previous valid checkpoint instead of trusting
+    /// the torn one.
+    #[test]
+    fn checkpoint_is_valid_rejects_each_dangling_reference() {
+        let first = SessionEntry::new_user("user", serde_json::json!("first"));
+        let second = SessionEntry::new_assistant(serde_json::json!("answer"), Vec::new());
+        let entries = vec![first.clone(), second.clone()];
+
+        // The checkpoint entry itself is not in the entries it is validated
+        // against: nothing to point at.
+        let dangling_entry = checkpoint("entry-missing", Some(&first.id), Some(&second.id));
+        assert!(!checkpoint_is_valid(&entries, &dangling_entry));
+
+        // Its own entry is present but `covered_from` is gone.
+        let mut dangling_covered = checkpoint("entry-cp", Some("gone"), Some(&second.id));
+        let mut with_cp = entries.clone();
+        with_cp.push(checkpoint_to_entry(&dangling_covered));
+        assert!(!checkpoint_is_valid(&with_cp, &dangling_covered));
+
+        // …and the same for the cutoff.
+        dangling_covered.covered_from_entry_id = Some(first.id.clone());
+        dangling_covered.cutoff_entry_id = Some("gone".into());
+        let mut with_cp = entries.clone();
+        with_cp.push(checkpoint_to_entry(&dangling_covered));
+        assert!(!checkpoint_is_valid(&with_cp, &dangling_covered));
+
+        // A fully resolvable checkpoint is accepted, so the rejections above are
+        // about the dangling references and not about the fixture shape.
+        let valid = checkpoint("entry-cp", Some(&first.id), Some(&second.id));
+        let mut with_cp = entries.clone();
+        with_cp.push(checkpoint_to_entry(&valid));
+        // `checkpoint_to_entry` stamps the content but the id must match the one
+        // the validator looks for.
+        let mut with_cp2 = with_cp.clone();
+        with_cp2.last_mut().unwrap().id = "entry-cp".to_string();
+        assert!(checkpoint_is_valid(&with_cp2, &valid));
+    }
+}

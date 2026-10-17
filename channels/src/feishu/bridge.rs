@@ -2155,6 +2155,23 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn an_empty_post_falls_through_the_image_carve_out() {
+        // A `post` message with no text and no image element: the media
+        // handler's image carve-out does not match, so the message must fall
+        // through to the file extraction and then no-op. Treating it as an
+        // image (or prompting without one) would both be wrong.
+        let fx = make_bridge("post-no-image", done_events()).await;
+        let mut e = event("om_1");
+        e.msg_type = Some("post".into());
+        e.content = Some(r#"{"content":[]}"#.into());
+        fx.bridge.handle_event(e).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(ts::recorded_of(&fx.grpc, "prompt").is_empty());
+        assert!(ts::requests_to(&fx.http, "/im/v1/messages/om_1/resources/img_k").is_empty());
+        assert!(replies(&fx.http, "om_1").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn empty_text_falls_to_media_handler_noop() {
         let fx = make_bridge("empty-text", done_events()).await;
         let mut e = event("om_1");
@@ -2238,6 +2255,32 @@ mod tests {
             .iter()
             .any(|b| b.contains("Failed to download image")));
         assert!(ts::recorded_of(&fx.grpc, "prompt").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_image_that_cannot_be_saved_reports_instead_of_prompting() {
+        // The download succeeds but the file cannot be stored (a regular file
+        // sits where the image directory belongs). The save failure must
+        // propagate out of the handler: prompting the agent without the image,
+        // or dropping the message silently, would both be wrong.
+        let fx = make_bridge("image-save-fail", done_events()).await;
+        std::fs::write(fx.bridge.data_dir.join("files"), b"not a directory").unwrap();
+        let mut e = event("om_1");
+        e.msg_type = Some("image".into());
+        e.content = Some(r#"{"image_key":"img_k"}"#.into());
+        let error = fx
+            .bridge
+            .handle_event(e)
+            .await
+            .expect_err("a failed save must surface");
+        assert!(
+            error.to_string().contains("Not a directory") || error.to_string().contains("os error"),
+            "{error}"
+        );
+        assert!(
+            ts::recorded_of(&fx.grpc, "prompt").is_empty(),
+            "nothing may reach the agent without the image"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2480,6 +2523,25 @@ mod tests {
         assert!(ts::recorded_of(&fx.grpc, "prompt").is_empty());
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_dropped_bridge_ends_its_queued_worker() {
+        // The per-conversation worker holds only a `Weak<Self>`. When the bridge
+        // is gone by the time the queued event is picked up, the worker must
+        // break out of its loop instead of upgrading a dead handle — no prompt,
+        // no reply. A current_thread runtime makes the ordering deterministic:
+        // a spawned task cannot run until the test awaits.
+        let fx = make_bridge("dropped-bridge", done_events()).await;
+        let bridge = Arc::new(fx.bridge);
+        assert!(bridge.enqueue_event(event("om_1")));
+        drop(bridge);
+        tokio::task::yield_now().await;
+        assert!(ts::recorded_of(&fx.grpc, "prompt").is_empty());
+        assert_eq!(
+            ts::requests_to(&fx.http, "/im/v1/messages/om_1/reply").len(),
+            0
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn a_turn_superseded_before_it_starts_clears_its_ack_reaction() {
         let fx = make_bridge("supersede-before-start", done_events()).await;
@@ -2510,6 +2572,42 @@ mod tests {
             1,
             "the superseded turn must clear its ack reaction"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_superseded_turn_without_an_ack_reaction_still_stops_before_prompting() {
+        // Same supersede decision as the test above, but the turn never placed a
+        // Typing reaction (the platform's reaction call failed, so the caller
+        // passes None). There is then nothing to clear, and the turn must still
+        // end before it prompts — the guard is the generation check, not the
+        // presence of a reaction id.
+        let fx = make_bridge("supersede-no-reaction", done_events()).await;
+        let counter = std::sync::atomic::AtomicU64::new(7);
+        let lock = tokio::sync::Mutex::new(());
+        prompt_loop::run_prompt_loop(
+            &fx.bridge.feishu,
+            &fx.bridge.agent,
+            "sid-1",
+            "om_1",
+            "hello",
+            &[],
+            false,
+            &lock,
+            &counter,
+            None,
+            None,
+            Some(3),
+        )
+        .await
+        .unwrap();
+        assert!(ts::recorded_of(&fx.grpc, "prompt").is_empty());
+        for rid in ["rid_1", "rid_2"] {
+            assert_eq!(
+                ts::requests_to(&fx.http, &format!("/im/v1/messages/om_1/reactions/{rid}")).len(),
+                0,
+                "a turn with no ack reaction must send no reaction request"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

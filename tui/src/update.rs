@@ -49,12 +49,15 @@ fn newer_version(current: &Version, manifest: Manifest) -> Option<Version> {
     (same_channel && latest.cmp_precedence(current).is_gt()).then_some(latest)
 }
 
+/// The installer the notice points at, per platform.
+#[cfg(windows)]
+const INSTALLER: &str = "install.ps1";
+/// See the Windows twin above.
+#[cfg(not(windows))]
+const INSTALLER: &str = "install.sh";
+
 fn notice(current: &Version, latest: &Version) -> String {
-    let installer = if cfg!(windows) {
-        "install.ps1"
-    } else {
-        "install.sh"
-    };
+    let installer = INSTALLER;
     let channel_hint = if latest.build.as_str() == "nightly" {
         " (set FUTUREOS_BASE=https://dl.future-os.cn/nightly)"
     } else {
@@ -166,11 +169,7 @@ mod tests {
             );
             assert!(message.contains(current));
             assert!(message.contains(latest));
-            assert!(message.contains(if cfg!(windows) {
-                "install.ps1"
-            } else {
-                "install.sh"
-            }));
+            assert!(message.contains(INSTALLER));
             assert_eq!(
                 message.contains("FUTUREOS_BASE="),
                 latest.ends_with("+nightly")

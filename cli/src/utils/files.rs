@@ -82,9 +82,28 @@ fn which_command(name: &str) -> (&'static str, String) {
     ("which", name.to_string())
 }
 
+/// Outcome of a PATH lookup.
+///
+/// An `Option` loses a distinction its callers depend on: "the executable is
+/// not installed" and "the lookup could not be *run*" (no `which`/`where` on
+/// PATH, the spawn refused, ...) are different facts. Collapsing them made
+/// `future doctor` report a failed probe as "not installed" — and downgrade the
+/// missing future-agent from an issue to an optional-component note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathLookup {
+    /// The lookup ran and resolved the name to this path.
+    Found(String),
+    /// The lookup ran and reported no match (`which`/`where` exited non-zero,
+    /// or succeeded with empty stdout).
+    NotFound,
+    /// The lookup command itself could not be run; nothing is known about
+    /// whether the name is installed.
+    NotLookedUp(String),
+}
+
 /// `which(name)` — first PATH match for an executable. On Unix shells out to
 /// `which`, on Windows to `where <name>.exe`, exactly like the TS version.
-pub async fn which(name: &str) -> Option<String> {
+pub async fn which(name: &str) -> PathLookup {
     let (cmd, target) = which_command(name);
     let output = tokio::process::Command::new(cmd)
         .arg(&target)
@@ -92,18 +111,28 @@ pub async fn which(name: &str) -> Option<String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
-        .await
-        .ok()?;
+        .await;
+    let output = match output {
+        Ok(output) => output,
+        Err(error) => return PathLookup::NotLookedUp(error.to_string()),
+    };
     if !output.status.success() {
-        return None;
+        return PathLookup::NotFound;
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let trimmed = stdout.trim();
     if trimmed.is_empty() {
-        return None;
+        return PathLookup::NotFound;
     }
     // Take the first line (`which` may print multiple matches on Windows).
-    trimmed.lines().next().map(|line| line.trim().to_string())
+    PathLookup::Found(
+        trimmed
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -118,24 +147,48 @@ mod tests {
     #[tokio::test]
     async fn which_finds_the_host_shell() {
         let _guard = crate::test_env::lock_env().await;
-        let found = which("cmd").await;
-        assert!(found.is_some(), "`which cmd` should resolve on Windows");
-        assert!(found.as_deref().unwrap_or("").contains("cmd"));
+        let PathLookup::Found(found) = which("cmd").await else {
+            panic!("`which cmd` should resolve on Windows");
+        };
+        assert!(found.contains("cmd"));
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn which_finds_the_host_shell() {
         let _guard = crate::test_env::lock_env().await;
-        let found = which("sh").await;
-        assert!(found.is_some(), "`which sh` should resolve on POSIX");
-        assert!(found.as_deref().unwrap_or("").contains("sh"));
+        let PathLookup::Found(found) = which("sh").await else {
+            panic!("`which sh` should resolve on POSIX");
+        };
+        assert!(found.contains("sh"));
     }
 
     #[tokio::test]
-    async fn which_missing_returns_none() {
+    async fn which_missing_is_not_found() {
         let _guard = crate::test_env::lock_env().await;
-        assert!(which("definitely-not-a-real-binary-xyz").await.is_none());
+        assert_eq!(
+            which("definitely-not-a-real-binary-xyz").await,
+            PathLookup::NotFound
+        );
+    }
+
+    /// A lookup that could not be *run* is not a missing executable: the two
+    /// used to be the same `None`, which is how `future doctor` turned its own
+    /// failed probe into "not installed".
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn which_without_a_lookup_command_is_not_looked_up() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        // A real directory, with no `which` in it: the lookup command itself
+        // cannot be spawned, so nothing is known about `sh`.
+        let empty = dir.path().join("bin");
+        std::fs::create_dir_all(&empty).unwrap();
+        let _env = crate::test_env::EnvGuard::set(&[("PATH", empty.as_os_str().to_owned())]);
+        match which("sh").await {
+            PathLookup::NotLookedUp(error) => assert!(!error.is_empty()),
+            other => panic!("a lookup that cannot run is not a look-up result: {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -219,7 +272,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn which_empty_output_is_none() {
+    async fn which_empty_output_is_not_found() {
         let _guard = crate::test_env::lock_env().await;
         // A fake `which` that succeeds with EMPTY stdout → None.
         let dir = tempfile::tempdir().unwrap();
@@ -235,6 +288,6 @@ mod tests {
         }
         let _env =
             crate::test_env::EnvGuard::set(&[("PATH", std::env::join_paths(paths).unwrap())]);
-        assert_eq!(which("anything").await, None);
+        assert_eq!(which("anything").await, PathLookup::NotFound);
     }
 }

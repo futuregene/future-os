@@ -148,6 +148,28 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn run_stops_when_shutdown_landed_before_the_agent_connection() {
+        // The arm a Ctrl-C during startup takes: the signal is already fired
+        // when `run` reaches its first `select!`, so the shutdown branch is the
+        // only ready one (a refused loopback connect cannot complete on its
+        // first poll) and the channel returns without ever building a bridge.
+        ts::ensure_crypto_provider();
+        let shutdown = crate::bridge::Shutdown::new();
+        shutdown.trigger();
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            DingtalkChannel::run(
+                agent_cfg("127.0.0.1:1"),
+                ch_cfg("http://127.0.0.1:1"),
+                shutdown,
+            ),
+        )
+        .await
+        .expect("a shutdown that already fired must end the channel");
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn run_keeps_retrying_without_agent_until_shutdown() {
         ts::ensure_crypto_provider();
         let shutdown = crate::bridge::Shutdown::new();
@@ -167,6 +189,34 @@ mod tests {
             .expect("shutdown must interrupt Agent retry backoff")
             .expect("task join");
         assert!(result.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_retries_the_agent_connection_after_the_backoff_elapses() {
+        // The reconnect backoff is 20 s, and the only way to observe that the
+        // loop *retries* (rather than sitting on its first attempt) is to let
+        // one elapse: this is the arm a long Agent outage takes, and it is what
+        // makes "keeps retrying" more than "can be cancelled".
+        ts::ensure_crypto_provider();
+        let shutdown = crate::bridge::Shutdown::new();
+        let handle = tokio::spawn(DingtalkChannel::run(
+            agent_cfg("127.0.0.1:1"),
+            ch_cfg("http://127.0.0.1:1"),
+            shutdown.clone(),
+        ));
+        // One full backoff plus margin: the first attempt has failed and the
+        // loop has come back around by now.
+        tokio::time::sleep(Duration::from_secs(23)).await;
+        assert!(
+            !handle.is_finished(),
+            "the channel must still be retrying after a full backoff"
+        );
+        shutdown.trigger();
+        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("shutdown must interrupt the retry")
+            .expect("task join");
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -232,6 +282,41 @@ mod tests {
             .expect("shutdown cancels the backoff sleep")
             .expect("task join");
         assert!(result.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_backoff_elapses_and_retries() {
+        // The other edge of the retry delay: the 5 s backoff elapses because
+        // nothing shuts down during it, so the loop comes back around and opens
+        // the gateway again (the sibling above cancels the same wait).
+        ts::ensure_crypto_provider();
+        let (base, log) = ts::spawn_http(vec![HttpRoute::json(
+            "/v1.0/gateway/connections/open",
+            500,
+            "{}",
+        )])
+        .await;
+        let (addr, _) = ts::spawn_mock_grpc(MockState::default()).await;
+        let shutdown = crate::bridge::Shutdown::new();
+        let sd = shutdown.clone();
+        let handle = tokio::spawn(DingtalkChannel::run(agent_cfg(&addr), ch_cfg(&base), sd));
+        // One full backoff plus margin: the open has been retried by now.
+        tokio::time::sleep(Duration::from_millis(5_600)).await;
+        assert!(
+            !handle.is_finished(),
+            "the channel must still be retrying after a full backoff"
+        );
+        let attempts = ts::requests_to(&log, "/v1.0/gateway/connections/open").len();
+        assert!(
+            attempts >= 2,
+            "the loop must have retried the gateway open (attempts: {attempts})"
+        );
+        shutdown.trigger();
+        let result = tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("shutdown must end the channel")
+            .expect("task join");
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

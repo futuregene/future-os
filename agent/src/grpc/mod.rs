@@ -1537,6 +1537,11 @@ mod tests {
         let log = String::from_utf8_lossy(&bytes);
         assert!(log.contains("[grpc] get_agent_info"), "{log}");
         assert!(!log.contains("[grpc] list_tool_calls"), "{log}");
+        drop(bytes);
+        // The subscriber's writer must survive an explicit flush (it is used as
+        // the process-wide default in real runs, where the sink is flushed at
+        // exit).
+        std::io::Write::flush(&mut capture.clone()).expect("flushing the capture writer");
     }
 
     /// Every name in the background set is a real command, so a typo cannot
@@ -1549,6 +1554,149 @@ mod tests {
         }
         assert!(!is_background_command("prompt"));
         assert!(!is_background_command("abort"));
+    }
+
+    /// A closed instance refuses every command and stream *before* dispatch, so
+    /// a late client cannot hydrate a session or start work behind the
+    /// shutdown boundary.
+    #[tokio::test]
+    async fn a_closed_service_refuses_commands_and_streams_before_dispatch() {
+        let state = grpc_app_state(false);
+        let sessions_before = state.sessions.read().len();
+        state.service_work.close();
+        let service = FutureAgentService {
+            state: state.clone(),
+        };
+
+        let command = proto::RpcCommand {
+            id: "cmd-closed".to_string(),
+            r#type: "get_state".to_string(),
+            session_id: "default".to_string(),
+            ..Default::default()
+        };
+        let error = service
+            .execute_command(business_request(command))
+            .await
+            .expect_err("a closed service must refuse the command");
+        assert_eq!(error.code(), tonic::Code::Unavailable);
+        assert!(
+            error.message().contains("Agent service is stopping"),
+            "{error}"
+        );
+
+        let stream = proto::StreamRequest {
+            session_id: "default".to_string(),
+            ..Default::default()
+        };
+        let error = service
+            .stream_events(business_request(stream))
+            .await
+            .err()
+            .expect("a closed service must refuse the event stream");
+        assert_eq!(error.code(), tonic::Code::Unavailable);
+        assert!(
+            error.message().contains("Agent service is stopping"),
+            "{error}"
+        );
+
+        assert_eq!(
+            state.sessions.read().len(),
+            sessions_before,
+            "a refused command must not hydrate or create a session"
+        );
+    }
+
+    /// The wire carries the candidate set for `suggest_skill`; the mapping into
+    /// the shared payload is the only place that contract exists.
+    #[tokio::test]
+    async fn suggest_candidates_cross_the_wire_into_the_recommendation_payload() {
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        let command = proto::RpcCommand {
+            id: "cmd-suggest".to_string(),
+            r#type: "suggest_skill".to_string(),
+            session_id: "default".to_string(),
+            suggest_query: "cover the missing lines".to_string(),
+            suggest_candidates: vec![proto::SkillCandidate {
+                name: "cov100".to_string(),
+                description: "line-coverage helper".to_string(),
+            }],
+            ..Default::default()
+        };
+        let response = service
+            .execute_command(business_request(command))
+            .await
+            .expect("suggestion is best-effort and always answers");
+        let resp = response.into_inner();
+        assert!(resp.success, "{}", resp.error);
+        assert!(
+            resp.data.is_empty(),
+            "a Tier-1 command must not dual-write the JSON body"
+        );
+        let decoded = future_rpc::decode::response_data(&resp);
+        assert!(
+            decoded.get("skill").is_some(),
+            "the payload field name is the wire contract: {decoded}"
+        );
+    }
+
+    /// Both public wrappers bind, announce and serve, and both report a bind
+    /// failure instead of silently failing to start. They never return on their
+    /// own when they bind successfully (shutdown is `pending`), so the test
+    /// drives them inside a current-thread runtime with an INFO subscriber —
+    /// the same thread the subscriber applies to — and aborts them once the
+    /// endpoint announced. All four cases share one test because they contend
+    /// for the same local endpoint.
+    #[test]
+    fn the_public_serve_wrappers_bind_serve_and_report_bind_failures() {
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(std::io::sink)
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .finish();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tracing::subscriber::with_default(subscriber, || {
+            runtime.block_on(async {
+                // 1. A host that is not an IP address cannot be bound, so the
+                // wrapper returns the error.
+                let error = serve_tcp(grpc_app_state(false), "not-an-ip", 0)
+                    .await
+                    .expect_err("an invalid bind host must fail");
+                assert!(
+                    error.to_string().contains("invalid gRPC bind IP"),
+                    "{error}"
+                );
+
+                // 2. The TCP wrapper serves until it is aborted.
+                let tcp = tokio::spawn(serve_tcp(grpc_app_state(false), "127.0.0.1", 0));
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                assert!(!tcp.is_finished(), "serve_tcp must keep serving");
+                tcp.abort();
+                let _ = tcp.await;
+
+                // 3. The local-IPC wrapper serves until it is aborted.
+                let local = tokio::spawn(serve_local(grpc_app_state(false)));
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                assert!(!local.is_finished(), "serve_local must keep serving");
+                local.abort();
+                let _ = local.await;
+
+                // 4. An already owned local endpoint is reported, never shared
+                // with the process that owns it.
+                let held = AgentListener::bind_local()
+                    .await
+                    .expect("the isolated home's endpoint is free here");
+                let error = serve_local(grpc_app_state(false))
+                    .await
+                    .expect_err("an occupied endpoint must fail");
+                assert!(error.to_string().contains("occupied"), "{error}");
+                drop(held);
+            });
+        });
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

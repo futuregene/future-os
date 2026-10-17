@@ -302,6 +302,11 @@ test("the level back leaves the form first, then the task", async () => {
   // …and back from the task is the list.
   await act(async () => { expect(goBackLevel()).toBe(true); });
   expect(sections()).toContain("tasks.title");
+
+  // At the list there is nothing left for this page to step back through: it
+  // says so rather than answering "handled" and swallowing the gesture, which
+  // would leave the user unable to leave the Settings page at all.
+  await act(async () => { expect(goBackLevel()).toBe(false); });
 });
 
 // Saving is the other way out of the form, and it lands on the task it just
@@ -388,11 +393,15 @@ test("edits a yearly trigger's month, day and time", async () => {
   expect(input("tasks.form.month").props.value).toBe("12");
   expect(input("tasks.form.dayOfMonth").props.value).toBe("31");
 
+  // The month is a field like the day: editing it is what the field is for, and
+  // a form that rendered it but dropped its edits would move the run's month
+  // back to the stored one on the next save.
+  await act(async () => input("tasks.form.month").props.onChangeText("6"));
   await act(async () => input("tasks.form.dayOfMonth").props.onChangeText("24"));
   await act(async () => button("tasks.form.save").props.onPress());
   expect(mockRemote.updateTask).toHaveBeenLastCalledWith("tsk_1", expect.objectContaining({
     triggerKind: "schedule",
-    trigger: { mode: "yearly", month: 12, day: 24, time: "22:00" },
+    trigger: { mode: "yearly", month: 6, day: 24, time: "22:00" },
   }));
 });
 
@@ -728,6 +737,10 @@ test("reports a model list that cannot be read, and still lets the task keep its
   // The task's own model stays on screen, so an edit that has nothing to do
   // with the model does not silently rewrite it.
   expect(chip("future/deepseek-v4-pro")).toBeTruthy();
+  // The pinned chip is a choice like any other: picking it is how a task whose
+  // model has been disabled keeps it, and the chip must be able to say so.
+  await act(async () => chip("future/deepseek-v4-pro").props.onPress());
+  expect(chip("future/deepseek-v4-pro").props.accessibilityState.selected).toBe(true);
   await act(async () => button("tasks.form.save").props.onPress());
   expect(mockRemote.updateTask).toHaveBeenCalledWith("tsk_1", expect.objectContaining({ modelId: "future/deepseek-v4-pro" }));
 });

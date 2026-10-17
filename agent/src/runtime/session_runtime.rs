@@ -657,6 +657,29 @@ mod tests {
         );
     }
 
+    /// Disarming the watchdog is what keeps a cancelled run's timer from
+    /// outliving its run and marking a *later* run stuck: once the session is
+    /// shut down or replaced, the timer slot is emptied and the armed task is
+    /// aborted, so advancing past the acknowledgement window changes nothing.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn stopping_the_cancellation_timer_disarms_the_armed_watchdog() {
+        let runtime = Arc::new(SessionRuntime::new(Arc::new(AtomicBool::new(false))));
+        runtime.begin_scheduled("run-a", "request-a", 7).unwrap();
+        runtime.request_abort(None).unwrap();
+        runtime.stop_cancellation_timer();
+        // Idempotent: a second stop must not panic on the emptied slot.
+        runtime.stop_cancellation_timer();
+        tokio::time::advance(std::time::Duration::from_secs(31)).await;
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            runtime.snapshot().unwrap().phase,
+            super::super::RunPhase::Cancelling,
+            "an aborted watchdog must not mark the run stuck"
+        );
+    }
+
     /// `is_terminal_unrecoverable` is the answer a client needs before it decides
     /// to retry: false while there is no run or a live one, true once the run has
     /// been marked stuck and will never release the session by itself.

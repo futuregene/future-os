@@ -221,4 +221,105 @@ describe("useRemoteApprovals", () => {
     expect(hook.current.approvals).toEqual([]);
     hook.unmount();
   });
+
+  /**
+   * The host's push lane is the untrusted boundary: every field is read by hand,
+   * and each one has a shape that means "not a request".
+   *
+   * A request that names no approval has no card identity to answer, and one
+   * whose `data` is not an object at all has no fields to read — producing a card
+   * for either would offer the user a decision it cannot send (no
+   * `approval_request_id` on the wire). The assertion is the *absence* of a card,
+   * plus the next well-formed request still landing, so a hook that wedged on the
+   * bad frame is caught too.
+   */
+  it.each([
+    ["no data envelope at all", { sessionId: "sess_1", type: "approval_request", eventId: "e" }],
+    ["a data that is not JSON", { sessionId: "sess_1", type: "approval_request", eventId: "e", data: "{not json" }],
+    ["a data that decodes to a scalar", { sessionId: "sess_1", type: "approval_request", eventId: "e", data: JSON.stringify(7) }],
+    ["a data with no approval id", { sessionId: "sess_1", type: "approval_request", eventId: "e", data: JSON.stringify({ tool_name: "Bash" }) }],
+    ["an approval id that is not a string", { sessionId: "sess_1", type: "approval_request", eventId: "e", data: JSON.stringify({ approval_request_id: 5 }) }],
+  ])("ignores a request with %s", async (_name, payload) => {
+    const hook = renderHook(() => useRemoteApprovals("desktop_a", "sess_1"));
+    await settle();
+
+    emit(payload as Record<string, unknown>);
+    await settle();
+    expect(hook.current.approvals).toEqual([]);
+
+    emit(request("ap_after"));
+    await settle();
+    expect(hook.current.approvals.map(item => item.id)).toEqual(["ap_after"]);
+    hook.unmount();
+  });
+
+  /**
+   * A decision for a request this window already dropped is a no-op, not a
+   * crash or a stray card.
+   *
+   * The host retransmits (a re-delivered request brings its card back, which is
+   * correct) and other clients answer independently, so a decision push for an id
+   * we do not hold and a terminal `run_finished` for a card that was already
+   * answered both arrive in normal operation.
+   */
+  it("ignores a settlement for a card it is not holding", async () => {
+    const hook = renderHook(() => useRemoteApprovals("desktop_a", "sess_1"));
+    await settle();
+
+    for (const type of ["approval_decision", "agent_end", "run_finished"]) {
+      emit({
+        sessionId: "sess_1",
+        type,
+        eventId: `evt_${type}`,
+        data: JSON.stringify({ approval_request_id: "ap_never_seen" }),
+      });
+    }
+    await settle();
+    expect(hook.current.approvals).toEqual([]);
+
+    // And a real card still arrives afterwards.
+    emit(request("ap1"));
+    await settle();
+    expect(hook.current.approvals.map(item => item.id)).toEqual(["ap1"]);
+    hook.unmount();
+  });
+
+  /**
+   * With no host selected there is nowhere to send a decision, so it is refused
+   * rather than sent to "the current machine" — which, with several paired, may
+   * not be the one that asked.
+   */
+  it("refuses to send a decision with no host selected", async () => {
+    const hook = renderHook(() => useRemoteApprovals("desktop_a", "sess_1"));
+    await settle();
+    emit(request("ap1"));
+    await settle();
+    const approval = hook.current.approvals[0]!;
+
+    // The conversation is closed while the card is on screen (the shell drops the
+    // selection), which is the state the guard exists for.
+    const detached = renderHook(() => useRemoteApprovals(null, null));
+    await settle();
+    await act(async () => {
+      await detached.current.decide(approval, "allow");
+    });
+
+    expect(requestMock).not.toHaveBeenCalled();
+    expect(detached.current.pending).toBeNull();
+    detached.unmount();
+    hook.unmount();
+  });
+
+  /**
+   * A subscription that resolves after the conversation was left is detached
+   * here, because nothing else holds the handle — the host's pushes would
+   * otherwise keep reaching a hook that is no longer displayed.
+   */
+  it("detaches a subscription that resolves only after unmount", async () => {
+    const hook = renderHook(() => useRemoteApprovals("desktop_a", "sess_1"));
+    hook.unmount();
+    await settle();
+
+    expect(listeners).toEqual([]);
+  });
 });

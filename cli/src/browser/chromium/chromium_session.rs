@@ -1647,6 +1647,43 @@ mod tests {
         assert!(tabs[1].visible);
     }
 
+    /// A page whose session is not in hand is listed but never asked for
+    /// visibility.
+    ///
+    /// The question would be sent on a session nobody holds, and the answer it
+    /// produced decides which page the *next* command drives — the same failure
+    /// the visibility probe exists to prevent. The page is still listed, and
+    /// with nothing reporting itself visible the last one in order is the only
+    /// candidate left: named active, and honestly not marked visible.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_page_without_a_session_is_listed_but_not_probed() {
+        let mock = MockCdp::start().await;
+        let mut s = session_over(&mock);
+        s.init().await.expect("init");
+
+        // Discovery ordered the page, but its attach is not in hand (a stale
+        // registry entry looks exactly like this).
+        s.page_mgr
+            .as_ref()
+            .expect("page manager")
+            .set_session_id("T-1", "");
+
+        let tabs = expect_tabs_list(s.tabs(&TabsAction::List).await.unwrap());
+        assert_eq!(tabs.len(), 1, "the page is still listed: {tabs:?}");
+        assert!(
+            !tabs[0].visible,
+            "no session to ask, so nothing may be reported as visible: {tabs:?}"
+        );
+        assert!(
+            mock.commands_of("Runtime.evaluate").is_empty(),
+            "the visibility probe must not run without a session"
+        );
+        assert!(
+            tabs[0].active,
+            "with nothing visible the last page in order is the fallback: {tabs:?}"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn evaluate_expression_and_function_forms() {
         let mock = MockCdp::start().await;

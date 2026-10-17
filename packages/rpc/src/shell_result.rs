@@ -49,3 +49,82 @@ impl ShellResult {
         };
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result(status: ShellStatus, exit_code: Option<i32>) -> ShellResult {
+        ShellResult {
+            command: "cargo test".into(),
+            cwd: "/w".into(),
+            duration_ms: 1,
+            status,
+            exit_code,
+            is_soft_fail: false,
+            is_error: false,
+            attempts: Vec::new(),
+            approval: None,
+            note: None,
+        }
+    }
+
+    /// A non-zero exit is the failure signal, but a soft-fail exit is a
+    /// deliberate partial result and a denied approval is an error even when the
+    /// command exited 0 (it never ran).
+    #[test]
+    fn a_denied_or_replaced_approval_is_an_error_whatever_the_exit_code() {
+        for approval in ["denied", "cancelled", "context_invalidated"] {
+            let mut shell = result(ShellStatus::Exited, Some(0));
+            shell.approval = Some(approval.to_string());
+            shell.update_verdict();
+            assert!(shell.is_error, "{approval} must be reported as an error");
+        }
+        // An approval that was not a refusal leaves the exit code in charge.
+        let mut shell = result(ShellStatus::Exited, Some(0));
+        shell.approval = Some("approved".into());
+        shell.update_verdict();
+        assert!(!shell.is_error);
+    }
+
+    #[test]
+    fn an_exited_command_follows_its_exit_code_and_soft_fail_flag() {
+        let mut ok = result(ShellStatus::Exited, Some(0));
+        ok.update_verdict();
+        assert!(!ok.is_error);
+
+        let mut failed = result(ShellStatus::Exited, Some(1));
+        failed.update_verdict();
+        assert!(failed.is_error);
+
+        let mut soft = result(ShellStatus::Exited, Some(1));
+        soft.is_soft_fail = true;
+        soft.update_verdict();
+        assert!(
+            !soft.is_error,
+            "a declared soft fail is reported by the caller, not as an error"
+        );
+
+        let mut signalled = result(ShellStatus::Exited, None);
+        signalled.update_verdict();
+        assert!(
+            signalled.is_error,
+            "an exit with no code (a signal) is not a success"
+        );
+    }
+
+    #[test]
+    fn every_non_exited_status_is_an_error() {
+        for status in [
+            ShellStatus::LaunchFailed,
+            ShellStatus::ExecutionFailed,
+            ShellStatus::TimedOut,
+            ShellStatus::Cancelled,
+            ShellStatus::NotStarted,
+        ] {
+            let mut shell = result(status, None);
+            shell.update_verdict();
+            assert!(shell.is_error, "{status:?} must be an error");
+        }
+    }
+}

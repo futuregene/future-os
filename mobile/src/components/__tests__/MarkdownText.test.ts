@@ -457,6 +457,26 @@ describe("MarkdownText", () => {
     expect(onOpenFile).toHaveBeenCalledWith("assets/pic.png");
   });
 
+  test("an image whose source is a path on the desktop is a chip that opens it", () => {
+    const onOpenFile = jest.fn();
+    let renderer: ReactTestRenderer | undefined;
+    act(() => {
+      renderer = create(
+        createElement(MarkdownText, {
+          text: "![shot](file:///Users/me/Downloads/shot.png)",
+          onOpenFile,
+        }),
+      );
+    });
+    // The row names the file rather than drawing a broken image: a `file://`
+    // source is a path on the machine that sent the message, so the phone offers
+    // it to the desktop instead of trying to load it.
+    const chip = renderer?.root.findAllByType(Text).find(node => node.props.onPress);
+    expect(chip).toBeDefined();
+    act(() => chip!.props.onPress());
+    expect(onOpenFile).toHaveBeenCalledWith("/Users/me/Downloads/shot.png");
+  });
+
   test("a local link inside a Markdown preview opens beside it, not on a desktop-only notice", () => {
     const onOpenFile = jest.fn();
     const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});

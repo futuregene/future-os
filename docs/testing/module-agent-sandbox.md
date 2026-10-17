@@ -1,5 +1,19 @@
 # Module: `ag-sandbox` (future-agent `agent/src/sandbox/` + `agent/src/tools/`)
 
+> **Record form: prose-only, declared 2026-10-16 (user gate `todo_6a850a842666`, answered
+> "prose-only, and say so in the final report").** This is a **round-1 record** from the previous
+> coverage campaign. It carries **no machine-readable per-line ledger**: `248` table rows, **0**
+> `path:LINE` citations in the whole document, and **0** rows whose first cell is a claim shape.
+> So `reconcile.py`'s MISSING half reports it as mostly-missing and its STALE half has nothing to read —
+> a property of this record's **form**, not a defect, and deliberately not repaired: measured, adding
+> claim-shaped rows here would **invent** claims rather than recover them
+> (`.future/cov100/LEDGER-REWORK.md`, `blindrework.py`).
+>
+> **This round's per-line guarantee for the same subtrees lives in:** module-agent-core.md (agent-core).
+> The final report classifies every module as *machine-checkable* or *prose-only*; this one is
+> **prose-only**, and its historical numbers are kept as history rather than re-verified this round.
+
+
 Coverage, waiver and dimension record for the `ag-sandbox` subtree of
 `future-agent`. Acceptance contract for this document:
 `lines-100-or-waived` · `dimensions` · `weak-tests-fixed`.

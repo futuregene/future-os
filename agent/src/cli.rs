@@ -758,6 +758,26 @@ mod tests {
         );
     }
 
+    /// The hidden helper is dispatched by stripping an `agent` prefix, so a
+    /// renamed standalone binary still reaches it deterministically. That
+    /// rewrite is platform-independent, and off Linux the helper itself is then
+    /// refused — which is what proves the rewrite ran rather than the flag being
+    /// silently accepted.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn the_agent_prefixed_helper_is_rewritten_then_refused_off_linux() {
+        let error = run_from_args(&[
+            "agent".to_string(),
+            "--linux-sandbox-helper".to_string(),
+            "probe".to_string(),
+        ])
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("unavailable on this platform"),
+            "unexpected error: {error}"
+        );
+    }
+
     /// `--reset-windows-sandbox` is a sessionless maintenance command: it must
     /// run without taking the singleton lock (the installer runs it while the
     /// Agent is up) and print a machine-readable count. Run against an isolated
@@ -804,6 +824,318 @@ mod tests {
         assert!(
             result.is_ok(),
             "startup continued without metadata: {result:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod future_home_tests {
+    use super::*;
+
+    /// `--home` points at a directory; a path that exists as a *file* fails at
+    /// the creation step with a message naming the input the user gave. This is
+    /// also the evidence for the classification of the following
+    /// `is_dir()` check: `create_dir_all` cannot succeed on an existing file, so
+    /// that check is only a belt-and-braces guard (it can be reached only if the
+    /// path is swapped between the two calls).
+    #[test]
+    fn a_home_path_that_is_a_file_fails_at_creation_and_names_the_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("not-a-directory");
+        std::fs::write(&file, "occupied").unwrap();
+
+        let error = set_future_home(&file, "--home").expect_err("a file is not a home");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("could not create FutureOS home"),
+            "creation fails first: {message}"
+        );
+        // The creation arm names the *path*; its two siblings name `source`.
+        // Asserted as-is and recorded as F-11 in the module record rather than
+        // "fixed" here, because changing a user-visible message is a behaviour
+        // change and belongs with a deliberate decision.
+        assert!(
+            message.contains(&file.display().to_string()),
+            "the message points at the path it could not use: {message}"
+        );
+        assert!(
+            !message.contains("is not a directory"),
+            "the later guard is not the one that fires: {message}"
+        );
+
+        // A relative path is refused before touching the filesystem.
+        let error = set_future_home(std::path::Path::new("relative/home"), "--home")
+            .expect_err("a relative home is refused");
+        assert!(
+            error.to_string().contains("must be an absolute path"),
+            "{error}"
+        );
+
+        // A writable directory is accepted, and a missing one is created.
+        let fresh = dir.path().join("nested/new-home");
+        let previous = std::env::var_os(future_rpc::home::FUTURE_HOME_ENV);
+        let _guard = crate::test_support::home_env_lock();
+        set_future_home(&fresh, "--home").expect("a fresh absolute directory is accepted");
+        assert!(fresh.is_dir());
+        assert_eq!(
+            std::env::var_os(future_rpc::home::FUTURE_HOME_ENV),
+            Some(fresh.clone().into_os_string())
+        );
+        crate::test_support::restore_env(future_rpc::home::FUTURE_HOME_ENV, &previous);
+    }
+}
+
+/// `async_main`'s final `select!` — the shutdown report racing the serve future
+/// — and the agent's refusal to pass a drain that was cut short off as a clean
+/// stop.
+#[cfg(test)]
+mod cut_short_drain_tests {
+    /// The agent's last decision. `async_main` ends with a `select!` between the
+    /// shutdown **report** completing and the serve future completing; its first
+    /// arm runs `ensure!(report.status == Stopped, "Agent failed to stop: …")`,
+    /// so an agent whose drain could not settle reports the stage that never
+    /// settled and exits non-zero instead of leaving with a clean exit code.
+    ///
+    /// The first arm is taken whenever the report becomes ready while the serve
+    /// future is still pending. The report can only be published early by the
+    /// deadline watcher (`FailedStopping`), because the drain itself ends only
+    /// after the listener stage — which cannot settle before the serve future
+    /// finishes. So the fixture must keep a drain stage open past the 4 s
+    /// deadline `async_main` itself requests. The drain cancels session runtime
+    /// state (runs, shells, approvals) but **not** a platform fetch: one Future
+    /// platform credential (`auth.json`'s `future.base_url`) pointing at an
+    /// endpoint that accepts TCP and never answers leaves the cold-cache
+    /// catalogue refresh (`models/future.rs`'s `spawn_future_models_refresh`,
+    /// which holds a `process_background()` registration across its native
+    /// fetch thread) outstanding, so the "runs and native background work" stage
+    /// never settles. The listener stage is then never reached, the serve future
+    /// is still pending when the report lands, and the first arm runs.
+    ///
+    /// The child is this test binary re-executed (the pattern
+    /// `cli::shutdown::tests` uses) and becomes the agent through the same entry
+    /// point `main` calls; a subprocess is required because the startup path
+    /// installs process-global state. The control leg runs the identical
+    /// fixture **without** the Future credential, which stops cleanly — that is
+    /// what makes the failing leg attributable to the un-cancellable platform
+    /// work rather than to the isolated home or the interrupt itself.
+    #[cfg(unix)]
+    #[test]
+    fn a_cut_short_drain_is_reported_instead_of_a_clean_stop() {
+        use std::time::Duration;
+
+        const CHILD: &str = "FUTURE_TEST_CUT_SHORT_DRAIN_CHILD";
+        const PORT: &str = "FUTURE_TEST_CUT_SHORT_DRAIN_PORT";
+        const OUTCOME: &str = "FUTURE_TEST_CUT_SHORT_DRAIN_OUTCOME";
+        const THIS_TEST: &str =
+            "cli::cut_short_drain_tests::a_cut_short_drain_is_reported_instead_of_a_clean_stop";
+
+        if std::env::var_os(CHILD).is_some() {
+            // The child *is* the agent. `--grpc-addr` with no `--profile-seconds`
+            // keeps it serving until the interrupt below.
+            let port = std::env::var(PORT).expect("child gRPC port");
+            let outcome = crate::cli::run_from_args(&[
+                "--grpc-addr".to_string(),
+                format!("127.0.0.1:{port}"),
+            ]);
+            // Announce the outcome before the Ctrl-C grace watchdog can force
+            // the process out from under us. A *file*, not stdout: the libtest
+            // harness captures this process's `print!` output and discards it
+            // when the test exits. The parent always supplies the path, so a
+            // missing one is a broken harness and `expect` is the honest answer.
+            let outcome_path = std::env::var(OUTCOME).expect("child outcome path");
+            let marker = match &outcome {
+                Ok(()) => "clean-stop".to_string(),
+                Err(error) => format!("failed-stop:{error:#}"),
+            };
+            let _ = std::fs::write(outcome_path, marker);
+            std::process::exit(if outcome.is_ok() { 0 } else { 1 });
+        }
+
+        /// One leg of the fixture: an isolated FutureOS home, one real agent
+        /// subprocess, one SIGINT. `platform_stalls` decides whether that home
+        /// carries a Future platform credential pointing at an endpoint that
+        /// accepts and never answers.
+        async fn leg(
+            platform_stalls: bool,
+        ) -> (std::process::ExitStatus, Duration, Option<String>, String) {
+            use std::time::{Duration, Instant};
+
+            let home = tempfile::tempdir().expect("isolated home");
+            let agent_dir = home.path().join(".future").join("agent");
+            std::fs::create_dir_all(&agent_dir).expect("agent config dir");
+            let held: std::sync::Arc<std::sync::Mutex<Vec<std::net::TcpStream>>> =
+                Default::default();
+            if platform_stalls {
+                let stalling =
+                    std::net::TcpListener::bind("127.0.0.1:0").expect("stalling endpoint");
+                let stalling_addr = stalling.local_addr().expect("stalling address");
+                let held_writer = held.clone();
+                std::thread::spawn(move || {
+                    // Hold every connection open and never answer: the fetch
+                    // waits, which is the whole fixture. The loop ends when the
+                    // listener errors, which is the only way it can stop.
+                    while let Ok((stream, _)) = stalling.accept() {
+                        held_writer.lock().expect("held").push(stream);
+                    }
+                });
+                std::fs::write(
+                    agent_dir.join("auth.json"),
+                    format!(
+                        r#"{{"future":{{"type":"api_key","key":"stall-key","base_url":"http://{stalling_addr}"}}}}"#
+                    ),
+                )
+                .expect("auth.json");
+                std::fs::write(
+                    agent_dir.join("models.json"),
+                    format!(
+                        r#"{{"providers":{{"custom":{{"api":"openai-completions","baseUrl":"http://{stalling_addr}/v1","apiKey":"sk-custom","models":[{{"id":"stall-model","limit":{{"context":64000,"output":4096}}}}]}}}}}}"#
+                    ),
+                )
+                .expect("models.json");
+                std::fs::write(
+                    agent_dir.join("settings.json"),
+                    r#"{"defaultModel": "custom/stall-model", "maxTurns": 9}"#,
+                )
+                .expect("settings.json");
+            }
+
+            let port = std::net::TcpListener::bind("127.0.0.1:0")
+                .expect("probe a free port")
+                .local_addr()
+                .expect("probed address")
+                .port();
+            let outcome_path = home.path().join("outcome.txt");
+            let log_path = home.path().join("child.log");
+            let log = std::fs::File::create(&log_path).expect("child log");
+            let mut child =
+                std::process::Command::new(std::env::current_exe().expect("test binary"))
+                    .arg("--exact")
+                    .arg(THIS_TEST)
+                    .env(CHILD, "1")
+                    .env(PORT, port.to_string())
+                    .env(OUTCOME, &outcome_path)
+                    .env("HOME", home.path())
+                    .env("USERPROFILE", home.path())
+                    // The child's home is the isolated one above, whichever way
+                    // the FutureOS root is selected.
+                    .env_remove(future_rpc::home::FUTURE_HOME_ENV)
+                    .stdout(std::process::Stdio::from(
+                        log.try_clone().expect("log clone"),
+                    ))
+                    .stderr(std::process::Stdio::from(log))
+                    .spawn()
+                    .expect("spawn child agent");
+
+            // The agent publishes its listener before it can answer, so a
+            // successful handshake is the readiness boundary — and it proves the
+            // failure below is not "the agent never started".
+            let address = format!("127.0.0.1:{port}");
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while let Err(error) = future_rpc::connection::connect_verified(
+                &address,
+                future_rpc::connection::EXPECTED_AGENT_VERSION,
+                Duration::from_secs(1),
+                Duration::from_secs(1),
+            )
+            .await
+            {
+                assert!(
+                    child.try_wait().expect("poll child").is_none(),
+                    "the child agent exited before it served: {error}"
+                );
+                assert!(
+                    Instant::now() < deadline,
+                    "the child agent never served: {error}"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            if platform_stalls {
+                // The fixture needs the platform catalogue fetch in flight
+                // before the interrupt, or the leg would be testing nothing.
+                // This is a precondition rather than a wait: the refresh is
+                // spawned during `prepare()` (before the listener binds), and in
+                // the measured run the connection was already held when the
+                // handshake returned -- the wait loop this replaced never
+                // entered its body (its three lines read `DA:0`).
+                let fetch_in_flight = !held.lock().expect("held").is_empty();
+                assert!(fetch_in_flight, "the platform fetch must be in flight");
+            }
+
+            // Interrupt the agent: its drain now has either nothing to wait for
+            // or a platform fetch it cannot cancel, and its report is due 4 s
+            // later.
+            let interrupted = Instant::now();
+            // SAFETY: the pid is this test's own child and the signal is SIGINT,
+            // exactly what a user's Ctrl-C delivers.
+            unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT) };
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let status = loop {
+                if let Some(status) = child.try_wait().expect("poll child") {
+                    break status;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the child agent did not exit after the interrupt"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            };
+            let mut output = String::new();
+            std::io::Read::read_to_string(
+                &mut std::fs::File::open(&log_path).expect("child log"),
+                &mut output,
+            )
+            .expect("read child log");
+            let outcome = std::fs::read_to_string(&outcome_path).ok();
+            (status, interrupted.elapsed(), outcome, output)
+        }
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("parent runtime");
+
+        // Control leg first: the same home, agent and interrupt, but no Future
+        // platform credential, so nothing in the drain can be left waiting.
+        let (status, elapsed, outcome, output) = runtime.block_on(leg(false));
+        assert_eq!(
+            outcome.as_deref(),
+            Some("clean-stop"),
+            "a drain with nothing outstanding must stop cleanly \
+             ({status:?} after {elapsed:?}): {output}"
+        );
+        assert_eq!(
+            status.code(),
+            Some(0),
+            "control exit after {elapsed:?}: {output}"
+        );
+
+        // The fixture leg: the platform fetch is still waiting when the drain's
+        // 4 s deadline expires.
+        let (status, elapsed, outcome, output) = runtime.block_on(leg(true));
+        // Diagnostic (shown on failure, and with `--nocapture`): which of the
+        // two honest outcomes this run produced, plus the child's own log.
+        println!("cut-short drain: outcome={outcome:?} status={status:?} elapsed={elapsed:?}");
+        println!("cut-short drain child log:\n{output}");
+        let reported = outcome.clone().unwrap_or_default();
+        let forced_out = status.code() == Some(130);
+        let reported_failure = reported.contains("failed-stop:")
+            && reported.contains("Agent failed to stop")
+            && reported.contains("Agent shutdown deadline exceeded during");
+        // The refusal runs ~1 s ahead of the Ctrl-C grace watchdog, which
+        // `std::process::exit(130)`s without unwinding. Both outcomes are the
+        // same behaviour -- the drain did not settle and the process did not
+        // exit 0 -- and the coverage of the refusal itself is measured from the
+        // profile, not from these lines.
+        let silent_but_forced = reported.is_empty() && forced_out;
+        let refused = reported_failure || silent_but_forced;
+        assert!(
+            refused,
+            "the cut-short drain neither failed nor was forced out"
+        );
+        assert!(
+            elapsed >= Duration::from_secs(3),
+            "the drain must reach its deadline"
         );
     }
 }

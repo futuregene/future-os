@@ -4,6 +4,7 @@ import {
   clearPendingRevoke,
   labelDesktop,
   loadCredentials,
+  loadActiveDesktopId,
   loadPairedDesktops,
   loadDeviceId,
   renameDesktop,
@@ -15,6 +16,7 @@ import {
   saveLastModel,
   saveLastThinking,
   savePendingRevoke,
+  setActiveDesktop,
 } from "../storage";
 import type { RemoteCredentials } from "../types";
 
@@ -153,6 +155,33 @@ describe("credential storage", () => {
     expect(await loadPairedDesktops()).toHaveLength(2);
     expect((await loadCredentials())?.pairId).toBe("replacement");
     expect(await loadCredentials("desktop_2")).toEqual(other);
+  });
+
+  /**
+   * Which machine the screens are pointed at is a pointer of its own, kept apart
+   * from the pairings: focusing is a write to that pointer, and a focus the
+   * phone cannot honour is refused rather than stored.
+   */
+  test("the focused desktop is stored, and a focus with nothing behind it is refused", async () => {
+    await saveCredentials(credentials);
+    await saveCredentials(other);
+    // Pairing a machine focuses it: the pair the user just completed is the one
+    // the next launch opens on.
+    expect(await loadActiveDesktopId()).toBe("desktop_2");
+
+    await setActiveDesktop("desktop_1");
+    expect(await loadActiveDesktopId()).toBe("desktop_1");
+
+    // Already focused: nothing is written, so a tap on the machine in use costs
+    // no storage round trip and cannot fail.
+    mockedStore.setItemAsync.mockClear();
+    await setActiveDesktop("desktop_1");
+    expect(mockedStore.setItemAsync).not.toHaveBeenCalled();
+
+    // A machine that is not paired cannot be focused at all — the pointer must
+    // not outlive the pairing it names.
+    await setActiveDesktop("desktop_9");
+    expect(await loadActiveDesktopId()).toBe("desktop_1");
   });
 
   test("clear removes only the selected desktop and keeps the installation identity", async () => {

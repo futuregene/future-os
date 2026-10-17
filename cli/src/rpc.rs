@@ -3221,4 +3221,99 @@ mod tests {
         )]);
         notify_agent_refresh_skills().await;
     }
+
+    // ── client surface the CLI exposes but no command drives yet ────────────
+
+    /// `getSessionStats` is part of the client surface every consumer shares;
+    /// nothing in the CLI reads it today, so this is the only place its request
+    /// shape is pinned.
+    #[tokio::test]
+    async fn get_session_stats_round_trips_through_the_client() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent = MockAgent::respond("get_session_stats", "{\"entries\":7,\"turns\":3}");
+        let addr = spawn_mock(agent.clone()).await;
+        let stats = RunClient::new(&addr)
+            .get_session_stats("s1")
+            .await
+            .expect("stats");
+        assert_eq!(stats["entries"], json!(7));
+        let seen = agent.seen_of("get_session_stats");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].session_id, "s1");
+    }
+
+    /// The post-run wait only leaves while the flag is clear, and it is bounded:
+    /// a session that keeps streaming gives up rather than blocking a finished
+    /// run forever.
+    #[tokio::test]
+    async fn wait_for_idle_state_polls_the_streaming_flag_to_clear() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = MockAgent::default();
+        agent.sequences.insert(
+            "get_state".into(),
+            vec![
+                "{\"isStreaming\":true}".to_string(),
+                "{\"isStreaming\":true}".to_string(),
+                "{\"isStreaming\":false,\"sessionName\":\"\"}".to_string(),
+            ],
+        );
+        let addr = spawn_mock(agent.clone()).await;
+        let state = RunClient::new(&addr)
+            .wait_for_idle_state("s1")
+            .await
+            .expect("idle state");
+        assert_eq!(state["isStreaming"], json!(false));
+        assert_eq!(
+            agent.seen_of("get_state").len(),
+            3,
+            "one read plus two polls, stopping at the first idle answer"
+        );
+    }
+
+    /// A model that answers with an empty title is a failure with a message the
+    /// caller can act on, and it never renames: the empty suggestion is dropped
+    /// by the same path a refused one takes.
+    #[tokio::test]
+    async fn an_empty_title_is_skipped_not_applied() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let mut agent = titled_run_agent();
+        agent
+            .responses
+            .insert("generate_session_title".into(), "{\"title\":\"  \"}".into());
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, cap) = Output::memory();
+        client
+            .run(&run_config("hello"), &out)
+            .await
+            .expect("the answer survives an unusable title");
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(
+            stderr.contains("First-turn title skipped: model returned an empty title"),
+            "stderr: {stderr}"
+        );
+        assert!(agent.seen_of("set_session_name").is_empty());
+    }
+
+    /// `--verbose` names the session a generated title was applied to, so a
+    /// scripted run leaves a trace of the extra write it made.
+    #[tokio::test]
+    async fn a_verbose_run_reports_the_title_it_applied() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let agent = titled_run_agent();
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, cap) = Output::memory();
+        let mut config = run_config("hello");
+        config.verbose = true;
+        client.run(&config, &out).await.expect("run");
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(
+            stderr.contains("Titled session s-new: First turn"),
+            "stderr: {stderr}"
+        );
+        assert_eq!(agent.seen_of("set_session_name").len(), 1);
+    }
 }

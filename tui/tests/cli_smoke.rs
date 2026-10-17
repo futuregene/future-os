@@ -40,10 +40,97 @@ fn unknown_option_exits_one() {
     assert!(stderr.contains("Unknown option"));
 }
 
+/// An agent that only answers the readiness handshake — enough to be discovered
+/// on an explicit `--grpc-addr`, so the binary never enters its sidecar-launch
+/// path. A TCP endpoint has no expected home, so any 64-hex data root validates.
+struct ReadinessMock;
+
+#[tonic::async_trait]
+impl future_rpc::proto::future_agent_server::FutureAgent for ReadinessMock {
+    async fn execute_command(
+        &self,
+        request: tonic::Request<future_rpc::proto::RpcCommand>,
+    ) -> Result<tonic::Response<future_rpc::proto::RpcResponse>, tonic::Status> {
+        let cmd = request.into_inner();
+        let data = if cmd.r#type == "get_agent_readiness" {
+            serde_json::json!({
+                "version": future_rpc::connection::EXPECTED_AGENT_VERSION,
+                "agentInstanceId": "cli-smoke-fixture",
+                "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION,
+                "dataRootId": "0".repeat(64),
+                "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION,
+            })
+            .to_string()
+        } else {
+            "{}".to_string()
+        };
+        Ok(tonic::Response::new(future_rpc::proto::RpcResponse {
+            id: cmd.id,
+            r#type: "response".into(),
+            command: cmd.r#type,
+            success: true,
+            data,
+            ..Default::default()
+        }))
+    }
+
+    type StreamEventsStream = std::pin::Pin<
+        Box<
+            dyn tokio_stream::Stream<Item = Result<future_rpc::proto::StreamEvent, tonic::Status>>
+                + Send,
+        >,
+    >;
+
+    async fn stream_events(
+        &self,
+        _request: tonic::Request<future_rpc::proto::StreamRequest>,
+    ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
+        Ok(tonic::Response::new(Box::pin(
+            futures_util::stream::pending(),
+        )))
+    }
+}
+
+/// Exit code 1 in print mode has **two** possible causes: with a sidecar that
+/// starts, `index::run` reaches its own "No prompt provided" check; without one,
+/// agent discovery fails first and the same code comes back. Asserting only
+/// `Some(1)` therefore accepts either path, and the difference is visible only
+/// in coverage counters — an infrastructure accident, not a behaviour.
+///
+/// So the path is pinned here: a readiness mock on the explicit address is
+/// discovered as an external agent (no launch, nothing host-dependent), and the
+/// assertion is on the message the print-mode branch prints.
 #[test]
 fn print_mode_without_message_exits_one() {
-    let out = run_with_args(&["--print"]);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let (addr, server) = runtime.block_on(async {
+        use future_rpc::proto::future_agent_server::FutureAgentServer;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let incoming = tonic::transport::server::TcpIncoming::from_listener(listener, true, None)
+            .expect("tcp incoming");
+        let server = tokio::spawn(
+            tonic::transport::Server::builder()
+                .add_service(FutureAgentServer::new(ReadinessMock))
+                .serve_with_incoming(incoming),
+        );
+        (addr, server)
+    });
+
+    let out = run_with_args(&["--print", "--grpc-addr", &addr]);
+    server.abort();
+    drop(runtime);
+
     assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("No prompt provided"),
+        "print mode must report the missing prompt (the agent was reachable, so \
+         this is the print branch, not a discovery failure): {stderr}"
+    );
 }
 
 #[test]

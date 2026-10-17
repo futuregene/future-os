@@ -217,4 +217,40 @@ describe("createLiveTick", () => {
     // One trailing run for the whole burst — not five.
     expect(runs).toHaveLength(2);
   });
+
+  it("keeps a request queued across a run that ends out of view", async () => {
+    // The interleaving the settle path exists for: the view goes inactive for
+    // the loop check that follows an in-flight projection, but is active again
+    // by the time the tick settles — with a push still queued. Only a settle
+    // path that re-reads `isActive()` restarts the tick; without it the queued
+    // push waits for the *next* push, which for a finished-looking view can be
+    // never.
+    const clock = virtualClock();
+    const runs: number[] = [];
+    const gate = deferred();
+    // Check 1 (leading run): active. Check 2 (after the run, still queued):
+    // the view is gone, so the loop stops. Check 3 (the settle re-check): back.
+    const activity = [true, false, true];
+    const tick = createLiveTick({
+      isActive: () => activity.shift() ?? true,
+      project: async () => {
+        runs.push(clock.now());
+        if (runs.length === 1)
+          await gate.promise;
+      },
+      now: clock.now,
+      sleep: clock.sleep,
+      intervalMs: 100,
+    });
+
+    tick.request();
+    await settle();
+    // A push lands while the first projection is in flight.
+    tick.request();
+    gate.resolve();
+    await settle();
+
+    // The queued push was not stranded: it ran, spaced by the interval.
+    expect(runs).toEqual([0, 100]);
+  });
 });

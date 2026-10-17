@@ -259,9 +259,9 @@ mod contract_tests {
 #[cfg(test)]
 mod runtime_tests {
     use super::test_support::{
-        await_publish, await_publish_matching, declare_features, init_store, jwt, nats_connect,
-        nats_connect_once, now_secs, pairing_creds, sign_in, unique, FakeNats, HomeGuard,
-        MockPlatform,
+        await_publish, await_publish_matching, declare_features, fake_state, init_store, jwt,
+        nats_connect, nats_connect_once, now_secs, pairing_creds, sign_in, unique, FakeNats,
+        HomeGuard, MockPlatform,
     };
     use super::*;
     use serde_json::json;
@@ -292,38 +292,6 @@ mod runtime_tests {
             nats_url: nats_url.to_string(),
             nats_ws_url: nats_url.replace("nats://", "ws://"),
             jwt_expires_at: now_secs() + expires_in,
-        }
-    }
-
-    /// A RemoteState wired to a live fake NATS server, with placeholder tasks
-    /// (pending forever) for the loops this test doesn't drive.
-    async fn fake_state(nats: &FakeNats, pair_id: &str) -> RemoteState {
-        let client = nats_connect(nats).await;
-        let (event_tx, event_rx) = tokio::sync::mpsc::channel(EVENT_QUEUE_CAPACITY);
-        let event_task = spawn_event_publisher(client.clone(), event_rx);
-        RemoteState {
-            security: secure::Transport::legacy_fixture(),
-            generation_id: 1,
-            client,
-            nats_health: Arc::new(NatsHealth::default()),
-            nats_url: nats.url().to_string(),
-            pair_id: pair_id.to_string(),
-            desktop_id: format!("desktop_{}", unique("rt")),
-            desktop_public_key: "UPUBKEY".to_string(),
-            bridge_instance_id: format!("bridge_{}", unique("rt")),
-            event_tx,
-            drop_counters: Arc::new(DropCounters::new()),
-            event_task,
-            cmd_task: tokio::spawn(std::future::pending()),
-            transfer_task: tokio::spawn(std::future::pending()),
-            heartbeat_task: tokio::spawn(std::future::pending()),
-            refresh_task: tokio::spawn(std::future::pending()),
-            web_task: None,
-            web_url: None,
-            web_lan_url: None,
-            pairing_code: None,
-            pairing_code_expires_at: None,
-            pairing_confirmed: Arc::new(AtomicBool::new(true)),
         }
     }
 

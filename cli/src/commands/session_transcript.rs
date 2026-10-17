@@ -2121,4 +2121,453 @@ mod tests {
         assert!(rendered.contains("text: hello"));
         assert!(rendered.contains("repeat with --cursor 1"));
     }
+
+    // ── the text view of the three content modes ────────────────────────────
+    //
+    // `--json` is the machine-readable form of every mode; the default text
+    // form is what a human reads, and each of its branches is asserted here
+    // against the projection `filter_entry` actually produces.
+
+    /// `--paths` renders a call from its structured arguments and a result from
+    /// its free text, both through `compact_paths` — which also has to say
+    /// `(none)` for a block that had nothing path-shaped, rather than render an
+    /// empty field the reader cannot tell from a missing one.
+    #[test]
+    fn text_paths_render_compact_lists_and_an_empty_one_on_purpose() {
+        let call = entry(
+            "assistant",
+            json!([call_block(
+                "write",
+                "c1",
+                json!({"file_path": "/work/out.md"})
+            )]),
+        );
+        let mut names = CallNames::new();
+        let mut ids = HashSet::new();
+        let kept = filter_entry(&call, &options(&["--paths"]), 3, &mut names, &mut ids).unwrap();
+        let rendered = format_text("s1", 1, &[kept.entry], 10, false, 3, 0);
+        assert!(
+            rendered.contains("tool-call write: paths /work/out.md"),
+            "{rendered}"
+        );
+
+        let result = entry("tool", json!([result_block("c1", "wrote /work/out.md")]));
+        let mut names = CallNames::new();
+        let mut ids = HashSet::new();
+        let kept = filter_entry(&result, &options(&["--paths"]), 4, &mut names, &mut ids).unwrap();
+        let rendered = format_text("s1", 1, &[kept.entry], 10, false, 4, 0);
+        assert!(
+            rendered.contains("tool-result: paths /work/out.md"),
+            "{rendered}"
+        );
+
+        let bare = entry(
+            "assistant",
+            json!([call_block("shell", "c2", json!({"command": "ls"}))]),
+        );
+        let mut names = CallNames::new();
+        let mut ids = HashSet::new();
+        let kept = filter_entry(&bare, &options(&["--paths"]), 5, &mut names, &mut ids).unwrap();
+        assert_eq!(kept.entry["blocks"][0]["paths"], json!([]));
+        let rendered = format_text("s1", 1, &[kept.entry], 10, false, 5, 0);
+        assert!(
+            rendered.contains("tool-call shell: paths (none)"),
+            "{rendered}"
+        );
+    }
+
+    /// Without `--paths` a call renders its name and parsed arguments; an
+    /// unnamed call falls back to the bare `tool-call` label instead of an
+    /// empty name; and a failed result carries the `(error)` marker, which is
+    /// the only place text mode distinguishes it.
+    #[test]
+    fn text_renders_calls_results_and_the_error_marker() {
+        let answer = entry(
+            "assistant",
+            json!([
+                {"kind": "reasoning", "text": "why"},
+                call_block("shell", "c1", json!({"command": "ls"})),
+                call_block("", "c2", json!({})),
+            ]),
+        );
+        let mut names = CallNames::new();
+        let mut ids = HashSet::new();
+        let kept = filter_entry(
+            &answer,
+            &options(&["--select", "assistant,thinking,tool-call"]),
+            0,
+            &mut names,
+            &mut ids,
+        )
+        .unwrap();
+        let rendered = format_text("s1", 1, &[kept.entry], 10, false, 0, 0);
+        assert!(rendered.contains("reasoning: why"), "{rendered}");
+        assert!(
+            rendered.contains("tool-call shell: {\"command\":\"ls\"}"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("tool-call: {}"), "{rendered}");
+
+        let failed = entry(
+            "tool",
+            json!([{"kind": "tool_result", "toolCallId": "c1", "text": "boom", "isError": true}]),
+        );
+        let mut names = CallNames::new();
+        let mut ids = HashSet::new();
+        let kept = filter_entry(
+            &failed,
+            &options(&["--select", "tool-result"]),
+            1,
+            &mut names,
+            &mut ids,
+        )
+        .unwrap();
+        let rendered = format_text("s1", 1, &[kept.entry], 10, false, 1, 0);
+        assert!(rendered.contains("tool-result (error): boom"), "{rendered}");
+
+        // A result that did not fail carries no marker: the plain form is the
+        // text, and "(error)" is reserved for a failure — a marker on every
+        // result would make the marker meaningless.
+        let succeeded = entry(
+            "tool",
+            json!([{"kind": "tool_result", "toolCallId": "c1", "text": "ok", "isError": false}]),
+        );
+        let mut names = CallNames::new();
+        let mut ids = HashSet::new();
+        let kept = filter_entry(
+            &succeeded,
+            &options(&["--select", "tool-result"]),
+            1,
+            &mut names,
+            &mut ids,
+        )
+        .unwrap();
+        let rendered = format_text("s1", 1, &[kept.entry], 10, false, 1, 0);
+        assert!(rendered.contains("tool-result: ok"), "{rendered}");
+        assert!(!rendered.contains("(error)"), "{rendered}");
+    }
+
+    /// `--counts` as text: one heading per non-empty distribution, the two
+    /// scalars, and the window — a section the tally left empty is omitted
+    /// rather than printed as an empty heading.
+    #[tokio::test]
+    async fn transcript_counts_text_mode_renders_every_section_and_the_window() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut assistant = run_entry(
+            "assistant",
+            "run-1",
+            "completed",
+            Some(json!({"inputTokens": 10})),
+        );
+        assistant["blocks"] = json!([
+            {"kind": "reasoning", "text": "ab"},
+            call_block("shell", "c1", json!({"command": "ls"})),
+            {"kind": "tool_result", "toolCallId": "c1", "text": "x", "isError": true},
+        ]);
+        let agent = entries_agent(json!({
+            "entries": [run_entry("user", "run-1", "completed", None), assistant]
+        }));
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        run(&args(&["--session", "s1", "--counts"]), &out)
+            .await
+            .expect("counts");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(
+            stdout.starts_with("session=s1 scanned=2 hasMore=false nextCursor=2\n"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("\nentries:\n  assistant: 1\n  user: 1\n"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("\nblocks:\n"), "{stdout}");
+        assert!(stdout.contains("\ntools:\n  shell: 1\n"), "{stdout}");
+        assert!(stdout.contains("\nruns:\n  completed: 2\n"), "{stdout}");
+        assert!(stdout.contains("\ntokens:\n  input: 10\n"), "{stdout}");
+        assert!(
+            stdout.contains("\ntoolErrors=1 contentBytes=7\n"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("\nwindow="), "{stdout}");
+        assert!(!stdout.contains("More entries exist"), "{stdout}");
+    }
+
+    /// `--runs` as text: the same ledger the JSON form serialises, with the
+    /// failed run's error line and the advice for the truncated case.
+    #[tokio::test]
+    async fn transcript_runs_text_mode_renders_the_ledger() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent = entries_agent(json!({
+            "entries": [
+                run_entry("user", "run-1", "completed", None),
+                run_entry("assistant", "run-1", "completed", Some(json!({"inputTokens": 2_500_000}))),
+                run_entry("user", "run-2", "failed", None),
+            ]
+        }));
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        run(&args(&["--session", "s1", "--runs"]), &out)
+            .await
+            .expect("runs");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(
+            stdout.starts_with("session=s1 runs=2 failed=1\n"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("run-1  completed 1.5s in=2.5M"), "{stdout}");
+        assert!(stdout.contains("error: upstream disconnected"), "{stdout}");
+        assert!(!stdout.contains("More runs exist"), "{stdout}");
+    }
+
+    /// The default text mode: the header counts what the window scanned, and a
+    /// result whose call was not in the window is reported as skipped — that
+    /// note is the only signal a reader gets that the view is incomplete.
+    #[tokio::test]
+    async fn transcript_text_mode_reports_the_header_and_skipped_results() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent = entries_agent(
+            json!({"entries": [entry("tool", json!([result_block("gone", "body")]))]}),
+        );
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        run(
+            &args(&[
+                "--session",
+                "s1",
+                "--tool",
+                "shell",
+                "--select",
+                "tool-result",
+            ]),
+            &out,
+        )
+        .await
+        .expect("transcript");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(
+            stdout
+                .starts_with("session=s1 scanned=1 entries=0 bytes=0 hasMore=false nextCursor=1\n"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "note: 1 tool result(s) had no call in this window and were skipped; start at --cursor 0 to include them"
+            ),
+            "{stdout}"
+        );
+    }
+
+    /// An empty page ends the scan at once: nothing was consumed, so the cursor
+    /// stays where the caller left it and `hasMore` is false.
+    #[tokio::test]
+    async fn transcript_empty_page_ends_the_scan() {
+        let _guard = crate::test_env::lock_env().await;
+        let (_agent, _env) = mock_env(entries_agent(json!({"entries": []}))).await;
+        let (out, cap) = Output::memory();
+        run(&args(&["--session", "s1", "--json", "--cursor", "7"]), &out)
+            .await
+            .expect("transcript");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let report: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(report["scannedEntries"], json!(0));
+        assert_eq!(report["hasMore"], json!(false));
+        assert_eq!(
+            report["nextCursor"],
+            json!(7),
+            "an empty page consumes none"
+        );
+    }
+
+    /// A byte budget that the next entry would exceed stops the window *before*
+    /// that entry, so the cursor still points at unread content and the next
+    /// call can pick it up where this one stopped.
+    #[tokio::test]
+    async fn transcript_max_bytes_leaves_the_next_entry_for_the_following_window() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent = entries_agent(json!({
+            "entries": [
+                entry("user", json!([text_block("first")])),
+                entry("assistant", json!([text_block("second")])),
+            ]
+        }));
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        run(
+            &args(&["--session", "s1", "--json", "--max-bytes", "1"]),
+            &out,
+        )
+        .await
+        .expect("transcript");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let report: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(report["emittedEntries"], json!(1));
+        assert_eq!(report["hasMore"], json!(true));
+        assert_eq!(
+            report["nextCursor"],
+            json!(1),
+            "the unread entry is not skipped"
+        );
+    }
+
+    /// The parser reports the flag by name, treats a flag-shaped value as a
+    /// missing value rather than as a value, refuses a blank or empty item, and
+    /// bounds the byte budget at 64 MiB.
+    #[test]
+    fn transcript_option_errors_name_the_flag_they_belong_to() {
+        assert_eq!(
+            parse(&args(&["--session", "--json"])).unwrap_err(),
+            "missing value for --session"
+        );
+        assert_eq!(
+            parse(&args(&["--session", "   "])).unwrap_err(),
+            "--session must not be empty"
+        );
+        assert_eq!(
+            parse(&args(&["--session", "s1", "--tool", ","])).unwrap_err(),
+            "--tool contains an empty item"
+        );
+        assert_eq!(
+            parse(&args(&["--session", "s1", "--max-bytes", "67108865"])).unwrap_err(),
+            "--max-bytes must be at most 64 MiB"
+        );
+        // The limit at its own boundary is accepted, one past it is not.
+        assert_eq!(
+            parse(&args(&["--session", "s1", "--max-bytes", "67108864"]))
+                .unwrap()
+                .max_bytes,
+            67_108_864
+        );
+    }
+
+    /// A `session_info`/`compaction` payload is an observation like any other:
+    /// `--grep` can drop it, and `--truncate` bounds the strings inside it.
+    #[test]
+    fn session_payloads_are_grepped_and_truncated_inside_their_object() {
+        let info = json!({
+            "id": "i1", "kind": "session_info", "role": "system", "createdAtMs": 1i64,
+            "session": {"cwd": "/work", "model": "claude-sonnet-4-5", "thinkingLevel": "high"},
+        });
+        let mut names = CallNames::new();
+        let mut ids = HashSet::new();
+        assert!(filter_entry(
+            &info,
+            &options(&["--select", "session", "--grep", "zzz"]),
+            0,
+            &mut names,
+            &mut ids
+        )
+        .is_none());
+
+        let kept = filter_entry(
+            &info,
+            &options(&["--select", "session", "--grep", "CLAUDE", "--truncate", "4"]),
+            0,
+            &mut names,
+            &mut ids,
+        )
+        .unwrap();
+        assert_eq!(kept.entry["session"]["model"], json!("clau…"));
+        assert_eq!(kept.entry["session"]["cwd"], json!("/wor…"));
+        assert_eq!(
+            kept.entry["session"]["thinkingLevel"],
+            json!("high"),
+            "a string at the limit is left alone"
+        );
+    }
+
+    /// The path walker recurses through arrays as well as objects, and both
+    /// shapes that fill the per-block list are stopped: the array loop returns
+    /// when an item filled it, and the object arm's next recursion — which sees
+    /// the full list — is the entry guard.
+    #[test]
+    fn path_collection_walks_arrays_and_stops_at_the_per_block_cap() {
+        let full: Vec<Value> = (0..MAX_PATHS_PER_BLOCK)
+            .map(|i| json!({"file_path": format!("/t/{i}")}))
+            .collect();
+        let mut out = Vec::new();
+        collect_paths_from_json(&json!({"items": full}), &mut out);
+        assert_eq!(out.len(), MAX_PATHS_PER_BLOCK);
+
+        let short: Vec<Value> = (0..MAX_PATHS_PER_BLOCK - 1)
+            .map(|i| json!({"file_path": format!("/t/{i}")}))
+            .collect();
+        let mut out = Vec::new();
+        collect_paths_from_json(&json!({"items": short, "output_path": "/t/last"}), &mut out);
+        assert_eq!(out.len(), MAX_PATHS_PER_BLOCK);
+        assert_eq!(out[MAX_PATHS_PER_BLOCK - 1], "/t/last");
+
+        // The text walker shares the cap, and stops before pushing past it.
+        let text = (0..MAX_PATHS_PER_BLOCK + 20)
+            .map(|i| format!("/t/{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut out = Vec::new();
+        collect_paths_from_text(&text, &mut out);
+        assert_eq!(out.len(), MAX_PATHS_PER_BLOCK);
+        assert_eq!(out[MAX_PATHS_PER_BLOCK - 1], "/t/99");
+    }
+
+    /// Truncation recurses into arrays and objects and leaves every scalar that
+    /// is not a string untouched.
+    #[test]
+    fn truncation_recurses_through_arrays_and_leaves_scalars_alone() {
+        let mut value = json!(["long-enough", {"deep": "long-enough"}, 7, null, true]);
+        truncate_strings(&mut value, 4);
+        assert_eq!(value, json!(["long…", {"deep": "long…"}, 7, null, true]));
+    }
+
+    /// Blocks this view does not model are dropped rather than echoed, and a
+    /// result the caller did not select leaves no trace: a media block is not a
+    /// text block with a different kind on it.
+    #[test]
+    fn unselected_and_unmodelled_blocks_leave_no_trace() {
+        let entry = entry(
+            "assistant",
+            json!([
+                {"kind": "image", "data": "base64…"},
+                text_block("kept"),
+                result_block("c1", "unselected"),
+            ]),
+        );
+        let mut names = CallNames::new();
+        let mut ids = HashSet::new();
+        let kept = filter_entry(
+            &entry,
+            &options(&["--select", "assistant"]),
+            0,
+            &mut names,
+            &mut ids,
+        )
+        .expect("the text block is kept");
+        let kinds: Vec<&str> = kept.entry["blocks"]
+            .as_array()
+            .expect("blocks")
+            .iter()
+            .map(|block| block["kind"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["text"],
+            "only the modelled, selected block survives"
+        );
+        let rendered = format_text("s1", 1, &[kept.entry], 10, false, 0, 0);
+        assert!(rendered.contains("text: kept"), "{rendered}");
+        assert!(!rendered.contains("unselected"), "{rendered}");
+    }
+
+    /// The text view skips a block kind its renderer does not know, so a
+    /// projection from a newer agent degrades to the blocks this build can read
+    /// instead of printing a half-written line.
+    #[test]
+    fn the_text_view_skips_block_kinds_it_cannot_render() {
+        let foreign = json!({
+            "ordinal": 0, "id": "e1", "kind": "assistant", "role": "assistant",
+            "createdAtMs": 0i64,
+            "blocks": [{"kind": "image", "text": "ignored"}],
+        });
+        let rendered = format_text("s1", 1, &[foreign], 0, false, 0, 0);
+        assert!(!rendered.contains("ignored"), "{rendered}");
+        assert!(rendered.contains("[assistant]"), "{rendered}");
+    }
 }
