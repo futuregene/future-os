@@ -601,7 +601,11 @@ fn service_fixture() {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 6, "the extraction must not migrate the schema");
+        assert_eq!(
+            version,
+            future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION as i64,
+            "service startup must use the advertised storage schema"
+        );
     }
 }
 
