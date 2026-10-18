@@ -49,6 +49,7 @@ export function ConnectionBadge({
   machines,
   standby = false,
   holder = null,
+  onTakeControl,
 }: {
   presentation: ConnectionPresentation;
   disconnectReason?: string;
@@ -76,6 +77,14 @@ export function ConnectionBadge({
    * in the block's own words; the per-machine rows read their own state.
    */
   holder?: { name?: string } | null;
+  /**
+   * Ask `desktopId` to let this phone drive it.
+   *
+   * The popover is where a refusal is explained, so it is also where the way out
+   * of it belongs: the dot says something is wrong, this sheet says what, and
+   * the action is one tap from the explanation.
+   */
+  onTakeControl?: (desktopId: string) => Promise<void> | void;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -86,6 +95,8 @@ export function ConnectionBadge({
   const frameKey = `${dimensions.width}:${dimensions.height}:${dimensions.fontScale}:${insets.top}:${insets.right}:${insets.bottom}:${insets.left}`;
   const [anchor, setAnchor] = useState<{ right: number; top: number; frameKey: string } | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  /** The machine whose takeover is in flight, so its button cannot be doubled. */
+  const [busy, setBusy] = useState<string | null>(null);
   // Dismiss rather than leave the bubble detached from its dot after layout changes.
   if (modalOpen && (!active || anchor?.frameKey !== frameKey)) setModalOpen(false);
   const visible = active && modalOpen && anchor !== null && anchor.frameKey === frameKey;
@@ -177,7 +188,9 @@ export function ConnectionBadge({
   const solution = partial
     ? t("connection.machinesPartialHint")
     : standbyOnly
-      ? t("connection.takeControlHint")
+      ? (holderName
+          ? t("connection.takeControlHint", { name: holderName })
+          : t("connection.takeControlHintUnknown"))
       : disconnected
         ? t(`connection.disconnectDetails.${copy}.solution`)
         : t(`connection.statusDetails.${detailState}.solution`);
@@ -188,6 +201,28 @@ export function ConnectionBadge({
   const reasonWithCode = partial
     ? reason
     : reason + (presentation.supportCode ? ` (${presentation.supportCode})` : "");
+  /**
+   * Take one machine, then close.
+   *
+   * Closing is part of the answer: the sheet exists to explain why the phone
+   * cannot work, and once it can, leaving the explanation on screen would be the
+   * last thing the user sees.
+   */
+  async function take(desktopId: string) {
+    if (!onTakeControl || busy) return;
+    setBusy(desktopId);
+    try {
+      await onTakeControl(desktopId);
+      close();
+    }
+    catch {
+      // Stay open: the machine refused, and the sheet is where that is read.
+    }
+    finally {
+      setBusy(null);
+    }
+  }
+
   const leftEdge = insets.left + layout.gutter;
   const rightEdge = insets.right + layout.gutter;
   const popoverWidth = Math.min(320, dimensions.width - leftEdge - rightEdge);
@@ -231,23 +266,41 @@ export function ConnectionBadge({
             <ScrollView bounces={false} contentContainerStyle={styles.content}>
               {severalMachines && (
                 <View style={styles.machines}>
-                  {machines!.map(machine => (
-                    <View key={machine.desktopId} style={styles.machineRow}>
-                      <View
-                        testID={`machine-dot-${machine.desktopId}`}
-                        style={[
-                          styles.machineDot,
-                          { backgroundColor: statusColor(machine.status, colors) },
-                        ]}
-                      />
-                      <Text numberOfLines={1} style={styles.machineName}>
-                        {`${iconGlyph(machine.icon)} ${machine.label}`}
-                      </Text>
-                      <Text style={styles.machineState}>
-                        {t(machineStatusKey(machine.status))}
-                      </Text>
-                    </View>
-                  ))}
+                  {machines!.map((machine) => {
+                    // A machine another device holds answers every heartbeat and
+                    // still cannot be read from, so its row wears the same yellow
+                    // the header dot does rather than the green of "connected".
+                    const held = machine.status === "connected" && machine.control === "standby";
+                    return (
+                      <View key={machine.desktopId} style={styles.machineRow}>
+                        <View
+                          testID={`machine-dot-${machine.desktopId}`}
+                          style={[
+                            styles.machineDot,
+                            { backgroundColor: held ? colors.warningDot : statusColor(machine.status, colors) },
+                          ]}
+                        />
+                        <View style={styles.machineText}>
+                          <Text numberOfLines={1} style={styles.machineName}>
+                            {`${iconGlyph(machine.icon)} ${machine.label}`}
+                          </Text>
+                          <Text numberOfLines={1} style={styles.machineState}>
+                            {held
+                              ? t("connection.machineStandby")
+                              : t(machineStatusKey(machine.status))}
+                          </Text>
+                        </View>
+                        {held && onTakeControl ? (
+                          <Button
+                            compact
+                            variant="secondary"
+                            label={busy === machine.desktopId ? "…" : t("connection.takeControl")}
+                            onPress={() => void take(machine.desktopId)}
+                          />
+                        ) : null}
+                      </View>
+                    );
+                  })}
                   {/* The count is the block's own description when only some
                       machines answer; written here it would repeat it a line
                       above its own reason. */}
@@ -264,6 +317,14 @@ export function ConnectionBadge({
               <Text accessibilityLiveRegion="polite" style={[styles.title, { color: titleColor }]}>{label}</Text>
               <Text style={styles.hint}>{reasonWithCode}</Text>
               {solution && <Text style={styles.hint}>{solution}</Text>}
+              {!severalMachines && standby && onTakeControl && machines?.[0] ? (
+                <Button
+                  compact
+                  variant="secondary"
+                  label={busy ? "…" : t("connection.takeControl")}
+                  onPress={() => void take(machines[0]!.desktopId)}
+                />
+              ) : null}
               {(reconnectable || unpairable) && (
                 <Button
                   compact
@@ -314,8 +375,9 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   machines: { gap: spacing.xs },
   machineRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   machineDot: { width: 8, height: 8, borderRadius: 4 },
-  machineName: { flex: 1, minWidth: 0, color: theme.colors.ink, fontSize: theme.font(14) },
-  machineState: { color: theme.colors.inkMuted, fontSize: theme.font(13) },
+  machineText: { flex: 1, minWidth: 0 },
+  machineName: { color: theme.colors.ink, fontSize: theme.font(14) },
+  machineState: { color: theme.colors.inkMuted, fontSize: theme.font(12) },
   machinesSummary: { color: theme.colors.inkMuted, fontSize: theme.font(12) },
   title: { fontSize: theme.font(15), fontWeight: "600" },
   hint: { color: theme.colors.inkSoft, fontSize: theme.font(14), lineHeight: theme.leading(21) },

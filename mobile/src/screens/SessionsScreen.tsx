@@ -27,7 +27,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "../components/Button";
 import { ActionMenu } from "../components/ActionMenu";
 import { ConnectionBadge } from "../components/ConnectionBadge";
-import { TakeControlBanner } from "../components/TakeControlBanner";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { DialogSurface } from "../components/DialogSurface";
 import { useAppDialog } from "../components/useAppDialog";
@@ -897,6 +896,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
               disconnectReason={remote.presence?.reason}
               error={remote.error}
               holder={remote.presence?.holder ?? null}
+              onTakeControl={remote.takeControl}
               standby={remote.presence?.control === "standby"}
               onReconnect={reconnect}
               onUnpair={confirmUnpair}
@@ -915,18 +915,6 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           <ErrorBanner
             message={remote.error}
             onDismiss={remote.clearError}
-          />
-        )}
-
-        {/* Another paired device holds this desktop. Connecting does not
-            displace it, so the phone says who has it and offers to take over —
-            on a deliberate tap, and only after saying what that costs. Shown
-            here rather than in the conversation so it is visible whichever tab
-            the user is on. */}
-        {connection.level === "connected" && remote.presence?.control === "standby" && (
-          <TakeControlBanner
-            holder={remote.presence?.holder ?? null}
-            onTakeControl={remote.takeControl}
           />
         )}
 
