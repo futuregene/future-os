@@ -7,7 +7,7 @@ mod paging;
 mod recall;
 mod recovery;
 
-pub(super) use recovery::{ensure_history_index, mark_history_index_ready};
+pub(super) use recovery::{ensure_history_index, mark_history_index_ready, with_history_index};
 
 pub(super) use display_index::{
     insert_entry_shape, refresh_session_metadata, update_display_index_from,
