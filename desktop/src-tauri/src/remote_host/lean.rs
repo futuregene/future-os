@@ -119,10 +119,31 @@ const USAGE_TOKEN_KEYS: [&str; 2] = ["completion_tokens", "output_tokens"];
 
 static LEAN_EVENTS: AtomicBool = AtomicBool::new(false);
 
-pub(crate) fn enabled() -> bool {
-    LEAN_EVENTS.load(Ordering::Acquire)
+tokio::task_local! {
+    /// Whether *this request's* connection declared the lean feed.
+    ///
+    /// The declaration belongs to a connection, and a machine now serves
+    /// several: a global flag would hand one device's history to the next
+    /// device's request, trimmed to fields it never asked for. The command loop
+    /// scopes each command with its own connection's declaration.
+    static LEAN_REQUEST: bool;
 }
 
+pub(crate) fn enabled() -> bool {
+    LEAN_REQUEST
+        .try_with(|value| *value)
+        .unwrap_or_else(|_| LEAN_EVENTS.load(Ordering::Acquire))
+}
+
+/// Run `future` as one request from a connection that declared — or did not
+/// declare — the lean feed.
+pub(crate) async fn in_request<T>(lean: bool, future: impl std::future::Future<Output = T>) -> T {
+    LEAN_REQUEST.scope(lean, future).await
+}
+
+/// Set the process-wide fallback. Only the fixtures use it: production state is
+/// per connection (see [`LEAN_REQUEST`] and `SUPERVISOR.lean_events`).
+#[cfg(test)]
 pub(crate) fn set_enabled(enabled: bool) {
     LEAN_EVENTS.store(enabled, Ordering::Release);
 }

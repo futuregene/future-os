@@ -328,3 +328,247 @@ mod tests {
         assert_eq!(value["error"], "protocol mismatch");
     }
 }
+
+#[cfg(test)]
+mod block_fixtures {
+    //! The `agent_supervisor` residual block. Every case re-executes this test
+    //! binary with its own `FUTURE_HOME` and agent socket: the Agent host, the
+    //! shutdown coordinator and the quit flags are process-wide and one-way, so
+    //! the only honest way to drive them is a fresh process per state.
+    use super::*;
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    const CASE: &str = "FUTURE_AGENT_SUPERVISOR_CASE";
+
+    #[test]
+    fn a_starting_host_is_reported_as_starting_and_refuses_a_quit_decision() {
+        run_case("starting");
+    }
+
+    #[test]
+    fn a_failed_host_reports_the_workers_error_on_the_status() {
+        run_case("failed");
+    }
+
+    #[test]
+    fn an_unreachable_agent_is_an_error_not_a_ready_status() {
+        run_case("unreachable");
+    }
+
+    #[test]
+    fn an_owned_host_counts_its_activity_and_a_stopped_host_reports_none() {
+        run_case("owned");
+    }
+
+    #[test]
+    fn a_failed_stop_is_a_stopping_status_with_its_reason() {
+        run_case("failed-stop");
+    }
+
+    #[test]
+    fn a_quit_while_another_action_owns_the_barrier_starts_no_stop() {
+        run_case("quit-barrier");
+    }
+
+    #[test]
+    fn a_repeated_quit_is_answered_without_starting_a_second_stop() {
+        run_case("quit-repeat");
+    }
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime for the status poll")
+            .block_on(future)
+    }
+
+    fn mock_app() -> tauri::App<tauri::test::MockRuntime> {
+        tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap()
+    }
+
+    fn run_case(case: &str) {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/host-fixtures");
+        std::fs::create_dir_all(&parent).unwrap();
+        let home = tempfile::tempdir_in(&parent).unwrap();
+        // A unix `sun_path` is 104 bytes on macOS, so the socket lives in the
+        // short system temp dir rather than beside the fixture home.
+        let socket = tempfile::tempdir().unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "agent_supervisor::block_fixtures::host_fixture",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CASE, case)
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .env("FUTURE_HOME", home.path().join(".future"))
+            .env("FUTURE_DESKTOP_AGENT_MODE", "auto")
+            .env("FUTURE_AGENT_SOCKET", socket.path().join("agent.sock"))
+            .env_remove("FUTURE_AGENT_GRPC_ADDR")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "{case} timed out: {} {}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let output = child.wait_with_output().unwrap();
+        // Hoisted for the same reason as the host fixture: a passing
+        // assertion never evaluates its message arguments.
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{case}: {stdout} {stderr}");
+    }
+
+    #[test]
+    fn host_fixture() {
+        let Ok(case) = std::env::var(CASE) else {
+            return;
+        };
+        if case == "starting" {
+            let endpoint = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            endpoint.set_nonblocking(true).unwrap();
+            let address = endpoint.local_addr().unwrap();
+            let starter = crate::agent_host::host().clone();
+            let thread = std::thread::spawn(move || starter.start(format!("http://{address}")));
+            // Accepting without answering keeps the host in `Starting`, which is
+            // the phase the status poll and the quit decision have to report.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let _peer = loop {
+                match endpoint.accept() {
+                    Ok((peer, _)) => break peer,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "the probe did not connect");
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("accept probe: {error}"),
+                }
+            };
+            let status = block_on(agent_status());
+            assert_eq!(status.phase, "starting");
+            assert!(status.error.is_none());
+            assert!(status.shutdown.is_none());
+            // Starting is *not* "no work": the count cannot be read yet, so the
+            // close request must confirm rather than exit.
+            assert_eq!(
+                on_close_requested(),
+                QuitDecision::Confirm { open_dialog: true }
+            );
+            crate::agent_host::host().request_stop();
+            let _ = crate::agent_host::host().stop();
+            assert!(thread.join().unwrap().is_err());
+            return;
+        }
+        if case == "failed" {
+            let root = future_rpc::home::future_home();
+            std::fs::create_dir_all(root.join("agent")).unwrap();
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(root.join("agent/agent-instance.lock"))
+                .unwrap();
+            fs2::FileExt::try_lock_exclusive(&file).unwrap();
+            let error = crate::agent_host::host()
+                .start("auto".into())
+                .unwrap_err()
+                .to_string();
+            let status = block_on(agent_status());
+            assert_eq!(status.phase, "unavailable");
+            assert_eq!(
+                status.error.as_deref(),
+                Some(error.as_str()),
+                "the status carries the worker's own refusal, not a substitute"
+            );
+            return;
+        }
+        if case == "unreachable" {
+            // No Agent is running and none is startable from a status poll: the
+            // poll must report the transport error instead of a phase.
+            let status = block_on(agent_status());
+            assert_eq!(status.phase, "unavailable");
+            assert!(
+                status.error.is_some(),
+                "an unreachable Agent is an error, not silence: {status:?}"
+            );
+            assert!(status.shutdown.is_none());
+            return;
+        }
+        if case == "owned" {
+            crate::agent_host::host().start("auto".into()).unwrap();
+            assert!(crate::agent_host::host().owns_agent());
+            let status = block_on(agent_status());
+            assert_eq!(status.phase, "ready");
+            assert_eq!(
+                status.agent_version.as_deref(),
+                Some(crate::build_info::VERSION)
+            );
+            // An owned but idle Agent has zero active work: the quit proceeds.
+            assert_eq!(on_close_requested(), QuitDecision::Proceed);
+            crate::agent_host::host().stop().unwrap();
+            assert_eq!(
+                crate::agent_host::host().phase(),
+                crate::agent_host::Phase::Stopped
+            );
+            // A stopped host cannot report activity at all, which is also zero.
+            assert_eq!(on_close_requested(), QuitDecision::Proceed);
+            return;
+        }
+        if case == "failed-stop" {
+            crate::desktop_shutdown::fail_for_test("fixture stop failure");
+            let error = crate::desktop_shutdown::stop("fixture").unwrap_err();
+            assert!(error.to_string().contains("fixture stop failure"));
+            let status = block_on(agent_status());
+            assert_eq!(status.phase, "stopping");
+            assert_eq!(status.error.as_deref(), Some("fixture stop failure"));
+            assert!(status.shutdown.is_some());
+            return;
+        }
+        if case == "quit-barrier" {
+            let app = mock_app();
+            let action = crate::desktop_shutdown::claim_action("update").unwrap();
+            // Another maintenance action owns the barrier, so the quit is
+            // refused: no stop operation may be published by it.
+            request_quit(app.handle().clone(), true);
+            drop(action);
+            assert!(
+                crate::desktop_shutdown::snapshot().is_none(),
+                "a refused quit must not begin a stop"
+            );
+            assert!(!exit_authorized());
+            return;
+        }
+        if case == "quit-repeat" {
+            let app = mock_app();
+            request_quit(app.handle().clone(), true);
+            assert!(
+                crate::desktop_shutdown::snapshot().is_some(),
+                "the first request publishes the shared stop"
+            );
+            assert!(crate::desktop_shutdown::is_stopping());
+            // The second request is answered by the first: no second waiter and
+            // no second stop.
+            request_quit(app.handle().clone(), true);
+            return;
+        }
+        panic!("unknown case {case}");
+    }
+}

@@ -76,6 +76,16 @@ pub(crate) fn pairing_creds(pair_id: &str) -> crate::remote::protocol::PairingCr
 /// *undeclared* lane while asserting about the declared one. Caller must have
 /// installed the pairing's runtime (`supervisor::shared_runtime`, as
 /// `supervisor::start` does before `build_transport`).
+/// Declare (or withdraw) the lean feed for one pairing's connection.
+///
+/// The declaration is per connection now that a machine serves several clients,
+/// so a fixture that wants a lean host must say so on *that* host's pairing.
+pub(crate) fn set_pair_lean(pair_id: &str, enabled: bool) {
+    crate::remote::SUPERVISOR
+        .lean_events(pair_id)
+        .store(enabled, std::sync::atomic::Ordering::Release);
+}
+
 pub(crate) fn declare_features(
     creds: &crate::remote::protocol::PairingCreds,
     pair_id: &str,

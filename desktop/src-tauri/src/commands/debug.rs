@@ -207,4 +207,41 @@ mod tests {
         assert!(resolve_environment("custom").is_err());
         assert!(resolve_environment("nonsense").is_err());
     }
+
+    /// The external-owner guard needs `Phase::Ready` with `owned == false`.
+    /// That is not a test-only phase: the production `AgentHost::run` sets it
+    /// itself when `select_agent` finds an agent it did not start, and the
+    /// bridge's mock agent is a real TCP tonic service, so pointing the host at
+    /// it reaches the state without any setter.
+    #[test]
+    fn an_external_agent_blocks_the_environment_switch() {
+        let _home = HomeGuard::new("cmd-env-external");
+        crate::store::initialize_app_store().expect("init store");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let addr = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock agent address");
+        crate::agent_host::host()
+            .start(addr)
+            .expect("an external agent is selected");
+        assert_eq!(
+            crate::agent_host::host().phase(),
+            crate::agent_host::Phase::Ready
+        );
+        assert!(
+            !crate::agent_host::host().owns_agent(),
+            "the host attached to an agent it did not start"
+        );
+
+        let app = tauri::test::mock_app();
+        // A relaunch is never expected here: `expect_err` below is what proves
+        // the guard fired, so the callback itself needs no panic arm.
+        let error = set_future_environment_with(app.handle().clone(), "test", |_| Ok(()))
+            .expect_err("blocked");
+        assert!(
+            error.to_string().contains("Stop the external Agent"),
+            "{error}"
+        );
+
+        let _ = crate::agent_host::host().stop();
+        drop(mock);
+    }
 }

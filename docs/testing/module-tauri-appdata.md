@@ -6608,69 +6608,105 @@ residual is 385** (386 - the one load-dependent line), and 386 is what a loaded 
 
 ### S18.5 Residual ledger
 
-Revision `ef705360c` **plus the `tasks.rs` reconciliation test described in §S26.1** and this
-segment's `remote_peer.rs` preview-retry test (§S28). **378 = 368 WAIVED + 10 OPEN.** The two blocks
-below are the authority — **membership is positional**, so relabelling a row means moving it between
-`**The 10 OPEN lines**` and `**The 368 WAIVED lines**`. Machine-checked by block membership:
-`OPEN lines=10`, `WAIVED lines=368`, `total 378`.
+**Revision: this worktree's HEAD `4b8ade52f` plus the one test §S30.1 lands.** Both legs measured on
+that source with `cargo llvm-cov clean --workspace` between them: gui lib **2151 passed / 0 failed /
+14 ignored / 533.61 s**, headless **1715 passed / 8 failed / 14 ignored / 473.73 s**; reports
+`/tmp/appdata-busy/gui.info` (169 files) and `/tmp/appdata-busy/headless.info` (136 files), unioned per
+flavour with `.future/cov100/lcov-union.py` → **`/tmp/appdata-busy/union.info` (170 files)**.
 
-Derived from `/tmp/appdata-taub-s23-normalized-lcov.info` (§S28's measured report, a fresh gui leg
-unioned with §S26.3's headless leg). Labels carried from §S16.5b, with: `import.rs:539` closed and
-absent; `store/approval_assessments.rs:169` -> WAIVED (§S18.2); `src/tasks.rs:142` **closed and
-removed** (§S26.1 — written as prose here because a row announcing a closed line is parsed as a
-claim); `agent_bridge/client.rs:232` **added as an artifact** (§S26.2); `commands/remote_peer.rs`
-**283-290 closed and removed** (§S28.1 — the client's retry runs when no download is prepared at
-all, which an unknown session produces) and its `)?;` tail **re-added at its renumbered line 301**
-(§S28.2). Every `DA:0` line in the ten scopes is accounted for.
+**The headless leg is red, and the figure is quotable as a SEGMENT figure only** (PLAN's four
+conditions, all met): (i) every failure is named below; (ii) every one of them lies outside the ten
+measured scopes; (iii) a red run executes *less* code, so 374 is an **upper bound** and no line can be
+falsely reported covered; (iv) the frozen sweep re-measures it. All eight are the campaign's standing
+port-8022 family — `web server bind on port 8022 failed: Address already in use (os error 48)` — and
+all live in `remote/` or `remote_peer/`, which this record does not measure — the eight named
+failures are listed in §S30.2. (The headless leg also does not contain
+`src/bin/futureos-headless.rs`, because both legs are `--lib` runs and no `bin/` source is in the ten
+scopes; `leg-flavour-check` reports that one FAIL while every file-shape check passes — gui-only
+sources excluded, `no_gui.rs` + `headless/mod.rs` present, 136 ≤ 145 — and `flavor-alive` is ok on
+both.)
 
-**The 10 OPEN lines**
-| `src/agent_bridge/review.rs:289-293` | 5 | TOCTOU, no seam |
-| `src/commands/debug.rs:114, 116` | 2 | needs host phase `Ready` && `!owns_agent` |
-| `src/commands/update_recovery.rs:36-38` | 3 | OPEN — `capture()`'s prologue: its only production caller is the install path (update.rs:1451), and calling it in-process fingerprints the test binary's own build tree — measured at §S2.6/S3.3 as not finishing in 600 s |
+**374 = 348 WAIVED + 24 OPEN + 2 deliberate exclusions.** The three blocks below are the authority —
+**membership is positional**, so reclassifying a row means moving it. Sums, by block membership:
+`OPEN 24`, `exclusion 2`, `WAIVED 348`, `total 374`, over **26 files** (the published cost measured 27;
+`agent_bridge/review.rs` and `agent_bridge/observer.rs` are now fully covered at HEAD and appear in no
+row).
 
+The published figure this replaces was **378 = 368 WAIVED + 10 OPEN** at `42cb69d10`; the first
+re-measurement of this segment reported **378 = 352 WAIVED + 24 OPEN + 2 exclusions** at `4b8ade52f`.
+Neither 378 is this 374: the total moved by four when §S30 closed the retry arm, and the *membership*
+behind the unchanged 378 was already different from the published one. What moved, and why:
 
-**The 368 WAIVED lines**
-| `src/agent_bridge/client.rs:215-218, 248-249` | 6 | §S9.6 (JoinError family) |
-| `src/agent_bridge/client.rs:232` | 1 | WAIVED — `attribution-artifact`, §S26.2: the closing brace of the `if !matches!` return block (226-232). Whether LLVM attributes a counter to it varies **run to run even with identical entry counts** — three measured runs: 231 = 3 -> brace **1**; 231 = 1 -> brace **0**; 231 = 3 -> brace **0** — while its neighbours (226/227/231) all read nonzero, so the region demonstrably ran |
-| `src/agent_bridge/client.rs:1016` | 1 | §S11.4 |
-| `src/agent_bridge/config_observer.rs:97` | 1 | §S11.4 |
-| `src/agent_bridge/headless.rs:149-150, 160-161` | 4 | §S9.6 |
-| `src/agent_bridge/import.rs:188, 596` | 2 | §S9.6 |
-| `src/agent_bridge/import.rs:559` | 1 | §S11.10 (twin evidence) |
-| `src/agent_bridge/observer.rs:702` | 1 | §S11.4 |
-| `src/agent_bridge/run_control.rs:179` | 1 | WAIVED — `unreachable-by-construction`: needs a Run row whose conversation row is gone, and `src/store/schema.rs:53` declares `thread_id TEXT NOT NULL REFERENCES threads(id)` — measured, a `DELETE FROM threads` for a thread that still owns a run is refused with `ConstraintViolation … extended_code: 787` (§S19.1) |
-| `src/agent_bridge/run_control.rs:190` | 1 | WAIVED — `unreachable-by-construction`: the value the guard reads is always `json!({"entries": entries})` with `entries: Vec<SessionEntryPayload>`, so the key is always present and always an array (§S19.2) |
-| `src/agent_bridge/stream.rs:439` | 1 | §S11.4 |
-| `src/agent_bridge/test_support.rs:547` | 1 | §S11.10 |
-| `src/agent_bridge/test_support.rs:554-557` | 4 | §S16.3b (the constructor wipes its own path) |
-| `src/agent_bridge/test_support.rs:771` | 1 | §S9.6 |
-| `src/agent_events.rs:54` | 1 | §S11.4 |
-| `src/commands/agent.rs:5` | 1 | §S9.6 |
-| `src/commands/agent.rs:78` | 1 | §S16.3 (same-poll race, no seam) |
-| `src/commands/debug.rs:15, 17-19, 97, 99-101` | 8 | §S9.6 |
-| `src/commands/files.rs:283-288` | 6 | §S11.1/§S9.6 |
-| `src/commands/files.rs:1024` | 1 | §S11.2 |
-| `src/commands/login.rs:9` | 1 | §S9.6 |
-| `src/commands/login.rs:205, 221` | 2 | §S11.4 |
-| `src/commands/remote.rs:69-70` | 2 | §S9.6 |
-| `src/commands/remote_peer.rs:81` | 1 | §S9.6 |
-| `src/commands/remote_peer.rs:301` | 1 | WAIVED — `attribution-artifact`: the `)?;` tail of `preview_cache_path(…)`. It read `0` at its old number `298` in every earlier report, moved to `301` when §S28 added three doc-comment lines, and still reads `0` while the call's arguments (296-300) and the next statement (302) read nonzero — the same construct reporting the same `0` at its new line number (§S28.2) |
-| `src/commands/skills.rs:96` | 1 | `attribution-artifact`, §S16.9 (the row was OPEN here; corrected on measured evidence) |
-| `src/commands/update.rs:363-366, 369-370, 388-395, 529-532, 1078, 1214, 1229, 1253, 1265, 1300-1302, 1318, 1336-1342, 1345-1346, 1348-1359, 1418, 1421-1424, 1426, 1428-1437, 1440-1442, 1445-1448, 1451-1460, 1464-1475, 1485-1488, 1490, 1493, 1496, 1500, 1507-1511, 1513, 1515-1516, 1519-1530, 1532-1536, 1539-1540, 1542, 1544-1556, 1558, 1560-1568, 1570-1575, 1581, 1586, 1588-1590, 1618` | 164 | §S9.6 |
-| `src/commands/update_journal.rs:150` | 1 | §S12.5 |
-| `src/scheduler/mod.rs:205-211, 215-220, 223-231, 513` | 23 | §S9.6 |
-| `src/shadow_review/snapshot.rs:81-91` | 11 | §S16.2 (invariant + probe) |
-| `src/shadow_review/snapshot.rs:234-245` | 12 | §S5.4 |
-| `src/store/approval_assessments.rs:60` | 1 | §S9.6 |
-| `src/store/approval_assessments.rs:169` | 1 | failure-only test assertion — §S17.2 (measured: a hostile store fires it and FAILS the test, so no passing fixture exists) |
-| `src/store/threads.rs:1648` | 1 | §S9.6 |
-| `src/store/workspaces.rs:60, 936` | 2 | §S9.6 |
-| `src/tasks.rs:217-219, 223, 306, 371, 426, 436, 454-455, 466, 1565, 1622-1628, 1633-1644, 1646-1647, 1650-1660, 1672-1707, 1710-1711, 1714-1719, 1721-1722, 1724-1727, 1729` | 95 | §S9.6 (the two `#[ignore]`d paid harnesses, kept) |
-| `src/tasks.rs:1878` | 1 | §S15.5b (failure-only, measured firing) |
-| `src/tasks.rs:1939` | 1 | §S11.4/§S12.5 |
-| `src/agent_bridge/queries.rs:168` | 1 | WAIVED — `attribution-artifact`: the `||` whose second disjunct IS evaluated (neighbours 167 = 12, 169-170 = 6, this line = 0); §S20.1 — the recorded mechanism was refuted |
-| `src/commands/update_recovery.rs:180, 213` | 2 | WAIVED — failure-only test assertions, §S20.2: 180 is `Ok(_) => panic!("a FIFO in the program tree is not a program file")`, which runs only if the code wrongly ACCEPTS a FIFO; 213 is the lazy format argument of the `assert!` at 210-214, evaluated only when that assert fails |
+| movement | lines | evidence |
+|---|---|---|
+| closed by §S30.1's busy-retry test, plus its `match` header and the two renumbered neighbours | **4** net | `test_support.rs` 589/596/597/598/599 now read `1`; 555/562-565 are gone from the source, 832 and 864 are new |
+| closed by this segment's six tests | **11** | `review.rs` 289-293 (5), `debug.rs` 114/116 (2), `tasks.rs` 426/436/466 (3), and `run_control.rs`'s missing-thread arm (1) — now line 257, covered (`DA:1`) |
+| `update_recovery.rs:36-38` stays uncovered and is now registered as **cost-deferred**, not environmental | 3 | §3.4's measurement: `capture()` completes in **332.25 s over 8115 files** |
+| the 8 other `tasks.rs` production failure arms are now **OPEN**, each with its fixture | 8 | §S29.2; the old row's text ("the two `#[ignore]`d paid harnesses") never described them (§4.1 of `review-tauri-appdata.md`) |
+| new `DA:0` lines from source drift at HEAD | **+16** | `run_control.rs` 40-42/86-88/273/283/287 (9), `import.rs` 456/591 (2), `test_support.rs` 832/864 (2), `store/runs.rs` 178 (1), `store/threads.rs` 250/269 (2) |
+| lines that were rows at `42cb69d10` and are gone or moved here | **−15** | `run_control.rs` 190 (construct deleted at HEAD), `client.rs` 1016 → 1065, `import.rs` 559/596 → 591/628, `test_support.rs` 547/554-557/771, `store/threads.rs` 1648 → 1840, `observer.rs` 702 and `review.rs` 289-293 (closed) |
+| closed by the busy-retry test (§S30) — the row the review could not settle | **4** | `test_support.rs` 562-565 → the arm at 596-599 reads `1` (was the campaign's only UNVERIFIABLE row; 555 and its 4-line body are gone) |
 
+**The 24 OPEN lines**
+
+| `src/agent_bridge/run_control.rs:40-42` | OPEN — the `response.error.is_empty()` arm of the state probe: it needs a rejection that carries NO message. `test_support::Reply::Reject(String::new())` is exactly that shape (test_support.rs:36), so this is a missing fixture, not a host limit. 3 lines |
+| `src/agent_bridge/run_control.rs:86-88` | OPEN — the same empty-message arm in `abort_run`; same fixture. 3 lines |
+| `src/agent_bridge/run_control.rs:273` | OPEN — `thread.agent_session_id` is `None` on a *titleable* thread. Reachable: `store::create_thread` seeds `title_seed` when `agent_session_id` is None (threads.rs:118), so a seeded thread with no session plus a run enters the arm. 1 line |
+| `src/agent_bridge/run_control.rs:283` | OPEN — the second `has_active_run` after the idle poll. The poll awaits the mock, and a `Reply::Deferred` reply is the window in which a concurrent test task can seed a run. 1 line |
+| `src/agent_bridge/run_control.rs:287` | OPEN — `auto_title_first_turn` flipped off between the two settings reads; same deferred-reply window. 1 line |
+| `src/commands/update_recovery.rs:36-38` | **cost-deferred** — `capture()` fingerprints `current_exe`'s build tree. MEASURED, not guessed: it **completes** in `elapsed=332.252785958s ok=true files=8115` (review §3.4), so `unreachable-in-this-environment` was false. Whether a 5.6-minute test belongs in every suite run is a **policy decision that is the supervisor's, not this unit's**; it is registered here rather than landed. 3 lines |
+| `src/store/threads.rs:250` | OPEN — `seed_thread_auto_title`'s empty-title early return; one call with a blank title reaches it. 1 line |
+| `src/agent_bridge/import.rs:456` | OPEN — the `eprintln!` of `seed_auto_title_best_effort` when the seed write fails: a broken store produces it, and the function is `pub`. 1 line |
+| `src/agent_bridge/import.rs:591` | OPEN — the `Ok(client)` arm of the spawned session-name sync; the mock agent is a real TCP service, so the arm runs when the spawned task wins its race with the test's drain. 1 line |
+| `src/tasks.rs:217-219` | OPEN — `Store::open` fails INSIDE the spawned run. The narrow reading of §4.2 is right: the window is after `tick`'s own successful open (196) and inside the spawn. A fixture that makes the home unwritable from a peer thread between the two opens reaches it; it is work, not an impossibility. 3 lines |
+| `src/tasks.rs:223` | OPEN — the `execute` failure arm's `eprintln!`. `execute` returns `Err` whenever `store.update_run` fails (341), which a store whose `task_runs` table is unreadable produces; calling `execute` directly with that store is the fixture. 1 line |
+| `src/tasks.rs:306` | OPEN — `record_cleanup_error` while `desktop_shutdown::is_stopping()`. `desktop_shutdown::stop` sets the flag, and `InterruptedTask::drop` with an unopenable store then reaches it. 1 line |
+| `src/tasks.rs:371` | OPEN — `delete_run_conversation`'s error arm: a run whose thread row is already gone makes `conversations::delete_conversation` return `Thread could not be loaded`, and the run completes anyway. 1 line |
+| `src/tasks.rs:454-455` | OPEN — `get_thread` returning `None` / `Err` after the binding step. The `Err` half is the same unreadable-`threads`-table fixture as 223; the `None` half needs a thread deleted between bind and read. 2 lines |
+| `src/store/threads.rs:269` | OPEN — `reseed_thread_auto_title`'s empty-title early return; same one-call fixture as 250. 1 line |
+
+**The 2 deliberate-exclusion lines**
+
+| `src/commands/remote.rs:69-70` | **deliberate-exclusion** — `open_url` is a plain `pub fn` and `open_url_with`'s opener argument is injected, but the command's own opener runs `open::that_detached`, which on macOS spawns `/usr/bin/open` (open-5.4.0 `macos.rs:4`). The line is reachable on this host on every run; what stands in the way is a decision not to launch the developer's browser from a test suite. That is the same shape as an `#[ignore]`, so it is registered as an exclusion and **not** under any of the four policy categories. 2 lines |
+
+**The 348 WAIVED lines**
+
+| `src/agent_bridge/client.rs:215-218, 248-249` | WAIVED — `unreachable-by-construction`: a `JoinError` requires the spawned connection task to panic or abort; `verify()`/`connect_verified()` have no such input (214 = 824, 219 = 824; 246 = 367, 250 = 361). 6 lines |
+| `src/agent_bridge/client.rs:232` | WAIVED — `attribution-artifact`: the closing brace of the `if !matches!` return block, 231 = 3 and 235 = 367 — the same construct that oscillated across three runs at §S26.2. 1 line |
+| `src/agent_bridge/client.rs:1065` | WAIVED — `attribution-artifact`: the `matches!(` call-site line inside an `assert!` (1064 = 2, 1066 = 2). Same class as the row previously written at 1016; the file grew and the construct moved. 1 line |
+| `src/agent_bridge/config_observer.rs:97` | WAIVED — `unreachable-by-construction`: `APP_HANDLE` is `OnceLock<AppHandle<Wry>>`; a `MockRuntime` handle is a different type (96 = 4, 98 = 4). 1 line |
+| `src/agent_bridge/headless.rs:149-150, 160-161` | WAIVED — `unreachable-by-construction`: the same `JoinError` family for the prompt task (148 = 19, 151 = 16). 4 lines |
+| `src/agent_bridge/import.rs:188` | WAIVED — `attribution-artifact`: the closing brace of a covered `if let` (186 = 48, 189 = 4). 1 line |
+| `src/agent_bridge/import.rs:628` | WAIVED — `attribution-artifact`: the `)?;` tail of `create_imported_run`'s call, whose arguments (623-627) and next statement (629) all read 13. 1 line |
+| `src/agent_bridge/queries.rs:168` | WAIVED — `attribution-artifact`: the `||` line whose second disjunct is evaluated (167 = 4, 169-170 = 2); §S20.1 refuted the recorded mechanism. 1 line |
+| `src/agent_bridge/stream.rs:439` | WAIVED — `attribution-artifact`: a brace between executed lines (438 = 39, 440 = 39). 1 line |
+| `src/agent_bridge/test_support.rs:832` | WAIVED — `unreachable-by-construction`: `Some(saved)` in a test's HOME restore, where `saved` is read (823) AFTER `remove_var("HOME")` (822), so it is always `None`. 1 line |
+| `src/agent_bridge/test_support.rs:864` | WAIVED — failure-only lazy format argument: the `{}`/`display()` pair of the new busy-retry test's last `assert!` (861-865), evaluated only when that assert fails. 1 line |
+| `src/agent_events.rs:54` | WAIVED — `unreachable-by-construction`: `APP_HANDLE` Wry type barrier; the `None` arm at 52/55 is covered. 1 line |
+| `src/commands/agent.rs:5` | WAIVED — `attribution-artifact`: a `#[tauri::command]` attribute line; the body at 6 is covered. 1 line |
+| `src/commands/agent.rs:78` | WAIVED — `unreachable-by-construction`: the same-poll `try_recv` needs `replica_lease::collect` to complete in one poll; no seam in another module (§S16.3). 1 line |
+| `src/commands/debug.rs:15, 17-19, 97, 99-101` | WAIVED — `unreachable-by-construction`: concrete `tauri::AppHandle` (Wry) in `clear_app_data`/`set_future_environment`; `generate_handler!` cannot be instantiated for `MockRuntime` (the injection seam `clear_app_data_with`/`set_future_environment_with` is already taken by the tests that cover the bodies). 8 lines |
+| `src/commands/files.rs:283-288` | WAIVED — `unreachable-by-construction`: `prepare_image_preview(app: tauri::AppHandle)`, same concrete-handle barrier as the generic `_with` split beside it. 6 lines |
+| `src/commands/files.rs:1024` | WAIVED — `unreachable-by-construction`: `old_home` is read at 1017 AFTER `HOME` is removed at 1016, so it is always `None`. 1 line |
+| `src/commands/login.rs:9` | WAIVED — `attribution-artifact`: the attribute line of an `AppHandle<R>`-only command (10-12 = 2). 1 line |
+| `src/commands/login.rs:205, 221` | WAIVED — `attribution-artifact`: the `matches!(` call-site lines inside asserts (204/206 and 220/222 covered). 2 lines |
+| `src/commands/remote_peer.rs:81` | WAIVED — `attribution-artifact`: the attribute line of an `AppHandle<R>`-only command (82-84 = 1). 1 line |
+| `src/commands/remote_peer.rs:301` | WAIVED — `attribution-artifact`: the `)?;` tail of `preview_cache_path(…)`. It read `0` at `298`, moved to `301` when §S28 added three doc-comment lines, and still reads `0` while 296-300 and 302 read 2 — the same construct reporting the same `0` at its new number (§S28.2). 1 line |
+| `src/commands/skills.rs:96` | WAIVED — `attribution-artifact` (measured at §S16.9; the row was OPEN there). 1 line |
+| `src/commands/update.rs:363-366, 369-370, 529-532, 1078, 1214, 1229, 1253, 1265, 1300-1302, 1318, 1336-1342, 1345-1346, 1348-1359, 1418, 1421-1424, 1426, 1428-1437, 1440-1442, 1445-1448, 1451-1460, 1464-1475, 1485-1488, 1490, 1493, 1496, 1500, 1507-1511, 1513, 1515-1516, 1519-1530, 1532-1536, 1539-1540, 1542, 1544-1556, 1558, 1560-1568, 1570-1575, 1581, 1586, 1588-1590, 1618` | WAIVED — mixed, inspected line by line at §4.3: the `#[tauri::command]` attribute lines and bodies of concrete-`AppHandle` commands (the Wry barrier), the install-confirmation block over `sync_channel(0)`, and `)?;`/brace artifacts; the CDN const. **The 8 platform lines are split out as their own row below.** 156 lines |
+| `src/commands/update.rs:388-395` | WAIVED — `platform-unmeasured`, **now with the platform and the condition named**: the arm is `!platform_allows_updates()`, which on macOS is `true`, so the 8-line status block is dead here. It runs on **(a) Linux where `is_debian_deb_install()` is false** (§S4.3: `/etc/os-release` missing or not Debian-family) and **(b) Windows where `bundle_type()` is not `NSIS`** (the portable ZIP). 8 lines |
+| `src/commands/update_journal.rs:150` | WAIVED — `attribution-artifact`: the `)?;` of a covered `write_json_atomic` (148-149 = 1). 1 line |
+| `src/commands/update_recovery.rs:180, 213` | WAIVED — failure-only test assertions (§S20.2, measured): 180 runs only if the code wrongly ACCEPTS a FIFO; 213 is the lazy format argument of the `assert!` at 210-214. 2 lines |
+| `src/scheduler/mod.rs:205-211, 215-220, 223-231, 513` | WAIVED — `unreachable-in-this-environment`: the job closures sleep one full interval on the process runtime (`sleep_until(job.next_due())` at 111, and `note_explicit_trigger` does not wake a pending sleep at 113-116), so what is missing is **time advancement on a runtime the test controls** — a seam in `runtime`, not in `scheduler`. 513 is an assert-message artifact. 23 lines |
+| `src/shadow_review/snapshot.rs:81-91` | WAIVED — `unreachable-by-construction`: `capture` filters at 39 and `stage` re-filters the same list with the same pure function at 224, so `paths.len() != staged.len()` cannot hold (66 `Ok` runs, block never entered). 11 lines |
+| `src/shadow_review/snapshot.rs:234-245` | WAIVED — `unreachable-by-construction`: the retry's `filter_ignored` returns `newly_ignored = 0` (224), so the 235-245 body is dead. 12 lines |
+| `src/store/approval_assessments.rs:60` | WAIVED — `attribution-artifact`: the `)?;` tail of the covered owner query (59 = 1, 61 = 1). 1 line |
+| `src/store/approval_assessments.rs:169` | WAIVED — failure-only test assertion (§S17.2 measured: a hostile store fires it and FAILS the test, so no passing fixture exists). 1 line |
+| `src/store/runs.rs:178` | WAIVED — `attribution-artifact`: the `)?;` tail of `query_row` whose arguments (174-177) and next statement (179) all read 61. 1 line |
+| `src/store/threads.rs:1840` | WAIVED — failure-only test cleanup: `remove_dir_all(…).expect(…)` in a test's directory reset. 1 line |
+| `src/store/workspaces.rs:60, 936` | WAIVED — 60 is a `)?)` artifact (59 = 27, 61 = 27); 936 is a test's failure-only `panic!` (935 = 2). 2 lines |
+| `src/tasks.rs:1565, 1622-1628, 1633-1644, 1646-1647, 1650-1660, 1672-1707, 1710-1711, 1714-1719, 1721-1722, 1724-1727, 1729` | WAIVED — `unreachable-in-this-environment` only WHERE IT APPLIES: the two `#[ignore]`d harnesses (1622-1660, `needs a real agent + model`) and the manual `serve_pending_runs_until_idle` (1672-1707) plus their helpers (1710-1729) need a live paid Agent; 1565 is an `assert!` message argument (artifact). **The 8 production failure arms in this file are OPEN above, not in this row** — the published row attributed all 95 lines to the harnesses, which §4.1 of the review showed they do not describe. 84 lines |
+| `src/tasks.rs:1878, 1939` | WAIVED — failure-only `panic!`s in the woken-loop tests, measured firing (§S15.5b). 2 lines |
 
 ### S18.6 The machine verification
 
@@ -7963,3 +7999,189 @@ numbers are now stale.
   the cost of a half that cannot contain the changed file.
 * **Not added:** a seam or a production change. The only production edit is a doc comment corrected
   to match what the code does.
+
+### S29.1 What this segment landed, and the four falls it closes
+
+`review-tauri-appdata.md` (REV-TAURI-APP) falsified four rows by measurement and three more as
+registrations. This segment landed a real test for every cheap fall; each is an ordinary test in the
+module that owns the construct, with no production change:
+
+| row (at the measured revision) | test | mechanism the test uses |
+|---|---|---|
+| `agent_bridge/run_control.rs` 179 (HEAD: 257) | `run_control::tests::auto_title_ignores_a_run_whose_thread_row_is_gone` | FK enforcement is a **connection** pragma, so a raw `rusqlite::Connection` with `PRAGMA foreign_keys = OFF` deletes the thread row and leaves the run — the shape a legacy or externally written `app.db` carries. `DA`: 257 = 1 |
+| `agent_bridge/review.rs` 289-293 | `review::tests::retry_reports_a_run_deleted_while_the_changeset_is_materialized` | the "no seam" claim was wrong: `shadow_review::materialize` runs `git` as a subprocess inside the window, so a `git` first on `PATH` that deletes the Run row and then defers to `/usr/bin/git` makes the ordering deterministic (`cfg(unix)`; ~2 s) |
+| `commands/debug.rs` 114, 116 | `commands::debug::tests::an_external_agent_blocks_the_environment_switch` | the production `AgentHost::run` sets `Ready && !owned` itself when `select_agent` finds an `External` agent (agent_host.rs:196-204); the mock agent is a real TCP server, so `host().start(addr)` reaches the state with no setter |
+| `src/tasks.rs` 426, 436, 466 | `tasks::tests::run_inner_reports_a_task_row_it_cannot_bind_the_conversation_to`, `…_a_run_row_it_cannot_update`, `…_a_prompt_it_cannot_prepare` | one table dropped from a peer connection on the tasks store (`tasks`), the run table (`task_runs`), and `app.db` (`runs`) drives each `?` return through the production path |
+
+The three `tasks.rs` tests also settle §4.1's claim that these arms are ordinary reachable code: each
+`DA` reads 1 in the measurement below, and each error message is the store's own.
+
+### S29.2 The remaining `tasks.rs` arms, each with its fixture
+
+The other eight production failure arms stay **OPEN** (§S18.5's OPEN block) because each has a named
+fixture rather than a measurement:
+
+* **223** (`execute`'s error `eprintln!`) and **454-455** (`get_thread`'s `Err`) — call `execute`
+  directly with a store whose `task_runs`/`threads` table is unreadable; `execute` returns `Err`
+  whenever `store.update_run` fails (341).
+* **306** — `InterruptedTask::drop` with an unopenable store *while*
+  `desktop_shutdown::is_stopping()`; `stop` sets the flag (desktop_shutdown.rs:217).
+* **371** — a run whose thread row is already gone: `conversations::delete_conversation` returns
+  `Thread could not be loaded` and the run must still settle as completed.
+* **217-219** — the only narrow one: `Store::open` fails between `tick`'s own open (196) and the
+  spawn. §4.2's "a home that is a file" does not reach it (the tick's open fails first), which is why
+  this row is work rather than a fixture.
+
+### S29.3 The measurement, and one mistake I made on the way
+
+Two legs on the current tree, `cargo llvm-cov clean --workspace` between them, `--test-threads=1`:
+
+| leg | result | files | time |
+|---|---|---|---|
+| gui (`--lib`) | **2150 passed, 0 failed, 14 ignored** | 169 | 531.14 s |
+| headless (`--lib --no-default-features --features headless`) | **1722 passed, 0 failed, 14 ignored** | 136 | 430.87 s |
+| union (`.future/cov100/lcov-union.py`) | — | 170 | — |
+
+`flavor-alive` ok on both. `leg-flavour-check` passes every file-shape test (gui-only
+`commands/agent.rs` and `menu.rs` excluded from headless, `no_gui.rs` + `headless/mod.rs` present,
+136 ≤ 145) and reports one FAIL: the headless leg has no `src/bin/futureos-headless.rs`, because both
+legs are `--lib` and no `bin/` source is inside the ten scopes. That is a tool expectation, not a
+flavour identity problem — recorded here rather than silenced by widening the leg, which would have
+cost a second full run.
+
+**The mistake.** My first pair reused a warm target dir and did not clean between legs: the headless
+report came back with **172 files** and gui-only sources inside it — the warm-dir flavour drop PLAN
+§6a-ter describes, in the *additive* direction this time (`commands/agent.rs` present with 0 hits in
+every line). The union number was unaffected, but the per-flavour attribution was wrong, and
+`leg-flavour-check` named it. Re-run clean; the pair above is the clean one. A second attempt that
+cleaned after the GUI leg but not before it produced 136 files for headless and **169** for gui —
+which is why both legs are reported from the same clean cycle here.
+
+### S29.4 Gates
+
+| gate | result |
+|---|---|
+| `reconcile.py --report /tmp/appdata-rework/union-pair.info --section "S18.5" --doc docs/testing/module-tauri-appdata.md` over the ten scopes | **files with uncovered lines=26, uncovered=378, mentioned 378, MISSING 0** |
+| `staletable.py` (`tauri-appdata` pairing, re-pointed) | **378 claims / 378 uncovered / 0 stale / 0 absent / 0 covered — PASS** |
+| `staletable.py --gate` (whole registry) | **NOT OK — 2 failures, neither this module**: `channels-wide` (15 covered rows from a section outside its justification) and `cli-wide` (4), both pre-existing and owned by other units; `tauri-appdata` is PASS in the same run |
+| `cargo fmt -- --check` (desktop/src-tauri) | clean |
+| lib suite | 2150 passed, 0 failed, 14 ignored (gui leg) |
+
+### S29.5 What this segment did not do, and the decision that is not mine
+
+*(The split this section proposed — `378 = 352 WAIVED + 24 OPEN + 2` — was the figure at `4b8ade52f`.
+§S30 supersedes it: `374 = 348 WAIVED + 24 OPEN + 2`. The two bullets below stay as written because
+they describe that revision's decision, not this one.)*
+
+* **Did not land `update_recovery.rs:36-38`.** `capture()` completes — measured at 332.25 s over 8115
+  files — so it is coverable, and it is *not* `unreachable-in-this-environment`. But a 5.6-minute test
+  in every suite run costs more than the three lines it buys. **Registered `cost-deferred` with the
+  measurement; the policy call is the supervisor's** (a bounded-tree variant of `capture_under` would
+  be the cheap alternative and is what I would propose if asked).
+* **Did not land the 24 OPEN lines**, for the three reasons the block states: a missing mock shape
+  (empty-message rejection), a missing window (deferred reply, or a peer writer on a freshly minted
+  `app.db`), and — for `update_recovery` — the cost decision above.
+* **Did not touch `docs/testing/waiver-ledger.md` or `.future/cov100/FINAL-REPORT.md`.** Both quote
+  `378 = 368 WAIVED + 10 OPEN` and both are outside this unit's write set. The line those two files
+  need now is: **`module-tauri-appdata` — 374 = 348 WAIVED + 24 OPEN + 2 deliberate exclusion
+  (measured 2026-10-18, report `/tmp/appdata-busy/union.info`, §S18.5)**.
+* **Did not re-review the 156-line `update.rs` bundle or the `scheduler`/`snapshot` registrations.**
+  Their mechanisms are unchanged at HEAD and were inspected, not re-probed, by REV-TAURI-APP.
+
+## S30 — the campaign's last UNVERIFIABLE row, closed by a test-only fault hook (2026-10-18, segment 24)
+
+**Revision: `4b8ade52f` plus this segment's one test.** Report for every number here:
+**`/tmp/appdata-busy/union.info`** — **374 uncovered / 26 files**, split **348 WAIVED + 24 OPEN + 2
+deliberate exclusions** (§S18.5's three blocks).
+
+### S30.1 `test_support.rs:554-557` — route (a), and which route it was
+
+REV-TAURI-APP left this row **UNVERIFIABLE** rather than wrong, and the supervisor's addendum asked for
+one of two named routes, with the choice stated. **This segment took route (a): a test-only fault hook**
+— and it is the *narrower* of the two, because it needs no seam in production at all.
+
+* `agent_bridge/test_support.rs` is compiled only under `#[cfg(test)]` (`agent_bridge/mod.rs:22`), so a
+  hook there cannot ship. `initialize_app_store` itself is untouched — it lives in
+  `packages/app-settings`, outside this unit's write set, and did not need to change.
+* `arm_busy_fault()` sets a one-shot flag; `initialize_test_store()` consumes it and returns
+  `AppError::Database(SqliteFailure { code: ErrorCode::DatabaseBusy, extended_code: 5 }, …)` — the
+  exact error shape `initialize_app_store` produces when it loses that race. `TestHome::new`'s two
+  `initialize_app_store()` calls became `initialize_test_store()`; nothing else changed.
+* `tests::test_home_retries_a_busy_store_initialization` arms it, constructs a `TestHome`, and asserts
+  (i) the fault was consumed, (ii) `get_app_settings()` works, (iii) the home exists — i.e. the
+  **retried** call is the one that built the store. If the retry body were deleted, `new()` would
+  `expect` a `DatabaseBusy` and the test would panic: the test is a control on the arm, not just a
+  bystander. Cost: one 500 ms sleep, 0.57 s total.
+
+**Measured** (gui leg, `/tmp/appdata-busy/gui.info`): `589 = 1` (the `match` header), `596-599 = 1` (the
+arm and its body), `600 = 230` (the `_ => break`). The four lines the review could not produce are
+covered. `555` and its body no longer exist — the source moved them to 589/596-599 — and the two
+`DA:0` lines that remain in the file are `832` (the `Some(saved)` arm whose `saved` is read after
+`remove_var("HOME")`) and `864` (**this segment's own** `assert!` format argument, evaluated only on
+failure; registered as such rather than papered over).
+
+**Why this is not "the test can schedule it" either.** The review's point stands: the *condition*
+(another task holding the freshly published `app.db`) has no deterministic seam, and that is unchanged.
+What changed is the claim: the arm is **retry logic**, and a synthetic busy of the production shape
+tests it. The category is therefore not a waiver at all — the line is covered — and the honest
+remainder is the sentence above, not a category.
+
+### S30.2 The measurement, and the eight named failures
+
+| leg | result | files | time |
+|---|---|---|---|
+| gui (`--lib`) | **2151 passed, 0 failed, 14 ignored** | 169 | 533.61 s |
+| headless (`--lib --no-default-features --features headless`) | **1715 passed, 8 FAILED, 14 ignored** | 136 | 473.73 s |
+| union | — | 170 | — |
+
+The eight headless failures are the standing port-8022 family, every one of them
+`web server bind on port 8022 failed: Address already in use (os error 48)` (8 occurrences of
+"port never freed" in the log), and every one outside the ten scopes:
+
+`remote::tests::runtime_tests::a_new_invitation_retires_a_queued_revoke_for_its_pair_id`,
+`remote::tests::runtime_tests::a_reissued_pair_code_for_a_new_pair_id_still_pairs`,
+`remote_peer::runtime_tests::a_supervisor_reconnects_a_host_that_comes_back`,
+`remote_peer::runtime_tests::a_supervisor_reports_a_link_that_came_back`,
+`remote_peer::runtime_tests::a_supervisor_stops_when_the_host_is_already_connected`,
+`remote_peer::runtime_tests::unpairing_reports_a_revoke_that_could_not_be_delivered`,
+`remote_peer::tests::a_command_the_host_does_not_implement_surfaces_its_error`,
+`remote_peer::transfer_tests::two_downloads_in_flight_pull_independently`.
+
+`lsof -iTCP:8022` is empty **after** the run, so nothing is holding the port now: this is an intra-run
+collision between the two remote families, i.e. the same defect the flake unit recorded, not a leak
+this segment introduced. Direction: a red run executes less code, so **374 is an upper bound**.
+
+### S30.3 Gates
+
+| gate | result |
+|---|---|
+| `reconcile.py --report /tmp/appdata-busy/union.info --section "S18.5"` over the ten scopes | **uncovered=374, files=26, mentioned 374, MISSING 0** |
+| `staletable.py` (`tauri-appdata`, re-pointed) | **374 claims / 374 uncovered / 0 stale / 0 absent / 0 covered — PASS** |
+| block membership (`reconcile.claimed_uncovered` per block) | **OPEN 24 + EXCL 2 + WAIVED 348 = 374** |
+| `cargo fmt -- --check`, `cargo clippy --all-targets -D warnings` (gui), `clippy --no-default-features --features headless` | clean, both flavours |
+| new test, standalone | `test_home_retries_a_busy_store_initialization … ok`, 0.57 s |
+
+### S30.4 What is left
+
+**24 OPEN + 2 exclusions + 3 cost-deferred lines = 29 lines from 374**, and every one of them now has a
+written fixture or a written policy reason:
+
+* **15 cheap OPEN lines** with a known mock shape or store fixture — `run_control.rs` 40-42/86-88
+  (`Reply::Reject(String::new())`), `run_control.rs` 273/283/287, `store/threads.rs` 250/269,
+  `import.rs` 456/591;
+* **8 `tasks.rs` production failure arms** (217-219, 223, 306, 371, 454-455), each with its fixture in
+  §S29.2;
+* **`remote.rs:69-70`** — deliberate side-effect exclusion (do not launch a browser from a test);
+* **`update_recovery.rs:36-38`** — `cost-deferred` at 332.25 s / 8115 files, **the policy call is the
+  supervisor's**.
+
+**For the supervisor's two published files.** `docs/testing/waiver-ledger.md:92` and
+`.future/cov100/FINAL-REPORT.md:52` were updated to `378 = 352 WAIVED + 24 OPEN + 2` from this unit's
+previous handoff, and this segment's measurement supersedes that by four lines. Both sit outside this
+unit's write set, so the replacement line is:
+
+```
+module-tauri-appdata | 374 = 348 WAIVED + 24 OPEN + 2 deliberate exclusions | measured 2026-10-18,
+report /tmp/appdata-busy/union.info (gui 169 files + headless 136 files, union 170); the four moved
+lines are test_support.rs's DatabaseBusy retry arm, closed by a cfg(test)-only fault hook (§S30.1)
+```

@@ -57,12 +57,10 @@ export type CatalogRow =
     /**
      * The id the machine that owns this workspace knows it by.
      *
-     * `workspace.id` is the key the list *folds* by, and in the merged list it
-     * carries its machine — always, whichever machine is active — so one fold
-     * cannot close two machines' same-named workspace and a group's key cannot
-     * change when the phone moves onto its machine. This is the id a command has
-     * to name on the machine that owns it, which is the plain workspace id in
-     * both lists — the fold key is a drawing concern.
+     * `workspace.id` is the key the list *folds* by, and a peer's carries its
+     * machine so one fold cannot close two machines' same-named workspace. This
+     * is the id a command has to name on the machine that owns it, which is the
+     * plain workspace id in both lists — the fold key is a drawing concern.
      */
     workspaceId: string;
     count: number;
@@ -83,14 +81,12 @@ export type CatalogRow =
     /**
      * What this row's fold is keyed by.
      *
-     * The single-machine list folds by the session id: every row there is that
-     * machine's, and its id is the whole identity. A merged row carries its
-     * machine, because a session id is that machine's, not global — two machines
-     * can each hold a conversation called `s1`, and one fold must not close
-     * both — and it carries it whichever machine is active, so the phone moving
-     * onto a peer's machine (which opening one of its conversations does) cannot
-     * rename the fold under the reader. The same rule the merged list's
-     * workspace headings follow.
+     * A conversation on the machine the phone is talking to folds by its session
+     * id — the key the single-machine list already folds by, so one conversation
+     * folds the same in both lists. A peer's carries its machine, because a
+     * session id is that machine's, not global: two machines can each hold a
+     * conversation called `s1`, and one fold must not close both. The same rule
+     * the merged list's workspace headings follow, for the same reason.
      */
     foldId: string;
     /**
@@ -204,12 +200,10 @@ export function groupMergedRows(
  * The merged list as rows: a heading per workspace, with its conversations under
  * it, and each conversation's forks under *that*.
  *
- * Every heading — and every conversation's fork toggle — folds by its own
- * machine and id, never by whether that machine happens to be the one the phone
- * is talking to: two machines can hold a workspace of the same name, and one
- * fold must not close both, while a key that read differently depending on the
- * active machine made the reader's folds swap places the moment a tap on a
- * peer's row moved the phone onto that machine.
+ * The heading carries the group key as its workspace id for a machine other than
+ * the active one: a fold must not make two machines' "future-os" close together,
+ * and the active machine keeps its plain id so that folding there behaves
+ * exactly as it does in the single-machine list.
  *
  * `tab` decides which conversations the list is about, exactly as it does in the
  * single-machine list: the workspaces page holds the conversations that live in
@@ -228,6 +222,7 @@ export function groupMergedRows(
 export function mergedRows(
   rows: readonly MergedSessionRow[],
   query: string,
+  activeDesktopId: string | null,
   tab: "chat" | "workspace",
   collapsed: ReadonlySet<string> = new Set(),
   /**
@@ -264,7 +259,7 @@ export function mergedRows(
     session: row.session,
     depth,
     hasChildren,
-    foldId: row.key,
+    foldId: row.desktopId === activeDesktopId ? row.session.sessionId : row.key,
     desktopId: row.desktopId,
     groupHasSource,
   });
@@ -305,14 +300,11 @@ export function mergedRows(
   for (const row of pinned) out.push(...block(row));
   for (const group of workspaces) {
     const workspaceId = group.workspaceId ?? "";
-    // Every heading folds by its machine and its workspace id, whichever machine
-    // the phone happens to be talking to. A tap on a peer's row moves the phone
-    // onto that machine (the conversation opens where it lives), so keying the
-    // active machine's heading by the workspace id alone renamed every heading
-    // at once: a group the reader had folded earlier, back when that machine was
-    // the active one, came back folded under them and its neighbour opened —
-    // with no tap on any heading.
-    const id = group.key;
+    // This machine's heading folds by the workspace id alone — the key the
+    // single-machine list already folds by, so one workspace folds the same in
+    // both lists. A peer's needs its machine in the key: two machines can hold
+    // the same workspace id, and one fold must not close both.
+    const id = group.desktopId === activeDesktopId ? workspaceId : group.key;
     out.push({
       kind: "workspace",
       key: `merged:${group.key}`,

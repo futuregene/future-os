@@ -123,6 +123,11 @@ pub(in crate::remote) fn stop_with<T>(cleanup: impl FnOnce() -> T) -> T {
         stop_runtime();
         disable_handshake();
         SUPERVISOR.bridge_shared.lock().unwrap().clear();
+        // A stopped machine serves no device, so it holds no device set and no
+        // controller. The book on disk is untouched and is read again on the
+        // next start; keeping the in-memory answers here would describe a
+        // machine that is not running.
+        SUPERVISOR.reset_devices();
         cleanup()
     })
 }
@@ -361,12 +366,39 @@ pub(in crate::remote) fn stop_runtime() -> RemoteStatus {
 }
 
 /// Stop one device's bridge and leave the others serving.
+///
+/// The offline notice goes out on a plain task, not through the process-lifetime
+/// registry: this is called per device (a removal, a rebuild) and registering
+/// each one there made teardown wait on a publish — bounded by
+/// [`DISCONNECT_NOTICE_TIMEOUT`] itself, so nothing is gained by also making it
+/// the caller's problem.
 pub(in crate::remote) fn stop_slot(pair_id: &str) {
     let state = SUPERVISOR.state.lock().unwrap().remove(pair_id);
     if let Some(state) = state {
-        announce_offline(&state);
+        announce_offline_untracked(&state);
         abort_generation(state);
     }
+}
+
+/// Best-effort "this device is now offline", on a task the process registry
+/// does not own.
+fn announce_offline_untracked(state: &RemoteState) {
+    let Some((client, subject, payload)) = offline_notice(state) else {
+        return;
+    };
+    tokio::spawn(send_mobile_disconnect_notice(client, subject, payload));
+}
+
+fn offline_notice(state: &RemoteState) -> Option<(async_nats::Client, String, Vec<u8>)> {
+    let pair_id = state.pair_id.clone();
+    let subject = format!("p.{pair_id}.presence");
+    let plaintext = serde_json::to_vec(&json!({
+        "online": false, "pairId": pair_id,
+        "bridgeInstanceId": state.bridge_instance_id, "lastHeartbeatTs": unix_timestamp(),
+    }))
+    .unwrap_or_default();
+    let payload = state.security.seal(&subject, &plaintext).ok()??;
+    Some((state.client.clone(), subject, payload))
 }
 
 /// Best-effort "this device is now offline" on its own presence subject.

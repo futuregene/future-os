@@ -383,6 +383,7 @@ pub(in crate::remote) async fn start_slot(
             },
         )
     });
+    SUPERVISOR.remember_device(&pair_id);
     let Some(previous) = previous else {
         return Ok(());
     };
