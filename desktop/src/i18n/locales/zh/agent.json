@@ -224,6 +224,8 @@
     "imageTooLarge": "图片过大（最大 {{max}}）",
     "imageUnreadable": "无法读取或解析图片：{{name}}",
     "fileMissing": "文件已移动或删除：{{name}}",
+    "copyFailed": "附件没能存进应用目录：{{names}}。这次仍会照常发送，但系统清理临时文件后，这些附件将无法再预览。",
+    "remoteUnavailable": "无法从那台电脑读取附件：{{name}}",
     "binaryUnsupported": "不支持二进制文件",
     "typeUnsupported": "不支持的文件类型",
     "originalMissing": "原图已损坏或缺失"

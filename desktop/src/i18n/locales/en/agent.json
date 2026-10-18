@@ -223,6 +223,8 @@
     "imageTooLarge": "Image is too large (maximum {{max}})",
     "imageUnreadable": "{{name}} cannot be read or decoded as an image",
     "fileMissing": "File has been moved or deleted: {{name}}",
+    "copyFailed": "Could not save {{names}} into the app's folder. It will still be sent, but it can't be previewed again once the system clears temporary files.",
+    "remoteUnavailable": "Could not read the attachment from that computer: {{name}}",
     "binaryUnsupported": "Binary files are not supported",
     "typeUnsupported": "Unsupported file type",
     "originalMissing": "Original image is missing or damaged"

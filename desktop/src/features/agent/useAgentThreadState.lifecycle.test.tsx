@@ -58,7 +58,7 @@ beforeEach(() => {
   storage.listRunEvents.mockResolvedValue([]);
   storage.listRunEventsSince.mockResolvedValue([]);
   storage.getSessionEntriesPage.mockResolvedValue({ entries: [], nextOffset: 0, hasMore: false });
-  agent.prepare.mockResolvedValue({ attachments: [], temporarySources: [] });
+  agent.prepare.mockResolvedValue({ attachments: [], temporarySources: [], unpersisted: [] });
   storage.createRun.mockImplementation(async () => {
     latest = running;
     return running;
@@ -129,7 +129,7 @@ describe("local send lifecycle", () => {
   });
 
   it("does not submit a staged prompt again when remounted before acceptance", async () => {
-    const preparation = deferred<{ attachments: []; temporarySources: [] }>();
+    const preparation = deferred<{ attachments: []; temporarySources: []; unpersisted: [] }>();
     agent.prepare.mockReturnValue(preparation.promise);
     const options = {
       pendingPrompt: { id: "remount-prompt", content: "question", targetThreadId: "lifecycle-thread" },
@@ -140,7 +140,7 @@ describe("local send lifecycle", () => {
     await mount(options);
     expect(agent.prepare).toHaveBeenCalledTimes(1);
     expect(storage.createRun).not.toHaveBeenCalled();
-    await act(async () => preparation.resolve({ attachments: [], temporarySources: [] }));
+    await act(async () => preparation.resolve({ attachments: [], temporarySources: [], unpersisted: [] }));
     expect(storage.createRun).toHaveBeenCalledTimes(1);
     expect(agent.send).toHaveBeenCalledTimes(1);
     await act(async () => agent.send.mock.calls[0]![0].onAccepted());
@@ -170,7 +170,7 @@ describe("local send lifecycle", () => {
   it("does not release a preparing send using the previous run's terminal status", async () => {
     latest = { ...running, id: "previous-run", status: "completed" };
     const view = await mount();
-    const preparation = deferred<{ attachments: []; temporarySources: [] }>();
+    const preparation = deferred<{ attachments: []; temporarySources: []; unpersisted: [] }>();
     agent.prepare.mockReturnValue(preparation.promise);
     const first = await begin(view);
     await act(async () => {
@@ -179,7 +179,7 @@ describe("local send lifecycle", () => {
     const second = await begin(view);
     const calls = agent.prepare.mock.calls.length;
     view.unmount();
-    preparation.resolve({ attachments: [], temporarySources: [] });
+    preparation.resolve({ attachments: [], temporarySources: [], unpersisted: [] });
     reply.resolve(success);
     await Promise.all([first.done, second.done]);
     expect(calls).toBe(1);

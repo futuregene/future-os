@@ -11,6 +11,13 @@ function isEphemeralAttachment(attachment: MessageAttachment) {
     || (attachment.temporary === undefined && attachment.path.includes("futureos-attachments"));
 }
 
+export interface UnpersistedAttachment {
+  /** The name the chip shows, so the warning can name what did not stick. */
+  name: string;
+  /** The temp path the message still holds. */
+  path: string;
+}
+
 /**
  * Persist attachments that FutureOS copied from the clipboard. Every image gets a cached thumbnail
  * (for the bubble). Pasted/downloaded images — which only ever existed in the
@@ -18,8 +25,15 @@ function isEphemeralAttachment(attachment: MessageAttachment) {
  * and their path rewritten there, so the reference survives after the temp file
  * is cleaned. The source is retained until the agent call succeeds, so an
  * early failure cannot invalidate the attachment path. Local (picked/dragged)
- * images keep their original path and are not copied. Non-image files are
- * untouched.
+ * files keep their original path and are not copied; an ephemeral one (a paste,
+ * an image or not) is copied whatever its kind, because the temp dir it came
+ * from is not somewhere a message may point at for long.
+ *
+ * A durable copy that fails is returned in `unpersisted` rather than swallowed:
+ * the send still proceeds — the file is readable now and the temp original is
+ * kept — but the caller has to say so *then*, because from then on the bubble
+ * holds a path the OS will reclaim, and a reader who learns that later sees
+ * "the file was moved or deleted" about a file they never touched.
  */
 export async function persistImageAttachments(attachments: MessageAttachment[], threadId: string) {
   // Phase 1 is read-only: every image must validate before phase 2 writes any
@@ -61,14 +75,24 @@ export async function persistImageAttachments(attachments: MessageAttachment[], 
           const promoted = attachment.kind === "image" && thumbnail
             ? { ...attachment, path, thumbnail, temporary: false }
             : { ...attachment, path, temporary: false };
-          return { attachment: promoted, temporarySource };
+          return { attachment: promoted, temporarySource, unpersisted: null };
         }
         catch {
-          // Best-effort: keep the temp path if the durable copy fails.
+          // Degrade rather than block the send: the file is readable right now,
+          // so this turn still reaches the model with its content. What is lost
+          // is the copy the bubble will point at later — reported to the caller,
+          // never swallowed, and the temp source is kept (nothing finalizes a
+          // path this never promoted).
+          const current = attachment.kind === "image" && thumbnail ? { ...attachment, thumbnail } : attachment;
+          return {
+            attachment: current,
+            temporarySource: null,
+            unpersisted: { name: attachment.name, path: attachment.path },
+          };
         }
       }
       const current = attachment.kind === "image" && thumbnail ? { ...attachment, path, thumbnail } : { ...attachment, path };
-      return { attachment: current, temporarySource: null };
+      return { attachment: current, temporarySource: null, unpersisted: null };
     }),
   );
   return {
@@ -76,6 +100,10 @@ export async function persistImageAttachments(attachments: MessageAttachment[], 
     temporarySources: persisted
       .map(item => item.temporarySource)
       .filter((path): path is string => Boolean(path)),
+    /** Ephemeral attachments still pointing at the temp dir, and why. */
+    unpersisted: persisted
+      .map(item => item.unpersisted)
+      .filter((item): item is UnpersistedAttachment => item !== null),
   };
 }
 
