@@ -2073,6 +2073,69 @@
             "shot": "d-remote-live-event-order.png"
           }
         ]
+      },
+      "remote-multi-device": {
+        "note": "The host section with several paired devices: the one in control, one connected but standing by, one only paired, plus the action that pairs another.",
+        "url": "http://localhost:5299/shot/?lang=zh&remoteDevices=multi",
+        "steps": [
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "远程"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "(() => {\n  const t = document.body.innerText;\n  for (const wanted of ['正在控制', '待命', '离线', '添加设备'])\n    if (!t.includes(wanted)) throw new Error('the device list is missing ' + wanted + ': ' + t.slice(0, 400));\n  const rows = [...document.querySelectorAll('li')].map(li => (li.textContent || '').trim()).filter(Boolean);\n  if (rows.length !== 3) throw new Error('expected three device rows, got ' + rows.length + ': ' + JSON.stringify(rows));\n  const active = rows.find(r => r.includes('iPhone 17 Pro'));\n  if (!active.includes('正在控制')) throw new Error('the controlling device is not marked as such: ' + active);\n  if (active.includes('让这台控制')) throw new Error('the controlling device offers to take over from itself');\n  const standby = rows.find(r => r.includes('MacBook Air'));\n  if (!standby.includes('让这台控制')) throw new Error('a connected standby device offers no way to take control');\n  const offline = rows.find(r => r.includes('iPad mini'));\n  if (offline.includes('让这台控制')) throw new Error('an offline device is offered the machine; it has no bridge to command');\n  return 'rows=' + rows.length;\n})()"
+          },
+          {
+            "shot": "d-remote-multi-device.png"
+          }
+        ]
+      },
+      "remote-multi-device-reconnect": {
+        "note": "The same list while the bridge has lost its connection and is retrying: the status row says the network is unavailable and offers 重新连接.",
+        "url": "http://localhost:5299/shot/?lang=zh&remoteDevices=reconnect",
+        "steps": [
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "远程"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "(() => {\n  const host = document.querySelector(\"[data-testid='remote-hub-host']\");\n  if (!host) throw new Error('the host direction is not on the page');\n  const t = host.innerText;\n  for (const wanted of ['连接中', '正在尝试连接，请检查电脑网络。', '重新连接', '添加设备'])\n    if (!t.includes(wanted)) throw new Error('a dropped connection is not shown as such: missing ' + wanted + ': ' + t.slice(0, 400));\n  if (t.includes('已连接\\n') || t.includes('正在控制'))\n    throw new Error('the section still claims a live connection or a controlling device: ' + t.slice(0, 400));\n  return 'ok';\n})()"
+          },
+          {
+            "shot": "d-remote-multi-device-reconnect.png"
+          }
+        ]
+      },
+      "remote-multi-device-waiting": {
+        "note": "Adding a device: the new invitation sits in the list as 等待配对 while its QR code is on screen.",
+        "url": "http://localhost:5299/shot/?lang=zh&remoteDevices=waiting",
+        "steps": [
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "远程"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "(() => {\n  const t = document.body.innerText;\n  for (const wanted of ['等待配对', '配对码', '添加设备'])\n    if (!t.includes(wanted)) throw new Error('the invitation is not on screen: missing ' + wanted + ': ' + t.slice(0, 400));\n  if (!document.querySelector('svg[role=img]')) throw new Error('no QR code is drawn for the invitation');\n  return 'ok';\n})()"
+          },
+          {
+            "shot": "d-remote-multi-device-waiting.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",
@@ -4264,6 +4327,33 @@
           },
           {
             "eval": "(() => {\n  const text = document.body.innerText;\n  if (!text.includes('实验室的 MacBook Pro')) throw new Error('the first machine page does not name it: ' + text.slice(0, 300));\n  if (text.includes('连接该桌面端')) throw new Error('the page still asks to connect first: ' + text.slice(0, 300));\n  return 'the first machine names itself too';\n})()"
+          }
+        ]
+      },
+      "connection-dropped": {
+        "_comment": "The paired desktop has gone away and the phone is offering to try again: the badge reads 已断开, and the sheet says why and carries the reconnect action. The content behind it is the cached catalogue, which is exactly what a reader sees on a dropped connection.",
+        "url": "http://localhost:8099/?connection=dropped",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "document.querySelector('[role=button][aria-label=\"桌面端连接状态: 已断开\"]').click()"
+          },
+          {
+            "wait": 1000
+          },
+          {
+            "eval": "(() => {\n  const sheet = document.querySelector('[aria-modal=true]') || document.body;\n  const text = sheet.innerText || '';\n  if (!text.includes('已断开')) throw new Error('the sheet does not say the connection is gone: ' + text.slice(0, 300));\n  const labels = [...sheet.querySelectorAll('[role=button]')].map(el => el.getAttribute('aria-label'));\n  if (!labels.includes('重新连接')) throw new Error('a dropped connection offers no retry: ' + labels.join(' / '));\n  return labels.join(' / ');\n})()"
+          },
+          {
+            "shot": "m-connection-dropped.png"
           }
         ]
       }

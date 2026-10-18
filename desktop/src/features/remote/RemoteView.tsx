@@ -264,6 +264,48 @@ export function RemoteHostSection({
   return (
     <>
       <div className="space-y-4">
+        {multi && isPaired
+          ? (
+              // The bridge's own state, above the device list. The list says
+              // which device is driving; this says whether the machine can be
+              // reached at all — and, when it cannot, why and what to do. A
+              // list of devices alone read as "everything is fine" during an
+              // outage, because every row is simply standing by.
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-line-soft bg-surface-subtle px-4 py-2">
+                <Badge tone={connected ? "accent" : connecting ? "warning" : "danger"}>
+                  {t(connectionStatusKey)}
+                </Badge>
+                <span className="min-w-0 flex-1 truncate text-xs text-ink-muted">
+                  {connected ? "" : t("connectionHint")}
+                </span>
+                <div className="ml-auto flex shrink-0 items-center gap-2">
+                  {presentation?.action === "loginAgain"
+                    ? (
+                        <Button
+                          disabled={busy}
+                          onClick={() => emitFutureEvent("show-onboarding", undefined)}
+                          size="sm"
+                          variant="secondary"
+                        >
+                          {t("loginAgain")}
+                        </Button>
+                      )
+                    : running && !reconnecting
+                      ? (
+                          <Button disabled={busy} onClick={() => void handleStop()} size="sm" variant="secondary">
+                            {t("disconnect")}
+                          </Button>
+                        )
+                      : (
+                          <Button disabled={busy} onClick={() => void handleStart()} size="sm" variant="secondary">
+                            {presentation?.action === "pairAgain" ? t("pairAgain") : t("reconnect")}
+                          </Button>
+                        )}
+                </div>
+              </div>
+            )
+          : null}
+
         {multi
           ? (
               <div className="rounded-lg border border-line-soft bg-surface-subtle">
@@ -294,8 +336,11 @@ export function RemoteHostSection({
                       <span className="min-w-0 truncate text-xs text-ink-muted">{formatPairId(device.pairId)}</span>
                       <div className="ml-auto flex shrink-0 items-center gap-2">
                         {/* A standby device can be given the machine from here, which
-                            is the desktop-side twin of the device's own "take over". */}
-                        {device.control === "standby" && device.pairingCode == null
+                            is the desktop-side twin of the device's own "take over".
+                            A device that is not connected cannot: it has no bridge to
+                            command, so handing it the machine would leave the device
+                            that *is* connected standing by for nobody. */}
+                        {device.control === "standby" && device.connected && device.pairingCode == null
                           ? (
                               <Button
                                 disabled={busy}

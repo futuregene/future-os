@@ -121,6 +121,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // `?multiTurnOlder=1` keeps one page of history above the multi-turn
   // conversation: the question-nav ↑ can then page it in for real.
   const withOlder = new URLSearchParams(window.location.search).get("multiTurnOlder") === "1";
+  // `?connection=dropped` makes the paired desktop answer as one that has gone
+  // away: the phone keeps its pairing and its cached catalogue, but the badge
+  // and its sheet have to say the connection is gone and offer a retry. Every
+  // other capture runs against a live desktop, so this is opt-in.
+  const connectionDropped = new URLSearchParams(window.location.search).get("connection") === "dropped";
   const [olderLoaded, setOlderLoaded] = useState(false);
   // `?leanRender=<mode>` renders a lean (or, for the control, full) lane slice
   // instead of the demo conversation — see shot/mock/leanRender.ts.
@@ -190,25 +195,34 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
   const value = withFallback({
     // Connection
-    phase: "ready",
+    phase: connectionDropped ? "stopped" : "ready",
     error: null,
     credentials,
     desktops,
     presence: {
-      online: true,
+      online: !connectionDropped,
       pairId: credentials.pairId,
       bridgeInstanceId: "bridge_1",
       lastHeartbeatTs: BOOT_TIME,
       agentAvailable: true,
+      ...(connectionDropped ? { disconnected: true } : {}),
     },
-    desktopOnline: true,
+    desktopOnline: !connectionDropped,
     hasConnectedContent: true,
     agentAvailable: true,
-    connectionPresentation: buildConnectionPresentation({
-      phase: "ready",
-      desktopOnline: true,
-      agentAvailable: true,
-    }),
+    connectionPresentation: buildConnectionPresentation(
+      connectionDropped
+        ? {
+            // The desktop stopped answering and said so: the pairing survives,
+            // the cached content is still readable, and the only way forward is
+            // to ask again. This is the state the badge and its sheet describe.
+            phase: "stopped",
+            desktopOnline: false,
+            agentAvailable: true,
+            desktopDisconnected: true,
+          }
+        : { phase: "ready", desktopOnline: true, agentAvailable: true },
+    ),
 
     // Catalogue
     catalogSync: { state: "ready", epoch: "epoch_1" },
