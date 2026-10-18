@@ -373,8 +373,8 @@ user asks for control back.
 **Telling a client whom it would displace.** The presence payload carries
 `holder` whenever the receiving device is *not* in control: the controller's
 `pairId` plus the name and kind it declared on `secure_ready`. That is what
-lets a client show "«name» is controlling this desktop — take over?" instead of
-either stealing the machine silently or refusing without saying why. A
+lets a client say "taken over by «name»" instead of either stealing the machine
+silently or refusing without saying why. A
 controller that never declared a name yields the pair id alone, and clients fall
 back to neutral wording rather than inventing an identity.
 
@@ -388,8 +388,12 @@ every paired device's.
 
 **Still next.** The desktop client role's standby UI ("connect to another
 computer" has the same question to ask). The mobile half is done: the sessions
-screen shows the holder by name with a "take over" button
-(`TakeControlBanner`), and it is the only path that displaces anyone.
+screen keeps its cues to a yellow status dot — green would claim the machine
+works while nothing can be read from it — and puts the explanation and the
+"take over" button inside the popover that dot opens. The list page itself
+carries no prompt: it says something is wrong, the sheet says what, and the
+action sits next to the explanation. The picker's per-machine rows show the
+same state, so choosing a machine also tells you whether you may use it.
 
 ### 2.2.1 Mobile multi-Desktop pairing (2026-09-12)
 

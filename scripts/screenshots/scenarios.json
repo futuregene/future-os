@@ -4358,7 +4358,7 @@
         ]
       },
       "take-control": {
-        "_comment": "Another paired device holds this desktop. The phone is connected and in standby, says who has it, and offers to take over — the only action that displaces it, and one the user has to take deliberately.",
+        "_comment": "Another paired device holds this desktop. Tapping the yellow dot opens the status sheet, which says who took it over and offers 接管 — no prompt on the list page itself.",
         "url": "http://localhost:8099/?held=1",
         "steps": [
           {
@@ -4371,7 +4371,13 @@
             "wait": 1500
           },
           {
-            "eval": "(() => {\n  const t = document.body.innerText;\n  for (const wanted of ['实验室的 MacBook Air 正在控制这台电脑', '接管会断开正在使用它的设备', '接管'])\n    if (!t.includes(wanted)) throw new Error('the takeover prompt is not on screen: missing ' + wanted + ': ' + t.slice(0, 500));\n  return 'ok';\n})()"
+            "eval": "document.querySelector('[role=button][aria-label^=\"桌面端连接状态\"]').click()"
+          },
+          {
+            "wait": 1000
+          },
+          {
+            "eval": "(() => {\n  const sheet = document.querySelector('[aria-modal=true]') || document.body;\n  const text = sheet.innerText || '';\n  for (const wanted of ['已连接 · 待命', '已被 实验室的 MacBook Air 接管', '接管会断开 实验室的 MacBook Air', '接管'])\n    if (!text.includes(wanted)) throw new Error('the status sheet does not explain or offer the takeover: missing ' + wanted + ': ' + text.slice(0, 400));\n  const labels = [...sheet.querySelectorAll('[role=button]')].map(el => el.getAttribute('aria-label'));\n  if (!labels.includes('接管')) throw new Error('no takeover action in the sheet: ' + labels.join(' / '));\n  return labels.join(' / ');\n})()"
           },
           {
             "shot": "m-take-control.png"
@@ -4418,7 +4424,7 @@
             "wait": 1500
           },
           {
-            "eval": "(() => {\n  const sheet = document.querySelector('[aria-modal=true]') || document.body;\n  const text = sheet.innerText || '';\n  if (!text.includes('由另一台设备控制'))\n    throw new Error('the standby machine does not say why it cannot be driven: ' + text.slice(0, 400));\n  const labels = [...sheet.querySelectorAll('[role=button]')].map(el => el.getAttribute('aria-label'));\n  if (!labels.some(label => label && label.startsWith('接管'))) \n    throw new Error('the picker offers no way to take over: ' + labels.join(' / '));\n  return labels.filter(Boolean).join(' / ');\n})()"
+            "eval": "(() => {\n  const sheet = document.querySelector('[aria-modal=true]') || document.body;\n  const text = sheet.innerText || '';\n  if (!text.includes('已被其他设备接管'))\n    throw new Error('the standby machine does not say why it cannot be driven: ' + text.slice(0, 400));\n  const labels = [...sheet.querySelectorAll('[role=button]')].map(el => el.getAttribute('aria-label'));\n  if (!labels.some(label => label && label.startsWith('接管'))) \n    throw new Error('the picker offers no way to take over: ' + labels.join(' / '));\n  return labels.filter(Boolean).join(' / ');\n})()"
           },
           {
             "shot": "m-take-control-picker.png"
@@ -4443,6 +4449,27 @@
           },
           {
             "shot": "m-connection-standby-dot.png"
+          }
+        ]
+      },
+      "take-control-list-quiet": {
+        "_comment": "The list page while another device holds the desktop: no banner, no button. The only cue is the yellow dot; the explanation and the action live behind it.",
+        "url": "http://localhost:8099/?held=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  const t = document.body.innerText;\n  for (const unwanted of ['已被 实验室的 MacBook Air 接管', '接管会断开'])\n    if (t.includes(unwanted)) throw new Error('the list page still carries the prompt: ' + unwanted);\n  const labels = [...document.querySelectorAll('[role=button]')].map(el => el.getAttribute('aria-label'));\n  if (labels.includes('接管')) throw new Error('the list page still offers the takeover action: ' + labels.join(' / '));\n  const dot = document.querySelector('[data-testid=connection-dot]');\n  if (!dot) throw new Error('the yellow dot is not on screen, so nothing says anything is wrong');\n  return getComputedStyle(dot).backgroundColor;\n})()"
+          },
+          {
+            "shot": "m-take-control-list-quiet.png"
           }
         ]
       }
