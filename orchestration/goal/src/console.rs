@@ -5304,17 +5304,16 @@ async fn run_turns(
                 // with terminal_state == "completed" and error == None, so a
                 // naive `error.unwrap_or(terminal_state)` fallback misreports
                 // it as "error: completed". Report the failure kind instead:
-                // for a verify-gate rejection include the validator's exit
-                // code; otherwise use the error (or terminal state) as-is.
+                // for a verify-gate failure name the verdict (did the gate
+                // judge the artifact, or could it not run at all?) and carry
+                // the validator's own stderr, so the supervisor does not have
+                // to re-run the gate by hand to tell a bad artifact from a
+                // malformed `--verify` command; otherwise use the error (or
+                // terminal state) as-is.
                 let failure_text = match record.failure_kind {
                     Some(crate::state::FailureKind::ScienceVerifyFailed) => {
                         match &record.validation {
-                            Some(v) if !v.ok => format!(
-                                "verify gate rejected (exit {})",
-                                v.exit_code
-                                    .map(|c| c.to_string())
-                                    .unwrap_or_else(|| "-".to_string())
-                            ),
+                            Some(v) if !v.ok => verify_failure_text(v),
                             _ => "verify-gate rejected the output".to_string(),
                         }
                     }
@@ -6335,6 +6334,38 @@ fn validation_status_label(status: &crate::state::ValidationStatus) -> &'static 
         crate::state::ValidationStatus::Unavailable => "unavailable",
         crate::state::ValidationStatus::NotRequired => "not_required",
     }
+}
+
+/// Byte budget for the validator diagnostics carried in a supervisor note. The
+/// receipt summary is itself bounded (16 KiB); the note has to stay readable.
+const VERIFY_REASON_CHARS: usize = 800;
+
+/// The supervisor-facing reason for a failed verify gate. Two failures look
+/// identical in the ledger (`validation.ok == false`): the gate judged the
+/// artifact bad, or the gate never ran (a malformed `--verify` string, a
+/// missing interpreter). The validator's own stderr is the only evidence that
+/// separates them, so it is carried here instead of a bare exit code — a bare
+/// `exit 2` recorded for six consecutive tickets is exactly what forced a
+/// manual re-diagnosis per ticket.
+fn verify_failure_text(v: &crate::state::TaskValidation) -> String {
+    let exit = v
+        .exit_code
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    let verdict = if crate::validator::could_not_run(v) {
+        format!("verify gate could not run (exit {exit}) — the validator never judged the output")
+    } else {
+        format!("verify gate rejected the output (exit {exit})")
+    };
+    // One line: the note is embedded in a supervisor batch message.
+    let diagnostics = v.summary.split_whitespace().collect::<Vec<_>>().join(" ");
+    if diagnostics.is_empty() {
+        return verdict;
+    }
+    format!(
+        "{verdict}: {}",
+        crate::executor::truncate_evidence(&diagnostics, VERIFY_REASON_CHARS)
+    )
 }
 
 /// P0-3①: reject unknown `--flags` instead of silently ignoring them.
@@ -12495,5 +12526,101 @@ mod worker_tail_tests {
         let unnamed = condense_live_log(r#"{"type":"tool_start"}"#);
         assert_eq!(unnamed.len(), 1, "{unnamed:?}");
         assert!(unnamed[0].ends_with('?'), "{unnamed:?}");
+    }
+}
+
+// ── Verify-gate failure reporting ─────────────────────────────────────────
+//
+// A verify-gate failure reaches the supervisor as one line. It used to be
+// `verify gate rejected (exit N)` — no stderr, no sign of whether the gate
+// judged the artifact or never started. Six consecutive tickets were rejected
+// that way while the work had landed, and every one had to be re-diagnosed by
+// hand from `runs.jsonl`. These tests pin the evidence into the reason.
+
+#[cfg(test)]
+mod verify_failure_reason_tests {
+    use super::*;
+
+    /// A validator the shell cannot start must read as "could not run" and
+    /// carry the shell's own diagnostic — NOT as a rejected artifact.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unstartable_validator_reason_carries_stderr_and_is_not_a_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        let receipt = crate::validator::validate(
+            dir.path(),
+            "future-goal-validator-that-does-not-exist --check",
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+        assert!(!receipt.ok);
+        let reason = verify_failure_text(&receipt);
+        assert!(reason.contains("could not run"), "{reason}");
+        assert!(
+            reason.to_lowercase().contains("not found"),
+            "stderr must reach the reason: {reason}"
+        );
+        assert!(
+            !reason.contains("rejected the output"),
+            "a gate that never ran is not a verdict on the output: {reason}"
+        );
+    }
+
+    /// The incident shape: an unsubstituted `<placeholder>` turns the command
+    /// into shell redirection, so `sh` exits 2 before running anything.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unparsable_validator_command_reports_the_shell_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let receipt = crate::validator::validate(
+            dir.path(),
+            "python3 reconcile.py --report <pinned union> --scope <ten scopes>",
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(receipt.exit_code, Some(2));
+        let reason = verify_failure_text(&receipt);
+        assert!(reason.contains("could not run"), "{reason}");
+        assert!(reason.to_lowercase().contains("syntax error"), "{reason}");
+        assert!(!reason.contains("rejected the output"), "{reason}");
+    }
+
+    /// A gate that actually judged the output keeps the old verdict word, and
+    /// still carries its diagnostics.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn validator_verdict_keeps_the_verdict_and_carries_stderr() {
+        let dir = tempfile::tempdir().unwrap();
+        let receipt = crate::validator::validate(
+            dir.path(),
+            "echo GATE-FAILED-MARKER 1>&2; exit 1",
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+        let reason = verify_failure_text(&receipt);
+        assert!(reason.contains("rejected the output"), "{reason}");
+        assert!(reason.contains("GATE-FAILED-MARKER"), "{reason}");
+    }
+
+    #[test]
+    fn verify_reason_is_single_line_and_bounded() {
+        let summary = format!(
+            "validator exited 1 — repair output, not acceptance criteria\nstdout (tail):\n{}",
+            "noise ".repeat(4000)
+        );
+        let receipt = crate::state::task_validation_receipt(
+            crate::state::ValidationStatus::Failed,
+            "gate",
+            &summary,
+            None,
+            Some(1),
+        );
+        let reason = verify_failure_text(&receipt);
+        assert!(!reason.contains('\n'), "reason must be one line");
+        assert!(
+            reason.len() < VERIFY_REASON_CHARS + 200,
+            "len {}",
+            reason.len()
+        );
     }
 }
