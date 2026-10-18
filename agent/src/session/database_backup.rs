@@ -15,7 +15,7 @@ pub fn create_database_snapshot(
     );
     std::fs::create_dir_all(directory).context("create database snapshot directory")?;
     let destination = directory.join(format!("{prefix}-{}.db", uuid::Uuid::new_v4()));
-    // Close the source handle before SQLite opens the empty temporary file.
+    // Close the temporary file handle before SQLite opens that file.
     // tempfile creates it owner-only, and TempPath removes incomplete snapshots.
     let temporary = tempfile::Builder::new()
         .prefix(".sqlite-upgrade-")
@@ -38,6 +38,18 @@ pub fn create_database_snapshot(
     temporary
         .persist_noclobber(&destination)
         .context("publish verified database snapshot")?;
+    #[cfg(unix)]
+    {
+        std::fs::File::open(directory)?.sync_all()?;
+        if let Some(parent) = directory.parent() {
+            std::fs::File::open(if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            })?
+            .sync_all()?;
+        }
+    }
     Ok(destination)
 }
 

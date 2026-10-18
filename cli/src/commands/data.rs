@@ -57,6 +57,8 @@ struct RestoreItem {
     path: String,
     had_original: bool,
     has_replacement: bool,
+    #[serde(default)]
+    original_digest: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -169,6 +171,10 @@ fn relative(root: &Path, logical: &str) -> Result<PathBuf> {
             .contains(&logical),
         "unexpected backup path"
     );
+    without_links(root, path)
+}
+
+fn without_links(root: &Path, path: &Path) -> Result<PathBuf> {
     let mut current = root.to_path_buf();
     for part in path.components() {
         current.push(part);
@@ -198,6 +204,97 @@ fn hash(path: &Path) -> Result<(u64, String)> {
         digest.update(&buffer[..count]);
     }
     Ok((bytes, format!("{:x}", digest.finalize())))
+}
+
+/// A deterministic preimage check for rollback. Links in the old tree are
+/// hashed as links, never followed; the original tree is moved intact.
+fn root_digest(path: &Path) -> Result<Option<String>> {
+    fn field(digest: &mut Sha256, bytes: &[u8]) {
+        digest.update((bytes.len() as u64).to_le_bytes());
+        digest.update(bytes);
+    }
+    fn visit(path: &Path, digest: &mut Sha256) -> Result<()> {
+        let meta = fs::symlink_metadata(path)?;
+        if meta.file_type().is_symlink() {
+            field(digest, b"link");
+            let target = fs::read_link(path)?;
+            field(
+                digest,
+                target
+                    .to_str()
+                    .context("restore preimage link is not UTF-8")?
+                    .as_bytes(),
+            );
+        } else if meta.is_dir() {
+            field(digest, b"directory");
+            let mut children = fs::read_dir(path)?
+                .map(|entry| {
+                    let entry = entry?;
+                    let name = entry
+                        .file_name()
+                        .into_string()
+                        .map_err(|_| anyhow::anyhow!("restore preimage name is not UTF-8"))?;
+                    Ok((name, entry.path()))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            children.sort_by(|a, b| a.0.cmp(&b.0));
+            field(digest, &(children.len() as u64).to_le_bytes());
+            for (name, child) in children {
+                field(digest, name.as_bytes());
+                visit(&child, digest)?;
+            }
+        } else {
+            ensure!(meta.is_file(), "unsupported restore preimage file type");
+            field(digest, b"file");
+            let (bytes, sha256) = hash(path)?;
+            field(digest, &bytes.to_le_bytes());
+            field(digest, sha256.as_bytes());
+        }
+        Ok(())
+    }
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
+    }
+    let mut digest = Sha256::new();
+    visit(path, &mut digest)?;
+    Ok(Some(format!("{:x}", digest.finalize())))
+}
+
+/// File contents are synced when copied. Sync nested directory entries before
+/// publishing a complete tree or a restore fence that depends on that tree.
+fn sync_tree(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                sync_tree(&entry.path())?;
+            }
+        }
+        fs::File::open(path)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+fn prepare_switch_parents(home: &Path, directory: &Path) -> Result<()> {
+    ensure!(directory.is_dir(), "restore work directory is missing");
+    for path in ROOTS {
+        let parent = Path::new(path)
+            .parent()
+            .context("restore root has no parent")?;
+        fs::create_dir_all(without_links(home, parent)?)?;
+        fs::create_dir_all(without_links(
+            directory,
+            &Path::new("previous").join(parent),
+        )?)?;
+    }
+    // Persist each destination's parent chain before an original is renamed.
+    sync_tree(directory)?;
+    sync_parent(directory)
 }
 
 fn copy_private(source: &Path, destination: &Path) -> Result<()> {
@@ -308,7 +405,7 @@ fn backup(home: &Path, destination: &Path) -> Result<()> {
     // Reserve both databases before taking either snapshot. Other CLI SQLite
     // writers cannot commit between the two snapshots or managed-file inventory.
     for logical in ["agent/agent.db", "app/app.db"] {
-        let source = home.join(logical);
+        let source = without_links(&home, Path::new(logical))?;
         if source.exists() {
             let conn = Connection::open_with_flags(&source, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
             conn.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -342,6 +439,7 @@ fn backup(home: &Path, destination: &Path) -> Result<()> {
     manifest.directories.sort();
     write_json(&staging.path().join("manifest.json"), &manifest)?;
     verify(staging.path())?;
+    sync_tree(staging.path())?;
     ensure!(
         !destination.exists(),
         "backup destination appeared during backup"
@@ -377,6 +475,21 @@ fn verify_files(source: &Path, manifest: &Manifest) -> Result<()> {
             file.path
         );
         if file.path == "agent/agent.db" || file.path == "app/app.db" {
+            // A backup is a standalone SQLite snapshot. Unmanifested sidecars
+            // must not override its hashed contents during verification.
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let sidecar = path.with_file_name(format!(
+                    "{}{suffix}",
+                    path.file_name()
+                        .context("database has no filename")?
+                        .to_string_lossy()
+                ));
+                ensure!(
+                    fs::symlink_metadata(sidecar)
+                        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound),
+                    "backup database contains an unexpected SQLite sidecar"
+                );
+            }
             let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
             let check: String = conn.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
             ensure!(check == "ok", "backup database integrity check failed");
@@ -408,7 +521,16 @@ fn work(home: &Path, id: &str) -> Result<PathBuf> {
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'),
         "invalid restore identity"
     );
-    Ok(home.join(format!(".restore-work-{id}")))
+    let directory = home.join(format!(".restore-work-{id}"));
+    match fs::symlink_metadata(&directory) {
+        Ok(meta) => ensure!(
+            meta.is_dir() && !meta.file_type().is_symlink(),
+            "invalid restore work directory"
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(directory)
 }
 
 fn begin_restore(home: &Path, source: &Path) -> Result<()> {
@@ -475,7 +597,7 @@ fn prepare_restore(home: &Path, source: &Path) -> Result<()> {
     for path in ROOTS {
         // Only enumerated managed roots are switched; application directories,
         // singleton locks and user-selected workspaces never move.
-        let original = home.join(path);
+        let original = without_links(home, Path::new(path))?;
         let replacement = incoming.join(path);
         if let Ok(meta) = fs::symlink_metadata(&original) {
             ensure!(
@@ -487,14 +609,16 @@ fn prepare_restore(home: &Path, source: &Path) -> Result<()> {
             path: (*path).into(),
             had_original: original.exists(),
             has_replacement: replacement.exists(),
+            original_digest: root_digest(&original)?,
         });
     }
     let journal = RestoreJournal {
-        version: 1,
+        version: 2,
         id,
         rollback: false,
         items,
     };
+    prepare_switch_parents(home, &directory)?;
     write_json(&pending(home), &journal)?;
     Ok(())
 }
@@ -510,17 +634,46 @@ fn finish_restore_with(
 ) -> Result<()> {
     let mut journal: RestoreJournal = serde_json::from_slice(&fs::read(pending(home))?)?;
     ensure!(
-        journal.version == 1 && journal.items.len() == ROOTS.len(),
+        matches!(journal.version, 1 | 2) && journal.items.len() == ROOTS.len(),
         "invalid restore journal"
     );
     for (item, path) in journal.items.iter().zip(ROOTS) {
         ensure!(item.path == *path, "invalid restore target");
+        if journal.version == 2 {
+            ensure!(
+                item.had_original == item.original_digest.is_some(),
+                "restore preimage evidence is missing"
+            );
+        }
     }
+    let directory = work(home, &journal.id)?;
+    for item in &journal.items {
+        without_links(home, Path::new(&item.path))?;
+        without_links(&directory, &Path::new("previous").join(&item.path))?;
+        without_links(&directory, &Path::new("incoming").join(&item.path))?;
+    }
+    // Check every retained preimage before performing another rename. A lost
+    // previous root must never be mistaken for a completed rollback.
+    if journal.version == 2 {
+        for item in journal.items.iter().filter(|item| item.had_original) {
+            let previous = directory.join("previous").join(&item.path);
+            let candidate = if previous.exists() {
+                previous
+            } else {
+                home.join(&item.path)
+            };
+            ensure!(
+                root_digest(&candidate)? == item.original_digest,
+                "restore preimage changed or is missing: {}; startup remains fenced",
+                item.path
+            );
+        }
+    }
+    prepare_switch_parents(home, &directory)?;
     if rollback && !journal.rollback {
         journal.rollback = true;
         write_json(&pending(home), &journal)?;
     }
-    let directory = work(home, &journal.id)?;
     for item in &journal.items {
         let original = home.join(&item.path);
         let previous = directory.join("previous").join(&item.path);
@@ -565,7 +718,23 @@ fn finish_restore_with(
             );
         }
     }
-    if !journal.rollback {
+    if journal.rollback {
+        for item in &journal.items {
+            let original = home.join(&item.path);
+            ensure!(
+                original.exists() == item.had_original,
+                "rollback is incomplete: {}; startup remains fenced",
+                item.path
+            );
+            if journal.version == 2 {
+                ensure!(
+                    root_digest(&original)? == item.original_digest,
+                    "rollback preimage verification failed: {}; startup remains fenced",
+                    item.path
+                );
+            }
+        }
+    } else {
         let manifest: Manifest =
             serde_json::from_slice(&fs::read(directory.join("restore-manifest.json"))?)?;
         verify_files(home, &manifest)?;
@@ -620,6 +789,100 @@ mod tests {
             })
             .unwrap();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn unmanifested_sqlite_sidecars_are_not_accepted_as_backup_contents() {
+        let root = tempfile::tempdir().unwrap();
+        let home = fixture(root.path());
+        let archive = root.path().join("archive");
+        backup(&home, &archive).unwrap();
+        fs::write(
+            archive.join("agent/agent.db-wal"),
+            b"unexpected committed pages",
+        )
+        .unwrap();
+        assert!(verify(&archive)
+            .unwrap_err()
+            .to_string()
+            .contains("sidecar"));
+        assert!(begin_restore(&home, &archive).is_err());
+        assert!(!pending(&home).exists());
+        assert_title(&home, "old title");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_restore_parents_never_move_an_external_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let home = fixture(root.path());
+        let archive = root.path().join("archive");
+        backup(&home, &archive).unwrap();
+        let external = root.path().join("external");
+        fs::create_dir_all(external.join("chat")).unwrap();
+        fs::write(external.join("chat/keep.txt"), b"external data").unwrap();
+        fs::rename(
+            home.join("workspaces"),
+            root.path().join("original-workspaces"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&external, home.join("workspaces")).unwrap();
+        assert!(prepare_restore(&home, &archive).is_err());
+        assert!(!pending(&home).exists());
+        assert_eq!(
+            fs::read(external.join("chat/keep.txt")).unwrap(),
+            b"external data"
+        );
+    }
+
+    #[test]
+    fn missing_preimage_never_clears_the_restore_fence() {
+        let root = tempfile::tempdir().unwrap();
+        let home = fixture(root.path());
+        let archive = root.path().join("archive");
+        backup(&home, &archive).unwrap();
+        change_current(&home);
+        prepare_restore(&home, &archive).unwrap();
+        assert!(finish_restore_with(&home, false, || bail!("exit after first rename")).is_err());
+        let journal: RestoreJournal =
+            serde_json::from_slice(&fs::read(pending(&home)).unwrap()).unwrap();
+        let previous = work(&home, &journal.id)
+            .unwrap()
+            .join("previous/agent/agent.db");
+        let bytes = fs::read(&previous).unwrap();
+        fs::remove_file(&previous).unwrap();
+        assert!(finish_restore(&home, true)
+            .unwrap_err()
+            .to_string()
+            .contains("preimage"));
+        assert!(future_rpc::home::ensure_restore_complete(&home).is_err());
+        assert_title(&home, "new title");
+        fs::write(&previous, bytes).unwrap();
+        finish_restore(&home, true).unwrap();
+        future_rpc::home::ensure_restore_complete(&home).unwrap();
+        assert_title(&home, "new title");
+    }
+
+    #[test]
+    fn version_one_pending_restores_remain_resumable() {
+        for rollback in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let home = fixture(root.path());
+            let archive = root.path().join("archive");
+            backup(&home, &archive).unwrap();
+            change_current(&home);
+            prepare_restore(&home, &archive).unwrap();
+            let mut journal: serde_json::Value =
+                serde_json::from_slice(&fs::read(pending(&home)).unwrap()).unwrap();
+            journal["version"] = 1.into();
+            for item in journal["items"].as_array_mut().unwrap() {
+                item.as_object_mut().unwrap().remove("original_digest");
+            }
+            write_json(&pending(&home), &journal).unwrap();
+            assert!(finish_restore_with(&home, false, || bail!("exit after rename")).is_err());
+            finish_restore(&home, rollback).unwrap();
+            assert_title(&home, if rollback { "new title" } else { "old title" });
+        }
     }
 
     #[test]
