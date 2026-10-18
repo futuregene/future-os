@@ -117,6 +117,8 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     match cmd_type.as_str() {
         "shutdown" => return session_lifecycle::cmd_shutdown(state, id),
         "list_sessions" => return session_lifecycle::cmd_list_sessions(state, &cmd, id),
+        "get_session_presence" => return session_lifecycle::cmd_session_presence(state, &cmd, id),
+        "get_storage_health" => return session_lifecycle::cmd_storage_health(state, id),
         "list_session_ids" => return session_lifecycle::cmd_list_session_ids(state, id),
         "list_streaming_sessions" => {
             return session_lifecycle::cmd_list_streaming_sessions(state, id)

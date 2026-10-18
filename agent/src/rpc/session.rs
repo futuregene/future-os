@@ -372,6 +372,19 @@ impl ServerSession {
             );
             return;
         }
+        if !self.ephemeral && self.runtime.snapshot().is_none() && !self.runtime.has_owned_task() {
+            match self
+                .session_manager
+                .finish_cancelled_receipts(&self.session_id)
+            {
+                Ok(count) if count > 0 => self.history_loaded = false,
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::error!(%error,"scheduler paused while preserving cancelled inputs");
+                    return;
+                }
+            }
+        }
         if self.scheduler.active().is_some() {
             if let Err(error) = self.scheduler.finish_active(&finished.run_id) {
                 tracing::error!(
@@ -414,8 +427,22 @@ impl ServerSession {
         run_id: &str,
         reason: crate::runtime::QueuedCancellationReason,
     ) -> Result<crate::runtime::ScheduledRunRequest, crate::runtime::RunQueueError> {
+        if !self.ephemeral
+            && self
+                .scheduler
+                .queued()
+                .iter()
+                .any(|run| run.run_id == run_id)
+        {
+            self.session_manager
+                .cancel_queued_receipt(&self.session_id, run_id)
+                .map_err(|error| {
+                    crate::runtime::RunQueueError::PersistenceUnavailable(error.to_string())
+                })?;
+        }
         let cancelled = self.scheduler.cancel_queued(run_id, reason)?;
         self.scheduled_snapshots.remove(run_id);
+        self.flush_cancelled_receipts_when_idle();
         Ok(cancelled)
     }
 
@@ -425,9 +452,31 @@ impl ServerSession {
     ) -> Vec<crate::runtime::ScheduledRunRequest> {
         let cancelled = self.scheduler.cancel_all_queued(reason);
         for request in &cancelled {
+            if !self.ephemeral {
+                if let Err(error) = self
+                    .session_manager
+                    .cancel_queued_receipt(&self.session_id, &request.run_id)
+                {
+                    tracing::error!(%error,"queued cancellation remains interrupted on restart");
+                }
+            }
             self.scheduled_snapshots.remove(&request.run_id);
         }
+        self.flush_cancelled_receipts_when_idle();
         cancelled
+    }
+
+    fn flush_cancelled_receipts_when_idle(&mut self) {
+        if !self.ephemeral && self.runtime.snapshot().is_none() && !self.runtime.has_owned_task() {
+            match self
+                .session_manager
+                .finish_cancelled_receipts(&self.session_id)
+            {
+                Ok(count) if count > 0 => self.history_loaded = false,
+                Ok(_) => {}
+                Err(error) => tracing::error!(%error,"cancelled input preservation deferred"),
+            }
+        }
     }
 
     pub fn recover_persistence_degraded(&mut self) -> Result<crate::runtime::RunLease> {

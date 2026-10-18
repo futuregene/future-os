@@ -10,6 +10,7 @@ use crate::utils::default_session_dir;
 #[cfg(test)]
 use anyhow::anyhow;
 use anyhow::Result;
+use rusqlite::params;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -152,6 +153,7 @@ impl Manager {
             );
             let store = SqliteStore::open_cancellable(&self.database_path(), cancellation.clone())?;
             store.import_legacy_cancellable(&self.dir, None, cancellation)?;
+            store.recover_queued_receipts(None, false)?;
             cancellation.check()?;
             let _ = self.store.set(store);
             tracing::info!("session storage: ready");
@@ -195,6 +197,18 @@ impl Manager {
         started: SessionEntry,
     ) -> Result<()> {
         let id = id.to_owned();
+        let run_id = started
+            .content
+            .as_ref()
+            .and_then(|content| content["run_id"].as_str())
+            .unwrap_or_default()
+            .to_owned();
+        let merged = user
+            .meta
+            .as_ref()
+            .and_then(|meta| meta["coalesced_run_ids"].as_array())
+            .cloned()
+            .unwrap_or_default();
         let values = Self::encoded(&[user, started])?;
         self.storage()?.db.call(move |db| {
             // Reads the existing markers before it writes: take the write lock
@@ -215,6 +229,10 @@ impl Manager {
                 )?;
             }
             super::sqlite_store::insert_transcript_entries(&tx, &id, values)?;
+            tx.execute("UPDATE queued_run_receipts SET status='started',payload_json=NULL,user_entry_json=NULL WHERE session_id=?1 AND run_id=?2",params![id,run_id])?;
+            for merged_run in merged.iter().filter_map(serde_json::Value::as_str) {
+                tx.execute("UPDATE queued_run_receipts SET status='merged',payload_json=NULL,user_entry_json=NULL WHERE session_id=?1 AND run_id=?2",params![id,merged_run])?;
+            }
             tx.execute("UPDATE sessions SET revision=revision+1 WHERE id=?1", [&id])?;
             tx.commit()?;
             Ok(())

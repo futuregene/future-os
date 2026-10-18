@@ -186,9 +186,10 @@ impl Manager {
     ) -> Result<serde_json::Value> {
         let id = id.to_owned();
         let page = self.storage()?.db.call(move |db| {
-            let tx = db.transaction()?;
+            let tx = crate::session::database::begin_write_transaction(db)?;
             let skipped: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')", [&id], |r| r.get(0))?;
             if skipped { anyhow::bail!("session migration was skipped"); }
+            super::ensure_history_index(&tx, &id)?;
             let page = read_display_page(&tx, &id, before, offset, limit)?;
             tx.commit()?;
             Ok(page)

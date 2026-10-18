@@ -387,7 +387,7 @@ fn verify_files(source: &Path, manifest: &Manifest) -> Result<()> {
                 let application: i64 =
                     conn.pragma_query_value(None, "application_id", |row| row.get(0))?;
                 ensure!(
-                    application == 0x46555452 && [0, 2, 3, 4, 5, 6].contains(&version),
+                    application == 0x46555452 && [0, 2, 3, 4, 5, 6, 7].contains(&version),
                     "unsupported Agent backup database"
                 );
             }

@@ -229,6 +229,7 @@ fn inspect_registry_database(connection: &Connection) -> Result<RegistryDatabase
         && version != 3
         && version != 4
         && version != 5
+        && version != 6
         && version != crate::session::database::CURRENT_SCHEMA_VERSION
     {
         bail!("unsupported Agent database schema version {version}");

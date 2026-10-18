@@ -8,7 +8,20 @@ pub(super) fn initialize_schema(
 ) -> Result<()> {
     cancellation.check()?;
     let tx = connection.transaction()?;
+    let missing_projection: bool = tx.query_row(
+        "SELECT count(*)!=2 FROM sqlite_schema WHERE type='table' AND name IN ('history_shapes','history_display')",
+        [], |row| row.get(0),
+    )?;
     tx.execute_batch(include_str!("schema.sql"))?;
+    if missing_projection {
+        tx.execute("DELETE FROM history_index_state", [])?;
+    }
+    for key in ["database_id", "restore_generation"] {
+        tx.execute(
+            "INSERT OR IGNORE INTO storage_meta(key,value) VALUES (?1,?2)",
+            rusqlite::params![key, uuid::Uuid::new_v4().to_string()],
+        )?;
+    }
     tx.execute("INSERT INTO storage_meta(key,value) VALUES ('event_sequence',CAST(coalesce((SELECT max(sequence) FROM run_events),0) AS TEXT))
         ON CONFLICT(key) DO UPDATE SET value=CAST(max(CAST(storage_meta.value AS INTEGER),CAST(excluded.value AS INTEGER)) AS TEXT)", [])?;
     cancellation.check()?;
@@ -28,7 +41,7 @@ pub(super) fn initialize_schema(
 
 /// Preparing the actual read shapes catches missing tables/columns without
 /// hydrating or rewriting any historical body. Derived indexes are separate.
-pub(super) fn validate_core(connection: &Connection) -> Result<()> {
+pub(super) fn validate_authoritative_history(connection: &Connection) -> Result<()> {
     for query in [
         "SELECT id,revision,current_metadata_json,created_at_ms,updated_at_ms FROM sessions LIMIT 0",
         "SELECT session_id,position,entry_id,entry_type,role,run_id,timestamp_ms,metadata_json,content_json FROM entries LIMIT 0",
@@ -41,5 +54,24 @@ pub(super) fn validate_core(connection: &Connection) -> Result<()> {
     ] {
         connection.prepare(query).map_err(|error| anyhow::anyhow!("Agent database history structure is incomplete; preserve the database for recovery: {error}"))?;
     }
+    Ok(())
+}
+
+pub(super) fn validate_core(connection: &Connection) -> Result<()> {
+    validate_authoritative_history(connection)?;
+    for query in [
+        "SELECT session_id,deleted_at_ms FROM session_tombstones LIMIT 0",
+        "SELECT session_id,run_id,client_request_id,run_sequence,fingerprint,payload_json,user_entry_json,status FROM queued_run_receipts LIMIT 0",
+    ] {
+        connection.prepare(query).map_err(|error| anyhow::anyhow!("Agent database history structure is incomplete; preserve the database for recovery: {error}"))?;
+    }
+    let identities: i64 = connection.query_row(
+        "SELECT count(*) FROM storage_meta WHERE key IN ('database_id','restore_generation') AND length(value)>0",
+        [], |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        identities == 2,
+        "Agent database identity is incomplete; preserve the database for recovery"
+    );
     Ok(())
 }

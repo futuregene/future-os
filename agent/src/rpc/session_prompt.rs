@@ -205,6 +205,30 @@ impl ServerSession {
         if self.deleting {
             return Err(crate::runtime::RunQueueError::Deleting.into());
         }
+        let receipt_fingerprint = crate::session::compaction_ops::canonical_hash(
+            &serde_json::json!({
+                "message":prompt.message,"modelContext":prompt.model_context,"images":images,"attachments":attachments
+            }),
+        )?;
+        if !self.ephemeral && !self.scheduler.knows_request(client_request_id) {
+            if let Some((run, sequence, fingerprint)) = self
+                .session_manager
+                .queued_receipt(&self.session_id, client_request_id)?
+            {
+                anyhow::ensure!(
+                    fingerprint == receipt_fingerprint
+                        && requested_run_id.is_none_or(|id| id.is_empty() || id == run),
+                    "client request id already belongs to another accepted input"
+                );
+                return Ok(crate::runtime::RunAck {
+                    run_id: run,
+                    run_epoch: 0,
+                    accepted_state: crate::runtime::RunAcceptedState::Existing,
+                    run_sequence: Some(u64::try_from(sequence)?),
+                    queue_position: None,
+                });
+            }
+        }
         if !self.scheduler.knows_request(client_request_id) {
             if let Some(run_id) = requested_run_id.filter(|run_id| !run_id.is_empty()) {
                 let journal_exists = self
@@ -225,7 +249,10 @@ impl ServerSession {
                                 == Some(run_id)
                         })
                     });
-                if journal_exists || transcript_exists {
+                let admitted = self
+                    .session_manager
+                    .has_queued_receipt_run(&self.session_id, run_id)?;
+                if journal_exists || transcript_exists || admitted {
                     return Err(
                         crate::runtime::RunQueueError::DuplicateRunId(run_id.to_string()).into(),
                     );
@@ -272,6 +299,10 @@ impl ServerSession {
             attachments: attachments.to_vec(),
             settings: settings.clone(),
         })?;
+        let durable_payload = payload.clone();
+        let queue_only = self.runtime.snapshot().is_some()
+            || self.runtime.has_owned_task()
+            || self.scheduler.active().is_some();
         let (ack, superseded, superseded_active) = if busy_policy
             == crate::runtime::BusyPolicy::SupersedeSession
         {
@@ -290,7 +321,51 @@ impl ServerSession {
         if ack.accepted_state == crate::runtime::RunAcceptedState::Existing {
             return Ok(ack);
         }
+        if queue_only && !self.ephemeral {
+            // Store the accepted input without resolving live attachment paths.
+            let mut message = build_user_message_with_model_context(
+                prompt.message,
+                prompt.model_context,
+                images,
+                attachments,
+                false,
+                &|_| None,
+            );
+            let metadata = message.metadata.get_or_insert_with(serde_json::Map::new);
+            metadata.insert("run_id".into(), ack.run_id.clone().into());
+            metadata.insert("client_request_id".into(), client_request_id.into());
+            let user = crate::session::agent_message_to_entry(&message);
+            if let Err(error) = self.session_manager.record_queued_receipt(
+                &self.session_id,
+                client_request_id,
+                &ack,
+                &receipt_fingerprint,
+                &durable_payload,
+                &user,
+            ) {
+                let _ = self.scheduler.cancel_queued(
+                    &ack.run_id,
+                    crate::runtime::QueuedCancellationReason::Cancelled,
+                );
+                return Err(error);
+            }
+        }
         for request in superseded {
+            if !self.ephemeral {
+                if let Err(error) = self
+                    .session_manager
+                    .cancel_queued_receipt(&self.session_id, &request.run_id)
+                {
+                    let _ = self.scheduler.cancel_queued(
+                        &ack.run_id,
+                        crate::runtime::QueuedCancellationReason::Cancelled,
+                    );
+                    let _ = self
+                        .session_manager
+                        .cancel_queued_receipt(&self.session_id, &ack.run_id);
+                    return Err(error);
+                }
+            }
             self.scheduled_snapshots.remove(&request.run_id);
         }
         self.scheduled_snapshots.insert(

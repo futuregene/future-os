@@ -163,22 +163,13 @@ fn v2_database_upgrades_to_current_schema_with_the_skills_table() {
     // current v2 layout, no skills table yet.
     let connection = Connection::open(&path).unwrap();
     connection
+        .execute_batch(include_str!("schema.sql"))
+        .unwrap();
+    connection
         .execute_batch(
-            "CREATE TABLE entries (
-                session_id TEXT NOT NULL, position INTEGER NOT NULL, entry_id TEXT NOT NULL,
-                entry_type TEXT NOT NULL, role TEXT, run_id TEXT, timestamp_ms INTEGER,
-                metadata_json TEXT NOT NULL, content_json TEXT,
-                PRIMARY KEY(session_id, position)
-             );
-             CREATE TABLE runs (
-                session_id TEXT NOT NULL, run_id TEXT NOT NULL, status TEXT NOT NULL,
-                run_sequence INTEGER, epoch INTEGER, started_at_ms INTEGER, completed_at_ms INTEGER,
-                error TEXT, cache_write_tokens INTEGER, input_baseline INTEGER, cache_read_baseline INTEGER,
-                input_tokens INTEGER, cache_read_tokens INTEGER, output_tokens INTEGER, duration_ms INTEGER,
-                PRIMARY KEY(session_id,run_id)
-             );
-             PRAGMA application_id = 1179997266;
-             PRAGMA user_version = 2;",
+            "DROP TABLE session_tombstones;
+        DROP TABLE queued_run_receipts; DROP TABLE history_index_state;
+        PRAGMA user_version=2;",
         )
         .unwrap();
     drop(connection);

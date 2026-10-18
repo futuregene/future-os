@@ -30,6 +30,7 @@ pub(super) fn open_connection_cancellable(
         && version != 3
         && version != 4
         && version != 5
+        && version != 6
         && version != super::CURRENT_SCHEMA_VERSION
     {
         bail!("unsupported Agent database schema version {version}");
@@ -73,6 +74,16 @@ pub(super) fn open_connection_cancellable(
         // CREATE IF NOT EXISTS must never mask missing authoritative history.
         super::schema::validate_core(&connection)?;
     } else if application != 0 {
+        let bootstrap: bool = connection.query_row(
+            "SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table'
+             AND name NOT LIKE 'sqlite_%' AND name NOT IN
+             ('skills','skills_meta','skill_installations','skill_operations'))",
+            [],
+            |row| row.get(0),
+        )?;
+        if !(bootstrap && matches!(version, 0 | 3 | 4)) {
+            super::schema::validate_authoritative_history(&connection)?;
+        }
         let directory = path
             .parent()
             .context("Agent database has no parent")?
