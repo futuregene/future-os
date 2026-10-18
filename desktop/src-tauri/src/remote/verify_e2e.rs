@@ -3109,4 +3109,89 @@ mod multi_device {
         drop(b);
         drop(machine);
     }
+
+    /// Both devices reconnect at the same instant, repeatedly.
+    ///
+    /// The single-device reconnect above proves one device does not reclaim.
+    /// This is the race the rule actually has to survive: two devices coming
+    /// back together, each re-deriving its own transport on a real broker,
+    /// neither reading "I am reconnecting" as "I want the machine". A stub
+    /// broker cannot expose it — there is no real reconnection to collide — and
+    /// a settlement based on ordering rather than on an explicit request would
+    /// show up here as control ping-ponging between rounds.
+    ///
+    /// Deterministic by construction: each round awaits both handshake replies
+    /// (they are request/reply), then polls the pointer, and nothing sleeps for
+    /// a fixed interval to "let things settle".
+    #[tokio::test]
+    async fn two_simultaneous_reconnects_leave_control_where_it_was() {
+        let Some(broker) = real_broker_or_skip() else {
+            return;
+        };
+        let machine = machine_with_two_devices(&broker, "verify-multi-reconnect-race").await;
+        let broker_url = broker.url().to_string();
+
+        let mut a = DeviceLink::open(&broker_url, &machine.a.creds, "race-a", None).await;
+        until("A holds the machine after pairing", || {
+            SUPERVISOR.in_control(&machine.a.pair_id)
+        })
+        .await;
+        let mut b = DeviceLink::open(&broker_url, &machine.b.creds, "race-b", None).await;
+        // B's connection did not displace A (that is the previous test's subject);
+        // this one starts from a machine that is already settled.
+        assert!(SUPERVISOR.in_control(&machine.a.pair_id));
+
+        for round in 0..3 {
+            // Both clients vanish at once and both come back at once. The join
+            // is the whole point: their handshakes are genuinely in flight
+            // together on the broker.
+            let (a_next, b_next) = tokio::join!(
+                a.reconnect(&broker_url, &machine.a.creds),
+                b.reconnect(&broker_url, &machine.b.creds),
+            );
+            drop(a);
+            drop(b);
+            a = a_next;
+            b = b_next;
+
+            // The pointer must not have moved, and must not still be moving:
+            // poll it rather than reading it once, so a claim that lands a tick
+            // late is caught instead of raced with.
+            let holder = machine.a.pair_id.clone();
+            until(
+                &format!("round {round}: the machine stays with the device that held it"),
+                || SUPERVISOR.in_control(&holder) && !SUPERVISOR.in_control(&machine.b.pair_id),
+            )
+            .await;
+
+            // …and that is what both devices experience, over the wire.
+            assert!(
+                a.may_drive(&format!("race-a-{round}")).await,
+                "round {round}: the device that held the machine was refused after reconnecting"
+            );
+            assert!(
+                !b.may_drive(&format!("race-b-{round}")).await,
+                "round {round}: a device took the machine by reconnecting"
+            );
+            assert_eq!(b.presence_control().await, "standby");
+            assert_eq!(a.presence_control().await, "active");
+        }
+
+        // The only thing that may move it still moves it: one explicit request.
+        let reply = b
+            .command(json!({ "id": unique("race-takeover"), "type": "takeover" }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "takeover refused: {reply}");
+        assert_eq!(reply["data"]["previous"], json!(machine.a.pair_id));
+        until("B now holds the machine", || {
+            SUPERVISOR.in_control(&machine.b.pair_id)
+        })
+        .await;
+        a.await_control("standby").await;
+        assert!(!a.may_drive("race-a-after-takeover").await);
+
+        drop(a);
+        drop(b);
+        drop(machine);
+    }
 }
