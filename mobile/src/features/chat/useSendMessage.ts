@@ -61,10 +61,19 @@ export function useSendMessage(options: SendMessageOptions): SendMessageApi {
       if (!isCurrent()) return;
       if (sameText()) setMessage(draftValue);
       const key = error instanceof Error ? error.message : "";
-      showToast(key === "send_compacting" ? t("chat.compacting")
-        : key === "prompt_too_large" ? t("chat.promptTooLarge")
-          : key.includes("session_not_on_desktop") ? t("chat.sessionNotOnDesktop")
-            : t("chat.sendFailed"));
+      // `superseded` is the desktop refusing because another device holds it.
+      // The composer's own notice says so while the pointer already reads
+      // standby; this branch is the race — control moved a moment ago — and
+      // "message failed to send" there leaves the user with no cause at all.
+      const holder = remote.presence?.holder?.name?.trim();
+      showToast(key === "superseded"
+        ? (holder
+            ? t("chat.standbyCannotSend", { name: holder })
+            : t("chat.standbyCannotSendUnknown"))
+        : key === "send_compacting" ? t("chat.compacting")
+          : key === "prompt_too_large" ? t("chat.promptTooLarge")
+            : key.includes("session_not_on_desktop") ? t("chat.sessionNotOnDesktop")
+              : t("chat.sendFailed"));
     } finally {
       if (isCurrent()) setTransferProgress(null);
     }

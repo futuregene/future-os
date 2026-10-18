@@ -188,6 +188,30 @@ describe("sending", () => {
     expect(setMessage).toHaveBeenCalledWith("keep me");
   });
 
+  test("a send refused because another device holds the desktop says who, not just 'failed'", async () => {
+    // The composer's own notice covers the steady state; this is the race where
+    // control moved between the presence push and the send. A generic
+    // "message failed to send" there leaves the user with no cause at all.
+    const remote = remoteFor({
+      sendMessage: jest.fn(async () => { throw new Error("superseded"); }),
+      presence: { control: "standby", holder: { name: "Lab MacBook Air" } },
+    });
+    const { setMessage } = mount({ remote, message: "keep me" });
+    await act(async () => { await api.send(); });
+    expect(toast).toHaveBeenCalledWith("t:chat.standbyCannotSend");
+    expect(setMessage).toHaveBeenCalledWith("keep me");
+  });
+
+  test("a superseded send with no named holder still says what happened", async () => {
+    const remote = remoteFor({
+      sendMessage: jest.fn(async () => { throw new Error("superseded"); }),
+      presence: { control: "standby", holder: null },
+    });
+    mount({ remote, message: "keep me" });
+    await act(async () => { await api.send(); });
+    expect(toast).toHaveBeenCalledWith("t:chat.standbyCannotSendUnknown");
+  });
+
   test("a manual compaction in flight blocks the send without eating the draft", async () => {
     const remote = remoteFor();
     const { setMessage } = mount({ remote, message: "keep me", compactionPending: true });

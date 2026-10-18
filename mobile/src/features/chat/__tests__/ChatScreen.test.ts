@@ -78,6 +78,8 @@ const mockRemote = {
   streaming: false,
   timelineSyncStatus: "idle" as TimelineSyncStatus,
   connectionPresentation: { level: "connected" },
+  presence: null as { control?: string; holder?: { name?: string } | null } | null,
+  takeControl: jest.fn(async () => {}),
 };
 jest.mock("../../../remote/RemoteContext", () => ({
   useRemote: () => mockRemote,
@@ -250,6 +252,27 @@ const olderCollision = () => {
     },
   }));
 };
+
+test("a desktop another device took over says so where the user is typing", () => {
+  // The status dot explains the refusal, but a user composing here will not tap
+  // a small dot to find out why sending does nothing.
+  // A fresh mount: `ChatScreen` takes no props, so `update` with an identical
+  // element does not re-render it and the changed fixture would be invisible.
+  act(() => tree.unmount());
+  mockRemote.presence = { control: "standby", holder: { name: "Lab MacBook Air" } };
+  act(() => { tree = create(createElement(ChatScreen)); });
+
+  const notice = () => tree.root.findAll(n => typeof n.type === "function" && n.type.name === "StandbyNotice");
+  expect(notice()).toHaveLength(1);
+  // It carries the holder's name, so the sentence names who to take it from.
+  expect(notice()[0]!.props.holder).toEqual({ name: "Lab MacBook Air" });
+
+  // …and nothing of the sort while this phone drives the desktop.
+  act(() => tree.unmount());
+  mockRemote.presence = { control: "active", holder: null };
+  act(() => { tree = create(createElement(ChatScreen)); });
+  expect(notice()).toHaveLength(0);
+});
 
 test.each(["files", "preview", "download"])("%s retains the list while covered and catches up without remounting", surface => {
   const original = mockRemote.timeline;
