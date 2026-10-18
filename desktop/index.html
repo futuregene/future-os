@@ -4,6 +4,20 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FutureOS</title>
+    <script>
+      // Paint the stored theme before the first frame. `src/lib/theme.ts` owns
+      // the real state and re-applies the same class once the app boots; this
+      // only avoids a light flash for dark-theme users while the bundle loads.
+      (function () {
+        try {
+          var stored = localStorage.getItem("future.theme");
+          var dark = stored === "dark"
+            || (stored !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.classList.toggle("dark", dark);
+          document.documentElement.style.colorScheme = dark ? "dark" : "light";
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

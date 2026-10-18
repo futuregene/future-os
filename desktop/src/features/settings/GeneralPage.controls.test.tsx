@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "../../i18n";
+import { setThemeMode } from "../../lib/theme";
 import { GeneralPage } from "./GeneralPage";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -31,6 +32,7 @@ beforeEach(() => {
   mocks.availability = { available: true, code: null, resolved: true };
   mocks.isLinux = false;
   mocks.isWindows = true;
+  setThemeMode("system");
   void i18n.changeLanguage("en");
 });
 
@@ -105,11 +107,32 @@ describe("generalPage language picker", () => {
   });
 });
 
+describe("generalPage theme picker", () => {
+  it("reflects the active theme and switches the document palette", () => {
+    const { container } = mount();
+    const theme = select(container, 1);
+
+    expect(theme.value).toBe("system");
+    expect([...theme.options].map(option => option.textContent)).toEqual(["Light", "Dark", "System"]);
+
+    choose(theme, "dark");
+
+    expect(container.ownerDocument.documentElement.classList.contains("dark")).toBe(true);
+    expect(localStorage.getItem("future.theme")).toBe("dark");
+    expect(theme.value).toBe("dark");
+
+    choose(theme, "light");
+
+    expect(container.ownerDocument.documentElement.classList.contains("dark")).toBe(false);
+    expect(localStorage.getItem("future.theme")).toBe("light");
+  });
+});
+
 describe("generalPage approval tier picker", () => {
   it("reports every tier change to the settings owner", () => {
     const onChangeApprovalTier = vi.fn();
     const { container } = mount({ approvalTier: "off", onChangeApprovalTier });
-    const tier = select(container, 1);
+    const tier = select(container, 2);
 
     expect(tier.value).toBe("off");
     expect([...tier.options].map(option => option.value)).toEqual(["manual", "sandbox", "auto", "off"]);
@@ -122,7 +145,7 @@ describe("generalPage approval tier picker", () => {
 
   it.each(["signed_out", "invalid", "checking"])("gates automatic review for %s without changing a pending preference", (futureSessionStatus) => {
     const { container } = mount({ approvalTier: "auto", futureSessionStatus });
-    const tier = select(container, 1);
+    const tier = select(container, 2);
     expect(tier.value).toBe(futureSessionStatus === "checking" ? "auto" : "sandbox");
     expect([...tier.options].find(option => option.value === "auto")!.disabled).toBe(true);
     expect([...tier.options].find(option => option.value === "sandbox")!.disabled).toBe(false);
@@ -130,7 +153,7 @@ describe("generalPage approval tier picker", () => {
 
   it("enables the sandbox option when the sandbox is available", () => {
     const { container } = mount({ approvalTier: "sandbox" });
-    const sandbox = [...select(container, 1).options].find(option => option.value === "sandbox")!;
+    const sandbox = [...select(container, 2).options].find(option => option.value === "sandbox")!;
 
     expect(sandbox.disabled).toBe(false);
     expect(sandbox.textContent).toBe("Sandboxed");
@@ -140,7 +163,7 @@ describe("generalPage approval tier picker", () => {
     mocks.availability = { available: false, code: null, resolved: false };
     const { container } = mount();
 
-    const sandbox = [...select(container, 1).options].find(option => option.value === "sandbox")!;
+    const sandbox = [...select(container, 2).options].find(option => option.value === "sandbox")!;
     expect(sandbox.disabled).toBe(true);
     expect(sandbox.textContent).toBe("Sandboxed (checking)");
   });
@@ -149,7 +172,7 @@ describe("generalPage approval tier picker", () => {
     mocks.availability = { available: false, code: "probe_failed", resolved: true };
     const { container } = mount();
 
-    const sandbox = [...select(container, 1).options].find(option => option.value === "sandbox")!;
+    const sandbox = [...select(container, 2).options].find(option => option.value === "sandbox")!;
     expect(sandbox.disabled).toBe(true);
     expect(sandbox.textContent).toBe("Sandboxed (unavailable)");
   });

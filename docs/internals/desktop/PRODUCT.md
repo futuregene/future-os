@@ -863,8 +863,10 @@ must not pollute the daily background-program list.
 ### 5.6 Colors and design tokens
 
 GUI colors uniformly use the **semantic tokens** defined in
-`desktop/tailwind.config.js` (neutral/surface, accent/interaction, the status
-triple, diff, shadows) — no raw Tailwind named colors written in components.
+`desktop/src/styles/globals.css` (neutral/surface, accent/interaction, the
+status triple, diff, shadows) — no raw Tailwind named colors written in
+components. Every token has a light and a dark value; the theme (Light / Dark /
+Follow system) is a Settings → General choice.
 Status badges uniformly use the `<Badge tone>` component; colors
 distinguishing **sibling categories** (run error subtypes) are an
 intentional exception.
