@@ -3569,6 +3569,27 @@ mod multi_device_tests {
         );
     }
 
+    /// A device with no runtime cannot take control: moving the pointer to it
+    /// would tell the connected device to stand by for a bridge that is not
+    /// there, leaving nobody driving the machine.
+    #[tokio::test]
+    async fn an_offline_device_cannot_take_control() {
+        let _home = test_support::HomeGuard::new("remote-multi-offline-takeover");
+        let (controller, standby) = two_devices("pair_ctrl5", "pair_standby5");
+
+        // No runtime is installed for either device in this fixture; the
+        // pointer must therefore stay where it was.
+        let refused = super::takeover(&standby.pair_id).await;
+        assert!(
+            matches!(refused, Err(crate::AppError::Message(ref message)) if message == "device_offline"),
+            "an offline device must be refused, not silently given the machine"
+        );
+        assert!(
+            SUPERVISOR.in_control(&controller.pair_id),
+            "the refusal must leave the existing controller in place"
+        );
+    }
+
     /// A device that reconnects is not a device that asked for the machine.
     /// This is the anti-ping-pong rule: if a reconnect reclaimed control, two
     /// devices would evict each other for as long as both keep retrying.

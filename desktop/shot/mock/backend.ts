@@ -172,6 +172,102 @@ const EMPTY_REMOTE_STATUS = {
   warningCode: null,
 };
 
+/**
+ * The host side with several paired devices (`?remoteDevices=<mode>`).
+ *
+ * A plain load answers `EMPTY_REMOTE_STATUS`, which is the single-device page
+ * the host section used to be. The device list only renders when the backend
+ * reports `devices`, so a capture of it needs a fixture that has them — and the
+ * three rows it can show are exactly the three states the list distinguishes:
+ * the device in control, one connected but standing by (it stays connected so
+ * it can take back over without re-pairing), and one that is only paired.
+ */
+function remoteStatusWithDevices(mode: string): Record<string, unknown> {
+  const now = Math.floor(Date.now() / 1000);
+  const devices = [
+    {
+      pairId: "pair_8F3A21C4D5E64B77",
+      phase: "ready",
+      control: "active",
+      connected: true,
+      client: { name: "iPhone 17 Pro", kind: "mobile" },
+      pairingCode: null,
+      pairingCodeExpiresAt: null,
+      desktopId: "desktop_C76HV2R4TKPGCC55",
+    },
+    {
+      pairId: "pair_2D9E4B1A7C3F8052",
+      phase: "ready",
+      control: "standby",
+      connected: true,
+      client: { name: "实验室的 MacBook Air", kind: "desktop" },
+      pairingCode: null,
+      pairingCodeExpiresAt: null,
+      desktopId: "desktop_C76HV2R4TKPGCC55",
+    },
+    {
+      pairId: "pair_6B7C0E5A9D21438F",
+      phase: "stopped",
+      control: "standby",
+      connected: false,
+      client: { name: "iPad mini", kind: "mobile" },
+      pairingCode: null,
+      pairingCodeExpiresAt: null,
+      desktopId: "desktop_C76HV2R4TKPGCC55",
+    },
+  ];
+
+  if (mode === "reconnect") {
+    // The bridge has lost its connection and is retrying: the same device list,
+    // with the transport down. `reason: "network"` is what turns the status row
+    // into "网络异常" plus a "重新连接" action.
+    return {
+      ...EMPTY_REMOTE_STATUS,
+      phase: "reconnecting",
+      reason: "network",
+      pairId: devices[0]!.pairId,
+      devices: devices.map(device => ({ ...device, connected: false, control: "standby" })),
+    };
+  }
+
+  if (mode === "waiting") {
+    // The invitation for a fourth device is on screen: the list carries the
+    // pending row, and the QR block below it is drawn from that row.
+    const pending = {
+      pairId: "pair_C41F7A08E62B4D19",
+      phase: "connecting" as const,
+      control: "standby" as const,
+      connected: false,
+      client: null,
+      pairingCode: "futureos://remote/pair?code=mock&desktopId=desktop_C76HV2R4TKPGCC55",
+      pairingCodeExpiresAt: now + 540,
+      desktopId: "desktop_C76HV2R4TKPGCC55",
+    };
+    return {
+      ...EMPTY_REMOTE_STATUS,
+      phase: "ready",
+      pairId: devices[0]!.pairId,
+      devices: [...devices, pending],
+      pairingCode: pending.pairingCode,
+      pairingCodeExpiresAt: pending.pairingCodeExpiresAt,
+    };
+  }
+
+  return {
+    ...EMPTY_REMOTE_STATUS,
+    phase: "ready",
+    pairId: devices[0]!.pairId,
+    devices,
+  };
+}
+
+/** `?remoteDevices=multi|waiting|reconnect`, or `""` for the plain host page. */
+function remoteDevicesMode(): string {
+  if (typeof window === "undefined")
+    return "";
+  return new URLSearchParams(window.location.search).get("remoteDevices") ?? "";
+}
+
 /** Command name → implementation. Anything missing goes to the fallback. */
 /** Mutable copy so a capture can show a task being toggled or deleted. */
 const taskList = tasks.map(task => ({ ...task }));
@@ -497,7 +593,10 @@ const handlers: Record<string, (args: any) => unknown> = {
   record_skill_reco: () => null,
 
   // ── Remote (phone control) ─────────────────────────────────────────────
-  remote_status: () => EMPTY_REMOTE_STATUS,
+  // A plain load is the single-device host page; `?remoteDevices=` swaps in the
+  // multi-device fixture (see `remoteStatusWithDevices`).
+  remote_status: () =>
+    remoteDevicesMode() ? remoteStatusWithDevices(remoteDevicesMode()) : EMPTY_REMOTE_STATUS,
   remote_pairing_status: () => ({ paired: false, deviceName: null }),
   remote_start: () => ({
     ...EMPTY_REMOTE_STATUS,
@@ -508,6 +607,11 @@ const handlers: Record<string, (args: any) => unknown> = {
   }),
   remote_stop: () => EMPTY_REMOTE_STATUS,
   remote_unpair: () => null,
+  // The three actions the device list offers. Serving them keeps a capture that
+  // presses one from silently doing nothing while it works in the app.
+  remote_add_device: () => remoteStatusWithDevices("waiting"),
+  remote_takeover: () => remoteStatusWithDevices("multi"),
+  remote_unpair_device: () => remoteStatusWithDevices("multi"),
 
   // ── Remote, the client role: this Desktop connecting *out* ─────────────
   //

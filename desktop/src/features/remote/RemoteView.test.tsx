@@ -587,6 +587,41 @@ describe("remoteView device list", () => {
     expect(container.textContent).not.toContain("Paired as");
   });
 
+  it("does not offer a device the machine when it is not connected", async () => {
+    // An offline device has no bridge to receive commands: handing it control
+    // would tell the connected one to stand by for nobody.
+    const offline = { ...standby, pairId: "pair_delta", connected: false, client: { kind: "mobile", name: "old-phone" } };
+    await mount({
+      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, offline] }),
+    });
+
+    const takeovers = [...container.querySelectorAll("button")]
+      .filter(button => (button.textContent ?? "").trim() === "Let this control");
+    expect(takeovers).toHaveLength(0);
+    expect(container.textContent).toContain("Offline");
+  });
+
+  it("says the connection is down above the device list, and offers to retry", async () => {
+    await mount({
+      remoteStatus: status({
+        pairId: "pair_alpha",
+        phase: "reconnecting",
+        reason: "network",
+        devices: [
+          { ...control, connected: false, control: "standby" },
+          { ...standby, connected: false },
+        ],
+      }),
+    });
+
+    // The list alone would read as normal: every row is merely standing by.
+    expect(container.textContent).toContain("Connecting");
+    expect(container.textContent).toContain("Reconnect");
+    // The bridge is not up, so "Disconnect" must not be the offered action.
+    expect(container.textContent).not.toContain("Disconnect");
+    expect(container.textContent).not.toContain("In control");
+  });
+
   it("offers a takeover only for the device that is not in control", async () => {
     await mount({
       remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, standby] }),

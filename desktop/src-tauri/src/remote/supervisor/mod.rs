@@ -50,7 +50,15 @@ pub(super) use self::status::status_focused;
 ///
 /// The device is told on its own channel, and the previous controller is told
 /// to stand by, exactly as when the device asks for itself.
+///
+/// A device with no runtime here cannot take control: there is no bridge to
+/// send it commands, so moving the pointer to it would strand the device that
+/// *is* connected (it would be told to stand by for nobody). The page hides the
+/// action for such a device; this is the same rule kept where the pointer moves.
 pub async fn takeover(pair_id: &str) -> Result<RemoteStatus, crate::AppError> {
+    if !SUPERVISOR.state.lock().unwrap().contains_key(pair_id) {
+        return Err(crate::AppError::Message("device_offline".to_string()));
+    }
     let previous = SUPERVISOR.claim_control_soon(pair_id);
     if let Some(previous) = previous {
         super::publish_standby(&previous);
