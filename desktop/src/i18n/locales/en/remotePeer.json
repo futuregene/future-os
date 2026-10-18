@@ -106,7 +106,6 @@
   "saving": "Saving…",
   "stop": "Stop",
   "stopping": "Stopping…",
-  "newConversation": "New conversation",
   "fork": "Branch from here",
   "forkFailed": "Could not branch the conversation: {{message}}",
   "forkNotSaved": "That reply's turn is not saved on the remote desktop yet. Reopen the conversation and try again.",

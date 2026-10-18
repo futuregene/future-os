@@ -131,7 +131,6 @@ async function mount(overrides: Partial<Parameters<typeof RemoteHubView>[0]> = {
     onRefreshRemote: vi.fn(async () => {}),
     onReconnectRemoteAll: vi.fn(async () => {}),
     onOpenRemoteSession: vi.fn(),
-    onStartConversation: vi.fn(),
     onToggleAutoConnect: vi.fn(),
     onToggleLeftPanel: vi.fn(),
     remoteStatus: status(),
@@ -230,11 +229,11 @@ it("gives each direction what it needs, and nothing crossed over", async () => {
     autoConnect: true,
     remoteStatus: { pairId: "pair_1" },
   });
-  expect(sections.client).toMatchObject({ onStartConversation: props.onStartConversation });
-  // The host half has no machines to open conversations on, and the client half
-  // has no pairing state: a prop on the wrong side would be invisible until it
+  expect(sections.client).toMatchObject({ onReconnectAll: props.onReconnectRemoteAll });
+  // The host half has no machines to reconnect, and the client half has no
+  // pairing state: a prop on the wrong side would be invisible until it
   // misbehaved.
-  expect(sections.host).not.toHaveProperty("onStartConversation");
+  expect(sections.host).not.toHaveProperty("onReconnectAll");
   expect(sections.client).not.toHaveProperty("remoteStatus");
 });
 
