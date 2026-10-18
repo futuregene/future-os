@@ -155,6 +155,8 @@ export const resources = {
         agentUnavailable:
           "Trying to connect. If this continues, restart FutureOS on the computer. (LC003)",
         connected: "Connected",
+        /** Connected, but another paired device is in front of this desktop. */
+        connectedStandby: "Connected · in standby",
         connecting: "Connecting",
         machinesSummary: "{{connected}} of {{total}} desktops connected",
         machinesPartial: "Some desktops are not connected",
@@ -177,6 +179,9 @@ export const resources = {
           connecting: "Connecting",
           offline: "Offline",
         },
+        /** Appended to a machine's own row when another device holds it. */
+        machineStandby: "connected, in standby",
+        machineStandbyHint: "Another device is in control",
         connectingDetail: "Connecting to the desktop",
         waitingDesktop: "Waiting for desktop",
         devicePreparing: "Desktop is preparing",
@@ -1101,6 +1106,7 @@ export const resources = {
         retryHint: "连接暂时不可用，请稍后重试。",
         agentUnavailable: "正在尝试连接；若长时间未连接，请重启桌面端（LC003）",
         connected: "已连接",
+        connectedStandby: "已连接 · 待命",
         connecting: "正在连接",
         machinesSummary: "{{total}} 个桌面端中已连接 {{connected}} 个",
         machinesPartial: "部分桌面端未连接",
@@ -1117,6 +1123,8 @@ export const resources = {
           connecting: "连接中",
           offline: "未连接",
         },
+        machineStandby: "已连接 · 待命",
+        machineStandbyHint: "由另一台设备控制",
         connectingDetail: "正在尝试连接桌面端",
         waitingDesktop: "等待桌面端",
         devicePreparing: "桌面端准备中",

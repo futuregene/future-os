@@ -4397,6 +4397,54 @@
             "shot": "m-tmp.png"
           }
         ]
+      },
+      "take-control-picker": {
+        "_comment": "The desktop picker with the control state on each row: the machine the phone is on is connected but standing by (another device drives it) and offers 接管 right there; the machine that holds it is listed as connected. This is where the user chooses, so it is where the question belongs.",
+        "url": "http://localhost:8099/?held=1&peers=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "桌面选择"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  const sheet = document.querySelector('[aria-modal=true]') || document.body;\n  const text = sheet.innerText || '';\n  if (!text.includes('由另一台设备控制'))\n    throw new Error('the standby machine does not say why it cannot be driven: ' + text.slice(0, 400));\n  const labels = [...sheet.querySelectorAll('[role=button]')].map(el => el.getAttribute('aria-label'));\n  if (!labels.some(label => label && label.startsWith('接管'))) \n    throw new Error('the picker offers no way to take over: ' + labels.join(' / '));\n  return labels.filter(Boolean).join(' / ');\n})()"
+          },
+          {
+            "shot": "m-take-control-picker.png"
+          }
+        ]
+      },
+      "connection-standby-dot": {
+        "_comment": "The status dot while the phone is connected but another device holds the machine: yellow, because nothing can be read or sent — green is reserved for connected and ours to drive.",
+        "url": "http://localhost:8099/?held=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  const dot = document.querySelector('[data-testid=connection-dot]');\n  if (!dot) throw new Error('no connection dot on screen');\n  const color = getComputedStyle(dot).backgroundColor;\n  // The warning dot is yellow; success is green. Name both so a palette\n  // change fails loudly instead of silently approving the wrong one.\n  const warning = getComputedStyle(document.documentElement).getPropertyValue('--x') || '';\n  if (color === 'rgb(34, 197, 94)' || color === 'rgb(22, 163, 74)')\n    throw new Error('a standby connection is painted as healthy green: ' + color + warning);\n  const label = document.querySelector('[role=button][aria-label^=\"桌面端连接状态\"]')?.getAttribute('aria-label');\n  if (!label || !label.includes('待命'))\n    throw new Error('the badge does not say it is in standby: ' + label);\n  return color + ' | ' + label;\n})()"
+          },
+          {
+            "shot": "m-connection-standby-dot.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label=\"稍后再说\"]') || document.body.innerText.includes('工作区')",
