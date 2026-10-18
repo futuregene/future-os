@@ -869,7 +869,11 @@ fn a_re_pair_with_an_unreadable_revoke_queue_reports_and_still_refuses() {
 #[test]
 fn a_live_broker_drives_the_generation_watch_and_reconnect() {
     let broker = Broker::start(BrokerMode::Live {
-        error_after: Duration::from_secs(5),
+        // 30 s, not 5: the child must reach `Remote: Ready` BEFORE the broker errors, and under a
+        // full-suite run its boot takes ~10-15 s (it passes 3/3 in isolation at ~10 s). A 5 s
+        // dwell made the assertion depend on host load, which is how this test failed inside the
+        // leg and passed alone - the classic shape this campaign keeps finding.
+        error_after: Duration::from_secs(30),
     });
     let platform = Platform::start(
         vec![
@@ -895,11 +899,11 @@ fn a_live_broker_drives_the_generation_watch_and_reconnect() {
         "the live broker must accept the generation; transcript:\n{}",
         child.text()
     );
-    let rebuilt = child.wait_for("critical task stopped", Duration::from_secs(20));
+    let rebuilt = child.wait_for("critical task stopped", Duration::from_secs(60));
     // The worker's `start_once(true)` contends with the credential-refresh worker for
     // `start_lock` (that worker sleeps up to `RETRY_WHILE_EXPIRED` while holding it), so
     // the `Err` arm can report several seconds after the rebuild line.
-    let reported = child.wait_for("automatic bridge reconnect failed", Duration::from_secs(30));
+    let reported = child.wait_for("automatic bridge reconnect failed", Duration::from_secs(90));
     let transcript = child.text();
     assert!(
         rebuilt,
@@ -950,13 +954,12 @@ fn a_live_broker_drives_the_generation_watch_and_reconnect() {
 #[test]
 fn a_healthy_generation_resets_the_budget_and_a_retryable_reconnect_arms_the_retry() {
     let broker = Broker::start(BrokerMode::Live {
-        // The broker is healthy until this fires, and this test asserts that `Remote: Ready`
-        // arrives BEFORE it (a healthy generation resets the budget; then the error arms the
-        // retry). It used to be a hardcoded 65 s, which silently required the child to come up
-        // in under a minute - my 90 s readiness budget then exceeded the window and the child
-        // could never reach Ready at all on CI. Tying the two together makes the ordering
-        // explicit instead of a coincidence of two unrelated numbers.
-        error_after: READY_BUDGET + Duration::from_secs(10),
+        // 65 s, NOT the readiness budget: this test asserts that the refusal arrives *after* a
+        // healthy dwell and *within its own wait budget*. Tying it to READY_BUDGET (90 s + 10)
+        // made the dwell longer than the wait that follows it and broke the test on macOS, where
+        // it had passed at 65 s. The Linux problem this test has is that the child never reaches
+        // Ready there at all, which is why it is gated to macOS above - a budget cannot fix it.
+        error_after: Duration::from_secs(65),
     });
     let platform = Platform::start(
         vec![
