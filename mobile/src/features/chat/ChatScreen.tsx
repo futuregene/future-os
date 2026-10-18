@@ -7,6 +7,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import { TimelineCard } from "./messages/TimelineCard";
 import { PausedTimeline } from "../../components/PausedTimeline";
 import { ErrorBanner } from "../../components/ErrorBanner";
+import { StandbyNotice } from "../../components/StandbyNotice";
 import { useRemote, useRemoteControls } from "../../remote/RemoteContext";
 import { iconGlyph } from "../../remote/peerIcons";
 import { modelReference, type TimelineItem } from "../../remote/types";
@@ -536,6 +537,16 @@ export function ChatScreen() {
                   showSyncNotice={showSyncNotice}
                   noticeState={noticeState}
                 />
+
+                {/* Where the sending happens, not just in the header: a user
+                    composing here will not tap a small dot to find out why the
+                    send button does nothing. */}
+                {remote.presence?.control === "standby" && (
+                  <StandbyNotice
+                    holder={remote.presence?.holder ?? null}
+                    onTakeControl={remote.takeControl}
+                  />
+                )}
 
                 <ComposerDock
                   key={`${conversationKey}:${remote.draft}:${remote.draftWorkspaceId}`}

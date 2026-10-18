@@ -415,6 +415,13 @@ export const resources = {
         tokens: "{{formattedCount}} tokens",
         loadFailed: "Could not load the conversation.",
         sendFailed: "Message failed to send.",
+        /**
+         * Shown in the conversation while another device holds this desktop:
+         * the status dot explains the refusal, but only to someone who taps it,
+         * and here the user is looking at the composer.
+         */
+        standbyCannotSend: "Taken over by {{name}} — messages will not send.",
+        standbyCannotSendUnknown: "Taken over by another device — messages will not send.",
         sessionNotOnDesktop:
           "That conversation is not on the connected desktop. Open it from the machine that owns it.",
         promptTooLarge:
@@ -1332,6 +1339,8 @@ export const resources = {
         tokens: "{{formattedCount}} tokens",
         loadFailed: "无法加载会话。",
         sendFailed: "消息发送失败。",
+        standbyCannotSend: "已被 {{name}} 接管，现在发不出去。",
+        standbyCannotSendUnknown: "已被另一台设备接管，现在发不出去。",
         sessionNotOnDesktop: "该会话不在当前连接的设备上。请到拥有它的那台设备上打开。",
         promptTooLarge: "这条消息太长了，无法发送。请将其缩短到 512 KB 以内。",
         noHistory: "还没有消息。",
