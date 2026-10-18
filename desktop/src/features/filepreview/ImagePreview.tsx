@@ -34,8 +34,8 @@ const DRAG_THRESHOLD_PX = 4;
  * - Wheel/trackpad scroll zooms in and out, anchored at the cursor.
  * - Double-click toggles between "fit to window" and "actual size" (100%).
  * - On-screen controls zoom in/out/reset and are keyboard-focusable.
- * - When zoomed in, drag to pan; panning is clamped to the image bounds so the
- *   picture cannot be lost.
+ * - When zoomed in, drag (or hold space and drag) to pan; panning is clamped
+ *   to the image bounds so the picture cannot be lost.
  */
 export function ImagePreview({
   path,
@@ -191,6 +191,27 @@ export function ImagePreview({
   const handleMouseUp = useCallback(() => {
     setIsDragging(false);
     dragStartRef.current = null;
+  }, []);
+
+  // Space-bar "drag to pan" mode.
+  const spacePressedRef = useRef(false);
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.code === "Space" && !event.repeat && !spacePressedRef.current) {
+        spacePressedRef.current = true;
+      }
+    }
+    function onKeyUp(event: KeyboardEvent) {
+      if (event.code === "Space") {
+        spacePressedRef.current = false;
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
   }, []);
 
   // Attach / detach global mouseup so a drag that leaves the window still ends.

@@ -41,8 +41,7 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 │   └── run_events/            # 每个 run 的事件日志（JSONL）
 ├── workspaces/
 │   └── chat/                  # 每线程聊天工作区（agent 会话 / 线程 id）
-├── remote_pairings.json       # 桌面远程桥凭证簿：每个配对设备一个槽位
-├── remote_pairing.json        # 旧的单设备桥身份（按单槽位凭证簿读取，保留不删）
+├── remote_pairing.json        # 桌面远程桥身份（nkey_seed + user_jwt）
 ├── approval_rule.json         # 用户级路径审批规则
 ├── windows-capabilities.json  # Windows 沙箱 ACL 清理元数据
 ├── run/agent.sock             # Unix IPC 端点（Windows 不使用）
@@ -178,11 +177,7 @@ agent 解析 `auth.json` 时会先读 `~/.future/agent/auth.json`，只有该文
   [桌面 NATS 内部说明](../internals/desktop-nats.zh-CN.md)。
 
 桌面远程桥把配对身份（`nkey_seed` + `user_jwt` + NATS 地址）保存在
-`~/.future/remote_pairings.json`（位于 `~/.future` 根，而非 `app/` 下）——每台已配对
-设备一个槽位，并记录当前在控制的是哪个 `pair_id`。多设备之前配对的安装把单条凭证留
-在 `~/.future/remote_pairing.json`，该文件会按单槽位凭证簿读取并保留不删，这样降级
-回旧版本仍能找到一个配对，而不是另发邀请（那会吊销凭证簿里的那一条）。显式解除配对
-会同时删除两个文件。
+`~/.future/remote_pairing.json`（位于 `~/.future` 根，而非 `app/` 下）。
 
 ## `~/.future/workspaces/chat/` — 聊天工作区
 

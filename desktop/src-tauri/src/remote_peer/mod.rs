@@ -6,7 +6,7 @@
 //! | | `remote` (+`remote_host`) | `remote_peer` (here) |
 //! |---|---|---|
 //! | role | host: phones pair *into* this machine | client: this machine pairs *out* |
-//! | credential file | `~/.future/remote_pairings.json` (`remote_pairing.json` when it predates multi-device) | `~/.future/remote_peers.json` |
+//! | credential file | `~/.future/remote_pairing.json` | `~/.future/remote_peers.json` |
 //! | owns | the bridge, phone commands, host catalog | this desktop's view of a remote host |
 //!
 //! **The remote host's sessions are not this machine's sessions.** They are

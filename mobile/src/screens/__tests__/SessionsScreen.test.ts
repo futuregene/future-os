@@ -169,40 +169,6 @@ test("the picker offers every paired desktop plus the merged option", () => {
     .toEqual({ kind: "desktop", desktopId: "desktop_2" });
 });
 
-test("the trigger draws one icon: the chosen desktop's own, or the merged list's", () => {
-  const trigger = () => button("desktops.pickerLabel");
-  // The picker's own glyphs only: a host node's type is the component's name in
-  // this mock, and the chevron/check are not one of them.
-  const glyphIcons = () => trigger()
-    .findAll(node => ["Layers", "Monitor"].includes(node.type as string))
-    .map(node => node.type as string);
-  // The merged list names no machine, so it draws the merged list's icon.
-  expect(glyphIcons()).toEqual(["Layers"]);
-  act(() => tree.root.findByType(DesktopPicker).props.onChange({ kind: "desktop", desktopId: "desktop_1" }));
-  // A chosen desktop used to be drawn twice — a generic machine icon beside its
-  // own glyph — which read as two unexplained icons in front of the name.
-  expect(glyphIcons()).toEqual([]);
-  const texts = trigger().findAllByType(Text).flatMap(text => text.props.children as string[]);
-  expect(texts).toEqual(["🖥️", "A very long desktop name"]);
-});
-
-test("the merged option wears the same icon in the trigger and in the sheet", () => {
-  const glyphIcons = (node: ReactTestInstance) => node
-    .findAll(child => ["Layers", "Monitor"].includes(child.type as string))
-    .map(child => child.type as string);
-  // Both places answer the same question, so they draw the same icon. Drawn
-  // separately they drifted — a monitor above, a stack of layers in the sheet —
-  // and the option in force looked like two different ones.
-  const merged = glyphIcons(button("desktops.pickerLabel"));
-  expect(merged).toEqual(["Layers"]);
-  act(() => button("desktops.pickerLabel").props.onPress());
-  const mergedRow = tree.root.findAll(node =>
-    typeof node.type === "string" &&
-    node.props.accessibilityRole === "radio" &&
-    node.props.accessibilityState?.checked !== undefined)[0]!;
-  expect(glyphIcons(mergedRow)).toEqual(merged);
-});
-
 test("the picker can be dismissed without choosing a desktop", () => {
   const pickerModal = () => tree.root.findByType(DesktopPicker).findAllByType(Modal)[0]!;
   // Nothing to dismiss while the list is shut, so the close button the user

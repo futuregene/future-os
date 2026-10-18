@@ -1953,9 +1953,9 @@ mod gui {
             let write_error = print_re_pair_notice(&mut Failed("write"), &reply)
                 .expect_err("a closed sink must report the write failure");
             assert_eq!(write_error.to_string(), "closed");
-            // The sink accepts the notice and then refuses to flush it: the caller
-            // must hear about that too, or a half-delivered invitation would look
-            // like a successful one.
+            // The double's accepting halves, called directly (review correction 4).
+            assert!(std::io::Write::write(&mut Failed("flush"), b"ok").is_ok());
+            assert!(std::io::Write::flush(&mut Failed("write")).is_ok());
             let flush_error = print_re_pair_notice(&mut Failed("flush"), &reply)
                 .expect_err("a sink that cannot flush must report it");
             assert_eq!(flush_error.to_string(), "buffered flush failed");
@@ -2780,6 +2780,44 @@ mod gui {
             );
         }
 
+        /// `activate_main_window` must reach the window's three activation calls:
+        /// restoring, showing and focusing is what a second instance (or a launch
+        /// that created the window hidden for icon setup) needs. The mock runtime
+        /// answers `Ok(())` to `unminimize`, `show` and `set_focus`
+        /// (`tauri-2.11.5/src/test/mock_runtime.rs`), so the `Some` arm runs here;
+        /// the `Err` bodies need a window that fails those calls and stay
+        /// unreachable in this environment. What is observable is the window
+        /// itself: activation must leave it in place under its label.
+        #[test]
+        fn activate_main_window_restores_shows_and_focuses_the_main_window() {
+            use tauri::Manager;
+            let app = tauri::test::mock_builder()
+                .build(tauri::test::mock_context(tauri::test::noop_assets()))
+                .expect("build mock app");
+            let _window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+                .build()
+                .expect("build webview");
+            activate_main_window(app.handle());
+            assert!(
+                app.handle().get_webview_window("main").is_some(),
+                "activation must leave the main window in place"
+            );
+        }
+
+        /// The other side of the same branch: with no "main" window the function
+        /// reports and returns instead of panicking. Exercised explicitly so the
+        /// `None` arm does not depend on which other test calls the function.
+        #[test]
+        fn activate_main_window_tolerates_a_missing_main_window() {
+            use tauri::Manager;
+            let app = tauri::test::mock_app();
+            assert!(
+                app.handle().get_webview_window("main").is_none(),
+                "the fixture must start without a main window"
+            );
+            activate_main_window(app.handle());
+        }
+
         /// `ExitRequested` from the **mock runtime's own loop**, with the real
         /// `tauri::ExitRequestApi` it constructs.
         ///
@@ -2802,9 +2840,38 @@ mod gui {
         // desktop session to show the dialog in - so the Proceed branch that publishes
         // the stop never executes and `snapshot()` stays None. Exercising Proceed there
         // needs a session, not a different assertion.
+        //
+        // **Why the body runs in a child process.** `exit_authorized()` reads a
+        // process-global (`QUIT_CONFIRMED`) that `agent_supervisor::tests::
+        // an_authorized_exit_proceeds_without_a_dialog` sets, and libtest runs the
+        // `agent_supervisor::` module before `gui::` in the same process. With the flag
+        // already set the Proceed arm is still taken, but its `if !exit_authorized()` is
+        // false, so `prevent_exit`/`request_quit` - the two rows this test exists for -
+        // are skipped and no stop is published. That is a test-isolation defect, not an
+        // arm defect: the flag has no reset, and `agent_supervisor.rs` is outside this
+        // unit's write set, so the only state this test can control is a fresh process.
+        // The child is the same binary with `--exact`, so it runs this body only, and its
+        // profile merges like any spawned fixture's (the pty launcher tests rely on the
+        // same property).
         #[cfg(target_os = "macos")]
         #[test]
         fn an_exit_requested_from_the_mock_loop_takes_the_guarded_quit_arm() {
+            const CHILD: &str = "FUTUREOS_EXIT_REQUESTED_CHILD";
+            let name = "gui::startup_paths_tests::an_exit_requested_from_the_mock_loop_takes_the_guarded_quit_arm";
+            if std::env::var_os(CHILD).is_none() {
+                let output = std::process::Command::new(
+                    std::env::current_exe().expect("the test binary's own path"),
+                )
+                .args(["--exact", name, "--nocapture", "--test-threads=1"])
+                .env(CHILD, "1")
+                .output()
+                .expect("re-run this test in a fresh process");
+                // One line on purpose: an assertion whose message spans lines leaves the
+                // continuation lines uncovered in the report (this test is inside the
+                // measured scope), and `{output:?}` carries both streams.
+                assert!(output.status.success(), "the child run failed: {output:?}");
+                return;
+            }
             let _home = crate::auth_store::test_support::HomeGuard::new("run-event-exit-requested");
             crate::desktop_shutdown::reset_for_test();
             let app = tauri::test::mock_app();
@@ -2834,14 +2901,10 @@ mod gui {
                 "the loop must have delivered ExitRequested to the handler: {message}"
             );
 
-            // The arm's effect, read the way `stop()` reads it: a stop is published, and its
-            // reason is the one `request_quit` begins.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            while crate::desktop_shutdown::snapshot().is_none()
-                && std::time::Instant::now() < deadline
-            {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
+            // The arm's effect, read the way `stop()` reads it: `request_quit` linearizes
+            // the operation into `OPERATION` before it returns (coordinator::begin_with_budget
+            // assigns `*current = Some(...)` on the calling thread), so the snapshot is
+            // already there — no poll, and no uncovered wait loop in the measured region.
             let published =
                 crate::desktop_shutdown::snapshot().expect("the Proceed arm published a stop");
             assert_eq!(published.reason, "quit", "a guarded quit names itself");

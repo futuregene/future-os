@@ -499,12 +499,66 @@ mod tests {
 
         // A deleted conversation must not accept a new tab. `delete_thread`
         // hard-deletes the row (it does not set `deleted_at`), so the refusal
-        // is the lookup failure — the `readonly`/`deleted_at` guard above it
-        // belongs to the `ThreadNotWritable` arm, which no store API can reach
-        // (nothing ever writes `readonly = 1`; see the waiver ledger).
+        // is the lookup failure; the `readonly`/`deleted_at` guard above it is
+        // exercised separately by the read-only fixture below.
         crate::store::delete_thread(&thread.id).expect("delete thread");
         let error = resolve_for_thread(&thread.id).expect_err("deleted thread");
         assert!(matches!(error, CwdError::ThreadNotFound(_)), "{error:?}");
         assert_eq!(error.code(), "THREAD_NOT_FOUND");
+    }
+
+    /// The `ThreadNotWritable` arm is a state a row can be in, not an
+    /// unreachable branch: `readonly` is an ordinary `threads` column with a
+    /// default, and the store's own test fixtures write rows over a raw
+    /// connection wherever the store API does not offer the transition. So the
+    /// fixture sets the flag directly and asks the resolver, the same way the
+    /// loader will read it.
+    #[test]
+    fn a_read_only_thread_is_refused_by_name() {
+        use crate::auth_store::test_support::HomeGuard;
+
+        let _home = HomeGuard::new("terminal_cwd_readonly");
+        crate::store::initialize_app_store().expect("init store");
+        let dir =
+            std::env::temp_dir().join(format!("futureos-cwd-readonly-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("workspace dir");
+        let workspace = crate::store::create_workspace(crate::store::CreateWorkspaceInput {
+            name: Some("READONLY".into()),
+            path: dir.display().to_string(),
+            description: None,
+            create_directory: Some(true),
+        })
+        .expect("create workspace");
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "workspace".into(),
+            title: Some("READONLY".into()),
+            workspace_id: Some(workspace.id.clone()),
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        })
+        .expect("create thread");
+
+        // The same conversation resolves while it is writable, so the refusal
+        // below is caused by the flag and not by the fixture.
+        resolve_for_thread(&thread.id).expect("a writable thread resolves");
+
+        let db = future_app_settings::app_db_path().expect("db path");
+        let conn = rusqlite::Connection::open(db).expect("open db");
+        let updated = conn
+            .execute(
+                "UPDATE threads SET readonly = 1 WHERE id = ?1",
+                [&thread.id],
+            )
+            .expect("mark read-only");
+        assert_eq!(updated, 1, "the thread row must actually be flagged");
+        drop(conn);
+
+        let error = resolve_for_thread(&thread.id).expect_err("a read-only thread is refused");
+        assert!(matches!(error, CwdError::ThreadNotWritable(_)), "{error:?}");
+        assert_eq!(error.code(), "THREAD_READONLY");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -199,9 +199,9 @@ export function SessionList({
     commandsFor(row.desktopId ?? null);
   const rows = useMemo(
     () => (merged !== undefined
-      ? sessionTreeMergedRows(merged, query, tab, collapsed, expanded)
+      ? sessionTreeMergedRows(merged, query, activeDesktopId, tab, collapsed, expanded)
       : catalogRows(remote.sessions, remote.workspaces, tab, collapsed, expanded, query)),
-    [remote.sessions, remote.workspaces, merged, tab, collapsed, expanded, query],
+    [remote.sessions, remote.workspaces, merged, tab, collapsed, expanded, query, activeDesktopId],
   );
   /**
    * Whether a row's own machine has to be named on it.
