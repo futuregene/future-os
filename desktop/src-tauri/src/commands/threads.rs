@@ -392,9 +392,13 @@ async fn read_thread_history(
         Ok(serde_json::json!({"entries":[],"hasMore":false,"nextOffset":0}))
     };
 
-    let empty = result
-        .as_ref()
-        .is_ok_and(|value| value["entries"].as_array().is_some_and(Vec::is_empty));
+    let empty = result.as_ref().is_ok_and(|value| {
+        value["entries"].as_array().is_some_and(|entries| {
+            entries
+                .iter()
+                .all(|entry| !matches!(entry["role"].as_str(), Some("user" | "assistant" | "tool")))
+        })
+    });
     let missing = result
         .as_ref()
         .err()
@@ -903,8 +907,25 @@ mod tests {
         assert_eq!(page["entries"].as_array().unwrap().len(), 2);
         assert_eq!(page["entries"][1]["blocks"][0]["text"], "preserved answer");
         assert_eq!(page["hasMore"], false);
-        let full = get_session_entries(thread.id).await.unwrap();
+        let full = get_session_entries(thread.id.clone()).await.unwrap();
         assert_eq!(full["entries"], page["entries"]);
+        script_mock_agent(MockScript {data:HashMap::from([("get_session_entries".into(),serde_json::json!({"entries":[{"id":"metadata","role":"system","kind":"session_info","blocks":[],"createdAtMs":1}],"hasMore":false,"nextOffset":0}).to_string())]),..Default::default()});
+        let recovered = get_session_entries_page(thread.id.clone(), None, 1)
+            .await
+            .unwrap();
+        assert_eq!(recovered["entries"], page["entries"]);
+        let error = crate::agent_bridge::agent_prompt(
+            "continue".into(),
+            None,
+            thread.id,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("recovery archive"));
         script_mock_agent(MockScript::default());
     }
 

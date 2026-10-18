@@ -240,6 +240,18 @@ pub(super) async fn agent_prompt_inner(
         .into());
     }
     let mut command_client = connect_agent().await?;
+    if !crate::store::legacy_history_entries(&thread_id)?.is_empty() {
+        let history =
+            super::queries::get_session_entries_before(stored_session_id.clone(), i64::MAX, 1)
+                .await?;
+        if !history["entries"].as_array().is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| matches!(entry["role"].as_str(), Some("user" | "assistant" | "tool")))
+        }) {
+            return Err("The Agent session has no conversation history, but a GUI recovery archive exists. Restore the matching Agent data before continuing this conversation.".into());
+        }
+    }
 
     // Create (or reuse) the agent session.
     let existing_cwd = workspace_path_for_thread(&thread_id)?;

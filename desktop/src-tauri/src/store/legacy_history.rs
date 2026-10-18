@@ -23,6 +23,13 @@ pub(super) fn preserve_legacy_history(conn: &Connection) -> Result<(), crate::Ap
         |row| row.get(0),
     )?;
     if applied {
+        // A partial restore/downgrade can reintroduce original tables beside
+        // an applied marker. Never let the legacy cleanup discard new bytes.
+        for table in TABLES {
+            if table_exists(conn, table)? {
+                return Err("Legacy GUI history tables appeared after preservation; keep this database and restore a consistent backup before upgrading.".into());
+            }
+        }
         return Ok(());
     }
     // The oldest GUI schemas reference the retired tables from runs,
@@ -33,7 +40,8 @@ pub(super) fn preserve_legacy_history(conn: &Connection) -> Result<(), crate::Ap
     let foreign_keys: bool = conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
     conn.pragma_update(None, "foreign_keys", false)?;
     let result = (|| -> Result<(), crate::AppError> {
-        let tx = conn.unchecked_transaction()?;
+        let tx =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
         for table in TABLES {
             if table_exists(&tx, table)? {
                 // Preserve every column, including legacy payloads we no longer
@@ -90,6 +98,14 @@ pub(super) fn preserve_legacy_history(conn: &Connection) -> Result<(), crate::Ap
                 .collect::<Vec<_>>()
                 .join(",");
             tx.execute_batch(&format!("INSERT INTO {rebuilt} ({names}) SELECT {names} FROM {table}; DROP TABLE {table}; ALTER TABLE {rebuilt} RENAME TO {table};"))?;
+        }
+        // Copy, rebuild obsolete references, retire originals, and record the
+        // marker under one write transaction. No writer can slip new history
+        // between the archive snapshot and deletion of the originals.
+        for table in ["tool_outputs", "tool_calls", "run_events", "messages"] {
+            if table_exists(&tx, table)? {
+                tx.execute_batch(&format!("DROP TABLE {table}"))?;
+            }
         }
         tx.execute(
             "INSERT INTO schema_migrations(version,applied_at) VALUES (?1,?2)",
@@ -203,6 +219,18 @@ mod tests {
         conn.execute_batch("INSERT INTO workspaces(id,name,kind,path,created_at,updated_at) VALUES('w','W','user','.',1,1);
             INSERT INTO threads(id,workspace_id,mode,title,created_at,updated_at) VALUES('t','w','chat','History',1,1);
             INSERT INTO runs(id,thread_id,status,created_at,updated_at) VALUES('r','t','completed',1,2);").unwrap();
+    }
+
+    #[test]
+    fn a_partial_restore_cannot_drop_new_history_beside_an_applied_marker() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_schema(&conn).unwrap();
+        conn.execute_batch("CREATE TABLE messages(id TEXT,content TEXT); INSERT INTO messages VALUES('late','only restored copy');").unwrap();
+        assert!(apply_schema(&conn).is_err());
+        let body: String = conn
+            .query_row("SELECT content FROM messages", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(body, "only restored copy");
     }
 
     #[test]
