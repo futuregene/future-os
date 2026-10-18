@@ -126,7 +126,7 @@ async fn pairing_a_link_connects_and_reports_the_host() {
     assert_eq!(peers.len(), 1);
     assert!(find(&peers, &fx.paired.creds.desktop_id).connected);
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// The bug this guards: the client required `nats_url` from the claim, but the
@@ -175,7 +175,7 @@ async fn a_claim_without_a_tcp_endpoint_still_pairs() {
         .clone();
     assert_eq!(stored, fx.nats.url());
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A bad link is rejected *before* any network call, and carries the support
@@ -211,7 +211,7 @@ async fn a_bad_link_is_rejected_with_a_shared_support_code() {
     // Nothing was stored, so nothing shows up as paired.
     assert!(list().await.expect("list").is_empty());
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 // ── the book and the list ───────────────────────────────────────────────────
@@ -221,7 +221,7 @@ async fn an_empty_book_lists_nothing() {
     let (_home, fx) = start("peer-rt-empty").await;
     creds::remove(&fx.paired.creds.desktop_id).expect("remove");
     assert!(list().await.expect("list").is_empty());
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A host that is paired but was never connected still appears, with the user's
@@ -242,7 +242,7 @@ async fn a_paired_host_is_listed_before_it_is_ever_connected() {
     // must read as "not fine", because the UI says everything is fine on `true`.
     assert!(!peer.agent_available);
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A failed connection is remembered against the host, so the list can say why
@@ -265,17 +265,17 @@ async fn a_failed_connection_is_remembered_against_its_host() {
     assert!(peer.error.is_some(), "{peer:?}");
     assert!(peer.bridge_instance_id.is_none());
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 #[tokio::test]
 async fn connecting_an_unknown_host_is_an_error_not_an_invention() {
-    let (_home, _fx) = start("peer-rt-unknown").await;
+    let (_home, fx) = start("peer-rt-unknown").await;
     let error = connect("desktop_nobody")
         .await
         .expect_err("an unpaired host cannot connect");
     assert!(error.to_string().contains("peer_not_paired"), "{error}");
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// `ensure_connected` is the path every command takes, so its two arms both
@@ -295,7 +295,7 @@ async fn ensure_connected_reuses_a_live_connection_and_opens_one_when_missing() 
     assert_eq!(again.bridge_instance_id, bridge);
     assert!(again.connected);
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// An expired grant is renewed *before* the connect, because a token that
@@ -321,7 +321,7 @@ async fn an_expired_grant_is_renewed_before_connecting() {
         "the refreshed expiry must be written back"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A revoked pairing is a *terminal* failure for the platform, and the runtime
@@ -341,7 +341,7 @@ async fn a_revoked_grant_is_reported_rather_than_retried() {
     assert!(!peer.connected);
     assert!(peer.error.is_some());
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 // ── disconnect / unpair ─────────────────────────────────────────────────────
@@ -360,7 +360,7 @@ async fn disconnect_drops_the_connection_but_keeps_the_pairing() {
     // Still paired: disconnecting is not unpairing.
     assert!(creds::load().expect("book").find(&desktop_id).is_some());
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 #[tokio::test]
@@ -376,7 +376,7 @@ async fn unpairing_removes_the_host_locally_and_revokes_it_remotely() {
     assert!(creds::load().expect("book").find(&desktop_id).is_none());
     assert!(list().await.expect("list").is_empty());
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// The local pairing goes first, always. An unreachable platform must not leave
@@ -394,19 +394,19 @@ async fn unpairing_reports_a_revoke_that_could_not_be_delivered() {
     // Locally gone regardless.
     assert!(creds::load().expect("book").find(&desktop_id).is_none());
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// An unpair whose host is unknown is not an error the UI has to handle: the
 /// user's intent (that host should be gone) is already satisfied.
 #[tokio::test]
 async fn unpairing_an_unknown_host_is_a_no_op() {
-    let (_home, _fx) = start("peer-rt-unpair-unknown").await;
+    let (_home, fx) = start("peer-rt-unpair-unknown").await;
     let error = unpair("desktop_nobody")
         .await
         .expect_err("there is nothing to revoke");
     assert!(error.to_string().contains("peer_not_paired"), "{error}");
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 // ── labels ──────────────────────────────────────────────────────────────────
@@ -430,7 +430,7 @@ async fn labels_round_trip_through_the_list_and_are_clearable() {
     // while a concurrent unpair is removing the entry.
     set_label("desktop_nobody", Some("x"), Some("y")).expect("no-op");
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 // ── catalogue reads, stamped with their source ──────────────────────────────
@@ -462,7 +462,7 @@ async fn catalogue_reads_are_stamped_with_the_host_and_its_pair() {
     assert_eq!(workspaces["pairId"], serde_json::json!(fx.pair_id));
     assert!(workspaces["workspaces"].is_array());
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A page larger than one reply arrives intact.
@@ -526,7 +526,7 @@ async fn a_page_larger_than_one_reply_arrives_intact() {
         "the reassembled bytes are the page, not a truncated prefix"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A run-scoped page repeats its run on every chunk it fetches.
@@ -580,19 +580,19 @@ async fn a_run_scoped_page_repeats_its_run_on_every_chunk() {
         "the last chunk is the run's own bytes, not a refusal"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A catalogue read against an unpaired host fails rather than opening a
 /// connection as a side effect of a background poll.
 #[tokio::test]
 async fn a_catalogue_read_for_an_unpaired_host_fails() {
-    let (_home, _fx) = start("peer-rt-catalog-unknown").await;
+    let (_home, fx) = start("peer-rt-catalog-unknown").await;
     let error = sessions("desktop_nobody")
         .await
         .expect_err("an unpaired host has no catalogue");
     assert!(error.to_string().contains("peer_not_paired"), "{error}");
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 // ── commands ────────────────────────────────────────────────────────────────
@@ -612,7 +612,7 @@ async fn a_command_connects_on_demand_and_returns_the_payload() {
     .expect("list_workspaces");
     assert!(data["workspaces"].is_array(), "{data}");
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A host-side error must reach the caller with the host's own words.
@@ -633,7 +633,7 @@ async fn a_command_the_host_does_not_implement_surfaces_its_error() {
         "the host's own words must survive: {error}"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A command that addresses a session routes on that session, not on the
@@ -662,7 +662,7 @@ async fn a_session_command_routes_on_its_own_session() {
     .expect("an unknown session is an empty page");
     assert_eq!(data["entries"], serde_json::json!([]));
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A dead socket must not keep looking connected, and the runtime must start
@@ -691,7 +691,7 @@ async fn a_command_against_a_dead_broker_drops_the_host_and_starts_retrying() {
     assert!(!peer.connected, "a dead socket must not look connected");
     assert!(peer.error.is_some());
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 // ── events ──────────────────────────────────────────────────────────────────
@@ -729,7 +729,7 @@ async fn a_connected_host_streams_its_events_to_the_emitter() {
     assert_eq!(events[0].desktop_id, desktop_id);
     assert_eq!(events[0].payload["sessionId"], json!("sess_rt_events"));
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// An activity-only move arrives on the catalogue lane, tagged with its domain.
@@ -798,7 +798,7 @@ async fn an_activity_packet_arrives_tagged_with_its_catalogue_domain() {
     })
     .await;
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A lean host trims `sessionId` out of the event envelope, and every listener
@@ -816,9 +816,9 @@ async fn a_lean_event_recovers_its_session_from_the_subject() {
         .await
         .expect("connect with a stream");
 
-    // The declaration is process-wide; the home guard this fixture holds is what
-    // keeps a sibling test from publishing while it is flipped.
-    crate::remote_host::lean::set_enabled(true);
+    // The declaration belongs to the host bridge that will publish these
+    // events, so it is set on that pairing rather than process-wide.
+    crate::remote::test_support::set_pair_lean(&fx.pair_id, true);
     crate::remote::publish_event(
         "sess_lean_events",
         "user_message",
@@ -831,7 +831,7 @@ async fn a_lean_event_recovers_its_session_from_the_subject() {
         1,
         1,
     );
-    crate::remote_host::lean::set_enabled(false);
+    crate::remote::test_support::set_pair_lean(&fx.pair_id, false);
     // The same lane with the declaration withdrawn: nothing about the full feed
     // may change, envelope keys included.
     crate::remote::publish_event(
@@ -867,7 +867,7 @@ async fn a_lean_event_recovers_its_session_from_the_subject() {
         .expect("the full feed is untouched");
     assert_eq!(full.payload["eventId"], json!("evt-full"));
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// The `selective_events_v1` lane, end to end: the host confirms the capability,
@@ -984,7 +984,7 @@ async fn opening_a_conversation_moves_the_event_lane_and_closing_it_moves_back()
     })
     .await;
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// `state.events` is what keeps the host's cross-conversation notifications
@@ -1096,7 +1096,7 @@ async fn the_host_wide_mirror_is_read_only_while_the_lane_is_narrow() {
         "the mirror is read as a session event, not as a snapshot"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// Setting the same conversation twice must not re-open the subscription: the
@@ -1146,7 +1146,7 @@ async fn re_stating_the_same_conversation_keeps_the_lane_open() {
     })
     .await;
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A burst of live events still reaches the UI one by one and in the order the
@@ -1196,7 +1196,7 @@ async fn a_burst_of_events_reaches_the_emitter_in_order() {
         "batching must not reorder, duplicate or drop a push"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// Reconnecting replaces the stream. Two live subscription tasks would deliver
@@ -1217,7 +1217,7 @@ async fn reconnecting_replaces_the_event_stream_rather_than_stacking_it() {
     let streams = stream_count().await;
     assert_eq!(streams, 1, "one stream per host, not one per connect");
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// Disconnecting stops the stream: a host the user removed must not keep
@@ -1252,7 +1252,7 @@ async fn disconnecting_stops_the_event_stream() {
         "a disconnected host must not keep emitting"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 // ── the supervisor ──────────────────────────────────────────────────────────
@@ -1278,7 +1278,7 @@ async fn a_supervisor_reconnects_a_host_that_comes_back() {
         "the host must be connected again"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A link that comes back must say so.
@@ -1320,7 +1320,7 @@ async fn a_supervisor_reports_a_link_that_came_back() {
         assert_eq!(events[0].desktop_id, desktop_id);
     }
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// The early-return arm: something else already reconnected, so the loop stops
@@ -1345,7 +1345,7 @@ async fn a_supervisor_stops_when_the_host_is_already_connected() {
     let after = find(&list().await.expect("list"), &desktop_id);
     assert_eq!(after.bridge_instance_id.as_deref(), Some(bridge.as_str()));
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// The window is finite: an unreachable host is retried a bounded number of
@@ -1379,7 +1379,7 @@ async fn a_supervisor_gives_up_after_its_window() {
         "an unreachable host must not be reported as connected"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A connect that fails **transiently** schedules a bounded retry — and still
@@ -1427,7 +1427,7 @@ async fn a_transient_first_connect_failure_schedules_a_bounded_retry() {
     // leak that made one starved run's red count rise from 9 to 18 while this fix
     // was being developed (`docs/testing/flaky-tauri.md` §13.8.4). `teardown`
     // aborts it, and this is the assertion that keeps that true.
-    teardown().await;
+    teardown(&fx.pair_id).await;
     assert_eq!(
         supervisor_count().await,
         0,
@@ -1550,7 +1550,7 @@ async fn only_the_host_that_failed_is_retried() {
     assert!(find(&peers, &desktop_id).connected);
     assert!(!find(&peers, "desktop_other").connected);
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// Two *pairings* coexist: one that connects and one that cannot, without the
@@ -1581,7 +1581,7 @@ async fn a_broken_pairing_does_not_disturb_a_working_one() {
     assert!(failing.error.is_some());
     assert_eq!(live_count().await, 1, "only the working host is connected");
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 // ── the liveness pass ──────────────────────────────────────────────────────
@@ -1628,7 +1628,7 @@ async fn connect_all_brings_up_every_pairing_and_names_the_ones_it_cannot() {
     // these machines without opening each one by hand.
     assert_eq!(stream_count().await, 1, "the connected host is streaming");
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// An already-live host is left alone. A second handshake would replace a
@@ -1652,7 +1652,7 @@ async fn connect_all_leaves_a_live_host_on_its_own_connection() {
     );
     assert_eq!(live_count().await, 1);
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// The mark a deliberate stop leaves, and what clears it.
@@ -1679,7 +1679,7 @@ async fn a_stopped_host_is_named_as_stopped_until_it_is_asked_for() {
     assert!(resumed.connected);
     assert!(!resumed.stopped, "{resumed:?}");
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// "Everything should be live" reaches a host the user had stopped, and clears
@@ -1699,7 +1699,7 @@ async fn connect_all_resumes_a_host_the_user_had_stopped() {
     assert!(peer.connected, "{peer:?}");
     assert!(!peer.stopped, "{peer:?}");
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A recovered host keeps delivering.
@@ -1755,7 +1755,7 @@ async fn a_supervisor_reconnect_keeps_delivering_to_the_registered_emitter() {
     )
     .await;
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A catalogue row is stamped from the **live connection**, not from the stored
@@ -1782,7 +1782,7 @@ async fn a_catalogue_row_is_stamped_from_the_live_connection_not_the_file() {
     assert_eq!(stamped["desktopId"], serde_json::json!(desktop_id));
     assert!(workspaces(&desktop_id).await.expect("workspaces")["pairId"].is_string());
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// `MockPlatform` is held by the fixture for the whole test: dropping it would
@@ -1826,7 +1826,7 @@ async fn a_credential_file_that_cannot_be_written_does_not_break_the_connect() {
     let peer = find(&list().await.expect("list"), &desktop_id);
     assert!(peer.error.is_some(), "{peer:?}");
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A connect that finds a retry loop already running replaces it: leaving both
@@ -1848,7 +1848,7 @@ async fn connecting_replaces_an_existing_retry_loop() {
     // And the fresh connection is the one serving, not the loop's attempt.
     assert!(find(&list().await.expect("list"), &desktop_id).connected);
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// When the socket closes under a live stream, the stream task ends instead of
@@ -1874,7 +1874,7 @@ async fn a_stream_ends_when_the_socket_closes() {
     )
     .await;
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A push that does not authenticate is dropped, not reported: a relay can
@@ -1938,7 +1938,7 @@ async fn a_forged_push_is_dropped_without_disturbing_the_stream() {
         json!("sess_forged")
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A payload that is not a JSON object cannot carry a request id, and must be
@@ -1954,7 +1954,7 @@ async fn a_command_that_is_not_an_object_is_sent_as_is() {
         .expect_err("a malformed command is the host's to reject");
     assert!(!error.to_string().is_empty());
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// The race guard between connecting and addressing the connection: a session
@@ -1989,7 +1989,7 @@ async fn a_connection_that_vanishes_between_connect_and_request_is_reported() {
     .expect("the next call reconnects");
     assert!(data["workspaces"].is_array());
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 // ── the event-stream loop's own seams ───────────────────────────────────────

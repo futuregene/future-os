@@ -2137,8 +2137,9 @@ mod tests {
                 .is_some(),
             "a healthy socket must attach"
         );
+        let pair_id = fx.pair_id.clone();
         drop(fx);
-        teardown().await;
+        teardown(&pair_id).await;
     }
 
     /// A subscription cannot be installed on a socket that is gone, and the
@@ -2157,8 +2158,9 @@ mod tests {
                 .is_none(),
             "a closed socket cannot carry a subscription"
         );
+        let pair_id = fx.pair_id.clone();
         drop(fx);
-        teardown().await;
+        teardown(&pair_id).await;
     }
 
     /// A stored seed that cannot be read is a local credential fault, and must be
@@ -2178,8 +2180,9 @@ mod tests {
             error.to_string().contains("Invalid stored device NKey"),
             "{error}"
         );
+        let pair_id = fx.pair_id.clone();
         drop(fx);
-        teardown().await;
+        teardown(&pair_id).await;
     }
 
     /// A handshake sent on a socket that has gone cannot be answered, and the
@@ -2202,8 +2205,9 @@ mod tests {
             matches!(error, crate::AppError::RemoteTransport(_)),
             "{error}"
         );
+        let pair_id = fx.pair_id.clone();
         drop(fx);
-        teardown().await;
+        teardown(&pair_id).await;
     }
 
     /// The *base* schedule is what must grow and be bounded; jitter only

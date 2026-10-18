@@ -728,6 +728,7 @@ mod tests {
         pairing_code_expires_at: Option<i64>,
     ) -> RemoteStatus {
         RemoteStatus {
+            devices: Vec::new(),
             agent_available: true,
             phase,
             reason: None,
@@ -876,6 +877,7 @@ mod tests {
             .as_secs() as i64
             + 300;
         let mut status = crate::remote::RemoteStatus {
+            devices: Vec::new(),
             client: None,
             phase: crate::remote::RemotePhase::Ready,
             reason: None,

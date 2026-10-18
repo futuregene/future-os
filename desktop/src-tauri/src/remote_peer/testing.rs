@@ -76,7 +76,11 @@ pub(crate) struct Paired {
 /// Start a host bridge and return (pair_id, its invitation URL).
 pub(crate) async fn start_host(platform: &MockPlatform, nats: &FakeNats) -> (String, String) {
     sign_in(platform.url());
-    let pair_id = format!("pair_{}", now_secs());
+    // Unique, not merely timestamped: two fixtures that start inside the same
+    // second would otherwise share a pair id, and the broker would round-robin
+    // `p.{pair}.cmd.>` between two unrelated bridges in one queue group — a
+    // handshake answered by the wrong host, or by nobody, inside the deadline.
+    let pair_id = crate::remote::test_support::unique("pair");
     platform.respond_pair_code_for(&pair_id, nats.url());
     let status = start(RemoteStartInput {}).await.expect("host bridge start");
     let invitation = status
@@ -205,7 +209,14 @@ pub(crate) async fn fixture(label: &str) -> (HomeGuard, Fixture) {
 /// dropped connection) outlives the call that made it, and the test build's
 /// schedule runs at 1 ms — so leaving one behind turns it into a CPU burner for
 /// every later test in the binary (`runtime::abort_supervisors_for_test`).
-pub(crate) async fn teardown() {
+pub(crate) async fn teardown(pair_id: &str) {
+    // The whole machine, not one device: these fixtures hold `HomeGuard` and are
+    // therefore serialized, so there is never a second test's bridge to spare —
+    // and the test web listener is one process-wide port that the next fixture
+    // must be able to bind. The pair id is taken so a reader can see which
+    // fixture is being torn down, and so this signature stays honest if the
+    // teardown ever has to become per device.
+    let _ = pair_id;
     stop();
     crate::remote_peer::runtime::abort_supervisors_for_test().await;
     wait_for_web_port_free().await;

@@ -59,8 +59,76 @@ pub(super) fn light_presence_payload(pair_id: &str, bridge_instance_id: &str) ->
         "agentAvailable": host().agent_available(),
         "pairId": pair_id,
         "bridgeInstanceId": bridge_instance_id,
+        // Additive: an older client ignores it, a newer one uses it to tell
+        // "connected to the machine" from "allowed to drive the machine".
+        "control": control_label(pair_id),
         "lastHeartbeatTs": unix_timestamp(),
     })
+}
+
+/// Whether `pair_id` may drive this machine, as the wire spells it.
+fn control_label(pair_id: &str) -> &'static str {
+    if super::SUPERVISOR.in_control(pair_id) {
+        "active"
+    } else {
+        "standby"
+    }
+}
+
+/// Tell a device it is no longer the one driving this machine.
+///
+/// Sent on the superseded device's own `state.` namespace — the platform's
+/// bridge permission already covers it — so the client learns immediately
+/// rather than by inference from a refused command. A client that does not
+/// understand the packet ignores it and finds out the same way it would have
+/// before: its next command comes back `superseded`.
+pub(super) fn publish_standby(pair_id: &str) {
+    publish_control(pair_id, "standby");
+}
+
+/// Send one control-state packet on `pair_id`'s own channel.
+///
+/// Awaited rather than spawned: it is one small publish on a client the caller
+/// already holds, and the process-lifetime task registry is for work that
+/// outlives the call. Registering a control push there made a *test* wait on a
+/// detached publish before it could change HOME — and the wait belongs to
+/// someone else's test, which is exactly how this failed.
+pub(super) fn publish_control(pair_id: &str, control: &str) {
+    let Some((client, security, bridge_instance_id)) = super::SUPERVISOR
+        .state
+        .lock()
+        .unwrap()
+        .get(pair_id)
+        .map(|state| {
+            (
+                state.client.clone(),
+                state.security.clone(),
+                state.bridge_instance_id.clone(),
+            )
+        })
+    else {
+        // The superseded device is not connected here, so there is nobody to
+        // tell. It will read `control: standby` from this machine's next
+        // presence whenever it does connect.
+        return;
+    };
+    let subject = format!("p.{pair_id}.state.control");
+    let payload = json!({
+        "control": control,
+        "pairId": pair_id,
+        "bridgeInstanceId": bridge_instance_id,
+        "lastControlChangeTs": unix_timestamp(),
+    });
+    let Ok(bytes) = serde_json::to_vec(&payload) else {
+        return;
+    };
+    // Fire-and-forget, on a task the process registry does not own: this is a
+    // notification, and no caller — a handshake reply, a takeover answer — may
+    // wait on it. The client finds out the same fact from its next presence
+    // packet if this one is lost.
+    tokio::spawn(async move {
+        let _ = super::secure::publish(&client, &security, subject, bytes).await;
+    });
 }
 
 /// Heartbeat payload: liveness plus the catalog revision.
