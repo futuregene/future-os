@@ -210,10 +210,14 @@ impl ServerSession {
                 "message":prompt.message,"modelContext":prompt.model_context,"images":images,"attachments":attachments
             }),
         )?;
+        let persistence_unavailable = |error: anyhow::Error| {
+            crate::runtime::RunQueueError::PersistenceUnavailable(error.to_string())
+        };
         if !self.ephemeral && !self.scheduler.knows_request(client_request_id) {
             if let Some((run, sequence, fingerprint)) = self
                 .session_manager
-                .queued_receipt(&self.session_id, client_request_id)?
+                .queued_receipt(&self.session_id, client_request_id)
+                .map_err(persistence_unavailable)?
             {
                 anyhow::ensure!(
                     fingerprint == receipt_fingerprint
@@ -233,8 +237,10 @@ impl ServerSession {
             if let Some(run_id) = requested_run_id.filter(|run_id| !run_id.is_empty()) {
                 let journal_exists = self
                     .session_manager
-                    .storage()?
-                    .has_events(&self.session_id, run_id)?;
+                    .storage()
+                    .map_err(persistence_unavailable)?
+                    .has_events(&self.session_id, run_id)
+                    .map_err(persistence_unavailable)?;
                 let transcript_exists = self
                     .session_manager
                     .load(&self.session_id)
@@ -251,7 +257,8 @@ impl ServerSession {
                     });
                 let admitted = self
                     .session_manager
-                    .has_queued_receipt_run(&self.session_id, run_id)?;
+                    .has_queued_receipt_run(&self.session_id, run_id)
+                    .map_err(persistence_unavailable)?;
                 if journal_exists || transcript_exists || admitted {
                     return Err(
                         crate::runtime::RunQueueError::DuplicateRunId(run_id.to_string()).into(),
@@ -347,7 +354,7 @@ impl ServerSession {
                     &ack.run_id,
                     crate::runtime::QueuedCancellationReason::Cancelled,
                 );
-                return Err(error);
+                return Err(persistence_unavailable(error).into());
             }
         }
         for request in superseded {
@@ -363,7 +370,7 @@ impl ServerSession {
                     let _ = self
                         .session_manager
                         .cancel_queued_receipt(&self.session_id, &ack.run_id);
-                    return Err(error);
+                    return Err(persistence_unavailable(error).into());
                 }
             }
             self.scheduled_snapshots.remove(&request.run_id);
