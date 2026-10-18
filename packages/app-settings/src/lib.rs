@@ -305,9 +305,28 @@ pub fn app_db_path() -> Result<PathBuf, Error> {
     Ok(app_dir()?.join("app.db"))
 }
 
+/// On-disk Desktop contract. Shared writers must reject future/foreign files.
+pub const APP_DB_APPLICATION_ID: i64 = 0x46554150;
+pub const APP_DB_SCHEMA_VERSION: i64 = 3;
+
+pub fn validate_database_header(conn: &Connection) -> Result<(), Error> {
+    let application: i64 = conn.pragma_query_value(None, "application_id", |row| row.get(0))?;
+    let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if application != 0 && application != APP_DB_APPLICATION_ID {
+        return Err(Error::Invalid(
+            "Database belongs to a different application; refusing to write.".into(),
+        ));
+    }
+    if !(0..=APP_DB_SCHEMA_VERSION).contains(&version) || (application == 0 && version != 0) {
+        return Err(Error::Invalid(format!("Unsupported Desktop database schema version {version}; use a matching or newer application. No downgrade was attempted.")));
+    }
+    Ok(())
+}
+
 /// Create the `app_settings` table if it does not exist. Cheap and idempotent,
 /// so a first write from the CLI does not require the desktop app to have run.
 pub fn ensure_table(conn: &Connection) -> Result<(), Error> {
+    validate_database_header(conn)?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS app_settings (
              key TEXT PRIMARY KEY,
@@ -319,7 +338,15 @@ pub fn ensure_table(conn: &Connection) -> Result<(), Error> {
 }
 
 fn open_at(path: &std::path::Path) -> Result<Connection, Error> {
+    if let Some(home) = path.parent().and_then(std::path::Path::parent) {
+        match std::fs::symlink_metadata(home.join(".restore-incomplete.json")) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+            Ok(_) => return Err(Error::Invalid("A FutureOS data restore is incomplete; run `future data resume` or `future data rollback` before writing settings or workspaces.".into())),
+        }
+    }
     let conn = Connection::open(path)?;
+    validate_database_header(&conn)?;
     // The desktop app may hold a write lock; wait rather than failing.
     conn.execute_batch("PRAGMA busy_timeout = 5000;")?;
     Ok(conn)
@@ -1102,4 +1129,33 @@ mod tests {
     }
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+}
+
+#[cfg(test)]
+mod database_header_tests {
+    use super::*;
+
+    #[test]
+    fn future_and_foreign_databases_are_not_modified_by_shared_writers() {
+        for (application, version) in [(APP_DB_APPLICATION_ID, 99), (123, 0), (0, 99)] {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.pragma_update(None, "application_id", application)
+                .unwrap();
+            conn.pragma_update(None, "user_version", version).unwrap();
+            assert!(ensure_table(&conn).is_err());
+            let tables: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM sqlite_schema WHERE type='table'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(tables, 0);
+            assert_eq!(
+                conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                version
+            );
+        }
+    }
 }

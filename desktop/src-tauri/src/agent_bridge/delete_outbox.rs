@@ -8,23 +8,51 @@ pub async fn reconcile_delete_outbox() {
     let Ok(_drain) = DRAIN.try_lock() else {
         return;
     };
-    let Ok(session_ids) = crate::store::pending_agent_session_deletes() else {
+    let Ok(pending) = crate::store::pending_agent_session_deletes_with_sources() else {
         return;
     };
-    if session_ids.is_empty() {
+    if pending.is_empty() {
         return;
     }
     let mut client = match connect_agent().await {
         Ok(client) => client,
         Err(error) => {
-            let outcomes = session_ids
+            let outcomes = pending
                 .into_iter()
-                .map(|session_id| (session_id, Some(error.to_string())))
+                .map(|(session_id, _)| (session_id, Some(error.to_string())))
                 .collect::<Vec<_>>();
             let _ = crate::store::settle_agent_session_deletes(&outcomes);
             return;
         }
     };
+    let identity = match session_presence_with_client(&mut client, Vec::new()).await {
+        Ok(identity) => identity,
+        Err(error) => {
+            let outcomes = pending
+                .into_iter()
+                .map(|(session, _)| (session, Some(error.to_string())))
+                .collect::<Vec<_>>();
+            let _ = crate::store::settle_agent_session_deletes(&outcomes);
+            return;
+        }
+    };
+    let mut session_ids = Vec::new();
+    let mut deferred = Vec::new();
+    for (session, source) in pending {
+        if source.as_deref() == Some(identity.database_id.as_str()) {
+            session_ids.push(session);
+        } else {
+            let reason = if source.is_some() {
+                "Deletion belongs to a different Agent database; intent retained."
+            } else {
+                "Deletion source is unverified; intent and Agent history retained."
+            };
+            deferred.push((session, Some(reason.to_owned())));
+        }
+    }
+    if !deferred.is_empty() {
+        let _ = crate::store::settle_agent_session_deletes(&deferred);
+    }
     for batch in session_ids.chunks(MAX_DELETE_SESSIONS) {
         let reply = async {
             let response = client

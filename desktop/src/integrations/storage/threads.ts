@@ -182,7 +182,15 @@ export async function getSessionEntries(threadId: string) {
   );
 }
 
+export interface HistoryStatus {
+  source: "agent" | "legacy" | "none";
+  availability: string;
+  canContinue: boolean;
+  sourceKey: string;
+}
+
 export interface SessionHistoryPage {
+  history?: HistoryStatus;
   entries: Record<string, unknown>[];
   hasMore: boolean;
   nextOffset: number;
@@ -192,10 +200,12 @@ export async function getSessionEntriesPage(
   threadId: string,
   before: number | null = null,
   limit = 10,
+  historySource?: string,
 ) {
   return invokeCommand<SessionHistoryPage>("get_session_entries_page", {
     threadId,
     before,
     limit,
+    ...(historySource ? { historySource } : {}),
   });
 }

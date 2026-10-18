@@ -289,7 +289,10 @@ CREATE INDEX IF NOT EXISTS idx_artifacts_workspace ON artifacts(workspace_id, de
 -- Every read is "today's rows", so index the day the queries all filter on.
 CREATE INDEX IF NOT EXISTS idx_skill_reco_events_day ON skill_reco_events(day);
 "#,
-    include_str!("approval_assessments.sql")
+    include_str!("approval_assessments.sql"),
+    include_str!("managed_cleanup.sql"),
+    include_str!("thread_sources.sql"),
+    include_str!("delete_sources.sql")
 );
 
 /// Columns added to pre-existing tables after their initial `CREATE`. SQLite's

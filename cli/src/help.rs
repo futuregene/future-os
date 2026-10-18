@@ -22,6 +22,7 @@ Groups:
   mcp       Configure MCP servers and call their tools
   models    List available AI models from the agent
   session   List, inspect, update, rename, and delete agent sessions
+  data      Offline history backup, verification and recovery
   doctor    Environment diagnostic
   version   Print the build identity (version, commit, target)
 

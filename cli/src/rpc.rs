@@ -38,6 +38,33 @@ pub struct RunClient {
 }
 
 impl RunClient {
+    pub async fn storage_health(&self) -> Result<Value, String> {
+        let data = self
+            .execute_command("get_storage_health", RpcCommand::default(), None, 10)
+            .await?;
+        if data["databaseId"].as_str().is_none_or(str::is_empty)
+            || data["restoreGeneration"].as_str().is_none_or(str::is_empty)
+            || data["schemaVersion"].as_u64()
+                != Some(u64::from(
+                    future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION,
+                ))
+            || [
+                "sessions",
+                "deletedSessions",
+                "failedImports",
+                "unrecoverableQueuedInputs",
+                "pendingQueuedInputs",
+                "pendingHistoryIndexes",
+                "catalogueConflicts",
+            ]
+            .iter()
+            .any(|key| data[key].as_u64().is_none())
+        {
+            return Err("Agent returned an incomplete storage health report".into());
+        }
+        Ok(data)
+    }
+
     pub fn new(addr: &str) -> Self {
         Self {
             addr: addr.to_string(),

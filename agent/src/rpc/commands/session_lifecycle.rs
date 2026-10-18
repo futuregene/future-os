@@ -5,6 +5,20 @@ use std::sync::Arc;
 
 use crate::rpc::{AppState, RpcCommand, RpcResponse, ServerSession, SseBroadcaster};
 
+pub(crate) fn cmd_storage_health(state: &AppState, id: &str) -> String {
+    match state.session_manager.storage_health() {
+        Ok(data) => RpcResponse::ok(id, "get_storage_health", data),
+        Err(error) => RpcResponse::build_fail(id, "get_storage_health", &error.to_string()),
+    }
+}
+
+pub(crate) fn cmd_session_presence(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
+    match state.session_manager.session_presence(&cmd.session_ids) {
+        Ok(data) => RpcResponse::ok(id, "get_session_presence", data),
+        Err(error) => RpcResponse::build_fail(id, "get_session_presence", &error.to_string()),
+    }
+}
+
 pub(crate) fn cmd_shutdown(state: &AppState, id: &str) -> String {
     state
         .shutting_down
@@ -242,10 +256,16 @@ fn delete_sessions(
     }
     match state.session_manager.delete_many(&ready) {
         Ok(()) => {
+            let catalogue = state.session_manager.session_presence(&[]).ok();
+            let database_id = catalogue
+                .as_ref()
+                .and_then(|data| data["databaseId"].as_str());
             for session_id in ready {
                 state.sessions.write().remove(&session_id);
                 // Publish only after the whole database transaction committed.
-                state.control_plane.publish_session_deleted(&session_id);
+                state
+                    .control_plane
+                    .publish_session_deleted(&session_id, database_id);
                 results.push(future_rpc::session_deletion::DeleteSessionResult {
                     session_id,
                     deleted: true,

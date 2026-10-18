@@ -24,18 +24,24 @@ impl SqliteStore {
 
     /// Summary inputs only: use the kind index to skip assistant/tool bodies.
     /// Read the tail timestamp separately so ordering includes all entry kinds.
-    pub(crate) fn summary_rows(&self, session: &str) -> Result<(Vec<String>, String)> {
+    pub(crate) fn summary_rows(&self, session: &str) -> Result<(Vec<String>, String, usize)> {
         let session = session.to_owned();
         self.db.call(move |db| {
             let tx = db.transaction()?;
             let rows = {
-                let mut stmt = tx.prepare("SELECT payload FROM entry_records WHERE session_id=?1 AND entry_type IN ('session_info','model_change','user') ORDER BY position")?;
+                let mut stmt = tx.prepare("SELECT payload FROM entry_records WHERE session_id=?1 AND position IN (
+                    SELECT min(position) FROM entries WHERE session_id=?1 AND entry_type='user'
+                    UNION SELECT max(position) FROM entries WHERE session_id=?1 AND entry_type='model_change'
+                    UNION SELECT position FROM entries WHERE session_id=?1 AND entry_type='session_info'
+                ) ORDER BY position")?;
                 let rows = stmt.query_map([&session], |row| row.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
                 rows
             };
             let timestamp = tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ',updated_at_ms/1000.0,'unixepoch') FROM sessions WHERE id=?1", [&session], |row| row.get(0))?;
+            let query_count = tx.query_row("SELECT count(*) FROM entries WHERE session_id=?1 AND entry_type='user'", [&session], |row| row.get::<_,i64>(0))?;
+            let query_count = usize::try_from(query_count)?;
             tx.commit()?;
-            Ok((rows, timestamp))
+            Ok((rows, timestamp, query_count))
         })
     }
 
@@ -159,6 +165,14 @@ pub(crate) fn read_run_markers(db: &Connection, session: &str) -> Result<Vec<Val
 /// Shared by `SqliteStore::replace` (its own transaction) and the in-place
 /// history reset (which must verify and rewrite in one transaction).
 fn rewrite_transcript_rows(db: &Connection, session: &str, entries: Vec<Value>) -> Result<()> {
+    let deleted: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1)",
+        [session],
+        |row| row.get(0),
+    )?;
+    if deleted {
+        bail!("session was explicitly deleted; restore its matching database instead of recreating it");
+    }
     let skipped: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')",
         [session],
@@ -186,6 +200,7 @@ pub(crate) fn insert_transcript_entries(
     session: &str,
     mut entries: Vec<Value>,
 ) -> Result<()> {
+    crate::session::history::ensure_history_index(db, session)?;
     // Resolve legacy message ownership once, before discarding repeated
     // snapshots. A terminal/start marker supplies identity, not a display-time
     // positional guess. Explicit identities are never overwritten.
@@ -368,5 +383,6 @@ pub(crate) fn insert_transcript_entries(
     if metadata_changed {
         crate::session::history::refresh_session_metadata(db, session)?;
     }
+    crate::session::history::mark_history_index_ready(db, session)?;
     Ok(())
 }

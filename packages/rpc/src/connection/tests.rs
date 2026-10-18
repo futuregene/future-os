@@ -382,17 +382,20 @@ fn different_development_builds_share_only_the_explicit_release_protocol_schema_
     assert!(validate_readiness(&info, &expected).is_err());
 }
 
-fn contract_metadata() -> Vec<(&'static str, &'static str)> {
+fn contract_metadata() -> Vec<(&'static str, String)> {
     vec![
-        (EXPECTED_INSTANCE_HEADER, "agent-a"),
-        (EXPECTED_DATA_ROOT_HEADER, "root-hash"),
-        (CLIENT_VERSION_HEADER, "1.2.3"),
-        (CLIENT_PROTOCOL_HEADER, "2"),
-        (CLIENT_SCHEMA_HEADER, "6"),
+        (EXPECTED_INSTANCE_HEADER, "agent-a".into()),
+        (EXPECTED_DATA_ROOT_HEADER, "root-hash".into()),
+        (CLIENT_VERSION_HEADER, "1.2.3".into()),
+        (CLIENT_PROTOCOL_HEADER, AGENT_PROTOCOL_VERSION.to_string()),
+        (
+            CLIENT_SCHEMA_HEADER,
+            AGENT_STORAGE_SCHEMA_VERSION.to_string(),
+        ),
     ]
 }
 
-fn metadata(pairs: &[(&'static str, &'static str)]) -> tonic::metadata::MetadataMap {
+fn metadata(pairs: &[(&'static str, String)]) -> tonic::metadata::MetadataMap {
     let mut metadata = tonic::metadata::MetadataMap::new();
     for (header, value) in pairs {
         metadata.insert(*header, value.parse().expect("visible ASCII headers"));
@@ -425,12 +428,20 @@ fn a_business_request_without_a_matching_client_contract_is_refused() {
     );
 
     for (index, value, label) in [
-        (0, "agent-b", "another instance"),
-        (1, "other-root", "another data root"),
-        (2, "1.2.4", "a different client release"),
-        (3, "3", "another protocol"),
-        (3, "not-a-number", "an unparsable protocol"),
-        (4, "7", "another storage schema"),
+        (0, "agent-b".into(), "another instance"),
+        (1, "other-root".into(), "another data root"),
+        (2, "1.2.4".into(), "a different client release"),
+        (
+            3,
+            (AGENT_PROTOCOL_VERSION + 1).to_string(),
+            "another protocol",
+        ),
+        (3, "not-a-number".into(), "an unparsable protocol"),
+        (
+            4,
+            (AGENT_STORAGE_SCHEMA_VERSION + 1).to_string(),
+            "another storage schema",
+        ),
     ] {
         let mut changed = complete.clone();
         changed[index] = (changed[index].0, value);
@@ -479,8 +490,18 @@ fn a_contract_header_that_cannot_be_encoded_is_refused_before_dispatch() {
         readiness.data_root_id.as_str()
     );
     assert_eq!(headers.get(CLIENT_VERSION_HEADER).unwrap(), "1.2.3");
-    assert_eq!(headers.get(CLIENT_PROTOCOL_HEADER).unwrap(), "2");
-    assert_eq!(headers.get(CLIENT_SCHEMA_HEADER).unwrap(), "6");
+    assert_eq!(
+        headers
+            .get(CLIENT_PROTOCOL_HEADER)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        AGENT_PROTOCOL_VERSION.to_string()
+    );
+    assert_eq!(
+        headers.get(CLIENT_SCHEMA_HEADER).unwrap().to_str().unwrap(),
+        AGENT_STORAGE_SCHEMA_VERSION.to_string()
+    );
 }
 
 /// An operator has to be able to tell "the Agent refused me" from "I could not

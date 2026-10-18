@@ -101,6 +101,8 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "get_system_prompt",
     "list_providers",
     "list_session_ids",
+    "get_session_presence",
+    "get_storage_health",
     "list_sessions",
     "list_streaming_sessions",
     "new_session",
@@ -214,6 +216,8 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
         | "search_all_session_history"
         | "get_session_events_since"
         | "list_session_ids"
+        | "get_session_presence"
+        | "get_storage_health"
         | "list_sessions"
         | "probe_sandbox"
         | "probe_windows_sandbox" => policy(

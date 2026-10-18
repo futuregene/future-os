@@ -212,6 +212,7 @@ pub async fn get_session_messages(
     session_id: String,
 ) -> Result<serde_json::Value, crate::AppError> {
     let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, &session_id).await?;
     let response = client
         .execute_command(base_command("get_messages", session_id))
         .await
@@ -231,7 +232,15 @@ pub async fn get_session_messages(
 /// with cached thumbnails), which is how the GUI rebuilds attachment chips.
 pub async fn get_session_entries(session_id: String) -> Result<serde_json::Value, crate::AppError> {
     let mut client = connect_agent().await?;
-    let entries = fetch_all_session_entries_with_client(&mut client, &session_id).await?;
+    super::verify_session_database(&mut client, &session_id).await?;
+    get_session_entries_with_client(&mut client, session_id).await
+}
+
+pub(crate) async fn get_session_entries_with_client(
+    client: &mut super::client::AgentClient,
+    session_id: String,
+) -> Result<serde_json::Value, crate::AppError> {
+    let entries = fetch_all_session_entries_with_client(client, &session_id).await?;
     Ok(serde_json::json!({ "entries": entries }))
 }
 
@@ -295,9 +304,19 @@ pub async fn get_session_entries_before(
     before: i64,
     user_exchange_limit: i64,
 ) -> Result<serde_json::Value, crate::AppError> {
-    let client = connect_agent().await?;
+    let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, &session_id).await?;
+    get_session_entries_before_with_client(&client, session_id, before, user_exchange_limit).await
+}
+
+pub(crate) async fn get_session_entries_before_with_client(
+    client: &super::client::AgentClient,
+    session_id: String,
+    before: i64,
+    user_exchange_limit: i64,
+) -> Result<serde_json::Value, crate::AppError> {
     let page = read_history_page_with_client(
-        &client,
+        client,
         get_session_entries_before_command(session_id, before, user_exchange_limit),
     )
     .await?;
@@ -348,7 +367,11 @@ async fn read_history_page_with_client(
                 .execute_command(command)
                 .await
                 .map_err(|e| format!("get_session_entries failed: {e}"))?
-                .into_inner()
+                .into_inner();
+            if super::client::is_session_not_found(&response) {
+                return Err("Conversation history is unavailable: restore its matching Agent database or legacy sessions backup.".into());
+            }
+            let response = response
                 .ok_or_rpc_error("get_session_entries returned an error")
                 .map_err(|error| error.to_string())?;
             future_rpc::decode::decode_session_entries_page(&response)
@@ -364,6 +387,7 @@ async fn read_history_page_with_client(
 /// model/thinking selectors.
 pub async fn get_session_state(session_id: String) -> Result<serde_json::Value, crate::AppError> {
     let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, &session_id).await?;
     let response = client
         .execute_command(get_state_command(session_id))
         .await
@@ -458,6 +482,7 @@ pub async fn set_session_model(
     model_id: String,
 ) -> Result<(), crate::AppError> {
     let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, &session_id).await?;
     client
         .execute_command(set_model_command(model_id, session_id))
         .await
@@ -486,6 +511,7 @@ pub async fn set_session_thinking_level(
     level: String,
 ) -> Result<(), crate::AppError> {
     let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, &session_id).await?;
     client
         .execute_command(set_thinking_level_command(level, session_id))
         .await
@@ -501,6 +527,7 @@ pub async fn generate_session_title(
     language: String,
 ) -> Result<serde_json::Value, crate::AppError> {
     let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, &session_id).await?;
     let command = crate::agent_proto::RpcCommand {
         mode: language,
         ..base_command("generate_session_title", session_id)
@@ -524,6 +551,7 @@ pub async fn generate_session_title(
 /// Rename a session: update the agent's session name, then mirror to the GUI store.
 pub async fn rename_session(session_id: String, name: String) -> Result<(), crate::AppError> {
     let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, &session_id).await?;
     client
         .execute_command(set_session_name_command(name.clone(), session_id.clone()))
         .await

@@ -52,6 +52,10 @@ async-trait.workspace = true
 indexmap = "2"
 rpassword = "7"
 tempfile.workspace = true
+sha2 = "0.10"
+anyhow = "1"
+fs2 = "0.4"
+fd-lock = "4"
 
 [dev-dependencies]
 tokio-stream = { workspace = true, features = ["net"] }

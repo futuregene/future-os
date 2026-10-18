@@ -114,6 +114,8 @@ pub fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Workspace> {
 /// desktop's own schema is created first whenever the app has started, and its
 /// migration state is left untouched by this.
 pub fn ensure_table(conn: &Connection) -> Result<(), Error> {
+    future_app_settings::validate_database_header(conn)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS workspaces (
              id TEXT PRIMARY KEY,

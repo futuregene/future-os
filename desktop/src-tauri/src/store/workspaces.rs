@@ -229,7 +229,9 @@ pub(super) fn delete_workspace_in(conn: &Connection, workspace_id: &str) -> rusq
         let rows = stmt.query_map(params![workspace_id], |row| row.get::<_, String>(0))?;
         rows.collect::<rusqlite::Result<_>>()?
     };
+    super::managed_cleanup::request_workspace_in(conn, workspace_id)?;
     for thread_id in &thread_ids {
+        super::managed_cleanup::request_thread_in(conn, thread_id)?;
         super::threads::delete_thread_children_in(conn, thread_id)?;
     }
     const DELETE_THREADS_SQL: &str = "DELETE FROM threads WHERE workspace_id = ?1";

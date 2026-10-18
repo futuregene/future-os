@@ -3253,13 +3253,11 @@ mod bridge_tests {
         bridge.stop().await;
     }
 
-    /// A session the Agent no longer has (created but never prompted, or dropped
-    /// by a restart) must read as EMPTY history over the remote bridge, exactly
-    /// as the desktop UI already answers it. Forwarding the rejection instead
-    /// pins the phone's timeline in "loading messages" forever: a failed history
-    /// page only schedules a retry, and the tail page is the phone's first read.
+    /// A missing transcript must not be reported as a successful empty history.
+    /// Clients retain their previous messages and receive a recoverable source
+    /// error, while a session without settings still answers an empty state.
     #[tokio::test]
-    async fn a_missing_agent_session_reads_as_empty_history_and_state() {
+    async fn a_missing_agent_session_reports_unavailable_history_and_empty_state() {
         let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-missing-session").await;
         let agent = ensure_mock_agent();
@@ -3274,31 +3272,33 @@ mod bridge_tests {
             }
         }
 
-        // The tail page (what the phone opens with) is a success with no rows
-        // and a terminal cursor, so it shows "no messages" instead of retrying.
+        // Neither paging direction may erase cached history by reporting a
+        // missing source as a successful empty page.
         let reply = bridge
             .call(json!({
                 "id": unique("cmd"), "type": "get_session_entries", "sessionId": session,
                 "before": i64::MAX, "limit": 10
             }))
             .await;
-        assert_eq!(reply["success"], json!(true));
-        assert_eq!(reply["data"]["entries"], json!([]));
-        assert_eq!(reply["data"]["hasMore"], json!(false));
-        assert_eq!(reply["data"]["nextOffset"], json!(0));
+        assert_eq!(reply["success"], json!(false));
+        assert!(reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("history is unavailable"));
 
-        // The forward (non-`before`) read answers the same way.
+        // The forward (non-`before`) read reports the same missing source.
         let reply = bridge
             .call(
                 json!({ "id": unique("cmd"), "type": "get_session_entries", "sessionId": session }),
             )
             .await;
-        assert_eq!(reply["success"], json!(true));
-        assert_eq!(reply["data"]["entries"], json!([]));
-        assert_eq!(reply["data"]["hasMore"], json!(false));
+        assert_eq!(reply["success"], json!(false));
+        assert!(reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("history is unavailable"));
 
-        // `get_state` also bounds the sync lane: a rejection there fails the
-        // whole reconcile before history is ever requested.
+        // A session without a settings snapshot still has an empty state.
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "get_state", "sessionId": session }))
             .await;

@@ -203,7 +203,7 @@ impl SqliteStore {
             let status = self.db.call(move |db| {
                 Ok(db
                     .query_row(
-                        "SELECT status FROM legacy_imports WHERE session_id=?1",
+                        "SELECT CASE WHEN EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1) THEN 'deleted' ELSE (SELECT status FROM legacy_imports WHERE session_id=?1) END WHERE EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1) OR EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1)",
                         [id],
                         |r| r.get::<_, String>(0),
                     )
@@ -260,7 +260,7 @@ impl SqliteStore {
             let status = self.db.call(move |db| {
                 Ok(db
                     .query_row(
-                        "SELECT status FROM legacy_imports WHERE session_id=?1",
+                        "SELECT CASE WHEN EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1) THEN 'deleted' ELSE (SELECT status FROM legacy_imports WHERE session_id=?1) END WHERE EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1) OR EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1)",
                         [key],
                         |r| r.get::<_, String>(0),
                     )

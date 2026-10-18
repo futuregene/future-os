@@ -480,6 +480,7 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
     // workspace directory name. Re-sync when the stored title is clearly
     // stale and a better one is available.
     if let Some(existing) = store::find_thread_by_agent_session(&summary.id)? {
+        super::verify_thread_source(&existing.id, &summary.id).await?;
         if store::sync_thread_parent_session(&summary.id, &summary.parent_session_id)? {
             // Upgrade/backfill can change an already-rendered tree without
             // importing any new rows. Do not wait for a restart to reveal it.
@@ -557,6 +558,7 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
             workspace_name,
             agent_session_id: Some(summary.id.clone()),
         })?;
+    super::verify_thread_source(&thread.id, &summary.id).await?;
     store::sync_thread_parent_session(&summary.id, &summary.parent_session_id)?;
     if !created {
         return Ok(0);
@@ -708,6 +710,7 @@ pub(crate) async fn import_discovered_session(session_id: &str) -> Result<bool, 
             workspace_name,
             agent_session_id: Some(session_id.to_string()),
         })?;
+    super::verify_thread_source(&thread.id, session_id).await?;
     store::sync_thread_parent_session(session_id, &summary.parent_session_id)?;
     // See `import_one`: a worker's name is a machine placeholder, an imported
     // standalone conversation's is not — and a failed seed write must not fail
@@ -981,6 +984,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_session_entries_reports_failures() {
+        let _home = super::super::test_support::TestHome::new("import-fetch-errors-schema");
         let mock = super::super::test_support::mock_agent();
 
         mock.push(
@@ -997,6 +1001,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_session_entries_decodes_typed_only_response() {
+        let _home = super::super::test_support::TestHome::new("import-fetch-typed-schema");
         let mock = super::super::test_support::mock_agent();
         mock.push_typed_data(
             "get_session_entries",
@@ -1106,6 +1111,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_session_entries_survives_transport_error() {
+        let _home = super::super::test_support::TestHome::new("import-fetch-transport-schema");
         let mock = super::super::test_support::mock_agent();
         mock.push(
             "get_session_entries",
@@ -1419,14 +1425,13 @@ mod tests {
     // ── import_missing_sessions / import_missing ─────────
 
     #[tokio::test]
-    async fn import_one_title_sync_spawns_tolerate_an_unreachable_agent() {
+    async fn import_one_preserves_titles_until_the_source_can_be_verified() {
         let home = super::super::test_support::TestHome::new("import-sync-down");
         let _mock = super::super::test_support::mock_agent();
         let workspace = super::super::test_support::seed_workspace(home.path(), "ws");
 
-        // Existing thread with a default title → the heal path spawns a
-        // title-sync task whose `if let Ok(connect_agent)` else arm runs when
-        // the agent endpoint is unreachable.
+        // An offline summary cannot prove ownership. Existing titles must
+        // remain intact until the matching Agent source can be verified.
         let heal = super::super::test_support::seed_thread(&workspace.id, Some("sess-heal-down"));
         crate::store::rename_thread(crate::store::RenameThreadInput {
             thread_id: heal.id.clone(),
@@ -1438,7 +1443,11 @@ mod tests {
         std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
 
         let s = summary("sess-heal-down", &workspace.path);
-        assert_eq!(import_one(&s).await.expect("heal"), 0);
+        assert!(import_one(&s).await.is_err());
+        assert_eq!(
+            crate::store::get_thread(&heal.id).unwrap().unwrap().title,
+            "New Chat"
+        );
 
         // A brand-new import validates history first; an unreachable agent is
         // reported without leaving a partial empty thread behind.

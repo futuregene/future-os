@@ -417,7 +417,7 @@ pub(super) async fn reconcile_discovered_session(
 /// session and keeps working; the sidebar re-roots it (see `buildThreadTree`).
 /// The deletion also tombstones the session, so a late `session_created`
 /// announcement or discovery pass can never resurrect it.
-pub(super) fn reconcile_deleted_session(session_id: &str) -> Result<bool, crate::AppError> {
+pub(crate) fn reconcile_deleted_session(session_id: &str) -> Result<bool, crate::AppError> {
     let Some(thread) = crate::store::find_thread_by_agent_session(session_id)? else {
         return Ok(false);
     };
@@ -588,6 +588,7 @@ fn bind_run(session_id: &str, canonical_run_id: &str, local_run_id: &str) {
 /// recently settled run — the broadcaster keeps stamping its identity onto
 /// between-runs settings events until the next run starts.
 struct ObserverState {
+    source: Option<(String, String, String)>,
     cursors: HashMap<String, i64>,
     session_cursor: i64,
     active_run: Option<String>,
@@ -598,12 +599,27 @@ struct ObserverState {
 impl Default for ObserverState {
     fn default() -> Self {
         Self {
+            source: None,
             cursors: HashMap::new(),
             session_cursor: -1,
             active_run: None,
             last_settled_run: None,
             last_message_activity_ms: None,
         }
+    }
+}
+
+impl ObserverState {
+    fn verify_source(&mut self, source: (String, String, String)) -> bool {
+        let changed = self
+            .source
+            .as_ref()
+            .is_some_and(|previous| previous != &source);
+        if changed {
+            *self = Self::default();
+        }
+        self.source = Some(source);
+        changed
     }
 }
 
@@ -721,6 +737,39 @@ async fn run_observer(
                 continue;
             }
         };
+
+        let presence = match super::verify_thread_source_with_client(
+            &mut client,
+            &shared.thread_id,
+            session_id,
+        )
+        .await
+        {
+            Ok(presence) => presence,
+            Err(error) => {
+                eprintln!("FutureOS: observer source verification deferred: {error}");
+                if sleep_or_cancel(&mut cancel, backoff).await {
+                    return;
+                }
+                backoff = (backoff * 2).min(Duration::from_secs(10));
+                continue;
+            }
+        };
+        if state.verify_source((
+            client.readiness().agent_instance_id.clone(),
+            presence.database_id,
+            presence.restore_generation,
+        )) {
+            // A restored journal may reuse lower event indexes. Cursors and
+            // transient run bindings belong to the verified source instance.
+            shared.has_active_run.store(false, Ordering::Relaxed);
+            shared
+                .run_bindings
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+            crate::emit_remote_activity(&shared.thread_id);
+        }
 
         if !replay_session_events(&mut client, session_id, shared, &mut state).await {
             if sleep_or_cancel(&mut cancel, backoff).await {
@@ -1292,6 +1341,36 @@ fn settings_event_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_restored_or_restarted_source_replays_from_its_own_cursor_origin() {
+        let mock = mock_agent();
+        let mut client = connect_agent().await.unwrap();
+        let shared = Arc::new(ObserverShared::new("source-fence"));
+        for source in [
+            ("instance", "database", "new-generation"),
+            ("new-instance", "database", "generation"),
+        ] {
+            let mut state = ObserverState::default();
+            let original = ("instance".into(), "database".into(), "generation".into());
+            assert!(!state.verify_source(original.clone()));
+            state.session_cursor = 999;
+            state.cursors.insert("run".into(), 500);
+            assert!(!state.verify_source(original));
+            assert_eq!(state.session_cursor, 999);
+            assert!(state.verify_source((source.0.into(), source.1.into(), source.2.into())));
+            assert!(state.cursors.is_empty());
+            mock.push_data("get_session_events_since", serde_json::json!({"events":[]}));
+            assert!(replay_session_events(&mut client, "session", &shared, &mut state).await);
+            assert_eq!(
+                mock.requests_of("get_session_events_since")
+                    .last()
+                    .unwrap()
+                    .since_idx,
+                -1
+            );
+        }
+    }
 
     fn handle_with(last_activity_ms: i64, has_active_run: bool) -> ObserverHandle {
         let (cancel, _rx) = oneshot::channel();
@@ -2673,12 +2752,10 @@ mod tests {
         (cancel_tx, handle)
     }
 
-    fn quiet_shared(thread_id: &str) -> Arc<ObserverShared> {
-        Arc::new(ObserverShared {
-            last_activity_ms: AtomicI64::new(0),
-            has_active_run: AtomicBool::new(false),
-            ..ObserverShared::new(thread_id)
-        })
+    fn bound_observer_shared(home: &TestHome, session_id: &str) -> ObserverShared {
+        let workspace = seed_workspace(home.path(), "observer");
+        let thread = seed_thread(&workspace.id, Some(session_id));
+        ObserverShared::new(&thread.id)
     }
 
     #[tokio::test]
@@ -2721,7 +2798,7 @@ mod tests {
             Reply::Reject("nope".to_string()),
         );
 
-        let shared = Arc::new(ObserverShared::new("thread-rr"));
+        let shared = Arc::new(bound_observer_shared(&_home, "sess-rr"));
         let (cancel_tx, handle) = spawn_run_observer("sess-rr", shared);
         // Cycle 1: replay fails → 50ms backoff completes → continue (no doubling).
         // Cycle 2: replay fails → 50ms backoff; cancel mid-sleep → return.
@@ -2773,7 +2850,7 @@ mod tests {
             None,
         ));
 
-        let shared = Arc::new(ObserverShared::new("thread-aa"));
+        let shared = Arc::new(bound_observer_shared(&_home, "sess-aa"));
         let (cancel_tx, handle) = spawn_run_observer("sess-aa", shared);
         // The atomic attach streams one event then closes; the post-stream
         // 200ms backoff sleep is where cancel lands → return (post-stream arm).
@@ -2807,7 +2884,7 @@ mod tests {
             ));
         }
 
-        let shared = Arc::new(ObserverShared::new("thread-rc"));
+        let shared = Arc::new(bound_observer_shared(&_home, "sess-rc"));
         let (cancel_tx, handle) = spawn_run_observer("sess-rc", shared);
         // Cycle 1 attaches fresh (cursor None → -1) and re-attaches; cycle 2
         // attaches with a cached cursor (Some arm).
@@ -2838,7 +2915,7 @@ mod tests {
         ));
         mock.push_plain_stream(StreamScript::AttachError(tonic::Code::Internal, "down"));
 
-        let shared = Arc::new(ObserverShared::new("thread-fb"));
+        let shared = Arc::new(bound_observer_shared(&_home, "sess-fb"));
         let (cancel_tx, handle) = spawn_run_observer("sess-fb", shared);
         tokio::time::sleep(Duration::from_millis(30)).await;
         cancel_tx.send(()).unwrap();
@@ -2867,7 +2944,7 @@ mod tests {
             None,
         ));
 
-        let shared = Arc::new(ObserverShared::new("thread-fbok"));
+        let shared = Arc::new(bound_observer_shared(&_home, "sess-fbok"));
         let (cancel_tx, handle) = spawn_run_observer("sess-fbok", shared);
         tokio::time::sleep(Duration::from_millis(60)).await;
         cancel_tx.send(()).unwrap();
@@ -2898,7 +2975,7 @@ mod tests {
             mock.push_plain_stream(StreamScript::AttachError(tonic::Code::Internal, "down"));
         }
 
-        let shared = Arc::new(ObserverShared::new("thread-fbr"));
+        let shared = Arc::new(bound_observer_shared(&_home, "sess-fbr"));
         let (cancel_tx, handle) = spawn_run_observer("sess-fbr", shared);
         // Cycle 1's backoff completes → continue 'attach; cycle 2's backoff is
         // where cancel lands (the `return` arm) after both arms are exercised.
@@ -2933,7 +3010,7 @@ mod tests {
         mock.push_stream(StreamScript::AttachError(tonic::Code::Internal, "down"));
         mock.push_stream(StreamScript::AttachError(tonic::Code::Internal, "down"));
 
-        let shared = Arc::new(ObserverShared::new("thread-ae"));
+        let shared = Arc::new(bound_observer_shared(&_home, "sess-ae"));
         let (cancel_tx, handle) = spawn_run_observer("sess-ae", shared);
         // Cycle 1: 40ms backoff completes → double + continue. Cycle 2: 80ms
         // backoff; cancel mid-sleep → return.
@@ -2963,7 +3040,7 @@ mod tests {
         mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
         mock.push_plain_stream(StreamScript::AttachError(tonic::Code::Internal, "down"));
 
-        let shared = Arc::new(ObserverShared::new("thread-pr"));
+        let shared = Arc::new(bound_observer_shared(&_home, "sess-pr"));
         let (cancel_tx, handle) = spawn_run_observer("sess-pr", shared);
         tokio::time::sleep(Duration::from_millis(100)).await;
         cancel_tx.send(()).unwrap();
@@ -2987,7 +3064,7 @@ mod tests {
             None,
         ));
 
-        let shared = Arc::new(ObserverShared::new("thread-gap"));
+        let shared = Arc::new(bound_observer_shared(&_home, "sess-gap"));
         let (cancel_tx, handle) = spawn_run_observer("sess-gap", shared);
         // handle_event rejects the gap (idx 3 with no cursor) → break → backoff.
         tokio::time::sleep(Duration::from_millis(60)).await;
@@ -3009,7 +3086,11 @@ mod tests {
         // Plain subscribe hangs; the quiet-window timeout fires and, with an
         // ancient last-activity timestamp and no active run, the observer sleeps.
 
-        let shared = quiet_shared("thread-quiet");
+        let shared = Arc::new(ObserverShared {
+            last_activity_ms: AtomicI64::new(0),
+            has_active_run: AtomicBool::new(false),
+            ..bound_observer_shared(&_home, "sess-quiet")
+        });
         let (_cancel_tx, handle) = spawn_run_observer("sess-quiet", shared);
         // The observer should self-terminate via the quiet-window return; give
         // it a bounded window to do so.
@@ -3036,7 +3117,7 @@ mod tests {
         let shared = Arc::new(ObserverShared {
             last_activity_ms: AtomicI64::new(0),
             has_active_run: AtomicBool::new(true),
-            ..ObserverShared::new("thread-idle-active")
+            ..bound_observer_shared(&_home, "sess-idle-active")
         });
         let (cancel_tx, handle) = spawn_run_observer("sess-idle-active", shared);
         // A few idle cycles, then cancel so the loop exits deterministically.

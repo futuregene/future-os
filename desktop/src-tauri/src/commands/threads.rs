@@ -82,6 +82,7 @@ pub async fn rename_thread(
         .unwrap_or(&thread.id)
         .to_string();
     let mut client = crate::agent_bridge::connect_agent().await?;
+    crate::agent_bridge::verify_session_database(&mut client, &session_id).await?;
     let cmd = crate::agent_bridge::set_session_name_command(input.title.clone(), session_id);
     let resp = client
         .execute_command(cmd)
@@ -117,8 +118,13 @@ pub async fn update_thread_model(
                 .filter(|id| !id.is_empty())
                 .unwrap_or(&thread.id)
                 .to_string();
-            let cmd = crate::agent_bridge::set_model_command(model_id, session_id);
-            let _ = client.execute_command(cmd).await;
+            if crate::agent_bridge::verify_session_database(&mut client, &session_id)
+                .await
+                .is_ok()
+            {
+                let cmd = crate::agent_bridge::set_model_command(model_id, session_id);
+                let _ = client.execute_command(cmd).await;
+            }
         }
     }
     Ok(thread)
@@ -142,8 +148,14 @@ pub async fn update_thread_thinking_level(
                 .filter(|id| !id.is_empty())
                 .unwrap_or(&thread.id)
                 .to_string();
-            let cmd = crate::agent_bridge::set_thinking_level_command(thinking_level, session_id);
-            let _ = client.execute_command(cmd).await;
+            if crate::agent_bridge::verify_session_database(&mut client, &session_id)
+                .await
+                .is_ok()
+            {
+                let cmd =
+                    crate::agent_bridge::set_thinking_level_command(thinking_level, session_id);
+                let _ = client.execute_command(cmd).await;
+            }
         }
     }
     Ok(thread)
@@ -297,11 +309,13 @@ pub async fn get_thread_agent_state(
     // The one exception is a missing session ("session not found"): the agent
     // losing a session (e.g. after an environment switch restarts it) is not a
     // transient fetch failure, so a null payload is the honest answer — the
-    // thread genuinely has no session now, and the prompt path recreates it on
-    // the next send.
+    // settings can be absent. Prompt admission separately verifies the history
+    // source; a missing source never authorizes an empty replacement session.
     let mut client = crate::agent_bridge::connect_agent()
         .await
         .map_err(|e| format!("Future Agent unreachable: {e}"))?;
+    crate::agent_bridge::verify_thread_source_with_client(&mut client, &thread_id, session_id)
+        .await?;
     let cmd = crate::agent_bridge::get_state_command(session_id.to_string());
     let resp = client
         .execute_command(cmd)
@@ -309,7 +323,9 @@ pub async fn get_thread_agent_state(
         .map_err(|e| format!("get_state RPC failed: {e}"))?
         .into_inner();
     if !resp.success {
-        if resp.error.contains("session not found") {
+        if resp.error_code == future_rpc::session_errors::SESSION_NOT_FOUND_CODE
+            || future_rpc::session_errors::legacy_session_not_found_message(&resp.error)
+        {
             return Ok(empty_agent_state(&thread.title));
         }
         return Err(format!("get_state rejected: {}", resp.error).into());
@@ -351,7 +367,7 @@ pub async fn compact_thread_context(
 /// Read Agent history, or preserved GUI history when upgrading an older DB.
 #[tauri::command]
 pub async fn get_session_entries(thread_id: String) -> Result<serde_json::Value, crate::AppError> {
-    read_thread_history(&thread_id, None).await
+    read_thread_history(&thread_id, None, None).await
 }
 
 /// One UI history page. Full-history callers keep using get_session_entries.
@@ -360,38 +376,121 @@ pub async fn get_session_entries_page(
     thread_id: String,
     before: Option<i64>,
     limit: i64,
+    history_source: Option<String>,
 ) -> Result<serde_json::Value, crate::AppError> {
-    read_thread_history(&thread_id, Some((before, limit.clamp(1, 100)))).await
+    read_thread_history(
+        &thread_id,
+        Some((before, limit.clamp(1, 100))),
+        history_source.as_deref(),
+    )
+    .await
 }
 
 async fn read_thread_history(
     thread_id: &str,
     page: Option<(Option<i64>, i64)>,
+    expected_source: Option<&str>,
 ) -> Result<serde_json::Value, crate::AppError> {
-    let thread = store::get_thread(thread_id)?.ok_or_else(|| "Thread not found.".to_string())?;
-    let session_id = thread
+    let thread = store::get_thread(thread_id)?.ok_or("Thread not found.")?;
+    let canonical = thread
         .agent_session_id
         .as_deref()
         .map(str::trim)
-        .filter(|id| !id.is_empty())
+        .filter(|id| !id.is_empty());
+    let session_id = canonical
         .map(str::to_owned)
         .or(store::legacy_session_id(thread_id)?);
-    let result = if let Some(session_id) = session_id.as_ref() {
-        match page {
-            Some((before, limit)) => {
-                crate::agent_bridge::get_session_entries_before(
-                    session_id.clone(),
-                    before.unwrap_or(i64::MAX),
-                    limit,
-                )
-                .await
-            }
-            None => crate::agent_bridge::get_session_entries(session_id.clone()).await,
+    let archived = store::has_legacy_history(thread_id)?;
+    let legacy_cursor = expected_source.is_some_and(|source| source.starts_with("legacy:"));
+    let tail = page.is_none_or(|(before, _)| before.is_none_or(|cursor| cursor == i64::MAX));
+    let mut key = format!("local:{thread_id}");
+    let mut availability = "ready";
+    let mut result = Ok(serde_json::json!({"entries":[],"hasMore":false,"nextOffset":0}));
+    if let Some(session_id) = session_id.as_ref() {
+        // Carry the instance-fenced client from ownership verification through
+        // every body/fragment read. A reconnect must start a fresh operation.
+        let verified = async {
+            let mut client = crate::agent_bridge::connect_agent().await?;
+            let presence = crate::agent_bridge::session_presence_with_client(
+                &mut client,
+                vec![session_id.clone()],
+            )
+            .await?;
+            Ok::<_, crate::AppError>((client, presence))
         }
-    } else {
-        Ok(serde_json::json!({"entries":[],"hasMore":false,"nextOffset":0}))
-    };
-
+        .await;
+        result = match verified {
+            Ok((mut client, presence)) => {
+                let status = presence.sessions[0].status.as_str();
+                if status != "present" {
+                    availability = match status {
+                        "deleted" => "deleted",
+                        "import_failed" => "import_failed",
+                        _ => "missing",
+                    };
+                    Err("Conversation history is unavailable: its Agent session or database is missing. Restore the matching Agent database or legacy sessions backup.".into())
+                } else if store::thread_source(thread_id)?
+                    .is_some_and(|source| source.0 != presence.database_id)
+                {
+                    availability = "different_database";
+                    Err("Conversation belongs to a different Agent database; restore its matching data.".into())
+                } else {
+                    key = format!(
+                        "agent:{}:{}:{}:{session_id}",
+                        presence.database_id,
+                        presence.restore_generation,
+                        client.readiness().agent_instance_id
+                    );
+                    if canonical.is_some() {
+                        store::record_thread_source(
+                            thread_id,
+                            session_id,
+                            &presence.database_id,
+                            &presence.restore_generation,
+                        )?;
+                    }
+                    if !legacy_cursor && expected_source.is_some_and(|source| source != key) {
+                        return Err(
+                            "Conversation history source changed; reload before paging further."
+                                .into(),
+                        );
+                    }
+                    if legacy_cursor {
+                        crate::agent_bridge::get_session_entries_before_with_client(
+                            &client,
+                            session_id.clone(),
+                            i64::MAX,
+                            1,
+                        )
+                        .await
+                    } else {
+                        match page {
+                            Some((before, limit)) => {
+                                crate::agent_bridge::get_session_entries_before_with_client(
+                                    &client,
+                                    session_id.clone(),
+                                    before.unwrap_or(i64::MAX),
+                                    limit,
+                                )
+                                .await
+                            }
+                            None => {
+                                crate::agent_bridge::get_session_entries_with_client(
+                                    &mut client,
+                                    session_id.clone(),
+                                )
+                                .await
+                            }
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                availability = "offline";
+                Err(error)
+            }
+        };
+    }
     let empty = result.as_ref().is_ok_and(|value| {
         value["entries"].as_array().is_some_and(|entries| {
             entries
@@ -399,28 +498,37 @@ async fn read_thread_history(
                 .all(|entry| !matches!(entry["role"].as_str(), Some("user" | "assistant" | "tool")))
         })
     });
-    let missing = result
-        .as_ref()
-        .err()
-        .is_some_and(|error| error.to_string().contains("session not found"));
-    // A scrolled Agent page must retain its own cursor space. Recovery from a
-    // different source starts on a fresh tail load, never mid-pagination.
-    let tail = page.is_none_or(|(before, _)| before.is_none_or(|cursor| cursor == i64::MAX));
-    if !tail {
-        return result;
-    }
-    if empty || missing {
-        // Recovery copies have their own ordinal space. Return the complete
-        // archive so Agent cursors are never reused to page a different source.
-        let entries = store::legacy_history_entries(thread_id)?;
-        if !entries.is_empty() {
-            return Ok(serde_json::json!({"entries":entries,"hasMore":false,"nextOffset":0}));
+    if archived && (tail || legacy_cursor) && (empty || result.is_err()) {
+        let source_key = store::legacy_history_source_key(thread_id)?;
+        if expected_source.is_some_and(|source| source != source_key) {
+            return Err(
+                "Conversation history source changed; reload before paging further.".into(),
+            );
         }
-        if missing || thread.last_message_at.is_some() || !store::list_runs(thread_id)?.is_empty() {
-            return Err("Conversation history is unavailable: its Agent session or database is missing. Restore the matching Agent database or legacy sessions backup.".into());
-        }
+        let mut recovered = match page {
+            Some((before, limit)) => {
+                store::legacy_history_page(thread_id, before.unwrap_or(i64::MAX), limit)?
+            }
+            None => {
+                serde_json::json!({"entries":store::legacy_history_entries(thread_id)?,"hasMore":false,"nextOffset":0})
+            }
+        };
+        recovered["history"] = serde_json::json!({"source":"legacy","availability":availability,"canContinue":false,"sourceKey":source_key});
+        return Ok(recovered);
     }
-    result
+    if legacy_cursor {
+        return Err("Conversation history source changed; reload before paging further.".into());
+    }
+    if empty
+        && tail
+        && (thread.last_message_at.is_some() || !store::list_runs(thread_id)?.is_empty())
+    {
+        return Err("Conversation history is unavailable: restore its matching Agent database or legacy sessions backup.".into());
+    }
+    let mut value = result?;
+    value["history"] = serde_json::json!({"source":if session_id.is_some(){"agent"}else{"none"},"availability":availability,
+        "canContinue":canonical.is_some() || session_id.is_none(),"sourceKey":key});
+    Ok(value)
 }
 
 #[tauri::command]
@@ -901,16 +1009,30 @@ mod tests {
             )]),
             ..Default::default()
         });
-        let page = get_session_entries_page(thread.id.clone(), None, 1)
+        let page = get_session_entries_page(thread.id.clone(), None, 1, None)
             .await
             .unwrap();
-        assert_eq!(page["entries"].as_array().unwrap().len(), 2);
-        assert_eq!(page["entries"][1]["blocks"][0]["text"], "preserved answer");
-        assert_eq!(page["hasMore"], false);
+        assert_eq!(page["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(page["entries"][0]["blocks"][0]["text"], "preserved answer");
+        assert_eq!(page["hasMore"], true);
+        assert_eq!(page["history"]["canContinue"], false);
         let full = get_session_entries(thread.id.clone()).await.unwrap();
-        assert_eq!(full["entries"], page["entries"]);
+        assert_eq!(full["entries"].as_array().unwrap().len(), 2);
+        let older = get_session_entries_page(
+            thread.id.clone(),
+            Some(1),
+            1,
+            page["history"]["sourceKey"].as_str().map(str::to_owned),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            older["entries"][0]["blocks"][0]["text"],
+            "preserved question"
+        );
+        assert_eq!(older["hasMore"], false);
         script_mock_agent(MockScript {data:HashMap::from([("get_session_entries".into(),serde_json::json!({"entries":[{"id":"metadata","role":"system","kind":"session_info","blocks":[],"createdAtMs":1}],"hasMore":false,"nextOffset":0}).to_string())]),..Default::default()});
-        let recovered = get_session_entries_page(thread.id.clone(), None, 1)
+        let recovered = get_session_entries_page(thread.id.clone(), None, 1, None)
             .await
             .unwrap();
         assert_eq!(recovered["entries"], page["entries"]);
@@ -1193,6 +1315,13 @@ mod tests {
         let _lock = mock_agent_lock();
         let _home = init("cmd_delete_active");
         let thread = make_thread(&_home, Some("sess_active_delete"));
+        store::record_thread_source(
+            &thread.id,
+            "sess_active_delete",
+            "test-agent-database",
+            "test-generation",
+        )
+        .unwrap();
         store::create_run(store::CreateRunInput {
             id: Some("run_active_delete".to_string()),
             thread_id: thread.id.clone(),
@@ -1281,10 +1410,10 @@ mod tests {
             !commands.iter().any(|command| command == "abort"),
             "no stop is attempted for a session the agent has no record of: {commands:?}"
         );
-        // The user's delete still reclaims the Agent side, so the tombstone is
-        // delivered (idempotently) even though there is no session to remove.
+        // No Agent source ever owned this unbound thread. Retain intent rather
+        // than sending a guessed session deletion to whichever database is live.
         assert!(
-            commands.iter().any(|command| command == "delete_sessions"),
+            !commands.iter().any(|command| command == "delete_sessions"),
             "{commands:?}"
         );
         assert!(store::get_thread(&thread.id).expect("get").is_none());
@@ -1424,7 +1553,9 @@ mod tests {
         );
         // A fetch-all loop would request the same non-advancing cursor and
         // error here. The UI command must return immediately after one page.
-        let page = get_session_entries_page(thread.id, None, 10).await.unwrap();
+        let page = get_session_entries_page(thread.id, None, 10, None)
+            .await
+            .unwrap();
         assert_eq!(page["entries"].as_array().unwrap().len(), 1);
         assert_eq!(page["hasMore"], true);
         assert_eq!(page["nextOffset"], 20);
@@ -1518,7 +1649,7 @@ mod tests {
         // Nothing is scripted. If this arm called the agent, the default mock
         // answer would not produce this payload, so the assertions below would
         // fail rather than pass by accident.
-        let page = get_session_entries_page(thread.id.clone(), None, 10)
+        let page = get_session_entries_page(thread.id.clone(), None, 10, None)
             .await
             .expect("a session-less thread is an empty page");
         assert_eq!(page["entries"], serde_json::json!([]));
@@ -1599,7 +1730,6 @@ mod tests {
         script_mock_agent(MockScript::default());
     }
 
-    /// A session the agent no longer knows about is an **empty page**, not an
     /// Missing history is actionable; storage failures must retain their own
     /// diagnostics instead of being collapsed into a successful empty page.
     #[tokio::test]
@@ -1615,7 +1745,7 @@ mod tests {
             )]),
             ..Default::default()
         });
-        let error = get_session_entries_page(thread.id.clone(), None, 10)
+        let error = get_session_entries_page(thread.id.clone(), None, 10, None)
             .await
             .expect_err("missing history must not masquerade as an empty conversation");
         assert!(error.to_string().contains("history is unavailable"));
@@ -1628,7 +1758,7 @@ mod tests {
             )]),
             ..Default::default()
         });
-        let error = get_session_entries_page(thread.id.clone(), None, 10)
+        let error = get_session_entries_page(thread.id.clone(), None, 10, None)
             .await
             .expect_err("an unrelated agent failure must propagate");
         assert!(

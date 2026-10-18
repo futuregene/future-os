@@ -17,6 +17,13 @@ pub(super) fn enqueue_agent_session_delete_in(
          VALUES (?1, ?2, 0, NULL)
          ON CONFLICT(session_id) DO NOTHING";
     conn.execute(SQL, params![session_id, now_millis()])?;
+    conn.execute(
+        "INSERT INTO agent_delete_sources(session_id,database_id)
+        SELECT ?1,MIN(database_id) FROM thread_sources WHERE session_id=?1
+        HAVING count(DISTINCT database_id)=1
+        ON CONFLICT(session_id) DO NOTHING",
+        [session_id],
+    )?;
     Ok(())
 }
 
@@ -29,12 +36,21 @@ pub fn is_agent_session_tombstoned(session_id: &str) -> Result<bool, crate::AppE
     Ok(conn.query_row(SQL, [session_id], |row| row.get(0))?)
 }
 
+#[cfg(test)]
 pub fn pending_agent_session_deletes() -> Result<Vec<String>, crate::AppError> {
+    Ok(pending_agent_session_deletes_with_sources()?
+        .into_iter()
+        .map(|(session, _)| session)
+        .collect())
+}
+
+pub fn pending_agent_session_deletes_with_sources(
+) -> Result<Vec<(String, Option<String>)>, crate::AppError> {
     let conn = connect()?;
     let mut stmt = conn
-        .prepare("SELECT session_id FROM agent_delete_outbox ORDER BY requested_at, session_id")?;
-    let rows = stmt.query_map([], |row| row.get(0))?;
-    let session_ids = rows.collect::<Result<Vec<String>, _>>()?;
+        .prepare("SELECT o.session_id,s.database_id FROM agent_delete_outbox o LEFT JOIN agent_delete_sources s ON s.session_id=o.session_id ORDER BY o.requested_at,o.session_id")?;
+    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    let session_ids = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(session_ids)
 }
 
@@ -84,6 +100,7 @@ pub(super) fn enqueue_all_agent_session_deletes_in(conn: &Connection) -> rusqlit
          SELECT DISTINCT COALESCE(NULLIF(TRIM(agent_session_id), ''), id), ?1, 0, NULL
          FROM threads";
     conn.execute(SQL, [now])?;
+    conn.execute_batch(include_str!("delete_sources.sql"))?;
     Ok(())
 }
 

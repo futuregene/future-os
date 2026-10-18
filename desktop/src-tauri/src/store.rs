@@ -9,13 +9,16 @@ mod cleanup;
 mod db;
 mod deletions;
 mod legacy_history;
+mod managed_cleanup;
 mod markdown_refs;
+mod migrations;
 mod records;
 mod review_snapshots;
 mod runs;
 mod schema;
 mod skill_reco;
 mod status;
+mod thread_sources;
 mod threads;
 mod util;
 mod workspace_files;
@@ -53,10 +56,16 @@ pub use db::{
 // its directory, since Windows cannot unlink an open database file.
 #[cfg(test)]
 pub(crate) use db::close_pool;
+#[cfg(test)]
+pub use deletions::pending_agent_session_deletes;
 pub use deletions::{
-    is_agent_session_tombstoned, pending_agent_session_deletes, settle_agent_session_deletes,
+    is_agent_session_tombstoned, pending_agent_session_deletes_with_sources,
+    settle_agent_session_deletes,
 };
-pub use legacy_history::{legacy_history_entries, legacy_session_id};
+pub use legacy_history::{
+    has_legacy_history, legacy_history_entries, legacy_history_page, legacy_history_source_key,
+    legacy_session_id,
+};
 pub use markdown_refs::resolve_markdown_references;
 pub use records::*;
 pub use review_snapshots::{
@@ -76,6 +85,7 @@ pub use runs::{
 #[cfg(test)]
 pub(crate) use runs::{append_run_event, flush_run_event_log_for_test};
 pub use skill_reco::{record_skill_reco, skill_reco_today, SkillRecoToday};
+pub use thread_sources::{record_thread_source, thread_source};
 pub use threads::{
     archive_thread, bind_thread_session_id, create_thread, delete_thread, delete_thread_tree,
     delete_thread_trees, find_thread_by_agent_session, forget_thread_mirror,
@@ -105,7 +115,7 @@ pub fn app_data_path() -> Result<AppDataPath, crate::AppError> {
 pub fn initialize_app_store() -> Result<(), crate::AppError> {
     ensure_app_dirs()?;
     let conn = connect()?;
-    apply_schema(&conn)?;
+    migrations::initialize(&conn)?;
     drop(conn);
     // Reconcile GUI threads against the agent's session list (orphan-session
     // cleanup) runs later, off the launch path, once the agent is reachable —
@@ -191,13 +201,20 @@ pub fn clear_all_data() -> Result<(), crate::AppError> {
     };
     // DROP TABLE also removes the table's indexes and triggers.
     for table in &tables {
-        if table == "agent_delete_outbox" {
+        if matches!(
+            table.as_str(),
+            "agent_delete_outbox" | "agent_delete_sources"
+        ) {
             continue;
         }
         conn.execute(&format!("DROP TABLE IF EXISTS \"{table}\""), [])?;
     }
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    conn.pragma_update(None, "user_version", 0)?;
+    // A reset retains only control-plane deletion intent. Create the known core
+    // before adopting a new database identity; explicit reset already authorized it.
     apply_schema(&conn)?;
+    migrations::initialize(&conn)?;
     app_settings::restore_device_id(&conn, device_id.as_deref())?;
     drop(conn);
 

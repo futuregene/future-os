@@ -88,7 +88,7 @@ impl Manager {
     pub fn list_all(&self) -> Result<Vec<SessionSummary>> {
         let mut summaries = Vec::new();
         for id in self.storage()?.ids(false)? {
-            let (rows, timestamp) = self.storage()?.summary_rows(&id)?;
+            let (rows, timestamp, query_count) = self.storage()?.summary_rows(&id)?;
             let mut entries = rows
                 .into_iter()
                 .map(|row| serde_json::from_str::<SessionEntry>(&row))
@@ -98,9 +98,11 @@ impl Manager {
             entries.push(serde_json::from_value(serde_json::json!({
                 "id": "summary-tail", "type": "summary-tail", "timestamp": timestamp
             }))?);
-            summaries.push(Self::summary_from_session(
+            let mut summary = Self::summary_from_session(
                 &self.restore_session_times(Self::session_from_entries(&id, entries)?)?,
-            ));
+            );
+            summary.query_count = query_count;
+            summaries.push(summary);
         }
         summaries.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
         Ok(summaries)
@@ -129,7 +131,7 @@ mod tests {
             // listing must not deserialize assistant bodies or fields.
             serde_json::json!({"id":"a", "type":"assistant", "role":123, "content":"x".repeat(100_000), "timestamp":"2026-01-02T00:00:00Z"}),
         ]).unwrap();
-        let (rows, _) = store.summary_rows("synthetic").unwrap();
+        let (rows, _, _) = store.summary_rows("synthetic").unwrap();
         assert_eq!(rows.len(), 1);
         assert!(rows[0].len() < 1000);
         let summaries = manager.list_all().unwrap();

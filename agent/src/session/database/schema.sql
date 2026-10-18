@@ -143,4 +143,47 @@ CREATE TABLE IF NOT EXISTS history_display (
 );
 CREATE INDEX IF NOT EXISTS history_users ON history_display(session_id,is_user,ordinal);
 CREATE INDEX IF NOT EXISTS history_sources ON history_display(session_id,source_position,ordinal);
+CREATE TABLE IF NOT EXISTS history_index_state (
+    session_id TEXT PRIMARY KEY NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    projection_version INTEGER NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS history_shapes_inserted AFTER INSERT ON history_shapes BEGIN
+    DELETE FROM history_index_state WHERE session_id=NEW.session_id;
+END;
+CREATE TRIGGER IF NOT EXISTS history_shapes_updated AFTER UPDATE ON history_shapes BEGIN
+    DELETE FROM history_index_state WHERE session_id=OLD.session_id OR session_id=NEW.session_id;
+END;
+CREATE TRIGGER IF NOT EXISTS history_shapes_deleted AFTER DELETE ON history_shapes BEGIN
+    DELETE FROM history_index_state WHERE session_id=OLD.session_id;
+END;
+CREATE TRIGGER IF NOT EXISTS history_display_inserted AFTER INSERT ON history_display BEGIN
+    DELETE FROM history_index_state WHERE session_id=NEW.session_id;
+END;
+CREATE TRIGGER IF NOT EXISTS history_display_updated AFTER UPDATE ON history_display BEGIN
+    DELETE FROM history_index_state WHERE session_id=OLD.session_id OR session_id=NEW.session_id;
+END;
+CREATE TRIGGER IF NOT EXISTS history_display_deleted AFTER DELETE ON history_display BEGIN
+    DELETE FROM history_index_state WHERE session_id=OLD.session_id;
+END;
 PRAGMA application_id = 1179997266;
+
+CREATE TABLE IF NOT EXISTS session_tombstones (
+    session_id TEXT PRIMARY KEY NOT NULL,
+    deleted_at_ms INTEGER NOT NULL
+);
+INSERT INTO session_tombstones(session_id,deleted_at_ms)
+SELECT session_id,0 FROM legacy_imports WHERE status='deleted'
+ON CONFLICT DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS queued_run_receipts (
+    session_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    client_request_id TEXT NOT NULL,
+    run_sequence INTEGER NOT NULL,
+    fingerprint TEXT NOT NULL,
+    payload_json TEXT CHECK(payload_json IS NULL OR json_valid(payload_json)),
+    user_entry_json TEXT CHECK(user_entry_json IS NULL OR json_valid(user_entry_json)),
+    status TEXT NOT NULL CHECK(status IN ('queued','cancel_requested','started','merged','cancelled','interrupted','recovery_failed')),
+    PRIMARY KEY(session_id,run_id),
+    UNIQUE(session_id,client_request_id)
+);

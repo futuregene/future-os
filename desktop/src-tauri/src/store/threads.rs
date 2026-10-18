@@ -673,6 +673,7 @@ fn delete_thread_tree_in(
         if !shared {
             super::deletions::enqueue_agent_session_delete_in(conn, session_id)?;
         }
+        super::managed_cleanup::request_thread_in(conn, &thread.id)?;
         delete_thread_rows_in(conn, thread, now)?;
     }
     Ok(DeletedThreadTree { root, targets })
@@ -844,6 +845,7 @@ pub fn purge_soft_deleted_threads() -> Result<usize, crate::AppError> {
     }
     let tx = conn.transaction()?;
     for id in &ids {
+        super::managed_cleanup::request_thread_in(&tx, id)?;
         delete_thread_children_in(&tx, id)?;
         tx.execute("DELETE FROM threads WHERE id = ?1", params![id])?;
     }

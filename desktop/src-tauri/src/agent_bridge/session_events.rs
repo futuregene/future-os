@@ -169,6 +169,33 @@ fn handle_session_deleted(data: &str) {
         eprintln!("FutureOS: session_deleted payload omitted sessionId");
         return;
     };
+    if let Some(database) = payload["databaseId"].as_str().filter(|id| !id.is_empty()) {
+        match crate::store::find_thread_by_agent_session(session_id).and_then(|thread| {
+            thread
+                .map(|thread| crate::store::thread_source(&thread.id))
+                .transpose()
+                .map(Option::flatten)
+        }) {
+            Ok(Some((source, _))) if source != database => {
+                eprintln!("FutureOS: ignored deletion from another Agent database");
+                return;
+            }
+            Ok(None) => {
+                eprintln!("FutureOS: preserving conversation without a verified deletion source");
+                return;
+            }
+            Err(error) => {
+                eprintln!("FutureOS: could not verify deletion source: {error}");
+                return;
+            }
+            _ => {}
+        }
+    } else {
+        eprintln!(
+            "FutureOS: preserving conversation after deletion event without database identity"
+        );
+        return;
+    }
     match super::observer::reconcile_deleted_session(session_id) {
         Ok(true) => {
             eprintln!("FutureOS: removed session {session_id} deleted outside the GUI");
@@ -420,6 +447,13 @@ mod tests {
         assert!(crate::store::get_thread(&thread.id).expect("get").is_some());
 
         handle_session_deleted(r#"{"sessionId":"s-gone"}"#);
+        assert!(crate::store::get_thread(&thread.id).unwrap().is_some());
+        handle_session_deleted(r#"{"sessionId":"s-gone","databaseId":"other"}"#);
+        assert!(crate::store::get_thread(&thread.id).unwrap().is_some());
+        crate::store::record_thread_source(&thread.id, "s-gone", "owned-db", "generation").unwrap();
+        handle_session_deleted(r#"{"sessionId":"s-gone","databaseId":"other"}"#);
+        assert!(crate::store::get_thread(&thread.id).unwrap().is_some());
+        handle_session_deleted(r#"{"sessionId":"s-gone","databaseId":"owned-db"}"#);
         assert!(crate::store::get_thread(&thread.id).expect("get").is_none());
         assert!(
             crate::store::is_agent_session_tombstoned("s-gone").expect("tombstone"),
@@ -464,7 +498,12 @@ mod tests {
                     "session_created",
                     r#"{"sessionId":"s-live","createdBy":"tui"}"#,
                 ),
-                stream_event("", 1, "session_deleted", r#"{"sessionId":"s-live"}"#),
+                stream_event(
+                    "",
+                    1,
+                    "session_deleted",
+                    r#"{"sessionId":"s-live","databaseId":"test-agent-database"}"#,
+                ),
             ],
             None,
         ));

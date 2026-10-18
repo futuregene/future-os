@@ -28,6 +28,8 @@ pub(crate) mod compaction_ops;
 #[cfg(test)]
 mod compaction_ops_tests;
 pub(crate) mod database;
+mod database_backup;
+pub use database_backup::create_database_snapshot;
 pub(crate) mod history;
 pub(crate) mod journal_compaction;
 mod journal_compactor;
@@ -40,7 +42,9 @@ mod fork;
 mod manager;
 mod model;
 mod persistence;
+mod presence;
 mod projection;
+mod queued_receipts;
 mod repair;
 pub mod reset;
 pub use reset::{DropKind, ResetOutcome, ResetPlan, ResetPlanResult, ResetSelectors};

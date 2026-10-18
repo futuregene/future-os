@@ -1113,7 +1113,10 @@ mod tests {
             "session-1".to_string(),
             Duration::from_secs(1),
         );
-        manager.delete("session-1").unwrap();
+        manager.test_execute(
+            "CREATE TEMP TRIGGER reject_append BEFORE INSERT ON entries
+             BEGIN SELECT RAISE(ABORT,'injected append failure'); END;",
+        );
 
         persistence
             .append(vec![SessionEntry::new_assistant(
@@ -1123,6 +1126,7 @@ mod tests {
             .unwrap();
         assert!(persistence.barrier().is_err());
 
+        manager.test_execute("DROP TRIGGER reject_append");
         manager.save(&session).unwrap();
         persistence
             .update_info("session_name", serde_json::json!("renamed"))
@@ -1206,9 +1210,12 @@ mod tests {
             "session-1".to_string(),
             Duration::from_secs(1),
         );
-        // Force the next append to fail by removing the file; the queued append
-        // records the error, which barrier surfaces.
-        manager.delete("session-1").unwrap();
+        // Reject the next append at the SQLite boundary; the queued append
+        // records the error, which barrier surfaces. Do not tombstone the session.
+        manager.test_execute(
+            "CREATE TEMP TRIGGER reject_append BEFORE INSERT ON entries
+             BEGIN SELECT RAISE(ABORT,'injected append failure'); END;",
+        );
         persistence
             .append(vec![SessionEntry::new_assistant(
                 serde_json::json!("lost"),
@@ -1217,9 +1224,10 @@ mod tests {
             .unwrap();
         assert!(persistence.barrier().is_err());
 
-        // Recreate the file: even though a write would now succeed, commit_run
+        // Restore writable storage: even though a write would now succeed, commit_run
         // must still refuse because an earlier append in this run was lost (the
         // on-disk run is incomplete; the caller heals via a full rewrite).
+        manager.test_execute("DROP TRIGGER reject_append");
         manager.save(&session).unwrap();
         let terminal = SessionEntry::run_terminal(
             "run-commit",
