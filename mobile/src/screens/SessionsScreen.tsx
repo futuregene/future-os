@@ -601,10 +601,11 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
         ...(paired?.icon ? { icon: paired.icon } : {}),
         active: true,
         status: activeMachineStatus(connection),
+        ...(remote.presence?.control ? { control: remote.presence.control } : {}),
       },
       ...catalogs.machines,
     ];
-  }, [activeDesktopId, catalogs.machines, connection, remote.desktops]);
+  }, [activeDesktopId, catalogs.machines, connection, remote.desktops, remote.presence]);
   /** What the user calls a paired machine; its id when they have not named it. */
   const desktopLabel = (desktopId: string): string =>
     machines.find(machine => machine.desktopId === desktopId)?.label ?? desktopId;
@@ -882,8 +883,10 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           <DesktopPicker
             desktops={remote.desktops}
             filter={scopedFilter}
+            machines={machines}
             onChange={setDesktopFilter}
             onManage={onManageDesktops}
+            onTakeControl={remote.catalogs.takeControlFor}
           />
           <View style={styles.topActions}>
             <ConnectionBadge
@@ -892,6 +895,9 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
               presentation={connection}
               disconnectReason={remote.presence?.reason}
               error={remote.error}
+              holder={remote.presence?.holder ?? null}
+              onTakeControl={remote.takeControl}
+              standby={remote.presence?.control === "standby"}
               onReconnect={reconnect}
               onUnpair={confirmUnpair}
             />

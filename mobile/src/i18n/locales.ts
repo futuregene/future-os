@@ -155,18 +155,40 @@ export const resources = {
         agentUnavailable:
           "Trying to connect. If this continues, restart FutureOS on the computer. (LC003)",
         connected: "Connected",
+        /** Connected, but another paired device is in front of this desktop. */
+        connectedStandby: "Connected · in standby",
         connecting: "Connecting",
         machinesSummary: "{{connected}} of {{total}} desktops connected",
         machinesPartial: "Some desktops are not connected",
         machinesPartialHint:
           "Make sure the desktops that are not connected are online, then reconnect",
         reconnectAll: "Reconnect all",
+        /**
+         * Another paired device holds this desktop. The name is the one that
+         * device declared about itself; when it declared none, the neutral
+         * wording is used rather than inventing an identity.
+         */
+        /**
+         * Passive on purpose: the desktop is the thing being used, and saying
+         * "<device> is controlling this desktop" named the wrong subject — on a
+         * phone there is no "this computer" within reach, and the sentence read
+         * as if the other device were operating the phone.
+         */
+        controlHeldBy: "Taken over by {{name}}",
+        controlHeldByUnknown: "Taken over by another device",
+        takeControl: "Take over",
+        takeControlHint: "Taking over disconnects {{name}}.",
+        takeControlHintUnknown: "Taking over disconnects the device that has it now.",
+        takeControlFailed: "Could not take over. Try again.",
         machine: {
           connected: "Connected",
           preparing: "Preparing",
           connecting: "Connecting",
           offline: "Offline",
         },
+        /** Appended to a machine's own row when another device holds it. */
+        machineStandby: "connected, in standby",
+        machineStandbyHint: "Taken over by another device",
         connectingDetail: "Connecting to the desktop",
         waitingDesktop: "Waiting for desktop",
         devicePreparing: "Desktop is preparing",
@@ -393,6 +415,13 @@ export const resources = {
         tokens: "{{formattedCount}} tokens",
         loadFailed: "Could not load the conversation.",
         sendFailed: "Message failed to send.",
+        /**
+         * Shown in the conversation while another device holds this desktop:
+         * the status dot explains the refusal, but only to someone who taps it,
+         * and here the user is looking at the composer.
+         */
+        standbyCannotSend: "Taken over by {{name}} — messages will not send.",
+        standbyCannotSendUnknown: "Taken over by another device — messages will not send.",
         sessionNotOnDesktop:
           "That conversation is not on the connected desktop. Open it from the machine that owns it.",
         promptTooLarge:
@@ -1091,17 +1120,26 @@ export const resources = {
         retryHint: "连接暂时不可用，请稍后重试。",
         agentUnavailable: "正在尝试连接；若长时间未连接，请重启桌面端（LC003）",
         connected: "已连接",
+        connectedStandby: "已连接 · 待命",
         connecting: "正在连接",
         machinesSummary: "{{total}} 个桌面端中已连接 {{connected}} 个",
         machinesPartial: "部分桌面端未连接",
         machinesPartialHint: "请确认未连接的桌面端在线后重新连接",
         reconnectAll: "重新连接全部",
+        controlHeldBy: "已被 {{name}} 接管",
+        controlHeldByUnknown: "已被另一台设备接管",
+        takeControl: "接管",
+        takeControlHint: "接管会断开 {{name}}。",
+        takeControlHintUnknown: "接管会断开正在使用它的设备。",
+        takeControlFailed: "接管未成功，请重试。",
         machine: {
           connected: "已连接",
           preparing: "准备中",
           connecting: "连接中",
           offline: "未连接",
         },
+        machineStandby: "已连接 · 待命",
+        machineStandbyHint: "已被其他设备接管",
         connectingDetail: "正在尝试连接桌面端",
         waitingDesktop: "等待桌面端",
         devicePreparing: "桌面端准备中",
@@ -1301,6 +1339,8 @@ export const resources = {
         tokens: "{{formattedCount}} tokens",
         loadFailed: "无法加载会话。",
         sendFailed: "消息发送失败。",
+        standbyCannotSend: "已被 {{name}} 接管，现在发不出去。",
+        standbyCannotSendUnknown: "已被另一台设备接管，现在发不出去。",
         sessionNotOnDesktop: "该会话不在当前连接的设备上。请到拥有它的那台设备上打开。",
         promptTooLarge: "这条消息太长了，无法发送。请将其缩短到 512 KB 以内。",
         noHistory: "还没有消息。",

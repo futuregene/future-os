@@ -272,7 +272,7 @@ export function ComposerControls({ disabled, modelId, modelOptions, modelsEmptyR
                       )
                     : null}
                   <button
-                    className="inline-flex size-7 items-center justify-center rounded-md bg-accent text-white transition-colors hover:bg-accent-hover disabled:bg-accent-disabled"
+                    className="inline-flex size-7 items-center justify-center rounded-md bg-accent-fill text-white transition-colors hover:bg-accent-fill-hover disabled:bg-accent-fill-disabled"
                     disabled={
                       (inputEmpty && attachmentCount === 0)
                       || disabled

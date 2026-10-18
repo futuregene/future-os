@@ -32,7 +32,7 @@ export function SkillIntroBubble({ count, onGo, onDismiss }: SkillIntroBubblePro
       <p className="mt-1.5 text-xs leading-5 text-ink-soft">{t("skillIntro.body")}</p>
       <div className="mt-2.5 flex items-center gap-2">
         <button
-          className="inline-flex h-7 items-center rounded-md bg-accent px-3 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
+          className="inline-flex h-7 items-center rounded-md bg-accent-fill px-3 text-sm font-medium text-white transition-colors hover:bg-accent-fill-hover"
           onClick={onGo}
           type="button"
         >

@@ -3,6 +3,13 @@
     "title": "界面语言",
     "description": "选择应用的显示语言"
   },
+  "theme": {
+    "title": "主题",
+    "description": "浅色、深色，或跟随系统外观",
+    "light": "浅色",
+    "dark": "深色",
+    "system": "跟随系统"
+  },
   "approvalTier": {
     "title": "审批模式",
     "manual": "手动审批",

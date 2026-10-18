@@ -4356,6 +4356,155 @@
             "shot": "m-connection-dropped.png"
           }
         ]
+      },
+      "take-control": {
+        "_comment": "Another paired device holds this desktop. Tapping the yellow dot opens the status sheet, which says who took it over and offers 接管 — no prompt on the list page itself.",
+        "url": "http://localhost:8099/?held=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "document.querySelector('[role=button][aria-label^=\"桌面端连接状态\"]').click()"
+          },
+          {
+            "wait": 1000
+          },
+          {
+            "eval": "(() => {\n  const sheet = document.querySelector('[aria-modal=true]') || document.body;\n  const text = sheet.innerText || '';\n  for (const wanted of ['已连接 · 待命', '已被 实验室的 MacBook Air 接管', '接管会断开 实验室的 MacBook Air', '接管'])\n    if (!text.includes(wanted)) throw new Error('the status sheet does not explain or offer the takeover: missing ' + wanted + ': ' + text.slice(0, 400));\n  const labels = [...sheet.querySelectorAll('[role=button]')].map(el => el.getAttribute('aria-label'));\n  if (!labels.includes('接管')) throw new Error('no takeover action in the sheet: ' + labels.join(' / '));\n  return labels.join(' / ');\n})()"
+          },
+          {
+            "shot": "m-take-control.png"
+          }
+        ]
+      },
+      "tmp-probe": {
+        "url": "http://localhost:8099/?held=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => document.body.innerText.slice(0,600))()"
+          },
+          {
+            "shot": "m-tmp.png"
+          }
+        ]
+      },
+      "take-control-picker": {
+        "_comment": "The desktop picker with the control state on each row: the machine the phone is on is connected but standing by (another device drives it) and offers 接管 right there; the machine that holds it is listed as connected. This is where the user chooses, so it is where the question belongs.",
+        "url": "http://localhost:8099/?held=1&peers=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "桌面选择"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  const sheet = document.querySelector('[aria-modal=true]') || document.body;\n  const text = sheet.innerText || '';\n  if (!text.includes('已被其他设备接管'))\n    throw new Error('the standby machine does not say why it cannot be driven: ' + text.slice(0, 400));\n  const labels = [...sheet.querySelectorAll('[role=button]')].map(el => el.getAttribute('aria-label'));\n  if (!labels.some(label => label && label.startsWith('接管'))) \n    throw new Error('the picker offers no way to take over: ' + labels.join(' / '));\n  return labels.filter(Boolean).join(' / ');\n})()"
+          },
+          {
+            "shot": "m-take-control-picker.png"
+          }
+        ]
+      },
+      "connection-standby-dot": {
+        "_comment": "The status dot while the phone is connected but another device holds the machine: yellow, because nothing can be read or sent — green is reserved for connected and ours to drive.",
+        "url": "http://localhost:8099/?held=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  const dot = document.querySelector('[data-testid=connection-dot]');\n  if (!dot) throw new Error('no connection dot on screen');\n  const color = getComputedStyle(dot).backgroundColor;\n  // The warning dot is yellow; success is green. Name both so a palette\n  // change fails loudly instead of silently approving the wrong one.\n  const warning = getComputedStyle(document.documentElement).getPropertyValue('--x') || '';\n  if (color === 'rgb(34, 197, 94)' || color === 'rgb(22, 163, 74)')\n    throw new Error('a standby connection is painted as healthy green: ' + color + warning);\n  const label = document.querySelector('[role=button][aria-label^=\"桌面端连接状态\"]')?.getAttribute('aria-label');\n  if (!label || !label.includes('待命'))\n    throw new Error('the badge does not say it is in standby: ' + label);\n  return color + ' | ' + label;\n})()"
+          },
+          {
+            "shot": "m-connection-standby-dot.png"
+          }
+        ]
+      },
+      "take-control-list-quiet": {
+        "_comment": "The list page while another device holds the desktop: no banner, no button. The only cue is the yellow dot; the explanation and the action live behind it.",
+        "url": "http://localhost:8099/?held=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  const t = document.body.innerText;\n  for (const unwanted of ['已被 实验室的 MacBook Air 接管', '接管会断开'])\n    if (t.includes(unwanted)) throw new Error('the list page still carries the prompt: ' + unwanted);\n  const labels = [...document.querySelectorAll('[role=button]')].map(el => el.getAttribute('aria-label'));\n  if (labels.includes('接管')) throw new Error('the list page still offers the takeover action: ' + labels.join(' / '));\n  const dot = document.querySelector('[data-testid=connection-dot]');\n  if (!dot) throw new Error('the yellow dot is not on screen, so nothing says anything is wrong');\n  return getComputedStyle(dot).backgroundColor;\n})()"
+          },
+          {
+            "shot": "m-take-control-list-quiet.png"
+          }
+        ]
+      },
+      "take-control-chat": {
+        "_comment": "Inside a conversation while another device holds the desktop: one line above the composer says who took it over and that nothing will send, with the takeover beside it. The dot in the header would say the same, but only to someone who taps it — here the user is looking at the composer.",
+        "url": "http://localhost:8099/?held=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "对话"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "基金申报书的创新点怎么写"
+          },
+          {
+            "wait": 1800
+          },
+          {
+            "eval": "(() => {\n  const t = document.body.innerText;\n  for (const wanted of ['已被 实验室的 MacBook Air 接管，现在发不出去。', '接管'])\n    if (!t.includes(wanted)) throw new Error('nothing in the conversation explains the refusal: missing ' + wanted + ': ' + t.slice(0, 600));\n  const labels = [...document.querySelectorAll('[role=button]')].map(el => el.getAttribute('aria-label'));\n  if (!labels.includes('接管')) throw new Error('the conversation offers no way to take it back: ' + labels.join(' / '));\n  return labels.filter(Boolean).join(' / ');\n})()"
+          },
+          {
+            "shot": "m-take-control-chat.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label=\"稍后再说\"]') || document.body.innerText.includes('工作区')",

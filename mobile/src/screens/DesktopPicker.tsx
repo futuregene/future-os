@@ -1,5 +1,6 @@
 import type { DesktopFilter } from "../remote/mergeSessions";
 import type { PairedDesktop } from "../remote/types";
+import type { MachineSummary } from "../remote/desktopStatus";
 import { Check, ChevronDown, Layers, Monitor, X } from "lucide-react-native";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -30,20 +31,56 @@ export function DesktopPicker({
   onChange,
   onManage,
   desktops,
+  machines,
+  onTakeControl,
 }: {
   filter: DesktopFilter;
   onChange: (filter: DesktopFilter) => void;
   onManage: () => void;
   desktops: PairedDesktop[];
+  /**
+   * Each paired machine's live control state, by desktop id.
+   *
+   * The picker is where the user chooses which machine to work on, so it is also
+   * where "this one is connected but another device is driving it" has to be
+   * visible — otherwise the only way to learn it is to select the machine and
+   * find every action refused.
+   */
+  machines?: MachineSummary[];
+  /** Ask `desktopId` to let this phone drive it. */
+  onTakeControl?: (desktopId: string) => Promise<void> | void;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
   const label = (desktop: PairedDesktop) => desktop.name ?? desktop.desktopId;
   const selected = filter.kind === "desktop"
     ? desktops.find(desktop => desktop.desktopId === filter.desktopId)
     : undefined;
+  const stateOf = (desktopId: string) => machines?.find(machine => machine.desktopId === desktopId);
+  /** Connected, and held by another device. */
+  const standby = (desktopId: string) => {
+    const machine = stateOf(desktopId);
+    return machine?.status === "connected" && machine.control === "standby";
+  };
+  const offline = (desktopId: string) => stateOf(desktopId)?.status === "offline";
+
+  async function take(desktopId: string) {
+    if (!onTakeControl || busy) return;
+    setBusy(desktopId);
+    try {
+      await onTakeControl(desktopId);
+    }
+    catch {
+      // The row keeps its state; the machine's own refusal is what the user
+      // will see if it persists, and a spinner stuck on is worse than a retry.
+    }
+    finally {
+      setBusy(null);
+    }
+  }
 
   function choose(next: DesktopFilter) {
     onChange(next);
@@ -113,6 +150,8 @@ export function DesktopPicker({
             </Pressable>
             {desktops.map((desktop) => {
               const isSelected = filter.kind === "desktop" && filter.desktopId === desktop.desktopId;
+              const isStandby = standby(desktop.desktopId);
+              const isOffline = offline(desktop.desktopId);
               return (
                 <Pressable
                   accessibilityRole="radio"
@@ -128,9 +167,32 @@ export function DesktopPicker({
                   <View style={styles.optionIcon}>
                     <Text style={styles.optionGlyph}>{iconGlyph(desktop.icon)}</Text>
                   </View>
-                  <Text style={[styles.optionLabel, isSelected && styles.optionLabelSelected]}>
-                    {label(desktop)}
-                  </Text>
+                  <View style={styles.optionText}>
+                    <Text style={[styles.optionLabel, isSelected && styles.optionLabelSelected]}>
+                      {label(desktop)}
+                    </Text>
+                    {/* Under the name, not beside it: a row with a second
+                        control in it would make "pick this machine" and "take
+                        it over" look like the same kind of answer. */}
+                    {isStandby ? (
+                      <Text style={styles.optionNote}>{t("connection.machineStandbyHint")}</Text>
+                    ) : isOffline ? (
+                      <Text style={styles.optionNote}>{t("connection.machine.offline")}</Text>
+                    ) : null}
+                  </View>
+                  {isStandby && onTakeControl ? (
+                    <Pressable
+                      accessibilityLabel={`${t("connection.takeControl")} ${label(desktop)}`}
+                      accessibilityRole="button"
+                      disabled={busy !== null}
+                      onPress={() => void take(desktop.desktopId)}
+                      style={({ pressed }) => [styles.takeControl, pressed && styles.pressed]}
+                    >
+                      <Text style={styles.takeControlLabel}>
+                        {busy === desktop.desktopId ? "…" : t("connection.takeControl")}
+                      </Text>
+                    </Pressable>
+                  ) : null}
                   {isSelected ? <Check color={colors.accent} size={16} /> : null}
                 </Pressable>
               );
@@ -197,7 +259,19 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   optionSelected: { backgroundColor: theme.colors.accentSoft },
   optionIcon: { width: 24, alignItems: "center", justifyContent: "center" },
   optionGlyph: { fontSize: theme.font(16) },
-  optionLabel: { flex: 1, minWidth: 0, color: theme.colors.ink, fontSize: theme.font(15) },
+  optionText: { flex: 1, minWidth: 0 },
+  optionLabel: { color: theme.colors.ink, fontSize: theme.font(15) },
+  optionNote: { color: theme.colors.inkMuted, fontSize: theme.font(12), marginTop: 1 },
+  takeControl: {
+    minHeight: 32,
+    justifyContent: "center",
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.pill,
+    backgroundColor: theme.colors.warningSoft,
+    borderWidth: 1,
+    borderColor: theme.colors.warning,
+  },
+  takeControlLabel: { color: theme.colors.ink, fontSize: theme.font(13), fontWeight: "600" },
   optionLabelSelected: { color: theme.colors.accent, fontWeight: "600" },
   separator: {
     height: StyleSheet.hairlineWidth,

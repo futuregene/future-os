@@ -2,6 +2,156 @@
 @import "katex/dist/katex.min.css";
 @config "../../tailwind.config.js";
 
+/* Dark mode is class-based, not `prefers-color-scheme`-based: `lib/theme.ts`
+   puts `.dark` on <html> both for an explicit dark choice and for "follow the
+   system" when the OS is dark. A component therefore never needs a `dark:`
+   variant — it uses a semantic token and the palette flips underneath it. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ── Light palette (the default) ────────────────────────────────────────────
+   Every GUI color is a semantic token from `docs/internals/desktop/COLOR.md`.
+   The dark palette below overrides the same variables, so `bg-surface` and
+   friends stay theme-agnostic at the call site. */
+@theme {
+  /* Neutrals / surfaces */
+  --color-canvas: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-surface-panel: #f8faff;
+  --color-surface-subtle: #f1f4f8;
+  --color-code-surface: #f6f8fa;
+  --color-line: #d9dee7;
+  --color-line-soft: #e8edf4;
+  --color-ink: #172033;
+  --color-ink-soft: #5d687a;
+  --color-ink-muted: #8a94a6;
+  --color-ink-strong: #0f172a;
+
+  /* Accent / interaction. `accent` is the text/icon/dot color; `accent-fill`
+     is the solid button surface (it keeps its light-theme value in the dark
+     palette so the white label on it stays legible). */
+  --color-accent: #2563eb;
+  --color-accent-soft: #e8f0ff;
+  --color-accent-fill: #2563eb;
+  --color-accent-fill-hover: #1d4ed8;
+  --color-accent-fill-disabled: #bfdbfe;
+  --color-accent-pulse: rgba(37, 99, 235, 0.28);
+  --color-focus: #93c5fd;
+
+  /* Search highlights. `search-ink` stays dark in both themes: the match
+     backgrounds are bright, so their text must be dark either way. */
+  --color-search-match: #fde047;
+  --color-search-current: #fb923c;
+  --color-search-ink: #0f172a;
+
+  /* Status tones (text / soft bg / line) */
+  --color-success: #15803d;
+  --color-success-soft: #f0fdf4;
+  --color-success-line: #bbf7d0;
+  --color-danger: #dc2626;
+  --color-danger-soft: #fef2f2;
+  --color-danger-line: #fecaca;
+  --color-danger-fill: #dc2626;
+  --color-warning: #b45309;
+  --color-warning-soft: #fffbeb;
+  --color-warning-line: #fde68a;
+  --color-info: #1d4ed8;
+  --color-info-soft: #eff6ff;
+  --color-info-line: #bfdbfe;
+
+  /* Live "generating" indicator (streaming reply) — amber ping dot. */
+  --color-generating: #f59e0b;
+
+  /* Scrollbar (classic webkit thumb, see below). */
+  --color-scrollbar: #c8ced9;
+  --color-scrollbar-hover: #aeb7c6;
+
+  /* Diff (GitHub style) */
+  --color-diff-add: #e6ffec;
+  --color-diff-add-line: #aadfb8;
+  --color-diff-remove: #ffebe9;
+  --color-diff-remove-line: #ffc9c9;
+
+  /* Overlay / scrim (modal backdrop, see components/ui/Overlay) */
+  --color-overlay: rgba(0, 0, 0, 0.6);
+}
+
+/* ── Dark palette ───────────────────────────────────────────────────────────
+   Surfaces keep the same layering (canvas < surface-panel < surface), text
+   keeps the same hierarchy, and only the values change. `:root.dark` (not
+   `.dark`) outranks the `:root` base block that follows it regardless of rule
+   order — the class lives on <html> anyway. */
+:root.dark {
+  color-scheme: dark;
+
+  /* Neutrals / surfaces */
+  --color-canvas: #0d1116;
+  --color-surface: #161b22;
+  --color-surface-panel: #11161d;
+  --color-surface-subtle: #1d232c;
+  --color-code-surface: #0f141a;
+  --color-line: #2b333d;
+  --color-line-soft: #222a34;
+  --color-ink: #e6ebf2;
+  --color-ink-soft: #a3adbb;
+  --color-ink-muted: #78828f;
+  --color-ink-strong: #f4f7fb;
+
+  /* Accent / interaction */
+  --color-accent: #60a5fa;
+  --color-accent-soft: #16243c;
+  --color-accent-fill: #2563eb;
+  --color-accent-fill-hover: #1d4ed8;
+  --color-accent-fill-disabled: #1e3a5f;
+  --color-accent-pulse: rgba(96, 165, 250, 0.3);
+  --color-focus: #3b82f6;
+
+  /* Search highlights (bright marks, dark ink) */
+  --color-search-match: #fde047;
+  --color-search-current: #fb923c;
+  --color-search-ink: #0f172a;
+
+  /* Status tones */
+  --color-success: #4ade80;
+  --color-success-soft: #10251a;
+  --color-success-line: #1e4a33;
+  --color-danger: #f87171;
+  --color-danger-soft: #2a1517;
+  --color-danger-line: #5b2528;
+  --color-danger-fill: #b91c1c;
+  --color-warning: #fbbf24;
+  --color-warning-soft: #2a2110;
+  --color-warning-line: #5a4419;
+  --color-info: #60a5fa;
+  --color-info-soft: #14233b;
+  --color-info-line: #2a4270;
+
+  /* Activity */
+  --color-generating: #fbbf24;
+
+  /* Scrollbar */
+  --color-scrollbar: #38414d;
+  --color-scrollbar-hover: #4a5563;
+
+  /* Diff */
+  --color-diff-add: #12261a;
+  --color-diff-add-line: #2f6b45;
+  --color-diff-remove: #2b1519;
+  --color-diff-remove-line: #7a3438;
+
+  /* Overlay / scrim */
+  --color-overlay: rgba(0, 0, 0, 0.7);
+
+  /* Shadows deepen with the palette: a light-theme shadow barely reads on a
+     dark surface. Plain custom properties (not the `--shadow-*` theme
+     namespace) so `tailwind.config.js` can point the utilities at them and they
+     stay swappable at runtime. */
+  --shadow-panel:
+    0 1px 2px rgba(0, 0, 0, 0.45), 0 12px 28px rgba(0, 0, 0, 0.35);
+  --shadow-dialog: 0 24px 60px rgba(0, 0, 0, 0.55);
+  --shadow-sidebar-divider: inset -8px 0 16px -16px rgba(0, 0, 0, 0.55);
+  --shadow-sidebar-floating: 6px 0 16px rgba(0, 0, 0, 0.3);
+}
+
 /* Load-older button entrance: a quick pop with a small overshoot bounce so the
    "pause + confirm" affordance is unmissable when it settles at the top. */
 @keyframes pop-in {
@@ -33,7 +183,7 @@
     box-shadow: 0 0 0 0 transparent;
   }
   50% {
-    box-shadow: 0 0 0 3px theme(colors.accent-pulse);
+    box-shadow: 0 0 0 3px var(--color-accent-pulse);
   }
 }
 
@@ -60,18 +210,19 @@
 }
 
 ::highlight(thread-search-match) {
-  color: theme(colors.ink-strong);
-  background: theme(colors.search-match);
+  color: var(--color-search-ink);
+  background: var(--color-search-match);
 }
 
 ::highlight(thread-search-current) {
-  color: theme(colors.ink-strong);
-  background: theme(colors.search-current);
+  color: var(--color-search-ink);
+  background: var(--color-search-current);
 }
 
 :root {
-  color: theme(colors.ink);
-  background: theme(colors.canvas);
+  color-scheme: light;
+  color: var(--color-ink);
+  background: var(--color-canvas);
   font-family:
     -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
     "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC",
@@ -81,6 +232,13 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+
+  /* Light shadows (the dark overrides live in the `.dark` block above). */
+  --shadow-panel:
+    0 1px 2px rgba(23, 32, 51, 0.06), 0 12px 28px rgba(23, 32, 51, 0.07);
+  --shadow-dialog: 0 24px 60px rgba(15, 23, 42, 0.18);
+  --shadow-sidebar-divider: inset -8px 0 16px -16px rgba(23, 32, 51, 0.15);
+  --shadow-sidebar-floating: 6px 0 16px rgba(23, 32, 51, 0.05);
 }
 
 @layer base {
@@ -104,7 +262,7 @@ body,
    window narrows — see `canShow*Panel` in components/layout/hooks/panelGeometry.ts. */
 body {
   overflow: hidden;
-  background: theme(colors.canvas);
+  background: var(--color-canvas);
 }
 
 @layer base {
@@ -132,14 +290,14 @@ body {
 }
 
 :not(.scrollbar-hover)::-webkit-scrollbar-thumb {
-  background: theme(colors.scrollbar);
+  background: var(--color-scrollbar);
   border: 3px solid transparent;
   border-radius: 999px;
   background-clip: padding-box;
 }
 
 :not(.scrollbar-hover)::-webkit-scrollbar-thumb:hover {
-  background: theme(colors.scrollbar-hover);
+  background: var(--color-scrollbar-hover);
   border: 3px solid transparent;
   background-clip: padding-box;
 }
@@ -164,14 +322,12 @@ body {
 
 /* The embedded terminal's IME preedit box.
    xterm ships `background: #000; color: #fff` for `.composition-view` — a
-   dark-theme default — while this app is light-only (see
-   `features/terminal/theme.ts`: a dark terminal in a white window reads as a
-   rendering bug). Typing Chinese therefore painted a black rectangle with white
-   characters over the terminal while the IME was composing. Paint it with the
-   terminal's own palette instead, so the preedit looks like the text being
-   typed. The selector is one level deeper than xterm's to win regardless of
-   stylesheet order. */
+   dark-theme default that ignored the app palette. Typing Chinese therefore
+   painted a black rectangle with white characters over a light terminal while
+   the IME was composing. Paint it with the terminal's own palette instead, so
+   the preedit looks like the text being typed. The selector is one level deeper
+   than xterm's to win regardless of stylesheet order. */
 [data-component="terminal"] .xterm .composition-view {
-  background: theme(colors.surface);
-  color: theme(colors.ink);
+  background: var(--color-surface);
+  color: var(--color-ink);
 }

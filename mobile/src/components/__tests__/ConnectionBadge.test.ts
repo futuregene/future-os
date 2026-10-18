@@ -53,8 +53,13 @@ const render = (
   presentation = ready,
   active = true,
   machines?: MachineSummary[],
+  standby = false,
+  holder: { name?: string } | null = null,
+  onTakeControl?: (desktopId: string) => Promise<void>,
 ) => {
-  const element = createElement(ConnectionBadge, { presentation, onReconnect, onUnpair, active, machines });
+  const element = createElement(ConnectionBadge, {
+    presentation, onReconnect, onUnpair, active, machines, standby, holder, onTakeControl,
+  });
   act(() => {
     tree.update(element);
   });
@@ -209,6 +214,101 @@ test("the dot is green only when every machine is connected", () => {
   // app renders from.
   render(ready, true, []);
   expect(dotColor()).toBe(lightColors.success);
+});
+
+test("a connected machine another device holds is yellow, not green", () => {
+  // Connected is not the same as usable. Painting a standby machine green told
+  // the user everything was fine while every command came back refused.
+  const held: MachineSummary[] = [{
+    desktopId: "a",
+    label: "a",
+    active: true,
+    status: "connected",
+    control: "standby",
+  }];
+  render(ready, true, held);
+  expect(dotColor()).toBe(lightColors.warningDot);
+
+  // A set where one machine is ours to drive is still green: the phone has
+  // somewhere to work.
+  render(ready, true, [...held, { desktopId: "b", label: "b", active: false, status: "connected", control: "active" }]);
+  expect(dotColor()).toBe(lightColors.success);
+});
+
+test("a standby connection says so instead of claiming to be simply connected", () => {
+  render(ready, true, [{ desktopId: "a", label: "a", active: true, status: "connected", control: "standby" }], true, {
+    name: "Lab MacBook Air",
+  });
+
+  expect(dotColor()).toBe(lightColors.warningDot);
+  open();
+  expect(text()).toContain("connection.connectedStandby");
+  // …and names who has it, so the user knows what taking it back would cost.
+  expect(text()).toContain("connection.controlHeldBy");
+});
+
+test("the sheet explains a standby machine by name and offers the takeover there", () => {
+  // The prompt used to sit on the list page; it belongs behind the dot, next to
+  // the explanation of why nothing works.
+  const take = jest.fn().mockResolvedValue(undefined);
+  render(
+    ready,
+    true,
+    [{ desktopId: "a", label: "Lab MacBook Air", active: true, status: "connected", control: "standby" }],
+    true,
+    { name: "Lab MacBook Air" },
+    take,
+  );
+  open();
+
+  // Passive voice, and the name is the one that would be disconnected.
+  expect(text()).toContain("connection.controlHeldBy");
+  const button = tree.root.findAll(node =>
+    typeof node.props.label === "string" && node.props.label === "connection.takeControl")[0]!;
+  expect(button).toBeDefined();
+  act(() => button.props.onPress());
+  expect(take).toHaveBeenCalledWith("a");
+});
+
+test("a machine this phone drives is not offered a takeover", () => {
+  render(
+    ready,
+    true,
+    [{ desktopId: "a", label: "Lab MacBook Air", active: true, status: "connected", control: "active" }],
+    false,
+    null,
+    jest.fn(),
+  );
+  open();
+
+  const buttons = tree.root.findAll(node =>
+    typeof node.props.label === "string" && node.props.label === "connection.takeControl");
+  expect(buttons).toHaveLength(0);
+});
+
+test("a standby machine's row wears yellow, and its takeover acts on that row", () => {
+  const take = jest.fn().mockResolvedValue(undefined);
+  render(
+    ready,
+    true,
+    [
+      { desktopId: "a", label: "a", active: true, status: "connected", control: "active" },
+      { desktopId: "b", label: "b", active: false, status: "connected", control: "standby" },
+    ],
+    true,
+    null,
+    take,
+  );
+  open();
+
+  expect(machineDotColor("b")).toBe(lightColors.warningDot);
+  expect(machineDotColor("a")).toBe(lightColors.success);
+  const buttons = tree.root.findAll(node =>
+    typeof node.props.label === "string" && node.props.label === "connection.takeControl");
+  expect(buttons).toHaveLength(1);
+  act(() => buttons[0]!.props.onPress());
+  // The row's own machine, not the one the phone happens to be reading.
+  expect(take).toHaveBeenCalledWith("b");
 });
 
 test("the partial dot is yellow while the title under it stays readable", () => {

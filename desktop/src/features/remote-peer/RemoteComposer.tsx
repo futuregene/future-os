@@ -780,7 +780,7 @@ export function RemoteComposer({
             : (
                 <button
                   aria-label={busy ? t("sending") : t("send")}
-                  className="inline-flex size-7 items-center justify-center rounded-md bg-accent text-white transition-colors hover:bg-accent-hover disabled:bg-accent-disabled"
+                  className="inline-flex size-7 items-center justify-center rounded-md bg-accent-fill text-white transition-colors hover:bg-accent-fill-hover disabled:bg-accent-fill-disabled"
                   disabled={(!text.trim() && uploads.length === 0) || busy || uploading || evaluating}
                   title={busy ? t("sending") : t("send")}
                   type="submit"

@@ -20,6 +20,15 @@ export interface MachineSummary {
   /** The machine the phone is talking to for the open conversation. */
   active: boolean;
   status: MachineStatus;
+  /**
+   * Whether this phone may drive that machine.
+   *
+   * A machine can answer every heartbeat and still not be ours to command:
+   * another paired device is in front of it. That is a different fact from
+   * `status` — "connected, but not driving" — and the two must not be collapsed,
+   * or a phone that was just displaced reads as fully working.
+   */
+  control?: "active" | "standby";
 }
 
 /** i18n key for a status, under the popover's rows. */
@@ -65,27 +74,38 @@ export function activeMachineStatus(
 }
 
 /**
- * Whether every listed machine is connected — the badge's green condition.
+ * Whether every listed machine is connected — the badge's green condition —
+ * and whether any of them may actually be driven.
  *
  * `all` is what the dot needs: a phone paired to three desktops is "connected"
  * only when all three answer, and one of them being down is a state the reader
  * has to see rather than a detail hidden behind the machine that happens to be
  * the active one.
+ *
+ * `drivable` is the second axis. A machine that answers but is held by another
+ * device is connected and *not usable*: the phone can read nothing from it and
+ * send nothing to it. Every one of them being in that state is not "connected"
+ * in any sense the user cares about, which is why the dot goes yellow for it
+ * rather than green.
  */
 export interface MachinesConnected {
   all: boolean;
   any: boolean;
   connected: number;
   total: number;
+  /** Machines this phone may drive: connected and not standing by. */
+  drivable: number;
 }
 
 export function machinesConnected(machines: readonly MachineSummary[]): MachinesConnected {
-  const connected = machines.filter(machine => machine.status === "connected").length;
+  const answered = machines.filter(machine => machine.status === "connected");
+  const connected = answered.length;
   return {
     all: machines.length > 0 && connected === machines.length,
     any: connected > 0,
     connected,
     total: machines.length,
+    drivable: answered.filter(machine => machine.control !== "standby").length,
   };
 }
 

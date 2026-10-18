@@ -68,6 +68,8 @@ class FakeSocket {
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
+    // xterm exposes its live options bag; the view repaints the theme through it.
+    options = {};
     rows = 24;
     cols = 80;
     buffer = { active: { viewportY: 0 } };

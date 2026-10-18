@@ -1,6 +1,8 @@
 import type { BundledLanguage, BundledTheme, HighlighterGeneric } from "shiki";
+import type { ResolvedTheme } from "../../lib/theme";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { bundledLanguagesInfo, createHighlighter } from "shiki";
+import { useResolvedTheme } from "../../lib/theme";
 
 type CodeHighlighter = HighlighterGeneric<BundledLanguage, BundledTheme>;
 
@@ -19,7 +21,12 @@ export interface HighlightResult {
   fgColor: string;
 }
 
-const THEME: BundledTheme = "github-light";
+// Shiki theme per app theme. Both are bundled up front (they are a few KB of
+// JSON) so switching the app theme never leaves code blocks on the old palette.
+const THEMES: Record<ResolvedTheme, BundledTheme> = {
+  light: "github-light",
+  dark: "github-dark",
+};
 
 let highlighterPromise: Promise<CodeHighlighter> | null = null;
 let cachedHighlighter: CodeHighlighter | null = null;
@@ -73,7 +80,7 @@ function getHighlighter(): Promise<CodeHighlighter> {
     // (see ensureLanguageLoaded) instead of paying to parse all of them upfront
     // when the first code block appears.
     highlighterPromise = createHighlighter({
-      themes: [THEME],
+      themes: [THEMES.light, THEMES.dark],
       langs: [],
     }).then((highlighter) => {
       cachedHighlighter = highlighter;
@@ -145,6 +152,9 @@ export function useCodeHighlighter() {
   // a load that finishes between this block's first render and its subscription
   // still triggers a re-render — no missed notification.
   const version = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  // Components re-render when the app theme flips, and the token colors below
+  // come from the matching Shiki theme.
+  const resolvedTheme = useResolvedTheme();
 
   useEffect(() => {
     // Kick off the shared highlighter lazily on first mount; getHighlighter is
@@ -166,7 +176,8 @@ export function useCodeHighlighter() {
         return null;
       }
 
-      const cacheKey = `${normalizedLang}\u0000${code}`;
+      const shikiTheme = THEMES[resolvedTheme];
+      const cacheKey = `${shikiTheme}\u0000${normalizedLang}\u0000${code}`;
       const cached = highlightCache.get(cacheKey);
       if (cached) {
         // LRU touch.
@@ -186,10 +197,10 @@ export function useCodeHighlighter() {
 
         const tokens = highlighter.codeToTokens(code, {
           lang: normalizedLang,
-          theme: THEME,
+          theme: shikiTheme,
         });
 
-        const theme = highlighter.getTheme(THEME);
+        const theme = highlighter.getTheme(shikiTheme);
         const fgColor = typeof theme.fg === "string" ? theme.fg : "#000000";
 
         const lines: HighlightedLine[] = tokens.tokens.map(line => ({
@@ -219,7 +230,7 @@ export function useCodeHighlighter() {
     // the highlighter/grammar loads gives `highlight` a new identity so memoized
     // consumers re-run against the now-ready highlighter or language.
     // eslint-disable-next-line react/exhaustive-deps
-    [version],
+    [version, resolvedTheme],
   );
 
   return { highlight, isLoaded: cachedHighlighter !== null };

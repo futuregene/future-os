@@ -17,10 +17,11 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef } from "react";
+import { getResolvedTheme, useResolvedTheme } from "../../lib/theme";
 import { connectTicket, connectUrl, TerminalApiError, terminalServer, updateTerminal } from "./client";
 import { terminalKeyPolicy } from "./keyPolicy";
 import { installMacInputWorkaround } from "./macInput";
-import { TERMINAL_THEME } from "./theme";
+import { terminalTheme } from "./theme";
 import "@xterm/xterm/css/xterm.css";
 
 /** How long a resize waits for the drag to settle before telling the server. */
@@ -56,6 +57,10 @@ export interface TerminalViewProps {
 export function TerminalView(props: TerminalViewProps) {
   const { tab, autoFocus } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // The xterm instance, so a theme switch can repaint an already-open terminal
+  // without re-running the mount effect (which would drop the socket).
+  const terminalRef = useRef<Terminal | null>(null);
+  const resolvedTheme = useResolvedTheme();
   // Latest callbacks without re-running the mount effect, which would tear the
   // socket down and reconnect on every parent render.
   const handlersRef = useRef(props);
@@ -92,8 +97,9 @@ export function TerminalView(props: TerminalViewProps) {
       scrollback: SCROLLBACK,
       allowTransparency: false,
       convertEol: false,
-      theme: TERMINAL_THEME,
+      theme: terminalTheme(getResolvedTheme()),
     });
+    terminalRef.current = terminal;
     disposables.push(terminal);
     // Two keys belong to someone else. The panel shortcut is the app's (see
     // `useTerminalPanel`), and while an IME is composing every key belongs to
@@ -406,6 +412,7 @@ export function TerminalView(props: TerminalViewProps) {
       // of output is part of what the next mount restores.
       flush(() => {
         persist();
+        terminalRef.current = null;
         terminal.dispose();
       });
     };
@@ -414,13 +421,22 @@ export function TerminalView(props: TerminalViewProps) {
     // eslint-disable-next-line react/exhaustive-deps
   }, [id]);
 
+  // Repaint an open terminal when the app theme changes. xterm keeps its own
+  // palette, so the CSS-variable flip does not reach it.
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (terminal) {
+      terminal.options.theme = terminalTheme(resolvedTheme);
+    }
+  }, [resolvedTheme]);
+
   return (
     <div
       ref={containerRef}
       data-component="terminal"
       data-terminal-root={id}
       dir="ltr"
-      className="h-full w-full overflow-hidden bg-white px-3 py-2"
+      className="h-full w-full overflow-hidden bg-surface px-3 py-2"
     />
   );
 }

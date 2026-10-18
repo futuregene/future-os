@@ -373,13 +373,47 @@ pub(super) async fn install_host_with_creds(
     if !real_agent {
         ensure_mock_agent();
     }
+    let slot = install_slot(creds, &broker, true).await;
+    // The fixture is the machine's only device, so it is the controller; the
+    // command gate is real and would otherwise refuse every command.
+    SUPERVISOR.restore_active(Some(slot.pair_id.clone()));
+    InstalledHost {
+        _home: home,
+        pair_id: slot.pair_id,
+        creds: slot.creds,
+    }
+}
+
+/// One device's host-side runtime, installed.
+///
+/// Split out of [`install_host_with_creds`] so a test can install *several*
+/// devices on one machine: the process-global `HOME` and the store belong to
+/// the caller (`HomeGuard` is exclusive), while a slot belongs to one pairing.
+pub(super) struct InstalledSlot {
+    pub(super) pair_id: String,
+    pub(super) creds: PairingCreds,
+}
+
+/// Install the production bridge for one device on `broker`.
+///
+/// `confirmed` is the pairing's "this device has paired before" flag. A real
+/// first connection has it `false`, and the first secure handshake that
+/// completes then claims control of the machine; a test that wants a device to
+/// behave as already-established passes `true`, and that device's handshakes
+/// never move the pointer (which is how a reconnect behaves).
+pub(super) async fn install_slot(
+    creds: PairingCreds,
+    broker: &Broker,
+    confirmed: bool,
+) -> InstalledSlot {
     let pair_id = creds.pair_id.clone();
     let _shared = super::supervisor::shared_runtime(&creds, true, false);
     let bridge_client = connect(broker.url(), &format!("realnet-host-{pair_id}")).await;
     let bridge_instance_id = format!("bridge_{}", unique("realnet-host"));
+    let confirmed_flag = Arc::new(AtomicBool::new(confirmed));
     let handshake = HandshakeState::new(
         creds.clone(),
-        Arc::new(AtomicBool::new(true)),
+        confirmed_flag.clone(),
         bridge_instance_id.clone(),
     );
     let mut tasks = build_transport(&bridge_client, &pair_id, &handshake, new_reply_slots())
@@ -409,25 +443,18 @@ pub(super) async fn install_host_with_creds(
             web_lan_url: None,
             pairing_code: None,
             pairing_code_expires_at: None,
-            pairing_confirmed: Arc::new(AtomicBool::new(true)),
+            pairing_confirmed: confirmed_flag,
         },
     );
     assert!(
         previous.is_none(),
-        "a previous fixture leaked SUPERVISOR.state"
+        "a previous fixture leaked SUPERVISOR.state for {pair_id}"
     );
-    // The fixture is the machine's only device, so it is the controller; the
-    // command gate is real and would otherwise refuse every command.
-    SUPERVISOR.restore_active(Some(pair_id.clone()));
     tasks.candidate_tasks.installed();
     // The bridge publishes what the Agent stream observer hands it; without
     // this sink the phone would see commands answered and no events at all.
     crate::remote_host::attach_events();
-    InstalledHost {
-        _home: home,
-        pair_id,
-        creds,
-    }
+    InstalledSlot { pair_id, creds }
 }
 
 impl Drop for E2e {
@@ -2541,5 +2568,630 @@ mod tests {
                 || message.contains("the broker must relay exactly"),
             "the baseline reading ran and the window rejected the monitor: {message}"
         );
+    }
+}
+
+/// Two devices on one machine, on a real broker.
+///
+/// The three invariants this machine's arbitration promises exist *only* while
+/// two devices are online at once — with one device connected, `superseded` and
+/// "never reclaim by yourself" have nothing to arbitrate. On the in-process
+/// `FakeNats` they hold vacuously: that fixture has a subscription table and
+/// little else, and the ping-pong rule depends precisely on what it does not
+/// model — real connection lifetimes, real delivery of a fire-and-forget
+/// `state.control` publish, real per-connection ordering. So this module runs
+/// the same production paths against a real `nats-server` when one is offered.
+///
+/// It is not a hard dependency: without `VERIFY_E2E_NATS_URL` the test skips
+/// and prints why (see [`real_broker_or_skip`]). Start one with
+/// `nats-server -a 127.0.0.1 -p <free>` and pass its URL.
+///
+/// What this still does **not** cover, and must not be reported as covered:
+/// the platform's JWT issuance (a local broker does not check the platform's
+/// tokens, so "does a *new* device get a valid credential" is untested here),
+/// and two real devices across a network (NAT/relay paths, a phone losing
+/// signal and coming back). Those need a deployment and two machines.
+#[cfg(test)]
+mod multi_device {
+    use super::*;
+
+    /// How long a "wait until X" is allowed to take. Generous enough for a
+    /// loaded CI box, bounded so a regression fails instead of hanging.
+    const DEADLINE: Duration = Duration::from_secs(20);
+
+    /// The broker this machine can use, or `None` after saying why it skipped.
+    fn real_broker_or_skip() -> Option<Broker> {
+        match std::env::var("VERIFY_E2E_NATS_URL") {
+            Ok(url) if !url.trim().is_empty() => Some(Broker::Real { url }),
+            _ => {
+                eprintln!(
+                    "SKIP verify_multi_device_real_broker: VERIFY_E2E_NATS_URL is not set, so \
+                     there is no real broker to check multi-device arbitration on. Run \
+                     `nats-server -a 127.0.0.1 -p <free>` and set VERIFY_E2E_NATS_URL=nats://127.0.0.1:<free> \
+                     to run it. (The in-process FakeNats cannot stand in for this: it is the \
+                     fixture whose thinness this test exists to get out from under.)"
+                );
+                None
+            }
+        }
+    }
+
+    /// One client: its own connection, its own secure channel to its own
+    /// bridge, and a subscription to the control packet the machine sends when
+    /// the device loses or gains the machine.
+    struct DeviceLink {
+        client: async_nats::Client,
+        channel: future_remote_crypto::Channel,
+        pair_id: String,
+        control: async_nats::Subscriber,
+        /// The client's Noise static key, kept so a reconnect can prove it is
+        /// the same device instead of pairing again.
+        private: [u8; 32],
+    }
+
+    impl DeviceLink {
+        /// Connect and pair, exactly as a phone does: subscribe first (a
+        /// supersede notice is fire-and-forget, so a subscription opened after
+        /// the handshake would legitimately never see it), then run the
+        /// production secure handshake.
+        ///
+        /// `previous` is the pairing identity of an earlier connection to the
+        /// same device. With it, this is a **reconnect**: the invitation cannot
+        /// be used twice, and a device coming back knows the desktop's static
+        /// key, so it runs the real reconnect pattern instead of pairing again.
+        async fn open(
+            broker_url: &str,
+            creds: &PairingCreds,
+            name: &str,
+            previous: Option<&DeviceLink>,
+        ) -> Self {
+            let pair_id = creds.pair_id.clone();
+            let client = connect(broker_url, &format!("{name}-{pair_id}")).await;
+            let control = client
+                .subscribe(format!("p.{pair_id}.state.control"))
+                .await
+                .expect("subscribe to the control channel");
+            // A real round trip: the SUB must be registered by the server before
+            // anything is published to it, or the notice is silently lost and
+            // the test would be asserting on a race rather than on the machine.
+            let probe = format!("p.{pair_id}.state.control.verify-sub-probe");
+            let mut echo = client.subscribe(probe.clone()).await.expect("probe sub");
+            client
+                .publish(probe.clone(), "probe".into())
+                .await
+                .expect("probe publish");
+            tokio::time::timeout(Duration::from_secs(5), echo.next())
+                .await
+                .expect("the broker must echo the subscription probe")
+                .expect("probe subscription ended");
+            echo.unsubscribe().await.expect("probe unsubscribe");
+            let (mut channel, private) = match previous {
+                None => {
+                    let (channel, private) =
+                        super::super::test_support::open_secure_channel_keeping_identity(
+                            &client,
+                            &invitation(creds),
+                            &pair_id,
+                        )
+                        .await;
+                    (channel, private)
+                }
+                Some(previous) => (
+                    super::super::test_support::reconnect_secure_channel(
+                        &client,
+                        &pair_id,
+                        &creds.desktop_id,
+                        &creds.secure.as_ref().expect("v2 identity").public_key,
+                        &previous.private,
+                    )
+                    .await,
+                    previous.private,
+                ),
+            };
+            // Declare readiness sealed, as the real client does: this is also
+            // what activates the desktop's channel for sealed traffic.
+            let subject = format!("p.{pair_id}.cmd.ready");
+            let ready = json!({ "type": "secure_ready" });
+            let wire = channel
+                .seal(
+                    &subject,
+                    &serde_json::to_vec(&ready).expect("ready serializes"),
+                )
+                .expect("ready seals");
+            let reply = client
+                .request(subject.clone(), wire.into())
+                .await
+                .expect("ready reply");
+            let _ = reply;
+            Self {
+                client,
+                channel,
+                pair_id,
+                control,
+                private,
+            }
+        }
+
+        /// Reconnect as the same device, without pairing again.
+        async fn reconnect(&self, broker_url: &str, creds: &PairingCreds) -> Self {
+            Self::open(broker_url, creds, "md-reconnect", Some(self)).await
+        }
+
+        /// One sealed business command, answered by the bridge. The error string
+        /// is what the *wire* said, which is the point: a standby device must
+        /// learn it from the machine, not from a flag this test can read.
+        async fn command(&mut self, command: Value) -> Value {
+            let subject = format!("p.{}.cmd.rpc", self.pair_id);
+            let wire = self
+                .channel
+                .seal(
+                    &subject,
+                    &serde_json::to_vec(&command).expect("command serializes"),
+                )
+                .expect("command seals");
+            let reply = self
+                .client
+                .request(subject.clone(), wire.clone().into())
+                .await
+                .expect("bridge reply");
+            let context =
+                future_remote_crypto::reply_context(&subject, &wire).expect("reply context");
+            let plaintext = self
+                .channel
+                .open(&context, &reply.payload)
+                .expect("reply decrypts");
+            serde_json::from_slice(&plaintext).expect("reply is JSON")
+        }
+
+        /// Whether this device's business commands are accepted right now.
+        async fn may_drive(&mut self, label: &str) -> bool {
+            let reply = self
+                .command(json!({ "id": unique(label), "type": "list_sessions" }))
+                .await;
+            if reply["success"] == json!(true) {
+                true
+            } else {
+                assert_eq!(
+                    reply["error"],
+                    json!("superseded"),
+                    "{label} was refused, but not as superseded: {reply}"
+                );
+                false
+            }
+        }
+
+        /// Wait for a control packet saying `expected`.
+        ///
+        /// Packets already queued are examined rather than assumed absent: the
+        /// machine also announces a device's *own* arrival on this channel, so
+        /// an earlier `active` may be sitting in front of the `standby` this
+        /// waits for.
+        async fn await_control(&mut self, expected: &str) {
+            let deadline = tokio::time::Instant::now() + DEADLINE;
+            loop {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                let message = tokio::time::timeout(remaining, self.control.next())
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!("timed out waiting for a `{expected}` control packet")
+                    })
+                    .expect("control subscription ended");
+                let plaintext = self
+                    .channel
+                    .open(message.subject.as_str(), &message.payload)
+                    .expect("control packet decrypts");
+                let body: Value = serde_json::from_slice(&plaintext).expect("control is JSON");
+                if body["control"] == json!(expected) {
+                    return;
+                }
+            }
+        }
+
+        /// The control state named in the device's own `get_presence` answer —
+        /// a second, independent path to the same fact (the heartbeat-driven
+        /// payload, not the dedicated channel).
+        async fn presence(&mut self) -> Value {
+            let reply = self
+                .command(json!({ "id": unique("presence"), "type": "get_presence" }))
+                .await;
+            assert_eq!(
+                reply["success"],
+                json!(true),
+                "get_presence refused: {reply}"
+            );
+            reply["data"].clone()
+        }
+
+        async fn presence_control(&mut self) -> String {
+            self.presence()
+                .await
+                .get("control")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| panic!("no control field in presence"))
+        }
+
+        /// Declare what this device is, the way a real client does on
+        /// `secure_ready`. The machine records it so a *standby* device can be
+        /// told whom it would displace.
+        async fn declare_identity(&mut self, name: &str, kind: &str) {
+            let subject = format!("p.{}.cmd.ready", self.pair_id);
+            let body = json!({
+                "type": "secure_ready",
+                "deviceName": name,
+                "deviceKind": kind,
+            });
+            let wire = self
+                .channel
+                .seal(
+                    &subject,
+                    &serde_json::to_vec(&body).expect("ready serializes"),
+                )
+                .expect("ready seals");
+            let reply = self
+                .client
+                .request(subject.clone(), wire.into())
+                .await
+                .expect("ready reply");
+            let _ = reply;
+        }
+
+        /// Prove a subscription is registered on the broker before anything is
+        /// published to it: a publish that overtakes the SUB is dropped, never
+        /// retried, and the test would then be asserting on a race.
+        async fn await_live(&self, subject: &str) {
+            let probe = format!("{subject}.verify-sub-probe");
+            let mut echo = self
+                .client
+                .subscribe(probe.clone())
+                .await
+                .expect("probe subscribe");
+            self.client
+                .publish(probe.clone(), "probe".into())
+                .await
+                .expect("probe publish");
+            tokio::time::timeout(Duration::from_secs(5), echo.next())
+                .await
+                .expect("the broker must echo the subscription probe")
+                .expect("probe subscription ended");
+            echo.unsubscribe().await.expect("probe unsubscribe");
+        }
+
+        /// Whether any control packet arrives within `window`, without
+        /// assuming which one. Used for "the machine said *nothing*".
+        async fn control_pending(&mut self, window: Duration) -> bool {
+            tokio::time::timeout(window, self.control.next())
+                .await
+                .map(|message| message.is_some())
+                .unwrap_or(false)
+        }
+
+        /// Receive one event if one arrives within `window`.
+        async fn event_within(
+            &mut self,
+            subscription: &mut async_nats::Subscriber,
+            window: Duration,
+        ) -> bool {
+            tokio::time::timeout(window, subscription.next())
+                .await
+                .map(|message| message.is_some())
+                .unwrap_or(false)
+        }
+    }
+
+    /// Two devices installed on one machine, plus the machine's store.
+    struct TwoDeviceMachine {
+        _home: HomeGuard,
+        a: InstalledSlot,
+        b: InstalledSlot,
+    }
+
+    impl Drop for TwoDeviceMachine {
+        fn drop(&mut self) {
+            // The machine stops serving both devices, and the next fixture must
+            // start from a machine with no devices and no controller.
+            stop();
+        }
+    }
+
+    async fn machine_with_two_devices(broker: &Broker, label: &str) -> TwoDeviceMachine {
+        let home = HomeGuard::new(label);
+        init_store();
+        ensure_mock_agent();
+        // Neither device has paired before, so each one's *first* secure
+        // handshake is the act that puts it in front of the machine — the
+        // production path a phone takes when it scans a code.
+        let a = install_slot(v2_creds(broker), broker, false).await;
+        let b = install_slot(v2_creds(broker), broker, false).await;
+        // Two connected devices and no explicit choice: nobody drives. The
+        // machine must not guess which one the user meant.
+        SUPERVISOR.restore_active(None);
+        TwoDeviceMachine { _home: home, a, b }
+    }
+
+    /// Poll until `check` holds, or fail naming what never happened.
+    async fn until(label: &str, mut check: impl FnMut() -> bool) {
+        let deadline = tokio::time::Instant::now() + DEADLINE;
+        while tokio::time::Instant::now() < deadline {
+            if check() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("timed out after {DEADLINE:?} waiting for: {label}");
+    }
+
+    /// Publish one live event for `session`, so a test's subscription and the
+    /// event it waits for name the same lane.
+    fn publish_one_event(session: &str, marker: &str) {
+        super::publish_event(
+            session,
+            "thinking_delta",
+            &json!({ "text": marker }).to_string(),
+            "run-md",
+            0,
+            0,
+            &format!("{session}:run-md:0:0"),
+            "2026-10-18T00:00:00Z",
+            0,
+            0,
+        );
+    }
+
+    /// The arbitration invariants, on a real broker, with two real bridges and
+    /// two real client connections.
+    ///
+    /// The requested semantics: connecting does **not** displace anyone. A
+    /// second device comes up in standby, is told who holds the machine, and its
+    /// user decides; only an explicit `takeover` moves control. A device that
+    /// lost the machine never takes it back by reconnecting.
+    #[tokio::test]
+    async fn a_second_device_is_told_who_holds_the_machine_and_only_takes_it_when_asked() {
+        let Some(broker) = real_broker_or_skip() else {
+            return;
+        };
+        let machine = machine_with_two_devices(&broker, "verify-multi-device").await;
+        let broker_url = broker.url().to_string();
+
+        // ── A connects: the machine is free, so A drives it ─────────────────
+        let mut a = DeviceLink::open(&broker_url, &machine.a.creds, "md-a", None).await;
+        a.declare_identity("A's phone", "mobile").await;
+        until("A holds the machine after pairing", || {
+            SUPERVISOR.in_control(&machine.a.pair_id)
+        })
+        .await;
+        assert_eq!(a.presence_control().await, "active");
+        assert!(
+            a.presence().await["holder"].is_null(),
+            "the controller is not displacing anybody"
+        );
+
+        // Live events reach the device that is driving.
+        let a_evt_subject = format!("p.{}.evt.sess_md_a", machine.a.pair_id);
+        let mut a_events = a
+            .client
+            .subscribe(a_evt_subject.clone())
+            .await
+            .expect("A subscribes to the live lane");
+        a.await_live(&a_evt_subject).await;
+        publish_one_event("sess_md_a", "to-a");
+        assert!(
+            a.event_within(&mut a_events, DEADLINE).await,
+            "the device in control must receive live events"
+        );
+
+        // ── ① B connects ⇒ nobody is displaced ─────────────────────────────
+        let mut b = DeviceLink::open(&broker_url, &machine.b.creds, "md-b", None).await;
+        b.declare_identity("B's laptop", "desktop").await;
+        // The handshake has been answered by now, so arbitration, if any, ran.
+        assert!(
+            SUPERVISOR.in_control(&machine.a.pair_id),
+            "B's mere connection displaced A from the machine"
+        );
+        assert!(
+            !SUPERVISOR.in_control(&machine.b.pair_id),
+            "connecting must not be the same act as taking over"
+        );
+        // What B's user gets to see: standby, and who holds it.
+        assert_eq!(b.presence_control().await, "standby");
+        let holder = b.presence().await["holder"].clone();
+        assert_eq!(
+            holder["name"],
+            json!("A's phone"),
+            "the standby device must be told who it would displace: {holder}"
+        );
+        assert_eq!(holder["pairId"], json!(machine.a.pair_id));
+        // B is refused over the wire, not by this process's opinion.
+        assert!(!b.may_drive("b-before-consent").await);
+        // A was told nothing and keeps driving: no notice, no break.
+        assert!(a.may_drive("a-after-b-connected").await);
+        assert_eq!(a.presence_control().await, "active");
+
+        // Events still belong to A, and never reach B.
+        let b_evt_subject = format!("p.{}.evt.sess_md_b", machine.b.pair_id);
+        let mut b_events = b
+            .client
+            .subscribe(b_evt_subject.clone())
+            .await
+            .expect("B subscribes to its own lane");
+        b.await_live(&b_evt_subject).await;
+        publish_one_event("sess_md_a", "to-a-again");
+        assert!(
+            a.event_within(&mut a_events, DEADLINE).await,
+            "the controller must keep receiving live events"
+        );
+        assert!(
+            !b.event_within(&mut b_events, Duration::from_millis(300))
+                .await,
+            "a standby device must not receive the machine's events"
+        );
+        assert!(
+            !a.control_pending(Duration::from_millis(300)).await,
+            "the controller must not be told to stand by just because a device connected"
+        );
+
+        // ── ② B's user agrees ⇒ only then is A displaced ────────────────────
+        let reply = b
+            .command(json!({ "id": unique("takeover"), "type": "takeover" }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "takeover refused: {reply}");
+        assert_eq!(reply["data"]["control"], json!("active"));
+        assert_eq!(
+            reply["data"]["previous"],
+            json!(machine.a.pair_id),
+            "the takeover must name the device it displaced"
+        );
+        until("B holds the machine", || {
+            SUPERVISOR.in_control(&machine.b.pair_id)
+        })
+        .await;
+        // A learns it from the machine, on A's own channel, over the broker.
+        a.await_control("standby").await;
+        assert_eq!(a.presence_control().await, "standby");
+        assert!(!a.may_drive("a-after-takeover").await);
+        // …and events now follow B, not A.
+        let a_gone = a
+            .event_within(&mut a_events, Duration::from_millis(300))
+            .await;
+        publish_one_event("sess_md_b", "to-b");
+        assert!(
+            b.event_within(&mut b_events, DEADLINE).await,
+            "the new controller must receive live events"
+        );
+        assert!(
+            !a_gone,
+            "the superseded device must not receive the controller's events"
+        );
+        assert!(b.may_drive("b-in-control").await);
+
+        // ── ③ A reconnect cannot take it back by itself ─────────────────────
+        //
+        // The realistic trigger is a reconnect: A comes back up, replays its
+        // handshake, and must not read "I am reconnecting" as "I want the
+        // machine". Nothing here asks for control, so nothing may move.
+        let mut a_again = a.reconnect(&broker_url, &machine.a.creds).await;
+        // The old connection is gone; its replacement proved the same identity
+        // over the reconnect pattern rather than redeeming the invitation.
+        drop(a);
+        assert!(
+            SUPERVISOR.in_control(&machine.b.pair_id),
+            "A's reconnect stole the machine back from B"
+        );
+        assert!(
+            !SUPERVISOR.in_control(&machine.a.pair_id),
+            "a reconnect must not put a device back in control"
+        );
+        assert!(
+            !a_again.may_drive("a-reconnected").await,
+            "the reconnected device was allowed to drive without asking"
+        );
+        // …and it is told whom it would displace, so its user can decide.
+        assert_eq!(a_again.presence_control().await, "standby");
+        assert_eq!(
+            a_again.presence().await["holder"]["name"],
+            json!("B's laptop"),
+            "the reconnected device must be told who holds the machine now"
+        );
+        // B is untouched through all of it.
+        assert!(b.may_drive("b-after-a-reconnect").await);
+        assert_eq!(b.presence_control().await, "active");
+
+        // ── …and A takes it back only because its user says so ─────────────
+        let reply = a_again
+            .command(json!({ "id": unique("takeover"), "type": "takeover" }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "takeover refused: {reply}");
+        assert_eq!(reply["data"]["previous"], json!(machine.b.pair_id));
+        b.await_control("standby").await;
+        assert!(!b.may_drive("b-displaced-again").await);
+
+        drop(a_again);
+        drop(b);
+        drop(machine);
+    }
+
+    /// Both devices reconnect at the same instant, repeatedly.
+    ///
+    /// The single-device reconnect above proves one device does not reclaim.
+    /// This is the race the rule actually has to survive: two devices coming
+    /// back together, each re-deriving its own transport on a real broker,
+    /// neither reading "I am reconnecting" as "I want the machine". A stub
+    /// broker cannot expose it — there is no real reconnection to collide — and
+    /// a settlement based on ordering rather than on an explicit request would
+    /// show up here as control ping-ponging between rounds.
+    ///
+    /// Deterministic by construction: each round awaits both handshake replies
+    /// (they are request/reply), then polls the pointer, and nothing sleeps for
+    /// a fixed interval to "let things settle".
+    #[tokio::test]
+    async fn two_simultaneous_reconnects_leave_control_where_it_was() {
+        let Some(broker) = real_broker_or_skip() else {
+            return;
+        };
+        let machine = machine_with_two_devices(&broker, "verify-multi-reconnect-race").await;
+        let broker_url = broker.url().to_string();
+
+        let mut a = DeviceLink::open(&broker_url, &machine.a.creds, "race-a", None).await;
+        until("A holds the machine after pairing", || {
+            SUPERVISOR.in_control(&machine.a.pair_id)
+        })
+        .await;
+        let mut b = DeviceLink::open(&broker_url, &machine.b.creds, "race-b", None).await;
+        // B's connection did not displace A (that is the previous test's subject);
+        // this one starts from a machine that is already settled.
+        assert!(SUPERVISOR.in_control(&machine.a.pair_id));
+
+        for round in 0..3 {
+            // Both clients vanish at once and both come back at once. The join
+            // is the whole point: their handshakes are genuinely in flight
+            // together on the broker.
+            let (a_next, b_next) = tokio::join!(
+                a.reconnect(&broker_url, &machine.a.creds),
+                b.reconnect(&broker_url, &machine.b.creds),
+            );
+            drop(a);
+            drop(b);
+            a = a_next;
+            b = b_next;
+
+            // The pointer must not have moved, and must not still be moving:
+            // poll it rather than reading it once, so a claim that lands a tick
+            // late is caught instead of raced with.
+            let holder = machine.a.pair_id.clone();
+            until(
+                &format!("round {round}: the machine stays with the device that held it"),
+                || SUPERVISOR.in_control(&holder) && !SUPERVISOR.in_control(&machine.b.pair_id),
+            )
+            .await;
+
+            // …and that is what both devices experience, over the wire.
+            assert!(
+                a.may_drive(&format!("race-a-{round}")).await,
+                "round {round}: the device that held the machine was refused after reconnecting"
+            );
+            assert!(
+                !b.may_drive(&format!("race-b-{round}")).await,
+                "round {round}: a device took the machine by reconnecting"
+            );
+            assert_eq!(b.presence_control().await, "standby");
+            assert_eq!(a.presence_control().await, "active");
+        }
+
+        // The only thing that may move it still moves it: one explicit request.
+        let reply = b
+            .command(json!({ "id": unique("race-takeover"), "type": "takeover" }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "takeover refused: {reply}");
+        assert_eq!(reply["data"]["previous"], json!(machine.a.pair_id));
+        until("B now holds the machine", || {
+            SUPERVISOR.in_control(&machine.b.pair_id)
+        })
+        .await;
+        a.await_control("standby").await;
+        assert!(!a.may_drive("race-a-after-takeover").await);
+
+        drop(a);
+        drop(b);
+        drop(machine);
     }
 }
