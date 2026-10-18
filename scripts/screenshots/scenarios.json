@@ -4472,6 +4472,39 @@
             "shot": "m-take-control-list-quiet.png"
           }
         ]
+      },
+      "take-control-chat": {
+        "_comment": "Inside a conversation while another device holds the desktop: one line above the composer says who took it over and that nothing will send, with the takeover beside it. The dot in the header would say the same, but only to someone who taps it — here the user is looking at the composer.",
+        "url": "http://localhost:8099/?held=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "对话"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "基金申报书的创新点怎么写"
+          },
+          {
+            "wait": 1800
+          },
+          {
+            "eval": "(() => {\n  const t = document.body.innerText;\n  for (const wanted of ['已被 实验室的 MacBook Air 接管，现在发不出去。', '接管'])\n    if (!t.includes(wanted)) throw new Error('nothing in the conversation explains the refusal: missing ' + wanted + ': ' + t.slice(0, 600));\n  const labels = [...document.querySelectorAll('[role=button]')].map(el => el.getAttribute('aria-label'));\n  if (!labels.includes('接管')) throw new Error('the conversation offers no way to take it back: ' + labels.join(' / '));\n  return labels.filter(Boolean).join(' / ');\n})()"
+          },
+          {
+            "shot": "m-take-control-chat.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label=\"稍后再说\"]') || document.body.innerText.includes('工作区')",
