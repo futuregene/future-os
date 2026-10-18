@@ -225,11 +225,13 @@ Notes:
 
 A Message is one message in a conversation.
 
-**GUI storage: the `messages` table is deleted (`DROPPED_TABLES` clears it in
-old databases).** Messages are persisted by Agent SQLite's `entries` and
-`message_blocks`, the only source of truth; the GUI reads them via the
-`get_session_entries` gRPC command and projects them into UI messages — no GUI
-SQLite and no second copy needing merge arbitration.
+**Active history is stored in Agent SQLite** (`entries` and `message_blocks`)
+and projected through `get_session_entries`. Upgrades preserve old GUI tables
+as read-only `legacy_*` recovery archives before retiring them; they are never
+a second live writer or model context. `legacy_thread_bindings` preserves the
+read identity of detached duplicate projections. See the transactional
+`v1.2.4-history-preservation` migration and recovery boundaries in
+[SQLite migration](../../architecture/sqlite-migration.md).
 
 Relations:
 

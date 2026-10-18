@@ -108,6 +108,80 @@ fn abort_works() {
 }
 
 #[test]
+fn abort_commits_a_dead_tasks_terminal_state_and_preserves_a_committed_outcome() {
+    for committed in [false, true] {
+        let state = make_app_state();
+        let session = state.get_session("default").unwrap();
+        let mut history = crate::session::Session::new(".", "mock");
+        history.id = "default".into();
+        history
+            .entries
+            .push(crate::session::SessionEntry::run_started("dead", 1));
+        if committed {
+            history
+                .entries
+                .push(crate::session::SessionEntry::run_terminal(
+                    "dead",
+                    crate::session::RUN_STATE_COMPLETED,
+                    0,
+                    1,
+                    None,
+                ));
+        }
+        state.session_manager.save(&history).unwrap();
+        let runtime = session.read().runtime.clone();
+        let lease = runtime.begin(Some("dead"), None).unwrap();
+        runtime.mark_stuck(&lease, "task panicked");
+        let mut cmd = make_cmd("abort");
+        cmd.run_id = "dead".into();
+        let reply = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(reply["success"], true, "{reply}");
+        assert!(runtime.snapshot().is_none());
+        assert!(!session
+            .read()
+            .is_streaming
+            .load(std::sync::atomic::Ordering::Acquire));
+        let persisted = state.session_manager.load("default").unwrap();
+        let terminal = crate::session::find_run_terminal(&persisted.entries, "dead").unwrap();
+        assert_eq!(
+            terminal["state"],
+            if committed {
+                crate::session::RUN_STATE_COMPLETED
+            } else {
+                crate::session::RUN_STATE_CANCELLED
+            }
+        );
+    }
+}
+
+#[test]
+fn failed_cancellation_persistence_retains_the_fault_until_a_successful_retry() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    let mut history = crate::session::Session::new(".", "mock");
+    history.id = "default".into();
+    history
+        .entries
+        .push(crate::session::SessionEntry::run_started("fault", 1));
+    state.session_manager.save(&history).unwrap();
+    let runtime = session.read().runtime.clone();
+    let lease = runtime.begin(Some("fault"), None).unwrap();
+    runtime.mark_stuck(&lease, "task panicked");
+    state.session_manager.test_execute("CREATE TRIGGER reject_cancel BEFORE INSERT ON entries BEGIN SELECT RAISE(ABORT,'disk failure'); END;");
+    let mut cmd = make_cmd("abort");
+    cmd.run_id = "fault".into();
+    let failed = parse_response(&handle_command_internal(&state, cmd.clone()));
+    assert_eq!(failed["success"], false);
+    assert_eq!(runtime.snapshot().unwrap().run_id, "fault");
+    state
+        .session_manager
+        .test_execute("DROP TRIGGER reject_cancel;");
+    let retried = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(retried["success"], true, "{retried}");
+    assert!(runtime.snapshot().is_none());
+}
+
+#[test]
 fn stale_run_scoped_commands_are_rejected_without_touching_current_run() {
     let state = make_app_state();
     let session = state.get_session("default").unwrap();

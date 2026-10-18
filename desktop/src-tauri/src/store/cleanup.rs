@@ -180,9 +180,9 @@ pub fn list_active_runs() -> Result<Vec<ActiveRun>, crate::AppError> {
     let conn = connect()?;
     let mut stmt = conn.prepare(&format!(
         "SELECT r.id, r.thread_id, r.created_at,
-                COALESCE(NULLIF(TRIM(t.agent_session_id), ''), t.id) AS session_id
+                COALESCE(NULLIF(TRIM(t.agent_session_id), ''), t.id, r.thread_id) AS session_id
          FROM runs r
-         JOIN threads t ON t.id = r.thread_id
+         LEFT JOIN threads t ON t.id = r.thread_id
          WHERE r.status NOT IN ({TERMINAL_RUN_STATUSES_SQL})
          ORDER BY r.created_at"
     ))?;
@@ -270,36 +270,12 @@ fn agent_terminal_settlement(
     })
 }
 use super::util::{count_workspace_files, loaded, now_millis};
-use super::{delete_thread, get_thread, get_workspace};
+use super::{get_thread, get_workspace};
 
-/// Startup reconciliation: delete active threads whose agent session has been
-/// removed out from under the GUI — e.g. via the TUI/CLI `delete_session` or a
-/// manual delete. The authoritative source is the agent's FILENAME-ONLY session
-/// enumeration (`list_session_ids` RPC): ids are read from the session file
-/// names without touching file contents, so a session whose journal is
-/// momentarily unreadable or corrupt is still reported as live and is never
-/// mistaken for a deleted session. The GUI no longer probes `{id}.jsonl`
-/// filenames itself, so it stays correct regardless of how or where the agent
-/// persists sessions.
-///
-/// The agent treats the session journal as the source of truth for a
-/// conversation's context and reloads it on a cold start; the GUI keeps only a
-/// rendered mirror (text + events), which cannot losslessly rebuild the agent's
-/// native message structure (tool calls, tool results, thinking). So when the
-/// session is gone there is no faithful recovery — we delete-to-match,
-/// hard-deleting the GUI thread so the two sides stay consistent instead of the
-/// model silently "forgetting" a conversation the UI still shows.
-///
-/// Only threads with at least one `completed` run are considered: the agent
-/// persists the journal on the successful-run path *before* it signals
-/// completion, so a completed run proves base data was written at some point. A
-/// missing session then means external deletion, not a conversation that simply
-/// hasn't produced base data yet (which must never be deleted).
-///
-/// An unreachable agent is ambiguous — the pass is skipped rather than
-/// treating unknown state as "everything was deleted". Runs once at startup,
-/// after the agent has had time to come up. Returns the number of threads
-/// deleted.
+/// Inspect missing Agent bindings without deleting conversation history.
+/// An incomplete restore or a different Agent database is indistinguishable
+/// from an offline deletion. Only an explicit deletion event or user action
+/// authorizes removing the local conversation and its recovery copies.
 pub async fn reconcile_orphan_sessions() -> Result<usize, crate::AppError> {
     // The bundled agent may still be booting when this pass runs; retry
     // briefly before concluding it is down.
@@ -328,13 +304,10 @@ pub async fn reconcile_orphan_sessions() -> Result<usize, crate::AppError> {
         let conn = connect()?;
         orphan_thread_ids(&conn, &live_sessions)?
     };
-    for thread_id in &orphans {
-        // Hard delete: the agent's session (source of truth) is already gone,
-        // so purge the GUI mirror and its child rows too. Also marks temp chat
-        // workspaces for cleanup.
-        delete_thread(thread_id)?;
+    if !orphans.is_empty() {
+        eprintln!("FutureOS: {} conversation source(s) are missing; preserving local history for recovery", orphans.len());
     }
-    Ok(orphans.len())
+    Ok(0)
 }
 
 /// Decide which active threads have lost their agent base data. Split out from
@@ -408,6 +381,9 @@ pub async fn reconcile_empty_conversations() -> Result<usize, crate::AppError> {
     };
     let mut removed = 0;
     for (thread_id, session_id) in candidates {
+        if !super::legacy_history_entries(&thread_id)?.is_empty() {
+            continue;
+        }
         match crate::agent_bridge::session_has_messages(&session_id).await {
             Ok(true) => {}
             Ok(false) => {
@@ -1094,6 +1070,26 @@ mod tests {
         assert_eq!(active[1].session_id, "t_none");
     }
 
+    #[tokio::test]
+    async fn orphaned_runs_remain_discoverable_and_can_be_terminated_without_guessing_a_session() {
+        let (_home, conn) = guarded_conn("orphan_run_abort");
+        seed_full(&conn);
+        conn.execute_batch("PRAGMA foreign_keys=OFF; DELETE FROM threads WHERE id='t_blank'; PRAGMA foreign_keys=ON;").unwrap();
+        drop(conn);
+        assert!(list_active_runs()
+            .unwrap()
+            .iter()
+            .any(|run| run.run_id == "r_run"));
+        let cancelled = crate::agent_bridge::abort_run("t_blank".into(), "r_run".into())
+            .await
+            .unwrap();
+        assert_eq!(cancelled.status, "cancelled");
+        assert!(!list_active_runs()
+            .unwrap()
+            .iter()
+            .any(|run| run.run_id == "r_run"));
+    }
+
     #[test]
     fn settle_interrupted_run_applies_agent_terminal_state() {
         let (_home, conn) = guarded_conn("cleanup_settle");
@@ -1350,7 +1346,7 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn reconcile_deletes_orphans_reported_gone_by_the_agent() {
+    async fn reconcile_preserves_history_when_an_agent_database_is_missing() {
         let _lock = mock_agent_lock();
         ensure_mock_agent();
         script_mock_agent(MockScript {
@@ -1364,11 +1360,11 @@ mod tests {
         seed_full(&conn);
         drop(conn);
 
-        // t_none completed a run and its session (its own thread id) is not
-        // live → hard-deleted. t_sess/t_blank have no completed run → kept.
+        // Absence from the Agent catalogue can mean a partial restore; even
+        // completed conversations and their run records must survive.
         let deleted = reconcile_orphan_sessions().await.expect("reconcile");
-        assert_eq!(deleted, 1);
-        assert!(crate::store::get_thread("t_none").expect("get").is_none());
+        assert_eq!(deleted, 0);
+        assert!(crate::store::get_thread("t_none").expect("get").is_some());
         assert!(crate::store::get_thread("t_sess").expect("get").is_some());
 
         script_mock_agent(MockScript::default());

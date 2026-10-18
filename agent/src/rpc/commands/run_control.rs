@@ -196,7 +196,9 @@ pub(crate) fn handle_abort_session(
             sess.cancel_all_queued_runs(crate::runtime::QueuedCancellationReason::Cancelled);
         let active_run_id = sess.runtime.snapshot().map(|active| active.run_id);
         if let Some(run_id) = active_run_id.as_deref() {
-            let _ = sess.runtime.request_abort(Some(run_id));
+            if let Err(error) = sess.abort_run(Some(run_id)) {
+                return RpcResponse::build_fail(id, "abort_session", &error.to_string());
+            }
         }
         (active_run_id, cancelled)
     };

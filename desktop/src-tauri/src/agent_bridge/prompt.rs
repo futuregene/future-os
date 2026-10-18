@@ -227,6 +227,12 @@ pub(super) async fn agent_prompt_inner(
         .as_deref()
         .map(str::trim)
         .filter(|id| !id.is_empty());
+    if stored_session_id.is_empty()
+        && (crate::store::legacy_session_id(&thread_id)?.is_some()
+            || !crate::store::legacy_history_entries(&thread_id)?.is_empty())
+    {
+        return Err("This conversation has preserved history but no writable Agent session. Restore its matching Agent database or continue from the original conversation; a new empty session was not created.".into());
+    }
     if requested_session_id.is_some_and(|requested| requested != stored_session_id) {
         return Err(format!(
             "Conversation session changed before this prompt was sent; expected {stored_session_id:?}, received {requested_session_id:?}. Reload the conversation and retry."
@@ -234,6 +240,18 @@ pub(super) async fn agent_prompt_inner(
         .into());
     }
     let mut command_client = connect_agent().await?;
+    if !crate::store::legacy_history_entries(&thread_id)?.is_empty() {
+        let history =
+            super::queries::get_session_entries_before(stored_session_id.clone(), i64::MAX, 1)
+                .await?;
+        if !history["entries"].as_array().is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| matches!(entry["role"].as_str(), Some("user" | "assistant" | "tool")))
+        }) {
+            return Err("The Agent session has no conversation history, but a GUI recovery archive exists. Restore the matching Agent data before continuing this conversation.".into());
+        }
+    }
 
     // Create (or reuse) the agent session.
     let existing_cwd = workspace_path_for_thread(&thread_id)?;

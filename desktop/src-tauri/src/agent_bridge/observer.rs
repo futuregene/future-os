@@ -2607,19 +2607,20 @@ mod tests {
 
     /// The low-frequency reconciliation loop ticks, then stops on the test
     /// seam; the production interval is 60 seconds. Each tick imports new
-    /// sessions AND drops conversations whose Agent session was deleted
-    /// outside the GUI (the backstop for a missed `session_deleted`).
+    /// sessions and retains missing sources: a partially restored catalogue
+    /// cannot authorize deleting a conversation or its completed run records.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn discovery_loop_ticks_and_stops() {
         let home = TestHome::new("observer-discovery-loop");
         let mock = mock_agent();
-        // The orphan heuristic only reclaims threads that produced base data.
+        // A completed run proves history existed; a missing catalogue entry
+        // must preserve it until an explicit deletion is observed.
         let workspace = crate::agent_bridge::test_support::seed_workspace(home.path(), "ws");
-        let doomed =
+        let retained =
             crate::agent_bridge::test_support::seed_thread(&workspace.id, Some("sess-deleted"));
-        let run = crate::agent_bridge::test_support::seed_run(&doomed.id);
+        let run = crate::agent_bridge::test_support::seed_run(&retained.id);
         crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
-            run_id: run.id,
+            run_id: run.id.clone(),
             status: "completed".to_string(),
             error_message: None,
             error_type: None,
@@ -2637,9 +2638,21 @@ mod tests {
         std::env::remove_var("FUTURE_TEST_DISCOVERY_INTERVAL_MS");
         assert_eq!(discovery_interval(), Duration::from_secs(60));
         assert!(
-            crate::store::get_thread(&doomed.id).expect("get").is_none(),
-            "a session the Agent no longer lists is reconciled away"
+            crate::store::get_thread(&retained.id)
+                .expect("get")
+                .is_some(),
+            "a partially restored Agent catalogue must not delete conversation history"
         );
+        assert_eq!(
+            crate::store::get_run(&run.id)
+                .expect("run")
+                .expect("retained")
+                .status,
+            "completed"
+        );
+        assert!(crate::store::pending_agent_session_deletes()
+            .expect("outbox")
+            .is_empty());
         let _ = mock;
     }
 

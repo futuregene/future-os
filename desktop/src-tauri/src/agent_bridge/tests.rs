@@ -22,6 +22,22 @@ mod watchdog_tests {
     }
 
     #[test]
+    fn failed_runtime_leases_are_recovered_instead_of_reattached() {
+        for phase in ["cancellation_stuck", "persistence_degraded"] {
+            let value =
+                serde_json::json!({"isStreaming":true,"activeRun":{"runId":"run-1","state":phase}});
+            assert_eq!(
+                plan_active_run_reconciliation(&value, "run-1", 120),
+                ActiveRunAction::RecoverFault
+            );
+            assert_eq!(
+                plan_active_run_reconciliation(&value, "other", 120),
+                ActiveRunAction::Skip
+            );
+        }
+    }
+
+    #[test]
     fn does_not_attach_for_a_different_active_run() {
         let action = plan_active_run_reconciliation(
             &state(r#"{"isStreaming": true, "activeRun": {"runId": "run-2"}}"#),

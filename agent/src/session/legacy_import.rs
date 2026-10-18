@@ -213,19 +213,9 @@ impl SqliteStore {
                 bail!("only a skipped legacy session can be retried");
             }
         }
-        let complete = self.db.call(|db| {
-            Ok(db
-                .query_row(
-                    "SELECT value FROM storage_meta WHERE key='legacy_complete'",
-                    [],
-                    |r| r.get::<_, String>(0),
-                )
-                .optional()?
-                .is_some())
-        })?;
-        if complete && retry.is_none() {
-            return Ok(());
-        }
+        // Discover newly restored files on every startup. Per-session import
+        // records below still fence successful, skipped and deleted sessions;
+        // a global completion bit must not hide a backup restored later.
         let mut paths = Vec::new();
         match std::fs::read_dir(directory) {
             Ok(files) => {
@@ -660,6 +650,23 @@ mod import_paths {
     fn write(dir: &Path, name: &str, body: &str) {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(dir.join(name), body).unwrap();
+    }
+
+    #[test]
+    fn discovers_backups_restored_after_initial_start_without_resurrecting_deleted_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        let sessions = temp.path().join("sessions");
+        let store = store_in(temp.path());
+        store.import_legacy(&sessions, None).unwrap();
+        write(&sessions, "old.jsonl", &entry_line("old-user"));
+        store.import_legacy(&sessions, None).unwrap();
+        assert!(store.contains("old").unwrap());
+        store.delete("old").unwrap();
+        write(&sessions, "later.jsonl", &entry_line("later-user"));
+        store.import_legacy(&sessions, None).unwrap();
+        assert!(!store.contains("old").unwrap());
+        assert!(store.contains("later").unwrap());
+        assert_eq!(store.import_records().unwrap().len(), 2);
     }
 
     #[test]
