@@ -410,8 +410,36 @@ struct ChildRun {
     home: PathBuf,
 }
 
+/// 8022 is a PRODUCTION constant (`remote::diagnostics::WEB_PORT`), so every child this file spawns
+/// binds it. A child that has been told to stop still holds the port for a moment while it unwinds,
+/// and on a shared CI runner that moment outlasts the next test's spawn: the log then reads
+/// `web client bind failed [LC002] ... Address already in use (os error 98)` and the child can never
+/// reach `Remote: Ready`, because the web client is part of what Ready reports.
+///
+/// This is the same family the campaign already documented for the in-process tests
+/// (`remote_peer::testing::wait_for_web_port_free`); an integration test spawns a different process,
+/// so it needs its own wait. Waiting is the fix, not a longer readiness budget - the budget was
+/// hiding it (90 s of a child that could never get there).
+fn wait_for_web_port_free() {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if std::net::TcpListener::bind(("0.0.0.0", 8022)).is_ok() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "port 8022 never became free: a previous child in this binary is still holding it, \
+             and the next child would fail to bind rather than fail the test it belongs to"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 impl ChildRun {
     fn spawn(home: PathBuf) -> Self {
+        // The previous child may still be unwinding; it holds the shared web port until it
+        // exits (see wait_for_web_port_free).
+        wait_for_web_port_free();
         let mut command = Command::new(env!("CARGO_BIN_EXE_futureos-headless"));
         command.arg("--no-qr");
         // Hermetic: the fixture controls every variable the child reads. A developer
