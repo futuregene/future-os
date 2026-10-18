@@ -2128,13 +2128,24 @@ mod tests {
     /// `nats-server`'s monitoring endpoint is the only source of the broker's
     /// own counters, and the harness has to read them the way it writes them.
     async fn serve_connz(body: &str) -> String {
+        serve_connz_answers(body, 1).await
+    }
+
+    /// The same endpoint answering `answers` requests and then going away. The
+    /// accounting window reads the counters twice (a baseline before the
+    /// measured traffic, a second reading after it), so a fixture that drives
+    /// both reads has to stay up for both.
+    async fn serve_connz_answers(body: &str, answers: usize) -> String {
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await
             .expect("bind loopback");
         let url = format!("http://{}", listener.local_addr().expect("addr"));
         let body = body.to_string();
         tokio::spawn(async move {
-            if let Ok((mut socket, _)) = listener.accept().await {
+            for _ in 0..answers {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
                 let mut request = [0u8; 2048];
                 let _ = socket.read(&mut request).await;
                 let response = format!(
@@ -2454,6 +2465,81 @@ mod tests {
         assert!(
             outcome.is_err(),
             "a monitor one byte over the receipt must be rejected"
+        );
+    }
+
+    /// The baseline monitor reading runs before the measured traffic.
+    ///
+    /// The window's *second* reading cannot be scripted in advance — it reports
+    /// the bytes the run itself produces — but the *baseline* reading has no
+    /// such requirement: any answer for the phone's connection makes the
+    /// `Some(url)` arm run, and the later comparison only needs `before` to be
+    /// `Some`. This drives the shipping `run_real_traffic_with(.., Some(url))`
+    /// against a loopback `/connz` that offers zeroed counters under every pair
+    /// id the publisher could mint in this process.
+    ///
+    /// Reachability is the claim, so the zeroed monitor failing the receipt
+    /// arithmetic is the expected outcome and is caught; the panic message is
+    /// asserted to be that arithmetic (or the overflow its subtraction raises in
+    /// a debug build), not the baseline's own `expect("phone connection")`,
+    /// which would mean the connection was never found.
+    #[tokio::test]
+    async fn the_baseline_monitor_reading_runs_before_the_traffic() {
+        let nats = FakeNats::start().await;
+        let pid = std::process::id();
+        // `E2e` mints the pair id at construction (`format!("pair_{}", unique("e2e"))`),
+        // so the id cannot be known before the run; reserve the next counter
+        // value and offer the ids that can follow it. `unique`'s counter is
+        // process-global and the measured suite runs one test at a time, so the
+        // pair id is the next value after the reservation; the wide window keeps
+        // a margin for any helper that mints ids in between.
+        let reserved = unique("baseline-monitor");
+        let next: u64 = reserved
+            .rsplit('-')
+            .next()
+            .and_then(|value| value.parse().ok())
+            .expect("unique() ends in its counter");
+        let rows: Vec<serde_json::Value> = (0..4096)
+            .map(|offset| {
+                json!({
+                    "name": format!("verify-phone-pair_e2e-{pid}-{}", next + offset),
+                    "in_msgs": 0u64,
+                    "in_bytes": 0u64,
+                    "out_msgs": 0u64,
+                    "out_bytes": 0u64,
+                })
+            })
+            .collect();
+        let url = serve_connz_answers(&json!({ "connections": rows }).to_string(), 2).await;
+        let journal = fixture_journal();
+        let entries = traffic_entries();
+
+        // NB: `run_real_traffic_with` takes `mock_agent_lock` itself; taking it
+        // here first deadlocks the non-reentrant mutex.
+        let outcome = std::panic::AssertUnwindSafe(super::run_real_traffic_with(
+            Broker::Real {
+                url: nats.url().to_string(),
+            },
+            &journal,
+            "sess_baseline_monitor",
+            "run-verify",
+            &entries,
+            Some(url),
+        ))
+        .catch_unwind()
+        .await;
+        let message = match outcome {
+            Ok(()) => panic!("a zeroed monitor must not satisfy the receipt arithmetic"),
+            Err(payload) => payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|text| text.to_string()))
+                .unwrap_or_default(),
+        };
+        assert!(
+            message.contains("subtract with overflow")
+                || message.contains("the broker must relay exactly"),
+            "the baseline reading ran and the window rejected the monitor: {message}"
         );
     }
 }

@@ -103,7 +103,7 @@ describe("MarkdownText layout and fidelity", () => {
     expect(widths.slice(2, 4)).toEqual(widths.slice(0, 2));
   });
 
-  test("large code previews a bounded head and expands to the whole source", () => {
+  test("large code previews a bounded wrapped head and expands to the whole source", () => {
     const code = "line with real indentation\n".repeat(5000) + "x".repeat(100000);
     const root = render(`\`\`\`ts\n${code}\n\`\`\``);
     const rows = () => root.findAllByType(Text).filter(node => node.props.selectable);
@@ -253,27 +253,21 @@ describe("MarkdownText layout and fidelity", () => {
     expect(wider[3]).toBe(widths[3]);
   });
 
-  test("code pans sideways instead of wrapping, stays selectable and uses an iOS-safe monospace font", () => {
+  test("code wraps to the block width, stays selectable and uses an iOS-safe monospace font", () => {
     const code = `const veryLongLine = '${"x".repeat(200)}';\n  indented();`;
     const root = render(`\`\`\`typescript\n${code}\n\`\`\``);
-    // A code block is a `pre`: its own scroller, horizontal only, and no width
-    // pinned on the text — that is what keeps a line longer than the phone from
-    // folding at the viewport edge (an ASCII diagram depends on it).
-    const scrollers = root.findAllByType(ScrollView);
-    expect(scrollers).toHaveLength(1);
-    expect(scrollers[0]!.props.horizontal).toBe(true);
-    // A horizontal `ScrollView` lays its content out in a row; the block
-    // overrides that so the rows (one `Text` per chunk) stack as lines.
-    expect(StyleSheet.flatten(scrollers[0]!.props.contentContainerStyle).flexDirection).toBe("column");
+    // No scroll container of either axis: the surrounding message list scrolls.
+    expect(root.findAllByType(ScrollView)).toHaveLength(0);
     const text = root.findAllByType(Text).find(node => node.props.selectable)!;
     const source = text.findAllByType(Text).filter(node => typeof node.props.children === "string")
       .map(node => node.props.children).join("");
     expect(source).toContain("const");
     expect(text.findAllByType(Text).some(node => StyleSheet.flatten(node.props.style)?.color === lightCodeColors.keyword)).toBe(true);
     expect(text.props.selectable).toBe(true);
-    // Nothing pins the width, and nothing lines the row up against the viewport.
+    // Wrapping is the native Text behaviour once nothing pins a fixed width.
     expect(text.props.numberOfLines).toBeUndefined();
     expect(StyleSheet.flatten(text.props.style).width).toBeUndefined();
+    for (let parent = text.parent; parent; parent = parent.parent) expect(parent.type).not.toBe(ScrollView);
     expect(StyleSheet.flatten(text.props.style).fontFamily).toBe(Platform.OS === "ios" ? "Menlo" : "monospace");
     expect(root.findAllByType(Text).some(node => node.props.children === "typescript")).toBe(true);
   });
@@ -333,11 +327,8 @@ describe("MarkdownText layout and fidelity", () => {
 
   test("inline and display math render as native vectors while Mermaid retains its source fallback", () => {
     const root = render("Formula $x^2$\n\n$$\n\\frac{a}{b}\n$$\n\n```mermaid\ngraph TD; A-->B;\n```");
-    // Two scrollers, both sideways: the display formula and the code block
-    // (`mermaid` keeps its source, drawn as a `pre`).
-    const scrollers = root.findAllByType(ScrollView);
-    expect(scrollers).toHaveLength(2);
-    expect(scrollers.every(node => node.props.horizontal === true)).toBe(true);
+    // Only the math block scrolls; code wraps in place.
+    expect(root.findAllByType(ScrollView)).toHaveLength(1);
     const formulas = root.findAllByType(SvgXml);
     expect(formulas).toHaveLength(2);
     expect(formulas.every(node => node.props.xml.includes("<path"))).toBe(true);

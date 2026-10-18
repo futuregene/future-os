@@ -545,11 +545,31 @@ mod tests {
     fn closing_admission_rejects_new_commands_without_losing_active_guards() {
         let _home = crate::auth_store::test_support::HomeGuard::new("shutdown-admission");
         let _mock = crate::agent_bridge::test_support::mock_agent();
+        super::reset_for_test();
         let command = super::admit().unwrap();
         super::ADMISSION.lock().unwrap().closed = true;
         assert!(super::admit().is_err());
         drop(command);
         assert!(super::is_stopping());
+        // A closed admission with **no** published stop operation is the state
+        // the status poll reports as "stopping". `coordinator::begin` sets both
+        // globals in one critical section, but they are separate: this fixture
+        // closes admission alone, which is the only construction of that state.
+        #[cfg(feature = "gui")]
+        {
+            let status = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime for the status poll")
+                .block_on(crate::agent_supervisor::agent_status());
+            assert_eq!(status.phase, "stopping");
+            assert!(
+                status.shutdown.is_none(),
+                "the stopping arm has no stop snapshot: {:?}",
+                status.shutdown
+            );
+        }
+        super::reset_for_test();
     }
 
     /// A run whose cancellation cannot be confirmed must say *why* in the message

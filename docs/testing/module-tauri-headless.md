@@ -1,10 +1,10 @@
 # Module: `desktop-tauri-headless` (`desktop/src-tauri`, headless/agent-supervision/terminal slice)
 
-Status: **see §2.2** — the current figure is **300 uncovered** (segment-3
-union, §2.2/§4.3); §2 is the earlier after-2 table (359), kept as history. Both
-are measured from the **merged gui + headless** lcov run, which is the only
-honest number for this crate (§1). This record covers the slice that one unit
-owns:
+Status: **see §2.6** — the current figure is **240 uncovered** (T13 union,
+§2.6/§4.3). §2 is the earlier history (359 → 300 → 283 → 270 → 254), kept as
+measured history and cited where it explains a row. All figures come from the **merged
+gui + headless** lcov run, which is the only honest number for this crate (§1).
+This record covers the slice that one unit owns:
 
 | scope | files |
 |---|---|
@@ -141,6 +141,28 @@ residual is 359 ± 2**, and a reviewer comparing two runs must expect those two
 lines to move. They are classified `unreachable-in-this-environment` in §4.1 with
 that mechanism.
 
+**Attribution, corrected by TAU-D10.** The oscillation belongs to **533 and 539**,
+and the pair is named as such in §4.1 since this measurement. The line the ledger
+used to cite for it — **535**, the closing brace of the `Binary` decode arm — is
+not one of the movers: over **fifteen readings** (five runs of
+`terminal::server::`, six runs of the single pump test, and three full-suite
+artifacts) 535 read **0 every time, including the two runs in which 533 itself
+executed**; 533 was covered in 2/5 + 1/3 and 539 in 1/5 + 1/3. So a reader who
+checked the cited line and found it uncovered was reading a true measurement of
+the wrong line.
+
+**Where the three lines stand in the pinned union** (`tauri-tau-t12-union-lcov.info`): **533 reads
+`DA:1` (covered)**, 539 reads `0`, 535 reads `0`. So the row claims **535 and 539** — the two that are
+uncovered in *this* pin — and **533 needs no row, because it is covered here**. Corrected 2026-10-18
+after the relay pointed out that an earlier draft of this paragraph said 533 "now has one": it does not,
+and the tool is right to report `MISSING 0` without it.
+
+**The obligation that follows, stated so the next pin cannot be misread**: 533 is one of the two
+historical oscillators (covered in 2/5 + 1/3 runs), so a future pin may read it `DA:0`. **If that
+happens, a row claiming `terminal/server.rs` 533 must be created** — the mention in this paragraph and in
+`§4.1`/`§4.2`/`§8.3` is prose, and `reconcile.py` counts a mention anywhere in the document, which is how
+an unclassified `DA:0` line can pass `MISSING 0`. A mention is not a claim.
+
 ### 2.1 The second segment, in the same metric
 
 The `after-2` column of §2 **is** the second segment's measurement; it was taken
@@ -260,17 +282,278 @@ report` exit **0**). A union of executions can only *lower* the residual — nev
 report a line as covered that no run executed — which is the §5.3 direction
 argument.
 
-### 2.3 Post-union edit: `cli_tool.rs` after `224dcea1e`
+### 2.3 `cli_tool.rs` at HEAD — re-measured, and the statement set changed
 
-The segment-3 union report predates `224dcea1e` ("NEW-B deadline seam"), which
-added 132 lines to `cli_tool.rs` (626 → 758) and inserted the `ProbeDeadline`
-seam above `probe`. The **11 uncovered statements are unchanged**, but their
-numbers are not: at the current HEAD they are **83, 92, 285-288, 293, 305, 357,
-400, 666** (the union numbers were 82, 91, 223-226, 231, 243, 294, 338, 598).
-This is recorded, unmeasured drift in the §2.1 sense: the union report and the
-rows below describe `aff0501b3`, not HEAD, and a re-measure is the successor's
-first check. It is not a new OPEN line — the statements and their mechanisms are
-the same.
+The segment-3 union (`aff0501b3`) measured a **626-line** `cli_tool.rs`. Two
+commits moved it afterwards: `224dcea1e` ("NEW-B deadline seam", 626 → 758) and
+`1876ffe78` (the Linux port of the probe fixtures: 11 insertions / 2 deletions,
+758 → **767**, the revision this record now describes).
+
+The re-measurement at `36c568972` is the §1/§6a-ter recipe: one render per
+flavour, `cargo llvm-cov clean` between the legs, then a union.
+
+```bash
+cargo llvm-cov clean
+cargo llvm-cov --lcov --no-fail-fast -j 4 --output-path /tmp/d8-gui.info -- --test-threads=1
+cargo llvm-cov clean
+cargo llvm-cov --lcov --no-fail-fast -j 4 --no-default-features --features headless \
+    --output-path /tmp/d8-headless.info -- --test-threads=1
+python3 .future/cov100/lcov-union.py --out /tmp/d8-union.info /tmp/d8-gui.info /tmp/d8-headless.info
+python3 .future/cov100/leg-flavour-check.py /tmp/d8-gui.info /tmp/d8-headless.info   # LEG IDENTITY: ok
+python3 .future/cov100/flavor-alive.py /tmp/d8-gui.info /tmp/d8-headless.info        # both carry nonzero hits
+```
+
+Driver `/tmp/d8-measure.sh`, log `/tmp/d8-measure.log`, union retained as
+`.future/cov100/tauri-tau-d8-union-lcov.info`. **Both legs came back green**:
+gui lib **2142 passed / 0 failed / 14 ignored**, headless lib **1717 / 0 / 14**,
+and every integration target passed in both (this removes the §8.5 §5.3 caveat
+for this revision: there is no red run to reason around).
+
+The file's residual is **still exactly 11 lines, but the set is not the same** —
+the previous note's claim that "the 11 uncovered statements are unchanged" was
+wrong in two directions. Measured `DA:0` set at HEAD: **83, 92, 285-288, 293,
+305, 356, 672, 759**.
+
+| union line (`aff0501b3`) | HEAD line (`36c568972`) | what changed |
+|---|---|---|
+| 82 | 83 | pure shift (`"future.exe"` under `cfg!(windows)`) |
+| 91 | 92 | pure shift (`"bundled"`) |
+| 223-226 | 285-288 | shift (the `try_wait` `Err` arm) |
+| 231 | 293 | shift (post-exit stderr limit) |
+| 243 | 305 | shift (post-exit stdout limit) |
+| 294 | **356** | shift; the earlier note wrote 357, which is the following `set_var` statement |
+| 338 | **none — now covered** | the `EnvGuard::drop` `None` arm (HEAD 400) is measured `DA>0`: `remote/verify_e2e.rs` arms the same guard with five absent `VERIFY_E2E_*` names |
+| 598 | **672** | the fail-only message argument; the earlier note wrote 666, which is `let started` (covered). `1876ffe78` added six lines above it |
+| — | **759** | **new statement**, not a shift: the `panic!` body of the `unwrap_or_else` closure the NEW-B seam introduced |
+
+So 356 and 672 correct two numbers the previous note got wrong, 400 is no longer
+a residual line at all, and 759 is a statement that did not exist at the union
+revision. The mechanisms are in §4.1; the pairing's `expect` is re-recorded from
+this report in §4.3.
+
+### 2.4 TAU-D10 — the re-measurement behind the current figure (270)
+
+Same recipe as §2.3, run at `b6cbc666e` with three tests added to this unit's
+scope (`cwd.rs` read-only fixture, the admission-status assertion in
+`desktop_shutdown.rs`, the live tab at the head of `manager.rs`'s exit order):
+
+```bash
+cargo llvm-cov clean
+cargo llvm-cov --lcov --no-fail-fast -j 4 --output-path /tmp/d9-gui.info -- --test-threads=1
+cargo llvm-cov clean
+cargo llvm-cov --lcov --no-fail-fast -j 4 --no-default-features --features headless \
+    --output-path /tmp/d9-headless.info -- --test-threads=1
+python3 .future/cov100/lcov-union.py --out /tmp/d9-union.info /tmp/d9-gui.info /tmp/d9-headless.info
+python3 .future/cov100/leg-flavour-check.py /tmp/d9-gui.info /tmp/d9-headless.info   # LEG IDENTITY: ok
+python3 .future/cov100/flavor-alive.py /tmp/d9-gui.info /tmp/d9-headless.info
+```
+
+Driver `/tmp/d9-measure.sh`, log `/tmp/d9-measure.log`, union retained as
+`.future/cov100/tauri-tau-d9-union-lcov.info`. Leg file sets are unchanged (170
+gui / 138 headless), so the two reports are the same flavours as §2.3 measured.
+
+* **gui leg: green.** lib **2155 passed / 0 failed / 14 ignored**; every
+  integration target passed.
+* **headless leg: red, outside this scope.** lib **1719 passed / 7 failed / 14
+  ignored**; all seven are `remote_peer::runtime::tests` /
+  `remote_peer::transfer_tests`, every one panicking at
+  `remote_peer/testing.rs:30` with `web server bind on port 8022 failed: Address
+  already in use` — the documented host-wide 8022 contention family, not this
+  unit's code. The leg therefore exited **101** and `cargo llvm-cov` did not
+  render its report; the report was rendered from the same run's profraw with
+  `cargo llvm-cov report --lcov --output-path /tmp/d9-headless.info` (exit 0),
+  which reads the existing execution rather than replaying the suite. Every
+  other headless target ran and passed, including `tests/headless_cli.rs`
+  (12/12), `tests/remote_start_refusal.rs` (4/4) and
+  `tests/re_pair_entry_points.rs` (0 tests, feature-gated).
+
+Per-file residuals: §4.3. The direction argument of §5.3 still holds — a union
+of executions cannot report a line as covered that no run reached — and the red
+`remote_peer` tests touch none of the twelve scopes.
+
+The gate reads the retained union (`.future/cov100/pairings.json`, pairing
+`tauri-headless`). Verbatim from `python3 .future/cov100/staletable.py --gate`:
+
+```
+tauri-headless             authoritative    module-tauri-headless.md        270    270      0      0       0 section       PASS
+```
+
+(columns: `claims 270 / uncovered 270 / STALE 0 / ABSENT 0 / COVERED 0`, the
+section needle resolving to §4.1's heading. The command as a whole exits
+non-zero on two peer pairings, `channels-wide` and `cli-wide`, whose covered rows
+are outside this unit and were already failing before this measurement.)
+
+### 2.5 TAU-D12 — the measurement behind the current figure (254)
+
+Same recipe as §2.4, run at the TAU-D12 revision with the two fixture modules of
+§9 in the tree. Both legs were rendered separately, `cargo llvm-cov clean`
+between them, and unioned:
+
+```bash
+cargo llvm-cov clean
+cargo llvm-cov --no-report --no-fail-fast -j 4 -- --test-threads=1
+cargo llvm-cov report --lcov --output-path /tmp/d12-gui.info
+cargo llvm-cov clean
+cargo llvm-cov --no-report --no-fail-fast -j 4 --no-default-features --features headless \
+    -- --test-threads=1
+cargo llvm-cov report --lcov --output-path /tmp/d12-headless.info
+python3 .future/cov100/leg-flavour-check.py /tmp/d12-gui.info /tmp/d12-headless.info  # ok
+python3 .future/cov100/lcov-union.py --out .future/cov100/tauri-tau-t12-union-lcov.info \
+    /tmp/d12-gui.info /tmp/d12-headless.info
+```
+
+Driver `/tmp/d12-measure.sh`, log `/tmp/d12-measure.log`. The union is retained as
+`.future/cov100/tauri-tau-t12-union-lcov.info` (172 files; the pairing
+`tauri-headless` points at it). `--no-report` + a separate `report` per leg is
+what makes a red leg still yield its profraw (§2.4 had to say that after the
+fact); here both legs exited **0**, so no such note is needed.
+
+* **LEG IDENTITY: ok** — gui 170 files / headless 138, exactly the sets §2.4
+  measured, so the two reports are the same flavours.
+* **gui leg: green.** lib **2167 passed / 0 failed / 14 ignored**; every
+  integration target passed. (An earlier run of the same revision lost four
+  `remote_peer::transfer_tests` to the host-wide `8022` bind contention; that run
+  was discarded and not used for numbers.)
+* **headless leg: green.** lib **1719 passed / 0 failed / 14 ignored**, plus the
+  integration targets (`tests/headless_cli.rs` 12/12 among them).
+
+| file / scope | D9 (§2.4) | T12 | attribution of the move |
+|---|---|---|---|
+| `src/terminal/server.rs` | 57 | **58** | +1, oscillation: **539** was `DA:1` in D9 and reads `DA:0` here (§4.1's 535 row names both) |
+| `src/terminal/pty.rs` | 18 | 18 | — |
+| `src/terminal/session.rs` | 14 | 14 | — |
+| `src/terminal/manager.rs` | 7 | 7 | — |
+| `src/terminal/shell.rs` | 11 | 11 | — |
+| `src/terminal/cwd.rs` | 3 | 3 | — |
+| `src/headless/mod.rs` | 44 | 44 | — |
+| `src/headless/agent.rs` | 1 | 1 | — |
+| `src/cli_tool.rs` | 11 | 11 | — |
+| `src/agent_host.rs` | 22 | **20** | −13 production lines closed (83, 88, 116, 147-150, 200, 233, 234, 334-336) and +11: one oscillation (265) and ten lines of the fixture's own fail-only arms (§4.1) |
+| `src/agent_supervisor.rs` | 65 | **50** | −23 production lines closed (all of §4.2's row) and +8 lines of the supervisor fixture's fail-only arms (§4.1) |
+| `src/skills_bootstrap.rs` | 17 | 17 | — |
+| **total** | **270** | **254** | **−16** |
+
+**270 → 254, attributable line by line.** 36 production lines closed (13 + 23),
+19 lines added to the residual (11 + 8) and one flake-free run movement (539, +1)
+account for the 16: `270 − 36 + 19 + 1 = 254`. The 19 are *test code in the two
+files the fixture lives in*, not a regression: each is a must-not-fire arm of the
+harness (a timeout guard, a panic on a case the fixture cannot legitimately hit),
+classified in §4.1 with the neighbours that are covered as evidence.
+
+**What the total does and does not claim.** 254 is the measured residual at the
+T12 revision, not zero. 218 lines are classified in §4.1 and **36 remain OPEN**
+in §4.2, all outside the `agent_host`/`agent_supervisor` block, which is now
+fully classified: 36 of its 45 OPEN lines are covered and every one of the 19
+remaining is named with a mechanism.
+
+The gate reads the T12 union (`.future/cov100/pairings.json`, pairing
+`tauri-headless`). Verbatim from `python3 .future/cov100/staletable.py --gate`:
+
+```
+tauri-headless             authoritative    module-tauri-headless.md        254    254      0      0       0 section       PASS
+```
+
+(columns: `claims 254 / uncovered 254 / STALE 0 / ABSENT 0 / COVERED 0`, the
+section needle resolving to §4.1's heading — the same line read `270 270` in §2.4
+before this segment. The command as a whole still exits non-zero on the same two
+peer pairings, `channels-wide` and `cli-wide`, both outside this unit.)
+
+### 2.6 TAU-D13 — the measurement behind the current figure (240)
+
+Same recipe as §2.5, run at the TAU-D13 revision with the `skills_bootstrap`
+block_fixtures module of §10 in the tree. Both legs were rendered separately,
+`cargo llvm-cov clean` between them, and unioned:
+
+```bash
+cargo llvm-cov clean
+cargo llvm-cov --no-report --no-fail-fast -j 4 -- --test-threads=1
+cargo llvm-cov report --lcov --output-path /tmp/d13-gui.info
+cargo llvm-cov clean
+cargo llvm-cov --no-report --no-fail-fast -j 4 --no-default-features --features headless \
+    -- --test-threads=1
+cargo llvm-cov report --lcov --output-path /tmp/d13-headless.info
+python3 .future/cov100/leg-flavour-check.py /tmp/d13-gui.info /tmp/d13-headless.info  # ok
+python3 .future/cov100/lcov-union.py --out .future/cov100/tauri-tau-t13-union-lcov.info \
+    /tmp/d13-gui.info /tmp/d13-headless.info
+```
+
+Driver `/tmp/d13-measure.sh`, log `/tmp/d13-measure.log`. The union is retained as
+`.future/cov100/tauri-tau-t13-union-lcov.info` (172 files; the pairing
+`tauri-headless` points at it).
+
+* **LEG IDENTITY: ok** — gui 170 files / headless 138, the same sets §2.5
+  measured; `leg-flavour-check.py` printed `LEG IDENTITY: ok - each leg matches
+  the flavour it claims`.
+* **Both legs are red, and neither red row is in this unit's scope.** gui lib
+  **2167 passed / 8 failed / 14 ignored** (609.81 s); headless lib
+  **1707 passed / 27 failed / 14 ignored** (589.39 s). 26 of the 27 headless
+  failures and all 8 gui failures are one family — `remote::tests::runtime_tests`
+  (7), `remote_peer::runtime_tests` (10), `remote_peer::tests` (5),
+  `remote_peer::transfer_tests` (4) — all panicking with
+  `web server bind on port 8022 failed: Address already in use (os error 48)` at
+  `remote_peer/testing.rs:30` / `remote/tests.rs:424`. The cause is outside this
+  tree: `lsof -nP -iTCP:8022 -sTCP:LISTEN` during the legs answered
+  `futureos_ 16860 … /Users/geilige/future-os/.worktrees/remote-multi-device-runtime/target/debug/deps/futureos_lib-… remote_peer::transfer_tests --test-threads=1`
+  — a **peer worktree's** test binary holding the port (the campaign's
+  `GOTCHAS.md` records the family). The 27th is
+  `tasks::tests::the_headless_loop_runs_a_queued_request_it_is_woken_for`
+  (`tasks.rs:1939`, "the woken headless loop never executed the queued request"),
+  a load-sensitive timing test in another unit's file. None of these files is one
+  of the twelve scopes, so no scope line changed hands because of them; every
+  test in the scopes passed in both legs, including the four new cases
+  (`skills_bootstrap::block_fixtures::{a_cli_whose_runtime_vanished_after_discovery_is_reported_and_skipped, a_stop_kills_a_live_bootstrap_child_and_ends_the_drain, a_surviving_grandchild_ends_the_drain_at_its_budget, host_fixture}` — the `host_fixture`
+  helper runs in the parent as a no-op and in each child as the case). Unlike
+  §2.5 there is a red leg to account for, and this paragraph is that accounting:
+  the run is used for numbers because the measurements are per line of *this*
+  scope, whose own tests all ran; it is not described as green.
+* The headless flavour does not compile `skills_bootstrap.rs` (`mod` is
+  `#[cfg(feature = "gui")]`), so all of that file's numbers come from the gui leg
+  and the union only adds the other eleven scopes.
+
+| file / scope | T12 (§2.5) | T13 | attribution of the move |
+|---|---|---|---|
+| `src/terminal/server.rs` | 58 | 58 | no net move: the oscillating pair swapped (`533` uncovered here, `539` covered; §4.1's 535 row names both members and the counts behind them) |
+| `src/terminal/pty.rs` | 18 | 18 | — |
+| `src/terminal/session.rs` | 14 | 14 | — |
+| `src/terminal/manager.rs` | 7 | 7 | — |
+| `src/terminal/shell.rs` | 11 | 11 | — |
+| `src/terminal/cwd.rs` | 3 | 3 | — |
+| `src/headless/mod.rs` | 44 | 44 | — |
+| `src/headless/agent.rs` | 1 | 1 | — |
+| `src/cli_tool.rs` | 11 | 11 | — |
+| `src/agent_host.rs` | 20 | 20 | — |
+| `src/agent_supervisor.rs` | 50 | **42** | −8: **200-206 and 210** read `DA>0` in this run. **Not claimed as closed** — see §4.1's rewritten row: the "Cleanup failed" waiter dialog was *shown* by a quit whose stop returned `Err`, and 207-209 (the confirmation callback) stayed uncovered because a native `rfd` dialog cannot be clicked from a test. The trigger is load-dependent, so these eight can return to the residual. |
+| `src/skills_bootstrap.rs` | 17 | **11** | −10 production lines closed (28-30, 49, 53, 54, 69, 70, 72, 80) and +4 of the new fixture's own fail-only arms (349, 393, 525, 526) = **−6** |
+| **total** | **254** | **240** | **−14** |
+
+**254 → 240, attributable line by line.** The D13 fixture closes ten production
+lines and adds four ($254 - 6 = 248$ for this file's row), and the remaining
+$-8$ is the measured `agent_supervisor` movement above, which this segment does
+**not** claim: $254 - 6 - 8 = 240$. Of the thirteen lines this todo was opened for
+(28-30, 49-54, 69-70, 72, 80, all `DA:0` in the T12 report), **ten are covered**
+(28-30, 49, 53, 54, 69, 70, 72, 80) and **three are the kill-error arm**
+(50-52), which the two stop cases cannot execute because `kill()` returns `Ok`
+for a live child and `Ok` again for one the plugin has already reaped (§4.1).
+
+**What the total does and does not claim.** 240 is the measured residual at the
+T13 revision, not zero. 217 lines are classified in §4.1 and **23 remain OPEN**
+in §4.2, all in `headless/` and `terminal/session.rs`; the `skills_bootstrap`
+row is gone and every one of its eleven residual lines is named.
+
+The gate reads the T13 union (`.future/cov100/pairings.json`, pairing
+`tauri-headless`: `report` re-pointed, `expect` 240/240). Verbatim from
+`python3 .future/cov100/staletable.py --gate`:
+
+```
+tauri-headless             authoritative    module-tauri-headless.md        240    240      0      0       0 section       PASS
+```
+
+(columns: `claims 240 / uncovered 240 / STALE 0 / ABSENT 0 / COVERED 0`, the
+section needle resolving to §4.1's heading; the same line read `254 254` after
+§2.5. The command as a whole still exits non-zero, on six pairings outside this
+unit — four whose `/tmp` reports are no longer retained (`tauri-shell`,
+`tauri-appdata`, `tauri-remote`, `tauri-shell-seg2`) and the two justification
+mismatches `channels-wide` and `cli-wide` §2.5 already recorded.)
 
 ## 3. What changed
 
@@ -388,53 +671,117 @@ reused where they apply.
 
 ### 4.1 Waived (checked against the code and against the measurement)
 
-Line numbers below are those of the **segment-3 union** report
-(`/tmp/tauri-tau3-union-lcov.info`), the one §2.2 tabulates and §8.7 verifies
-(`MISSING 0 / STALE 0`). The **after-2** table in §2 is retained as history: the
-third segment's gate fixes added lines above several test residues, so its
-numbers are not these. §4.4 is the explicit crosswalk between the two revisions;
-it exists because an audit pointed at the retained after-2 artifact reports 27
-lines as "unmentioned" and 13 as "stale" — both are revision effects, not gaps
-in this ledger.
+Line numbers below are those of the **T13 union** report
+(`.future/cov100/tauri-tau-t13-union-lcov.info`, measured at the TAU-D13 revision;
+§2.6), the report the pairing is re-pointed at. §4.4 is the explicit crosswalk
+between the retained after-2 artifact and the D8 union; it exists because an
+audit pointed at the retained after-2 artifact reports 27 lines as "unmentioned"
+and 13 as "stale" — both are revision effects, not gaps in this ledger.
+
+**Closed by the TAU-D13 fixture (2026-10-18): 10 lines.** §4.2's
+`skills_bootstrap` row is gone, and the lines it named are covered by the three
+stop/TOCTOU cases of §10 (`skills_bootstrap.rs` 28-30, 49, 53, 54, 69, 70, 72,
+80). The same measurement *added* four lines to this table, all in the new
+fixture module and all fail-only (349, 393, 525, 526). Three of the row's
+thirteen lines were **not** closed: 50-52, the body of
+`if let Err(error) = child.take().unwrap().kill()`. Both stop cases take the `Ok`
+side — a live child is killed, and a child the plugin has already reaped answers
+`Ok(())` because `std::process::Child::kill` is a no-op once the handle is
+cleared — so that arm needs a third state this host does not produce (§10.4).
+Also new in this report is **533** on the oscillating side: 539 was `DA:0` in T12
+and reads `DA>0` here, the same pair the other way round, and the 535 row below
+names both movers with the counts that predict exactly this.
+
+**Closed by the TAU-D12 fixtures (2026-10-18): 36 lines.** §4.2's two rows are
+gone, and the lines they named are covered by the subprocess cases of §9
+(`agent_host.rs` 83, 88, 116, 147-150, 200, 233, 234, 334-336 and
+`agent_supervisor.rs` 58-62, 70-75, 92-93, 116, 122, 125-130, 190, 193-194). The
+same measurement *added* 19 lines to this table: the two fixture modules live in
+the files they drive, and their must-not-fire arms carry mechanisms below. Also
+new in this report is **265** on the oscillating side (§4.2's old row called it
+covered in D9; it reads `DA:0` here) and **539** on the other (§4.1's 535 row
+names both movers and which way each read).
+
+**Closed by the TAU-D10 measurement (2026-10-18):** four lines that the previous
+tables called constructions are now covered by tests, and their rows are gone:
+`cwd.rs` 206 (`a_read_only_thread_is_refused_by_name` sets the `readonly` column
+over a raw connection and asserts the `THREAD_READONLY` refusal),
+`agent_supervisor.rs` 65-66 (`closing_admission_rejects_new_commands_without_losing_active_guards`
+now polls `agent_status` while admission is closed and no stop operation exists),
+and `manager.rs` 361 (`retention_never_evicts_a_running_session` now puts the live
+tab at the *oldest* position of the exit order, so the eviction loop really pops
+it and skips it). The comment in `cwd.rs`'s deleted-thread test that said
+"nothing ever writes `readonly = 1`" was replaced by the fixture above it, because
+that sentence described the API surface, not reachability.
+
+**Covered in the same measurement, but not by this unit's tests.** Five lines
+left the headless ledger without a new test here: `headless/mod.rs` **147-149**,
+**188**, **220-221** and **281**. The PTY fixture this record had prescribed for
+147-149/281 now exists in another unit's integration target —
+`desktop/src-tauri/tests/remote_start_refusal.rs` calls `openpty` and spawns the
+real `futureos-headless` with both streams on a pty (and
+`tests/re_pair_entry_points.rs` does the same for the `--re-pair` entry points),
+which is exactly what `require_terminal` needed. The remaining three are reached
+by those runs' supervision loop (the `available` phase arm and the invitation
+bookkeeping). `agent_host.rs` **265** also left (§4.2), on the oscillating
+side of its own family. None of these is claimed as a closure of this segment's
+work: they are measured covered by tests that landed after the D8 report.
 
 | lines | category | mechanism |
 |---|---|---|
 | `pty.rs` 161-165, 621-622 | `platform-unmeasured` | The `if cfg!(windows)` UTF-8 code-page block and its mirror assertion in `the_child_environment_is_scrubbed_and_tagged`: `cfg!` compiles both arms, so on macOS the five `command.env(…)` lines exist but never run. A Windows measurement executes them; the *unix* half of the same test is covered. |
 | `pty.rs` 434, 456 | `unreachable-by-construction` | The two timeout returns of the test helpers `wait_for` / `wait_for_exit`. Every caller asserts a needle or an exit code that its fixture produces within 20 s; reaching either line means the assertion after it fails, i.e. only a failing run executes it. |
 | `pty.rs` 745-747, 787-789, 792 | `unreachable-in-this-environment` | The deadline arm (message argument + 20 ms sleep) of the two teardown tests' reap loops: on this host the signalled child is usually already reaped by the first `try_wait`, so the loop does not spin. It *did* spin in the segment-3 union run, which closed 744, 785 and 786; the lines that stay uncovered are the same arms on the other polls. Needs a host where reaping the killed child is reliably slower than one poll (§8.3). |
-| `pty.rs` 843, 886; `cli_tool.rs` 338; `skills_bootstrap.rs` 223, 253, 271; `headless/mod.rs` 919, 923; `cwd.rs` 451, 454 | `unreachable-in-this-environment` | Fixture restores written as `match saved { Some(v) => set, None => remove }`. The `None` arm needs the variable to have been **absent** from the process environment when the test started; the campaign harness always sets `PATH` (PLAN §2) and the fixtures set the rest. Measured stable here: that arm did not fire in any of this unit's runs. The `cli_tool` entry is now the segment-3 guard's own `None` arm (`EnvGuard::drop`); the four hand-written restores it replaced are gone from the file, so they are no longer rows at all — renumbered at `8449acf` they were `cli_tool.rs` 456, 479, 511, 535 (§8.3). |
+| `pty.rs` 843, 886 | `unreachable-in-this-environment` | Fixture restores written as `match saved { Some(v) => set, None => remove }`. The `None` arm needs the variable to have been **absent** from the process environment when the fixture started; `PATH` is always set by the campaign harness (PLAN §2). |
+| `skills_bootstrap.rs` 223, 253, 271 | `unreachable-in-this-environment` | The same restore shape (`match saved { Some => set, None => remove }`); the variables these fixtures pin are always present when the guard is created. |
+| `headless/mod.rs` 952, 956 | `unreachable-in-this-environment` | The same restore shape in `with_path_and_broken_agent`: `PATH` is set by the harness, and `FUTURE_AGENT_GRPC_ADDR` is installed process-wide by the agent-bridge mock (`agent_bridge/test_support.rs:323`), which is why 952 and 956 read `DA:0` while their `Some` arms (951, 955) are each hit 4 times. |
+| `cwd.rs` 451, 454 | `unreachable-in-this-environment` | The same restore shape; the pinned variable is present for the fixture's lifetime. |
 | `session.rs` 526 | `unreachable-by-construction` | `on_eof` collects subscriber keys and then re-looks-up each token **under the same `MutexGuard`** (`inner` is locked at 522 and held through 533). A key taken from `keys()` therefore cannot be missing; the `else { continue }` arm is the compiler's requirement, not a reachable state. Evidence: 522-525 and 527-533 are covered in the same run. |
-| `session.rs` 611, 796, 853, 1022, 1046, 1223, 1264, 1284, 1289; `manager.rs` 533 | `unreachable-by-construction` | Failure-only code: the helper's timeout `panic!` (611), the message arguments of passing assertions (`inner.buffer.len()`, `String::from_utf8_lossy(…)` ×5, `listed.len()`, `started.elapsed()`), the untaken arm of a passing `matches!` (1221), and the `Err(_) => break` of the bounded scan that follows a missing exit event (1022 — reaching it means the assertion two lines later fails). A passing run cannot evaluate them. |
-| `manager.rs` 307-310 | `unreachable-by-construction` | `shutdown_checked`'s "Terminal children did not exit" error needs a session whose child is still un-reaped after `shutdown_all`, i.e. a process that survives `SIGKILL`. No fixture can provide one. |
-| `manager.rs` 355, 361, 365 | `unreachable-by-construction` | `prune_exited`: `pop_front` cannot return `None` while `exit_order.len() > EXITED_LIMIT ≥ 0`; an id enters `exit_order` only while its session is exited, ids are issued monotonically and never reused, so a still-running session can never be in that queue; 365 is the closing brace of that never-taken branch. Evidence: 350-354, 356-360, 362-364, 366-368 are covered in the same run. |
+| `session.rs` 611, 796, 853, 1022, 1046, 1223, 1264, 1284, 1289 | `unreachable-by-construction` | Failure-only code: the helper's timeout `panic!` (611), the message arguments of passing assertions (`inner.buffer.len()`, `String::from_utf8_lossy(…)` ×5, `listed.len()`, `started.elapsed()`), the untaken arm of a passing `matches!` (1221), and the `Err(_) => break` of the bounded scan that follows a missing exit event (1022 — reaching it means the assertion two lines later fails). A passing run cannot evaluate them. |
+| `manager.rs` 533 | `unreachable-by-construction` | The message argument of a passing assertion in the `shutdown_all` fixture; a passing run cannot evaluate it. |
+| `manager.rs` 307-310 | `unreachable-in-this-environment` | `shutdown_checked`'s "Terminal children did not exit" error needs a session whose child is still un-reaped after `shutdown_all`, i.e. a process that survives `SIGKILL`. That is an OS state (a child in an uninterruptible wait, or a zombie held by another reaper), not a code invariant — the ledger's own definition puts "a broken filesystem, a full pipe, ENOSPC" in this category — and the fixture that would reach it is a host where `SIGKILL` cannot take effect. Evidence: 300-306 are covered in the same run. |
+| `manager.rs` 355, 365 | `unreachable-by-construction` (355) / `attribution-artifact` (365) | (355) `pop_front` cannot return `None` while `exit_order.len() > EXITED_LIMIT ≥ 0`, so the `break` is the compiler's obligation. (365) the closing brace of the loop body, reached only when the eviction branch removes an id: 359-364 are covered in the same run (5-6 hits each, 361 once) and 363-364 are the eviction itself, which is the neighbour evidence the `attribution-artifact` label requires. |
 | `pty.rs` (sweep) | — | not a waiver: the `ps`-based session sweep is empty on macOS, so it is *covered* through a fixture `ps` rather than through the platform query — see §5.1. |
-| `cli_tool.rs` 82 | `platform-unmeasured` | The `name = if cfg!(windows) { "future.exe" } else { "future" }` arm. `cfg!` compiles both arms, so on macOS the Windows spelling exists but never runs; a Windows measurement executes it. |
-| `cli_tool.rs` 91 | `unreachable-in-this-environment` | The `"bundled"` source label needs a `future` binary **in the directory of the running executable**. A libtest binary lives in `target/<flavor>/deps/`, which the harness never populates, and populating it would break the sibling discovery tests that rely on the bundled candidate being absent. (The baseline run *did* cover it — it measured from the main worktree, whose `target/debug/` carries a built CLI; this is an environment difference, not a code change.) |
-| `cli_tool.rs` 223-226 | `unreachable-in-this-environment` | The `try_wait`-failed arm of `probe`. Needs `Child::try_wait` to return `Err` for a live child this process spawned; no fixture can make `waitpid` fail there. |
-| `cli_tool.rs` 231, 243 | `unreachable-in-this-environment` | The two post-exit re-checks of the output limit. The poll loop (208-218) already kills a child as soon as *either* stream passes 64 KiB, so reaching these lines requires the child to grow a stream past the limit **between** the loop's last `metadata()` call and its `try_wait` returning `Some` — a microsecond window with no deterministic fixture. Evidence: 208-218 (the kill + "exceeded its output limit") are covered by `a_flooding_cli_is_killed_at_the_output_limit`. |
-| `cli_tool.rs` 294 | `attribution-artifact` | The closing brace of `if let Some(path) = std::env::var_os("PATH")` in `prepare_path`; its `None` region. Evidence: 292-293 (the `directories.extend` on the `Some` path) and 295-299 are covered in the same run. |
-| `cli_tool.rs` 598 | `unreachable-by-construction` | The message argument of `assert!(started.elapsed() >= …)` in the timeout test — evaluated only when the assertion fails. (It was 567 before the segment-3 guard added lines above it; the row moved.) |
+| `cli_tool.rs` 83 | `platform-unmeasured` | The `name = if cfg!(windows) { "future.exe" } else { "future" }` arm. `cfg!` compiles both arms, so on macOS the Windows spelling exists but never runs; a Windows measurement executes it. |
+| `cli_tool.rs` 92 | `unreachable-in-this-environment` | The `"bundled"` source label needs a usable `future` file **in the directory of the running executable**, i.e. beside the libtest binary in `target/<flavor>/deps/`. Writing one there would also make `resolve()` succeed for `host_environment::tests::a_host_without_a_resolvable_cli_still_starts_logging`, which asserts `resolve().is_err()` with an empty `PATH` and does **not** take `TEST_HOME_LOCK`; a scoped guard therefore cannot protect it under CI's parallel run. Evidence: 93-99 (the `"path"` label) are covered in the same run. |
+| `cli_tool.rs` 285-288 | `unreachable-in-this-environment` | The `try_wait`-failed arm of `probe`. Needs `Child::try_wait` to return `Err` for a live child this process spawned; no fixture can make `waitpid` fail there (the process has no `SIGCHLD` reaper). Evidence: 283 (`Ok(Some)`) and 284 (`Ok(None)`) are covered. |
+| `cli_tool.rs` 293 | `unreachable-in-this-environment` | The post-exit stderr re-check of the output limit. The poll loop (267-281) already kills a child as soon as *either* stream passes 64 KiB, so reaching this line requires stderr to grow past the limit **between** the loop's last `metadata()` call and the `try_wait` that returns `Some` — a microsecond window with no deterministic fixture. Evidence: 267-280 (the kill + "exceeded its output limit") are covered by `a_flooding_cli_is_killed_at_the_output_limit`. |
+| `cli_tool.rs` 305 | `unreachable-in-this-environment` | The post-exit stdout re-check, same window as 293: `stdout.take(LIMIT + 1)` can only read past the limit if the file crossed it after the loop's check. Evidence: 298-304 are covered. |
+| `cli_tool.rs` 356 | `attribution-artifact` | The closing brace of `if let Some(path) = std::env::var_os("PATH")` in `prepare_path`; its `None` region. The `Some` path is what the harness produces. Evidence: 354-355 (the `directories.extend`) and 357, 359-361 (`set_var` / `join_paths` / `Ok`) are covered in the same run (358 is a string line with no `DA` record). |
+| `cli_tool.rs` 672 | `unreachable-by-construction` | The message argument (`started.elapsed()`) of `assert!(started.elapsed() >= …)` in `a_silent_cli_is_killed_and_reported_as_a_timeout` — evaluated only when the assertion fails. (It was 598 at the union revision; `1876ffe78` moved it to 672, §2.3.) |
+| `cli_tool.rs` 759 | `unreachable-by-construction` | The `panic!("without a deadline the fixture's reply must be captured: …")` body of the `unwrap_or_else` closure in `a_reply_that_arrives_after_the_deadline_is_captured_only_without_one`. The closure runs only when the no-deadline probe returns `Err`, which is the failure the surrounding test exists to report. This statement is new since the union revision (the NEW-B seam, §2.3). |
 | `skills_bootstrap.rs` 104 | `unreachable-by-construction` | `CommandEvent`'s `#[non_exhaustive]` wildcard `_ => {}` in `handle_skill_event`. The compiler requires the arm and the released enum has no further variants (`.future/memory/coverage-llvm-cov.md`, "`CommandEvent` 是 `#[non_exhaustive]`"). |
-| `agent_supervisor.rs` 33 | `unreachable-by-construction` | `ensure_agent_running`'s real body is inside `#[cfg(not(test))]`. The lib is compiled twice (`cfg(test)` for the unit tests, without it for the bins/integration tests); only the former is executed by any test binary, which is the documented cfg-split residue (`.future/memory/coverage-llvm-cov.md`, "lib 双编译合并"). |
-| `agent_supervisor.rs` 41, 45 | `unreachable-by-construction` | The `return false` of `ensure_agent_ready_for_login`: in `cfg(test)` `ensure_agent_running` is a constant `Ok(())` (lines 35-38), so `!matches!(…)` cannot be false in a test binary and the guard needs a real embedded-Agent start that returns `Err`. |
-| `agent_supervisor.rs` 65-66 | `unreachable-by-construction` | The `is_stopping() → "stopping"` arm of `agent_status` requires `snapshot() == None` **and** `is_stopping() == true`. `coordinator::begin` sets `ADMISSION.closed = true` and registers the operation in one critical section, and neither is ever cleared, so the first branch (57) always wins. Evidence: 57-62 are covered in the same run. |
+| `skills_bootstrap.rs` 50-52 | `unreachable-in-this-environment` | The body of `if let Err(error) = child.take().unwrap().kill()` — the cancellation-failed report. Measured, not assumed: the two stop cases of §10 take both sides of the call and both read the `Ok` side (49 and 53/54 are covered, 50-52 are not). A **live** child we spawned is killable, and a child the plugin's wait thread has already reaped answers `Ok(())`: `shared_child`'s `wait` reaps through `std::process::Child::wait`, and `Child::kill` is a no-op once the handle is cleared — measured on this toolchain with a three-line program (`spawn → wait → kill` prints `Ok(())`). The error needs `libc::kill` to fail for a *live* child the process owns (`EPERM`/`ESRCH` from a signal-ignoring or re-parented child), which this harness cannot construct without a `kill` seam. |
+| `skills_bootstrap.rs` 349, 393, 525, 526 | `unreachable-by-construction` | The new fixture's must-not-fire arms (§10): (349) the timeout guard of `run_case` — kill and reap the child that outlived its 120 s deadline; (393) `wait_until`'s trailing `ready()`, the timeout answer whose callers assert on the condition it re-reads; (526) the unknown-case `panic!("unknown case {case}")`; and (525) the fall-through brace before that panic, which the branch above (`return` at 524) never reaches. Each ends the run or is only reached by a failing run — the same class as `session.rs` 611 and `agent_supervisor.rs` 422-424. The passing assertions' arguments were hoisted at 351-354 and 519-523 so they are not residual lines. |
+| `agent_supervisor.rs` 33 | `unreachable-in-this-environment` | `ensure_agent_running`'s real body is inside `#[cfg(not(test))]`: it runs in the **non-test** lib copy, i.e. only in a real application run, and it is reached from the GUI entry point (`commands/login.rs`), not from the headless binary, which never calls it. Fixture that would reach it: a GUI application run; the campaign harness has none. The cfg split is a fact about which binary is executed, not an invariant in the code. |
+| `agent_supervisor.rs` 41, 45 | `unreachable-in-this-environment` | In the **bin** copy `ensure_agent_running` performs the real embedded-Agent start, so a start that returns `Err` (a held instance lock, an unusable runtime dir) makes `!matches!(…)` true and returns `false` at 45. The old mechanism ("in `cfg(test)` the callee is a constant `Ok(())`") describes the test copy, not the line. Fixture: a GUI application run whose embedded-Agent start fails. Evidence: 35-40 are covered in the same run. |
 | `agent_supervisor.rs` 157-160, 162, 164-182 | `unreachable-in-this-environment` | `confirm_quit` builds and shows a dialog: it selects one of two messages, then chains `.dialog().message(…).title(…).kind(…).buttons(…)`, optionally `.parent(&window)`, and calls `.show(…)`. `tauri-plugin-dialog` drives **`rfd`'s native modal dialog**, i.e. a real window on this host that no automated run can dismiss. |
-| `agent_supervisor.rs` 196-220 | `unreachable-in-this-environment` | `request_quit`'s waiter thread: it runs the real stop operation, then either shows the same native "Cleanup failed" dialog or calls `app.exit(0)` — a process exit from inside a mock app. Not callable from a test binary without a dialog/exit seam. |
-| `server.rs` 115-117 | `unreachable-by-construction` | `spawn_server_task`'s `#[cfg(not(test))]` half: `crate::runtime::spawn` exists only in the non-test lib copy, which is linked but never driven by a test binary. Same cfg-split class as `agent_supervisor.rs` 33. |
+| `agent_supervisor.rs` 207-209, 211, 216-218 | `unreachable-in-this-environment` | What is left of `request_quit`'s waiter thread: (207-209) the confirmation callback of the "Cleanup failed" native dialog, (211) its closing brace after the `return`, and (216-218) the dialog shown when the waiter thread itself fails to spawn — `rfd` dialogs, not clickable from a test binary without a dialog seam. **Correction, measured in T13:** the row used to say 200-211 could not be *shown* at all; it can. In this run **200-206 and 210 read `DA>0`**: a quit whose stop operation returned `Err` (load-dependent; the same line was `DA:0` in D9 and T12) reached the dialog and called `.show(…)`, which on this host really opens a window. The callback body (207-209) still never runs because nothing clicks it, so the eight lines are **not claimed as closed** and may return to the residual on a quieter run. The rest of the waiter body is covered: the macOS-only mock-loop test `gui::startup_paths_tests::an_exit_requested_from_the_mock_loop_takes_the_guarded_quit_arm` takes the Proceed arm and publishes the stop, and the D8 union measures `DA>0` at 188, 189, 191, 192, 196-199, 212-215, 219 and 220. |
+| `agent_supervisor.rs` 422-424, 426-427, 461, 571-572 | `unreachable-by-construction` | The supervisor fixture's must-not-fire arms (§9): the timeout guard (kill the child, then panic with its output at 424), the accept-error panic, and the unknown-case panic with the fall-through brace before it. Each ends the run, so a passing run cannot evaluate them — the same class as `session.rs` 611 and `manager.rs` 533. The harness's passing assertion was hoisted for this reason (436-437 would otherwise be a residual line too). |
+| `agent_host.rs` 124-126 | `unreachable-in-this-environment` | The `Err` arm of the worker-thread spawn in `start`: `std::thread::Builder::spawn` must fail (EAGAIN). No input the fixture controls makes `pthread_create` fail on this host; the builder (98-104) and the closure (105-123) are covered in the same run, so this arm is the only part of the statement nobody can execute. A thread-exhaustion fixture would be a different claim (it would also starve the harness), and this record does not make it. |
+| `agent_host.rs` 216, 223, 250 | `unreachable-in-this-environment` | Three `phase != Starting` re-reads inside `run`: after the probe resolves (216), on entering the service scope (223), and after `initialize` returns (250). Each is a microsecond window between an awaited step and a lock; a stop that lands *during* the probe takes the biased `probe_cancel` arm (193, covered), and the deterministic cancellations the fixture builds (§9) block strictly before these windows. Reaching one needs a stop inside a lock acquisition or inside the `cancellation.check`-free tail of `initialize` — an ordering, not a state, and this record does not claim a race. Evidence: 214-215, 219-226 and 246-249 are covered in the same run. |
+| `agent_host.rs` 265-266 | `unreachable-in-this-environment` | The drain arm's clean continuation. `wait_for_shutdown` wins the *unbiased* `select!` at 262 (1 hit here), the `ensure!` at 263 is evaluated and its message at 264 runs — one hit each, i.e. the report was **not** `Stopped` and the arm returned there. **265** (`server.as_mut().await?`) was executed once in the D9 union and returned `Err`; **266** is the `break` after an await that completed `Ok`, and no run has ever taken it. The pair needs a `Stopped` drain report while the server future is still pending *and* a server that then completes cleanly. Named individually, with both readings, because 265 moved between reports: `DA:1` in D9, `DA:0` here. |
+| `agent_host.rs` 281 | `attribution-artifact` | The closing brace of the `if let Ok(identity) = ready` body. The body (273-280) and the arm's join (283) are covered in the same run; the `if let`'s false side is an `Err` readiness channel, which skips the body and lands on 282. |
+| `agent_host.rs` 289 | `unreachable-by-construction` | The message argument (`report.errors.join("; ")`) of the `ensure!` at 286: arguments are evaluated only when the condition fails, so reaching this line means the assertion two lines later fails. The same class as `session.rs` 611. |
+| `agent_host.rs` 373 | `attribution-artifact` | The closing brace of the parse branch in `start_timeout` (the `#[cfg(test)]`-only deadline override, §6). The fixture sets a valid millisecond value, so 370-372 execute; 375-376 execute in every other start. Only the malformed-value join region has no counter. |
+| `agent_host.rs` 462-464, 466-467, 514, 572, 709-710 | `unreachable-by-construction` | The host fixture's must-not-fire arms (§9): the timeout guard (kill, collect, panic with the child's output), the unexpected-open panic in `blocked_reader`, the accept-error panic, and the unknown-case panic with its fall-through brace. A passing run cannot evaluate any of them. |
+| `server.rs` 115-117 | `unreachable-in-this-environment` | `spawn_server_task`'s `#[cfg(not(test))]` half: `crate::runtime::spawn` exists only in the non-test lib copy, and the only process that executes that copy is a real Desktop application run (the headless binary does not compile `terminal/`, so `tests/headless_cli.rs` cannot reach it either). The record's own §4.2 last paragraph calls this a "blind spot … rather than as waivable work" — that is a reachable-in-this-environment statement — and the category now says the same thing. Evidence: 111-114 are covered in the same run. |
 | `server.rs` 149, 157, 525, 704, 168, 1184, 1900 | `unreachable-by-construction` / `attribution-artifact` | Four invariants: (149) the connection `Semaphore` is owned by `SERVER` and never closed, so `acquire_owned` cannot fail; (157) `SERVER` is a `OnceLock` set once in `bind` and never cleared, so the `if let Some(server)` guard is always true inside the accept loop; (525) the pump holds `Attachment` (which owns `Arc<Session>`), so its subscriber — and therefore the event sender — outlives the loop and `recv()` cannot return `None`; (704) the header loop runs over `buffer[..head_end]`, a slice that ends before the terminating `CRLFCRLF`, so no line it yields is empty. 168, 1184 and 1900 are closing-brace / `})` regions of test helpers and of the `spawn_server_task` call. Evidence for each: the neighbouring lines (148-156, 500-524, 700-703) are covered in the same run. |
-| `server.rs` 535, 539 | `unreachable-in-this-environment` | The pump's "the shell is gone, so this input frame could not be written" arms (539 for a `Text` frame, 535 its closing brace). Reaching them requires a client input frame to be processed **before** the `SessionEvent::Exited` that ends the tunnel in the same `select!` — an ordering, not a state, which is why this family oscillates between runs (§2.0): 533 was covered in the segment-3 union run and is uncovered in the pre-segment-3 one. |
+| `server.rs` 533, 535 | `unreachable-in-this-environment` | **The oscillating family, named: 533 and 539** — the two `break`s of "the shell is gone, so this input frame failed to write" (533 `Binary`, 539 `Text`) — plus the closing-brace region of the `Binary` decode arm, which is the stable member. Reaching any of them needs a client input frame to be processed **before** the `SessionEvent::Exited` that ends the tunnel in the same `select!`; that is an ordering, not a state. Measured over five runs of `terminal::server::` plus six runs of the single pump test: **533 covered in 2/5, 539 in 1/5; 535 covered in 0/15**, including the two runs in which 533 itself executed. So 533 and 539 are the movers and 535 is the stable brace. In **D9** both movers read `DA>0` and only 535 was claimed; in **T12** 539 read `DA:0` while 533 read `DA:1` and the row claimed 535 + 539; in **T13** the pair flipped back — 533 reads `DA:0` and 539 `DA>0` — so this row claims **533 + 535** and 539 is the covered member this time. The 1/5-and-2/5 distribution predicts exactly this alternation. Whichever member is uncovered in the report cited is claimed; a range across the two would be STALE in one direction or the other. Fixture: none without asserting a race; the only deterministic route is a scripted `select!` ordering seam, which this record does not propose. Evidence: 531, 532, 534, 537 and 538 are covered in the same run (536 has no `DA` record). |
 | `server.rs` 140-142, 163-164, 496-497, 519-523 | `unreachable-in-this-environment` | (140-142) `TcpListener::from_std` must fail for a listener `bind` just created; (163-164) a transient `accept` error (EMFILE/ECONNABORTED) must occur; (496-497) the subscriber must be removed between `attach` and `activate`, a microsecond window the pump itself keeps empty; (519-523) a viewer must accumulate > `SUBSCRIBER_LIMIT` (1 MiB) of *unread* pending output before its `activate` call — the pump activates immediately after attach, so only a scheduler stall could produce it. |
 | `server.rs` 1349-1353, 1962-1966, 1992-1996 | `platform-unmeasured` | The e2e's own DSR answering blocks (`answered_dsr = true; socket.send(Text("\u{1b}[1;1R"))`). A Windows ConPTY shell emits the query and blocks; the unix shell these tests spawn does not, so the arm never runs here. A Windows measurement executes it — the same reason `docs/testing/module-tauri.md` §6.1 had to teach the e2e to answer it on Windows. |
 | `server.rs` 1342-1346, 1135, 1953, 1956, 1988, 2025, 2061 | `unreachable-in-this-environment` | The e2e loops' "some other frame arrived" / "nothing more" arms: the fixture shell emits no Text frame and never errors between the awaited frames, so no other variant is queued in those windows. (1135) `shared_server`'s `if let Err(error) = serve()` body — the *first* caller binds and serves, so a later caller is the only one that can see `serve` fail; the segment-3 runs did not reach it. |
 | `server.rs` 1756, 1957-1959, 1989, 2026, 2062, 2617 | `unreachable-by-construction` | Fail-only assertions and loop-exit arms of the e2e: `panic!("socket error: …")`, `Err(_) => break`, and `panic!("the pump never wrote the control frame")`. Their loop guard is the awaited frame itself, so reaching one means the assertion immediately after it fails — only a failing run executes them. |
-| `cwd.rs` 253 | `attribution-artifact` | The message argument of `assert!(!resolved.to_string_lossy().starts_with(r"\\?\"))` — evaluated only on failure. |
-| `cwd.rs` 206 | `unreachable-by-construction` | `resolve_for_thread`'s `ThreadNotWritable` arm needs a thread row with `readonly = 1` or `deleted_at` set. No store API writes either (`delete_thread` hard-deletes), which the file's own test `a_thread_resolves_to_its_own_workspace_and_is_refused_once_deleted` already documents. |
+| `cwd.rs` 253 | `unreachable-by-construction` | The message argument of `assert!(!resolved.to_string_lossy().starts_with(r"\\?\"))` — evaluated only when the assertion fails, the same failure-only class as `session.rs` 611 and `manager.rs` 533. It was labelled `attribution-artifact`, which needs neighbouring covered lines as evidence for a brace/macro region; there are none to offer (251 is covered, 254 has no `DA` record), so the label moves to the class that describes the construct. |
 | `shell.rs` 108, 113 | `unreachable-in-this-environment` | `account_login_shell`'s two `None`s need `getpwuid_r` to fail or to return an empty login shell. This host always resolves one for the current uid. |
-| `shell.rs` 303, 315 | `unreachable-by-construction` | (303) both producers of a candidate (the account shell, `SHELL`) already reject an empty value, so `path.as_os_str().is_empty()` is never true; (315) the `Some(path)` arm for a *relative* candidate requires the candidate loop to reach a non-absolute path, which needs the account login shell (always absolute and executable) to be rejected first — see 325. |
+| `shell.rs` 303 | `unreachable-by-construction` | Both producers of a candidate (the account shell, `SHELL`) already reject an empty value, so `path.as_os_str().is_empty()` is never true. |
+| `shell.rs` 315 | `unreachable-in-this-environment` | The `Some(path)` arm for a *relative* candidate requires the candidate loop to reach a non-absolute path, which needs the account login shell (always absolute and executable here) to be rejected first. That is a host state — the same one the next row names — and the two rows must not carry different categories. Fixture: a host whose account login shell is missing or relative, with no usable `/bin/bash` or `/bin/sh` fallback. |
 | `shell.rs` 325, 329-332 | `unreachable-in-this-environment` | `tried.push` and the final `SHELL_UNAVAILABLE` error need **every** candidate unusable, including `/bin/bash` and `/bin/sh`. Needs a host without either. |
 | `shell.rs` 296, 352 | `attribution-artifact` | Closing-brace regions of the `SHELL`-candidate push (296: the `if !shell.is_empty()` block) and of the `/etc/shells` read (352). Evidence: 291-295 and 344-351 are covered in the same run. |
-| `headless/mod.rs` 281, 352, 624-626, 811, 948, 1098 | `unreachable-by-construction` | (281) `require_terminal`'s `Ok(())` needs both `stdin` and `stdout` to be terminals, which a libtest process never has; (352) the closing brace of `ensure_login`'s `match fetch_profile()` — the match is exhaustive over `AppError`, so the fall-through region is impossible; (624-626, 811, 948) test code that the test *asserts is not executed* (`interrupt_drops_pending_startup_before_it_can_complete` drops the second future before it runs, `interrupt_cancels_an_already_waiting_authorization_request` asserts the drop happened) and the discovery-failure panic in `the_builtin_skill_bootstrap_runs_the_cli`; (1098) the `Err(_) => return` of the mock HTTP server's bounded accept. |
-| `headless/mod.rs` 313-315 | `unreachable-in-this-environment` | The spawn-failure arm of `bootstrap_builtin_skills`. To reach it the CLI must pass `usable()` **and** the identity re-read (which pins length, mtime and inode) and then fail to spawn; any change to the file between those two points is exactly what the re-check rejects. Same TOCTOU class as `skills_bootstrap.rs` 28-30. |
+| `headless/mod.rs` 352, 649-651, 981 | `unreachable-by-construction` | (352) the closing brace of `ensure_login`'s `match fetch_profile()` — the match is exhaustive over `AppError`, so the fall-through region is impossible; (649-651) the body of the future passed to `until_shutdown` in `interrupt_drops_pending_startup_before_it_can_complete`, which the test asserts *never completes* (`completed` is false at 654); (981) the `Err(error) => panic!("the fixture CLI must be accepted by discovery")` arm of a `match` the fixture's CLI must satisfy — reaching it is the failure. |
+| `headless/mod.rs` 1131 | `unreachable-in-this-environment` | The `Err(_) => return` of the mock HTTP server's bounded accept loop, after its `WouldBlock` arm: any other accept error (`ECONNABORTED`, `EMFILE`) is the ledger's own "broken host" class. Fixture: an accept that fails for a reason other than would-block; this host's loopback listener does not produce one. Evidence: the `WouldBlock` arm and the loop body are covered in the same run. |
+| `headless/mod.rs` 836 | `attribution-artifact` | The closing brace of the `async move` block whose last expression is `std::future::pending().await` (835) in `interrupt_cancels_an_already_waiting_authorization_request`. The future is dropped while pending, so it never completes and llvm-cov attributes no hit to the block's end. Evidence: 830-835 and 837 are covered in the same run. |
+| `headless/mod.rs` 313-315 | `unreachable-in-this-environment` | The spawn-failure arm of `bootstrap_builtin_skills`. The T12 row's mechanism ("any change to the file between discovery and the re-check is exactly what the re-check rejects") is **narrower than it read**: the re-check pins the CLI's own identity (length, mtime, inode, ctime), not the *interpreter* its `#!` line names. TAU-D13 measured exactly that on the sibling module: a CLI whose `#!` interpreter is removed after discovery still passes discovery and fails only at `spawn` (`skills_bootstrap.rs` 28-30, §10.2). This arm is therefore **reachable with the same symlink trick** and is the successor's first candidate; it is not closed here because the case belongs in `headless/`'s own fixture, not in this segment's file. |
 | `headless/mod.rs` 354-360, 364, 368-372, 374 | `unreachable-in-this-environment` | The device-code login flow after `require_terminal`: it needs an interactive terminal and a live platform authorization endpoint (`start_with_browser` + `wait_for_login` polling). `wait_for_login` itself is covered directly (§3). |
 
 ### 4.2 OPEN — reachable, not waived, next segment's work
@@ -449,17 +796,24 @@ are classified with their mechanism in §4.1: `terminal/server.rs` 140-142 (a
 transient `accept` error: EMFILE/ECONNABORTED), 163-164 (the same error's
 back-off sleep), 496-497 (the viewer removed between `attach` and `activate`),
 519-523 (a viewer past `SUBSCRIBER_LIMIT` that is still inactive when the pump
-activates it — needs a scheduler stall, not a fixture), 533/535/539 (the
-oscillating pair of §2.0), 1342-1346 and 1953-2062 (the e2e's "some other frame
-arrived" arms), and the `#[cfg(not(test))]` halves (`server.rs` 115-117,
-`agent_supervisor.rs` 33).
+activates it — needs a scheduler stall, not a fixture), **533 and 539** (the
+oscillating pair of §2.0; 535 is its stable brace region, and §4.1 claims the
+member that is uncovered in the T13 report — 533 there, 539 in T12 — naming both
+each time), 1342-1346 and 1953-2062 (the e2e's "some
+other frame arrived" arms), and the `#[cfg(not(test))]` halves (`server.rs`
+115-117, `agent_supervisor.rs` 33).
+
+The `agent_host` / `agent_supervisor` rows this table carried until TAU-D12 are
+**gone**: §9's fixtures covered 36 of their 45 lines, and the 19 that remain
+(plus the two lines that oscillated into the residual) are classified in §4.1
+with their mechanisms. The `skills_bootstrap` row is gone too: §10's three cases
+covered ten of its thirteen lines, and the other three (50-52) are classified in
+§4.1 with the measurement that refuses them. What is left here is the three rows
+below.
 | lines | why it is not covered yet | next step |
 |---|---|---|
-| `agent_supervisor.rs` 58-62, 70-71, 73-75, 92-93, 116, 122, 125-130, 188-194 | `agent_status` / `active_work_count` / `request_quit` need a *controlled* Agent-host phase (`Starting`, `Failed`, `Stopped`, owned activity) or a stop snapshot in flight. `agent_host::host()` is a process-wide singleton and the shutdown flags are sticky, so doing it in the shared libtest process is order-dependent. | a subprocess re-exec fixture in this file (`run_case`, the pattern `src/agent_host/tests.rs` already uses) with an isolated `FUTURE_HOME`/`FUTURE_AGENT_SOCKET`: cases `starting` (unanswering H2 endpoint), `failed` (held instance lock), `stopped` (real start→stop), `claim-action-then-quit` (covers 188-194). |
-| `agent_host.rs` 83, 88, 111, 116, 124-126, 147-150, 200, 216, 223, 233-234, 250, 265-266, 281, 289, 319-320, 334-336 | Each needs a host phase (`Ready`, `Stopped`, `Starting`) or a race this host cannot be made to lose: 111 and 319-320 are the **external-attach** arms (`select_agent` found another Agent, so the worker returns Ready without owning one) and 265-266 its stop path; the host fixtures take that arm only when their mock Agent answers inside `select_agent`'s 2 s connect+handshake budget, which is why those four lines oscillate between runs (covered in the segment-3 `before` run at load 9.6, uncovered in the union run — §8.5). The rest need a real startup timeout/cancel, a worker-thread spawn failure, or an un-reaped child at the stop deadline. | the same subprocess fixture (this file may host it): extend `CASE` handling in an inline `#[cfg(test)] mod` here rather than in `src/agent_host/tests.rs`, which is outside this unit's write set. **Segment 3 closed 160 and 208** with the agent-mode arm of `tests/headless_cli.rs` (§8.2), which shows the shape those two wanted: the *real binary* is a cheaper way to a controlled refusal than a phase injector. |
 | `headless/agent.rs` 15 | `check_running` must observe `Phase::Failed`. | the subprocess fixture below, with a case that forces a failed phase (the segment-3 sessions cover the successful `ensure_running`, so only the failed branch is left). |
-| `headless/mod.rs` 136-138, 147-149, 182, 188, 207-216, 220-221, 224-227 | The rest of `session()`: (136-138) the *failure* branch of the model-catalog refresh; (147-149) the `--re-pair` revocation, which needs an interactive terminal; (182) the "platform login changed" exit, which needs the account key to change mid-run; (188) the `available` arm of the phase line — with an unreachable pairing the supervisor reports `agent_available: false`, so the segment-3 arms take the other arm; (207-227) the pairing invitation, the `Ready` hand-over and the expired-invitation refusal, all of which need a `RemoteStatus` carrying a **pairing code** or `phase == Ready`, i.e. a *successful* `remote::start`. | (136-138) a platform whose **model catalog** endpoint fails while the profile one succeeds; (147-149) a PTY fixture (`portable-pty` is a dependency) so `require_terminal` passes; (188) an arm where the Agent is Ready but the remote start is not; (207-227) a **live NATS broker** — `connect_nats` sets `require_tls(true)` outside `cfg(test)`, and the crate's in-process fake broker (`remote/test_support.rs`) is `#[cfg(test)]`, so it is not linked into the binary. That one is `unreachable-in-this-environment` until this host has a broker with JWT auth and TLS. |
-| `skills_bootstrap.rs` 28-30, 49-54, 69-70, 72, 80 | (28-30) the spawn failure after a successful discovery — a TOCTOU the identity re-check closes (see §4.1 `headless` 313-315 for the same mechanism); (49-54, 69-70, 72, 80) the stop path needs `desktop_shutdown::is_stopping() == true`, a process-global irreversible flag, plus a real `CommandChild` to kill and wait for. | (28-30) needs a fault-injection seam (see §6); (49-54/69-70/72/80) a subprocess fixture in this file that calls `desktop_shutdown::begin("fixture")` and drains a real plugin-spawned child (the plugin does work under `MockRuntime`, see §3). |
+| `headless/mod.rs` 136-138, 182, 207-216, 224-227 | The rest of `session()`: (136-138) the *failure* branch of the model-catalog refresh; (182) the "platform login changed" exit, which needs the account key to change mid-run; (207-216, 224-227) the pairing invitation, the `Ready` hand-over and the expired-invitation refusal, all of which need a `RemoteStatus` carrying a **pairing code** or `phase == Ready`, i.e. a *successful* `remote::start`. The PTY half of this row is now **covered** by `tests/remote_start_refusal.rs` (see §4.1), which is why 147-149, 188 and 220-221 are gone from it. | (136-138) a platform whose **model catalog** endpoint fails while the profile one succeeds; (182) an account key that changes mid-run; (207-227) a **live NATS broker** — `connect_nats` sets `require_tls(true)` outside `cfg(test)`, and the crate's in-process fake broker (`remote/test_support.rs`) is `#[cfg(test)]`, so it is not linked into the binary. That one is `unreachable-in-this-environment` until this host has a broker with JWT auth and TLS. |
 | `session.rs` 220, 222, 223, 231 | The reader thread's `Weak::upgrade() == None`, `EINTR` and read-error arms, and the thread-spawn failure. | needs a fault-injection seam for the reader (or a fixture child that makes the master read fail after its last byte); the manager kills the tree before dropping the session, so the `None` arm is a race. |
 
 One class is listed last because it is a *decision*, not a task: the
@@ -474,61 +828,83 @@ executes them, this host cannot by construction.
 
 ### 4.3 Reconciliation
 
-Per file: the measured residual (after-2, §2), the OPEN count (the rows of §4.2),
+Per file: the measured residual (T13 union, §2.6), the OPEN count (the rows of §4.2),
 and therefore the withdrawn-as-waived count (§4.1). The table is exact by
 construction — every line is either named in a §4.2 row or classified in §4.1 —
 and a reviewer can regenerate both line lists with
-`covlines.py detail /tmp/tauri-tau2-lcov.info --under <file>`.
+`covlines.py detail .future/cov100/tauri-tau-t13-union-lcov.info --under <file>`.
 
 | file | residual | §4.2 OPEN | §4.1 waived |
 |---|---|---|---|
 | `terminal/server.rs` | 58 | 0 | 58 |
 | `terminal/pty.rs` | 18 | 0 | 18 |
 | `terminal/session.rs` | 14 | 4 | 10 |
-| `terminal/manager.rs` | 8 | 0 | 8 |
+| `terminal/manager.rs` | 7 | 0 | 7 |
 | `terminal/shell.rs` | 11 | 0 | 11 |
-| `terminal/cwd.rs` | 4 | 0 | 4 |
-| `headless/mod.rs` | 51 | 24 | 27 |
+| `terminal/cwd.rs` | 3 | 0 | 3 |
+| `headless/mod.rs` | 44 | 18 | 26 |
 | `headless/agent.rs` | 1 | 1 | 0 |
 | `cli_tool.rs` | 11 | 0 | 11 |
-| `agent_host.rs` | 26 | 26 | 0 |
-| `agent_supervisor.rs` | 81 | 27 | 54 |
-| `skills_bootstrap.rs` | 17 | 13 | 4 |
-| **total** | **300** | **95** | **205** |
+| `agent_host.rs` | 20 | 0 | 20 |
+| `agent_supervisor.rs` | 42 | 0 | 42 |
+| `skills_bootstrap.rs` | 11 | 0 | 11 |
+| **total** | **240** | **23** | **217** |
 
-(Counted from the segment-3 union report, §2.2. The arithmetic is exact: every
+(Counted from the **T13 union** report, §2.6. The arithmetic is exact: every
 uncovered line of the scope is named in a §4.2 row or classified in §4.1.)
 
-So across the three segments: **552 → 359 → 300**, i.e. **252 lines covered** for
-this scope, **205 waived with a mechanism** and **95 OPEN** — of which about 25 are
-arms inside this unit's own new *test* code (fixture restores, fail-only messages,
-loop tails) and the rest are production lines whose next step §4.2 names. The
-residual is **300 ± 4**, for the two oscillating families named in §2.0 and §2.2.
+**254 → 240, attributable line by line** (§2.6 tabulates it per file): 10
+production lines closed by §10's fixture (28-30, 49, 53, 54, 69, 70, 72, 80), 4
+lines added to the residual (the fixture's own fail-only arms 349, 393, 525, 526)
+and 8 lines of `agent_supervisor` 200-206/210 that this segment does **not**
+claim — they read `DA>0` in this run because the "Cleanup failed" dialog was
+shown by a stop that failed under load, and their callback is still uncovered
+(§4.1). `skills_bootstrap` is now **0 OPEN**: every one of its eleven residual
+lines carries a mechanism (50-52 in §4.1, 104/223/253/271 in §4.1, and the four
+new fail-only arms).
+
+The earlier history, retained so the numbers are auditable: **283 → 270** closed
+thirteen lines against D8 in three kinds of move — 4 by TAU-D10's own tests
+(`cwd.rs` 206, `agent_supervisor.rs` 65-66, `manager.rs` 361), 1 by oscillation
+(`server.rs` 533, not claimed), and 8 by other units' tests that landed after D8
+(`headless/mod.rs` 147-149, 188, 220-221, 281 and `agent_host.rs` 265, which has
+since oscillated back out). **270 → 254** is TAU-D12's block: 36 production lines
+covered by §9's fourteen cases, 19 fixture lines added, and 539 flipping into the
+residual.
+
+So across the six measurements: **552 → 359 → 300 → 283 → 270 → 254 → 240**, i.e.
+**312 lines covered** for this scope, **217 waived with a mechanism** and **23
+OPEN**. The residual stays **± 2** in the sense §2.0 gives it: the `server.rs`
+533/539 pair and the `agent_host.rs` drain arm move with scheduling, and the
+ledger claims only the member that is uncovered in the report it cites. The
+`agent_supervisor` 200-210 arm is a new member of that class and is *not* part of
+the ± 2: it is eight lines, it is measured in this report, and §4.1 says why it
+may come back.
 
 Remaining work, in the order a successor should attempt it:
 
-1. `headless/mod.rs` 207-227 (12 of the 24 OPEN lines there) — the pairing
-   invitation, the `Ready` hand-over and the expired-invitation refusal. All three
-   need a *successful* `remote::start`, i.e. a NATS broker this host does not have
-   (§4.2 has the mechanism). Reachable only with either a real broker or a
-   production seam that lets the test binary use the `#[cfg(test)]` fake one.
-2. `agent_host.rs` 26 + `agent_supervisor.rs` 27 — one subprocess re-exec fixture
-   each, the pattern `src/agent_host/tests.rs` already uses. Segment 3 showed the
-   cheaper half of this: the *real binary* closes the refusals (160/208) without any
-   fixture, so a successor should try a `FUTURE_DESKTOP_AGENT_MODE`/held-lock case
-   through `tests/headless_cli.rs` before writing a phase injector.
-3. `skills_bootstrap.rs` 13 — a subprocess case that calls
-   `desktop_shutdown::begin("fixture")` and drains a real plugin-spawned child.
-4. `headless/mod.rs` 136-138, 147-149, 182, 188 — a model-catalog failure, a PTY
-   fixture for `--re-pair`, a mid-run platform change, and a Ready Agent with a
-   non-ready remote start. Four independent arms, each with a named next step.
-5. `terminal/session.rs` 4 and `headless/agent.rs` 1 — the reader thread's
+1. `headless/mod.rs` 207-216, 224-227 (14 of the 18 OPEN lines there) — the
+   pairing invitation, the `Ready` hand-over and the expired-invitation refusal.
+   All three need a *successful* `remote::start`, i.e. a NATS broker this host
+   does not have (§4.2 has the mechanism). Reachable only with either a real
+   broker or a production seam that lets the test binary use the `#[cfg(test)]`
+   fake one.
+2. `headless/mod.rs` 136-138, 182 — a model-catalog failure and a mid-run
+   platform change, each with a named next step in §4.2.
+3. `terminal/session.rs` 4 and `headless/agent.rs` 1 — the reader thread's
    `EINTR`/error/`Weak::upgrade` arms, and a forced `Phase::Failed`.
+4. The `agent_host`/`agent_supervisor` residue (19 lines plus the eight above) is
+   *not* on this list: each member is an ordering, a native dialog or a
+   must-not-fire arm, not a missing fixture (§4.1 cites `agent_host.rs` 265-266's
+   measured distribution as the example).
 
-**What the total does and does not claim.** 300 is the measured residual of the
-segment-3 revision, not zero, and this record does not call the module "done":
-205 lines are classified in §4.1 and **95 remain OPEN** in §4.2. The headline
-alone is not the 口径 A claim; the claim is that every one of the 300 is named.
+**What the total does and does not claim.** 240 is the measured residual at the
+TAU-D13 revision, not zero, and this record does not call the module "done":
+217 lines are classified in §4.1 and **23 remain OPEN** in §4.2. The headline
+alone is not the 口径 A claim; the claim is that every one of the 240 is named.
+The 240 is a union of two legs that are **not green** for reasons outside this
+scope (§2.6 names the 8022 family and the peer worktree that held the port);
+every test in the twelve scopes passed in both legs.
 
 ### 4.4 Revision crosswalk: the retained after-2 artifact (359)
 
@@ -571,25 +947,29 @@ report and carries a mechanism in §4.1/§4.2.
 
 | after-2 line | file | real line |
 |---|---|---|
-| 598 | `cli_tool.rs` | after-2 **567**, the `started.elapsed()` message argument of the timeout assertion; segment 3's guard moved the test down to union **598** (and the current file, after `224dcea1e`, to **666** — §2.3). |
+| 598 | `cli_tool.rs` | after-2 **567**, the `started.elapsed()` message argument of the timeout assertion; segment 3's guard moved it to union **598**, `224dcea1e` to 666, and `1876ffe78` to **672** (§2.3 — 666 is `let started`, which is measured covered). |
 | 747, 788, 789, 792 | `terminal/pty.rs` | after-2 **746, 787, 790** (the reap-loop `sleep`/`assert!` lines); segment-3 fixtures shifted them by +1/+2. §4.1 cites the union numbers (745-747, 787-789, 792). |
 
 These are not evidence of a missing line: they are the union numbers read against
 the older report. Reading the source at the union numbers confirms each is a real
 statement, and §4.1 already carries the mechanism.
 
-**D. The reconciliation rule.** Against the union: `uncovered 300 / mentioned
-300 / MISSING 0 / STALE 0` (§8.7). Against after-2: `MISSING 0` after this
-crosswalk (every line is named), `STALE 8` (the first two groups above) and
-`ABSENT 5` (group C; the rows still cite the union numbers). The 13 cannot be
+**D. The reconciliation rule.** Against the T12 union: `uncovered 254 / mentioned
+254 / MISSING 0 / STALE 0 / COVERED 0 / ABSENT 0` (§2.5, and the
+`staletable.py --gate` run recorded there; the D9 union it superseded read
+`uncovered 270 / mentioned 270 / MISSING 0 / STALE 0`). Against after-2: `MISSING 0` after
+this crosswalk (every line is named), `STALE 8` (the first two groups above) and
+`ABSENT 5` (group C; the rows cite the union/D9 numbers). The 13 cannot be
 driven to zero **while the same rows remain in the union ledger**, because those
 numbers are uncovered in one report and covered — or absent — in the other; the
 pairings registry therefore has to point at the report the ledger describes.
-That is a registry change, outside this record's write scope; the recommendation
-is to retain `/tmp/tauri-tau3-union-lcov.info` beside the after-2 copy and
-re-point the pairing to it with `expect.uncovered = 300`. (A simulated
-`--gate --strict` with that registry entry reports this pairing **PASS**: claims
-280, uncovered 300, missing 0, covered 0, absent 0.)
+That registry change is made: the `tauri-headless` pairing points at
+`.future/cov100/tauri-tau-t13-union-lcov.info` with `expect.uncovered = 240`
+(`.future/cov100/pairings.json`; it pointed at the T12 union — uncovered 254 —
+when this crosswalk was written, and at D9's 270 before that). The D9 union
+(270), the D8 union (283) and the segment-3 union
+(300) are superseded as pairing targets and kept as artifacts. Numbers in this
+section are after-2/segment-3 history; current line numbers are §4.1's.
 
 ## 5. Findings
 
@@ -649,6 +1029,7 @@ us" test.
 | `agent_supervisor::confirm_quit` / `request_quit`'s waiter | both call `app.dialog()…show()`, which reaches **`rfd`'s native modal dialog** on this host (a test would open a real window nobody can dismiss) and then `app.exit(0)` | inject the dialog/window effect (`*_with(dialog, exit)`), as the repo already does for relaunch elsewhere |
 | `headless::session` (`mod.rs` lines ~128-230) | after `ensure_login` the entry point needs a live platform API, a real NATS/remote session and an interactive terminal; the integration test that drives the *binary* is `desktop/src-tauri/tests/headless_cli.rs`, which is **outside this unit's declared write set** | extend the write set to `tests/headless_cli.rs` and serve the platform endpoints from a fake loopback HTTP server (the shape `future_login`'s own tests use) |
 | `skills_bootstrap::drain_skill_events` stop path | needs `desktop_shutdown::is_stopping() == true`, which is a process-global, irreversible flag (`coordinator::begin` sets `ADMISSION.closed` and nothing clears it); flipping it in the shared libtest process makes every later test see a stopping Desktop | a subprocess fixture (same re-exec pattern) or a test-only `reset` that restores admission |
+| `agent_host::start`'s startup deadline (`START_TIMEOUT`, 180 s) | the arm at 147-150 needs the wait to expire while the worker is still `Starting`; with the production constant that means a fixture that holds a start for three minutes — in this suite, on both legs, in every future run | **applied in TAU-D12** (§9): `start_timeout()` reads `FUTURE_AGENT_HOST_TEST_START_MS` under `#[cfg(test)]` only and returns `START_TIMEOUT` otherwise, so the override is compiled out of the binary and the fixture still exercises the real deadline logic (cancel, phase, error). It sits beside the existing `#[cfg(test)] tests::before_first_serve_poll` hook in the same file, which is the same pattern. The alternative — a three-minute case — was rejected as a permanent cost to every run |
 
 ## 7. Quality gates (PLAN §5.1/§5.2) — run, and their exit codes
 
@@ -725,6 +1106,51 @@ run from `desktop/src-tauri` with the environment of §1.
 Logs: `/tmp/tau3-fmt.log`, `/tmp/tau3-clippy-gui.log`,
 `/tmp/tau3-clippy-headless.log`, `/tmp/tau3-scoped-suite.log`,
 `/tmp/tau3-union-leg2.log`.
+
+### 7.2 TAU-D10 — the gates on the revision this segment ships
+
+| gate (exact command) | exit | scope of what is red |
+|---|---|---|
+| `rustfmt --edition 2021 --check src/terminal/cwd.rs src/terminal/manager.rs src/desktop_shutdown.rs` | **0** | — (the three files this segment edited; a first run found two over-long lines in the new `cwd` fixture, reformatted before the run below) |
+| `cargo clippy --all-targets -j 4 -- -D warnings` | **0** | — |
+| `cargo clippy --no-default-features --features headless --all-targets -j 4 -- -D warnings` | **0** | — |
+| `cargo llvm-cov --lib -- terminal::cwd::tests::a_read_only_thread terminal::manager::tests::retention_never desktop_shutdown::tests::closing_admission -- --test-threads=1` | **0** | 3 passed / 0 failed |
+
+Log `/tmp/d9-clippy.log` (both flavours), `CARGO_TARGET_DIR=target/cov-tauri-d9`.
+The instrumented full suites that the measurement ran are the wider evidence:
+gui **2155/0**, headless **1719/7** with the seven `remote_peer` port-8022
+failures named in §2.4.
+
+### 7.3 TAU-D12 — the gates on the revision this segment ships
+
+| gate (exact command) | exit | scope of what is red |
+|---|---|---|
+| `rustfmt --edition 2021 --check src/agent_host.rs src/agent_supervisor.rs` | **0** | — (a first run found one over-long assertion in the supervisor fixture, reformatted before the runs below) |
+| `cargo clippy --all-targets -j 4 -- -D warnings` | **0** | — |
+| `cargo clippy --no-default-features --features headless --all-targets -j 4 -- -D warnings` | **0** | — |
+| `cargo test --lib -- --test-threads=1 agent_host::block_fixtures` | **0** | 8 passed / 0 failed, three consecutive runs (the stop-deadline case costs its 10 s `STOP_TIMEOUT` on purpose) |
+| `cargo test --lib -- --test-threads=1 agent_supervisor::block_fixtures` | **0** | 8 passed / 0 failed |
+| `cargo llvm-cov --no-report --lib -- --test-threads=1 agent_host::block_fixtures` (and the supervisor filter) | **0** | the same cases under instrumentation, so the measured run is not a different build |
+
+`CARGO_TARGET_DIR=target/cov-tauri-t12` (the measurement's own dir, deleted after
+the union was written). The instrumented full suites are the wider evidence and
+both were **green** this time: gui **2167/0/14 ignored**, headless
+**1719/0/14 ignored** (§2.5).
+
+### 7.4 TAU-D13 — the gates on the revision this segment ships
+
+| gate (exact command) | exit | scope of what is red |
+|---|---|---|
+| `rustfmt --edition 2021 --check src/skills_bootstrap.rs` | **0** | — |
+| `cargo clippy --all-targets -j 4 -- -D warnings` | **0** | — |
+| `cargo clippy --no-default-features --features headless --all-targets -j 4 -- -D warnings` | **0** | — |
+| `cargo test --lib -- --test-threads=1 skills_bootstrap::block_fixtures` | **0** | 4 passed / 0 failed (3.32 s): the three cases plus the `host_fixture` helper, which is a no-op in the parent |
+| `cargo llvm-cov --no-report --no-fail-fast -j 4 -- --test-threads=1` (both flavours, §2.6) | **101** (gui), **101** (headless) | the 8022 port family and one `tasks` timing test, all outside the twelve scopes; §2.6 names every failing test, the port's holder (a peer worktree's test binary) and why no scope line changed hands |
+
+`CARGO_TARGET_DIR=target/cov-tauri-t13`. The instrumented suites are red for
+reasons this unit does not own; unlike §7.3 they are therefore not cited as the
+wider green evidence, and the scope's own tests are: all twelve scope files'
+tests, including the four new cases, passed in both legs.
 
 ## 8. Segment 3 (2026-10-17) — the foreground session of the real binary
 
@@ -803,7 +1229,7 @@ Measured wall time alone: 5.2 s, 3.0 s and 2.6 s; the whole integration target
 | 103 | `cli_tool.rs` | the `"development"` source label — the `#[cfg(not(test))]` candidate list exists in the binary the integration test spawns (§8.1) |
 | 456, 479, 511, 535 | `cli_tool.rs` | the four hand-written fixture restores, **deleted** by the guard of `docs/testing/flaky-tauri.md` (the new `EnvGuard::drop` `None` arm is the one residue left, listed in §4.1) |
 | 744, 785, 786 | `terminal/pty.rs` | two of the reap-loop deadline arms, taken this time (§4.1 keeps the other polls) |
-| 533, 548 | `terminal/server.rs` | the oscillating pump arm (§2.0) and the "any other client frame is ignored" arm |
+| 548 | `terminal/server.rs` | the "any other client frame is ignored" arm. **Not** 533: that disposition was false as written — 533 is one of the oscillating pair, and in the current pin it reads `DA:1`, so it carries no row (§2.0), measured 0 in 3 of 5 runs at the revision this claim was made on, so it was a run-dependent cover read as a closure. **533 reads `DA:1` in this pin and is not claimed; if a future pin reads it `DA:0`, a row must be created for it (§2.0).** |
 | 258 | `headless/mod.rs` | a normal completion of `starting_with_notice`'s awaited future (the slow-start notice never wins, so the call returns at that line) |
 
 Not closures, for the avoidance of doubt: `810`, `941` and `1086` read as *covered* in an early reconcile pass only because the segment-3 report renumbers them (the unit's own gate fixes inserted lines). Under the segment-3 numbering the same three lines are `811`, `948` and `1098`, and the report shows all three **uncovered** — they are cited in §4.1, not closed.
@@ -906,3 +1332,199 @@ first act, both fixed in the rows rather than in the check:
 
 
 
+## 9. TAU-D12 (2026-10-18) — one subprocess fixture per module closes the `agent_host` / `agent_supervisor` block
+
+### 9.1 The route that was tried first, and why it cannot produce these cases
+
+The instruction was to try the real binary first — segment 3 closed `agent_host`
+160 and 208 through `tests/headless_cli.rs`'s `CARGO_BIN_EXE_futureos-headless`
+child — and to say which cases it cannot produce. It cannot produce any line of
+this block, and the reasons are structural rather than incidental:
+
+* `agent_supervisor` is `#[cfg(feature = "gui")]`, so the headless binary does
+  not compile the module at all. Its `#[cfg(not(test))]` half (`ensure_agent_running`)
+  is reached only from `commands/login.rs`, i.e. from a Tauri command in a GUI
+  run, and the campaign harness has no GUI run (§4.1's 33 / 41-45 rows keep that
+  mechanism).
+* the `agent_host` lines left after segment 3 are not *entry-point* arms. They
+  need a **phase the headless entry point never produces** (`Ready` on a second
+  `start`, `Stopped` at a quit decision), a **stop it never performs**
+  (`headless::session` has no stop), an **attach it never tries** (it removes
+  `FUTURE_AGENT_GRPC_ADDR` and always starts locally), or a **cancellation window
+  inside one start**. A child that runs to `Ready` and exits covers none of them,
+  which is exactly what the D9 measurement showed: the 22 residual lines were
+  unchanged after the headless-binary tests landed.
+
+So the fixture is the `run_case` pattern of `src/agent_host/tests.rs`, moved into
+each module's own `#[cfg(test)] mod block_fixtures`: the case re-executes the
+libtest binary (`--exact …::block_fixtures::host_fixture --test-threads=1`) with
+its own `HOME`, `USERPROFILE`, `FUTURE_HOME` and `FUTURE_AGENT_SOCKET`. The
+fixture lives in the module it drives because `src/agent_host/tests.rs` is
+outside this unit's write set — and because the supervisor's cases need the
+module's own private state (`QUIT_PENDING`, `begin_quit`) to be observable
+through its public behaviour.
+
+### 9.2 The cases, and what each one asserts
+
+Fourteen tests, each a fresh process: seven in `agent_host.rs`, seven in
+`agent_supervisor.rs`.
+
+| module | case | state | asserted behaviour |
+|---|---|---|---|
+| `agent_host` | `stopping` | `desktop_shutdown::begin("fixture")` has closed admission | `start` refuses with "Desktop is stopping" and leaves the host `Idle`/unowned — no worker is spawned |
+| `agent_host` | `ready-repeat` | a mock Agent answers `select_agent` (external attach) | the first `start` reaches `Ready` **without owning** the service; a second `start` returns `Ok` in the same phase; `stop` on an attached host drops it to `Stopped` without signalling the owner |
+| `agent_host` | `timeout` | a TCP peer accepts and never answers, deadline shortened (§9.3) | `start` fails with "Agent startup timed out", the phase is `Failed`, and the cleanup `stop` reports the same reason |
+| `agent_host` | `stop-deadline` | a FIFO at `<sessions>/b.jsonl` blocks the legacy import | `stop` fails after `STOP_TIMEOUT` with "Agent cleanup timed out; restart requires process exit" and the phase is `Failed` |
+| `agent_host` | `external-stop` | mock Agent + FIFO at `auth.json` (blocks the external-owner policy check) | a stop landing after the probe but before the phase re-read is a **cancellation**, never a `Ready`: `start` fails, the phase settles `Stopped`, nothing is owned |
+| `agent_host` | `cancel-prepare` | FIFO at `auth.json` (blocks the channel-environment default, before `prepare`) | the typed cancellation is folded into a clean `Ok`, the phase settles `Stopped` |
+| `agent_host` | `moved-home` | FIFO at `auth.json`; `FUTURE_HOME` changes while the worker is blocked | `prepare` refuses with "FutureOS home changed…", the phase is `Failed`, and nothing is created under the moved root |
+| `agent_supervisor` | `starting` | an unanswering peer holds the host in `Starting` | `agent_status` is `"starting"` with no error and no shutdown snapshot, and `on_close_requested` **confirms** (an unreadable count is not zero) |
+| `agent_supervisor` | `failed` | a held instance lock makes the worker fail | `agent_status` carries the worker's own refusal as `error`, phase `unavailable` |
+| `agent_supervisor` | `unreachable` | nothing listening at all | the poll reports the transport error instead of a phase, and no stop snapshot |
+| `agent_supervisor` | `owned` | a real embedded Agent, started and stopped | `ready` with the build version; an owned idle Agent proceeds on close (six activity fields summed); a `Stopped` host proceeds too |
+| `agent_supervisor` | `failed-stop` | `fail_for_test` + `stop("fixture")` | the status is `"stopping"` **with the failure text** and a snapshot — the `state == "failed"` arm |
+| `agent_supervisor` | `quit-barrier` | `claim_action("update")` holds the barrier | `request_quit` starts no stop and publishes no snapshot |
+| `agent_supervisor` | `quit-repeat` | the first quit publishes its stop | the second request is answered by the first (no second waiter, one snapshot) |
+
+The assertions are about behaviour, not line touches: the timeout case asserts
+the deadline *and* its reason, the stop-deadline case asserts the elapsed time is
+at least `STOP_TIMEOUT`, the moved-home case asserts the moved root stays empty,
+and the `starting` case asserts the quit decision (not merely the phase string).
+
+### 9.3 Fixture mechanics that cost a debugging cycle
+
+* **A FIFO is the phase switch.** `auth.json` and `sessions/<id>.jsonl` are read
+  with `File::open` + `read`, so making them FIFOs blocks the worker at exactly
+  one statement. `ENXIO` on `open(O_WRONLY|O_NONBLOCK)` means "no reader yet",
+  so the parent can wait for the worker to arrive instead of sleeping.
+* **But `open` and `read` are two different moments** (the F3 class of §8.6).
+  `open` returns as soon as *a writer* exists; the import's next act is a
+  `cancellation.check()`, and only then the blocking `read`. Cancelling between
+  the two makes the import abort at the checkpoint instead of sticking — the
+  `stop-deadline` case observed that as a 1-in-5 flake and now lets the reader
+  settle into `read` (200 ms) before it cancels. Deterministic since.
+* **A unix socket path is at most 104 bytes on macOS.** The first version put the
+  fixture socket under `target/host-fixtures/.tmpXXXX/agent.sock` (~111 bytes);
+  `connect` then failed with `ENAMETOOLONG`, which `select_agent` classifies as
+  "local endpoint could not be safely classified as absent" — a *plausible* error
+  from the wrong cause. The socket now lives in the short system temp dir.
+* **`app.exit(0)` on `tauri::test::MockRuntime` panics** (`request_exit` is
+  `unimplemented!()`), in the waiter thread, after `QUIT_CONFIRMED` is stored.
+  Harmless for the two quit cases, but it means those cases cannot assert on
+  anything the waiter does after the exit.
+* **Assertion arguments are lazily evaluated.** The first version of both
+  `run_case` helpers passed `String::from_utf8_lossy(…)` inline to
+  `assert!(output.status.success(), …)`, which added four residual lines per
+  helper to the very files this segment was measuring; they are hoisted into
+  bindings now (§4.1 keeps only the genuinely fail-only arms).
+
+### 9.4 What this closed, and what it did not
+
+36 production lines are covered by these fourteen cases: `agent_host.rs` 83, 88,
+116, 147-150, 200, 233, 234, 334-336 (13) and `agent_supervisor.rs` 58-62, 70-75,
+92-93, 116, 122, 125-130, 190, 193-194 (23). §4.2's two rows are deleted rather
+than narrowed.
+
+19 lines remain, all classified in §4.1: the worker-thread spawn failure
+(124-126), three phase re-reads inside one start (216, 223, 250), the drain arm's
+clean continuation (265-266), one closing brace (281), the `ensure!` message
+argument (289), the test-only deadline override's parse join (373), and the two
+fixtures' must-not-fire arms. Two of those moved in this measurement: **265** was
+`DA:1` in D9 and reads `DA:0` here, and **539** on the other side of the pair
+(§4.1). Neither is claimed as closed, and neither is claimed as a range.
+
+**A fact about the API surface is not a fact about reachability.** D9's row called
+265 an "external-attach arm"; it is `server.as_mut().await?` in the drain arm, and
+the fixture that *does* attach (`ready-repeat`) cannot reach it. The row now says
+what the measurement shows: the arm is taken (263, one hit), the report is not
+`Stopped` (264, one hit), so the await is never reached in this run.
+
+## 10. TAU-D13 (2026-10-18) — the `skills_bootstrap` stop and TOCTOU block
+
+§4.2 carried one row for `skills_bootstrap.rs`: 28-30 (the spawn failure after a
+successful discovery) and 49-54, 69-70, 72, 80 (the drain's stop path). The row
+named two mechanisms and neither was a mock: a process-global stop flag plus a
+real `CommandChild`, and a TOCTOU the identity re-check was said to close. This
+section records what the measurement did to both claims.
+
+### 10.1 Why the cases are subprocesses, and why no mock was needed
+
+`drain_skill_events` takes `Option<CommandChild>`, a value no mock can produce,
+and its stop arm reads `desktop_shutdown::is_stopping()` — set by
+`desktop_shutdown::begin`, which closes producer admission **for the whole
+process and never reopens it**. Calling it in the shared libtest process would
+change every drain that runs after it. So each case re-execs the libtest binary
+(`--exact skills_bootstrap::block_fixtures::host_fixture --nocapture
+--test-threads=1`) with its own `HOME`, `USERPROFILE`, `FUTURE_HOME` and
+`FUTURE_AGENT_SOCKET`, exactly as §9's harness does. Two details are inherited
+verbatim because they are not optional:
+
+* the socket lives in the **short system temp dir** — a unix socket path is at
+  most 104 bytes on macOS (§9.3's `ENAMETOOLONG` trap);
+* every assertion argument is hoisted into a binding, because a passing
+  `assert!` never evaluates its message and those lines would land in this very
+  file's residual (§9.3's last bullet).
+
+The child is spawned by the **real** shell plugin under `MockRuntime`
+(`app.shell().command(&bootstrap).spawn()`); §3 already proves that path works,
+and `the_bootstrap_spawns_the_cli_through_the_shell_plugin` uses it.
+
+### 10.2 The cases, and what each one asserts
+
+Four tests in the gui flavour (the module is `#[cfg(feature = "gui")]`, so the
+headless leg compiles none of it and reports 0):
+
+| case | state | line(s) it exercises | asserted behaviour |
+|---|---|---|---|
+| `spawn-failure` | discovery succeeds, then the CLI's `#!` interpreter is removed | 28-30 | `resolve_for("skills.init")` is `Ok` *before* the removal; after it, `run_builtin_skills` reports the spawn failure, never runs `init` (marker absent), never panics |
+| `stop-live` | `desktop_shutdown::begin("fixture")` with a live plugin-spawned child | 49, 53, 54, 80 | the drain ends in **under 2 s** (it killed the child, it did not wait out the unconfirmed budget), the exit code is `None`, and the pid is gone (`kill(pid, 0)` → `ESRCH`) |
+| `stop-unconfirmed` | a grandchild inherits the plugin's pipes and keeps them open | 69-70, 72, 80 | the drain ends **at or after 2 s** — its own budget, because no `Terminated` event can ever arrive — and reports no exit code |
+| `host_fixture` | the helper | — | a no-op in the parent (no case variable) and the case body in each child |
+
+Two mechanics made the cases deterministic:
+
+* **`exec sleep 300`** in the stop-live fixture: without `exec` the shell would
+  be the direct child and the sleep would survive the kill, so the pid the test
+  checks would be the wrong one.
+* **Reap before stopping** in the stop-unconfirmed case: the fixture's direct
+  child exits at once, but its `sleep 30` grandchild still holds the pipes. The
+  test waits until the pid answers `ESRCH` (a zombie still answers signal 0, so
+  this is the plugin's wait thread having reaped it) and only then calls
+  `begin("fixture")`; it SIGKILLs the grandchild afterwards so the case does not
+  leave a 30 s process behind.
+
+The spawn-failure case answers the row's "needs a fault-injection seam": **no
+seam is needed.** The identity re-check pins the CLI file (length, mtime, inode,
+ctime) and the fixture leaves all four untouched; the program it names with `#!`
+is a symlink to `/bin/sh` that the test removes *after* `resolve_for` returned
+`Ok`. Discovery passes, the spawn fails, and the failure is the real one a
+half-deleted installation produces.
+
+### 10.3 The lines this section closed, and the three it did not
+
+Ten of the row's thirteen lines are covered: **28-30** (spawn-failure), **49, 53,
+54** (the kill and `stopping` being set; 53 is the error block's join),
+**69-70, 72** (the budget's report and `break`; stop-unconfirmed) and **80** (the
+post-loop "termination was not confirmed"; stop-live).
+
+**50-52 are not**, and the measurement says why: both stop cases read the `Ok`
+side of `if let Err(error) = child.take().unwrap().kill()`. A live child we
+spawned is killable; a child the plugin has already reaped answers `Ok(())`
+because `shared_child` reaps through `std::process::Child::wait` and
+`Child::kill` is a no-op once the handle is cleared (checked on this toolchain:
+`spawn → wait → kill` prints `Ok(())`). The
+error arm needs `libc::kill` to fail for a live child this process owns — an
+`EPERM`/`ESRCH` state this harness cannot build without a `kill` seam, which this
+record does not add. The row is in §4.1, not waived as if it were covered.
+
+The fixture **added four lines** to the same file's residual (349, 393, 525, 526
+in §4.1): its 120 s timeout guard, `wait_until`'s timeout answer, the
+unknown-case panic and the brace before it. The instrumented file grew 173 →
+348 measured lines, almost all of it the fixture itself; that is test code, not
+production growth, and §2.6's table states the move as −10 +4.
+
+One correction propagated out of this measurement: the `headless/mod.rs` 313-315
+row claimed the identity re-check closed the TOCTOU. It does not — it pins the
+CLI, not its interpreter — so that arm is reachable with this same trick. The row
+in §4.1 now says so, and the successor's first case is to land it in
+`headless/`'s own fixture.

@@ -773,6 +773,11 @@ weakened nor hidden, and no measurement command skipped a test.
    Reported, not silent: this *is* a production behaviour change (an over-long
    rule is now refused instead of crashing), reviewed against the repo's
    fail-closed rule contract (rules.rs:749-751).
+   **DISPOSITION (2026-10-17): the user decided to KEEP the 4096-byte bound as
+   shipped.** No code change, no waiver, no test change — this closes the item
+   rather than parking it. The number itself and the idea of a friendlier
+   approval-UI message for a refused over-long pattern remain the user's to revisit
+   later; neither is a defect in this record, and neither is owed by anyone.
 2. **`openai_item_metadata`'s `encrypted_content` parameter is dead.** All three
    call sites (194, 877, 1106) pass `None`, so the branch at 937 cannot execute;
    the live path for that value is `openai_reasoning_metadata`. Either the

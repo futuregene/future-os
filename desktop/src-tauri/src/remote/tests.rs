@@ -1989,6 +1989,126 @@ mod runtime_tests {
         *SUPERVISOR.last_error_code.lock().unwrap() = None;
     }
 
+    /// A loopback NATS endpoint that answers the CONNECT handshake with
+    /// `-ERR 'Authorization Violation'`, i.e. what a broker sends when it
+    /// rejects the credential the client presented.
+    ///
+    /// This is the missing fixture behind the refresh loop's
+    /// `Err(AppError::RemoteAuthorization)` arm (`remote/transport.rs`): the
+    /// in-process `FakeNats` authenticates nothing, and a real `nats-server`
+    /// cannot be asked to reject one rotation and accept the next. The frame
+    /// flow is the protocol's minimum: `INFO`, read until `CONNECT`, then the
+    /// error. `async_nats`'s `ServerError::new` lowercases the text, so the
+    /// canonical capitalisation the server uses is what has to be sent.
+    struct NatsAuthRefuser {
+        url: String,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl NatsAuthRefuser {
+        async fn start() -> Self {
+            use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+            let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .await
+                .expect("bind the refuser");
+            let url = format!("nats://{}", listener.local_addr().expect("refuser address"));
+            let task = tokio::spawn(async move {
+                loop {
+                    let Ok((stream, _)) = listener.accept().await else {
+                        return;
+                    };
+                    tokio::spawn(async move {
+                        let (read_half, mut write_half) = stream.into_split();
+                        let info = concat!(
+                            "INFO {\"server_id\":\"REFUSER\",\"server_name\":\"auth-refuser\",",
+                            "\"version\":\"2.10.2\",\"host\":\"127.0.0.1\",\"port\":0,",
+                            "\"max_payload\":1048576,\"proto\":1,\"headers\":true,",
+                            "\"auth_required\":true,\"nonce\":\"dGVzdA==\"}\r\n"
+                        );
+                        if write_half.write_all(info.as_bytes()).await.is_err() {
+                            return;
+                        }
+                        let mut reader = BufReader::new(read_half);
+                        let mut line = String::new();
+                        loop {
+                            line.clear();
+                            match reader.read_line(&mut line).await {
+                                Ok(0) | Err(_) => return,
+                                Ok(_) => {}
+                            }
+                            if line.starts_with("CONNECT") {
+                                let _ = write_half
+                                    .write_all(b"-ERR 'Authorization Violation'\r\n")
+                                    .await;
+                                let _ = write_half.flush().await;
+                                return;
+                            }
+                        }
+                    });
+                }
+            });
+            NatsAuthRefuser { url, task }
+        }
+    }
+
+    impl Drop for NatsAuthRefuser {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    /// A refreshed credential the broker rejects is terminal: the loop records
+    /// `service_authorization` on the live bridge and returns instead of
+    /// rotating the same invalid credential forever.
+    ///
+    /// The refresh request itself succeeds — the platform hands out a
+    /// credential for the refused endpoint — which is exactly the production
+    /// state after a server-side revocation the platform has not learned about.
+    #[tokio::test]
+    async fn credential_refresh_returns_when_the_broker_rejects_the_refreshed_credential() {
+        let _home = HomeGuard::new("remote-refresh-auth-rejected");
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        let refuser = NatsAuthRefuser::start().await;
+        sign_in(platform.url());
+        let creds = test_creds("pair_auth_reject", nats.url(), 30);
+        pairing::save_creds(&creds).unwrap();
+        // The platform accepts the rotation; the broker it points at does not.
+        platform.respond_refresh(&refuser.url);
+
+        let state = fake_state(&nats, "pair_auth_reject").await;
+        let confirmed = state.pairing_confirmed.clone();
+        let health = state.nats_health.clone();
+        install_state(state);
+        let handshake =
+            commands::HandshakeState::new(creds, confirmed.clone(), "bridge_auth_reject".into());
+        let task = spawn_credential_refresh(
+            "pair_auth_reject".into(),
+            commands::new_reply_slots(),
+            confirmed,
+            handshake,
+        );
+
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("a rejected refreshed credential ends the refresh worker")
+            .expect("the refresh worker did not panic");
+        assert_eq!(
+            SUPERVISOR.last_error_code.lock().unwrap().as_deref(),
+            Some("service_authorization")
+        );
+        assert!(
+            health.service_config_error.load(Ordering::Acquire),
+            "the live bridge records that its own credential was refused"
+        );
+        assert!(
+            SUPERVISOR.state.lock().unwrap().is_some(),
+            "the worker reports the failure; stopping the bridge is the supervisor's"
+        );
+        *SUPERVISOR.last_error_code.lock().unwrap() = None;
+        stop();
+    }
+
     #[tokio::test]
     async fn credential_refresh_retries_on_transient_failures() {
         let _home = HomeGuard::new("remote-refresh-retry");
