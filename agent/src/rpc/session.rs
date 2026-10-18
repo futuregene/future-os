@@ -466,7 +466,7 @@ impl ServerSession {
         cancelled
     }
 
-    fn flush_cancelled_receipts_when_idle(&mut self) {
+    pub(super) fn flush_cancelled_receipts_when_idle(&mut self) {
         if !self.ephemeral && self.runtime.snapshot().is_none() && !self.runtime.has_owned_task() {
             match self
                 .session_manager

@@ -2514,6 +2514,73 @@ async fn enqueue_prompt_releases_active_when_scheduled_start_fails() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn failed_coalesced_activation_preserves_each_input_without_restart() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("unused")]),
+        "failed-fold-receipts",
+    );
+    let mut session = fixture.session;
+    let mut saved = crate::session::Session::new(".", "mock");
+    saved.id = session.session_id.clone();
+    saved.entries.push(crate::session::SessionEntry::new_user(
+        "user",
+        serde_json::json!("existing history"),
+    ));
+    session.session_manager.save(&saved).unwrap();
+    session
+        .scheduler
+        .accept(
+            "previous",
+            Some("previous-run"),
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+            serde_json::json!({}),
+        )
+        .unwrap();
+    session.scheduler.start_next(1).unwrap();
+    let mut ids = Vec::new();
+    for request in ["accepted-a", "accepted-b"] {
+        let ack = session
+            .enqueue_prompt(
+                request,
+                &[],
+                &[],
+                None,
+                request,
+                crate::runtime::BusyPolicy::EnqueueCoalescing,
+            )
+            .unwrap();
+        ids.push(ack.run_id);
+    }
+    session.scheduler.finish_active("previous-run").unwrap();
+    session.scheduled_snapshots.clear();
+    let error = session.start_next_scheduled().unwrap_err();
+    assert!(error.to_string().contains("snapshot is unavailable"));
+    let entries = session
+        .session_manager
+        .load(&session.session_id)
+        .unwrap()
+        .entries;
+    for run in ids {
+        assert!(entries.iter().any(|entry| entry.entry_type == "user"
+            && entry
+                .meta
+                .as_ref()
+                .is_some_and(|meta| meta["run_id"] == run)));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.entry_type == "run_terminal"
+                && entry
+                    .content
+                    .as_ref()
+                    .is_some_and(|value| value["run_id"] == run && value["state"] == "cancelled")));
+    }
+    assert!(!entries
+        .iter()
+        .any(|entry| entry.entry_type == "run_started"));
+    assert!(!session.runtime.has_owned_task());
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn scheduled_run_fifo_mismatch_reports_error() {
     let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("x")]), "fifo-mismatch");
     let mut session = fixture.session;

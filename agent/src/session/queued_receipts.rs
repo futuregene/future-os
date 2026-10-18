@@ -49,9 +49,17 @@ impl Manager {
     }
 
     pub(crate) fn cancel_queued_receipt(&self, session: &str, run: &str) -> Result<()> {
-        let (session, run) = (session.to_owned(), run.to_owned());
+        self.cancel_queued_receipts(session, &[run.to_owned()])
+    }
+
+    pub(crate) fn cancel_queued_receipts(&self, session: &str, runs: &[String]) -> Result<()> {
+        let (session, runs) = (session.to_owned(), runs.to_vec());
         self.storage()?.db.call(move |db| {
-            db.execute("UPDATE queued_run_receipts SET status='cancel_requested' WHERE session_id=?1 AND run_id=?2 AND status='queued'",params![session,run])?;
+            let tx = super::database::begin_write_transaction(db)?;
+            for run in runs {
+                tx.execute("UPDATE queued_run_receipts SET status='cancel_requested' WHERE session_id=?1 AND run_id=?2 AND status='queued'",params![session,run])?;
+            }
+            tx.commit()?;
             Ok(())
         })
     }
