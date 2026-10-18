@@ -53,8 +53,12 @@ CREATE TABLE IF NOT EXISTS threads (
     deleted_at INTEGER
 );
 
--- messages, run_events, tool_calls, tool_outputs — removed.
--- Message history is now read from agent session JSONL.
+-- Active message history lives in Agent SQLite. Older GUI tables are copied
+-- losslessly into legacy_* tables by the history-preservation migration.
+CREATE TABLE IF NOT EXISTS legacy_thread_bindings (
+    thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,

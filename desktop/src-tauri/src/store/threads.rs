@@ -503,6 +503,7 @@ pub(super) fn delete_thread_children_in(
     conn: &Connection,
     thread_id: &str,
 ) -> rusqlite::Result<()> {
+    super::legacy_history::delete_history_in(conn, thread_id)?;
     // Review data: file changes → changesets → snapshots (all source kinds).
     const DELETE_FILE_CHANGES_SQL: &str = "DELETE FROM review_file_changes WHERE changeset_id IN (
              SELECT id FROM review_changesets WHERE thread_id = ?1

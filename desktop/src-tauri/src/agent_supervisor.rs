@@ -132,6 +132,10 @@ fn active_work_count() -> Result<usize, crate::AppError> {
     }
 }
 pub fn on_close_requested() -> QuitDecision {
+    // Never inspect Agent/SQLite locks again after exit was authorized.
+    if QUIT_CONFIRMED.load(Ordering::Acquire) {
+        return QuitDecision::Proceed;
+    }
     quit_decision(
         QUIT_CONFIRMED.load(Ordering::Acquire),
         QUIT_DIALOG_OPEN.load(Ordering::Acquire),
@@ -182,14 +186,53 @@ pub fn confirm_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
 }
 
 static QUIT_PENDING: AtomicBool = AtomicBool::new(false);
+static FORCE_QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+fn spawn_force_exit_watchdog(
+    budget: std::time::Duration,
+    exit: impl FnOnce() + Send + 'static,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("desktop-force-exit".into())
+        .spawn(move || {
+            std::thread::sleep(budget);
+            exit();
+        })
+}
+
+fn force_exit_process() {
+    // Only an explicit Force quit / Exit anyway reaches this fallback. A
+    // blocked UI event loop or native cleanup cannot veto process termination.
+    #[cfg(not(test))]
+    std::process::exit(0);
+}
+
+fn arm_force_exit() {
+    if !FORCE_QUIT_REQUESTED.swap(true, Ordering::AcqRel)
+        && spawn_force_exit_watchdog(std::time::Duration::from_secs(25), force_exit_process)
+            .is_err()
+    {
+        force_exit_process();
+    }
+}
 
 /// Intercept ordinary exits while the event loop can still render progress.
 /// This waiter is deliberately outside the task registry it must shut down.
 pub(crate) fn request_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>, force: bool) {
+    // Arm before every potentially blocking lock, including the singleflight
+    // gate. A force request also upgrades an already pending ordinary quit.
+    if force {
+        arm_force_exit();
+    }
     if QUIT_PENDING.swap(true, Ordering::AcqRel) {
         return;
     }
-    let Some(operation) = crate::desktop_shutdown::begin_quit() else {
+    let operation = if force {
+        Some(crate::desktop_shutdown::begin("quit"))
+    } else {
+        crate::desktop_shutdown::begin_quit()
+    };
+    let Some(operation) = operation else {
         QUIT_PENDING.store(false, Ordering::Release);
         return;
     };
@@ -198,14 +241,14 @@ pub(crate) fn request_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>, force: b
         let result = operation.wait();
         if let Err(error) = result {
             eprintln!("FutureOS exit cleanup failed: {error}");
-            if !force {
+            if !FORCE_QUIT_REQUESTED.load(Ordering::Acquire) {
                 app.dialog().message(format!("FutureOS could not complete cleanup: {error}. Exit the process anyway?"))
                     .title("Cleanup failed")
                     .kind(MessageDialogKind::Error)
                     .buttons(MessageDialogButtons::OkCancelCustom("Exit anyway".into(), "Keep open".into()))
                     .show(move |confirmed| {
                         QUIT_PENDING.store(false, Ordering::Release);
-                        if confirmed { QUIT_CONFIRMED.store(true, Ordering::Release); app.exit(0); }
+                        if confirmed { arm_force_exit(); QUIT_CONFIRMED.store(true, Ordering::Release); app.exit(0); }
                     });
                 return;
             }
@@ -229,6 +272,19 @@ pub(crate) fn exit_authorized() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forced_exit_deadline_does_not_depend_on_agent_cleanup_or_the_ui_loop() {
+        let (send, receive) = std::sync::mpsc::channel();
+        let worker = spawn_force_exit_watchdog(std::time::Duration::from_millis(1), move || {
+            send.send(()).unwrap();
+        })
+        .unwrap();
+        receive
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        worker.join().unwrap();
+    }
     #[test]
     fn unknown_or_busy_activity_requires_confirmation() {
         assert_eq!(
@@ -370,6 +426,11 @@ mod block_fixtures {
     #[test]
     fn a_quit_while_another_action_owns_the_barrier_starts_no_stop() {
         run_case("quit-barrier");
+    }
+
+    #[test]
+    fn a_forced_quit_can_join_cleanup_during_maintenance() {
+        run_case("force-maintenance");
     }
 
     #[test]
@@ -547,13 +608,21 @@ mod block_fixtures {
             let action = crate::desktop_shutdown::claim_action("update").unwrap();
             // Another maintenance action owns the barrier, so the quit is
             // refused: no stop operation may be published by it.
-            request_quit(app.handle().clone(), true);
+            request_quit(app.handle().clone(), false);
             drop(action);
             assert!(
                 crate::desktop_shutdown::snapshot().is_none(),
                 "a refused quit must not begin a stop"
             );
             assert!(!exit_authorized());
+            return;
+        }
+        if case == "force-maintenance" {
+            let app = mock_app();
+            let _action = crate::desktop_shutdown::claim_action("update").unwrap();
+            request_quit(app.handle().clone(), true);
+            assert!(FORCE_QUIT_REQUESTED.load(Ordering::Acquire));
+            assert!(crate::desktop_shutdown::snapshot().is_some());
             return;
         }
         if case == "quit-repeat" {

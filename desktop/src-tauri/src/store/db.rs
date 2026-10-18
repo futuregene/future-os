@@ -202,6 +202,7 @@ pub(super) fn connect() -> Result<PooledConnection, crate::AppError> {
 
 pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
     conn.execute_batch(SCHEMA)?;
+    super::legacy_history::preserve_legacy_history(conn)?;
     apply_approval_assessments_migration(conn)?;
     // This is a required identity invariant: one Agent session may back only
     // one Desktop thread. Repair legacy duplicate bindings before installing

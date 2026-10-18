@@ -71,7 +71,7 @@ async fn abort_run_on_agent(
         .execute_command(run_control_command(
             "abort",
             session_id.to_string(),
-            canonical_run_id,
+            canonical_run_id.clone(),
         ))
         .await
         // Transport-level Unavailable → AgentUnavailable, so `abort_run`
@@ -81,6 +81,50 @@ async fn abort_run_on_agent(
         .into_inner();
     if response.success || is_session_not_found(&response) {
         return Ok(());
+    }
+    if let Some(run_id) =
+        canonical_run_id.filter(|_| response.error.contains("is no longer active"))
+    {
+        let probe = client
+            .execute_command(super::client::get_run_state_command(
+                session_id.to_owned(),
+                run_id.clone(),
+            ))
+            .await
+            .map_err(|status| map_rpc_error(context, status))?
+            .into_inner();
+        if is_session_not_found(&probe) {
+            return Ok(());
+        }
+        if probe.success {
+            let state = future_rpc::decode::response_data(&probe);
+            let queued = state["queuedRuns"]
+                .as_array()
+                .is_some_and(|runs| runs.iter().any(|run| run["runId"] == run_id));
+            if queued {
+                let cancelled = client
+                    .execute_command(run_control_command(
+                        "cancel_queued_run",
+                        session_id.to_owned(),
+                        Some(run_id),
+                    ))
+                    .await
+                    .map_err(|status| map_rpc_error(context, status))?
+                    .into_inner();
+                return cancelled
+                    .ok_or_rpc_error("Unable to cancel queued Future Agent run")
+                    .map(|_| ());
+            }
+            if state
+                .pointer("/activeRun/runId")
+                .and_then(serde_json::Value::as_str)
+                != Some(run_id.as_str())
+            {
+                // This exact run has already ended. Do not let a stale local
+                // row block termination or abort a newer client's live run.
+                return Ok(());
+            }
+        }
     }
     Err(if response.error.is_empty() {
         "Future Agent rejected the abort request."
@@ -157,11 +201,20 @@ pub async fn abort_run(
     thread_id: String,
     run_id: String,
 ) -> Result<store::RunRecord, crate::AppError> {
-    if let Err(error) = abort_agent_thread(&thread_id, Some(&run_id)).await {
-        if !is_agent_unavailable_error(&error) {
-            return Err(error);
+    let run = store::get_run(&run_id)?.ok_or_else(|| "Run could not be loaded.".to_string())?;
+    if run.thread_id != thread_id {
+        return Err("Run does not belong to this thread.".into());
+    }
+    // A legacy orphan has no trustworthy session binding to send an abort to.
+    // Settle its local record rather than stranding it or guessing another
+    // client's session id. The watchdog applies the same rule.
+    if store::get_thread(&thread_id)?.is_some() {
+        if let Err(error) = abort_agent_thread(&thread_id, Some(&run_id)).await {
+            if !is_agent_unavailable_error(&error) {
+                return Err(error);
+            }
+            eprintln!("FutureOS agent abort skipped because agent is unavailable: {error}");
         }
-        eprintln!("FutureOS agent abort skipped because agent is unavailable: {error}");
     }
     // Compare-and-set: only cancel a run that isn't already terminal. If the run
     // finished (completed/failed) in the window before the user's stop landed,
@@ -403,6 +456,37 @@ mod tests {
         seed_workspace, Reply, TestHome,
     };
     use super::*;
+
+    #[tokio::test]
+    async fn stale_local_rows_can_stop_without_cancelling_a_newer_run_and_queued_rows_are_cancelled_exactly(
+    ) {
+        let _home = TestHome::new("rc-stale-stop");
+        let mock = mock_agent();
+        let mut client = connect_agent().await.unwrap();
+        mock.push(
+            "abort",
+            Reply::Reject("run `old` is no longer active; current run is `new`".into()),
+        );
+        mock.push_run_state("old", serde_json::json!({"activeRun":{"runId":"new"}}));
+        abort_run_on_agent(&mut client, "abort", "session", Some("old".into()))
+            .await
+            .unwrap();
+        assert_eq!(mock.requests_of("abort").len(), 1);
+        assert_eq!(mock.requests_of("abort")[0].run_id, "old");
+        mock.push(
+            "abort",
+            Reply::Reject("run `queued` is no longer active".into()),
+        );
+        mock.push_run_state(
+            "queued",
+            serde_json::json!({"activeRun":{"runId":"new"},"queuedRuns":[{"runId":"queued"}]}),
+        );
+        mock.push_data("cancel_queued_run", serde_json::json!({}));
+        abort_run_on_agent(&mut client, "abort", "session", Some("queued".into()))
+            .await
+            .unwrap();
+        assert_eq!(mock.requests_of("cancel_queued_run")[0].run_id, "queued");
+    }
 
     #[tokio::test]
     async fn abort_session_resolves_active_run_and_aborts() {

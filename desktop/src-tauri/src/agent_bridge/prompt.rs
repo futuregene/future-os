@@ -227,6 +227,12 @@ pub(super) async fn agent_prompt_inner(
         .as_deref()
         .map(str::trim)
         .filter(|id| !id.is_empty());
+    if stored_session_id.is_empty()
+        && (crate::store::legacy_session_id(&thread_id)?.is_some()
+            || !crate::store::legacy_history_entries(&thread_id)?.is_empty())
+    {
+        return Err("This conversation has preserved history but no writable Agent session. Restore its matching Agent database or continue from the original conversation; a new empty session was not created.".into());
+    }
     if requested_session_id.is_some_and(|requested| requested != stored_session_id) {
         return Err(format!(
             "Conversation session changed before this prompt was sent; expected {stored_session_id:?}, received {requested_session_id:?}. Reload the conversation and retry."
