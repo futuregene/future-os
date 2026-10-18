@@ -459,16 +459,26 @@ fn verify(source: &Path) -> Result<Manifest> {
 }
 
 fn verify_files(source: &Path, manifest: &Manifest) -> Result<()> {
-    let mut paths = HashSet::new();
+    verify_files_at(manifest, ROOTS, |logical| relative(source, logical))
+}
+
+fn verify_files_at(
+    manifest: &Manifest,
+    roots: &[&str],
+    resolve: impl Fn(&str) -> Result<PathBuf>,
+) -> Result<()> {
+    let mut files = HashSet::new();
+    let mut directories = HashSet::new();
     for directory in &manifest.directories {
         ensure!(
-            relative(source, directory)?.is_dir(),
-            "backup directory is missing"
+            directories.insert(directory.clone()),
+            "duplicate backup directory"
         );
+        ensure!(resolve(directory)?.is_dir(), "backup directory is missing");
     }
     for file in &manifest.files {
-        ensure!(paths.insert(&file.path), "duplicate backup file");
-        let path = relative(source, &file.path)?;
+        ensure!(files.insert(file.path.clone()), "duplicate backup file");
+        let path = resolve(&file.path)?;
         ensure!(
             path.is_file() && hash(&path)? == (file.bytes, file.sha256.clone()),
             "backup file verification failed: {}",
@@ -505,6 +515,62 @@ fn verify_files(source: &Path, manifest: &Manifest) -> Result<()> {
                 );
             }
         }
+    }
+    let mut actual_files = HashSet::new();
+    let mut actual_directories = HashSet::new();
+    for root in roots
+        .iter()
+        .filter(|root| !root.ends_with("-wal") && !root.ends_with("-shm"))
+    {
+        inventory(
+            &resolve(root)?,
+            root,
+            &mut actual_files,
+            &mut actual_directories,
+        )?;
+    }
+    ensure!(
+        actual_files == files && actual_directories == directories,
+        "backup inventory disagrees with its manifest; no files may be silently omitted"
+    );
+    Ok(())
+}
+
+/// Compare the actual managed tree as well as each listed hash. An omitted
+/// record must not turn a present attachment/history source into absent data.
+fn inventory(
+    path: &Path,
+    logical: &str,
+    files: &mut HashSet<String>,
+    directories: &mut HashSet<String>,
+) -> Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    ensure!(
+        !metadata.file_type().is_symlink(),
+        "backup path contains a symbolic link"
+    );
+    if metadata.is_dir() {
+        directories.insert(logical.into());
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("backup file name is not UTF-8"))?;
+            inventory(
+                &entry.path(),
+                &format!("{logical}/{name}"),
+                files,
+                directories,
+            )?;
+        }
+    } else {
+        ensure!(metadata.is_file(), "unsupported managed file type");
+        files.insert(logical.into());
     }
     Ok(())
 }
@@ -669,6 +735,62 @@ fn finish_restore_with(
             );
         }
     }
+    if !rollback && !journal.rollback {
+        let manifest: Manifest =
+            serde_json::from_slice(&fs::read(directory.join("restore-manifest.json"))?)?;
+        for item in &journal.items {
+            let listed = manifest
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .chain(manifest.directories.iter().map(String::as_str))
+                .any(|path| {
+                    path == item.path
+                        || path
+                            .strip_prefix(&item.path)
+                            .is_some_and(|tail| tail.starts_with('/'))
+                });
+            ensure!(
+                listed == item.has_replacement,
+                "restore replacement disagrees with its manifest"
+            );
+            if item.has_replacement
+                && item.had_original
+                && !directory.join("previous").join(&item.path).exists()
+            {
+                ensure!(
+                    directory.join("incoming").join(&item.path).exists(),
+                    "restore replacement is missing; startup remains fenced"
+                );
+            }
+        }
+        let roots: Vec<_> = journal
+            .items
+            .iter()
+            .filter(|item| item.has_replacement)
+            .map(|item| item.path.as_str())
+            .collect();
+        // A crash may have installed some roots already. Verify every remaining
+        // or installed replacement before moving any more originals.
+        verify_files_at(&manifest, &roots, |logical| {
+            let item = journal
+                .items
+                .iter()
+                .find(|item| {
+                    logical == item.path
+                        || logical
+                            .strip_prefix(&item.path)
+                            .is_some_and(|tail| tail.starts_with('/'))
+                })
+                .context("unexpected restore replacement path")?;
+            let base = if directory.join("incoming").join(&item.path).exists() {
+                directory.join("incoming")
+            } else {
+                home.to_path_buf()
+            };
+            relative(&base, logical)
+        })?;
+    }
     prepare_switch_parents(home, &directory)?;
     if rollback && !journal.rollback {
         journal.rollback = true;
@@ -792,6 +914,121 @@ mod tests {
     }
 
     #[test]
+    fn omitted_records_and_unlisted_managed_files_refuse_restore() {
+        for omit in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let home = fixture(root.path());
+            let archive = root.path().join("archive");
+            backup(&home, &archive).unwrap();
+            if omit {
+                let mut manifest = verify(&archive).unwrap();
+                manifest
+                    .files
+                    .retain(|file| file.path != "app/images/t/original.png");
+                write_json(&archive.join("manifest.json"), &manifest).unwrap();
+            } else {
+                fs::write(
+                    archive.join("agent/sessions/unlisted.jsonl"),
+                    b"historical input",
+                )
+                .unwrap();
+            }
+            assert!(verify(&archive)
+                .unwrap_err()
+                .to_string()
+                .contains("inventory"));
+            assert!(begin_restore(&home, &archive).is_err());
+            assert!(!pending(&home).exists());
+            assert_title(&home, "old title");
+        }
+    }
+
+    #[test]
+    fn damaged_replacement_is_rejected_before_another_original_moves() {
+        let root = tempfile::tempdir().unwrap();
+        let home = fixture(root.path());
+        let archive = root.path().join("archive");
+        backup(&home, &archive).unwrap();
+        change_current(&home);
+        prepare_restore(&home, &archive).unwrap();
+        assert!(finish_restore_with(&home, false, || bail!("interrupted")).is_err());
+        let journal: RestoreJournal =
+            serde_json::from_slice(&fs::read(pending(&home)).unwrap()).unwrap();
+        let directory = work(&home, &journal.id).unwrap();
+        fs::write(
+            directory.join("incoming/app/images/t/original.png"),
+            b"damaged",
+        )
+        .unwrap();
+        let mut moves = 0;
+        assert!(finish_restore_with(&home, false, || {
+            moves += 1;
+            Ok(())
+        })
+        .is_err());
+        assert_eq!(moves, 0);
+        assert_title(&home, "new title");
+        assert!(pending(&home).exists());
+        // Rollback depends on the verified originals, not a damaged replacement.
+        finish_restore(&home, true).unwrap();
+        assert_title(&home, "new title");
+        assert_eq!(
+            fs::read(home.join("app/images/t/original.png")).unwrap(),
+            b"new image"
+        );
+    }
+
+    #[test]
+    fn rollback_can_itself_be_interrupted_at_every_move() {
+        for stop_after in 1..=ROOTS.len() * 2 {
+            let root = tempfile::tempdir().unwrap();
+            let home = fixture(root.path());
+            let archive = root.path().join("archive");
+            backup(&home, &archive).unwrap();
+            change_current(&home);
+            prepare_restore(&home, &archive).unwrap();
+            // Leave the forward switch complete but its fence unacknowledged.
+            let journal: RestoreJournal =
+                serde_json::from_slice(&fs::read(pending(&home)).unwrap()).unwrap();
+            let total: usize = journal
+                .items
+                .iter()
+                .map(|item| usize::from(item.had_original) + usize::from(item.has_replacement))
+                .sum();
+            if stop_after > total {
+                break;
+            }
+            let mut forward = 0;
+            assert!(finish_restore_with(&home, false, || {
+                forward += 1;
+                if forward == total {
+                    bail!("exit before completion acknowledgement");
+                }
+                Ok(())
+            })
+            .is_err());
+            let mut backward = 0;
+            assert!(finish_restore_with(&home, true, || {
+                backward += 1;
+                if backward == stop_after {
+                    bail!("exit during rollback");
+                }
+                Ok(())
+            })
+            .is_err());
+            assert!(pending(&home).exists());
+            // Resume must honor the persisted rollback direction.
+            finish_restore(&home, false).unwrap();
+            assert!(!pending(&home).exists());
+            assert_title(&home, "new title");
+            assert_eq!(
+                fs::read(home.join("app/images/t/original.png")).unwrap(),
+                b"new image"
+            );
+        }
+    }
+
+    #[test]
     fn unmanifested_sqlite_sidecars_are_not_accepted_as_backup_contents() {
         let root = tempfile::tempdir().unwrap();
         let home = fixture(root.path());
@@ -876,7 +1113,7 @@ mod tests {
                 serde_json::from_slice(&fs::read(pending(&home)).unwrap()).unwrap();
             journal["version"] = 1.into();
             for item in journal["items"].as_array_mut().unwrap() {
-                item.as_object_mut().unwrap().remove("original_digest");
+                item.as_object_mut().unwrap().remove("originalDigest");
             }
             write_json(&pending(&home), &journal).unwrap();
             assert!(finish_restore_with(&home, false, || bail!("exit after rename")).is_err());
