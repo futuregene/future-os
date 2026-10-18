@@ -168,10 +168,17 @@ export const resources = {
          * device declared about itself; when it declared none, the neutral
          * wording is used rather than inventing an identity.
          */
-        controlHeldBy: "{{name}} is controlling this desktop",
-        controlHeldByUnknown: "Another device is controlling this desktop",
+        /**
+         * Passive on purpose: the desktop is the thing being used, and saying
+         * "<device> is controlling this desktop" named the wrong subject — on a
+         * phone there is no "this computer" within reach, and the sentence read
+         * as if the other device were operating the phone.
+         */
+        controlHeldBy: "Taken over by {{name}}",
+        controlHeldByUnknown: "Taken over by another device",
         takeControl: "Take over",
-        takeControlHint: "Taking over disconnects the device that has it now.",
+        takeControlHint: "Taking over disconnects {{name}}.",
+        takeControlHintUnknown: "Taking over disconnects the device that has it now.",
         takeControlFailed: "Could not take over. Try again.",
         machine: {
           connected: "Connected",
@@ -181,7 +188,7 @@ export const resources = {
         },
         /** Appended to a machine's own row when another device holds it. */
         machineStandby: "connected, in standby",
-        machineStandbyHint: "Another device is in control",
+        machineStandbyHint: "Taken over by another device",
         connectingDetail: "Connecting to the desktop",
         waitingDesktop: "Waiting for desktop",
         devicePreparing: "Desktop is preparing",
@@ -1112,10 +1119,11 @@ export const resources = {
         machinesPartial: "部分桌面端未连接",
         machinesPartialHint: "请确认未连接的桌面端在线后重新连接",
         reconnectAll: "重新连接全部",
-        controlHeldBy: "{{name}} 正在控制这台电脑",
-        controlHeldByUnknown: "另一台设备正在控制这台电脑",
+        controlHeldBy: "已被 {{name}} 接管",
+        controlHeldByUnknown: "已被另一台设备接管",
         takeControl: "接管",
-        takeControlHint: "接管会断开正在使用它的设备。",
+        takeControlHint: "接管会断开 {{name}}。",
+        takeControlHintUnknown: "接管会断开正在使用它的设备。",
         takeControlFailed: "接管未成功，请重试。",
         machine: {
           connected: "已连接",
@@ -1124,7 +1132,7 @@ export const resources = {
           offline: "未连接",
         },
         machineStandby: "已连接 · 待命",
-        machineStandbyHint: "由另一台设备控制",
+        machineStandbyHint: "已被其他设备接管",
         connectingDetail: "正在尝试连接桌面端",
         waitingDesktop: "等待桌面端",
         devicePreparing: "桌面端准备中",

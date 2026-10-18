@@ -7,7 +7,6 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import { TimelineCard } from "./messages/TimelineCard";
 import { PausedTimeline } from "../../components/PausedTimeline";
 import { ErrorBanner } from "../../components/ErrorBanner";
-import { TakeControlBanner } from "../../components/TakeControlBanner";
 import { useRemote, useRemoteControls } from "../../remote/RemoteContext";
 import { iconGlyph } from "../../remote/peerIcons";
 import { modelReference, type TimelineItem } from "../../remote/types";
@@ -502,16 +501,6 @@ export function ChatScreen() {
                   ? undefined
                   : remote.clearError
               }
-            />
-          )}
-
-          {/* Another paired device holds the desktop. Connecting does not
-              displace it, so this is where the user learns about it and where
-              taking it back is asked for — by name, and only on a tap. */}
-          {connection.level === "connected" && remote.presence?.control === "standby" && (
-            <TakeControlBanner
-              holder={remote.presence?.holder ?? null}
-              onTakeControl={remote.takeControl}
             />
           )}
 
