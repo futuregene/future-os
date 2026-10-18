@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@future-os/thread-projection";
 import type { Dispatch, SetStateAction } from "react";
+import type { HistoryStatus } from "../../integrations/storage/threads";
 import type { StoredRun } from "../../integrations/storage/threadStore";
 import {
   matchesSettledRun,
@@ -114,6 +115,8 @@ export function useThreadMessages({
   );
   const [historyError, setHistoryError] = useState<string | null>(null);
   const historyCursorRef = useRef<number | null>(initialCursor?.before ?? null);
+  const [historyStatus, setHistoryStatus] = useState<HistoryStatus | null>(initialCursor?.history ?? null);
+  const historyStatusRef = useRef(historyStatus);
   const hasOlderHistoryRef = useCommittedRef(hasOlderHistory);
   const olderInFlightRef = useRef<object | null>(null);
   const historyEpochRef = useRef(0);
@@ -137,6 +140,8 @@ export function useThreadMessages({
     historyEpochRef.current += 1;
     olderInFlightRef.current = null;
     historyCursorRef.current = null;
+    historyStatusRef.current = null;
+    setHistoryStatus(null);
     cacheEligibleRef.current = false;
     setHasOlderHistory(false);
     setHistoryError(null);
@@ -170,10 +175,10 @@ export function useThreadMessages({
         messages,
         historyCursorRef.current === null
           ? undefined
-          : { before: historyCursorRef.current, hasMore: hasOlderHistory },
+          : { before: historyCursorRef.current, hasMore: hasOlderHistory, ...(historyStatus ? { history: historyStatus } : {}) },
       );
     }
-  }, [messages, normalizedAgentSessionId, threadId, hasOlderHistory]);
+  }, [messages, normalizedAgentSessionId, threadId, hasOlderHistory, historyStatus]);
 
   const refreshRecentRun = useCallback(
     async (targetThreadId: string) => {
@@ -237,6 +242,14 @@ export function useThreadMessages({
           setBlockingLoad(false);
         return;
       }
+      const sourceChanged = historyStatusRef.current?.sourceKey && result.history?.sourceKey
+        && historyStatusRef.current.sourceKey !== result.history.sourceKey;
+      historyStatusRef.current = result.history ?? null;
+      setHistoryStatus(result.history ?? null);
+      if (sourceChanged) {
+        historyCursorRef.current = null;
+        replacingRef.current = true;
+      }
       const merged = replacingRef.current
         ? { messages: result.messages, keptOlder: false }
         : reconcileThreadHistory(messagesRef.current, result.messages, baseline, historyCursorRef.current !== null, settle);
@@ -292,6 +305,7 @@ export function useThreadMessages({
           null,
           null,
           before,
+          ...(historyStatusRef.current?.sourceKey ? [historyStatusRef.current.sourceKey] as [string] : []),
         );
         if (epoch !== historyEpochRef.current)
           return;
@@ -428,6 +442,7 @@ export function useThreadMessages({
     loadOlderHistory,
     loadAllHistoryForSearch,
     historyError,
+    historyStatus,
     sessionChanged,
     messages,
     recentRun,

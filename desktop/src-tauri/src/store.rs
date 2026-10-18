@@ -18,6 +18,7 @@ mod runs;
 mod schema;
 mod skill_reco;
 mod status;
+mod thread_sources;
 mod threads;
 mod util;
 mod workspace_files;
@@ -58,7 +59,10 @@ pub(crate) use db::close_pool;
 pub use deletions::{
     is_agent_session_tombstoned, pending_agent_session_deletes, settle_agent_session_deletes,
 };
-pub use legacy_history::{has_legacy_history, legacy_history_entries, legacy_session_id};
+pub use legacy_history::{
+    has_legacy_history, legacy_history_entries, legacy_history_page, legacy_history_source_key,
+    legacy_session_id,
+};
 pub use markdown_refs::resolve_markdown_references;
 pub use records::*;
 pub use review_snapshots::{
@@ -78,6 +82,7 @@ pub use runs::{
 #[cfg(test)]
 pub(crate) use runs::{append_run_event, flush_run_event_log_for_test};
 pub use skill_reco::{record_skill_reco, skill_reco_today, SkillRecoToday};
+pub use thread_sources::{record_thread_source, thread_source};
 pub use threads::{
     archive_thread, bind_thread_session_id, create_thread, delete_thread, delete_thread_tree,
     delete_thread_trees, find_thread_by_agent_session, forget_thread_mirror,

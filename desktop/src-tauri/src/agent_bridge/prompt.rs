@@ -274,6 +274,7 @@ pub(super) async fn agent_prompt_inner(
     if session_was_created {
         crate::store::bind_thread_session_id(&thread_id, &session_id)?;
     }
+    super::verify_thread_source(&thread_id, &session_id).await?;
     set_agent_permission_level(&mut command_client, &session_id, "workspace").await?;
     set_agent_sandbox_policy(&mut command_client, &session_id, &thread_id).await?;
 

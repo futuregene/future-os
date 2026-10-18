@@ -661,6 +661,10 @@ fn default_answer(
     state: &mut MockAgentState,
 ) -> (bool, String, String) {
     match cmd.r#type.as_str() {
+        "get_session_presence" => ok(
+            json!({"databaseId":"test-agent-database","restoreGeneration":"test-generation",
+            "sessions":cmd.session_ids.iter().map(|id|json!({"sessionId":id,"status":"present"})).collect::<Vec<_>>()}),
+        ),
         "delete_sessions" => ok(json!({"results": cmd.session_ids.iter().map(|session_id| {
             json!({"sessionId": session_id, "deleted": true,
                 "error": "", "errorCode": "", "errorData": null})

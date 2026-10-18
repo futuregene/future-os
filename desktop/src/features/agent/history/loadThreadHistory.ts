@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@future-os/thread-projection";
+import type { HistoryStatus } from "../../../integrations/storage/threads";
 import type { StoredRun } from "../../../integrations/storage/threadStore";
 import {
   entriesToTurns,
@@ -23,6 +24,7 @@ import {
 export type AgentLoadResult
   = | {
     status: "loaded";
+    history?: HistoryStatus;
     messages: AgentMessage[];
     hasMore: boolean;
     nextOffset: number;
@@ -34,13 +36,17 @@ export async function loadThreadHistory(
   activeRunId?: string | null,
   activeRunStartedAt?: number | null,
   before: number | null = null,
+  historySource?: string,
 ): Promise<AgentLoadResult> {
   try {
-    const result = await getSessionEntriesPage(threadId, before);
+    const result = historySource
+      ? await getSessionEntriesPage(threadId, before, 10, historySource)
+      : await getSessionEntriesPage(threadId, before);
     const entries = result?.entries ?? [];
     if (!entries.length) {
       return {
         status: "loaded",
+        ...(result.history ? { history: result.history } : {}),
         messages: [],
         hasMore: result.hasMore,
         nextOffset: result.nextOffset,
@@ -59,6 +65,7 @@ export async function loadThreadHistory(
     if (!messages.length) {
       return {
         status: "loaded",
+        ...(result.history ? { history: result.history } : {}),
         messages: [],
         hasMore: result.hasMore,
         nextOffset: result.nextOffset,
@@ -111,6 +118,7 @@ export async function loadThreadHistory(
       : withFailures;
     return {
       status: "loaded",
+      ...(result.history ? { history: result.history } : {}),
       messages: finalMessages.map(message =>
         message.role === "user" && userRuns.has(message.id)
           ? { ...message, runId: userRuns.get(message.id) }

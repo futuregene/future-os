@@ -151,6 +151,15 @@ pub fn legacy_history_entries(thread_id: &str) -> Result<Vec<Value>, crate::AppE
 }
 
 fn read_entries(conn: &Connection, thread_id: &str) -> rusqlite::Result<Vec<Value>> {
+    read_window(conn, thread_id, -1, 0)
+}
+
+fn read_window(
+    conn: &Connection,
+    thread_id: &str,
+    limit: i64,
+    offset: i64,
+) -> rusqlite::Result<Vec<Value>> {
     if !table_exists(conn, "legacy_messages")? {
         return Ok(Vec::new());
     }
@@ -163,10 +172,10 @@ fn read_entries(conn: &Connection, thread_id: &str) -> rusqlite::Result<Vec<Valu
     let mut statement = conn.prepare(&format!(
         "SELECT m.id,m.role,m.content,m.created_at,
            COALESCE(m.run_id,(SELECT id FROM runs WHERE trigger_message_id=m.id AND thread_id=m.thread_id LIMIT 1)),{content_type}
-         FROM legacy_messages m WHERE m.thread_id=?1 ORDER BY m.created_at,m.id"
+         FROM legacy_messages m WHERE m.thread_id=?1 ORDER BY m.created_at,m.id LIMIT ?2 OFFSET ?3"
     ))?;
     let entries = statement
-        .query_map([thread_id], |row| {
+        .query_map(params![thread_id,limit,offset], |row| {
             let role: String = row.get(1)?;
             let content: String = row.get(2)?;
             let mixed = if row.get::<_, String>(5)? == "mixed" {
@@ -188,6 +197,41 @@ fn read_entries(conn: &Connection, thread_id: &str) -> rusqlite::Result<Vec<Valu
         })?
         .collect();
     entries
+}
+
+pub fn legacy_history_page(
+    thread_id: &str,
+    before: i64,
+    limit: i64,
+) -> Result<Value, crate::AppError> {
+    let conn = connect()?;
+    let total: i64 = conn.query_row(
+        "SELECT count(*) FROM legacy_messages WHERE thread_id=?1",
+        [thread_id],
+        |row| row.get(0),
+    )?;
+    let end = before.clamp(0, total);
+    let start = end.saturating_sub(limit.clamp(1, 100)).max(0);
+    let bytes: i64 = conn.query_row("SELECT COALESCE(sum(length(CAST(content AS BLOB))),0) FROM
+        (SELECT content FROM legacy_messages WHERE thread_id=?1 ORDER BY created_at,id LIMIT ?2 OFFSET ?3)",params![thread_id,end-start,start],|row|row.get(0))?;
+    if bytes > 8 * 1024 * 1024 {
+        return Err("Preserved history page exceeds the display budget; export the recovery archive or restore its Agent database to read large entries.".into());
+    }
+    let entries = read_window(&conn, thread_id, end - start, start)?;
+    Ok(json!({"entries":entries,"hasMore":start>0,"nextOffset":start}))
+}
+
+pub fn legacy_history_source_key(thread_id: &str) -> Result<String, crate::AppError> {
+    let conn = connect()?;
+    let identity: Option<String> = if table_exists(&conn, "app_database_identity")? {
+        conn.query_row("SELECT database_id || ':' || restore_generation FROM app_database_identity WHERE id='main'",[],|row|row.get(0)).optional()?
+    } else {
+        None
+    };
+    Ok(format!(
+        "legacy:{}:{thread_id}",
+        identity.unwrap_or_default()
+    ))
 }
 
 /// Explicit user deletion removes recovery copies too, before its run ids go.

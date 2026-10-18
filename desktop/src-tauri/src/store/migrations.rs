@@ -10,8 +10,15 @@ use crate::AppError;
 
 const CONTRACT_SQL: &str = include_str!("app_schema_contract.sql");
 
-fn checksum() -> String {
-    format!("{:x}", Sha256::digest(CONTRACT_SQL))
+const STEPS: &[(i64, &str)] = &[(1, CONTRACT_SQL), (2, include_str!("thread_sources.sql"))];
+
+fn checksum(version: i64) -> String {
+    let sql = STEPS
+        .iter()
+        .find(|step| step.0 == version)
+        .expect("admitted contract version")
+        .1;
+    format!("{:x}", Sha256::digest(sql))
 }
 
 /// Runs before WAL configuration or any schema write, including on pooled opens.
@@ -19,15 +26,17 @@ pub(super) fn admit(conn: &Connection) -> Result<i64, AppError> {
     future_app_settings::validate_database_header(conn)?;
     let version = conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?;
     if version != 0 {
-        let stored: Option<String> = conn
-            .query_row(
-                "SELECT checksum FROM app_schema_migrations WHERE version=?1",
-                [version],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if stored.as_deref() != Some(checksum().as_str()) {
-            return Err("Desktop database migration contract is missing or changed; preserve this database and restore a matching backup.".into());
+        for applied in 1..=version {
+            let stored: Option<String> = conn
+                .query_row(
+                    "SELECT checksum FROM app_schema_migrations WHERE version=?1",
+                    [applied],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if stored.as_deref() != Some(checksum(applied).as_str()) {
+                return Err("Desktop database migration contract is missing or changed; preserve this database and restore a matching backup.".into());
+            }
         }
         let identity: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM app_database_identity WHERE id='main' AND database_id!='' AND restore_generation!='')", [], |row| row.get(0))?;
         if !identity {
@@ -106,31 +115,33 @@ pub(super) fn initialize(conn: &Connection) -> Result<(), AppError> {
     }
     let backup = snapshot_before_upgrade(conn)?;
     let result = (|| {
-        super::db::apply_schema(conn)?;
-        let tx =
-            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute_batch(CONTRACT_SQL)?;
-        validate_core(&tx)?;
-        tx.execute("INSERT INTO app_database_identity(id,database_id,restore_generation) VALUES ('main',?1,?2)", params![create_id("database"), create_id("restore")])?;
-        tx.execute(
-            "INSERT INTO app_schema_migrations(version,checksum,applied_at) VALUES (?1,?2,?3)",
-            params![
-                future_app_settings::APP_DB_SCHEMA_VERSION,
-                checksum(),
-                now_millis()
-            ],
-        )?;
-        tx.pragma_update(
-            None,
-            "application_id",
-            future_app_settings::APP_DB_APPLICATION_ID,
-        )?;
-        tx.pragma_update(
-            None,
-            "user_version",
-            future_app_settings::APP_DB_SCHEMA_VERSION,
-        )?;
-        tx.commit()?;
+        if version == 0 {
+            super::db::apply_schema(conn)?;
+        }
+        for (step, sql) in STEPS.iter().filter(|step| step.0 > version) {
+            let tx = rusqlite::Transaction::new_unchecked(
+                conn,
+                rusqlite::TransactionBehavior::Immediate,
+            )?;
+            tx.execute_batch(sql)?;
+            if *step == 1 {
+                tx.execute("INSERT INTO app_database_identity(id,database_id,restore_generation) VALUES ('main',?1,?2)",params![create_id("database"),create_id("restore")])?;
+            }
+            if *step == future_app_settings::APP_DB_SCHEMA_VERSION {
+                validate_core(&tx)?;
+            }
+            tx.execute(
+                "INSERT INTO app_schema_migrations(version,checksum,applied_at) VALUES (?1,?2,?3)",
+                params![step, checksum(*step), now_millis()],
+            )?;
+            tx.pragma_update(
+                None,
+                "application_id",
+                future_app_settings::APP_DB_APPLICATION_ID,
+            )?;
+            tx.pragma_update(None, "user_version", step)?;
+            tx.commit()?;
+        }
         Ok(())
     })();
     result.map_err(|error: AppError| {
@@ -214,7 +225,7 @@ fn snapshot_before_upgrade(conn: &Connection) -> Result<Option<PathBuf>, AppErro
         .parent()
         .ok_or("Desktop database has no parent directory")?
         .join("backups");
-    let path = future_agent::session::create_database_snapshot(conn, &directory, "app-before-schema-1")
+    let path = future_agent::session::create_database_snapshot(conn, &directory, "app-before-schema-upgrade")
         .map_err(|error| AppError::from(format!("Cannot create a verified Desktop pre-upgrade snapshot: {error}; migration was not started.")))?;
     eprintln!(
         "FutureOS: preserved Desktop pre-upgrade snapshot at {}",
@@ -227,6 +238,31 @@ fn snapshot_before_upgrade(conn: &Connection) -> Result<Option<PathBuf>, AppErro
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn version_one_upgrades_in_order_and_preserves_database_identity() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        let identity: String = conn
+            .query_row("SELECT database_id FROM app_database_identity", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        conn.execute_batch("DROP TABLE thread_sources; DELETE FROM app_schema_migrations WHERE version=2; PRAGMA user_version=1;
+            CREATE TRIGGER refuse_v2 BEFORE INSERT ON app_schema_migrations WHEN NEW.version=2 BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        assert!(initialize(&conn).is_err());
+        assert_eq!(admit(&conn).unwrap(), 1);
+        assert!(!table_names(&conn).unwrap().contains("thread_sources"));
+        conn.execute_batch("DROP TRIGGER refuse_v2").unwrap();
+        initialize(&conn).unwrap();
+        let after: String = conn
+            .query_row("SELECT database_id FROM app_database_identity", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(identity, after);
+        assert_eq!(admit(&conn).unwrap(), 2);
+    }
 
     fn legacy(conn: &Connection) {
         conn.execute_batch(include_str!("fixtures/pre-agent.sql"))
@@ -255,7 +291,10 @@ mod tests {
                 .unwrap();
             initialize(&conn).unwrap();
             validate_core(&conn).unwrap();
-            assert_eq!(admit(&conn).unwrap(), 1);
+            assert_eq!(
+                admit(&conn).unwrap(),
+                future_app_settings::APP_DB_SCHEMA_VERSION
+            );
             let after: String = conn
                 .query_row("SELECT database_id FROM app_database_identity", [], |row| {
                     row.get(0)
@@ -267,7 +306,7 @@ mod tests {
                     row.get(0)
                 })
                 .unwrap();
-            assert_eq!(markers, 1);
+            assert_eq!(markers, future_app_settings::APP_DB_SCHEMA_VERSION);
         }
     }
 
@@ -372,18 +411,24 @@ mod tests {
         assert_eq!(body, "保留历史");
         conn.execute_batch("DROP TRIGGER refuse_contract").unwrap();
         initialize(&conn).unwrap();
-        assert_eq!(admit(&conn).unwrap(), 1);
+        assert_eq!(
+            admit(&conn).unwrap(),
+            future_app_settings::APP_DB_SCHEMA_VERSION
+        );
     }
 
     #[test]
     fn damaged_current_contract_does_not_recreate_or_erase_authoritative_tables() {
         let conn = Connection::open_in_memory().unwrap();
         initialize(&conn).unwrap();
-        conn.execute_batch("UPDATE app_schema_migrations SET checksum='changed'")
+        conn.execute_batch("UPDATE app_schema_migrations SET checksum='changed' WHERE version=1")
             .unwrap();
         assert!(initialize(&conn).is_err());
-        conn.execute("UPDATE app_schema_migrations SET checksum=?1", [checksum()])
-            .unwrap();
+        conn.execute(
+            "UPDATE app_schema_migrations SET checksum=?1 WHERE version=1",
+            [checksum(1)],
+        )
+        .unwrap();
         conn.execute_batch("DROP TABLE artifacts").unwrap();
         assert!(initialize(&conn).is_err());
         assert!(!table_names(&conn).unwrap().contains("artifacts"));

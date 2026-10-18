@@ -417,7 +417,7 @@ pub(super) async fn reconcile_discovered_session(
 /// session and keeps working; the sidebar re-roots it (see `buildThreadTree`).
 /// The deletion also tombstones the session, so a late `session_created`
 /// announcement or discovery pass can never resurrect it.
-pub(super) fn reconcile_deleted_session(session_id: &str) -> Result<bool, crate::AppError> {
+pub(crate) fn reconcile_deleted_session(session_id: &str) -> Result<bool, crate::AppError> {
     let Some(thread) = crate::store::find_thread_by_agent_session(session_id)? else {
         return Ok(false);
     };
@@ -721,6 +721,14 @@ async fn run_observer(
                 continue;
             }
         };
+
+        if let Err(error) = super::verify_thread_source(&shared.thread_id, session_id).await {
+            eprintln!("FutureOS: observer source verification deferred: {error}");
+            if sleep_or_cancel(&mut cancel, backoff).await {
+                return;
+            }
+            continue;
+        }
 
         if !replay_session_events(&mut client, session_id, shared, &mut state).await {
             if sleep_or_cancel(&mut cancel, backoff).await {

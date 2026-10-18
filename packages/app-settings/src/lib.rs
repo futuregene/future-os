@@ -307,7 +307,7 @@ pub fn app_db_path() -> Result<PathBuf, Error> {
 
 /// On-disk Desktop contract. Shared writers must reject future/foreign files.
 pub const APP_DB_APPLICATION_ID: i64 = 0x46554150;
-pub const APP_DB_SCHEMA_VERSION: i64 = 1;
+pub const APP_DB_SCHEMA_VERSION: i64 = 2;
 
 pub fn validate_database_header(conn: &Connection) -> Result<(), Error> {
     let application: i64 = conn.pragma_query_value(None, "application_id", |row| row.get(0))?;

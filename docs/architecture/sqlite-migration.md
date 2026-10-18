@@ -122,7 +122,7 @@ Restoring an older app.db never authorizes deleting newer files. Unowned images,
 
 ## Database admission and upgrade contract
 
-Desktop now uses application_id `0x46554150` and user_version `1`. Known legacy
+Desktop now uses application_id `0x46554150` and user_version `2`. Known legacy
 Desktop layouts and CLI settings/workspace bootstrap databases are adopted through
 the existing release migrations. `app_schema_migrations` records the new contract
 checksum; `app_database_identity` persists database and restore identities. The
@@ -137,7 +137,7 @@ Agent schema, a snapshot is published under `agent/backups/`. Snapshots contain
 committed WAL contents, use unique names, retain original tables and are never
 overwritten on retry. Failure to create/verify the snapshot prevents migration.
 These are independent database snapshots, not a coordinated two-store backup or
-an attachment backup; those require the later backup/restore work.
+an attachment backup; the coordinated commands below provide that separately.
 
 The Desktop adoption contract is committed only after structural validation.
 Legacy migration steps retain their own transaction boundaries: a failed later
@@ -175,3 +175,52 @@ The tool never stops an existing process or removes instance lock files.
 ## Fault termination
 
 Abort and persistence retry share a serialized fault-outcome boundary. An immediate SQLite transaction preserves existing terminal results and settles only an unfinished exact run. A live task cannot receive a fabricated terminal or release its lease. Repeated cancellation of a settled run is idempotent while stale requests cannot affect newer work. `abort_retry` propagates recovery failures.
+
+
+## Source ownership, queue receipts and disposable indexes
+
+Agent storage schema 7 persists a database family ID and restore generation.
+Desktop contract 2 binds each conversation to that source. A changed database
+cannot silently claim an existing conversation. Restores rotate the generation,
+which fences history cursors and replaces cached display windows instead of
+mixing snapshots. Legacy GUI archives use bounded pages and remain read only;
+the UI explains that the matching Agent source must be restored before sending.
+
+`session_tombstones` records native and imported deletions independently of
+session rows. Bounded `get_session_presence` requests distinguish present,
+deleted, missing and failed import. Reconciliation removes a mirror only for
+proven deletion from its recorded database; absence alone preserves it.
+
+`queued_run_receipts` commits the request identity and original input before a
+queued acknowledgement. The canonical run start consumes receipts in the same
+transaction as the user/start entries. Restart materializes unstarted accepted
+input with an interrupted/cancelled terminal once; it never resumes model calls
+or tools. Request retries retain the original run identity. Unrecoverable receipt
+bytes remain stored and are reported, rather than blocking unrelated sessions.
+
+`history_index_state` versions disposable projections. Transactional invalidation
+triggers expose partial index changes; missing tables invalidate all index stamps
+at open. Opening one affected conversation rebuilds shapes and display rows from
+canonical records in batches, without rewriting history or replaying work. Normal
+pages check one indexed stamp and load only selected bodies. Listings fetch the
+first user, current session metadata and last model change, and count user rows
+without hydrating every user message.
+
+`future doctor` asks the running storage owner for schema/identity and catalogue
+counts, including failed imports, unrecoverable queued inputs and pending index
+rebuilds. Agent failures are reported as unverified health, not an empty healthy
+catalogue. This is catalogue diagnosis, not a full SQLite integrity scan; offline
+backup verification performs SQLite integrity and file-hash checks.
+
+## Manual acceptance for this change
+
+Local unit tests are intentionally not executed. Added fault cases compile with
+static checks; CI can execute them once a PR is authorized. Validate a consistent
+copy under an isolated `FUTURE_HOME`: historical database upgrades and repeated
+startup; archive-only read-only paging; foreign database refusal; orphan-run
+termination and repeated abort; accepted queued inputs after restart; Force quit
+with a stalled cleanup (independent 25-second watchdog); restore interruption and
+resume/rollback; and reconstruction of missing disposable history indexes with
+canonical records unchanged. Previously erased bytes require an earlier backup
+or original import source. Full backup currently rejects symlinks/special files,
+requires stopped writers and restores only to its original home.

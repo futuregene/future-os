@@ -304,10 +304,56 @@ pub async fn reconcile_orphan_sessions() -> Result<usize, crate::AppError> {
         let conn = connect()?;
         orphan_thread_ids(&conn, &live_sessions)?
     };
-    if !orphans.is_empty() {
+    let bindings: Vec<(String, String)> = {
+        let conn = connect()?;
+        let mut statement = conn.prepare("SELECT id,agent_session_id FROM threads WHERE status!='deleted' AND COALESCE(agent_session_id,'')!=''")?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        rows
+    };
+    let mut removed = 0;
+    for batch in bindings.chunks(future_rpc::session_deletion::MAX_DELETE_SESSIONS) {
+        let ids = batch.iter().map(|(_, session)| session.clone()).collect();
+        let presence = match crate::agent_bridge::session_presence(ids).await {
+            Ok(presence) => presence,
+            Err(error) => {
+                eprintln!("FutureOS: durable session reconcile deferred: {error}");
+                break;
+            }
+        };
+        for (thread, session) in batch {
+            let status = presence
+                .sessions
+                .iter()
+                .find(|item| item.session_id == *session)
+                .map(|item| item.status.as_str());
+            match status {
+                Some("present") => {
+                    if let Err(error) = super::record_thread_source(
+                        thread,
+                        session,
+                        &presence.database_id,
+                        &presence.restore_generation,
+                    ) {
+                        eprintln!("FutureOS: conversation source binding retained: {error}");
+                    }
+                }
+                Some("deleted")
+                    if super::thread_source(thread)?
+                        .is_some_and(|source| source.0 == presence.database_id) =>
+                {
+                    removed +=
+                        usize::from(crate::agent_bridge::reconcile_deleted_session(session)?);
+                }
+                _ => {}
+            }
+        }
+    }
+    if !orphans.is_empty() && removed == 0 {
         eprintln!("FutureOS: {} conversation source(s) are missing; preserving local history for recovery", orphans.len());
     }
-    Ok(0)
+    Ok(removed)
 }
 
 /// Decide which active threads have lost their agent base data. Split out from

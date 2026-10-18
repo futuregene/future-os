@@ -23,6 +23,8 @@ pub enum AppError {
     /// carried verbatim, so the serialized string the frontend sees is unchanged.
     #[error("{0}")]
     AgentUnavailable(String),
+    #[error("{message}")]
+    AgentCommand { code: String, message: String },
     #[error("{reason}")]
     AgentIncompatible {
         agent_version: Option<String>,

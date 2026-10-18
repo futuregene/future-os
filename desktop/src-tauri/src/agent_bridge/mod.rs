@@ -8,6 +8,7 @@ mod import;
 mod models;
 mod observer;
 mod persist;
+mod presence;
 mod prompt;
 mod queries;
 mod reconciliation;
@@ -46,10 +47,12 @@ pub(crate) use self::import::{list_agent_session_ids, session_has_messages};
 pub use self::models::{list_agent_models, list_builtin_providers, AgentModelOption};
 #[cfg(test)]
 pub(crate) use self::observer::has_observer;
+pub(crate) use self::observer::reconcile_deleted_session;
 pub use self::observer::{
     drop_observer, ensure_observer_for_session, ensure_observer_for_thread,
     reconcile_streaming_observers, spawn_session_discovery, spawn_streaming_observer_monitor,
 };
+pub(crate) use self::presence::{session_presence, verify_thread_source};
 #[cfg(test)]
 pub use self::prompt::agent_prompt;
 pub(crate) use self::prompt::agent_prompt_with_acceptance;

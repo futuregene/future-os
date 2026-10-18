@@ -134,6 +134,10 @@ struct MockAgent;
 /// echoes the requested run id so tests that let the pipeline generate one
 /// still get a consistent acknowledgement.
 fn default_reply_data(cmd: &RpcCommand) -> String {
+    if cmd.r#type == "get_session_presence" {
+        return serde_json::json!({"databaseId":"test-agent-database","restoreGeneration":"test-generation",
+            "sessions":cmd.session_ids.iter().map(|id|serde_json::json!({"sessionId":id,"status":"present"})).collect::<Vec<_>>()}).to_string();
+    }
     if cmd.r#type == "get_agent_readiness" {
         return serde_json::json!({"version":crate::build_info::VERSION,"agentInstanceId":"agent-test","protocolVersion":future_rpc::connection::AGENT_PROTOCOL_VERSION,"dataRootId":"0".repeat(64),"storageSchemaVersion":future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION}).to_string();
     }

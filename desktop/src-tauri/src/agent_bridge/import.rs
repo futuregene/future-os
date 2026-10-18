@@ -480,6 +480,7 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
     // workspace directory name. Re-sync when the stored title is clearly
     // stale and a better one is available.
     if let Some(existing) = store::find_thread_by_agent_session(&summary.id)? {
+        super::verify_thread_source(&existing.id, &summary.id).await?;
         if store::sync_thread_parent_session(&summary.id, &summary.parent_session_id)? {
             // Upgrade/backfill can change an already-rendered tree without
             // importing any new rows. Do not wait for a restart to reveal it.
@@ -557,6 +558,7 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
             workspace_name,
             agent_session_id: Some(summary.id.clone()),
         })?;
+    super::verify_thread_source(&thread.id, &summary.id).await?;
     store::sync_thread_parent_session(&summary.id, &summary.parent_session_id)?;
     if !created {
         return Ok(0);
@@ -708,6 +710,7 @@ pub(crate) async fn import_discovered_session(session_id: &str) -> Result<bool, 
             workspace_name,
             agent_session_id: Some(session_id.to_string()),
         })?;
+    super::verify_thread_source(&thread.id, session_id).await?;
     store::sync_thread_parent_session(session_id, &summary.parent_session_id)?;
     // See `import_one`: a worker's name is a machine placeholder, an imported
     // standalone conversation's is not — and a failed seed write must not fail
