@@ -560,7 +560,10 @@ describe("screen-owned surfaces", () => {
 
   test("unpairing asks first and only then disconnects", () => {
     act(() => tree.root.findByType(ConnectionBadge).props.onUnpair());
-    expect(modalText()).toContain("sessions.unpairConfirm");
+    // `sessions.unpairConfirm` carries a `{{name}}` placeholder (en and zh both),
+    // so the dialog has to name the machine it is about to drop: without the
+    // option i18next leaves the raw placeholder in the sentence.
+    expect(modalText()).toContain("sessions.unpairConfirm:A very long desktop name");
     const dialog = visibleModal()!;
     const confirm = dialog.findAllByType(Button)
       .find(node => node.props.label === "sessions.unpair")!;
