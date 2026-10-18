@@ -6340,8 +6340,9 @@ mod bridge_tests {
         };
         let mut tap = nats.tap();
         handle_pair_handshake_confirm(&client, &msg, &cmd, &state).await;
-        let reply: Value =
-            await_publish(&mut tap, &reply_subject, Duration::from_secs(5)).await.json();
+        let reply: Value = await_publish(&mut tap, &reply_subject, Duration::from_secs(5))
+            .await
+            .json();
         assert_eq!(reply["success"], json!(true), "got: {reply}");
 
         assert_eq!(

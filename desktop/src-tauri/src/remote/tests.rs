@@ -286,7 +286,11 @@ mod runtime_tests {
         test_creds(pair_id, "nats://127.0.0.1:1", 3600)
     }
 
-    pub(super) fn test_creds(pair_id: &str, nats_url: &str, expires_in: i64) -> pairing::PairingCreds {
+    pub(super) fn test_creds(
+        pair_id: &str,
+        nats_url: &str,
+        expires_in: i64,
+    ) -> pairing::PairingCreds {
         let key_pair = nkeys::KeyPair::new_user();
         pairing::PairingCreds {
             handshake_version: 2,
@@ -3541,7 +3545,10 @@ mod multi_device_tests {
 
     /// Save two devices and make `first` the controller — the shape of a
     /// machine that was driven by one of them and then paired a second.
-    pub(super) fn two_devices(first: &str, second: &str) -> (pairing::PairingCreds, pairing::PairingCreds) {
+    pub(super) fn two_devices(
+        first: &str,
+        second: &str,
+    ) -> (pairing::PairingCreds, pairing::PairingCreds) {
         let a = test_creds(first);
         let b = test_creds(second);
         pairing::save_creds(&a).unwrap();
@@ -3902,10 +3909,8 @@ mod slot_tests {
     #[test]
     fn promotion_leaves_a_claimed_pointer_alone() {
         let _home = test_support::HomeGuard::new("remote-promote-claimed");
-        let (controller, standby) = super::multi_device_tests::two_devices(
-            "pair_promote_ctrl",
-            "pair_promote_standby",
-        );
+        let (controller, standby) =
+            super::multi_device_tests::two_devices("pair_promote_ctrl", "pair_promote_standby");
         SUPERVISOR.restore_active(Some(controller.pair_id.clone()));
 
         crate::remote::supervisor::promote_a_lone_device();
@@ -3999,10 +4004,8 @@ mod slot_tests {
     #[tokio::test]
     async fn takeover_from_the_desktop_switches_control() {
         let _home = test_support::HomeGuard::new("remote-takeover-desktop");
-        let (controller, standby) = super::multi_device_tests::two_devices(
-            "pair_takeover_ctrl",
-            "pair_takeover_standby",
-        );
+        let (controller, standby) =
+            super::multi_device_tests::two_devices("pair_takeover_ctrl", "pair_takeover_standby");
         *SUPERVISOR.last_error_code.lock().unwrap() = None;
 
         crate::remote::takeover(&standby.pair_id)
@@ -4027,7 +4030,10 @@ mod slot_tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         let status = status();
-        assert_eq!(status.pair_id, standby.pair_id, "the status follows control");
+        assert_eq!(
+            status.pair_id, standby.pair_id,
+            "the status follows control"
+        );
         assert!(!SUPERVISOR.in_control(&controller.pair_id));
         let row = |pair_id: &str| {
             status
@@ -4058,8 +4064,7 @@ mod slot_tests {
         );
 
         // With two connected devices and no pointer there is nobody to pick.
-        let second =
-            Slot::install_into(fake_state(&nats, "pair_controlling_second").await);
+        let second = Slot::install_into(fake_state(&nats, "pair_controlling_second").await);
         assert_eq!(
             SUPERVISOR.controlling_pair(),
             None,
@@ -4214,7 +4219,10 @@ mod slot_tests {
     async fn wait_until(what: &str, timeout: Duration, mut condition: impl FnMut() -> bool) {
         let deadline = std::time::Instant::now() + timeout;
         while !condition() {
-            assert!(std::time::Instant::now() < deadline, "{what} never happened");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what} never happened"
+            );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
@@ -4333,9 +4341,7 @@ mod slot_tests {
         wait_until(
             "the resume to record its failure",
             Duration::from_secs(10),
-            || {
-                SUPERVISOR.last_error_code.lock().unwrap().as_deref() == Some("reconnect_required")
-            },
+            || SUPERVISOR.last_error_code.lock().unwrap().as_deref() == Some("reconnect_required"),
         )
         .await;
         assert!(
@@ -4444,5 +4450,4 @@ mod slot_tests {
         );
         task.abort();
     }
-
 }
