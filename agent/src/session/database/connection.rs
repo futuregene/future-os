@@ -14,6 +14,9 @@ pub(super) fn open_connection_cancellable(
     cancellation: &crate::service::StartupCancellation,
 ) -> Result<Connection> {
     cancellation.check()?;
+    if let Some(home) = path.parent().and_then(Path::parent) {
+        future_rpc::home::ensure_restore_complete(home)?;
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).context("create SQLite directory")?;
     }

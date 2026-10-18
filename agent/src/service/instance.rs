@@ -27,6 +27,7 @@ impl InstanceFile {
     }
 
     pub(super) fn acquire(&mut self, future_home: &Path) -> Result<InstanceGuard<'_>> {
+        future_rpc::home::ensure_restore_complete(future_home)?;
         let guard = self.lock.try_write().map_err(|error| {
             if error.kind() == std::io::ErrorKind::WouldBlock {
                 anyhow::anyhow!("{}", lock_conflict_message(&self.path, future_home))
@@ -34,6 +35,7 @@ impl InstanceFile {
                 anyhow::Error::from(error)
             }
         })?;
+        future_rpc::home::ensure_restore_complete(future_home)?;
         // Preserve the old lock path and fd-lock's Windows first-byte protocol.
         // Never truncate it until the exclusive lock has been acquired.
         guard.set_len(0)?;

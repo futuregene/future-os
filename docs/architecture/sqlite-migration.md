@@ -145,3 +145,29 @@ step leaves earlier committed steps resumable, rather than claiming the entire
 upgrade rolled back. The original snapshot remains available. Corrupt current
 history structures are reported, never masked by creating empty authoritative
 tables. Shared CLI writers reject foreign/future Desktop database headers too.
+
+## Offline coordinated backup and restore
+
+`future data backup /absolute/new-backup-directory` reserves both instance locks
+and both database write boundaries before snapshotting. The backup includes both
+databases, managed images/review/chat roots, legacy session/event sources and Agent
+settings/models/auth files. It must be outside the FutureOS home, is published
+only after SQLite integrity checks and SHA-256 file verification, and never
+replaces an existing backup. Unsupported symbolic links/file types fail the
+operation rather than being followed or silently omitted. User-selected external
+workspace directories are not copied. Backups contain credentials and must stay
+private.
+
+`future data verify DIRECTORY` validates an existing set without starting Agent.
+After stopping all writers, `future data restore DIRECTORY --yes` restores to the
+original data root so saved working-directory paths keep their meaning. It stages
+and verifies replacements, rotates restore identities, then fences normal startup
+with `.restore-incomplete.json` while switching managed roots. Original files,
+including prior WAL/SHM, remain under `.restore-work-<id>/previous/`.
+
+`future data resume` completes an interrupted switch; `future data rollback`
+restores the previous files. Repeating either after a process interruption is
+safe at every rename boundary. The fence is removed only after the operation has
+finished; a successful forward restore also verifies the final file set. Recovery
+work directories are retained, never automatically reclaimed by orphan cleanup.
+The tool never stops an existing process or removes instance lock files.

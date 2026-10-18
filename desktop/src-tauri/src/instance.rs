@@ -40,6 +40,9 @@ impl InstanceGuard {
     }
 
     fn at(directory: &Path) -> Result<Self, crate::AppError> {
+        if let Some(home) = directory.parent() {
+            future_rpc::home::ensure_restore_complete(home)?;
+        }
         std::fs::create_dir_all(directory).map_err(|e| format!("Create Desktop directory: {e}"))?;
         let file = OpenOptions::new()
             .read(true)
@@ -64,6 +67,9 @@ impl InstanceGuard {
                 )
             }
         })?;
+        if let Some(home) = directory.parent() {
+            future_rpc::home::ensure_restore_complete(home)?;
+        }
         Ok(Self { _file: file })
     }
 }

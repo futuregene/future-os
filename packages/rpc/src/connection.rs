@@ -371,6 +371,8 @@ impl LocalStartPermit {
 }
 
 pub fn check_instance_lock(home: &Path) -> Result<(), ConnectionError> {
+    crate::home::ensure_restore_complete(home)
+        .map_err(|error| ConnectionError::StartupBlocked(error.to_string()))?;
     let path = home.join("agent").join("agent-instance.lock");
     let file = match std::fs::OpenOptions::new()
         .read(true)

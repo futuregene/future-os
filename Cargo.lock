@@ -1908,10 +1908,13 @@ dependencies = [
 name = "future-cli"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "base64 0.22.1",
  "chrono",
  "dirs 5.0.1",
+ "fd-lock",
+ "fs2",
  "future-agent",
  "future-app-settings",
  "future-app-workspaces",
@@ -1928,6 +1931,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "tokio-stream",

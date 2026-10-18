@@ -171,6 +171,9 @@ pub fn list_skill_records() -> Result<Vec<SkillRecord>> {
 /// A file created here is stamped `application_id` + `user_version = 4`; an
 /// existing v3 database moves to v4 after the new tables are created.
 pub(crate) fn open_registry(path: &Path) -> Result<Connection> {
+    if let Some(home) = path.parent().and_then(Path::parent) {
+        future_rpc::home::ensure_restore_complete(home)?;
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).context("create SQLite directory")?;
     }

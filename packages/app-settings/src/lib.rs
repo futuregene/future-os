@@ -338,6 +338,13 @@ pub fn ensure_table(conn: &Connection) -> Result<(), Error> {
 }
 
 fn open_at(path: &std::path::Path) -> Result<Connection, Error> {
+    if let Some(home) = path.parent().and_then(std::path::Path::parent) {
+        match std::fs::symlink_metadata(home.join(".restore-incomplete.json")) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+            Ok(_) => return Err(Error::Invalid("A FutureOS data restore is incomplete; run `future data resume` or `future data rollback` before writing settings or workspaces.".into())),
+        }
+    }
     let conn = Connection::open(path)?;
     validate_database_header(&conn)?;
     // The desktop app may hold a write lock; wait rather than failing.

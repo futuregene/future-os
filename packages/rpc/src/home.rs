@@ -15,6 +15,20 @@ use std::path::{Path, PathBuf};
 /// [`future_home_override`]).
 pub const FUTURE_HOME_ENV: &str = "FUTURE_HOME";
 
+pub const RESTORE_PENDING_FILE: &str = ".restore-incomplete.json";
+
+/// An interrupted multi-file restore must finish or roll back before any writer
+/// opens either database. Existence errors are failures, never permission to start.
+pub fn ensure_restore_complete(home: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(home.join(RESTORE_PENDING_FILE)) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+        Ok(_) => Err(std::io::Error::other(
+            "A FutureOS data restore is incomplete. Run `future data resume` or `future data rollback` before starting clients.",
+        )),
+    }
+}
+
 /// The configured FutureOS home override, when the environment names one.
 ///
 /// Empty and relative values are ignored: a relative root would make every

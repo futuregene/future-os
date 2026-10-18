@@ -175,6 +175,7 @@ pub(crate) fn close_pool() {
 
 pub(super) fn connect() -> Result<PooledConnection, crate::AppError> {
     let path = db_path()?;
+    future_rpc::home::ensure_restore_complete(&future_dir()?)?;
     if let Ok(mut pool) = POOL.lock() {
         if pool.0 != path {
             // HOME changed (test override) — drop connections into the old
