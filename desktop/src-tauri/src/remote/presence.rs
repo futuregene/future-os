@@ -82,8 +82,8 @@ fn control_label(pair_id: &str) -> &'static str {
 /// rather than by inference from a refused command. A client that does not
 /// understand the packet ignores it and finds out the same way it would have
 /// before: its next command comes back `superseded`.
-pub(super) async fn publish_standby(pair_id: &str) {
-    publish_control(pair_id, "standby").await;
+pub(super) fn publish_standby(pair_id: &str) {
+    publish_control(pair_id, "standby");
 }
 
 /// Send one control-state packet on `pair_id`'s own channel.
@@ -93,7 +93,7 @@ pub(super) async fn publish_standby(pair_id: &str) {
 /// outlives the call. Registering a control push there made a *test* wait on a
 /// detached publish before it could change HOME — and the wait belongs to
 /// someone else's test, which is exactly how this failed.
-pub(super) async fn publish_control(pair_id: &str, control: &str) {
+pub(super) fn publish_control(pair_id: &str, control: &str) {
     let Some((client, security, bridge_instance_id)) = super::SUPERVISOR
         .state
         .lock()
@@ -122,7 +122,13 @@ pub(super) async fn publish_control(pair_id: &str, control: &str) {
     let Ok(bytes) = serde_json::to_vec(&payload) else {
         return;
     };
-    let _ = super::secure::publish(&client, &security, subject, bytes).await;
+    // Fire-and-forget, on a task the process registry does not own: this is a
+    // notification, and no caller — a handshake reply, a takeover answer — may
+    // wait on it. The client finds out the same fact from its next presence
+    // packet if this one is lost.
+    tokio::spawn(async move {
+        let _ = super::secure::publish(&client, &security, subject, bytes).await;
+    });
 }
 
 /// Heartbeat payload: liveness plus the catalog revision.

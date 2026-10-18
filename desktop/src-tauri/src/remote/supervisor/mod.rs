@@ -51,8 +51,8 @@ pub use self::status::status;
 pub async fn takeover(pair_id: &str) -> Result<RemoteStatus, crate::AppError> {
     let previous = SUPERVISOR.claim_control_soon(pair_id);
     if let Some(previous) = previous {
-        super::publish_standby(&previous).await;
+        super::publish_standby(&previous);
     }
-    super::publish_control(pair_id, "active").await;
+    super::publish_control(pair_id, "active");
     Ok(status())
 }

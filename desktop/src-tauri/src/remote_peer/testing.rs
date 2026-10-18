@@ -10,7 +10,7 @@ use super::{creds, link, platform};
 use crate::remote::test_support::{
     init_store, jwt, now_secs, sign_in, FakeNats, HomeGuard, MockPlatform,
 };
-use crate::remote::{start, stop, RemoteStartInput};
+use crate::remote::{start, RemoteStartInput};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::json;
 
@@ -76,7 +76,11 @@ pub(crate) struct Paired {
 /// Start a host bridge and return (pair_id, its invitation URL).
 pub(crate) async fn start_host(platform: &MockPlatform, nats: &FakeNats) -> (String, String) {
     sign_in(platform.url());
-    let pair_id = format!("pair_{}", now_secs());
+    // Unique, not merely timestamped: two fixtures that start inside the same
+    // second would otherwise share a pair id, and the broker would round-robin
+    // `p.{pair}.cmd.>` between two unrelated bridges in one queue group — a
+    // handshake answered by the wrong host, or by nobody, inside the deadline.
+    let pair_id = crate::remote::test_support::unique("pair");
     platform.respond_pair_code_for(&pair_id, nats.url());
     let status = start(RemoteStartInput {}).await.expect("host bridge start");
     let invitation = status
@@ -205,8 +209,12 @@ pub(crate) async fn fixture(label: &str) -> (HomeGuard, Fixture) {
 /// dropped connection) outlives the call that made it, and the test build's
 /// schedule runs at 1 ms — so leaving one behind turns it into a CPU burner for
 /// every later test in the binary (`runtime::abort_supervisors_for_test`).
-pub(crate) async fn teardown() {
-    stop();
+pub(crate) async fn teardown(pair_id: &str) {
+    // Only *this* fixture's bridge. `stop()` would tear down every device the
+    // process-global supervisor holds, and the neighbours in this binary are
+    // separate fixtures running in parallel — killing theirs mid-handshake is a
+    // timeout in a test that never touched this code path.
+    crate::remote::test_support::stop_bridge(pair_id).await;
     crate::remote_peer::runtime::abort_supervisors_for_test().await;
     wait_for_web_port_free().await;
 }

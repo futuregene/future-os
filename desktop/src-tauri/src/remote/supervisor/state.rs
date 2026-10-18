@@ -66,6 +66,13 @@ pub(in crate::remote) struct Supervisor {
     /// must come back as a standby, or the two devices would take turns
     /// evicting each other for as long as either one keeps reconnecting.
     pub(in crate::remote) active: Mutex<Option<String>>,
+    /// The devices this process has a credential for.
+    ///
+    /// Kept in memory so [`Supervisor::in_control`] — which every command and
+    /// every presence packet reads — never touches the filesystem. It is
+    /// written by start (the slots it served), by a slot being added, and by an
+    /// unpair.
+    pub(in crate::remote) known: Mutex<std::collections::HashSet<String>>,
     pub(in crate::remote) last_error_code: Mutex<Option<String>>,
     pub(in crate::remote) start_lock: tokio::sync::Mutex<()>,
     pub(in crate::remote) start_requested: AtomicBool,
@@ -87,6 +94,7 @@ pub(in crate::remote) static SUPERVISOR: LazyLock<Supervisor> = LazyLock::new(||
     state: Mutex::new(HashMap::new()),
     bridge_shared: Mutex::new(HashMap::new()),
     active: Mutex::new(None),
+    known: Mutex::new(std::collections::HashSet::new()),
     last_error_code: Mutex::new(None),
     start_lock: tokio::sync::Mutex::const_new(()),
     start_requested: AtomicBool::new(false),
@@ -206,17 +214,22 @@ impl Supervisor {
             // device that is the whole truth and there is nothing to protect;
             // on one that *does* have devices it means nobody was given the
             // machine, and nobody may act as if they were.
-            None => pairing::load_slots().is_empty(),
+            None => self.known.lock().unwrap().is_empty(),
         }
     }
 
-    /// Whether `pair_id` is a device this process actually has: a live runtime
-    /// or a persisted credential.
+    /// Whether `pair_id` is a device this process actually has.
     fn device_is_known(&self, pair_id: &str) -> bool {
         self.state.lock().unwrap().contains_key(pair_id)
-            || pairing::load_slots()
-                .iter()
-                .any(|slot| slot.pair_id == pair_id)
+            || self.known.lock().unwrap().contains(pair_id)
+    }
+
+    pub(in crate::remote) fn remember_device(&self, pair_id: &str) {
+        self.known.lock().unwrap().insert(pair_id.to_string());
+    }
+
+    pub(in crate::remote) fn forget_device(&self, pair_id: &str) {
+        self.known.lock().unwrap().remove(pair_id);
     }
 
     /// The device in control, if one claimed it.
@@ -490,6 +503,7 @@ mod tests {
             state: std::sync::Mutex::new(std::collections::HashMap::new()),
             bridge_shared: std::sync::Mutex::new(std::collections::HashMap::new()),
             active: std::sync::Mutex::new(None),
+            known: std::sync::Mutex::new(std::collections::HashSet::new()),
             last_error_code: std::sync::Mutex::new(None),
             start_lock: tokio::sync::Mutex::const_new(()),
             start_requested: AtomicBool::new(false),

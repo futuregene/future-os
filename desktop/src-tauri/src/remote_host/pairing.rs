@@ -190,6 +190,7 @@ pub fn save_creds(creds: &PairingCreds) -> Result<(), crate::AppError> {
                 creds.secure = stored.secure.clone();
             }
         }
+        let saved_pair_id = creds.pair_id.clone();
         book.upsert(creds);
         // Something has to be in control, or a single-device desktop would
         // report itself as paired but unclaimed. The takeover rules that decide
@@ -200,7 +201,11 @@ pub fn save_creds(creds: &PairingCreds) -> Result<(), crate::AppError> {
         }
         let value = serde_json::to_value(&book)
             .map_err(|error| crate::AppError::Message(format!("encode pairing creds: {error}")))?;
-        crate::config_io::write_json_atomic(&path, &value, true)
+        crate::config_io::write_json_atomic(&path, &value, true)?;
+        // Tell the control rules this device exists, so no command has to read
+        // the book to find out.
+        crate::remote::note_known_device(&saved_pair_id);
+        Ok(())
     })
 }
 
@@ -208,6 +213,12 @@ pub fn save_creds(creds: &PairingCreds) -> Result<(), crate::AppError> {
 /// meaning is "this machine has no devices": clearing some of them would leave
 /// a pairing the user was told was gone.
 pub fn clear_creds() -> Result<(), crate::AppError> {
+    for slot in load_book_checked()
+        .map(|book| book.slots)
+        .unwrap_or_default()
+    {
+        crate::remote::forget_known_device(&slot.pair_id);
+    }
     for path in [book_path()?, pairing_path()?] {
         if path.exists() {
             std::fs::remove_file(&path).map_err(|error| {
@@ -273,6 +284,7 @@ pub fn remove_slot(pair_id: &str) -> Result<(), crate::AppError> {
     // Nothing is left. Both files go: an empty book would still answer "this
     // machine has a credential file", and the legacy file would keep
     // describing a device that was just unpaired.
+    crate::remote::forget_known_device(pair_id);
     if book.slots.is_empty() {
         for path in [book_path()?, pairing_path()?] {
             if path.exists() {

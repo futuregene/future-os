@@ -55,7 +55,7 @@ async fn a_download_round_trips_a_file_through_the_host() {
 
     assert_eq!(bytes, contents);
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// More than one chunk, so the index arithmetic, the ordered append and the
@@ -80,7 +80,7 @@ async fn a_multi_chunk_download_assembles_in_order() {
     // out-of-order or duplicated chunk cannot coincide with the expected result.
     assert_eq!(bytes, contents);
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// The bytes are checked against the hash the host declared. This is the
@@ -108,7 +108,7 @@ async fn a_download_whose_bytes_do_not_match_the_declared_hash_fails() {
         "the failure must say what did not match, got: {error}"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A file whose source shrank after the host declared it is refused. The host
@@ -133,7 +133,7 @@ async fn a_download_whose_source_shrank_is_refused() {
         "the refusal must carry a reason"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A pull for a transfer the host does not know is refused by the host, and the
@@ -162,7 +162,7 @@ async fn an_unknown_transfer_is_refused_with_the_hosts_reason() {
         "the host's own reason must reach the caller, got: {error}"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// The two halves of one pull are joined by `(desktop, transfer, index)`: the
@@ -193,7 +193,7 @@ async fn two_downloads_in_flight_pull_independently() {
     assert_eq!(first_bytes.expect("first"), b"first file bytes");
     assert_eq!(second_bytes.expect("second"), b"second file bytes, longer");
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 // ── the guards around a prepared transfer ──────────────────────────────────
@@ -220,7 +220,7 @@ async fn an_oversized_download_is_refused_before_pulling() {
         "got: {error}"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A declared chunk size of zero would make the chunk count a division by zero.
@@ -242,7 +242,7 @@ async fn a_zero_chunk_size_is_refused() {
         "got: {error}"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A pull that fails propagates, and the host's record is released on the way
@@ -270,7 +270,7 @@ async fn a_failed_pull_releases_the_hosts_record() {
         "got: {error}"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// The retry decision, tested directly: it is the one choice here whose wrong
@@ -573,7 +573,7 @@ async fn a_declaration_that_disagrees_with_the_bytes_is_refused() {
         "got: {error}"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A destination that cannot be written is reported.
@@ -653,7 +653,7 @@ async fn a_pull_without_a_connection_is_refused() {
         "the refusal must name the reason, got: {error}"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A chunk that never arrives fails rather than hanging.
@@ -697,7 +697,7 @@ async fn a_chunk_that_never_arrives_gives_up() {
         "got: {error}"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A connection that dies between the lookup and the request is recorded, not
@@ -740,7 +740,7 @@ async fn a_request_on_a_vanished_connection_is_recorded() {
         "got: {error}"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// Forged bytes on a chunk subject are dropped, not handed to a waiting pull.
@@ -790,7 +790,7 @@ async fn forged_chunk_bytes_are_not_handed_to_a_waiting_pull() {
         .expect("a forged chunk must not break a real download");
     assert_eq!(bytes, b"real bytes");
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A chunk subject with a non-numeric index is dropped before anything is
@@ -838,7 +838,7 @@ async fn a_chunk_subject_that_is_not_shaped_like_one_is_dropped() {
         b"real bytes"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 // ── upload ──────────────────────────────────────────────────────────────────
@@ -874,7 +874,7 @@ async fn an_upload_round_trips_through_the_host() {
     };
     assert_eq!(uploaded.content_hash, expected);
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// More than one chunk, so the index arithmetic and the ordered append are real.
@@ -900,7 +900,7 @@ async fn a_multi_chunk_upload_keeps_its_order() {
     };
     assert_eq!(uploaded.content_hash, expected);
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// The host enforces its own size limit, and its message is the one that reaches
@@ -923,7 +923,7 @@ async fn an_oversized_upload_is_refused_by_the_host() {
         "the host's own reason must reach the caller, got: {error}"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /**
@@ -1045,7 +1045,7 @@ async fn an_uploaded_file_can_be_claimed_as_an_attachment() {
         contents
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A chunk size a host declares must be one this machine can use.
@@ -1100,7 +1100,7 @@ async fn a_chunk_write_without_a_connection_is_refused() {
         "got: {error}"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A chunk write on a socket that has died is recorded, not merely failed.
@@ -1147,7 +1147,7 @@ async fn a_chunk_write_on_a_dead_socket_is_recorded() {
         !find(&runtime::list().await.expect("list"), &desktop_id).connected,
         "a dead socket must not keep looking connected"
     );
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /// A command that **timed out** does not, by itself, condemn the connection.
@@ -1211,7 +1211,7 @@ async fn a_request_that_times_out_keeps_a_connection_that_is_still_up() {
         "the transfer lane must still work after one timed-out command ({transfer_id})"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
 
 /**
@@ -1283,5 +1283,5 @@ async fn a_chunk_write_on_a_dropped_broker_is_recorded() {
         "a dropped connection must be retried, not left looking merely idle"
     );
 
-    teardown().await;
+    teardown(&fx.pair_id).await;
 }
