@@ -65,6 +65,18 @@ export function RemoteClientSection({
 }) {
   const { t } = useTranslation("remotePeer");
   const [peers, setPeers] = useState<RemotePeer[]>([]);
+  /**
+   * Whether the first read has answered yet.
+   *
+   * The rows start empty, so "no machines are paired" and "the answer has not
+   * arrived" looked identical — and the read goes through the backend's runtime
+   * lock, which a host that has just dropped can hold for a while. The section
+   * then said "no remote desktops yet" and quietly filled in: a machine the user
+   * has paired looked *removed*. Saying it is still reading is the honest
+   * reading, and the same distinction `peerStatus` draws between "offline" and
+   * "still being reached".
+   */
+  const [loading, setLoading] = useState(true);
   const [invitation, setInvitation] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -87,6 +99,11 @@ export function RemoteClientSection({
       // A read failure here is local (the credential book); the per-host
       // connection errors arrive on the peers themselves.
       setError(err instanceof Error ? err.message : String(err));
+    }
+    finally {
+      // Either way the question "is this a list, or is it still being read?"
+      // has an answer now.
+      setLoading(false);
     }
   }, []);
 
@@ -246,7 +263,11 @@ export function RemoteClientSection({
           : null}
 
         {peers.length === 0
-          ? <p className="text-sm text-ink-soft">{t("empty")}</p>
+          ? (
+              <p className="text-sm text-ink-soft" data-testid={loading ? "peers-loading" : undefined}>
+                {loading ? t("loading") : t("empty")}
+              </p>
+            )
           : (
               <div className="space-y-2">
                 {peers.map(peer => (

@@ -6,6 +6,7 @@
   "adding": "Connecting…",
   "slotWarning": "Pairing here replaces that desktop's current phone pairing. It can be re-added later with a new link.",
   "empty": "No remote desktops yet.",
+  "loading": "Reading your desktops…",
   "connect": "Connect",
   "connecting": "Connecting…",
   "disconnect": "Disconnect",

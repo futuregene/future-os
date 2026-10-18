@@ -90,7 +90,18 @@ pub struct PeerEvent {
 
 #[derive(Default)]
 struct Runtime {
-    live: HashMap<String, PeerSession>,
+    /// One session per connected host.
+    ///
+    /// Behind an `Arc` so a caller can take it out of the map and await a round
+    /// trip *after* dropping the runtime mutex. Every one of these methods is
+    /// either a quick read of the map (`list`) or a mutation of another host's
+    /// entry, and a command's round trip is bounded by `COMMAND_TIMEOUT` — up to
+    /// three attempts for a retryable read. Holding the mutex across that wait
+    /// made one host's timeout stall every other host's list read: the device
+    /// picker kept drawing its last answer while the Remote page's first read
+    /// was still blocked, so a host that had merely dropped looked removed
+    /// rather than offline.
+    live: HashMap<String, std::sync::Arc<PeerSession>>,
     /// The subscription task per host, aborted on disconnect so a host the user
     /// removed cannot keep emitting into a UI that has forgotten it.
     tasks: HashMap<String, crate::runtime::TaskHandle>,
@@ -180,6 +191,46 @@ fn reconnect_delay(attempt: usize) -> std::time::Duration {
 #[cfg(test)]
 pub(crate) static INJECT_CONNECTION_LOST: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+/// The live session for a host, cloned so the caller can await on it with the
+/// runtime mutex released.
+///
+/// Both command lanes go through here, for two reasons that have to hold
+/// together:
+///
+/// * **The lock is not held across the round trip.** A command's budget is
+///   `session::COMMAND_TIMEOUT` — three attempts for a retryable read, so up to
+///   half a minute against a host that has silently dropped. Every state read on
+///   this module (`list()`, `connect_all`, `disconnect`, `set_visible_session`)
+///   needs the same mutex, so holding it through that wait made one unreachable
+///   host stall the *peer list* of every other host: the picker kept drawing its
+///   last answer while the Remote page's first read was still blocked, and a
+///   machine that had merely gone offline looked removed.
+/// * **The race the test hook forces is the one being closed.** The entry can
+///   disappear between `ensure_connected` and this lookup (a concurrent command's
+///   transport failure, or the user pressing Disconnect), so the answer is an
+///   `Option` and each caller says `peer_not_connected` itself.
+async fn session_handle(desktop_id: &str) -> Option<std::sync::Arc<session::PeerSession>> {
+    let live = runtime().lock().await;
+    #[cfg(test)]
+    let live = forced_connection_loss(live, desktop_id);
+    live.live.get(desktop_id).cloned()
+}
+
+/// Apply the one-shot [`INJECT_CONNECTION_LOST`] hook, if it is armed.
+///
+/// Separate from [`session_handle`] so production never holds a `mut` guard it
+/// does not use: the entry can only be dropped here, in a test build.
+#[cfg(test)]
+fn forced_connection_loss<'a>(
+    mut live: tokio::sync::MutexGuard<'a, Runtime>,
+    desktop_id: &str,
+) -> tokio::sync::MutexGuard<'a, Runtime> {
+    if INJECT_CONNECTION_LOST.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        live.live.remove(desktop_id);
+    }
+    live
+}
 
 fn runtime() -> &'static Mutex<Runtime> {
     static RUNTIME: OnceLock<Mutex<Runtime>> = OnceLock::new();
@@ -660,7 +711,8 @@ pub(crate) async fn connect_with_emitter(
                 ),
             );
         }
-        live.live.insert(desktop_id.to_string(), peer_session);
+        live.live
+            .insert(desktop_id.to_string(), std::sync::Arc::new(peer_session));
         // A live connection is proof the retry loop is no longer needed; it is
         // restarted below only if this connection later drops.
         if let Some(supervisor) = live.supervisors.remove(desktop_id) {
@@ -1597,16 +1649,11 @@ async fn send_request(
             .unwrap_or(lane)
             .to_string()
     };
-    let mut live = runtime().lock().await;
-    #[cfg(test)]
-    if INJECT_CONNECTION_LOST.swap(false, std::sync::atomic::Ordering::Relaxed) {
-        // The real interleaving this guards: a concurrent command's transport
-        // failure, or the user pressing Disconnect, removes the entry between
-        // the connect above and the lookup below. Forced here because it cannot
-        // be produced from outside without racing.
-        live.live.remove(desktop_id);
-    }
-    let Some(session) = live.live.get_mut(desktop_id) else {
+    // The handle is cloned out of the map, not borrowed from it: the round trip
+    // below is a network wait, and the runtime mutex is what every other host's
+    // `list()`, `connect` and `disconnect` needs. This is the second half of
+    // why a session is an `Arc` — the wait happens with the lock released.
+    let Some(session) = session_handle(desktop_id).await else {
         return Err(crate::AppError::Message("peer_not_connected".into()));
     };
     let subject = session.command_subject(&key);
@@ -1614,6 +1661,7 @@ async fn send_request(
         .request(&subject, command, session::COMMAND_TIMEOUT)
         .await;
     if let Err(error) = &result {
+        let mut live = runtime().lock().await;
         on_transport_failure(&mut live, desktop_id, error);
     }
     result
@@ -1816,7 +1864,7 @@ fn on_transport_failure(live: &mut Runtime, desktop_id: &str, error: &crate::App
         && live
             .live
             .get(desktop_id)
-            .is_some_and(session::PeerSession::is_connected)
+            .is_some_and(|session| session.is_connected())
     {
         return;
     }
@@ -1872,16 +1920,18 @@ pub(crate) async fn put_chunk_within(
     bytes: &[u8],
     budget: Duration,
 ) -> Result<(), crate::AppError> {
-    let mut live = runtime().lock().await;
-    let Some(session) = live.live.get_mut(desktop_id) else {
+    let session = runtime().lock().await.live.get(desktop_id).cloned();
+    let Some(session) = session else {
         return Err(crate::AppError::Message("peer_not_connected".into()));
     };
     let subject = session.transfer_chunk_subject(upload_id, index);
     // The session budget, not a transfer one: the host writes this chunk to disk
     // before it answers, so a short budget here would report a slow disk as a
-    // dead socket.
+    // dead socket. The wait happens with the runtime lock released, so a slow
+    // disk on this host does not stall another host's list read.
     let result = session.request_bytes(&subject, bytes, budget).await;
     if let Err(error) = &result {
+        let mut live = runtime().lock().await;
         on_transport_failure(&mut live, desktop_id, error);
     }
     result.map(|_| ())
@@ -2021,20 +2071,16 @@ pub(crate) async fn request_at(
             .entry("id")
             .or_insert_with(|| json!(crate::store::create_id("cmd")));
     }
-    let mut live = runtime().lock().await;
-    #[cfg(test)]
-    if INJECT_CONNECTION_LOST.swap(false, std::sync::atomic::Ordering::Relaxed) {
-        // The same interleaving the session-keyed lane guards against: a
-        // concurrent command's transport failure, or the user pressing
-        // Disconnect, removes the entry between the connect above and the
-        // lookup below.
-        live.live.remove(desktop_id);
-    }
-    let Some(session) = live.live.get_mut(desktop_id) else {
+    // Same shape as the session-keyed lane: take the handle, drop the runtime
+    // lock, then wait. A chunk pull's command can take the host a while (its
+    // budget is the session's), and every other host's state read needs this
+    // mutex.
+    let Some(session) = session_handle(desktop_id).await else {
         return Err(crate::AppError::Message("peer_not_connected".into()));
     };
     let result = session.request(subject, command, timeout).await;
     if let Err(error) = &result {
+        let mut live = runtime().lock().await;
         on_transport_failure(&mut live, desktop_id, error);
     }
     result
@@ -2099,7 +2145,7 @@ mod tests {
 
     /// Take a session out of the runtime so a test owns it (a `SecureChannel` is
     /// not `Clone`, and taking it is also what removes it from the serving path).
-    async fn take_session(desktop_id: &str) -> PeerSession {
+    async fn take_session(desktop_id: &str) -> std::sync::Arc<PeerSession> {
         runtime()
             .lock()
             .await
@@ -2122,6 +2168,47 @@ mod tests {
         let desktop_id = fx.paired.creds.desktop_id.clone();
         connect(&desktop_id).await.expect("connect");
         (home, fx, desktop_id)
+    }
+
+    /// A command that is still waiting for its reply must not stop the peer list
+    /// from answering.
+    ///
+    /// The runtime lock used to be held across the round trip, so one unreachable
+    /// host made every other host's `list()` wait out `session::COMMAND_TIMEOUT` —
+    /// and a retryable read makes that up to three attempts, half a minute. That
+    /// is what a user sees as a machine disappearing from the device picker: the
+    /// five-second poll keeps its last answer, so the entry stays put and says
+    /// "offline", while the Remote page's first read is blocked behind a host
+    /// that dropped and draws "no remote computers" until it finally answers.
+    ///
+    /// The subject deliberately goes nowhere: the host subscribes to its own
+    /// command, presence and state lanes, so this is a real wait rather than a
+    /// business refusal that would return in microseconds.
+    #[tokio::test]
+    async fn a_command_in_flight_does_not_block_the_peer_list() {
+        let (_home, fx, desktop_id) = connected_fixture("peer-rt-list-unblocked").await;
+        let budget = std::time::Duration::from_secs(5);
+        let subject = format!("p.{}.nobody.answers", fx.pair_id);
+        let in_flight = tokio::spawn(async move {
+            let _ = request_at(&desktop_id, json!({}), &subject, budget).await;
+        });
+        // Let the request reach the wire and take whatever lock it takes.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        let started = std::time::Instant::now();
+        let peers = list()
+            .await
+            .expect("the list answers while a command is in flight");
+        let waited = started.elapsed();
+        assert_eq!(peers.len(), 1);
+        assert!(peers[0].connected, "{peers:?}");
+        assert!(
+            waited < std::time::Duration::from_secs(1),
+            "the list waited {waited:?} behind another host's command"
+        );
+
+        in_flight.abort();
+        teardown(&fx.pair_id).await;
     }
 
     /// A control for the test below: on a healthy socket the stream attaches, so

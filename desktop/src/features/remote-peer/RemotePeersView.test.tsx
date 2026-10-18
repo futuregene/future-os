@@ -500,6 +500,32 @@ it("reports a peer list it cannot read", async () => {
   await view.unmount();
 });
 
+/**
+ * "Nothing is paired" and "the answer has not arrived" used to render as the
+ * same sentence, because the rows start empty and the read can take a while
+ * (the backend's peer list shares a lock with every live command). A machine the
+ * user has paired therefore looked *removed* until the read answered — and then
+ * quietly reappeared, which is exactly what a dropped host used to do.
+ */
+it("says it is still reading rather than claiming nothing is paired", async () => {
+  let answer: (peers: RemotePeer[]) => void = () => {};
+  listRemotePeers.mockReturnValue(new Promise<RemotePeer[]>((resolve) => {
+    answer = resolve;
+  }));
+  const view = await mount();
+
+  expect(view.container.querySelector("[data-testid='peers-loading']")?.textContent)
+    .toBe("Reading your desktops…");
+  expect(view.text()).not.toContain("No remote desktops yet.");
+
+  await act(async () => answer([peer()]));
+  await view.settle();
+
+  expect(view.container.querySelector("[data-testid='peers-loading']")).toBeNull();
+  expect(view.text()).toContain("Studio iMac");
+  await view.unmount();
+});
+
 it("reports a failed connect, and reports a failed disconnect the same way", async () => {
   connectRemotePeer.mockRejectedValue(new Error("bridge_unreachable"));
   // An offline machine is the one that offers "Connect".
