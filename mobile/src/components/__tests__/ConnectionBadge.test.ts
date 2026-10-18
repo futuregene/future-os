@@ -53,8 +53,12 @@ const render = (
   presentation = ready,
   active = true,
   machines?: MachineSummary[],
+  standby = false,
+  holder: { name?: string } | null = null,
 ) => {
-  const element = createElement(ConnectionBadge, { presentation, onReconnect, onUnpair, active, machines });
+  const element = createElement(ConnectionBadge, {
+    presentation, onReconnect, onUnpair, active, machines, standby, holder,
+  });
   act(() => {
     tree.update(element);
   });
@@ -209,6 +213,37 @@ test("the dot is green only when every machine is connected", () => {
   // app renders from.
   render(ready, true, []);
   expect(dotColor()).toBe(lightColors.success);
+});
+
+test("a connected machine another device holds is yellow, not green", () => {
+  // Connected is not the same as usable. Painting a standby machine green told
+  // the user everything was fine while every command came back refused.
+  const held: MachineSummary[] = [{
+    desktopId: "a",
+    label: "a",
+    active: true,
+    status: "connected",
+    control: "standby",
+  }];
+  render(ready, true, held);
+  expect(dotColor()).toBe(lightColors.warningDot);
+
+  // A set where one machine is ours to drive is still green: the phone has
+  // somewhere to work.
+  render(ready, true, [...held, { desktopId: "b", label: "b", active: false, status: "connected", control: "active" }]);
+  expect(dotColor()).toBe(lightColors.success);
+});
+
+test("a standby connection says so instead of claiming to be simply connected", () => {
+  render(ready, true, [{ desktopId: "a", label: "a", active: true, status: "connected", control: "standby" }], true, {
+    name: "Lab MacBook Air",
+  });
+
+  expect(dotColor()).toBe(lightColors.warningDot);
+  open();
+  expect(text()).toContain("connection.connectedStandby");
+  // …and names who has it, so the user knows what taking it back would cost.
+  expect(text()).toContain("connection.controlHeldBy");
 });
 
 test("the partial dot is yellow while the title under it stays readable", () => {

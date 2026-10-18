@@ -246,6 +246,8 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
     refresh(): Promise<void>;
     reconnect(): void;
     commandsFor(desktopId: string): DesktopCommands | null;
+    /** Ask `desktopId` to let this phone drive it (see `takeControl`). */
+    takeControlFor(desktopId: string): Promise<void>;
     readWorkspaces(desktopId: string): Promise<RemoteWorkspace[]>;
   };
 }
@@ -815,6 +817,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       ...(entry.icon ? { icon: entry.icon } : {}),
       active: false,
       status: machineStatusOf(entry),
+      ...(entry.connection.presence?.control ? { control: entry.connection.presence.control } : {}),
     }));
     return {
       catalogs: catalogEntries,
@@ -831,6 +834,20 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             pairing.reconnect(entry.desktopId);
           else void entry.connection.recover("request-failure");
         }
+      },
+      /**
+       * Ask one paired machine to let this phone drive it.
+       *
+       * Resolved through that machine's own runtime, not the open one: the
+       * picker can offer the action for a device the phone is not currently
+       * reading, and sending it down the open machine's connection would ask
+       * the wrong desktop to hand over.
+       */
+      takeControlFor: async (desktopId: string): Promise<void> => {
+        const client = registryRef.current.get(desktopId)?.connection.clientRef.current;
+        if (!client) throw new Error("not_connected");
+        const response = await client.request<{ control?: string }>({ type: "takeover" }, "list");
+        if (response.success === false) throw new Error(response.error ?? "takeover_failed");
       },
       commandsFor: (desktopId: string): DesktopCommands | null => {
         const entry = registryRef.current.get(desktopId);

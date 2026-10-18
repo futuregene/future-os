@@ -72,15 +72,25 @@ describe("the dot's own answer", () => {
     expect(machinesConnected([machine("a", "connected"), machine("b", "connected")]).all)
       .toBe(true);
     expect(machinesConnected([machine("a", "connected"), machine("b", "offline")]))
-      .toEqual({ all: false, any: true, connected: 1, total: 2 });
+      .toEqual({ all: false, any: true, connected: 1, total: 2, drivable: 1 });
     expect(machinesConnected([machine("a", "offline"), machine("b", "connecting")]).all)
       .toBe(false);
+  });
+
+  test("counts a machine held by another device as connected but undrivable", () => {
+    // The dot's green needs both: answering *and* ours to command. A standby
+    // machine passes the first and fails the second, which is why it is yellow.
+    const held = { ...machine("a", "connected"), control: "standby" as const };
+    expect(machinesConnected([held]).all).toBe(true);
+    expect(machinesConnected([held]).drivable).toBe(0);
+    expect(machinesConnected([held, machine("b", "connected")]).drivable).toBe(1);
   });
 
   test("says nothing about machines it does not have", () => {
     // No pairing at all: the dot falls back to the active connection's own
     // presentation rather than reporting "0 of 0 connected".
-    expect(machinesConnected([])).toEqual({ all: false, any: false, connected: 0, total: 0 });
+    expect(machinesConnected([]))
+      .toEqual({ all: false, any: false, connected: 0, total: 0, drivable: 0 });
   });
 });
 

@@ -184,8 +184,17 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // paired desktop really offers its client, so a capture can act on a peer's
   // row exactly as it can on the phone's own.
   const peerId = demoDesktops[1]?.desktopId ?? "";
+  // `?held=1` also makes the *other* machine the one that is driving, which is
+  // what the picker has to show: the open machine connected and in standby, the
+  // peer holding it. Without a second machine there is nothing to pick between.
   const peerMachines = withPeers && peerId
-    ? [{ desktopId: peerId, label: demoDesktops[1]!.name, active: false, status: "connected" }]
+    ? [{
+        desktopId: peerId,
+        label: demoDesktops[1]!.name,
+        active: false,
+        status: "connected" as const,
+        control: "active" as const,
+      }]
     : [];
   const peerCommands = {
     capabilities: new Set<string>(),
@@ -272,6 +281,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       refresh: async () => {},
       reconnect: () => {},
       commandsFor: (id: string) => (withPeers && id === peerId ? peerCommands : null),
+      takeControlFor: async () => undefined,
       readWorkspaces: async () => demoWorkspaces,
     },
     skillsRevision: 0,

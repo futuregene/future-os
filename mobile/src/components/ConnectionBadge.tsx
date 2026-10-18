@@ -47,6 +47,8 @@ export function ConnectionBadge({
   onUnpair,
   active = true,
   machines,
+  standby = false,
+  holder = null,
 }: {
   presentation: ConnectionPresentation;
   disconnectReason?: string;
@@ -62,6 +64,18 @@ export function ConnectionBadge({
    * machine is exactly the state the reader has to be able to see.
    */
   machines?: MachineSummary[];
+  /**
+   * Whether the machine the badge is rendered for is held by another device.
+   *
+   * Only read when there is no machine list to judge (the single-device
+   * fallback): with a list, every machine's own `control` answers this.
+   */
+  standby?: boolean;
+  /**
+   * The device holding the machine, when another one does. Only used to name it
+   * in the block's own words; the per-machine rows read their own state.
+   */
+  holder?: { name?: string } | null;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -96,12 +110,20 @@ export function ConnectionBadge({
   // three desktops, two of them up, is not "no connection" — which is what the
   // one machine's own state says when that machine is the one that is down.
   const partial = summary !== null && machinesPartlyConnected(summary, presentation);
-  // The dot answers for every paired machine when there is a list to judge, and
-  // for the one connection the app renders from when there is not.
+  // "Connected" alone is not green: a machine that answers while another paired
+  // device holds it cannot be read from or commanded, and painting that green
+  // told the user everything was fine while every action failed. Green means
+  // connected *and* ours to drive; yellow covers both a partly-connected set and
+  // a fully-connected one that nobody here may drive.
   const state: DotState = summary && machines!.length > 0
-    ? summary.all ? "up" : summary.any ? "partial" : "down"
-    : presentation.level === "connected" ? "up" :
-      presentation.level === "connecting" ? "partial" : "down";
+    ? summary.all
+      ? (summary.drivable > 0 ? "up" : "partial")
+      : summary.any
+        ? "partial"
+        : "down"
+    : presentation.level === "connected"
+      ? (standby ? "partial" : "up")
+      : presentation.level === "connecting" ? "partial" : "down";
   const { dot: dotColor, text: titleColor } = stateColors(colors)[state];
   // A connection the app still reports as healthy (or still trying) is where a
   // silently dead transport hides: those states keep the same manual reconnect
@@ -126,20 +148,39 @@ export function ConnectionBadge({
     : presentation.customerState === "waitingDesktop"
       ? "waitingDesktop"
       : presentation.level;
-  const label = partial ? t("connection.machinesPartial") : t(statusKey);
+  // Every machine answers, and none of them is ours to drive: the set is up but
+  // held by another paired device. Distinct from `partial` (some machines are
+  // down): here the block has to say *why* nothing can be done, and name who is
+  // holding it when there is one machine and it said who it is.
+  const standbyOnly = summary !== null
+    && summary.any
+    && summary.drivable === 0
+    && !partial;
+  const holderName = machines?.length === 1 ? holder?.name?.trim() ?? null : null;
+  const label = partial
+    ? t("connection.machinesPartial")
+    : standbyOnly
+      ? t("connection.connectedStandby")
+      : t(statusKey);
   const reason = partial
     ? t("connection.machinesSummary", {
       connected: summary!.connected,
       total: summary!.total,
     })
-    : disconnected
-      ? t(`connection.disconnectDetails.${copy}.reason`)
-      : t(`connection.statusDetails.${detailState}.reason`);
+    : standbyOnly
+      ? (holderName
+          ? t("connection.controlHeldBy", { name: holderName })
+          : t("connection.controlHeldByUnknown"))
+      : disconnected
+        ? t(`connection.disconnectDetails.${copy}.reason`)
+        : t(`connection.statusDetails.${detailState}.reason`);
   const solution = partial
     ? t("connection.machinesPartialHint")
-    : disconnected
-      ? t(`connection.disconnectDetails.${copy}.solution`)
-      : t(`connection.statusDetails.${detailState}.solution`);
+    : standbyOnly
+      ? t("connection.takeControlHint")
+      : disconnected
+        ? t(`connection.disconnectDetails.${copy}.solution`)
+        : t(`connection.statusDetails.${detailState}.solution`);
   // The set's own state carries no support code: there is no single failure to
   // look up, and the rows above name which machines it is about. The open
   // machine's code is still the phone's when nothing answers at all, where
