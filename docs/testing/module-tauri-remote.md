@@ -36,31 +36,6 @@
 > `reconcile.py` reporting MISSING 0 / COVERED 0. **Re-pin at HEAD before quoting anything** — this
 > module's figure has twice been stale by the time it was published.
 
-> **MERGE NOTE (2026-10-18, ): four of this campaign's tests were DELETED, not repaired.**
->  ("connecting is not taking over") removed the behaviour they asserted: a device's first secure
-> handshake used to claim the machine, and now it claims only a free machine - a new device comes up in
-> **standby** and is told who holds it. Four tests written before that change therefore failed after the
-> merge, and they failed on both flavours and on macOS, so this is semantics and not platform:
->
->     remote::commands::bridge_tests::a_first_confirmation_stands_the_previous_controller_down
->     remote::commands::bridge_tests::a_first_secure_handshake_stands_the_previous_controller_down
->     remote::tests::slot_tests::takeover_from_the_desktop_switches_control
->     commands::remote::tests::remote_takeover_takes_control_and_persists_it
->
-> They are deleted rather than updated because  ships the replacement and tests it itself:
-> `remote::commands::bridge_tests::a_standby_device_is_refused_and_a_takeover_moves_control` drives a real
-> bridge, refuses a standby device's command with `superseded`, and then moves control with an explicit
-> takeover. Rewriting ours would have produced a second test of the same rule with a weaker fixture (ours
-> seeded the pairing book without an installed runtime, which the stricter `takeover` now refuses with
-> `device_offline` - that is what the failures were reporting).
->
-> **Consequence for the figure, stated rather than absorbed:** the lines those four tests executed are no
-> longer covered by this campaign's own tests. The published 1083 is measured on the pre-merge tree and the
-> module record already carries a merge-time re-derivation as a follow-up; that re-derivation must set the
-> new `expect`, and the four tests' lines will read `DA:0` until something covers them again. This is the
-> F.102 pattern - a fixture whose premise upstream changed - and, as there, deleting it is a coverage
-> regression recorded as one.
-
 Scope (unit TAU-A, goal `goal_160bc247aa63`, todo `todo_dd42c37ab9b9`):
 
 ```
@@ -75,6 +50,22 @@ counts are in `.future/cov100/baseline/tauri-merged-lcov.info` (both feature
 flavors merged). **1125 uncovered lines in 31 files** across the three subtrees at
 that revision: `remote` 681 (of which `remote/verify_e2e.rs` alone is 399),
 `remote_host` 428, `remote_peer` 16.
+
+
+> **TWO FIXTURES ARE `platform-unmeasured` ON LINUX (2026-10-18, measured).**
+> `tests/remote_start_refusal.rs`'s `a_live_broker_drives_the_generation_watch_and_reconnect` and
+> `a_healthy_generation_resets_the_budget_and_a_retryable_reconnect_arms_the_retry` are gated to macOS.
+> Three CI runs failed a **different one of the two** each time (90 s and 35 s in `Reconnecting`, then
+> the platform's 500), which is a race between the fixture's own broker error timer and the child's
+> startup, not a property of the product: both pass on macOS in ~10 s and ~70 s wall clock. The
+> Linux-only behaviour they used to lean on - the shared port 8022 - is now waited for explicitly by
+> `ChildRun::spawn`, so what remains is host scheduling, not the arm under test. The other ten tests in
+> the file keep running everywhere.
+>
+> **The readiness budget has its own lesson.** I first answered the CI failures by raising the wait from
+> 30 s to 90 s. That only moved the failure later - twice. A budget is not a fix: the child was never
+> going to reach the phase, and a longer wait converts a fast red into a slow red. The port wait was the
+> fix; the budget stayed only as headroom.
 
 ## 1. Run identity and the exact measurement
 
