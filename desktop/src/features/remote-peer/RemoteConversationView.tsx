@@ -3,7 +3,7 @@ import type { ActivityTargetResolver } from "../agent/AgentActivityList";
 import type { RemotePeer } from "./remotePeerClient";
 import type { RemoteLiveReply } from "./remoteRunStreams";
 import type { RemoteApproval } from "./useRemoteApprovals";
-import { ArrowDown, Check, History, ReceiptText, X } from "lucide-react";
+import { ArrowDown, Check, Folder, History, ReceiptText, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
@@ -96,6 +96,7 @@ export function RemoteConversationView({
   persistedEntryIds,
   streaming,
   title,
+  workspaceName,
   sessionId,
 }: {
   approvals: RemoteApproval[];
@@ -156,6 +157,14 @@ export function RemoteConversationView({
   persistedEntryIds: ReadonlySet<string>;
   streaming: boolean;
   title: string;
+  /**
+   * The workspace this conversation works in, named as the rail names it.
+   *
+   * `null` for a chat conversation (whose row lives in the chat section) and
+   * for a host too old to report the name: a qualifier the header cannot state
+   * truthfully is left off rather than drawn as an id.
+   */
+  workspaceName: string | null;
   /** The conversation's session id on that host. */
   sessionId: string;
 }) {
@@ -313,6 +322,26 @@ export function RemoteConversationView({
               label={peer ? peerBadgeText(peer, peer.desktopId) : desktopId}
               title={peer?.name ?? peer?.desktopId ?? desktopId}
             />
+            {/* Which workspace on that machine. The same qualifier the machine
+                badge is and the same vocabulary the rail's workspace headings
+                use (a folder and the workspace's own name), so a reader who
+                came from a heading can see the conversation stayed in it — the
+                phone already says this under its title, and the desktop said
+                nothing. Capped like the machine badge: a long name must not
+                squeeze the conversation's own title, which is what the header
+                is for. */}
+            {workspaceName
+              ? (
+                  <span
+                    className="ml-2 inline-flex min-w-0 shrink-0 items-center gap-1 text-xs font-normal text-ink-muted"
+                    data-testid="remote-thread-workspace"
+                    title={workspaceName}
+                  >
+                    <Folder aria-hidden className="size-3.5 shrink-0" />
+                    <span className="max-w-40 truncate">{workspaceName}</span>
+                  </span>
+                )
+              : null}
           </div>
         </div>
         {/* The conversation's own account book, in the same place and the same
@@ -333,9 +362,6 @@ export function RemoteConversationView({
             onClick={onOpenUsage}
           />
         </div>
-        {streaming
-          ? <span className="shrink-0 px-1 text-xs text-accent">{t("statusRunning")}</span>
-          : null}
       </header>
 
       {/* The transcript, and the band of controls over its foot.

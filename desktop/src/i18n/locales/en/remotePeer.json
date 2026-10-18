@@ -18,7 +18,6 @@
   "statusAgentUnavailable": "Agent unavailable",
   "peersSummary": "{{connected}} of {{total}} connected",
   "reconnectAll": "Reconnect all",
-  "statusRunning": "Running",
   "statusUnread": "Unread",
   "selector": {
     "all": "All devices",

@@ -97,21 +97,29 @@ interface WorkspaceCreateRequest {
 }
 
 /**
- * A remote session's title, from the catalogue the rows are built from.
+ * What the open remote conversation's header says about it, from the catalogue
+ * the rows are built from.
  *
- * Falls back to the session id rather than to an empty header: a conversation
- * the catalogue has not caught up with yet is still *open*, and a blank title
- * would read as a broken view instead of a pending read.
+ * The title falls back to the session id rather than to an empty header: a
+ * conversation the catalogue has not caught up with yet is still *open*, and a
+ * blank title would read as a broken view instead of a pending read. The
+ * workspace is the one the row was grouped under in the list — a name, not an
+ * id, so a host that does not report it leaves the qualifier off rather than
+ * drawing something the reader cannot recognise. A chat conversation has no
+ * workspace of its own, so it gets none.
  */
-function titleOfRemote(
+function contextOfRemote(
   catalogs: RemoteCatalog[],
   target: { desktopId: string; sessionId: string },
-): string {
-  return catalogs
+): { title: string; workspaceName: string | null } {
+  const session = catalogs
     .find(catalog => catalog.desktopId === target.desktopId)
     ?.sessions
-    .find(session => session.sessionId === target.sessionId)
-    ?.title ?? target.sessionId;
+    .find(session => session.sessionId === target.sessionId);
+  return {
+    title: session?.title ?? target.sessionId,
+    workspaceName: session?.mode === "workspace" ? (session.workspaceName ?? null) : null,
+  };
 }
 
 export function AppShell() {
@@ -915,6 +923,12 @@ function ReadyAppShell({
   const activeRemotePeer = activeRemote
     ? remotePeers.find(peer => peer.desktopId === activeRemote.desktopId)
     : undefined;
+  // Read once per render rather than at each use: the header and the usage
+  // dialog must name the same conversation, and a draft (an empty session id)
+  // simply has no catalogue row to read.
+  const activeRemoteContext = activeRemote
+    ? contextOfRemote(remoteCatalogs, activeRemote)
+    : null;
 
   /**
    * Ask a host to compact a conversation's context.
@@ -1265,7 +1279,8 @@ function ReadyAppShell({
                             persistedEntryIds={remoteTimeline.persistedEntryIds}
                             sessionId={activeRemote.sessionId}
                             streaming={remoteTimeline.streaming}
-                            title={titleOfRemote(remoteCatalogs, activeRemote)}
+                            title={activeRemoteContext?.title ?? activeRemote.sessionId}
+                            workspaceName={activeRemoteContext?.workspaceName ?? null}
                           />
                         )
                       : storeError
@@ -1443,7 +1458,7 @@ function ReadyAppShell({
               desktopId={activeRemote.desktopId}
               onClose={() => setRemoteUsageOpen(false)}
               sessionId={activeRemote.sessionId}
-              title={titleOfRemote(remoteCatalogs, activeRemote)}
+              title={activeRemoteContext?.title ?? activeRemote.sessionId}
             />
           )
         : null}
