@@ -6243,6 +6243,39 @@ mod bridge_tests {
             }
         }
     }
+
+    /// A standby device may ask about itself — that is how the phone shows
+    /// "connected to the machine, not driving it" — but the answer carries its
+    /// own liveness only. The conversation list belongs to the machine, and
+    /// handing it to every paired device would make "only one controls" a
+    /// statement about commands alone.
+    #[tokio::test]
+    async fn a_standby_device_is_answered_with_its_own_liveness_only() {
+        let _home = HomeGuard::new("cmd-standby-presence");
+        let bridge = Bridge::start().await;
+        bridge.activate();
+        let controller = format!("pair_{}", unique("ctl"));
+        SUPERVISOR.remember_device(&controller);
+        SUPERVISOR.restore_active(Some(controller.clone()));
+        assert!(
+            !SUPERVISOR.in_control(&bridge.pair_id),
+            "the fixture must actually be the standby one"
+        );
+
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "get_presence" }))
+            .await;
+
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["control"], json!("standby"));
+        assert_eq!(reply["data"]["pairId"], json!(bridge.pair_id));
+        assert!(
+            reply["data"].get("sessions").is_none(),
+            "a standby device must not receive the machine's conversations: {reply}"
+        );
+        assert!(reply["data"].get("workspaces").is_none(), "{reply}");
+        bridge.stop().await;
+    }
 }
 
 struct NatsReply<'a> {

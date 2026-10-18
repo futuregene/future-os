@@ -602,7 +602,15 @@ $ python3 .future/cov100/reconcile.py --label rev-ch-frozen \
   MISSING (uncovered, not mentioned): 0                      # exit 0; no STALE
 ```
 
-The probe tests quoted in §3 live in the scratch tree `/tmp/rev-ch` (ephemeral; §6 rebuilds it), and
+The probe tests quoted in §3 live in the scratch tree `/tmp/rev-ch` — **that tree is GONE**: it was
+removed with the rest of `/tmp` during closeout cleanup on 2026-10-18, and this report embeds no
+verbatim copy of the probe sources, so it can only be **rebuilt approximately**: §1 (Method) carries
+the recipe (`git archive HEAD | tar -x -C <dir>`, then copy the frozen `channels/src` and
+`channels/tests` over it) and §3 names each probe and the assertion it made. The DSR conclusion in §3
+does **not** depend on that rebuild: its load-bearing evidence is
+`coverage/tauri-tau-remote-report.json` together with `/tmp/chan-lcov-r2final.info`, and both survive.
+(An earlier revision of this sentence said "§6 rebuilds it"; §6 is "Waiver reasons attacked" and
+never contained the recipe — corrected 2026-10-18.)
 the report was produced from the frozen sources with the campaign worktree untouched.
 
 ## 2. Method

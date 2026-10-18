@@ -613,6 +613,27 @@ pub(crate) fn jwt_expiry(jwt: &str) -> Result<i64, crate::AppError> {
 mod tests {
     use super::*;
 
+    /// A book written before the `version` field existed (or by any writer that
+    /// omitted it) must decode as the current version rather than being refused:
+    /// the field exists to *detect* an old file, and `serde(default)` is what
+    /// turns "absent" into a number. The supplier is the only thing standing
+    /// between an older book and a hard parse error, so it is pinned directly.
+    #[test]
+    fn a_book_without_a_version_decodes_as_the_current_one() {
+        let book: PairingBook = serde_json::from_value(serde_json::json!({
+            "active": null,
+            "slots": [],
+        }))
+        .expect("a book without a version decodes");
+        assert!(book.slots().is_empty());
+        assert_eq!(book.active(), None);
+        assert_eq!(
+            serde_json::to_value(&book).expect("serializes")["version"],
+            serde_json::json!(BOOK_VERSION),
+            "the default is the constant the writer uses"
+        );
+    }
+
     #[test]
     fn identifies_revoked_credential_error() {
         assert!(is_invalid_or_revoked_error(&crate::AppError::Remote {

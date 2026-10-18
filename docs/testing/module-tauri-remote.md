@@ -1,5 +1,41 @@
 # Module: `tau-remote` — the `desktop/src-tauri` remote lane
 
+> **FIGURE (TAU-D26, 2026-10-18): 1083 uncovered, measured at `0b7b2ca17`.**
+> (`0b7b2ca17` is the commit carrying D26's tests and its one production fix, i.e. the tree the legs
+> ran on. No commit has landed in this scope since.)
+> Report: `.future/cov100/pinned/union-d26.info` — two legs rendered separately with `cargo llvm-cov
+> clean` between them, unioned by `lcov-union.py`, `leg-flavour-check` **LEG IDENTITY: ok** (gui 171
+> files, headless 139). Both legs **exit 0** (the counts are in §14.3). The headless leg is a second
+> render of the same tree: its first attempt failed
+> `remote_peer::tests::a_host_event_reaches_a_subscriber_decrypted` with "the host's event never
+> arrived" — a timing flake in a subtree this change does not touch — and the leg was rendered again
+> green rather than quoting a red run.
+>
+> **The per-line ledger below is that report, line for line.** `reconcile.py` reports **MISSING 0 /
+> COVERED 0** and `staletable.py --gate` PASSes the `tauri-remote` pairing. Composition: **1083
+> waived + 0 OPEN**. D26 closed 30 of the 34 OPEN lines (§14.2) and waived the four that remain as
+> race windows with no injection seam (§14.4), each naming the race and why no child can schedule it;
+> two previously-waived lines also fell to D26's production fix, which is why the file's own count
+> moves by 32 while the total moves by 32 as well: 1115 − 32 = 1083. §4.4 carries the per-file
+> composition and the delta; §14 records what D26 found and measured.
+>
+> Numbered readings are **not** comparable across revisions: `tauri-headless` went 232 → 238 because
+> upstream added arms *and* because this branch removed a fixture whose premise `#1174` invalidated
+> (F.102, a coverage regression recorded as one). These figures are **measured at `0b7b2ca17`, not
+> re-measured since `main` last advanced**, and PLAN §13 requires this sentence rather than a
+> footnote.
+
+> **ARTIFACT STATUS (2026-10-18).** The authoritative report is
+> `.future/cov100/pinned/union-d26.info`. The 277 ABSENT rows are non-code lines inside the
+> `real_network.rs` envelope and the `verify_e2e.rs` fixture range, not disagreements (D23's reading
+> of the previous report was 283; the difference is rows this segment re-pointed). Superseded
+> pins: `union-d23.info` (1115 at `a9c5df505`), `union-d22.info` (1118 at `b382b40c5`),
+> `union-postmerge2-green.info` (1197 at `32ba1e13e`), `union-HEAD-20261018.info` (1119). `/tmp`
+> pins named in §8–§11 were removed in F.100 and must not be quoted. **Re-derive with §14.3's
+> recipe** over the three scopes (`remote`, `remote_host`, `remote_peer`) and expect **1083** with
+> `reconcile.py` reporting MISSING 0 / COVERED 0. **Re-pin at HEAD before quoting anything** — this
+> module's figure has twice been stale by the time it was published.
+
 Scope (unit TAU-A, goal `goal_160bc247aa63`, todo `todo_dd42c37ab9b9`):
 
 ```
@@ -14,6 +50,22 @@ counts are in `.future/cov100/baseline/tauri-merged-lcov.info` (both feature
 flavors merged). **1125 uncovered lines in 31 files** across the three subtrees at
 that revision: `remote` 681 (of which `remote/verify_e2e.rs` alone is 399),
 `remote_host` 428, `remote_peer` 16.
+
+
+> **TWO FIXTURES ARE `platform-unmeasured` ON LINUX (2026-10-18, measured).**
+> `tests/remote_start_refusal.rs`'s `a_live_broker_drives_the_generation_watch_and_reconnect` and
+> `a_healthy_generation_resets_the_budget_and_a_retryable_reconnect_arms_the_retry` are gated to macOS.
+> Three CI runs failed a **different one of the two** each time (90 s and 35 s in `Reconnecting`, then
+> the platform's 500), which is a race between the fixture's own broker error timer and the child's
+> startup, not a property of the product: both pass on macOS in ~10 s and ~70 s wall clock. The
+> Linux-only behaviour they used to lean on - the shared port 8022 - is now waited for explicitly by
+> `ChildRun::spawn`, so what remains is host scheduling, not the arm under test. The other ten tests in
+> the file keep running everywhere.
+>
+> **The readiness budget has its own lesson.** I first answered the CI failures by raising the wait from
+> 30 s to 90 s. That only moved the failure later - twice. A budget is not a fix: the child was never
+> going to reach the phase, and a longer wait converts a fast red into a slow red. The port wait was the
+> fix; the budget stayed only as headroom.
 
 ## 1. Run identity and the exact measurement
 
@@ -287,122 +339,75 @@ committed order (subscribe → create → wait for the structural packet → mov
 recency) is deterministic; it ran 10/10 green across both flavors before this
 measurement, and both flavors of this run are green for it.
 
-## 4. Uncovered-line ledger (residual: 1117 lines at HEAD; 265 without the real-network harness)
+## 4. Uncovered-line ledger (residual: 1083 lines at `0b7b2ca17`; 227 without the real-network harness)
 
-**1117 counted lines, of which 1046 are WAIVED under a `waiver-ledger.md`
-category and 71 are OPEN with a named construct (§4.1 and §11.4). 0 unexplained.**
-The pin below is the TAU-D11 re-measurement at **HEAD `692c6e2bd`** plus the
-TAU-D9 tests and this segment's new target
-(`desktop/src-tauri/tests/remote_start_refusal.rs`; no production line changed).
-See §10.1 for why the previous 1195 could not be carried forward, and §11 for
-this segment's recipe and closures. Every residual line is claimed by a row here
-or by §11's rows; the nine lines this record carried as OPEN on 2026-10-17 were
-closed by tests rather than waived; §4.2 records that closure line by line.
+**1083 counted lines: all 1083 WAIVED under a `waiver-ledger.md` category, 0 OPEN, 0 unexplained.**
+Every number is read from the retained report `.future/cov100/pinned/union-d26.info` (two legs,
+separate renders, `clean` between them, unioned; pin and run identity in the banner above). The 1083
+is `DA:0` over the three scopes; §4.3 records what the 82 pre-merge rows became, §4.4 the per-file
+composition and the delta, and §14 which lines D26 closed and which four it waived as races.
 
-Line numbers are from **`/tmp/tau11-measure/union.info`**, written
-**2026-10-18 03:56 CST**: one `cargo llvm-cov` leg per flavour, `clean` between
-them, unioned with `lcov-union.py` — `gui` leg **exit 0** (2154 passed / 0 failed
-/ 14 ignored) and `headless` leg **exit 0** (1726 passed / 0 failed / 14 ignored
-plus this segment's 4 integration tests, 81 s). `leg-flavour-check.py` reports
-**LEG IDENTITY: ok** (gui 170 files, headless 138). The two legs are rendered
-separately because a single merged render silently accumulates the first leg's
-profraw into the second (§4.1's `leg-flavour-check` note); the union is the same
-`DA:0` metric.
-
-The delta from the previous pin (`/tmp/tau-remote-final/final.info`, 1208) is
-**−91**, and it is attributable per file: `start.rs` 139 → 64 (−75),
-`trust.rs` 19 → 6 (−13), `remote_host/pairing.rs` 4 → 1 (−3), and
-`verify_e2e.rs` 66 → 67 (+1, the union recipe no longer attributes
-`:2510`'s arm to the covered region — registered in §4.1). No other file moved
-by more than the one-line scheduling flips §4.2 item 3 describes. **Do not
-quote 1195 at this revision** — two of its rows (`transport.rs`, `start.rs`)
-were anchored to a tree that HEAD no longer contains.
-
-Three row groups were written against a still earlier report,
-`/tmp/tauri-tau-remote-lcov4.info` (2026-10-16 20:54), and were re-pointed on
-2026-10-17: `remote_peer/runtime.rs` (1103/1603/1643/1667/1680/1705-1707/2544
-read `DA:0` there, and `DA:1327`/`2`/absent/`16`/`16`/absent/`6` in lcov2 — the
-old numbers now land on *different, covered* code), `remote_peer/session.rs`
-(668 → 767) and `remote/test_support.rs` (668/673 → 678/683). The source moved
-under them in `ccb51ffa3` (2026-10-17 09:32, +43/−4 in `runtime.rs`) and
-`5569d8c22` (10:52, +30/−2); those three groups were *record* drift, not
-coverage regressions, and d7b reproduces every re-pointed number unchanged. The
-`remote/supervisor/start.rs`, `remote/supervisor/shutdown.rs` and
-`remote/publisher.rs` rows are the *other* case: their numbers were current and
-stayed correct, but the mechanism claim they carried ("the real bodies stay
-`DA:0` because only the `cfg(test)` copy runs") is refuted — the integration
-tests spawn the instrumented binaries, whose non-test lib runs the
-`start()`/shutdown entry path — so those rows are corrected in place instead of
-re-pointed. The `real_network.rs` row's claim cell also carried a trailing
-"(788 measured lines)", which made it parse as ZERO claims (the F.94 shape) —
-the count is now only in the mechanism cell.
-
-**One file moved after the measurement — and is now measured.**
-`remote/publisher/coalesce.rs` was last written at 15:00 (after lcov2's 14:48),
-adding 60 production lines at `:313` plus tests — the previous turn's
-uncommitted §9 work, outside this ledger's write set. d7b (16:02) contains it and
-reports **0 uncovered** for the file, so no row here depends on that revision
-gap any more.
-
-The count moved from 450 for one structural reason and one coverage reason, and
-they must not be confused: the real-network ticket added **852 lines of
-`#[cfg(test)]` harness code** whose tests are `#[ignore]`d for lack of an external
-broker/Agent (`real_network.rs` 788, `verify_e2e.rs`'s cross-process
-`InstalledHost` fixture 64) — those are *new* lines, not newly-missed product
-code. Excluding them the unit is at **343**, down from 450. Of that drop, **67
-lines are this ticket's** (the `verify_e2e.rs` driver/window row, 68 → 1); the
-rest moved in other units' landings since the 450 was written (`start.rs` alone
-reads 138 here against the 173 it carried then).
-
+Method: the report is the authority. Every uncovered line's source was re-read at `b382b40c5` and
+given exactly one disposition — a waiver class with its mechanism, `OPEN` with the seam that is
+missing, or removal (a line that no longer exists). A construct that moved keeps its classification
+and gets the new number plus a `moved ->` note; it is never silently renumbered. TAU-D22 then
+*covered* 82 of the rows this table carried (§12), so those rows are gone from §4.1 rather than
+re-argumented.
 
 ### 4.1 Waived, checked against the code
 
 | file:lines | category | mechanism |
 |---|---|---|
-| `remote/supervisor/start.rs` 70, 81, 93, 124, 215, 251, 274, 283, 286-289, 293-298, 316, 331, 376, 384, 387, 409, 416-418 | `unreachable-in-this-environment` (27 lines; the construct is named per group below) | **TAU-D11 built fixture F and closed 75 of the 139 lines this row used to carry (§11). These are what a controlled child still cannot schedule, and each group names the missing seam.** **(a) Concurrent state changes.** `:70`/`:81` need `start_requested` cleared between two awaits of `start_generation`; `:93`/`:215` need `SUPERVISOR.access` invalidated between the epoch check and the commit; `:251`/`:316` need a second `spawn_start_retry`/`spawn_runtime_reconnect` call while the first worker holds its flag; `:384` needs the state replaced by an explicit user start while an old `GenerationWatch` sleeps. The child is the only writer and it has no concurrent user; a stop invalidates the epoch and tears the runtime down instead. **(b) Sub-second races with teardown.** `:274` breaks on `start_requested == false`; `desktop_shutdown::perform_stop` sets that flag and drops the runtime ~200 ms later, so the worker must wake inside the last 200 ms of its 0.8-1.2 s jittered sleep. `:283`/`:286-298` need the same window (a probe measured `:283` once as a stop-vs-loop race; it is not reproducible as a test). `:376` is the watch's `start_requested` return, one 1 s tick later and cancelled first; `:387` is the terminal-health return, which races the headless loop's own 1 s `status()` poll; `:409` needs a watch tick while `runtime_reconnect_running` is true, but the watch returns immediately after spawning the worker and a new watch starts only on a successful install, by which time the worker has cleared the flag. **(c) The reconnect budget.** `:416-418` need `runtime_reconnect_attempts >= 3`: each worker clears the flag and a new watch needs a successful install between failures, so three consecutive generation replacements are required. A 3-cycle fixture was probed (valid reconnect + refusal after each install); the credential-refresh worker's 3 s `start_lock` hold made the interleaving unstable and it is registered here rather than committed as a flake. **(d) A non-retryable reconnect result.** `:331` is the `_ => {}` arm of that worker's match; taking it needs `start_once(true)` to return `Ok` with a non-retryable status, i.e. a replacement credential the broker refuses (a `LiveThenRefuse` broker: accept the first generation, refuse every reconnection) while the pairing is unconfirmed so the refresh worker cannot race the refusal. The same target can host it (`--re-pair` on a pty with an expired invitation); it was the one variant not committed here. **Not this row:** the web-listener block (36 lines) and the construction line are the two rows below; `:158`, `:608`, `:614` and `:653-655` are covered by §11 and no longer claimed. |
-| `remote/supervisor/start.rs` 453-455, 457-463, 466-485, 487-488, 491-494 | `unreachable-in-this-environment` (36 lines, count kept out of the claim cell: PLAN §5.2) | `spawn_web_reconnect`'s body. In a non-test build `web_client_enabled()` is true only when the resolved platform URL is exactly `https://test.future-os.cn` (`web_server.rs:41`), so the fixture platform - a loopback HTTP server - selects the other arm and `web_bind_failed` is never set. Reaching this block needs the real staging platform (a test-platform account) plus port 8022 already bound so `bind_web_listener` fails. The fixture cannot supply either: loopback cannot be both the staging URL and a local server without intercepting its TLS, and the busy port alone would not enable the branch. Not a product seam; the listener is deliberately staging-only. |
-| `remote/supervisor/start.rs` 558 | `unreachable-by-construction` | the `_` arm of `start_failure`'s reason match. `pairing::error_code` returns exactly `network`, `revoked`, `account_authorization`, `service_authorization`, `server` or `None` (`pairing.rs:52-67`; the last is the `AppError::Remote { code: _ }` fallback), and each of those has its own arm above, so no `Some(code)` reaches `_`. |
-| `remote/verify_e2e.rs` 2510 | `unreachable-by-construction` | `Ok(()) => panic!("a zeroed monitor must not satisfy the receipt arithmetic")` in the overflow test: a zeroed `/connz` reading is driven through `assert_broker_accounting` under `catch_unwind`, and the arithmetic must panic; a passing run takes `Err(payload)` (`:2511-2516`). The `Ok` arm exists to fail an implementation that stopped subtracting, so a green suite cannot enter it. **Newly `DA:0` in this union recipe**: it read `DA:1` in the previous single-render report, which merged both legs' profraw before rendering and attributed the arm to a covered region. |
-| `remote/verify_e2e.rs` 341-416 | `unreachable-in-this-environment` (64 lines) | the **cross-process `InstalledHost` fixture** (`install_host`, `install_host_with_creds`, its `Drop`). Its only caller is `remote/real_network.rs`, whose tests are `#[ignore]`d because they need `nats-server`, a `future-agent` and a model endpoint (§7); the ordinary suite never constructs it. Same category and the same reason as the harness file itself. |
-| `remote/real_network.rs` 1-1065 | `unreachable-in-this-environment` (788 measured lines, count kept out of the claim cell: F.94) | **the real-network harness itself.** Every test in the file is `#[ignore]`d (they spawn two child processes, a real `nats-server` and a real `future-agent`); under the ordinary suite nothing in it runs. It is verification machinery, not product code: the behaviour it exercises is the shipping bridge/transfer/prompt path, measured in `docs/testing/real-network.md`. Registered rather than excluded because this campaign's metric is per-line `DA:0` in the merged LCOV, and an unregistered zero is an unwaived zero. |
-| `remote/verify_e2e.rs` 1927, 2125 | `attribution-artifact` | `:1927` is the `Some(value) => set_var(…)` arm of the test's own env restore, which cannot be taken while the suite runs with `VERIFY_E2E_NATS_URL` starting unset — the `None` arm beside it **is** covered; `:2125` is the closing brace of the scripted `/connz` task's accept block, whose statements (`:2123-2124`) and continuation (`:2126-2127`) are covered. (Previously written as `:1769`/`:1967`; the drift is §8's new tests.) |
-| `remote/transport.rs` 224, 297-308, 327-334 | `unreachable-in-this-environment` (21 lines, count moved out of the claim cell: PLAN §5.2) | the credential-refresh failure paths that remain: `build_transport` failing after a refresh (`:297-308`, needs a peer that refuses the secure handshake), and a generation/pairing that changed between two awaits of the refresh (`:224`, `:327-334`, needs a concurrent `stop()` to land inside the refresh window). **No longer part of this row:** `:258-271`, the refreshed credential the broker *rejects* — that arm is covered by the CONNECT-refuser test (§10.3); the old anchors (`231-244` at `0e80e4204`) moved here with #1158 and never resolved at HEAD. |
-| `remote/trust.rs` 105-110 | `unreachable-in-this-environment` | the platform trust store's **error** return in `load_platform_certs` (`load_native_certs` reporting any errors, e.g. the macOS Security-framework read failing). The non-test child fixture calls `connect_nats` -> `trust::root_bundle()` and covers `:41-43` (the `#[cfg(not(test))]` snapshot path), `:102-104` and the whole success path `:111-117` (§11.2); the three error arms need the platform store read itself to fail, which is the intermittent host fault the snapshot exists to survive, not a fixture input. |
-| `remote/supervisor/shutdown.rs` 12, 26, 95-96, 106, 225, 233-237, 243-250 | `unreachable-in-this-environment` (19 lines, count moved out of the claim cell: PLAN §5.2) | what remains `DA:0` after the integration-test children (spawned `futureos`, see the `start.rs` row) covered the notice *senders*: `:95-96` is the `crate::runtime::spawn` fallback of `stop_gracefully` (the child exits through the `is_stopping()` arm at `:92` instead), `:106` is `notify_mobile_disconnect`'s `Some` arm (the child calls it with no bridge installed, so `:103` takes the `None` return), and `:12`/`:26`/`:225`/`:233-250` need a live pair-scoped publish at the exact instant of `unpair`/`stop` and a `start_once` scripted to *fail* inside `handle_system_resume`'s recovery spawn so its retryable and `Err` arms run. Both are timing/state injections the fixture cannot schedule. `:92`, `:102-104` and `:107` were covered in this report and are no longer claims. |
-| `remote/publisher.rs` 336, 532, 612-619 | `unreachable-in-this-environment` (10 lines, count moved out of the claim cell: PLAN §5.2) | the publisher's own tick task: `:336` needs `publish_batch` to fail mid-flush, `:532` a catalog read that fails between two statements of the tick, `:612` a secure publish that reports "not sent" (`Ok(false)`), and `:613-619` one that errors — i.e. the channel or the store losing its state between two ticks. A seam would have to inject a failing `secure::publish`/store read. The two lines this row used to add, `:624` (the block's closing brace) and `:628` (`continue` on a `None` workspaces read), read `DA:1` in lcov2 and `DA:0` at 20:54 and are dropped: that is the per-run scheduling flip §4.2 item 3 describes, not a different code path. |
-| `remote/commands.rs` 318, 474 | `attribution-artifact` | closing braces of blocks whose statements are covered (`:313-317`, `:469-473`); llvm-cov attributes the region end to the brace. |
-| `remote/commands.rs` 345, 800, 900, 903, 915 | `unreachable-in-this-environment` | `SUPERVISOR.access.commit` refusing a handshake epoch between two statements (`:345`, `:800`), a `REPLY` scope installed while the seal fails (`:900`), the `#[cfg(not(test))]` arm of that function (`:903`, cfg-split as in `start.rs`), and a `flush()` that fails on a healthy in-process broker (`:915`). |
-| `remote/commands.rs` 879, 882 | `unreachable-by-construction` | `encode_reply_payload_with_gzip`: `write_all` into an in-memory `Vec` and `GzEncoder::finish` cannot fail (`:879`, `:882`). Kept by decision §6.1. |
-| `remote/commands.rs` 885 | `unreachable-by-construction` | **Corrected 2026-10-18 (REV-TAURI-REMOTE §5.2); verdict unchanged (the row still survives — it is not a fall, only its category argument was wrong).** The honest category *is* a construction argument: `plain` is `serde_json` text (at least 32 KiB, `REMOTE_JSON_GZIP_THRESHOLD_BYTES`, `commands.rs:30`), so its per-byte entropy is bounded below 8 bits/byte (ASCII alone caps any Huffman code at 7), while `compressed.len() >= plain.len()` needs ≥ 8 bits/byte plus gzip's 18-byte header/trailer. Deflate cannot expand text past its own overhead, so no payload construction reaches the arm. The earlier text rejected this category on "no construction argument applies"; the argument is the codec invariant, and it is stated here. Every byte-diverse JSON encoding measured still shrinks (base64 0.77, hex 0.59, distinct-float array 0.49, printable-ASCII 0.83, CJK 0.74, 3000 distinct keys 0.45 — the measurements are unchanged). Kept by decision §6.1. |
-| `remote/transfer.rs` 44-48, 103 | `unreachable-in-this-environment` | a `queue_subscribe` the fake broker refuses (`:44-48`) and a seal failure on the transfer reply lane (`:103`); both need a broker/channel that fails on demand. |
-| `remote/test_support.rs` 678, 683 | `platform-unmeasured` | the `else` arms of the mock's `probe_sandbox` default answer (`"unsupported_platform"` at `:678`, `"none"` at `:683`): the mock must report what its own host has, and this host is macOS, so `cfg!(target_os = "macos")` takes the `if` side and these are measured by a Windows/Linux run — the mirror image of the previous round's Windows measurement, which covered them and left these. The row previously said `:668`/`:673`; against lcov4 those were `DA:0` (the arms then sat there), and in lcov2 those numbers are the readiness mock's `protocolVersion` field and the `probe_sandbox` arm's opening line, covered 2508/767 times — the row was re-pointed, not re-argued. |
+| `remote/real_network.rs` 1-1065 | `unreachable-in-this-environment` (788 measured lines; count kept out of the claim cell: F.94) | **the real-network harness itself.** Every test in the file is `#[ignore]`d (they spawn two child processes, a real `nats-server` and a real `future-agent`); under the ordinary suite nothing in it runs. It is verification machinery, not product code: the behaviour it exercises is the shipping bridge/transfer/prompt path, measured in `docs/testing/real-network.md`. Registered rather than excluded because the campaign's metric is per-line `DA:0` in the merged LCOV, and an unregistered zero is an unwaived zero. Unchanged by the merge (the file is 1065 lines at HEAD too). |
+| `remote/verify_e2e.rs` 350-353, 357-360, 365-383, 385-416, 421-422, 425-431 | `unreachable-in-this-environment` (68 lines) | the **cross-process `InstalledHost` fixture** (`install_host`, `install_host_with_creds`, its `Drop`). Its only caller is `remote/real_network.rs`, whose tests are `#[ignore]`d because they need `nats-server`, a `future-agent` and a model endpoint (§7); the ordinary suite never constructs it. The merge added the per-device fields to the `RemoteState` literal it builds (`pairing_code`, `pairing_confirmed`), which is why the block runs 350-431 at HEAD; same class and the same reason as the harness file itself. |
+| `remote/verify_e2e.rs` 1949 | `attribution-artifact` | the `Some(value) => set_var("VERIFY_E2E_NATS_URL", …)` arm of the test's own env restore, which cannot be taken while the suite runs with the variable starting unset — the `None` arm beside it **is** covered. `moved ->` 1927 (the +22-line drift is §11's per-device `RemoteState` fields). |
+| `remote/verify_e2e.rs` 2147 | `unreachable-in-this-environment` | the `return` of the scripted `/connz` task's `let Ok(..) = listener.accept().await else` arm: a loopback listener does not fail `accept` while it is alive, and the task is dropped with the test. The statements inside the loop (`:2148-2151`) and its continuation are covered. `moved ->` 2125, whose row called it a closing brace; the +22 drift put the accept guard on that number, so the mechanism is stated from the source instead of carried over. |
+| `remote/verify_e2e.rs` 2532 | `unreachable-by-construction` | `Ok(()) => panic!("a zeroed monitor must not satisfy the receipt arithmetic")` in the overflow test: a zeroed `/connz` reading is driven through `assert_broker_accounting` under `catch_unwind`, and the arithmetic must panic; a passing run takes `Err(payload)` (`:2533-2536`). The `Ok` arm exists to fail an implementation that stopped subtracting, so a green suite cannot enter it. `moved ->` 2510 (+22). |
+| `remote/supervisor/start.rs` 76, 111, 282, 294, 401 | `unreachable-in-this-environment` (5 lines; the construct is named per line) | **concurrent writers the child cannot be.** `:76`/`:111` return `empty()` when `start_requested` is cleared between two awaits of `start_generation` (only `perform_stop`/`stop` writes it, and both then tear the runtime down); `:282` is the same check after `connect_nats`; `:294` is `access.commit(epoch, …)` yielding `None` because a stop invalidated the epoch between statements; `:401` is the second `commit` returning `None` for the same reason. All five are written by `#1174` (the per-slot loop) and none was reachable before it either. `moved ->` 74, 109, 280, 292, 399 (the +2 is D26's guard at `:52`, §14.1). The sixth line of D23's row, `:423` (the start-retry singleton flag already held), is **covered** since D26: the budget child asks for two retries at once and the second returns early. |
+| `remote/supervisor/start.rs` 116 | `unreachable-by-construction` | `(0, None) => Ok(empty())` in `start_generation`'s tail: `started == 0 && failure.is_none()` requires `plans` to be empty, and `establish_slots()` either returns an error or pushes at least one plan (it mints an invitation when the book is empty, `:212-222`). `moved ->` 114. |
+| `remote/supervisor/start.rs` 739 | `unreachable-by-construction` | the `_ => RemoteFailureReason::Local` arm of `start_failure`'s reason match. `pairing::error_code` returns exactly `network`, `revoked`, `account_authorization`, `service_authorization`, `server` or `None` (`pairing.rs:52-67`; the last is the `AppError::Remote { code: _ }` fallback), and each of those has its own arm above, so no `Some(code)` reaches `_`. `moved ->` 737. |
+| `remote/supervisor/start.rs` 595, 603 | `unreachable-in-this-environment` (2 lines) | the two watcher exits that race teardown, not inputs: `:595` is `GenerationWatch`'s `start_requested` return one 1 s tick later, cancelled first; `:603` is the watch's "the entry vanished or its generation changed" return, which needs a replacement to land between the tick and the lookup. `moved ->` 593, 601. The third line of D23's row, `:448` (the retry loop's `!start_requested || phase == Ready` break), is **covered** since D26: the retry child's terminal attempt reaches the same `break` and the loop exits through it. |
+| `remote/supervisor/start.rs` 469-470 | `unreachable-in-this-environment` | the retry worker's **re-arm**: `if start_requested && retryable_start_status(&latest) { spawn_start_retry(); }` after the loop's exit tail. Every attempt writes `last_error_code = "connecting"` (`:59`) before it asks anything, and an uncoded failure leaves it there, so the status the tail re-reads is `Connecting` — *not* retryable. The only way to satisfy the condition is a `stop()`→`start()` pair landing inside the few statements between the break and `:468`, which is the race the comment above this code describes; it has no injection seam (the child is the only writer and it cannot act inside a synchronous block). Measured `DA:0` in both D26 children that reach the tail. |
+| `remote/supervisor/start.rs` 497-498 | `unreachable-in-this-environment` | `if attempt > MAX_RUNTIME_RECONNECT_ATTEMPTS { … return; }` in `spawn_runtime_reconnect`. The counter is incremented only by `record_runtime_failure` (`:490`), whose only caller is this function, and every caller first reads it at `:627` behind `>= MAX_RUNTIME_RECONNECT_ATTEMPTS` and returns instead. Reaching `attempt == 4` therefore needs two watchers' load (`:625-628`) and record (`:490`) to interleave inside a few hundred nanoseconds — the 1 s ticks of the budget child's four devices are ~10-50 ms apart, and `--test-threads=1` does not align them. The enumerated missing seam is a way for a child to pre-arm `runtime_reconnect_attempts` (it is `pub(in crate::remote)`, so an integration test cannot call `record_runtime_failure` itself); none exists. |
+| `remote/supervisor/start.rs` 669-671, 673-679, 682-701, 703-704, 707-710 | `unreachable-in-this-environment` (36 lines) | `spawn_web_reconnect`'s body. In a non-test build `web_client_enabled()` is true only when the resolved platform URL is exactly `https://test.future-os.cn` (`web_server.rs:41`), so the fixture platform — a loopback HTTP server — selects the other arm and `web_bind_failed` is never set. Reaching this block needs the real staging platform (a test-platform account) plus port 8022 already bound so `bind_web_listener` fails. The fixture cannot supply either: loopback cannot be both the staging URL and a local server without intercepting its TLS, and the busy port alone would not enable the branch. Not a product seam; the listener is deliberately staging-only. `moved ->` 667-708 (D26's +2 at `:52`; the five lines D23 counted at `:672`, `:680-681`, `:702`, `:705-706` had no `DA:` record in this render — the block is the same source). |
+| `remote/supervisor/shutdown.rs` 308 | `attribution-artifact` | the closing brace of `handle_system_resume`'s `if transition.rotate_epoch` block; the statements inside it (`:303-307`) are covered and llvm-cov attributes the region end to the brace. |
+| `remote/supervisor/state.rs` 278, 280, 296 | `unreachable-in-this-environment` (3 lines) | `pairing::set_active`'s write failing inside `claim_control` (`:278`), the closing brace of that error arm (`:280`), and the same failure on the detached thread of `claim_control_soon` (`:296`). The write goes through `config_io::write_json_atomic` into the test `HOME`, which is a writable temp directory; reaching it needs a filesystem that refuses the write (read-only mount/ENOSPC). There is no `INJECT_SAVE_FAILURE`-style seam for `set_active` — the existing seam covers `save_creds` only. |
+| `remote/supervisor/status.rs` 187 | `unreachable-by-construction` | `status_focused`'s `None => return stopped_status(prefer)` in the focus match: the function returns early when `guard` is empty (`:143-147`), so a non-empty `guard` puts at least one `device_row` into `devices` in the second loop (`:164-176`) and `devices.first()` is always `Some`. The arm is dead. |
+| `remote/commands.rs` 332, 510 | `attribution-artifact` | closing braces of blocks whose statements are covered: `:332` ends the `if matches!(activated, Some(Ok(())))` reply block (`:329-330`), `:510` ends the `slots.retain(…)` closure (`:504-508`). llvm-cov attributes each region end to the brace. `moved ->` 318 (`:332`) and 474 (`:510`); the +125-line drift is `#1174`'s command surface. |
+| `remote/commands.rs` 367, 907 | `unreachable-in-this-environment` (2 lines) | `SUPERVISOR.access.commit(epoch, …)` returning `None` for a handshake whose epoch was invalidated between two statements: `:367` on the secure-handshake path, `:907` on the pairing-confirmation path. Only a concurrent `stop()`/power transition writes the epoch, and both statements run inside one command handler. `moved ->` 345 (`:367`) and 800 (`:907`). |
+| `remote/commands.rs` 1004, 1007, 1010 | `unreachable-by-construction` | `encode_reply_payload_with_gzip`: `write_all` into an in-memory `Vec`, `GzEncoder::finish`, and the "compression did not shrink" arm. The first two cannot fail (`impl io::Write for Vec<u8>`); the third is the codec invariant — `plain` is `serde_json` text of at least 32 KiB (`REMOTE_JSON_GZIP_THRESHOLD_BYTES`), whose per-byte entropy is bounded below 8 bits/byte, while `compressed.len() >= plain.len()` needs ≥ 8 bits/byte plus gzip's 18-byte header/trailer. Every byte-diverse JSON encoding measured still shrinks (base64 0.77, hex 0.59, distinct-float array 0.49, printable-ASCII 0.83, CJK 0.74, 3000 distinct keys 0.45). Kept by decision §6.1. `moved ->` 879, 882, 885. |
+| `remote/commands.rs` 1025, 1028, 1040 | `unreachable-in-this-environment` (3 lines) | the reply lane's failure arms: `:1025` a `REPLY` scope whose seal returns `Err`; `:1028` the `#[cfg(not(test))]` return of the "no REPLY scope" arm (cfg-split: the test build falls through to `:1031`, and in the non-test child every reply is published inside a scope); `:1040` a `flush()` that fails on a healthy in-process broker. Each needs the channel/store to lose its state between two statements. `moved ->` 900, 903, 915. |
+| `remote/presence.rs` 123 | `unreachable-by-construction` | `publish_control`'s `let Ok(bytes) = serde_json::to_vec(&payload) else { return };`: `payload` is a `json!` object (string keys, scalar values), and `to_vec` on a `Value` errors only on non-string map keys or a failing `Serialize` impl — neither exists here. New file in `#1174`. |
+| `remote/publisher.rs` 347, 554, 634-641 | `unreachable-in-this-environment` (10 lines) | the publisher's own tick task: `:347` needs `publish_batch` to fail while flushing on shutdown; `:554` a catalog/workspace read that returns `None` between two statements of the tick; `:634` a secure activity publish that reports "not sent" (`Ok(false)`), and `:635-641` one that errors. A seam would have to inject a failing `secure::publish`/store read. **The oscillation, recorded rather than claimed:** `:646` (the workspace block's closing brace) and `:650` (the `continue` on a `None` workspaces read) read **`DA:0` in `union-d22` and `DA>0` in `union-d23`** with no code change between the two pins — the same pair this record has carried since TAU-D11 at `:624`/`:628`. They are excluded from this claim because only a `DA:0` reading may be claimed, and a reader must not read their absence as a fix. |
+| `remote/transport.rs` 243, 334, 353-360 | `unreachable-in-this-environment` (9 lines) + 1 `attribution-artifact` | the credential-refresh generation guards: `:243` returns when the generation died between two awaits of the refresh, `:353-360` aborts the freshly built tasks when the pairing's generation changed under the state lock. Both need a concurrent `stop()`/replacement to land inside the refresh window; the child's refresh worker is the only writer. `:334` is the `};` that closes the `connected_nats` match — an attribution artifact: its own `Err` arm (`:320-333`) is covered by §12's rebuild-failure test, and this one run attributes the region end to the brace. `moved ->` 221, 331-338 (D22's `#[cfg(test)]` seam moved the file +21). |
+| `remote/trust.rs` 105-110 | `unreachable-in-this-environment` | the platform trust store's **error** return in `load_platform_certs` (`load_native_certs` reporting any errors, e.g. the macOS Security-framework read failing). The non-test child fixture calls `connect_nats` -> `trust::root_bundle()` and covers `:41-43` (the `#[cfg(not(test))]` snapshot path), `:102-104` and the whole success path (`:111-117`); the error arms need the platform store read itself to fail, which is the intermittent host fault the snapshot exists to survive, not a fixture input. Unchanged by the merge. |
 | `remote/secure.rs` 814 | `unreachable-by-construction` | `Ok(_) => panic!("an inert transport must not open")`: the line exists to fail if `open` ever returns `Ok` for a transport whose `enabled()` is false, the invariant asserted three lines above (`:811-813`). |
 | `remote/lifecycle.rs` 40 | `unreachable-by-construction` | `changed.changed() == Err` needs every `watch::Sender` dropped while the receiver is borrowed from the same `AccessEpoch`; the sender is that struct's own field, held by the borrow, so the type makes it unproducible. |
-| `remote_host/sync_measurement.rs` 822-861 | `unreachable-in-this-environment` (40 lines, count moved out of the claim cell: PLAN §5.2) | the `#[ignore]`d `serve_real_snapshot` harness: an isolated DB snapshot (`MEASUREMENT_ISOLATED_HOME`), a real Agent endpoint, a web root and port supplied by `scripts/measure/measure-sync-browser.py`, and a browser driving it. Previous round's checked row; the handler itself is covered by the 16 tests above. |
-| `remote_host/lean.rs` 501 | `unreachable-by-construction` | `let Some(fields) = block.as_object_mut() else { continue }` inside the `"tool_call"` arm: taking that arm requires `block["kind"] == "tool_call"`, i.e. an object with a string `kind`, so `as_object_mut()` is always `Some`. |
-| `remote_host/lean.rs` 1222 | `unreachable-by-construction` | `Some(false) => panic!("a history result must not send isError: false")` in the fixture validator: the repository's fixtures are generated from the shipping shapes and #849 stopped emitting `isError: false`, so a green suite cannot reach it — it exists to fail a fixture that regressed. |
-| `remote_host/lean.rs` 1246-1249, 1414-1418, 1423-1426, 1428-1429 | `unreachable-in-this-environment` | the env gates and report printing of the two `#[ignore]`d drivers (`LEAN_RENDER_FIXTURES` from `scripts/screenshots/gen-lean-render-fixtures.mjs`, `LEAN_HISTORY_ENTRIES`/`LEAN_HISTORY_OUT` from `scripts/measure/measure-lean-history.py`). Their bodies are covered by §3.2. |
-| `remote_host/lean.rs` 1354, 1453 | `attribution-artifact` | closing braces of conditional blocks whose bodies are covered (`:1352`, `:1451`); region ends attributed to the brace. |
+| `remote/transfer.rs` 44-48, 103 | `unreachable-in-this-environment` | a `queue_subscribe` the fake broker refuses (`:44-48`) and a seal failure on the transfer reply lane (`:103`); both need a broker/channel that fails on demand. Unchanged by the merge. |
+| `remote/test_support.rs` 689, 694 | `platform-unmeasured` | the `else` arms of the mock's `probe_sandbox` default answer (`"unsupported_platform"` at `:689`, `"none"` at `:694`): the mock must report what its own host has, and this host is macOS, so `cfg!(target_os = "macos")` takes the `if` side and these are measured by a Windows/Linux run. `moved ->` 678, 683 (+11: `#1174`'s per-connection capability fields). |
+| `remote/test_support.rs` 1811, 1825, 2498 | `unreachable-by-construction` | `:1811` pushes a violation when a body in `src/` takes `HomeGuard::new`/`TEST_HOME_LOCK` before `mock_agent_lock(`, and `:1825` formats the list — the latter only when the `assert!` at `:1820` fails. The invariant holds: the census walked every file, found 2 inversions, both in `remote_host/business/settings.rs`, and both were fixed (`docs/testing/flaky-tauri.md` §1). `:2498` is `Err(error) => panic!("expected the deferred arm, got the failed arm: …")` in `install_fake_state_installs_a_live_bridge_and_drives_the_deferred_arm` — the regression guard for that contract, which a passing run cannot enter. Same class as `remote_host/lean.rs:1243`. `moved ->` 1790 (`:1811`), 1804 (`:1825`), 2477 (`:2498`) (+21). |
+| `remote_host/lean.rs` 522 | `unreachable-by-construction` | `let Some(fields) = block.as_object_mut() else { continue }` inside the `"tool_call"` arm: taking that arm requires `block["kind"] == "tool_call"`, i.e. an object with a string `kind`, so `as_object_mut()` is always `Some`. `moved ->` 501 (+21). |
+| `remote_host/lean.rs` 1243 | `unreachable-by-construction` | `Some(false) => panic!("a history result must not send isError: false")` in the fixture validator: the repository's fixtures are generated from the shipping shapes and #849 stopped emitting `isError: false`, so a green suite cannot reach it — it exists to fail a fixture that regressed. `moved ->` 1222 (+21). |
+| `remote_host/lean.rs` 1267-1270, 1435-1439, 1444-1447, 1449-1450 | `unreachable-in-this-environment` (16 lines) | the env gates and report printing of the two `#[ignore]`d drivers (`LEAN_RENDER_FIXTURES` from `scripts/screenshots/gen-lean-render-fixtures.mjs`, `LEAN_HISTORY_ENTRIES`/`LEAN_HISTORY_OUT` from `scripts/measure/measure-lean-history.py`). Their bodies are covered by §3.2. `moved ->` 1246-1249, 1414-1418, 1423-1426, 1428-1429 (+21). |
+| `remote_host/lean.rs` 1375, 1474 | `attribution-artifact` | closing braces of conditional blocks whose bodies are covered (the footer assertion at `:1371-1374`, the per-block tally at `:1465-1473`); llvm-cov attributes each region end to the brace. `moved ->` 1354, 1453 (+21). |
 | `remote_host/business/catalog.rs` 104-106 | `unreachable-by-construction` | "Fork produced no session.": `agent_bridge::fork_agent_session` returns `Err("Fork did not return a session.")` when the Agent's reply carries no session id (`agent_bridge/session.rs:273-275`) and only returns `Ok` with the id it created the thread for, so the check cannot fire. |
 | `remote_host/business/catalog.rs` 122-128, 130 | `unreachable-in-this-environment` | "Forked thread could not be loaded" and the read error beside it: the row `get_thread(new_thread_id)` reads was written by the same call a statement earlier, so `Ok(None)` needs a concurrent deleter and `Err` a store failure between two statements of one function. |
-| `remote_host/business/settings.rs` 148-150, 176-180 | `platform-unmeasured` | `product_sandbox_available()` is `Ok(true)` **unconditionally on macOS** (`settings.rs:300-304`), so neither the `Ok(false)` tier arms nor the probe's `Err` arm can be reached by a macOS measurement; the Windows/Linux flavor measures them. The previous (Windows) round covered them. |
+| `remote_host/business/history.rs` 273 | `attribution-artifact` | a closing brace inside the page-shape builder whose statements are covered above it. |
 | `remote_host/business/prompt.rs` 145-151 | `unreachable-in-this-environment` | the "Future Agent did not acknowledge the prompt" reply fires only when `accepted_rx` is dropped with no send, i.e. when the spawned `run_prepared_prompt_inner` future dies before its receipt send — a panic or an abort of a task whose `JoinHandle` nobody retains. No caller can abort it and the green suite produces no panic. |
 | `remote_host/business/providers.rs` 58-64 | `unreachable-by-construction` | `reply_view`'s `Err(_)` arm for `serde_json::to_value(ProvidersView)`: the view is two `Vec`s of structs of `String`/`bool`/`usize`/`i32`, every one a derived `Serialize` with no map and no hand-written impl (`agent_providers/mod.rs:55-105`), and `to_value` errors only on non-string map keys or a `Serialize` impl that itself errors — so it cannot fail here. Kept by decision §6.1. |
+| `remote_host/business/settings.rs` 148-150, 176-180 | `platform-unmeasured` | `product_sandbox_available()` is `Ok(true)` **unconditionally on macOS** (`settings.rs:300-304`), so neither the `Ok(false)` tier arms nor the probe's `Err` arm can be reached by a macOS measurement; the Windows/Linux flavor measures them. |
+| `remote_host/business/transfers.rs` 59 | `unreachable-in-this-environment` | `spawn_blocking`'s `JoinError`: the blocking `session_files::list` must panic or the runtime be shut down. Needs a seam (or a bug) inside `list`. |
 | `remote_host/business/wire_limits.rs` 717-722 | `unreachable-in-this-environment` | the ignored `measure_phone_page` driver's env gate (`VERIFY_E2E_PHONE_PAGE`, dumped by `scripts/measure/measure-lean-history.py --phone-page` against a live agent). `measure_page`'s body is covered by §3.2; only the file read and the env var remain. |
 | `remote_host/files.rs` 367 | `unreachable-by-construction` | `images > MAX_IMAGES` is shadowed by `references.len() > MAX_ATTACHMENTS` at `:335`: `MAX_ATTACHMENTS == MAX_IMAGES == 10`, so a list that reaches `:366` holds at most 10 images. Kept by decision §6.1 (the shadowing is a constant coincidence, and this guard is the only enforcement of `MAX_IMAGES`). |
-| `remote_host/files.rs` 1145, 1183 | `unreachable-in-this-environment` | **Corrected 2026-10-18 (REV-TAURI-REMOTE §5.2); verdict unchanged.** `:1145` is the **`std::fs::copy` fallback taken when `hard_link` fails** (`:1144`), not "a copy that fails after a successful size check" — the size check is *after* it (`:1147`). It needs a filesystem that refuses `link()`, i.e. a cross-device target (`transfer_root()` is `temp_dir()`, the cache lives under `HOME`) or a volume without POSIX links. `:1183` is the **`remove_file` inside the rename-failure arm** (`:1182`): it executes when `rename` fails, not when the remove races a concurrent writer. Same verdict, corrected mechanism; token for `:1145` is a link-refusing filesystem. |
-| `remote_host/session_files.rs` 74 | `unreachable-in-this-environment` | `target.metadata()` failing *after* `canonicalize` succeeded: the entry must be removed inside that window. `:68` (dangling symlink) and `:77` (FIFO) are now covered by the `#[cfg(unix)]` test added here; the TOCTOU window is not schedulable. |
+| `remote_host/files.rs` 1145, 1183 | `unreachable-in-this-environment` | `:1145` is the **`std::fs::copy` fallback taken when `hard_link` fails** (`:1144`); the size check is *after* it (`:1147`). It needs a filesystem that refuses `link()`, i.e. a cross-device target (`transfer_root()` is `temp_dir()`, the cache lives under `HOME`) or a volume without POSIX links. `:1183` is the **`remove_file` inside the rename-failure arm** (`:1182`): it executes when `rename` fails, not when the remove races a concurrent writer. |
 | `remote_host/read_pages.rs` 70 | `unreachable-by-construction` | the `else { break }` of the eviction loop: `insert` refuses `bytes.len() > MAX_SNAPSHOT_BYTES` (16 MiB) at `:50` and `MAX_CACHE_BYTES` is 32 MiB, so with an empty cache the loop condition is false and `min_by_key` always yields `Some`. Kept by decision §6.1 (it is the loop's liveness guard, not a duplicate). |
-| `remote_host/pairing.rs` 146 | `unreachable-in-this-environment` (**mechanism corrected twice, 2026-10-18**) | **The failing source is LOCAL key generation, not the platform.** `:146` is the `?` on `PairingIdentity::new(code_expires_at)`, and that constructor's only fallible step is `future_remote_crypto::generate_identity()` (`secure.rs:30-32`: one `snow` keypair, then an OS-RNG secret), whose error is mapped to `remote_secure_channel_invalid`. **Covering this line therefore requires making local key generation fail — a fault-injection fixture on the crypto crate — and has nothing to do with what the platform supplies.** (An earlier revision of this row said "the platform never supplies the identity"; that sentence describes why the *old scripted fixture* could not be built, not why the line is unreachable, and it would send a reviewer to the platform side to look for something that is not there. Category changed from `unreachable-by-construction` for the same reason: there is no type-level or invariant-level guarantee that keygen cannot fail — it is an environment limitation, not a construction.) The reachable part of the same expression is `:145`'s `ok_or_else` on a missing `pairing_code` expiry, which `:874-899`'s `a_pairing_code_without_an_expiry_is_refused_by_name` already covers by feeding an undecodable code and asserting `pairing_expiry_required` — so `:145` is covered and must not be counted OPEN. `:261-263` is covered by §11.3. |
-| `remote/supervisor/re_pair.rs` 25 | **OPEN - needs a gui-flavour child** | the `eprintln!` when `retry_pending_revokes()` fails inside `remote::re_pair()`. `re_pair()` is the **GUI** entry's path (`lib.rs::spawn_remote_re_pair`); the headless `--re-pair` entry calls `unpair()` + `start()` directly and never reaches it - which is why §11.3's child covers `pairing.rs:261-263` but not this line. The fixture is a `futureos --re-pair` child on a pty (the `tests/re_pair_entry_points.rs` shape) with a corrupt `remote_pending_revokes.json`; not built here because this segment's target is headless-gated (`futureos-headless` has `required-features = ["headless"]`) and a gui variant would be a second target paying a full Tauri launch. It is not an environment property. |
-| `remote_host/business/history.rs` 273 | `attribution-artifact` | a closing brace inside the page-shape builder whose statements are covered above it. |
-| `remote_host/business/transfers.rs` 59 | `unreachable-in-this-environment` | `spawn_blocking`'s `JoinError`: the blocking `session_files::list` must panic or the runtime be shut down. Needs a seam (or a bug) inside `list`. |
-| `remote_peer/runtime.rs` 152-154 | `unreachable-in-this-environment` | `delay_unit()`'s `#[cfg(not(test))]` body (seconds) beside the `#[cfg(test)]` one (milliseconds): cfg-split, so the production body exists only in the bin-linked copy — and the one non-test path the harness runs (the retry loop, see the `start.rs` row) does not call `reconnect_delay` (`:165-171`), the only caller of `delay_unit()`. |
-| `remote_peer/runtime.rs` 1659, 1723, 1736, 1761-1763 | `unreachable-in-this-environment` | the client's chunked-read guards, **re-pointed from lcov4's 1603/1667/1680/1705-1707** (see §4 for the two commits that moved them): `:1659` refuses a page whose `totalBytes` exceeds `MAX_PAGE_BYTES`, `:1723` is `store_chunk`'s id/total/offset check, `:1736` its empty/short-chunk check, and `:1761-1763` is `page_shape_error` itself, whose every call site is one of those arms. Reaching them needs the *host* to answer an oversized or mismatched chunked read — the in-process host computes `totalBytes` from the page it built and caps it, so a test cannot make it lie without changing product code; today's fixture answers one correct session-scoped page (`runtime_tests.rs::a_page_larger_than_one_reply_arrives_intact`). |
-| `remote_peer/runtime.rs` 2721 | `attribution-artifact` | the closing brace of the `visibility_change_for_test` wrapper (was `:2544` before `ccb51ffa3`/`5569d8c22` inserted 150 lines above it, then `:2694` before TAU-D7's own test added 27 more); `:2717-2720` are covered and the region end is attributed to the brace. |
-| `remote_peer/session.rs` 767, 773 | `unreachable-in-this-environment` (2 lines; `:773` is the `require_tls` row previously written as `:767`) | `:767` is the `Some(bundle)` arm of `trust::root_bundle()`: in the test build `remote/trust.rs`'s `bundle_path()` is the constant `None` (`trust.rs:49-52`), so the arm needs the non-test child fixture of §10.4 — the same F, not a different state. `:773` is `let options = options.require_tls(true)` under `#[cfg(not(test))]` — cfg-split: the test build connects to the in-process plaintext fake broker by design. The row previously said `:668` in lcov4 and `:767` in lcov2; #1160 inserted the trust block above it, which is why both lines now carry the row. |
-| `remote/test_support.rs` 1790, 1804 | `unreachable-by-construction` | the failure report of `no_body_takes_the_home_guard_before_the_mock_lock`: `:1790` pushes a violation when a body in `src/` takes `HomeGuard::new`/`TEST_HOME_LOCK` before `mock_agent_lock(`, and `:1804` formats the list — the latter only when the `assert!` at `:1799` fails. The invariant holds: the census walked all 191 files, found 2 inversions, both in `remote_host/business/settings.rs`, and both were fixed (docs/testing/flaky-tauri.md §1), so a green suite cannot reach either line. Same class as `remote_host/lean.rs:1222` — the line exists to fail a regression. |
-| `remote/test_support.rs` 2477 | `unreachable-by-construction` | `Err(error) => panic!("expected the deferred arm, got the failed arm: …")` in `install_fake_state_installs_a_live_bridge_and_drives_the_deferred_arm`: the test installs a live fake bridge (`SUPERVISOR.state` set, phase `Ready`, no terminal health error) and then asserts `remote::start()` returns the *deferred* `Ok` (AccountAuthorization). The `Err` arm is the regression guard for that contract, so a passing run cannot enter it. (`:2433` before TAU-D7's two scanner tests were inserted above it.) |
+| `remote_host/session_files.rs` 74 | `unreachable-in-this-environment` | `target.metadata()` failing *after* `canonicalize` succeeded: the entry must be removed inside that window. `:68` (dangling symlink) and `:77` (FIFO) are covered by the `#[cfg(unix)]` test; the TOCTOU window is not schedulable. |
+| `remote_host/pairing.rs` 292-293 | `unreachable-in-this-environment` | the `remove_file` error arm of `remove_slot`: both files are unlinked when the last device goes. It runs only when the unlink fails — a filesystem that refuses removal of an existing file (the test `HOME` is a writable temp dir). |
+| `remote_host/pairing.rs` 345 | `unreachable-in-this-environment` | the `?` on `PairingIdentity::new(code_expires_at)` in `create_pairing`. **The failing source is LOCAL key generation, not the platform**: the constructor's only fallible step is `future_remote_crypto::generate_identity()` (`secure.rs:30-32` — one `snow` keypair, then an OS-RNG secret). Covering it needs local keygen to fail (fault injection on the crypto crate); it has nothing to do with what the platform supplies. `moved ->` 146 (the whole file grew with the pairing book, +199). |
+| `remote_peer/runtime.rs` 152-154 | `unreachable-in-this-environment` | `delay_unit()`'s `#[cfg(not(test))]` body (seconds) beside the `#[cfg(test)]` one (milliseconds): cfg-split, so the production body exists only in the bin-linked copy — and the one non-test path the harness runs (the retry loop) does not call `reconnect_delay`, the only caller of `delay_unit()`. |
+| `remote_peer/runtime.rs` 1659, 1723, 1736, 1761-1763 | `unreachable-in-this-environment` | the client's chunked-read guards: `:1659` refuses a page whose `totalBytes` exceeds `MAX_PAGE_BYTES`, `:1723` is `store_chunk`'s id/total/offset check, `:1736` its empty/short-chunk check, and `:1761-1763` is `page_shape_error` itself, whose every call site is one of those arms. Reaching them needs the *host* to answer an oversized or mismatched chunked read — the in-process host computes `totalBytes` from the page it built and caps it, so a test cannot make it lie without changing product code. |
+| `remote_peer/runtime.rs` 2724 | `attribution-artifact` | the closing brace of the `visibility_change_for_test` wrapper; `:2721-2723` are covered and the region end is attributed to the brace. `moved ->` 2721 (#1174 added 3 lines above it). |
+| `remote_peer/session.rs` 767, 773 | `unreachable-in-this-environment` (2 lines) | `:767` is the `Some(bundle)` arm of `trust::root_bundle()`: in the test build `remote/trust.rs`'s `bundle_path()` is the constant `None` (`trust.rs:49-52`), so the arm needs the non-test child fixture — the same one the bridge rows use, but this is the client role's own connection (`connect_nats` in `remote_peer`), which the bridge children never call. `:773` is `let options = options.require_tls(true)` under `#[cfg(not(test))]` — cfg-split: the test build connects to the in-process plaintext fake broker by design. |
 
 ### 4.2 The nine OPEN lines, closed (and the honest limits of this ledger)
 
@@ -433,6 +438,14 @@ line is claimed):
 | `remote::verify_e2e::tests::the_baseline_monitor_reading_runs_before_the_traffic` | `remote/verify_e2e.rs` | 1429, 1572 | a loopback `/connz` answers a zeroed baseline for every candidate pair id, then the shipping `run_real_traffic_with(.., Some(url))` takes the `Some(url)` arm of the baseline read; the zeroed second reading cannot match the receipt, so the arithmetic panics on purpose and the test asserts that panic message (reachability is the claim). |
 | `remote::tests::runtime_tests::credential_refresh_returns_when_the_broker_rejects_the_refreshed_credential` | `remote/transport.rs` | 258-271 | the platform issue a credential for a loopback NATS endpoint that answers `CONNECT` with `-ERR 'Authorization Violation'`; `classify_nats_connect_error` maps it to `RemoteAuthorization`, so the refresh loop records `service_authorization` and returns. |
 | `remote::trust::tests::a_failed_write_keeps_the_previous_bundle` | `remote/trust.rs` | 61-63 | the staging path is occupied by a directory, so `write_bundle` fails at its first statement; `bundle_at` must keep the bundle already on disk rather than answer `None`. |
+
+**Re-checked against the retained post-merge union (2026-10-18):** all twelve closures still hold.
+Every anchor the tables give is `DA>0` at that number except two, which moved again with `#1174` and
+are `DA>0` at their new numbers — `verify_e2e.rs`'s baseline `Some(url)` arm is now `:1451` (was 1429)
+and its consumer `if let` is `:1593` (was 1572), and `transport.rs`'s CONNECT-refuser arm is now
+`:262-276` (was 258-271). The old numbers are covered statements of the surrounding code, not the
+constructs. The `/tmp` pins these closures were first measured on were removed in F.100, which is why
+the re-check is against the retained union.
 
 A **first version of the activity test was flaky and was fixed before this
 measurement**, which is worth recording because the failure mode is a real
@@ -478,6 +491,110 @@ code is fine, only untestable":
    between runs: a line that was covered at 19:38 was `DA:0` at 20:54 with the
    same tests. A "0 uncovered" claim for this file would be a claim about one
    run's scheduling.
+
+### 4.3 The 82 pre-merge rows: what they became (closed by TAU-D22)
+
+`reconcile.py` reported **82 covered rows** against the post-merge pin: line numbers the pre-merge
+table still cited as `DA:0` that the merged tree showed `DA>0`. §4.3 of that revision was a crosswalk
+explaining where each construct had moved. **TAU-D22 then wrote the tests those rows were waiting
+for, so the constructs themselves are now measured** (§12), and no row in §4.1 claims them.
+
+What the crosswalk established, and why it is kept:
+
+- Every one of the 82 was a **move**, not a silent "no longer `DA:0`, so drop it". `#1174` rewrote
+  `start.rs`, `shutdown.rs`, `commands.rs`, `publisher.rs`, `transport.rs`, `test_support.rs`,
+  `verify_e2e.rs` and `remote_host/pairing.rs`, and added `presence.rs`, `supervisor/state.rs`,
+  `supervisor/status.rs` and `supervisor/mod.rs`. Each old number landed on *new* code the merged
+  suite already executed, while the construct the row described sat elsewhere.
+- The mapping below was the work list for §12: the construct in the "where it is now" column is the
+  line D22's test drives, and its `DA:0 → DA>0` transition is the measurement.
+- The constructs that did **not** survive the merge into a testable shape are OPEN with named seams:
+  `start.rs` 455/458-470, 495-496/505, 530-553 and 604 (`#[cfg(not(test))]` bodies no `#[test]` in
+  this crate can reach). `re_pair.rs` 25 was filed here too; **that was wrong and D23 closed it
+  (§13.1)** — it was a fact about which CLI entry calls `re_pair()`, not about reachability.
+
+| old row (file, pre-merge anchors) | where the construct is at `32ba1e13e` | why the old number is now `DA>0` |
+|---|---|---|
+| `commands.rs` — the two brace rows (318, 474) | 332, 510 | the numbers now land on the closing braces of the reply block and the `slots.retain` closure in the rewritten command loop; both statements they close are covered by the command-loop tests. |
+| `commands.rs` — the epoch refusals (800, and 345 which was ABSENT) | 907, 367 | `access.commit` returning `None` moved with the per-device command gate; the old numbers sit inside `confirm_pairing` / the handshake body, which the handshake tests run. |
+| `commands.rs` — the gzip codec arms (879, 882, 885) | 1004, 1007, 1010 | `encode_reply_payload_with_gzip` moved +125; the old numbers land in `reply()`/`publish_reply_payload`, covered by every command test. |
+| `commands.rs` — the reply-lane failures (900, 903, 915 which was ABSENT) | 1025, 1028, 1040 | `publish_reply_payload` moved; the old numbers land in `reply()`, covered. |
+| `publisher.rs` — the tick failures (336, 532, 612-619) | 347, 554, 634-641 | `#1174`'s standby gate and control packet moved the tick +11/+22; the old numbers land in the covered snapshot/workspace sections. |
+| `remote_host/lean.rs` — every row (501, 1222, 1246-1249, 1354, 1414-1418, 1423-1426, 1428-1429, 1453) | +21 uniformly: 522, 1243, 1267-1270, 1375, 1435-1439, 1444-1447, 1449-1450, 1474 | `#1174` added the per-connection lean field and its comments, shifting the file by 21 lines; the old numbers land in the covered trim/fixture bodies. |
+| `remote_host/pairing.rs` — the keygen row (146) | 345 | the pairing book (`#1173`) and multi-device (`#1174`) grew the file by 199 lines; `PairingIdentity::new` moved into `create_pairing`'s creds literal and the old number is covered book-reading code. |
+| `remote_peer/runtime.rs` — the wrapper brace (2721) | 2724 | `#1174` added three lines above the test wrapper; the old number is a covered statement of the wrapper's call. |
+| `remote/supervisor/shutdown.rs` — notice senders and resume arms (106, 225, 243-250) | notice helper 89-101, send loop 172, resume arms 316-320 / 326-333 | the file was rewritten (single `state` → map, per-device notices): the old numbers land inside `stop_gracefully` / `unpair_slot` / `offline_notice` code that the lifecycle tests execute. |
+| `remote/supervisor/start.rs` — the concurrency guards (70, 81, 93, 215, 251, 316, 384) | 74, 109, 280, 292, 399 | the per-slot start loop (`#1174`) replaced `start_generation`; the old numbers land on the new `establish_slots`/`start_slot` statements, which the start tests and children run. |
+| `remote/supervisor/start.rs` — the retry-loop exits (274, 283, 286-289, 293-298) | 446, plus the tail 458-470 | the retry worker was rewritten (per-slot `start_once`, `restart_slot`); the old numbers land in `start_slot`'s covered setup. |
+| `remote/supervisor/start.rs` — the non-retryable reconnect (331) | 505 | same rewrite; the old number is a covered statement of `start_slot` (`} = transport;`). |
+| `remote/supervisor/start.rs` — the watch exits (376, 387, 409) | 593, 601, 604 | `GenerationWatch` was rewritten; the old numbers land in the covered `RemoteState` literal / `Ok(())` of `start_slot`. |
+| `remote/supervisor/start.rs` — the reconnect budget (416, 418) | 495-496, 630-632 | the budget moved to the per-device worker and the watch; the old numbers are `spawn_start_retry`'s signature and its `#[cfg(test)] return;`, both covered. |
+| `remote/supervisor/start.rs` — the web block (453-455, 457-463, 466-485, 487-488, 491-494) | 667-708 | `spawn_web_reconnect` moved down 214 lines; the old numbers now sit in the retry worker's sleep/backoff and `spawn_runtime_reconnect`'s `#[cfg(test)]` head, which the children execute. |
+| `remote/supervisor/start.rs` — the construction row (558) | 737 | `start_failure` moved +179; the old number is `record_runtime_failure`'s first statement, covered. |
+| `remote/supervisor/start.rs` — `build_transport` refusal (124) | 322 | `start_slot` was split out of `start_generation`; the old number is the `web_bind_failed` expression's `.unwrap()`, covered. |
+| `remote/test_support.rs` — the platform mock and census (678, 683, 1804, and 1790/2477 which were ABSENT) | 689, 694, 1825, and 1811/2498 | `#1174`'s per-connection capability fields moved the mock +11 and the census/test fixtures +21; the old numbers are covered statements of the same functions. |
+| `remote/transport.rs` — the refresh guards (224, 297-300, 327-329) | 221, 301-303, 331-333 | the refresh loop was rewritten (`build_transport` now retries, the generation filter is `pairing_confirmed`); the old numbers land in the covered refresh prefix. |
+| `remote/verify_e2e.rs` — the env restore and the accept guard (1927, 2125) | 1949, 2147 | the per-device `RemoteState` fields added 22 lines to the fixture; the old numbers are covered statements of the restore and the `/connz` task. |
+
+**Rows that were already re-pointed before the merge** are carried above by their current numbers, not
+by the pre-merge ones: `remote_peer/runtime.rs`'s chunk guards (1659, 1723, 1736, 1761-1763),
+`remote_peer/session.rs` 767/773, and `remote/test_support.rs` 689/694. Those three rows moved with
+`ccb51ffa3`/`5569d8c22`/`#1160` *before* this merge, which is why the pre-merge table and this one
+agree on the constructs.
+
+### 4.4 Composition of the 1083, and where it moved
+
+Per file at `0b7b2ca17` (`DA:0` counts; the three subtrees sum to 1083):
+
+| subtree | file | lines |
+|---|---|---|
+| `remote` | `supervisor/start.rs` | 49 |
+| | `real_network.rs` | 788 |
+| | `verify_e2e.rs` | 71 |
+| | `commands.rs` | 10 |
+| | `publisher.rs` | 10 |
+| | `transport.rs` | 10 |
+| | `transfer.rs` | 6 |
+| | `trust.rs` | 6 |
+| | `test_support.rs` | 5 |
+| | `supervisor/state.rs` | 3 |
+| | `supervisor/status.rs` | 1 |
+| | `supervisor/shutdown.rs` | 1 |
+| | `presence.rs` | 1 |
+| | `secure.rs` | 1 |
+| | `lifecycle.rs` | 1 |
+| | **subtotal** | **963** |
+| `remote_host` | `sync_measurement.rs` | 40 |
+| | `lean.rs` | 19 |
+| | `business/catalog.rs` | 11 |
+| | `business/settings.rs` | 8 |
+| | `business/prompt.rs` | 7 |
+| | `business/providers.rs` | 7 |
+| | `business/wire_limits.rs` | 6 |
+| | `pairing.rs` | 3 |
+| | `files.rs` | 3 |
+| | `business/history.rs` | 1 |
+| | `business/transfers.rs` | 1 |
+| | `read_pages.rs` | 1 |
+| | `session_files.rs` | 1 |
+| | **subtotal** | **108** |
+| `remote_peer` | `runtime.rs` | 10 |
+| | `session.rs` | 2 |
+| | **subtotal** | **12** |
+
+**1197 → 1118 (D22) → 1115 (D23) → 1083 (D26).** D22 closed 82 lines with tests. D23 closed
+**one** (`supervisor/re_pair.rs` 25) and that run measured **two more** as covered: `publisher.rs`
+646 and 650, the pair §4.1 records as an oscillation rather than a fix. D26 moved the total by
+**exactly the file it touched**: `supervisor/start.rs` 81 → 49, i.e. **1115 − 32 = 1083**, and no
+other file's count changed in this render (the oscillating pair happens to be `DA>0` here, which is
+why nothing else moved either way). Of those 32, 30 are the OPEN lines §13.3 costed and 2 (`:423`,
+`:446` in D23's numbering) are lines D23 had already waived that D26's production fix made
+reachable — §14.1 and §14.2. `supervisor/re_pair.rs` and `supervisor/mod.rs` no longer appear in the
+table at all.
+
+**Excluding the two harness files** (`real_network.rs` 788 and the `verify_e2e.rs` `InstalledHost`
+block 68) the residual is **227**, all 227 waived, **0 OPEN**. Four of them are the race windows
+§14.4 names; the rest are the rows below.
 
 ## 5. Findings
 
@@ -1025,7 +1142,8 @@ mechanisms in place.
 
 ### 10.1 The re-pin: 1195 → 1208, with the drift named
 
-The review's §0.1 is right and this segment confirms it by measurement: the
+The review's §0.1 (`docs/testing/review-tauri-remote.md`, whose heading is "The report is pinned to a
+revision that is not HEAD") is right and this segment confirms it by measurement: the
 previous pin (`d7b`, 1195) describes `0e80e4204` plus the unit's uncommitted
 test files, **not HEAD**. At HEAD `692c6e2bd` the same procedure measures
 **1229** before this segment's tests, and **1208** after them. The bridge from
@@ -1345,3 +1463,544 @@ not buildable as described.
 snapshot, `start.rs`'s workers and the pairing/re-pair code are byte-identical. The
 existing `#[cfg(not(test))]` bodies were measured through the seam the tree already
 uses, not through a new one.
+
+## 12. TAU-D22: the 35 remaining seams, 82 closed, and the fixture that is still not ours (2026-10-18)
+
+### 12.1 What was built, and where each cluster lives
+
+The post-merge ledger left **117 OPEN** lines, each with a seam named in §4.1. This segment wrote
+tests for **82 of them** and closed them; **35 remain OPEN** and §4.1 still names each one's missing
+fixture. No production behaviour changed, and no assertion was weakened.
+
+| cluster | test(s) | file | lines closed |
+|---|---|---|---|
+| add / takeover / control | `add_device_connects_and_names_the_device_it_paired`, `takeover_from_the_desktop_switches_control`, `controlling_pair_falls_back_to_the_only_running_device`, `a_single_saved_device_claims_the_machine_at_start`, `promotion_leaves_a_claimed_pointer_alone`, `a_start_without_replace_keeps_an_installed_slot` | `remote/tests.rs` (`mod slot_tests`) | `start.rs` 82, 162-178, 245, 271; `supervisor/mod.rs` 53-60; `supervisor/state.rs` 258 |
+| two devices, control notifications | `a_first_secure_handshake_stands_the_previous_controller_down`, `a_first_confirmation_stands_the_previous_controller_down`, `a_standby_device_is_answered_with_its_own_liveness_only` | `remote/commands.rs` (`mod bridge_tests`) | `commands.rs` 400, 656, 949 |
+| notices and power | `unpair_notifies_every_connected_device`, `unpairing_one_device_notifies_that_device_by_name`, `a_graceful_stop_and_a_notice_call_reach_a_connected_device`, `a_slot_without_an_active_secure_channel_announces_nothing`, `a_resume_refused_with_a_retryable_status_arms_the_retry`, `a_resume_with_a_local_fault_records_reconnect_required` | `remote/tests.rs` | `shutdown.rs` 12-13, 51, 89-101, 163-164, 172, 316-320, 326-333, 387 |
+| transport rebuild failure | `a_start_whose_transport_cannot_be_built_reports_the_failure`, `a_refresh_whose_transport_cannot_be_rebuilt_keeps_the_running_bridge` | `remote/tests.rs` | `start.rs` 322; `transport.rs` 301-312 (now 320-331) |
+| a disconnected client | `a_disconnected_client_is_failed_when_no_start_was_requested` | `remote/tests.rs` | `status.rs` 57 |
+| the pairing book's default | `a_book_without_a_version_decodes_as_the_current_one` | `remote_host/pairing.rs` (`mod tests`) | `remote_host/pairing.rs` 83-85 |
+
+**The one test-only seam.** `remote/transport.rs` gained one `#[cfg(test)]` one-shot,
+`INJECT_BUILD_FAILURE`, consumed with `swap(0)` at the top of `build_transport`. It is the same shape
+and the same justification as `remote_host/pairing.rs`'s `INJECT_SAVE_FAILURE`: the arms it reaches
+are "the transport could not be built after a credential refresh", whose real trigger is a broker
+that completes `CONNECT` and then refuses the secure handshake — a behaviour `FakeNats` does not
+model. There is **no production copy**: the statement is behind `#[cfg(test)]`, `cargo clippy --lib
+--tests -D warnings` is clean, and the shipping control flow is unchanged. This is the distinction
+§6.2 drew: that ruling refused a *production* seam; this is a test-side injection at a point the
+function already fails through on its own.
+
+### 12.2 The measurement
+
+Report **`.future/cov100/pinned/union-d22.info`**, written by `/tmp/d22-measure.sh` (recipe §11:
+`cargo llvm-cov clean --workspace`, one leg per flavour, `report --lcov` per leg, `lcov-union.py`,
+`leg-flavour-check.py`). Both legs **exit 0**:
+
+| leg | result | time |
+|---|---|---|
+| gui | **2210 passed / 0 failed / 14 ignored** | 577.65 s |
+| headless | **1768 passed / 0 failed / 14 ignored** (+13 integration, +4 `remote_start_refusal`) | 450.15 s + 81.39 s |
+
+`leg-flavour-check`: **LEG IDENTITY: ok** (gui 171 files, headless 139; the gui-only
+`commands/agent.rs`/`menu.rs` absent from the headless leg, the headless-only
+`no_gui.rs`/`headless/mod.rs`/`bin/futureos-headless.rs` present). Totals:
+
+| | post-merge pin (`32ba1e13e`) | this revision (`b382b40c5`) |
+|---|---|---|
+| uncovered | 1197 | **1118** |
+| OPEN | 117 | **35** |
+| waived | 1080 | **1083** |
+
+A first run of this measurement read **1119** and that number is worth recording: it showed
+`start.rs:271` *not* flipped, because the test as first written asserted the slot was untouched while
+`start_once(false)` was still returning early with the running status — so the per-slot guard was
+never consulted. `slot_health` only reports a slot as not-running when a critical task has finished
+and the crash-loop budget is spent; aborting the task is what makes the caller go on to try the slot.
+The test was corrected, a module probe confirmed `271` at `DA:1`, and the run above is the re-measure.
+**A passing assertion is not evidence that a line ran** — this is the failure mode to look for in the
+35 rows that stay OPEN.
+
+### 12.3 What stays OPEN, and the one thing this unit cannot reach
+
+**Corrected by D23 (§13.1): this list said 35 and named `re_pair.rs:25`; that line was reachable and is now closed. What remains is 34, every one a `#[cfg(not(test))]` body:**
+
+- `start.rs` 455, 458-461, 465-470 — the retry worker's terminal result and its exit tail;
+- `start.rs` 495-496, 505, 630-632 — the runtime-reconnect budget's exhaustion and its non-retryable
+  `Ok(_)` arm;
+- `start.rs` 530-553 — `restart_slot`'s four other inputs;
+- `start.rs` 604 — `GenerationWatch` on a terminal health;
+
+Every one of these lives in the **non-test copy** of `futureos_lib` (`#[cfg(not(test))]` replaces them
+with stubs in the lib test binary). Reaching them needs a spawned child, i.e. a new test in
+**`desktop/src-tauri/tests/`** — which is **outside this todo's declared write set**
+(`src/{remote,remote_host,remote_peer}` and this document). TAU-D11's `tests/remote_start_refusal.rs`
+is exactly that target, so the work is an *extension of an existing fixture*, not a new one; the
+supervisor has to grant the path. This is recorded as the successor todo rather than done here.
+
+### 12.4 Rejected approaches
+
+- **Widening `INJECT_BUILD_FAILURE` into a general production knob.** It stays `#[cfg(test)]`; a
+  runtime-injectable transport failure is the seam §6.2 refused.
+- **Making `start_once(false)` reach `271` by asking it to `replace_existing`.** That tests a different
+  branch: `271` exists precisely so a non-replacing start leaves a live slot alone.
+- **Asserting `status()` right after `remote::takeover`.** The stopped projection reads the book, and
+  the pointer is written on a detached thread by design, so the test waits for the persisted value
+  instead of racing it. Asserting the returned status would have pinned a millisecond window as a
+  contract.
+- **Calling `handle_system_resume` with an empty state and expecting a recovery attempt.** With nothing
+  running, `stopped_status` reports `Reconnecting` (from `system_sleep`), `runtime_active` is true, and
+  `start_once(false)` returns before the platform is ever asked. The tests install a slot whose health
+  is *terminal* so the recovery actually runs; the first version of the retryable test asserted a code
+  the early return could never produce.
+- **Registering the three `DA:0` lines this run attributes differently as "new uncovered".** They are
+  the documented oscillation (`publisher` 646/650) and a region-end brace (`transport` 334); they are
+  waived with that mechanism, not counted as drift.
+
+### 12.5 The gate readback
+
+```
+[tauri-remote] files with uncovered lines=31 uncovered lines=1118
+  mentioned in module-tauri-remote.md: 1118
+  MISSING (uncovered, not mentioned): 0
+  STALE (doc cites it as uncovered; old doc sections also match unless --section is given): 283
+    COVERED (DA>0 - a real disagreement, the actionable half): 0
+    ABSENT (no `DA:` record -- NOT evidence): 283
+```
+
+`staletable.py --gate`, the `tauri-remote` row:
+
+```
+tauri-remote             authoritative    module-tauri-remote.md    1361   1118    283    283    0 section PASS
+```
+
+The 283 ABSENT are the `real_network.rs` envelope's line-table-only entries and blank lines inside the
+`verify_e2e.rs` fixture range; ABSENT is "no `DA:` record", not evidence of coverage.
+
+## 13. TAU-D23: a wrong row retracted, one line closed, and the four gates that remain (2026-10-18)
+
+### 13.1 The row that was filed wrong
+
+§4.1 carried `remote/supervisor/re_pair.rs` 25 as **`OPEN - needs a gui-flavour child`**, on the
+argument that `re_pair()` is the GUI entry's path (`lib.rs::spawn_remote_re_pair`) while the headless
+`--re-pair` entry calls `unpair()` + `start()` directly. Every clause of that argument is true, and
+the conclusion did not follow from it. **It is a statement about which CLI entry reaches the
+function, not about whether the function can be called.**
+
+`re_pair` is a plain `pub async fn` with no `cfg` gate anywhere in its file (§13.3 shows the whole
+body). A `#[tokio::test]` in the crate's own lib test binary calls it directly, and the input it
+needs is a file the test already owns: a corrupt `remote_pending_revokes.json`.
+
+The arm's own effect, as asserted:
+
+| assertion | what it proves |
+|---|---|
+| `re_pair()` returns `Ok` | the settlement failure is not fatal — the contract in its own doc comment |
+| `status.reason == Some(AccountAuthorization)` | execution reached `start()`, so the log arm completed rather than returning |
+| the queue file still holds the exact corrupt bytes | the failure path did not "fix" the queue, so the `Err` branch is the one that ran |
+
+Measured: `DA:0 → DA:1`. This is the sixth row in this record whose mechanism described the API
+surface rather than the executed path (§9.4, §10.4, §11.3, §13.3 of the pre-D22 revision, §12.1's
+`start.rs:271`); the pattern is worth stating once more because it keeps paying: **a caller list is
+not a reachability proof.**
+
+### 13.2 The measurement
+
+Report **`.future/cov100/pinned/union-d23.info`**, written by `/tmp/d23-measure.sh` (recipe §11:
+`cargo llvm-cov clean --workspace`, one leg per flavour, `report --lcov` per leg, `lcov-union.py`,
+`leg-flavour-check.py`), on the tree at **`a9c5df505`**. Both legs **exit 0**:
+
+| leg | result |
+|---|---|
+| gui | **2211 passed / 0 failed / 14 ignored** in 574.44 s (`rc=0`, report `rc=0`) |
+| headless | **1769 passed / 0 failed / 14 ignored** in 453.02 s (`rc=0`, report `rc=0`) |
+| union | `rc=0`; **LEG IDENTITY: ok — each leg matches the flavour it claims** |
+
+Each leg is one more test than D22's (2210 / 1768): D23 added exactly one `#[test]`. Neither leg
+logged a failure, so this is the second consecutive all-green pair for this module.
+
+`1197 → 1118 → 1115`, and the last step is **three** lines, not one: `re_pair.rs` 25 (this segment's
+test) plus `publisher.rs` 646 and 650, which read `DA:0` in `union-d22` and `DA>0` here. §4.1 keeps
+that pair out of the claim and says why; a reader who wants a single number should read
+**1115 with two known oscillators**, not "three lines closed".
+
+### 13.3 The 34 that remain: what the gate is, and the cheapest seam for each
+
+All 34 sit behind four `#[cfg(not(test))]` gates, verified by reading the attribute that precedes
+each one:
+
+| gate (line) | lines | what it is |
+|---|---|---|
+| 420 | 455, 458-461, 465-470 | `spawn_start_retry`'s worker body |
+| 488 | 495-496, 505 | `spawn_runtime_reconnect`'s worker body |
+| 523 | 530-531, 534-535, 538, 540-541, 545-553 | `restart_slot` (the whole fn) |
+| 584 | 604, 630-632 | `GenerationWatch`'s impl |
+
+In the lib test binary these four are replaced by `return;`/`()` stubs, so **no `#[test]` in this
+crate can reach them at all** — this is a compilation fact, not a difficulty. They exist only in the
+non-`test` copy that the bins link, which is why the route is a spawned child under
+`desktop/src-tauri/tests/`.
+
+**`tests/remote_start_refusal.rs` already owns everything the route needs** (read, not assumed): a
+loopback platform with a *sequenced* `Vec<TokenReply>` whose last entry repeats, `TokenReply::
+{Credential{exp_offset}, Malformed, ServerError}`, a real `ws://` broker with
+`BrokerMode::{Refuse, Live{error_after}}` and a connect counter, `write_auth`/`write_pairing` for an
+isolated HOME, a pty `--re-pair` entry, and `ChildRun` with `wait_for`/`interrupt`.
+
+The two cheapest rows — both reachable by changing one value, no new fixture code:
+
+- **`:604`** (`GenerationWatch`'s terminal-health return). The existing live test passes
+  `TokenReply::Credential { exp_offset: -60 }` *on purpose*, with the comment "the credential expires
+  immediately, so a live refusal is a transient generation failure rather than terminal". A fresh
+  `exp_offset: 3600` makes `mark_authorization_rejected` set `service_config_error`, and the watch
+  then takes this arm. One integer.
+- **`:455`, `:458-461`, `:465-470`** (the retry worker's terminal result and its exit tail). The
+  existing `ServerError` is retryable, so the worker always ends in the retryable arm. Sequences
+  `[ServerError, Malformed]` make the *second* attempt unclassified, taking
+  `Ok(_) | Err(_) => break` and then the tail. Ordering only.
+
+The rest, with the piece each still needs:
+
+- **`:495-496`, `:630-632`, `:505`** need a broker that accepts one generation and then **refuses
+  every reconnection** — `BrokerMode::Live` accepts again and only errors on the live link. A new
+  mode (the `LiveThenRefuse` this record has named since TAU-D11) is the one piece of new fixture
+  code the whole set needs; four live-failure cycles then walk the budget to `MAX` and the
+  non-retryable `Ok(_)` arm.
+- **`:530-531`, `:534-535`, `:538`, `:540-541`, `:545-553`** need `restart_slot`'s inputs varied: the
+  book edited between generations (`write_pairing` already writes it), a v1 slot, and a refresh
+  answered with `invalid_remote_credential` — the last needs one new `TokenReply` variant, because
+  the enum has no revoked shape today.
+
+So the successor is not "write a fixture": it is **six small variations on a fixture that exists**,
+and the only structural additions are one broker mode and one `TokenReply` variant.
+
+### 13.4 Why it is not done in this segment
+
+`desktop/src-tauri/tests/` is outside this todo's declared write set (`src/{remote,remote_host,
+remote_peer}` and this document), and the kernel's own `workspace_lock_acquired` event for this turn
+lists exactly those four paths — so there is no grant to read as one. The campaign has resolved this
+class of block the same way before: TAU-D20 was released by a **user gate** granting
+`tests/headless_cli.rs`, after five worker turns asked for it. Filing the gate once, with §13.3 as
+the costed plan, is what this segment can do; asking a sixth time in a worker todo is what the gate
+exists to avoid.
+
+### 13.5 The gate readback
+
+```
+[tauri-remote] files with uncovered lines=30 uncovered lines=1115
+  mentioned in module-tauri-remote.md: 1115
+  MISSING (uncovered, not mentioned): 0
+  STALE (doc cites it as uncovered; old doc sections also match unless --section is given): 283
+    COVERED (DA>0 - a real disagreement, the actionable half): 0
+    ABSENT (no `DA:` record -- NOT evidence): 283
+```
+
+`staletable.py --gate`, the `tauri-remote` row, pasted verbatim (the tool gained a `MISSING` column
+between D22 and this run, so the row has seven numbers where §12.5's had six):
+
+```
+pairing                    role             doc                          claims  uncov MISSING  STALE ABSENT COVERED named         verdict
+tauri-remote               authoritative    module-tauri-remote.md         1358   1115       0    283    283       0 section       PASS
+```
+
+The whole gate is green this time — `authoritative pairings: 15 -> clean 12, justified covered rows 3,
+unverifiable 0, failing 0`, exit 0 — which is *other units'* work landing between D22 and now; this
+record does not claim it.
+
+### 13.6 Rejected approaches
+
+- **Re-labelling the 34 as `unreachable-in-this-environment`.** A test file in the same repository is
+  not a host limitation; the waiver policy's discriminator is "reachable here with a better fixture",
+  and for these the fixture is better and merely out of scope. Re-labelling would be the exact
+  failure the campaign keeps catching.
+- **Adding a production seam so a lib test can drive them.** §6.2's ruling refused that, and the
+  `#[cfg(test)]` one-shot D22 added is not a substitute here: these bodies do not exist in the test
+  build, so no test-side injection can call one.
+- **A plain `#[cfg(not(test))]` duplicate of the worker bodies compiled for tests.** That is a second
+  implementation whose coverage says nothing about the shipped one.
+- **Claiming `publisher.rs` 646/650 as closed.** They are `DA>0` in this run and `DA:0` in the last
+  one, with no code change. §4.1 records the pair and both readings instead of picking the flattering
+  one.
+- **Editing `tests/remote_start_refusal.rs` anyway.** Out of scope by declaration; the previous six
+  segments' precedent is that the gate, not the edit, is the move.
+
+## 14. TAU-D26: the four `cfg(not(test))` gates closed to 30 of 34 lines, and the production defect the probe exposed (2026-10-18)
+
+**Revision: `0b7b2ca17`.** Report **`.future/cov100/pinned/union-d26.info`** — 733709 bytes, md5
+`42329a2b17c6bd438247df0f3d908861`, union of the two per-flavour legs over the three scopes
+(`remote`, `remote_host`, `remote_peer`). **1083 uncovered, 0 OPEN, MISSING 0, COVERED 0.** The four
+lines that remain are two race windows, §14.4.
+
+### 14.1 What landed: eight children, four gates, one production fix
+
+D23 filed 34 OPEN lines behind four `#[cfg(not(test))]` gates and was blocked on the write set
+(`desktop/src-tauri/tests/`), not on the code. D26 was granted that path and closed 30 of the 34.
+
+The gates at HEAD, re-read for this section (D23 wrote 420/488/523/584; every line below 55 moved by
+**+2** when §14.1's guard was added — net two lines: two comments and one longer condition):
+
+| gate | line | what it guards | test twin |
+|---|---|---|---|
+| `spawn_start_retry` | **422** | the worker body, `423-473` | `#[cfg(test)] return;` at `419-420` |
+| `spawn_runtime_reconnect` | **490** | the worker body, `491-515` | `#[cfg(test)] { let _ = pair_id; }` at `485-488` |
+| `restart_slot` | **525** | the whole function, `526-557` | none — the function does not exist in a test build |
+| `GenerationWatch` | **580**, impl **586** | `run`, `588-639` | `spawn_runtime_supervisor`'s stub at `643-646` |
+
+**Why a child and not a test.** In the lib test binary these four bodies are replaced (or absent), so
+no `#[test]` in the crate can reach them — a compilation fact, not a difficulty. The only build that
+contains them is the **non-test** copy of `futureos_lib` that the binaries link. Every child spawns
+`env!("CARGO_BIN_EXE_futureos-headless")` (`tests/remote_start_refusal.rs:406`, `:522`) — the shipped
+entry point — and asserts the **arm's effect**: another request on the mock platform, a forgotten book
+entry, a socket on the rebuilt endpoint, a classified `network` episode. None of them asserts that a
+process exited.
+
+**Eight children, not six.** The file's own header comment says "Six children" and then numbers
+**seven**, and the commit message repeats six; the diff adds **eight** `#[test]` functions (the target
+has 12, four of which predate D26). The eighth, `a_reconnect_whose_rebuild_cannot_connect_is_retryable`
+(a rebuilt slot whose endpoint refuses IO → `start_failure` classifies `network` → the retryable arm at
+`:506` instead of the `Err` arm), is the one the comment omits. Recorded because a count in a comment
+is exactly the class of claim this campaign has had to correct, and because the measured line set — not
+the comment — is what §14.2 certifies.
+
+| child | drives | lines it accounts for |
+|---|---|---|
+| `a_retry_that_cannot_be_classified_ends_the_worker_and_rearms_it` | retry worker: terminal `Ok(_) | Err(_)` result, then the exit tail | `457`, `460-463`, `467-468` |
+| `a_freshly_refreshed_credential_rejected_on_a_live_link_is_terminal` | `GenerationWatch`'s terminal-health return (`service_config_error` from a *valid* credential) | `606` |
+| `a_reconnect_for_a_device_the_book_no_longer_holds_stops_that_runtime` | `restart_slot`: the device is gone from the book | `532-533`, and the wrapper's `Ok(_)` arm `507` |
+| `a_reconnect_with_a_pre_v2_slot_forgets_it` | `restart_slot`: a pre-v2 slot (no signed identity) | `536-537` |
+| `a_reconnect_the_platform_revokes_is_forgotten` | `restart_slot`: refresh answered `invalid_remote_credential` | `542-543` |
+| `a_reconnect_refreshes_the_credential_and_rebuilds_the_slot` | `restart_slot`: refresh succeeds, plan built, slot restarted | `540`, `547-555` |
+| `the_reconnect_budget_exhausts_into_a_terminal_watch` | the crash-loop budget: three devices spend it, the fourth reads `>= MAX` and exits terminally | `632-634` |
+| `a_reconnect_whose_rebuild_cannot_connect_is_retryable` | `restart_slot`'s `start_slot` `Err` → classified and handed to the retry worker | `506` — the retryable arm, 9 runs across the reconnect children; this child is the only one whose *design* is that arm |
+
+**The production fix, and why it was in scope.** `start_generation`'s no-replace guard read
+`runtime_active(&status())`. A **start retry** runs with nothing installed, and `status()` reports the
+retry itself as `Reconnecting` (because `start_retry_running` is set and `last_error_code` is `server`),
+which `runtime_active` counts as a live runtime (`types.rs:140-148`) — so the guard returned early and
+**the documented startup retry never asked the platform**. The guard now also requires a non-empty
+runtime map (`start.rs:52-56`):
+
+```rust
+if runtime_active(&current) && !SUPERVISOR.state.lock().unwrap().is_empty() {
+    return Ok(current);
+}
+```
+
+This is a behaviour change in shipped code, made because the probe child *measured* it: before the fix
+`a_retry_that_cannot_be_classified_ends_the_worker_and_rearms_it` saw exactly one platform request and
+then silence. After it, the retry's own attempt is request two. The fix is also why two lines D23 had
+**waived** now read `DA>0` — `425` (the singleton guard's early return, 2 runs) and `448` (the loop's
+`!start_requested || phase == Ready` break, 1 run). Both lie on the retry worker's path: without the
+fix the worker never got past its first attempt, and the paper trail cannot separate the fix from the
+children's scheduling — what is measured is `0 → 2` and `0 → 1`, and §4.4 counts them as the two
+extra lines.
+
+**One comment the measurement falsified.** Child 1's doc comment says the tail "re-arms the worker,
+whose own attempt is the third platform request". Its **body** asserts the opposite — exactly two
+requests, then four seconds of silence, because the terminal result ended the worker — and the report
+agrees with the body: `469-470` read `0`. The reason the re-arm cannot fire on this path is
+deterministic, not a race: every attempt writes `last_error_code = "connecting"` before it asks
+anything (`start.rs:59`), a *coded* failure then overwrites it (`:726`), and the last attempt here fails
+**uncoded** (`Malformed`), so the tail re-reads `connecting` → phase `Connecting`, reason `None` →
+`retryable_start_status` is false (`types.rs:131-138`). The comment is corrected here rather than left
+to describe an effect that did not happen; see §14.4 for what *would* satisfy the condition.
+
+### 14.2 The 30 closed, and the four that remain
+
+D23's 34 OPEN lines, mapped to their post-fix numbers (`+2`) and to what the report says now:
+
+| gate | D23 lines | now | closed | remains |
+|---|---|---|---|---|
+| `spawn_start_retry` | 455; 458-461; 465-470 | 457; 460-463; 467-472 | 9 | **469-470** |
+| `spawn_runtime_reconnect` | 495-496; 505 | 497-498; 507 | 1 | **497-498** |
+| `restart_slot` | 530-531; 534-535; 538; 540-541; 545-553 | 532-533; 536-537; 540; 542-543; 547-555 | 16 | — |
+| `GenerationWatch` | 604; 630-632 | 606; 632-634 | 4 | — |
+| | **34** | | **30** | **4** |
+
+Per-line `DA` in `union-d26.info`, the whole set (read from the pin, not from a log):
+
+```
+457 1   460 2   461 2   462 2   463 2   467 2   468 2   469 0   470 0   471 2   472 2
+507 4   497 0   498 0
+532 1   533 1   536 1   537 1   540 2   542 1   543 1   547..555 all >0 (9 lines)
+506 9   606 1   632 1   633 1   634 1
+```
+
+**The arithmetic, and it is exact.** `supervisor/start.rs` 81 → 49 uncovered: **−32** = the 30 OPEN
+lines above plus the two previously-waived lines the fix reached (`425`, `448`). No other file's count
+changed in this render, so the scope total is `1115 − 32 = 1083`. The ABSENT rows (277 in this reading,
+against D23's 283 — they are the same two harness files' non-code lines, and the delta is this
+segment's re-pointed row set) are **not** evidence of anything and stay out of the composition, and
+`COVERED` is 0: **no row in this ledger disagrees with the pin in either direction.**
+
+**The two reclassifications this section implies, both already applied to §4.1's rows.** The
+five-line concurrency row lost `:423` (now `425`, covered) and the two-line watch row lost `:446` (now
+`448`, covered); the row that carried `:604` became `:606` and the budget row became `:632-634`. The
+four remaining lines moved from OPEN to a named class — `unreachable-in-this-environment`, with the
+race stated in §14.4 — **after** the children proved that every other input reaches its arm. That
+order matters: they were not waived first.
+
+### 14.3 The measurement
+
+| leg | result | files | exit |
+|---|---|---|---|
+| gui (`-j 4`, `-- --test-threads=1`) | **2214 passed / 0 failed / 14 ignored**, plus the 12 integration tests | 171 | **rc=0** (report rc=0) |
+| headless (`--no-default-features --features headless`) | **1769 passed / 0 failed / 14 ignored**, plus the same 12 | 139 | **rc=0** (report rc=0) |
+| union | `lcov-union.py`, then `leg-flavour-check.py` → **LEG IDENTITY: ok** | 173 | rc=0 |
+
+The lib counts are unchanged from D25 (`2214` / `1769`) because D26 added **no** lib test — its eight
+children live in `tests/remote_start_refusal.rs`, which is why each leg carries the same twelve
+integration tests on top. `leg-flavour-check` is **fully green for this pair** — 171/139 files, the two
+gui-only sources excluded from the headless leg, `no_gui.rs` and `headless/mod.rs` present, and
+`src/bin/futureos-headless.rs` present — because these legs run every target. (D25's appdata pair, by
+contrast, is two `--lib` runs and FAILs that one marker; the difference is the leg shape, not the
+crate.)
+
+**The headless leg is a second run of the same tree.** Its first attempt reddened
+`remote_peer::tests::a_host_event_reaches_a_subscriber_decrypted` ("the host's event never arrived") —
+a timing flake in a subtree this change does not touch. The leg was run again on `0b7b2ca17` and that
+green run is the one quoted, rather than publishing either a red run or a single re-render of a red
+run's profraw. Two notes a reader needs: a re-run cannot hide a covered line (a line reads `0` only if
+**no** retained attempt executed it), and the gui half of the union is a **single** render —
+`gui-first.info` is a byte-identical copy of `gui.info` (both md5 `2373b903a3e8cc16cb2628e7482efb3d`),
+so the headless re-run kept the gui report instead of re-rendering it.
+
+**What is retained, and what re-derives from it.** An earlier revision of this section stated that the
+per-leg reports and the run's script were not retained. Both statements were wrong, and the correction
+matters because it decides what a reader may re-check instead of take on trust:
+
+| artifact | path | size | what it re-derives |
+|---|---|---|---|
+| gui leg report | `.future/cov100/d26/gui.info` | 3496779 B | **171** `SF:` / 74723 `DA:` |
+| headless leg report | `.future/cov100/d26/headless.info` | 2754606 B | **139** `SF:` / 61124 `DA:` |
+| gui copy kept for the re-run | `.future/cov100/d26/gui-first.info` | 3496779 B | identical to `gui.info` (same md5) |
+| the full run | `.future/cov100/measure-d26.sh` | — | gui leg, `clean`, headless leg, union, flavour check |
+| the headless re-run | `.future/cov100/measure-d26-headless.sh` | — | headless leg only, gui report kept |
+
+Re-checked after this section was first written: `lcov-union.py` over those two leg reports writes a
+file **byte-identical to the pin** (md5 `42329a2b17c6bd438247df0f3d908861` for both), and
+`leg-flavour-check.py` prints **LEG IDENTITY: ok** over 171/139 (`FLAVOUR_EXIT=0`). So the file counts,
+the 173-file union, the `DA` totals (74801 records, 1805 zeros, 1083 in the three scopes) and every
+per-line value in §14.2 are re-derivable from retained artifacts rather than quoted. What no retained
+artifact shows is the legs' **pass/fail counts and `*_EXIT=` lines**: that transcript did not survive,
+so those cells are the run's recorded output, not re-verified here — the pin can be recomputed but not
+re-interpreted into a test result.
+
+**The commands, as the retained script runs them** (`measure-d26.sh`; `$W` is this worktree):
+
+```bash
+cd $W/desktop/src-tauri
+export HOME=$W/target/test-home CARGO_TARGET_DIR=$W/target/cov-tauri-d26
+make -C $W desktop-sidecar-placeholder
+cargo llvm-cov clean
+cargo llvm-cov --no-report --no-fail-fast -j 4 -- --test-threads=1
+cargo llvm-cov report --lcov --output-path $W/.future/cov100/d26/gui.info
+cargo llvm-cov clean
+cargo llvm-cov --no-report --no-fail-fast -j 4 --no-default-features --features headless \
+    -- --test-threads=1
+cargo llvm-cov report --lcov --output-path $W/.future/cov100/d26/headless.info
+python3 $W/.future/cov100/lcov-union.py --out $W/.future/cov100/pinned/union-d26.info \
+    $W/.future/cov100/d26/gui.info $W/.future/cov100/d26/headless.info
+python3 $W/.future/cov100/leg-flavour-check.py \
+    $W/.future/cov100/d26/gui.info $W/.future/cov100/d26/headless.info
+```
+
+Two things differ from §11.2's form and are deliberate: the target directory is `cov-tauri-d26` (not
+`cov-tauri-remote`), and the reports land **in-repo** under `.future/cov100/d26/` rather than `/tmp`
+(F.100) — which is why the tables above can name them. The previous revision's block wrote
+`$W/target/d26/`, a path that matched neither the script nor the disk; it is corrected here rather than
+left as a command a reader cannot run.
+
+Three properties of that sequence are load-bearing:
+
+1. **No `--lib`.** The legs run every target, which is what makes the children execute *inside* the
+   instrumented run; a `--lib` leg would leave all 30 gated lines uncovered and could not have produced
+   this figure. That the gated bodies read `DA>0` is itself the proof the children ran: those bodies
+   exist in no test build, so only the spawned `futureos-headless` (linking the non-test lib) can
+   execute them.
+2. **`clean` between the legs**, so neither leg inherits the other's profraw (§11.2, and what
+   `leg-flavour-check.py` exists to catch).
+3. **Per-leg `report --lcov`**, then the union: `DA` max per line, which is the correct metric for
+   "uncovered iff no flavour executed it".
+
+What the pin does and does not contain, measured: **all 173 `SF:` records are under
+`desktop/src-tauri/src/`** — the integration target's own file carries no record, so it is outside the
+metric by construction, exactly as it is in every pin this record has quoted. The union carries 74801
+`DA:` records, 1805 of them zero; 1083 of those zeros fall in the three scopes.
+
+### 14.4 The four race windows, and why no child can schedule them
+
+Both windows are `unreachable-in-this-environment`, not `unreachable-by-construction`: the arm *can*
+execute on a host where a second writer interleaves, and what is missing is a seam for a test to be
+that writer. Each names the writer, the window, and why the child that comes closest cannot close it.
+
+**`start.rs:469-470` — the retry worker's re-arm** (`if start_requested && retryable_start_status(&latest) { spawn_start_retry(); }`, `:468-471`).
+
+- *The race*: the worker has already cleared `start_retry_running` (`:461-463`) and is about to die.
+  For the body to run, the status read at `:467` must be retryable — i.e. phase `Reconnecting` **and**
+  reason `network`/`server` — while `start_requested` is still true. Both are only reachable if another
+  actor records a *coded* retryable failure (or stops and starts again, which re-writes
+  `start_requested` and `last_error_code`) **between the singleton clear and the `status()` call**.
+- *Why it cannot be scheduled here*: on the single-writer path the condition is deterministically
+  **false**, and §14.1 gives the reason — the last attempt writes `"connecting"` at `:59` and its
+  uncoded failure leaves it there, so the tail re-reads `Connecting` with `reason: None`, which
+  `retryable_start_status` rejects. The window between `:463` and `:467` is a few synchronous
+  statements: no `.await`, no yield, and the only writers (`start()` via the CLI/IPC entry, `stop()`)
+  run on other tasks. A child can drive them, but not land inside that block — and the child that
+  comes closest (child 1) asserts the **opposite** outcome, that no third request arrives, which is
+  precisely why `469-470` read `0`.
+- *The enumerated missing seam*: a test-only way to insert a writer between `:463` and `:467` — e.g. a
+  `#[cfg(test)]` hook the tail calls before re-reading the status. §6.2 refused production seams for
+  reachability, and this one would be in shipped code (`spawn_start_retry`'s non-test body), so it is
+  named and not built.
+
+**`start.rs:497-498` — the budget guard** (`if attempt > MAX_RUNTIME_RECONNECT_ATTEMPTS { last_error_code = "reconnect_required"; return; }`, `:496-499`).
+
+- *The race*: `attempt` is produced by `record_runtime_failure` (`:559-575`), whose **only** caller is
+  `spawn_runtime_reconnect` itself (`:492`), and every caller first reads the counter at `:627-630`
+  behind `>= MAX_RUNTIME_RECONNECT_ATTEMPTS` (`= 3`, `state.rs:447`) and **returns** instead of
+  calling. So a call can only see `attempt == 4` if two watchers both pass the `>= 3` check and both
+  then record — the load at `:627` and the increment at `:572` are not atomic together.
+- *Why it cannot be scheduled here*: the window is the few hundred nanoseconds between one watcher's
+  `load` and the other's `fetch_add`. Child 7 (`the_reconnect_budget_exhausts_into_a_terminal_watch`)
+  puts three devices on a broker that refuses them ~600 ms into each generation and the controlling one
+  on a second broker that fails 5.5 s later, so the budget is spent *sequentially* and the last watcher
+  takes the terminal exit at `:632-634` — which that child does cover and assert
+  (`GenerationUnhealthy` in the entry's status). A child cannot pre-arm the counter either:
+  `runtime_reconnect_attempts` and `record_runtime_failure` are `pub(in crate::remote)`, so an
+  integration test cannot call the recorder directly, and the counter is process-global, so no
+  per-device reset exists to exploit.
+- *What the arm is for*: a defensive duplicate of the watch's own `>= MAX` check (same effect, same
+  error code). Its **behaviour** is covered through `:632-634`; only this second copy of the check is
+  not. Recording that distinction is why the row is honest rather than convenient: nothing about the
+  user-visible contract is untested, and the alternative — a production seam to make the duplicate
+  fire — would buy one line with a shipped hook.
+
+### 14.5 The gate readback, and what is left
+
+`reconcile.py` over the three scopes against `union-d26.info` (verbatim head):
+
+```
+[tauri-remote] files with uncovered lines=30 uncovered lines=1083
+  mentioned in module-tauri-remote.md: 1083
+  MISSING (uncovered, not mentioned): 0
+    COVERED (DA>0 - a real disagreement, the actionable half): 0
+    ABSENT (no `DA:` record -- NOT evidence): 277
+```
+
+```
+pairing                    role             doc                          claims  uncov MISSING  STALE ABSENT COVERED named         verdict
+tauri-remote               authoritative    module-tauri-remote.md         1320   1083       0    277    277       0 section       PASS
+```
+
+**1083 = 1083 waived, 0 OPEN**, over 30 files with uncovered lines. Excluding the two harness files
+(`real_network.rs` 788 and the `verify_e2e.rs` `InstalledHost` block 68) the residual is **227**, of
+which four are §14.4's race windows, 36 are `spawn_web_reconnect`'s staging-only body
+(`start.rs:669-710`), 5 are the concurrent-writer row (`76, 111, 282, 294, 401`), 2 are the watch's
+teardown races (`595, 603`), and the rest are the per-file rows in §4.1.
+
+**What D26 did not do.** It did not touch the two harness files, the staging-only web reconnect body, or
+any row outside `supervisor/start.rs` — the file-level arithmetic in §14.2 is the evidence: this render
+moves exactly one file. It did not add a production seam (§6.2). It did not re-label the four remaining
+lines as `unreachable-by-construction`: §14.4 shows a writer that *could* satisfy each, which is a
+missing seam, not an impossible state.

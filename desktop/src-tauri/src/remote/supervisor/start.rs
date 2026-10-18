@@ -50,7 +50,9 @@ pub(in crate::remote) async fn start_generation(
     }
     if !replace_existing {
         let current = status();
-        if runtime_active(&current) {
+        // Ask the runtime map, not the projection: a start retry runs with nothing
+        // installed and `status()` reporting that retry itself as `Reconnecting`.
+        if runtime_active(&current) && !SUPERVISOR.state.lock().unwrap().is_empty() {
             return Ok(current);
         }
     }
