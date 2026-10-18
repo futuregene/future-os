@@ -55,6 +55,13 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   labelDesktop(desktopId: string, patch: { name?: string; icon?: string }): Promise<void>;
   removeDesktop(desktopId: string): Promise<void>;
   presence: Presence | null;
+  /**
+   * Ask the open desktop to let this device drive it.
+   *
+   * Only meaningful while another paired device holds it (`presence.control ===
+   * "standby"`); the desktop moves control for nobody who merely connected.
+   */
+  takeControl(): Promise<void>;
   desktopOnline: boolean;
   hasConnectedContent: boolean;
   agentAvailable: boolean;
@@ -537,6 +544,19 @@ function machineSurface(
     decideApproval: runtime?.conversation.decideApproval ?? noop,
     clearError: connection?.clearError ?? app.clearError,
     continueRun: runtime?.outbox.continueRun ?? noop,
+    /**
+     * Ask this desktop to let this device drive it.
+     *
+     * The machine does not move control for a device that merely connected;
+     * this is the only call that does, and the UI gates it behind the user
+     * reading who currently holds it.
+     */
+    takeControl: async (): Promise<void> => {
+      const client = runtime?.connection.clientRef.current;
+      if (!client) throw new Error("not_connected");
+      const response = await client.request<{ control?: string }>({ type: "takeover" }, "list");
+      if (response.success === false) throw new Error(response.error ?? "takeover_failed");
+    },
   };
 }
 

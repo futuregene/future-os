@@ -4356,6 +4356,47 @@
             "shot": "m-connection-dropped.png"
           }
         ]
+      },
+      "take-control": {
+        "_comment": "Another paired device holds this desktop. The phone is connected and in standby, says who has it, and offers to take over — the only action that displaces it, and one the user has to take deliberately.",
+        "url": "http://localhost:8099/?held=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  const t = document.body.innerText;\n  for (const wanted of ['实验室的 MacBook Air 正在控制这台电脑', '接管会断开正在使用它的设备', '接管'])\n    if (!t.includes(wanted)) throw new Error('the takeover prompt is not on screen: missing ' + wanted + ': ' + t.slice(0, 500));\n  return 'ok';\n})()"
+          },
+          {
+            "shot": "m-take-control.png"
+          }
+        ]
+      },
+      "tmp-probe": {
+        "url": "http://localhost:8099/?held=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => document.body.innerText.slice(0,600))()"
+          },
+          {
+            "shot": "m-tmp.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label=\"稍后再说\"]') || document.body.innerText.includes('工作区')",

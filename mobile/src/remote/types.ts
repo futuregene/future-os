@@ -158,6 +158,22 @@ export interface Presence {
   unpaired?: boolean;
   pairId: string;
   bridgeInstanceId: string;
+  /**
+   * Whether this device may drive the desktop right now.
+   *
+   * `standby` means another paired device holds it. Additive on the wire: a
+   * desktop that predates this field sends nothing, and an absent value is read
+   * as "in control" — that is what every older desktop meant by being connected.
+   */
+  control?: "active" | "standby";
+  /**
+   * Who holds the desktop, when it is not this device.
+   *
+   * This is what lets the phone ask "taking over disconnects <name>?" instead of
+   * either stealing the machine silently or refusing without saying why. A
+   * holder that never declared a name is described neutrally.
+   */
+  holder?: { pairId?: string | null; name?: string; kind?: string } | null;
   lastHeartbeatTs: number;
   sessions?: PresenceSession[];
   workspaces?: RemoteWorkspace[];

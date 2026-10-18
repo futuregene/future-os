@@ -224,6 +224,32 @@ impl Supervisor {
             || self.known.lock().unwrap().contains(pair_id)
     }
 
+    /// Whether a *different* device currently holds the machine.
+    ///
+    /// This is the one question the handshake asks before it moves anything:
+    /// connecting must not be the same act as taking over. A pointer naming a
+    /// device this machine does not have is stale and does not count — it
+    /// cannot be in front of the machine.
+    pub(in crate::remote) fn held_by_another(&self, pair_id: &str) -> bool {
+        match self.active_pair() {
+            Some(active) if active != pair_id => self.device_is_known(&active),
+            _ => false,
+        }
+    }
+
+    /// What the device in control says it is, for a client that has to be told
+    /// who it would displace.
+    ///
+    /// The name comes from the controller's own `secure_ready`; a machine whose
+    /// controller never declared one has nothing to show, and the client falls
+    /// back to a neutral wording rather than inventing an identity.
+    pub(in crate::remote) fn controller_identity(&self) -> Option<ClientIdentity> {
+        let active = self.active_pair()?;
+        let slot = self.client_identity(&active)?;
+        let identity = slot.lock().unwrap().clone();
+        identity
+    }
+
     /// Forget every device and the controller — a machine-wide stop.
     pub(in crate::remote) fn reset_devices(&self) {
         self.known.lock().unwrap().clear();

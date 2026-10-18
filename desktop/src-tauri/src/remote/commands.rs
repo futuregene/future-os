@@ -394,7 +394,16 @@ pub(super) async fn command_loop_with_ready(
                     // wait on a file write. The device is already authenticated
                     // by this point, so the few milliseconds in between belong
                     // to nobody's authority.
-                    if first_handshake && accepted {
+                    //
+                    // …and only when the machine is free. Connecting is not
+                    // taking over: if another device holds the machine, this
+                    // one comes up in standby, reads `control`/`holder` from its
+                    // presence, and asks its user whether to displace the
+                    // controller. The client decides that, not this machine.
+                    if first_handshake
+                        && accepted
+                        && !super::SUPERVISOR.held_by_another(&handshake.creds.pair_id)
+                    {
                         let moved = super::SUPERVISOR.claim_control_soon(&handshake.creds.pair_id);
                         if let Some(previous) = moved {
                             super::publish_standby(&previous);
@@ -911,12 +920,13 @@ async fn handle_pair_handshake_confirm(
         }
         Some(Ok(())) => {}
     }
-    // Pairing this device is the act that puts it in front of the machine.
-    //
-    // It is the *second* claim path besides `takeover`, and it is the one the
-    // user is most obviously asking for: they just scanned a code, or just
-    // pressed "add a device" on the machine they are sitting at. The previous
-    // controller is told to stand by on its own channel.
+    // Pairing this device is *not* the act that puts it in front of the machine
+    // when another device already holds it. The user is the one who decides to
+    // displace a controller, and the client they are looking at is where that
+    // decision is made: this device comes up in standby, its presence names the
+    // current holder, and its own "take over" is what moves the machine. Making
+    // the mere handshake claim would silently disconnect whatever the other
+    // person was in the middle of.
     reply(
         client,
         msg,
@@ -931,7 +941,9 @@ async fn handle_pair_handshake_confirm(
             "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1", "workspace_pinning_v1", "workspace_create_v1", "desktop_settings_v1", "skill_management_v1", "compaction_v1", "provider_management_v1", "fork_v1", "tasks_v1", "task_deps_v1"],
             // A device that is not in control gets its own liveness and nothing
             // else: the conversation list belongs to the machine, and this reply
-            // is also what a replayed handshake receives.
+            // is also what a replayed handshake receives. `control` and `holder`
+            // are how it learns whether it may drive at all, and whom it would
+            // displace.
             "presence": if super::SUPERVISOR.in_control(&state.creds.pair_id) {
                 super::build_presence_payload(&state.creds.pair_id, &state.bridge_instance_id)
             } else {
@@ -942,8 +954,9 @@ async fn handle_pair_handshake_confirm(
     )
     .await;
     // After the answer, for the same reason as the secure handshake: a claim
-    // writes to disk, and no reply may wait on that.
-    if first_confirmation {
+    // writes to disk, and no reply may wait on that. And like the secure path,
+    // only a machine nobody holds is claimed by connecting to it.
+    if first_confirmation && !super::SUPERVISOR.held_by_another(&state.creds.pair_id) {
         let moved = super::SUPERVISOR.claim_control_soon(&state.creds.pair_id);
         if let Some(previous) = moved {
             super::publish_standby(&previous);

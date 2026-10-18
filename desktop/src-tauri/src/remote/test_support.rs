@@ -196,6 +196,22 @@ pub(crate) async fn open_secure_channel(
     invitation: &str,
     pair_id: &str,
 ) -> future_remote_crypto::Channel {
+    open_secure_channel_keeping_identity(client, invitation, pair_id)
+        .await
+        .0
+}
+
+/// [`open_secure_channel`], also handing back the client's static private key.
+///
+/// A reconnect is a *different* Noise pattern (IK) that proves the same
+/// identity instead of redeeming the invitation again — and the invitation is
+/// one-shot, so the key is the only way back. A test that wants to reconnect as
+/// the same device needs it.
+pub(crate) async fn open_secure_channel_keeping_identity(
+    client: &async_nats::Client,
+    invitation: &str,
+    pair_id: &str,
+) -> (future_remote_crypto::Channel, [u8; 32]) {
     let url = reqwest::Url::parse(invitation).unwrap();
     let fields: HashMap<_, _> = url
         .query_pairs()
@@ -249,6 +265,60 @@ pub(crate) async fn open_secure_channel(
         serde_json::from_slice(&channel.open("handshake-confirm", &encrypted).unwrap()).unwrap();
     assert_eq!(confirmed["pairId"], pair_id);
     assert_eq!(confirmed["confirmed"], true);
+    let private: [u8; 32] = private.as_slice().try_into().expect("32-byte identity key");
+    (channel, private)
+}
+
+/// Reconnect to a desktop this device has already paired with.
+///
+/// The invitation is one-shot, so coming back is the *reconnect* pattern (IK):
+/// the client proves the static key the desktop pinned during pairing, and the
+/// desktop proves its own. `desktop_public` is that pinned key — read from the
+/// pairing's `secure` identity, exactly as the real client stores it.
+pub(crate) async fn reconnect_secure_channel(
+    client: &async_nats::Client,
+    pair_id: &str,
+    desktop_id: &str,
+    desktop_public: &str,
+    private: &[u8; 32],
+) -> future_remote_crypto::Channel {
+    let prologue = future_remote_crypto::prologue(pair_id, desktop_id).unwrap();
+    let desktop_key = URL_SAFE_NO_PAD.decode(desktop_public.as_bytes()).unwrap();
+    let mut handshake = future_remote_crypto::Handshake::new(
+        future_remote_crypto::Pattern::Reconnect,
+        true,
+        private,
+        Some(&desktop_key),
+        None,
+        &prologue,
+    )
+    .expect("reconnect handshake");
+    let subject = format!("p.{pair_id}.cmd.handshake");
+    let first = json!({
+        "type": "secure_open",
+        "pairing": false,
+        "message": URL_SAFE_NO_PAD.encode(handshake.write(b"").unwrap()),
+    });
+    let response = client
+        .request(subject.clone(), serde_json::to_vec(&first).unwrap().into())
+        .await
+        .unwrap();
+    let response: Value = serde_json::from_slice(&response.payload).unwrap();
+    assert_eq!(response["success"], true, "reconnect refused: {response}");
+    handshake
+        .read(
+            &URL_SAFE_NO_PAD
+                .decode(response["data"]["message"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+    let mut channel = handshake.finish().unwrap();
+    let encrypted = URL_SAFE_NO_PAD
+        .decode(response["data"]["confirmation"].as_str().unwrap())
+        .unwrap();
+    let confirmed: Value =
+        serde_json::from_slice(&channel.open("handshake-confirm", &encrypted).unwrap()).unwrap();
+    assert_eq!(confirmed["pairId"], pair_id);
     channel
 }
 

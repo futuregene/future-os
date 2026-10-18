@@ -161,6 +161,16 @@ export const resources = {
         machinesPartialHint:
           "Make sure the desktops that are not connected are online, then reconnect",
         reconnectAll: "Reconnect all",
+        /**
+         * Another paired device holds this desktop. The name is the one that
+         * device declared about itself; when it declared none, the neutral
+         * wording is used rather than inventing an identity.
+         */
+        controlHeldBy: "{{name}} is controlling this desktop",
+        controlHeldByUnknown: "Another device is controlling this desktop",
+        takeControl: "Take over",
+        takeControlHint: "Taking over disconnects the device that has it now.",
+        takeControlFailed: "Could not take over. Try again.",
         machine: {
           connected: "Connected",
           preparing: "Preparing",
@@ -1096,6 +1106,11 @@ export const resources = {
         machinesPartial: "部分桌面端未连接",
         machinesPartialHint: "请确认未连接的桌面端在线后重新连接",
         reconnectAll: "重新连接全部",
+        controlHeldBy: "{{name}} 正在控制这台电脑",
+        controlHeldByUnknown: "另一台设备正在控制这台电脑",
+        takeControl: "接管",
+        takeControlHint: "接管会断开正在使用它的设备。",
+        takeControlFailed: "接管未成功，请重试。",
         machine: {
           connected: "已连接",
           preparing: "准备中",
