@@ -30,6 +30,14 @@ pub(super) fn admit(conn: &Connection) -> Result<i64, AppError> {
     future_app_settings::validate_database_header(conn)?;
     let version = conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?;
     if version != 0 {
+        let ledger: (i64, i64, i64) = conn.query_row(
+            "SELECT count(*),min(version),max(version) FROM app_schema_migrations",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        if ledger != (version, 1, version) {
+            return Err("Desktop database version header disagrees with its migration ledger; preserve it for recovery.".into());
+        }
         for applied in 1..=version {
             let stored: Option<String> = conn
                 .query_row(
@@ -457,6 +465,34 @@ mod tests {
             admit(&conn).unwrap(),
             future_app_settings::APP_DB_SCHEMA_VERSION
         );
+    }
+
+    #[test]
+    fn inconsistent_nonzero_headers_never_replay_contract_steps() {
+        for extra_version in [0, 4] {
+            let conn = Connection::open_in_memory().unwrap();
+            legacy(&conn);
+            initialize(&conn).unwrap();
+            conn.execute(
+                "INSERT INTO app_schema_migrations VALUES(?1,'unknown',1)",
+                [extra_version],
+            )
+            .unwrap();
+            assert!(initialize(&conn).is_err());
+            let body: String = conn
+                .query_row(
+                    "SELECT content FROM legacy_messages WHERE id='u'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(body, "保留历史");
+        }
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        conn.pragma_update(None, "user_version", 2).unwrap();
+        assert!(admit(&conn).is_err());
+        assert!(table_names(&conn).unwrap().contains("agent_delete_sources"));
     }
 
     #[test]
