@@ -10,7 +10,11 @@ use crate::AppError;
 
 const CONTRACT_SQL: &str = include_str!("app_schema_contract.sql");
 
-const STEPS: &[(i64, &str)] = &[(1, CONTRACT_SQL), (2, include_str!("thread_sources.sql"))];
+const STEPS: &[(i64, &str)] = &[
+    (1, CONTRACT_SQL),
+    (2, include_str!("thread_sources.sql")),
+    (3, include_str!("delete_sources.sql")),
+];
 
 fn checksum(version: i64) -> String {
     let sql = STEPS
@@ -240,6 +244,41 @@ mod tests {
     use std::fs;
 
     #[test]
+    fn version_two_qualifies_only_proven_deletion_sources() {
+        let conn = Connection::open_in_memory().unwrap();
+        legacy(&conn);
+        initialize(&conn).unwrap();
+        conn.execute_batch("UPDATE threads SET agent_session_id='session' WHERE id='t';
+            INSERT INTO thread_sources VALUES('t','session','original-agent','generation');
+            INSERT INTO agent_delete_outbox(session_id,requested_at) VALUES('session',1),('unknown',2);
+            DROP TABLE agent_delete_sources;
+            DELETE FROM app_schema_migrations WHERE version=3; PRAGMA user_version=2;
+            CREATE TRIGGER refuse_v3 BEFORE INSERT ON app_schema_migrations WHEN NEW.version=3 BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        assert!(initialize(&conn).is_err());
+        assert_eq!(admit(&conn).unwrap(), 2);
+        assert!(!table_names(&conn).unwrap().contains("agent_delete_sources"));
+        conn.execute_batch("DROP TRIGGER refuse_v3").unwrap();
+        initialize(&conn).unwrap();
+        let rows: Vec<(String, String)> = conn
+            .prepare("SELECT session_id,database_id FROM agent_delete_sources")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, vec![("session".into(), "original-agent".into())]);
+        let archive: String = conn
+            .query_row(
+                "SELECT content FROM legacy_messages WHERE id='u'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(archive, "保留历史");
+        assert_eq!(admit(&conn).unwrap(), 3);
+    }
+
+    #[test]
     fn version_one_upgrades_in_order_and_preserves_database_identity() {
         let conn = Connection::open_in_memory().unwrap();
         initialize(&conn).unwrap();
@@ -248,7 +287,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        conn.execute_batch("DROP TABLE thread_sources; DELETE FROM app_schema_migrations WHERE version=2; PRAGMA user_version=1;
+        conn.execute_batch("DROP TABLE agent_delete_sources; DROP TABLE thread_sources; DELETE FROM app_schema_migrations WHERE version>=2; PRAGMA user_version=1;
             CREATE TRIGGER refuse_v2 BEFORE INSERT ON app_schema_migrations WHEN NEW.version=2 BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
         assert!(initialize(&conn).is_err());
         assert_eq!(admit(&conn).unwrap(), 1);
@@ -261,7 +300,10 @@ mod tests {
             })
             .unwrap();
         assert_eq!(identity, after);
-        assert_eq!(admit(&conn).unwrap(), 2);
+        assert_eq!(
+            admit(&conn).unwrap(),
+            future_app_settings::APP_DB_SCHEMA_VERSION
+        );
     }
 
     fn legacy(conn: &Connection) {

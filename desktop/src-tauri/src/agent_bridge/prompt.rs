@@ -241,9 +241,13 @@ pub(super) async fn agent_prompt_inner(
     }
     let mut command_client = connect_agent().await?;
     if crate::store::has_legacy_history(&thread_id)? {
-        let history =
-            super::queries::get_session_entries_before(stored_session_id.clone(), i64::MAX, 1)
-                .await?;
+        let history = super::queries::get_session_entries_before_with_client(
+            &command_client,
+            stored_session_id.clone(),
+            i64::MAX,
+            1,
+        )
+        .await?;
         if !history["entries"].as_array().is_some_and(|entries| {
             entries
                 .iter()
@@ -274,7 +278,7 @@ pub(super) async fn agent_prompt_inner(
     if session_was_created {
         crate::store::bind_thread_session_id(&thread_id, &session_id)?;
     }
-    super::verify_thread_source(&thread_id, &session_id).await?;
+    super::verify_thread_source_with_client(&mut command_client, &thread_id, &session_id).await?;
     set_agent_permission_level(&mut command_client, &session_id, "workspace").await?;
     set_agent_sandbox_policy(&mut command_client, &session_id, &thread_id).await?;
 

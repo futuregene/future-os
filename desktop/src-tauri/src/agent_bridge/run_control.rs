@@ -143,6 +143,7 @@ pub(super) async fn abort_agent_thread(
         store::get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
     let session_id = thread.agent_session_id.unwrap_or(thread.id);
     let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, &session_id).await?;
     let canonical_run_id = match local_run_id.filter(|run_id| !run_id.is_empty()) {
         Some(local_run_id) => Some(
             AGENT_REPLICAS
@@ -169,7 +170,7 @@ pub(super) async fn abort_agent_thread(
 /// Abort an in-flight run for an already-resolved agent session id. Unlike
 /// [`abort_agent_thread`] it takes the session id directly (the quit guard reads
 /// it from `store::active_run_sessions`, so there is no thread to reload) and
-/// does not touch the store — on force-quit we only need the agent to stop
+/// accepts orphaned rows while checking any recorded source — on force-quit we need the agent to stop
 /// streaming before the process exits; startup convergence settles the run rows
 /// on the next launch. Best-effort at the call site: aborting a session that
 /// already finished is a harmless no-op on the agent side.
@@ -181,6 +182,7 @@ pub(super) async fn abort_agent_thread(
 /// the session stopped — deleting the conversation — go on with its work.
 pub(crate) async fn abort_session(session_id: &str) -> Result<(), crate::AppError> {
     let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, session_id).await?;
     let canonical_run_id = match probe_session(&mut client, session_id).await? {
         SessionProbe::Unknown => return Ok(()),
         SessionProbe::ActiveRun(run_id) => run_id,

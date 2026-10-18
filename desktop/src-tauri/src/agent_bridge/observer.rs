@@ -588,6 +588,7 @@ fn bind_run(session_id: &str, canonical_run_id: &str, local_run_id: &str) {
 /// recently settled run — the broadcaster keeps stamping its identity onto
 /// between-runs settings events until the next run starts.
 struct ObserverState {
+    source: Option<(String, String, String)>,
     cursors: HashMap<String, i64>,
     session_cursor: i64,
     active_run: Option<String>,
@@ -598,12 +599,27 @@ struct ObserverState {
 impl Default for ObserverState {
     fn default() -> Self {
         Self {
+            source: None,
             cursors: HashMap::new(),
             session_cursor: -1,
             active_run: None,
             last_settled_run: None,
             last_message_activity_ms: None,
         }
+    }
+}
+
+impl ObserverState {
+    fn verify_source(&mut self, source: (String, String, String)) -> bool {
+        let changed = self
+            .source
+            .as_ref()
+            .is_some_and(|previous| previous != &source);
+        if changed {
+            *self = Self::default();
+        }
+        self.source = Some(source);
+        changed
     }
 }
 
@@ -722,12 +738,37 @@ async fn run_observer(
             }
         };
 
-        if let Err(error) = super::verify_thread_source(&shared.thread_id, session_id).await {
-            eprintln!("FutureOS: observer source verification deferred: {error}");
-            if sleep_or_cancel(&mut cancel, backoff).await {
-                return;
+        let presence = match super::verify_thread_source_with_client(
+            &mut client,
+            &shared.thread_id,
+            session_id,
+        )
+        .await
+        {
+            Ok(presence) => presence,
+            Err(error) => {
+                eprintln!("FutureOS: observer source verification deferred: {error}");
+                if sleep_or_cancel(&mut cancel, backoff).await {
+                    return;
+                }
+                backoff = (backoff * 2).min(Duration::from_secs(10));
+                continue;
             }
-            continue;
+        };
+        if state.verify_source((
+            client.readiness().agent_instance_id.clone(),
+            presence.database_id,
+            presence.restore_generation,
+        )) {
+            // A restored journal may reuse lower event indexes. Cursors and
+            // transient run bindings belong to the verified source instance.
+            shared.has_active_run.store(false, Ordering::Relaxed);
+            shared
+                .run_bindings
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+            crate::emit_remote_activity(&shared.thread_id);
         }
 
         if !replay_session_events(&mut client, session_id, shared, &mut state).await {
@@ -1300,6 +1341,36 @@ fn settings_event_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_restored_or_restarted_source_replays_from_its_own_cursor_origin() {
+        let mock = mock_agent();
+        let mut client = connect_agent().await.unwrap();
+        let shared = Arc::new(ObserverShared::new("source-fence"));
+        for source in [
+            ("instance", "database", "new-generation"),
+            ("new-instance", "database", "generation"),
+        ] {
+            let mut state = ObserverState::default();
+            let original = ("instance".into(), "database".into(), "generation".into());
+            assert!(!state.verify_source(original.clone()));
+            state.session_cursor = 999;
+            state.cursors.insert("run".into(), 500);
+            assert!(!state.verify_source(original));
+            assert_eq!(state.session_cursor, 999);
+            assert!(state.verify_source((source.0.into(), source.1.into(), source.2.into())));
+            assert!(state.cursors.is_empty());
+            mock.push_data("get_session_events_since", serde_json::json!({"events":[]}));
+            assert!(replay_session_events(&mut client, "session", &shared, &mut state).await);
+            assert_eq!(
+                mock.requests_of("get_session_events_since")
+                    .last()
+                    .unwrap()
+                    .since_idx,
+                -1
+            );
+        }
+    }
 
     fn handle_with(last_activity_ms: i64, has_active_run: bool) -> ObserverHandle {
         let (cancel, _rx) = oneshot::channel();

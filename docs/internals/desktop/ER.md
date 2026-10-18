@@ -1376,3 +1376,11 @@ reject incompatible headers before creating or modifying tables.
 `thread_sources(thread_id, session_id, database_id, restore_generation)` is Desktop
 contract 2's source binding. It cascades with a thread; a different Agent database
 cannot replace the binding. Cursor source keys include the restore generation.
+
+
+Desktop contract 3 adds `agent_delete_sources(session_id, database_id)` with a
+cascade FK to `agent_delete_outbox`. This control state survives explicit reset
+with the outbox; thread deletion cannot erase ownership evidence needed for safe
+retry. Missing evidence leaves intent deferred rather than adopting the current
+Agent database. Cursor keys also fence the Agent instance, while durable source
+bindings retain database family and restore generation.

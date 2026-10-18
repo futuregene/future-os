@@ -52,7 +52,10 @@ pub use self::observer::{
     drop_observer, ensure_observer_for_session, ensure_observer_for_thread,
     reconcile_streaming_observers, spawn_session_discovery, spawn_streaming_observer_monitor,
 };
-pub(crate) use self::presence::{session_presence, verify_thread_source};
+pub(crate) use self::presence::{
+    session_presence, session_presence_with_client, verify_session_database, verify_thread_source,
+    verify_thread_source_with_client,
+};
 #[cfg(test)]
 pub use self::prompt::agent_prompt;
 pub(crate) use self::prompt::agent_prompt_with_acceptance;
@@ -68,8 +71,8 @@ pub use self::queries::{
     SyncFutureModelsResult, WindowsSandboxProbeResult,
 };
 pub(crate) use self::queries::{
-    get_events_since_page, get_run_snapshot, get_tool_call_args, provision_agent_session,
-    query_tools,
+    get_events_since_page, get_run_snapshot, get_session_entries_before_with_client,
+    get_session_entries_with_client, get_tool_call_args, provision_agent_session, query_tools,
 };
 pub use self::reconciliation::{
     attach_remote_stream, reconcile_interrupted_runs, reconcile_thread_workspace,

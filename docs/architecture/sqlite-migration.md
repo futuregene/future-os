@@ -122,7 +122,7 @@ Restoring an older app.db never authorizes deleting newer files. Unowned images,
 
 ## Database admission and upgrade contract
 
-Desktop now uses application_id `0x46554150` and user_version `2`. Known legacy
+Desktop now uses application_id `0x46554150` and user_version `3`. Known legacy
 Desktop layouts and CLI settings/workspace bootstrap databases are adopted through
 the existing release migrations. `app_schema_migrations` records the new contract
 checksum; `app_database_identity` persists database and restore identities. The
@@ -224,3 +224,29 @@ resume/rollback; and reconstruction of missing disposable history indexes with
 canonical records unchanged. Previously erased bytes require an earlier backup
 or original import source. Full backup currently rejects symlinks/special files,
 requires stopped writers and restores only to its original home.
+
+
+## Additional failure boundaries
+
+Desktop contract 3 adds `agent_delete_sources`. Thread/workspace deletion and
+explicit reset preserve proven database ownership with the pending intent, even
+after thread rows disappear. Delivery checks that ownership through the same
+instance-fenced client; foreign or unqualified old intent remains queued with an
+error, never silently assigned to the current database. Migration from contract 2
+qualifies only ownership still provable from existing source bindings.
+
+History, fragment reads, prompt admission and observer replay use their verified
+client throughout the operation. Cursor keys include the Agent instance; a new
+instance or restore generation clears observer cursors and transient run bindings,
+so lower restored event indexes can be read. State/title reads verify ownership;
+stopping a known foreign source settles the local run without aborting foreign
+work. Healthy history and runtime metadata use read transactions, reserving a
+writer only for index reconstruction. Failed activation of coalesced queued input
+materializes each unstarted input without waiting for restart or executing work.
+
+Restore journal version 2 records deterministic preimage digests, checks retained
+roots before moving more files and verifies originals before clearing a rollback
+fence. Version 1 pending journals remain supported. Backup verification rejects
+unmanifested SQLite sidecars; snapshot publication and complete tree staging sync
+directory entries as well as file bodies. Added cases cover these boundaries but
+are only compiled locally, as local unit-test execution is intentionally disabled.

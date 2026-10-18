@@ -39,6 +39,11 @@ pub(crate) enum Reply {
     RejectCode(&'static str, String),
     /// Transport-level failure (tonic status).
     Status(tonic::Code, &'static str),
+    /// Simulate the production instance fence after the endpoint is replaced.
+    BoundData {
+        instance: &'static str,
+        data: serde_json::Value,
+    },
     /// Signal request arrival, then wait for a test-controlled JSON response.
     Deferred {
         entered: tokio::sync::oneshot::Sender<()>,
@@ -165,6 +170,12 @@ impl FutureAgent for MockAgent {
         &self,
         request: tonic::Request<RpcCommand>,
     ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
+        let expected_instance = request
+            .metadata()
+            .get(future_rpc::connection::EXPECTED_INSTANCE_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
         let cmd = request.into_inner();
         let reply = {
             let mut state = STATE
@@ -220,6 +231,17 @@ impl FutureAgent for MockAgent {
                 Ok(tonic::Response::new(response))
             }
             Reply::Status(code, message) => Err(tonic::Status::new(code, message)),
+            Reply::BoundData { instance, data } => {
+                if expected_instance != instance {
+                    return Err(tonic::Status::failed_precondition("Agent instance changed"));
+                }
+                Ok(tonic::Response::new(rpc_response(
+                    &cmd,
+                    true,
+                    data.to_string(),
+                    String::new(),
+                )))
+            }
             Reply::Deferred { entered, data } => {
                 let _ = entered.send(());
                 let data = data

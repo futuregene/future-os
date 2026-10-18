@@ -231,7 +231,14 @@ pub async fn get_session_messages(
 /// with cached thumbnails), which is how the GUI rebuilds attachment chips.
 pub async fn get_session_entries(session_id: String) -> Result<serde_json::Value, crate::AppError> {
     let mut client = connect_agent().await?;
-    let entries = fetch_all_session_entries_with_client(&mut client, &session_id).await?;
+    get_session_entries_with_client(&mut client, session_id).await
+}
+
+pub(crate) async fn get_session_entries_with_client(
+    client: &mut super::client::AgentClient,
+    session_id: String,
+) -> Result<serde_json::Value, crate::AppError> {
+    let entries = fetch_all_session_entries_with_client(client, &session_id).await?;
     Ok(serde_json::json!({ "entries": entries }))
 }
 
@@ -296,8 +303,17 @@ pub async fn get_session_entries_before(
     user_exchange_limit: i64,
 ) -> Result<serde_json::Value, crate::AppError> {
     let client = connect_agent().await?;
+    get_session_entries_before_with_client(&client, session_id, before, user_exchange_limit).await
+}
+
+pub(crate) async fn get_session_entries_before_with_client(
+    client: &super::client::AgentClient,
+    session_id: String,
+    before: i64,
+    user_exchange_limit: i64,
+) -> Result<serde_json::Value, crate::AppError> {
     let page = read_history_page_with_client(
-        &client,
+        client,
         get_session_entries_before_command(session_id, before, user_exchange_limit),
     )
     .await?;

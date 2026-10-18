@@ -979,6 +979,7 @@ mod bridge_tests {
             ],
         )
         .expect("enqueue");
+        conn.execute("INSERT INTO agent_delete_sources(session_id,database_id) VALUES (?1,'test-agent-database')",[session_id]).unwrap();
     }
 
     fn delete_reply(outcomes: &[(&str, bool, &str)]) -> serde_json::Value {
@@ -1025,6 +1026,57 @@ mod bridge_tests {
         let prev = break_home();
         reconcile_delete_outbox().await;
         restore_home(prev);
+    }
+
+    #[tokio::test]
+    async fn delete_outbox_retains_foreign_and_unverified_intent() {
+        let home = TestHome::new("delete-source-fence");
+        let mock = mock_agent();
+        enqueue_delete(&home, "owned-elsewhere");
+        enqueue_delete(&home, "unknown-source");
+        let conn = rusqlite::Connection::open(home.path().join(".future/app/app.db")).unwrap();
+        conn.execute("UPDATE agent_delete_sources SET database_id='original-database' WHERE session_id='owned-elsewhere'",[]).unwrap();
+        conn.execute(
+            "DELETE FROM agent_delete_sources WHERE session_id='unknown-source'",
+            [],
+        )
+        .unwrap();
+        reconcile_delete_outbox().await;
+        assert!(mock.requests_of("delete_sessions").is_empty());
+        assert_eq!(
+            crate::store::pending_agent_session_deletes().unwrap().len(),
+            2
+        );
+        mock.push_data("get_session_presence",serde_json::json!({"databaseId":"original-database","restoreGeneration":"restored","sessions":[]}));
+        reconcile_delete_outbox().await;
+        assert_eq!(
+            mock.requests_of("delete_sessions")[0].session_ids,
+            vec!["owned-elsewhere"]
+        );
+        assert_eq!(
+            crate::store::pending_agent_session_deletes().unwrap(),
+            vec!["unknown-source"]
+        );
+    }
+
+    #[test]
+    fn deletion_source_survives_thread_deletion_and_explicit_reset() {
+        let home = TestHome::new("delete-source-reset");
+        let workspace = seed_workspace(home.path(), "delete");
+        let thread = seed_thread(&workspace.id, Some("session"));
+        crate::store::record_thread_source(
+            &thread.id,
+            "session",
+            "original-database",
+            "generation",
+        )
+        .unwrap();
+        crate::store::delete_thread_tree(&thread.id, false).unwrap();
+        crate::store::clear_all_data().unwrap();
+        assert_eq!(
+            crate::store::pending_agent_session_deletes_with_sources().unwrap(),
+            vec![("session".into(), Some("original-database".into()))]
+        );
     }
 
     #[tokio::test]

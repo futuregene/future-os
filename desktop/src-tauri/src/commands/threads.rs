@@ -82,6 +82,7 @@ pub async fn rename_thread(
         .unwrap_or(&thread.id)
         .to_string();
     let mut client = crate::agent_bridge::connect_agent().await?;
+    crate::agent_bridge::verify_session_database(&mut client, &session_id).await?;
     let cmd = crate::agent_bridge::set_session_name_command(input.title.clone(), session_id);
     let resp = client
         .execute_command(cmd)
@@ -117,8 +118,13 @@ pub async fn update_thread_model(
                 .filter(|id| !id.is_empty())
                 .unwrap_or(&thread.id)
                 .to_string();
-            let cmd = crate::agent_bridge::set_model_command(model_id, session_id);
-            let _ = client.execute_command(cmd).await;
+            if crate::agent_bridge::verify_session_database(&mut client, &session_id)
+                .await
+                .is_ok()
+            {
+                let cmd = crate::agent_bridge::set_model_command(model_id, session_id);
+                let _ = client.execute_command(cmd).await;
+            }
         }
     }
     Ok(thread)
@@ -142,8 +148,14 @@ pub async fn update_thread_thinking_level(
                 .filter(|id| !id.is_empty())
                 .unwrap_or(&thread.id)
                 .to_string();
-            let cmd = crate::agent_bridge::set_thinking_level_command(thinking_level, session_id);
-            let _ = client.execute_command(cmd).await;
+            if crate::agent_bridge::verify_session_database(&mut client, &session_id)
+                .await
+                .is_ok()
+            {
+                let cmd =
+                    crate::agent_bridge::set_thinking_level_command(thinking_level, session_id);
+                let _ = client.execute_command(cmd).await;
+            }
         }
     }
     Ok(thread)
@@ -302,6 +314,8 @@ pub async fn get_thread_agent_state(
     let mut client = crate::agent_bridge::connect_agent()
         .await
         .map_err(|e| format!("Future Agent unreachable: {e}"))?;
+    crate::agent_bridge::verify_thread_source_with_client(&mut client, &thread_id, session_id)
+        .await?;
     let cmd = crate::agent_bridge::get_state_command(session_id.to_string());
     let resp = client
         .execute_command(cmd)
@@ -393,8 +407,20 @@ async fn read_thread_history(
     let mut availability = "ready";
     let mut result = Ok(serde_json::json!({"entries":[],"hasMore":false,"nextOffset":0}));
     if let Some(session_id) = session_id.as_ref() {
-        result = match crate::agent_bridge::session_presence(vec![session_id.clone()]).await {
-            Ok(presence) => {
+        // Carry the instance-fenced client from ownership verification through
+        // every body/fragment read. A reconnect must start a fresh operation.
+        let verified = async {
+            let mut client = crate::agent_bridge::connect_agent().await?;
+            let presence = crate::agent_bridge::session_presence_with_client(
+                &mut client,
+                vec![session_id.clone()],
+            )
+            .await?;
+            Ok::<_, crate::AppError>((client, presence))
+        }
+        .await;
+        result = match verified {
+            Ok((mut client, presence)) => {
                 let status = presence.sessions[0].status.as_str();
                 if status != "present" {
                     availability = match status {
@@ -410,8 +436,10 @@ async fn read_thread_history(
                     Err("Conversation belongs to a different Agent database; restore its matching data.".into())
                 } else {
                     key = format!(
-                        "agent:{}:{}:{session_id}",
-                        presence.database_id, presence.restore_generation
+                        "agent:{}:{}:{}:{session_id}",
+                        presence.database_id,
+                        presence.restore_generation,
+                        client.readiness().agent_instance_id
                     );
                     if canonical.is_some() {
                         store::record_thread_source(
@@ -428,7 +456,8 @@ async fn read_thread_history(
                         );
                     }
                     if legacy_cursor {
-                        crate::agent_bridge::get_session_entries_before(
+                        crate::agent_bridge::get_session_entries_before_with_client(
+                            &client,
                             session_id.clone(),
                             i64::MAX,
                             1,
@@ -437,7 +466,8 @@ async fn read_thread_history(
                     } else {
                         match page {
                             Some((before, limit)) => {
-                                crate::agent_bridge::get_session_entries_before(
+                                crate::agent_bridge::get_session_entries_before_with_client(
+                                    &client,
                                     session_id.clone(),
                                     before.unwrap_or(i64::MAX),
                                     limit,
@@ -445,7 +475,11 @@ async fn read_thread_history(
                                 .await
                             }
                             None => {
-                                crate::agent_bridge::get_session_entries(session_id.clone()).await
+                                crate::agent_bridge::get_session_entries_with_client(
+                                    &mut client,
+                                    session_id.clone(),
+                                )
+                                .await
                             }
                         }
                     }
@@ -1281,6 +1315,13 @@ mod tests {
         let _lock = mock_agent_lock();
         let _home = init("cmd_delete_active");
         let thread = make_thread(&_home, Some("sess_active_delete"));
+        store::record_thread_source(
+            &thread.id,
+            "sess_active_delete",
+            "test-agent-database",
+            "test-generation",
+        )
+        .unwrap();
         store::create_run(store::CreateRunInput {
             id: Some("run_active_delete".to_string()),
             thread_id: thread.id.clone(),
@@ -1369,10 +1410,10 @@ mod tests {
             !commands.iter().any(|command| command == "abort"),
             "no stop is attempted for a session the agent has no record of: {commands:?}"
         );
-        // The user's delete still reclaims the Agent side, so the tombstone is
-        // delivered (idempotently) even though there is no session to remove.
+        // No Agent source ever owned this unbound thread. Retain intent rather
+        // than sending a guessed session deletion to whichever database is live.
         assert!(
-            commands.iter().any(|command| command == "delete_sessions"),
+            !commands.iter().any(|command| command == "delete_sessions"),
             "{commands:?}"
         );
         assert!(store::get_thread(&thread.id).expect("get").is_none());

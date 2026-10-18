@@ -56,8 +56,11 @@ pub use db::{
 // its directory, since Windows cannot unlink an open database file.
 #[cfg(test)]
 pub(crate) use db::close_pool;
+#[cfg(test)]
+pub use deletions::pending_agent_session_deletes;
 pub use deletions::{
-    is_agent_session_tombstoned, pending_agent_session_deletes, settle_agent_session_deletes,
+    is_agent_session_tombstoned, pending_agent_session_deletes_with_sources,
+    settle_agent_session_deletes,
 };
 pub use legacy_history::{
     has_legacy_history, legacy_history_entries, legacy_history_page, legacy_history_source_key,
@@ -198,7 +201,10 @@ pub fn clear_all_data() -> Result<(), crate::AppError> {
     };
     // DROP TABLE also removes the table's indexes and triggers.
     for table in &tables {
-        if table == "agent_delete_outbox" {
+        if matches!(
+            table.as_str(),
+            "agent_delete_outbox" | "agent_delete_sources"
+        ) {
             continue;
         }
         conn.execute(&format!("DROP TABLE IF EXISTS \"{table}\""), [])?;
