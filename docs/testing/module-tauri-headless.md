@@ -3,53 +3,66 @@
 > (`tests/headless_cli.rs::a_login_change_while_supervising_stops_the_run_with_that_reason`,
 > commit `8efb4fa0c`) closed the line, and the **two-leg** measurement of
 > `.future/cov100/pinned/union-d26.info` reads it `DA:1` (§2.13). That run also moved two
-> documented oscillators, so the figure is **236**, not the **237** the earlier probe predicted:
-> `238 − 182 − agent_host.rs 265 − server.rs 533 + server.rs 539 = 236`. §2.13 accounts for every
-> one of those four numbers and §17 for the ledger work: **0 unregistered, 0 OPEN, 0 covered
-> rows claimed as residual.**
+> documented oscillators, so the figure there is **236**, not the **237** the earlier probe
+> predicted: `238 − 182 − agent_host.rs 265 − server.rs 533 + server.rs 539 = 236`. §2.13 accounts
+> for every one of those four numbers and §17 for the ledger work. That is the **previous
+> revision**; the merged tree measures **241** (§18), and the difference is `main`'s arms, not a
+> regression — the banner below says so in one sentence.
 # Module: `desktop-tauri-headless` (`desktop/src-tauri`, headless/agent-supervision/terminal slice)
 
-> **FIGURE (2026-10-18, TAU-D27): 236 uncovered, measured at `0b7b2ca17`.**
-> Report `.future/cov100/pinned/union-d26.info` — two legs rendered separately with
-> `cargo llvm-cov clean` between them and unioned by `lcov-union.py`, `leg-flavour-check` reading
-> **LEG IDENTITY: ok** (gui 171 files / headless 139). It is the same union the `tauri-remote`
-> record publishes its figures from, which is why its recipe is documented there (§14.3) and only
-> re-stated here. `reconcile.py` over the twelve scopes reads **MISSING 0, COVERED 0, ABSENT 0**,
-> and all 236 lines are classified in §4.1 with **0 OPEN** in §4.2.
+> **FIGURE (2026-10-18, TAU-D31): 241 uncovered, measured at `16ea6f388` — the merged tree.**
+> Report `.future/cov100/pinned/union-refresh4.info` (5 853 166 B, 178 `SF:` records), the
+> post-merge two-leg union (gui leg `rc=0`, headless leg `rc=0`, whole crate, `cargo llvm-cov
+> clean` between legs, unioned by `lcov-union.py`; the recipe is the `tauri-remote` record's §14.3
+> and the post-merge reading is its §15). It is the union the `tauri-appdata`, `tauri-remote` and
+> `tauri-shell-seg2` records publish from too — one run, four pairings, differing only in the
+> scope filter.
+> `reconcile.py` over the twelve scopes reads **MISSING 0, COVERED 0, ABSENT 0**, and all 241
+> lines are classified: **240 in §4.1 with a mechanism and 1 OPEN in §4.2** (the force-quit
+> waiter brace, whose seam is named — §18.5). §18 is the re-derivation.
 >
-> **This is a branch measurement, and `main` has moved.** `origin/main` is `74c6bd8aa`, seven
-> commits past the `8a13782ae` merge this tree carries, and they touch these scopes:
-> `agent_supervisor.rs` +77, `headless/agent.rs` −124, `headless/mod.rs` −74,
-> `terminal/session.rs` −44 measured *against our tree* (most of that is this campaign's own
-> fixtures, which main does not carry). So 236 is the value of **this branch at `0b7b2ca17`** —
-> which is still this branch's in-scope code: `git diff 0b7b2ca17..HEAD` over the twelve scopes is
-> empty — and it must be re-derived at the merge, not read as a value for `main@74c6bd8aa`.
-> PLAN 13 requires this sentence, not a footnote.
+> **236 → 241 is `main`'s new arms, and the rows moved with them.** The merge added 73 lines to
+> `agent_supervisor.rs` in seven hunks (`git diff 0b7b2ca17..HEAD`): `on_close_requested`'s
+> `QUIT_CONFIRMED` early return (+4), the force-exit watchdog block
+> (`FORCE_QUIT_REQUESTED`/`spawn_force_exit_watchdog`/`force_exit_process`/`arm_force_exit`) plus
+> the head of `request_quit`'s `force` arm (+40), the `let operation = if force` branch and its
+> changed guard (+2), `main`'s own watchdog test (+13), the `force-maintenance` fixture's test
+> registration (+5), a one-line fixture edit (+1) and that case's body (+8). Five of the new
+> lines are uncovered in this union (the `cfg(not(test))` exit body and the watchdog
+> spawn-failure branch), which is the whole of the increase: **42 + 5 = 47** for that file. The
+> other 42 statements are the same code at new positions — `confirm_quit` +4, the waiter's
+> dialog +43, the fixture's timeout guard and unknown case +69 — so §4.1's rows were
+> **re-derived, not renumbered**: §18 tabulates old → new for every row this segment touched.
+> No other file moved. **The twelve scopes are byte-identical at `16ea6f388` and `HEAD`**
+> (`git diff 16ea6f388..HEAD` over them is empty), so this is a measurement of the tree the
+> reader has, not of a branch that no longer exists (F.101).
 >
-> **Why 236 and not the 237 the probe predicted.** The previous figure was **238 at `32ba1e13e`**.
-> Against it: `182` closed (−1); `agent_host.rs` 265 read `DA:1` again (−1, its sixth reading and
-> not claimed); `server.rs` 533 and 539 traded places once more (533 covered, −1; 539 returned,
-> +1). `238 − 1 − 1 − 1 + 1 = 236`. §2.13 tabulates that per file; each mover is an oscillator
-> §4.1 has named for five measurements, and the ledger claims only the member the cited report
-> shows.
+> **Why 236 at the previous revision.** That figure was **236 at `0b7b2ca17`** (report
+> `union-d26`). Against the 238 before it: `182` closed (−1); `agent_host.rs` 265 read `DA:1`
+> again (−1, its sixth reading and not claimed); `server.rs` 533 and 539 traded places once more
+> (533 covered, −1; 539 returned, +1). `238 − 1 − 1 − 1 + 1 = 236`. §2.13 tabulates that per
+> file; each mover is an oscillator §4.1 has named for five measurements, and the ledger claims
+> only the member the cited report shows.
 
-> **ARTIFACT STATUS (2026-10-18, TAU-D27).** The current pin is
-> `.future/cov100/pinned/union-d26.info` (733 709 B, 173 `SF:` records) and it is re-derivable —
-> **re-checked in this segment, not quoted**: `lcov-union.py` over `.future/cov100/d26/gui.info` +
-> `d26/headless.info` writes a file byte-identical to the pin (`cmp` silent, md5
-> `42329a2b17c6bd438247df0f3d908861` for both) and `leg-flavour-check.py` prints
-> **LEG IDENTITY: ok** over 171/139 (`FLAVOUR_EXIT=0`). The two earlier pins stay
-> for the figures this record still explains: `pinned/tauri-headless-237-union.info` (the 237
-> revision) and `pinned/union-postmerge2-green.info` (the 238 revision). Note for readers of
+> **ARTIFACT STATUS (2026-10-18, TAU-D31).** The current pin is
+> `.future/cov100/pinned/union-refresh4.info` (5 853 166 B, 178 `SF:` records, md5
+> `5fb223725194aed41049418eaa3e1224`). Unlike the two pins this record replaced it is **not** a
+> branch-only artifact: it was rendered on the merged tree and the twelve scopes have not changed
+> between `16ea6f388` and `HEAD`, which is checked mechanically in §18.1 rather than asserted.
+> The earlier pins stay for the figures this record still explains:
+> `pinned/union-d26.info` (the 236 revision, 733 709 B, 173 `SF:` records),
+> `pinned/tauri-headless-237-union.info` (the 237 revision) and
+> `pinned/union-postmerge2-green.info` (the 238 revision). Note for readers of
 > commit `06beded3d`: it recorded "t15 reads 244" because it sampled TAU-D15's **first draft**
 > union while it was being written; that draft was discarded (its harness cost 8 residual lines
 > instead of 3, §12.3) and the 244 describes no file on disk. The `pinned/` directory exists
 > because storing these under `/tmp` was luck, not design — F.100 is why.
 
-Status: **see §2.13** — the current figure is **236 uncovered**, of which **all 236
-are classified and none is OPEN** (§4.1, §4.3). §2 is the earlier history
-(359 → 300 → 283 → 270 → 254 → 240 → 237 → 238 → 233 → 232 → 238 → 236), kept as
-measured history and cited where it explains a row. All figures come from the
+Status: **see §18** — the current figure is **241 uncovered at `16ea6f388`** (the merged tree),
+of which **240 are classified with a mechanism and 1 is OPEN** (§4.1, §4.2). §2 is the earlier history
+(359 → 300 → 283 → 270 → 254 → 240 → 237 → 238 → 233 → 232 → 238 → 236 → 241), kept as
+measured history and cited where it explains a row; the step from 236 is `main`'s new arms
+(§18.1), not a regression. All figures come from the
 **merged gui + headless** lcov run, which is the only honest number for this crate
 (§1).
 This record covers the slice that one unit owns:
@@ -1004,7 +1017,7 @@ The four filtered runs that *did* happen are evidence about specific lines, not
 measurements of the figure, and they are reported as such: §16.1's pty probe and §16.2's
 ten pump runs.
 
-### 2.13 TAU-D27 — the measurement behind the current figure (236)
+### 2.13 TAU-D27 — the measurement behind the previous figure (236)
 
 **What this segment needed from a measurement, and what a probe could not give it.** D20's
 fixture had already been *observed* to move `headless/mod.rs` 182 (`DA:0` → `DA:1` in a 3.35 s
@@ -1024,7 +1037,10 @@ writes a file `cmp`-identical to the pin (md5 `42329a2b17c6bd438247df0f3d908861`
 * **Revision `0b7b2ca17`**, rev-parse'd from the record that published the union. The seven
   commits between it and this HEAD touch `pairings.json` and two other records only, so
   `git diff 0b7b2ca17..HEAD -- desktop/src-tauri/src/{headless,terminal,cli_tool.rs,agent_host.rs,agent_supervisor.rs,skills_bootstrap.rs}`
-  is empty — the figure belongs to this tree.
+  is empty — the figure belongs to this tree. **That was true when this section was written and
+  is no longer true after the merge:** `agent_supervisor.rs` gained `main`'s force-exit arms, and
+  §18 re-derives the figure (241) and the rows against the merged tree. This section is kept as
+  the history of how 236 was established.
 * **LEG IDENTITY: ok** — gui 171 files / headless 139, each leg matching the flavour it claims
   (`leg-flavour-check.py`, exit 0). This matters here: the headless leg is the one that runs
   `tests/headless_cli.rs`, which is where D20's fixture lives.
@@ -1181,15 +1197,15 @@ reused where they apply.
 
 ### 4.1 Waived (checked against the code and against the measurement)
 
-Line numbers below are those of the **`union-d26`** report
-(`.future/cov100/pinned/union-d26.info`, measured at `0b7b2ca17`; §2.13), the report the
-pairing points at. **Every number at or below the `with_path_and_broken_agent` helper is
-+1 against the rows TAU-D18 wrote**, because #1174 inserted one line (`devices: Vec::new(),`)
-at 862 and shifted everything below it; §17.1 walks the four rows where that mattered. §4.4 is
+Line numbers below are those of the **`union-refresh4`** report
+(`.future/cov100/pinned/union-refresh4.info`, measured at `16ea6f388`; §18), the report the
+pairing points at. The rows for `agent_supervisor.rs` were **re-derived** at the merge, not
+renumbered: §18.2 tabulates every old → new position. The +1 shift §17.1 recorded for the
+`with_path_and_broken_agent` helper (#1174's `devices: Vec::new(),` insertion at 862) still
+stands and is unchanged by this merge, because `headless/mod.rs` is identical in both pins.
+§4.4 is
 the explicit crosswalk between the retained after-2 artifact and the D8 union; it exists
 because an audit pointed at the retained after-2 artifact reports 27 lines as "unmentioned"
-and 13 as "stale" — both are revision effects, not gaps in this ledger.
-audit pointed at the retained after-2 artifact reports 27 lines as "unmentioned"
 and 13 as "stale" — both are revision effects, not gaps in this ledger.
 
 **Retracted by TAU-D18 (2026-10-18): `session.rs` 220.** A row in this table is
@@ -1343,9 +1359,14 @@ work: they are measured covered by tests that landed after the D8 report.
 | `skills_bootstrap.rs` 349, 393, 525, 526 | `unreachable-by-construction` | The new fixture's must-not-fire arms (§10): (349) the timeout guard of `run_case` — kill and reap the child that outlived its 120 s deadline; (393) `wait_until`'s trailing `ready()`, the timeout answer whose callers assert on the condition it re-reads; (526) the unknown-case `panic!("unknown case {case}")`; and (525) the fall-through brace before that panic, which the branch above (`return` at 524) never reaches. Each ends the run or is only reached by a failing run — the same class as `session.rs` 611 and `agent_supervisor.rs` 422-424. The passing assertions' arguments were hoisted at 351-354 and 519-523 so they are not residual lines. |
 | `agent_supervisor.rs` 33 | `unreachable-in-this-environment` | `ensure_agent_running`'s real body is inside `#[cfg(not(test))]`: it runs in the **non-test** lib copy, i.e. only in a real application run, and it is reached from the GUI entry point (`commands/login.rs`), not from the headless binary, which never calls it. Fixture that would reach it: a GUI application run; the campaign harness has none. The cfg split is a fact about which binary is executed, not an invariant in the code. |
 | `agent_supervisor.rs` 41, 45 | `unreachable-in-this-environment` | In the **bin** copy `ensure_agent_running` performs the real embedded-Agent start, so a start that returns `Err` (a held instance lock, an unusable runtime dir) makes `!matches!(…)` true and returns `false` at 45. The old mechanism ("in `cfg(test)` the callee is a constant `Ok(())`") describes the test copy, not the line. Fixture: a GUI application run whose embedded-Agent start fails. Evidence: 35-40 are covered in the same run. |
-| `agent_supervisor.rs` 157-160, 162, 164-182 | `unreachable-in-this-environment` | `confirm_quit` builds and shows a dialog: it selects one of two messages, then chains `.dialog().message(…).title(…).kind(…).buttons(…)`, optionally `.parent(&window)`, and calls `.show(…)`. `tauri-plugin-dialog` drives **`rfd`'s native modal dialog**, i.e. a real window on this host that no automated run can dismiss. |
-| `agent_supervisor.rs` 207-209, 211, 216-218 | `unreachable-in-this-environment` | What is left of `request_quit`'s waiter thread: (207-209) the confirmation callback of the "Cleanup failed" native dialog, (211) its closing brace after the `return`, and (216-218) the dialog shown when the waiter thread itself fails to spawn — `rfd` dialogs, not clickable from a test binary without a dialog seam. **Correction, measured in T13:** the row used to say 200-211 could not be *shown* at all; it can. In this run **200-206 and 210 read `DA>0`**: a quit whose stop operation returned `Err` (load-dependent; the same line was `DA:0` in D9 and T12) reached the dialog and called `.show(…)`, which on this host really opens a window. The callback body (207-209) still never runs because nothing clicks it, so the eight lines are **not claimed as closed** and may return to the residual on a quieter run. The rest of the waiter body is covered: the macOS-only mock-loop test `gui::startup_paths_tests::an_exit_requested_from_the_mock_loop_takes_the_guarded_quit_arm` takes the Proceed arm and publishes the stop, and the D8 union measures `DA>0` at 188, 189, 191, 192, 196-199, 212-215, 219 and 220. |
-| `agent_supervisor.rs` 422-424, 426-427, 461, 571-572 | `unreachable-by-construction` | The supervisor fixture's must-not-fire arms (§9): the timeout guard (kill the child, then panic with its output at 424), the accept-error panic, and the unknown-case panic with the fall-through brace before it. Each ends the run, so a passing run cannot evaluate them — the same class as `session.rs` 611 and `manager.rs` 533. The harness's passing assertion was hoisted for this reason (436-437 would otherwise be a residual line too). |
+| `agent_supervisor.rs` 161-164, 166, 168-186 | `unreachable-in-this-environment` | `confirm_quit` builds and shows a dialog: it selects one of two messages, then chains `.dialog().message(…).title(…).kind(…).buttons(…)`, optionally `.parent(&window)`, and calls `.show(…)`. `tauri-plugin-dialog` drives **`rfd`'s native modal dialog**, i.e. a real window on this host that no automated run can dismiss. (TAU-D31 re-derived the position: the row read `157-160, 162, 164-182` on `union-d26`; `on_close_requested`'s new early return added four lines at `134`, so every statement in this function moved **+4** — §18.2. The lines themselves are unchanged: same unreachable call site, same 24 uncovered statements.) |
+| `agent_supervisor.rs` 203, 207, 208 | `unreachable-in-this-environment` | `force_exit_process`, the watchdog's terminal action: its body is `#[cfg(not(test))] std::process::exit(0)`, and **both measured legs are test binaries**. In them the statement at 207 does not exist, so 203 (the `fn` line) and 208 (its brace) carry no executed region; 199 — the watchdog closure calling this function — and 197-200 read `DA>0` in the same run, which is the neighbouring evidence. The only binary that executes 207 is a non-test GUI application whose 25 s force budget actually fires, and the campaign has no such run (the same blind spot `server.rs` 115-117 and `agent_supervisor.rs` 33 name). New in this union: `main` added the function (§18.1). |
+| `agent_supervisor.rs` 214, 215 | `unreachable-in-this-environment` | `arm_force_exit`'s spawn-failure branch: `spawn_force_exit_watchdog(…).is_err()` calls straight into the fallback. The condition needs `std::thread::Builder::spawn` to fail — `pthread_create` returning `EAGAIN` — and no input this crate controls makes that happen on this host; the same obstacle, and the same refusal, as `agent_host.rs` 124-126 in this ledger. Evidence: the rest of the function is covered in this run (210-213 and 216-217 read `DA>0`: the `force-maintenance` and `quit-repeat` cases call `request_quit(…, true)`, which arms the watchdog and spawns it successfully). New in this union (§18.1). |
+| `agent_supervisor.rs` 250-252 | `unreachable-in-this-environment` | The confirmation callback of the "Cleanup failed" native dialog. **Measured again in this union:** 242-249 and 253 read `DA>0` — a quit whose stop operation returned `Err` reached the dialog and called `.show(…)`, which on this host really opens a window (load-dependent; the same arm was `DA:0` in some earlier runs) — while the callback body (250-252) still never runs: `rfd` delivers `confirmed` only from a click on a native modal window, and this GUI session cannot show-and-dismiss one (F.90). The rest of the waiter is covered here too (227-231, 233, 235-237 and 239-249; 232/234/238 have no `DA:` record — `} else {`, `};` and a blank). (Positions: this row read `207-209` on `union-d26`; the merge's force-exit block is +43 over the waiter, §18.2.) |
+| `agent_supervisor.rs` 254 | **OPEN** (not waived) | The closing brace of `if !FORCE_QUIT_REQUESTED { … }` in the waiter: it is reached only when the cleanup **failed on a force quit**, because that is the one path that skips the dialog and falls out of the block instead of `return`ing (253). This is a production path, not an environment limit — and unlike the row above, **it needs no dialog host at all**, so the "native window" mechanism that covers 250-252 does not apply to it. No fixture reaches it in this union: the `force-maintenance` case takes the barrier and returns before the waiter exists, and the union's failing stop (242-249) came from an ordinary quit. The missing seam is a `block_fixtures` case that sets `desktop_shutdown::fail_for_test(…)` and calls `request_quit(app, true)`, then waits for the waiter thread: `fail_for_test` is process-global (`STOP_FAILURE` in `desktop_shutdown.rs`), so the case must be a subprocess like every other `block_fixtures` arm. It is cheap and it is **not written in this segment**, which registers rather than measures — the close needs its own run. |
+| `agent_supervisor.rs` 259-261 | `unreachable-in-this-environment` | The dialog shown when the waiter thread itself fails to spawn. Same obstacle as the row above — an `rfd` native dialog — and the spawn has to fail first, which no input makes happen (the same `pthread_create` obstacle as the `arm_force_exit` row). Evidence: 255-258 (the `QUIT_CONFIRMED`/`exit` tail of the covered thread body) and 262-263 (the closing brace) read `DA>0`. (Read `216-218` on `union-d26`; +43, §18.2.) |
+| `agent_supervisor.rs` 483-485, 487-488, 640-641 | `unreachable-by-construction` | The supervisor fixture's must-not-fire arms (§9): (483-485, 487-488) the timeout guard — kill the child, reap it, then panic with its output; and (640-641) the unknown-case panic with the fall-through brace before it, which the `quit-repeat` branch above never reaches because it returns (639). Each ends the run, so a passing run cannot evaluate it — the same class as `session.rs` 611 and `manager.rs` 533. The harness's passing assertion was hoisted for this reason (494-496 would otherwise be a residual line too). (Read `422-424, 426-427, 571-572` on `union-d26`; +61/+69, §18.2. 486 is a covered format-string line and 489 the call's `);`.) |
+| `agent_supervisor.rs` 522 | `unreachable-in-this-environment` | The `starting` case's accept-error panic. The listener is a fresh `127.0.0.1:0` socket this process just bound, set to non-blocking, and nothing closes it, so the loop has exactly two outcomes: `Ok(peer)` once the host connects, or `WouldBlock` and a 10 ms sleep. The `Err` arm needs `accept` itself to fail — `EMFILE`/`ENFILE` from the harness's own fd budget, or `ECONNABORTED` if the peer resets between the host's `connect` and this `accept` — i.e. a resource state or a race, neither of which is an input the fixture can set; and it is a run-ending panic, so a passing run cannot evaluate it. (Read `461` on `union-d26`; +61, §18.2.) |
 | `agent_host.rs` 124-126 | `unreachable-in-this-environment` | The `Err` arm of the worker-thread spawn in `start`: `std::thread::Builder::spawn` must fail (EAGAIN). No input the fixture controls makes `pthread_create` fail on this host; the builder (98-104) and the closure (105-123) are covered in the same run, so this arm is the only part of the statement nobody can execute. A thread-exhaustion fixture would be a different claim (it would also starve the harness), and this record does not make it. |
 | `agent_host.rs` 216, 223, 250 | `unreachable-in-this-environment` | Three `phase != Starting` re-reads inside `run`: after the probe resolves (216), on entering the service scope (223), and after `initialize` returns (250). Each is a microsecond window between an awaited step and a lock; a stop that lands *during* the probe takes the biased `probe_cancel` arm (193, covered), and the deterministic cancellations the fixture builds (§9) block strictly before these windows. Reaching one needs a stop inside a lock acquisition or inside the `cancellation.check`-free tail of `initialize` — an ordering, not a state, and this record does not claim a race. Evidence: 214-215, 219-226 and 246-249 are covered in the same run. |
 | `agent_host.rs` 266 | `unreachable-in-this-environment` | The drain arm's clean continuation: the `break` after `server.as_mut().await?` returned `Ok`. **265 is not claimed here** — it is the most active oscillator in this record and its readings are: `DA:1` in D9, `DA:0` in D12-D14, `DA:1` in T15, `DA:0` in T17, `DA:1` in T18, `DA:0` in the 238 revision and **`DA:1` again in `union-d26`** (sixth reading). 263's `ensure!` is evaluated and its message at 264 runs (one hit each, i.e. the report was **not** `Stopped`), then the arm awaits the server future; **266** additionally needs a `Stopped` drain report while that future is still pending *and* a server that then completes cleanly — no run has ever taken it. |
@@ -1381,10 +1402,20 @@ some other test's interleaving, not to that fixture. **The T18 union was the onl
 
 ### 4.2 OPEN — reachable, not waived, next segment's work
 
-**No row is left. The scope is closed at 口径 A for the report it cites: 236 uncovered lines,
-every one named in §4.1, none OPEN.**
+**One row, and it is new in this segment: `agent_supervisor.rs` 254.** Everything else in the
+241 is registered in §4.1 with a mechanism. The line is the closing brace of `request_quit`'s
+`if !FORCE_QUIT_REQUESTED { … }` block, reached only when the cleanup **failed on a force quit**
+— the one path that skips the dialog and falls out of the block instead of `return`ing. It is a
+production path and it needs **no** dialog host, so the `rfd` mechanism that covers its
+neighbours (250-252) does not cover it; that is why this segment moved it out of §4.1 instead of
+renumbering it as one of them. Missing seam: a `block_fixtures` case that calls
+`desktop_shutdown::fail_for_test(…)`, `request_quit(app, true)`, and waits for the waiter
+thread — a subprocess, because `STOP_FAILURE` is process-global. It is cheap and it is **not
+written here**: this segment registers, and the close would need its own measurement (§18.5).
+Also worth knowing: `main`'s five new lines (§18.1) are `cfg(not(test))` and spawn-failure arms,
+so the merge added *this* OPEN row's neighbourhood without adding a second OPEN row.
 
-The last row was `headless/mod.rs` **182**, the "platform login changed or was removed" exit, and
+The previous occupant of this section was `headless/mod.rs` **182**, the "platform login changed or was removed" exit, and
 it was blocked by this unit's write set rather than by the code. D20 widened the write set to
 `desktop/src-tauri/tests/headless_cli.rs`, wrote
 `a_login_change_while_supervising_stops_the_run_with_that_reason` (commit `8efb4fa0c`), and the
@@ -1444,11 +1475,11 @@ executes them, this host cannot by construction.
 
 ### 4.3 Reconciliation
 
-Per file: the measured residual (`union-d26`, §2.13), the OPEN count (the rows of §4.2),
+Per file: the measured residual (`union-refresh4`, §18), the OPEN count (the rows of §4.2),
 and therefore the withdrawn-as-waived count (§4.1). The table is exact by
 construction — every line is classified in §4.1 and §4.2 has no row — and a reviewer can
 regenerate the line list with
-`covlines.py detail .future/cov100/pinned/union-d26.info --under <file>`.
+`covlines.py detail .future/cov100/pinned/union-refresh4.info --under <file>`.
 
 | file | residual | §4.2 OPEN | §4.1 waived |
 |---|---|---|---|
@@ -1462,14 +1493,22 @@ regenerate the line list with
 | `headless/agent.rs` | 3 | 0 | 3 |
 | `cli_tool.rs` | 11 | 0 | 11 |
 | `agent_host.rs` | 19 | 0 | 19 |
-| `agent_supervisor.rs` | 42 | 0 | 42 |
+| `agent_supervisor.rs` | 47 | 1 | 46 |
 | `skills_bootstrap.rs` | 11 | 0 | 11 |
-| **total** | **236** | **0** | **236** |
+| **total** | **241** | **1** | **240** |
 
-(Counted from the **`union-d26`** report, §2.13. The arithmetic is exact: the twelve
-per-file counts sum to 236, `reconcile.py` reads `MISSING 0 / COVERED 0 / ABSENT 0` over the
-same report, and §4.2 has no row left. `terminal/protocol.rs` and `terminal/test_support.rs`
+(Counted from the **`union-refresh4`** report, §18. The arithmetic is exact: the twelve
+per-file counts sum to 241, `reconcile.py` reads `MISSING 0 / COVERED 0 / ABSENT 0` over the
+same report, and the single §4.2 row is `agent_supervisor.rs` 254.
+`terminal/protocol.rs` and `terminal/test_support.rs`
 carry no uncovered line and are not rows.)
+
+**TAU-D31: 236 → 241, and one file moved.** `agent_supervisor.rs` 42 → 47 is `main`'s force-exit
+work, itemised in §18.1: `force_exit_process`'s `cfg(not(test))` body (203, 207, 208) and
+`arm_force_exit`'s spawn-failure branch (214, 215). The other eleven files are unchanged to the
+line, and every `agent_supervisor.rs` row was re-derived to its post-merge position (§18.2)
+rather than renumbered in place. 236 + 5 = 241 = **240 waived + 1 OPEN**, and the OPEN line is
+the refiling of old 211 (§18.5), not one of the merge's five.
 
 **TAU-D27: 238 → 236, and the last OPEN line closed.** `headless/mod.rs` 182 is covered by
 D20's fixture, which is the whole of the OPEN column going to zero; the other two movers are
@@ -1529,33 +1568,36 @@ since oscillated back out). **270 → 254** is TAU-D12's block: 36 production li
 covered by §9's fourteen cases, 19 fixture lines added, and 539 flipping into the
 residual.
 
-So across the twelve measurements: **552 → 359 → 300 → 283 → 270 → 254 → 240 →
-237 → 238 → 233 → 232 → 238 → 236**, i.e. **316 lines covered** for this scope, **236 waived
-with a mechanism** and **0 OPEN**. (The 238 in that sequence is the post-merge re-measurement,
-which went *up* because F.102 removed a fixture; the second 236 is the current figure.) The
+So across the fourteen measurements: **552 → 359 → 300 → 283 → 270 → 254 → 240 →
+237 → 238 → 233 → 232 → 238 → 236 → 241**, i.e. **311 lines covered** for this scope, **241
+waived with a mechanism** and **0 OPEN**. (The 238 in that sequence is the post-merge
+re-measurement, which went *up* because F.102 removed a fixture; the 236 is `union-d26`, whose
+last OPEN line closed; the 241 is the merged tree, where `main`'s force-exit arms added five
+lines — §18.1 says which five, so the increase is attributable rather than rounded.) The
 residual stays **± 2** in the sense §2.0 gives it: the `server.rs`
 533/539 pair and the `agent_host.rs` drain arm move with scheduling, and the
 ledger claims only the member that is uncovered in the report it cites.
-The `agent_supervisor` 200-210 arm is a new member of that class and is *not* part of
-the ± 2: it is eight lines, it is measured in this report, and §4.1 says why it
-may come back.
+`agent_supervisor`'s force-exit arms are a new member of that class and are *not* part of
+the ± 2: they are five lines, they are measured in this report, and §4.1 says which obstacle
+holds each one.
 
-Remaining work. **There is none in this scope's ledger.** The one item that stood here for
+Remaining work. **One line: `agent_supervisor.rs` 254**, and §4.2 names the subprocess case that
+would close it. The item that stood here for
 four turns — `headless/mod.rs` 182 — closed when the write set was widened to
 `desktop/src-tauri/tests/headless_cli.rs` and D20 wrote the case (§4.2). What is left is not a
 task list but the two classes §4.1 names as *decisions*: the `#[cfg(not(test))]` halves (a
 real application run; `docs/testing/module-tauri.md` §5.3) and the oscillators (± 2, claimed
-per report). If a future merge moves a line, the move is a re-derivation of this table against
-a new measurement — not a new waiver.
+per report), plus the one OPEN line above. If a future merge moves a line, the move is a
+re-derivation of this table against a new measurement — not a new waiver.
 
-**What the total does and does not claim.** 236 is the measured residual at `0b7b2ca17`, not
-zero, and this record does not call the module "done": every one of the 236 lines is
-classified in §4.1 with a mechanism and **none is OPEN**. The headline alone is not the 口径 A
-claim; the claim is that a reviewer can attack the 236 one row at a time — and §15.2 is the
-price of that claim being worth something: one row's mechanism was wrong, and it was the review
-of a weak row (not the count) that found it. §17.1 adds the second lesson from this segment: a
+**What the total does and does not claim.** 241 is the measured residual at `16ea6f388` (the
+merged tree), not zero, and this record does not call the module "done": 240 of the 241
+lines are classified in §4.1 with a mechanism and **one is OPEN** (§4.2). The headline alone is not
+the 口径 A claim; the claim is that a reviewer can attack the 241 one row at a time — and
+§15.2 is the price of that claim being worth something: one row's mechanism was wrong, and it
+was the review of a weak row (not the count) that found it. §17.1 adds the second lesson: a
 line number can move under a correct mechanism, and only reading the code at both revisions
-tells the two apart.
+tells the two apart — §18.2 is the same check applied to a merge.
 
 ### 4.4 Revision crosswalk: the retained after-2 artifact (359)
 
@@ -2975,3 +3017,144 @@ is **not** this pairing: it counts reference roles (`channels-wide` [wide], `tau
 [superseded-ledger], `cli-wide` [wide]), and F.104 is why the exit code and the authoritative
 `failing 0` disagree with that headline — those three are other units' pairings and none of them
 is in this scope.
+
+## 18. TAU-D31 (2026-10-18) — the merged tree: 236 → 241, and the rows re-derived rather than renumbered
+
+Ticket `todo_6aa85f2841be`. This segment did **not** re-measure (the union below is the campaign's
+retained post-merge artifact, the same one the `tauri-appdata`, `tauri-remote` and
+`tauri-shell-seg2` records publish from); it read the merged code, re-derived every
+`agent_supervisor.rs` row to its post-merge position, and registered the lines the merge added.
+
+### 18.1 The measurement identity, and the whole of the +5
+
+Report `.future/cov100/pinned/union-refresh4.info` — 5 853 166 B, 178 `SF:` records, md5
+`5fb223725194aed41049418eaa3e1224`, measured at `16ea6f388` with both legs `rc=0` (gui and
+headless, whole crate, `cargo llvm-cov clean` between legs, unioned by `lcov-union.py`).
+
+**The report describes this tree.** Checked, not asserted:
+
+```
+$ git diff --stat 16ea6f388..HEAD -- desktop/src-tauri/src/terminal desktop/src-tauri/src/headless \
+    desktop/src-tauri/src/cli_tool.rs desktop/src-tauri/src/agent_host.rs \
+    desktop/src-tauri/src/agent_supervisor.rs desktop/src-tauri/src/skills_bootstrap.rs
+                          # empty: the twelve scopes are byte-identical at 16ea6f388 and HEAD
+```
+
+Per file, `union-d26` (236, §2.13) against `union-refresh4` (241):
+
+| file | 236 (`0b7b2ca17`) | 241 (`16ea6f388`) | attribution of the move |
+|---|---|---|---|
+| `agent_supervisor.rs` | 42 | **47** | `main`'s force-exit arms: 203, 207, 208 (`force_exit_process`'s `cfg(not(test))` body) and 214, 215 (`arm_force_exit`'s spawn-failure branch) |
+| the other eleven files | 194 | 194 | no change; `git diff 0b7b2ca17..16ea6f388` over them touches only `agent_supervisor.rs` |
+| **total** | **236** | **241** | **+5, all in one file, all new statements** |
+
+The merge's diff on that file is +73/−4 (`git diff 0b7b2ca17..HEAD`), in seven hunks:
+`on_close_requested`'s `QUIT_CONFIRMED` early return (+4 at 134); the force-exit watchdog block
+(`FORCE_QUIT_REQUESTED`, `spawn_force_exit_watchdog`, `force_exit_process`, `arm_force_exit`) plus
+the head of `request_quit`'s `force` arm (+40); the `let operation = if force` branch and the
+changed guard (+2); `main`'s watchdog test (+13); the `force-maintenance` fixture registration
+(+5); a one-line fixture edit (+1); and that case's body (+8). The five new uncovered lines are
+inside the second group; the rest of the new code is covered by `main`'s own tests
+(`forced_exit_deadline_does_not_depend_on_agent_cleanup_or_the_ui_loop`,
+`a_forced_quit_can_join_cleanup_during_maintenance`).
+
+### 18.2 Old → new, per row, with the statements checked at both revisions
+
+The statements did not change; their positions did. This is the table §4.1's rows were derived
+from (`git show 0b7b2ca17:…/agent_supervisor.rs` against the working tree):
+
+| row (old, `union-d26`) | row (new, `union-refresh4`) | shift | why |
+|---|---|---|---|
+| 33 | 33 | 0 | before the first insertion |
+| 41, 45 | 41, 45 | 0 | same |
+| 157-160, 162, 164-182 | 161-164, 166, 168-186 | **+4** | `on_close_requested`'s early return inserted 4 lines at 134; `confirm_quit` (old 157) is now 161. 165 and 167 have no `DA` record at either revision (the `} else {` and `};` sub-lines) |
+| — | 203, 207, 208 | new | `force_exit_process` (§4.1) |
+| — | 214, 215 | new | `arm_force_exit`'s `is_err()` branch (§4.1) |
+| 207-209, 211 | 250-252, 254 | **+43** | the same callback body and the brace after the `return`; the new force-exit block is 43 lines above them. 253 (`return;`) is covered |
+| 216-218 | 259-261 | **+43** | the spawn-failure dialog |
+| 422-424, 426-427 | 483-485, 487-488 | **+61** | the fixture's timeout guard; 486 (the format string) is covered and 489 is the call's `);`. The macOS mock-loop and force-exit tests added 61 lines above the fixture |
+| 461 | 522 | **+61** | the `starting` case's accept-error panic |
+| 571-572 | 640-641 | **+69** | the `quit-repeat` fall-through brace and the unknown-case panic (the `force-maintenance` case added 8 more lines between 569 and 571) |
+
+Every row above was checked against the code at **both** revisions: same brace, same `panic!`, same
+`show(…)`. Nothing was renumbered by arithmetic alone — the four shift amounts differ (+4/+43/+61/+69)
+and were read off the diff hunks, which is the failure mode §17.1 warns about in the other direction.
+
+### 18.3 What the unregistered set actually was
+
+`reconcile.py` reported **MISSING 11** for this pairing, and that number is honest but incomplete.
+The row-claim comparison (parsed claims against `DA:0` records, both directions) says what happened:
+
+```
+claims 236   resolved 236   uncovered 241
+uncovered not claimed: 24
+claimed not uncovered: 19   (11 covered, 8 absent)
+```
+
+The 24 unclaimed lines are the merge's shift plus its new arms. Only 11 of them were *MISSING*,
+because `reconcile.py` matches **cited numbers**, not rows, and 13 of the 24 were cited by number
+in neighbouring notes (for example `203` in prose about `arm_force_exit`, `214, 215` in the old
+row's "212-215 are covered" evidence). That is this campaign's known false-clean shape and the
+reason §17.2's own claim comparison exists. This segment closed it by giving every one of the 47
+`agent_supervisor.rs` lines a row: after the edits the same comparison reads
+
+```
+claims 241   resolved 241   uncovered 241
+uncovered not claimed: []   claimed but not uncovered: []
+```
+
+### 18.4 The two sentences
+
+```
+$ python3 .future/cov100/reconcile.py --report .future/cov100/pinned/union-refresh4.info \
+    --doc docs/testing/module-tauri-headless.md --label tauri-headless \
+    --section "4. Residual uncovered lines" --scope <each of the twelve>
+[tauri-headless] files with uncovered lines=12 uncovered lines=241
+  mentioned in module-tauri-headless.md: 241
+  MISSING (uncovered, not mentioned): 0
+                                # no STALE block: COVERED 0, ABSENT 0
+$ echo $?
+0
+```
+
+`COVERED 0` is asserted the way the tool states it — no `STALE` block at all — and checked
+independently by the claim comparison in §18.3 (`split_stale()` over the section returns
+`COVERED 0 / ABSENT 0`). The five new rows are the only claims this segment added; the rest moved.
+
+### 18.5 The one line this segment un-waived: `agent_supervisor.rs` 254
+
+The merge's renumbering made a filing question visible that the old numbering hid. Old **211**
+was the closing brace of `if !force { … }` in the waiter, and the row that claimed it described
+the surrounding native dialog. At this revision the same brace is **254**, and it is not covered
+by that mechanism: the force path **skips** the dialog. Trace:
+
+```
+244   if !FORCE_QUIT_REQUESTED.load(..) {      // force quit -> false -> block skipped
+245-249   dialog … .show(…)                     // never reached on a force quit
+253       return;                               // returns only inside that block
+254   }                                         // reached when the block is skipped
+255   }
+256   QUIT_CONFIRMED.store(true, ..);
+257   app.exit(0);
+```
+
+So 254 executes on a **force quit whose cleanup failed** — reachable in production, executable
+with no dialog host, and absent from this union because the `force-maintenance` case returns at
+the barrier (230-238) before the waiter exists, and the union's failing stop (242-249) came from
+an *ordinary* quit. That is a missing fixture, not an environment limit, so the row moved from
+§4.1 to §4.2 (OPEN) with the seam named there: `fail_for_test` + `request_quit(app, true)` in a
+`block_fixtures` subprocess.
+
+This is the only row this segment *moved between classes*, and it moved in the direction the
+ticket cares about: out of a waiver and into work. It also answers the "if you deleted the code,
+would the line move?" test in the useful direction — deleting the `if !FORCE_QUIT_REQUESTED`
+guard would delete 254, and deleting only the dialog would not cover it.
+
+**What this segment does not claim.** It did not re-measure (the ticket says not to), it did not
+close a line, and it did not retract a mechanism: the 24 `agent_supervisor.rs` statements that were
+already unreachable are still unreachable, and the five new ones are `cfg(not(test))` and
+spawn-failure arms — the two classes this record has refused to fabricate fixtures for since D19
+(§16.3). If a future review finds one of those five mechanisms weak, the cheapest attack is the
+`arm_force_exit` pair: a `cfg(test)` seam that forces `spawn_force_exit_watchdog` to return `Err`
+would close 214-215 without touching the product path, and §4.1's `agent_host.rs` 124-126 row is
+the precedent for why this record has not done it.
