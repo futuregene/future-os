@@ -80,19 +80,6 @@ pub(crate) fn pairing_creds(pair_id: &str) -> crate::remote::protocol::PairingCr
 ///
 /// The declaration is per connection now that a machine serves several clients,
 /// so a fixture that wants a lean host must say so on *that* host's pairing.
-/// Stop the bridge of one pairing, and only that one.
-///
-/// `remote::stop()` is the *machine's* stop: it tears down every device at once,
-/// which is right for the desktop's own "disconnect" and wrong for a test that
-/// shares the process-global supervisor with fixtures running in parallel — one
-/// fixture's teardown would kill its neighbours' bridges mid-handshake. This is
-/// the per-device version the fixtures use.
-pub(crate) async fn stop_bridge(pair_id: &str) {
-    crate::remote::SUPERVISOR.release_control(pair_id);
-    crate::remote::SUPERVISOR.forget_device(pair_id);
-    super::supervisor::stop_slot(pair_id);
-}
-
 pub(crate) fn set_pair_lean(pair_id: &str, enabled: bool) {
     crate::remote::SUPERVISOR
         .lean_events(pair_id)

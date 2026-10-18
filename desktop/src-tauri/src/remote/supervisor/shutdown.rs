@@ -123,6 +123,11 @@ pub(in crate::remote) fn stop_with<T>(cleanup: impl FnOnce() -> T) -> T {
         stop_runtime();
         disable_handshake();
         SUPERVISOR.bridge_shared.lock().unwrap().clear();
+        // A stopped machine serves no device, so it holds no device set and no
+        // controller. The book on disk is untouched and is read again on the
+        // next start; keeping the in-memory answers here would describe a
+        // machine that is not running.
+        SUPERVISOR.reset_devices();
         cleanup()
     })
 }

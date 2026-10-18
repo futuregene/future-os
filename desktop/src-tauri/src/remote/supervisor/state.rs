@@ -224,6 +224,12 @@ impl Supervisor {
             || self.known.lock().unwrap().contains(pair_id)
     }
 
+    /// Forget every device and the controller — a machine-wide stop.
+    pub(in crate::remote) fn reset_devices(&self) {
+        self.known.lock().unwrap().clear();
+        *self.active.lock().unwrap() = None;
+    }
+
     pub(in crate::remote) fn remember_device(&self, pair_id: &str) {
         self.known.lock().unwrap().insert(pair_id.to_string());
     }

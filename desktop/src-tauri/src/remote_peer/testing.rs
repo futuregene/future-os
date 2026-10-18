@@ -10,7 +10,7 @@ use super::{creds, link, platform};
 use crate::remote::test_support::{
     init_store, jwt, now_secs, sign_in, FakeNats, HomeGuard, MockPlatform,
 };
-use crate::remote::{start, RemoteStartInput};
+use crate::remote::{start, stop, RemoteStartInput};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::json;
 
@@ -210,11 +210,14 @@ pub(crate) async fn fixture(label: &str) -> (HomeGuard, Fixture) {
 /// schedule runs at 1 ms — so leaving one behind turns it into a CPU burner for
 /// every later test in the binary (`runtime::abort_supervisors_for_test`).
 pub(crate) async fn teardown(pair_id: &str) {
-    // Only *this* fixture's bridge. `stop()` would tear down every device the
-    // process-global supervisor holds, and the neighbours in this binary are
-    // separate fixtures running in parallel — killing theirs mid-handshake is a
-    // timeout in a test that never touched this code path.
-    crate::remote::test_support::stop_bridge(pair_id).await;
+    // The whole machine, not one device: these fixtures hold `HomeGuard` and are
+    // therefore serialized, so there is never a second test's bridge to spare —
+    // and the test web listener is one process-wide port that the next fixture
+    // must be able to bind. The pair id is taken so a reader can see which
+    // fixture is being torn down, and so this signature stays honest if the
+    // teardown ever has to become per device.
+    let _ = pair_id;
+    stop();
     crate::remote_peer::runtime::abort_supervisors_for_test().await;
     wait_for_web_port_free().await;
 }
