@@ -126,23 +126,10 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
     }
 }
 
-/// A session the Agent answers with `session not found` is a *missing identity*,
-/// not a transient failure: the thread is bound to a session id the Agent holds
-/// no transcript for — one created but never prompted (the Agent keeps such a
-/// row at `revision = -1` and refuses to list it), or one dropped by a restart.
-/// The desktop UI already answers such a thread with empty history and lets the
-/// prompt path recreate the session on the next send; the remote bridge must
-/// answer the phone identically. Forwarding the rejection instead pins the
-/// mobile timeline in its "loading messages" state forever, because a failed
-/// history page reads as "not loaded yet" and only schedules another retry.
+/// An unknown session has no settings snapshot. This fallback is only for
+/// state reads; missing historical content must remain an explicit error.
 pub(super) fn missing_session(error: &crate::AppError) -> bool {
     error.to_string().contains("session not found")
-}
-
-/// The empty display-history page for a session the Agent no longer has, so
-/// paging terminates instead of retrying a dead identity.
-pub(super) fn empty_entries_page() -> Value {
-    json!({"entries": [], "hasMore": false, "nextOffset": 0})
 }
 
 pub(super) async fn reply(sink: &dyn ReplySink, success: bool, data: Value, error: Option<&str>) {

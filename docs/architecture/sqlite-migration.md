@@ -274,3 +274,8 @@ remains in place.
 Regression cases cover omitted attachments, damaged staged replacements, repeated
 rollback interruption, contradictory migration ledgers, foreign-database background
 repair and mutation. Tests are compiled by static checks but are not run locally.
+
+Remote forward/backward history reads also report unavailable transcripts explicitly
+instead of returning successful empty pages, and verify any known database ownership
+before fetching bodies. The empty-state fallback for an unknown session's settings
+is separate and never applies to historical content.

@@ -138,7 +138,24 @@ mod tests {
                 .is_err()
         );
         assert!(!crate::agent_bridge::wait_for_agent_idle("session").await);
-        for command in ["compact", "set_session_name", "get_state"] {
+        assert!(crate::agent_bridge::get_session_entries("session".into())
+            .await
+            .is_err());
+        assert!(
+            crate::agent_bridge::get_session_entries_before("session".into(), i64::MAX, 10)
+                .await
+                .is_err()
+        );
+        assert!(crate::agent_bridge::get_session_messages("session".into())
+            .await
+            .is_err());
+        for command in [
+            "compact",
+            "set_session_name",
+            "get_state",
+            "get_session_entries",
+            "get_messages",
+        ] {
             assert!(mock.requests_of(command).is_empty());
         }
         assert_eq!(

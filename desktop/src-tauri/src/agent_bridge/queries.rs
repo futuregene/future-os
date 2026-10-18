@@ -212,6 +212,7 @@ pub async fn get_session_messages(
     session_id: String,
 ) -> Result<serde_json::Value, crate::AppError> {
     let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, &session_id).await?;
     let response = client
         .execute_command(base_command("get_messages", session_id))
         .await
@@ -231,6 +232,7 @@ pub async fn get_session_messages(
 /// with cached thumbnails), which is how the GUI rebuilds attachment chips.
 pub async fn get_session_entries(session_id: String) -> Result<serde_json::Value, crate::AppError> {
     let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, &session_id).await?;
     get_session_entries_with_client(&mut client, session_id).await
 }
 
@@ -302,7 +304,8 @@ pub async fn get_session_entries_before(
     before: i64,
     user_exchange_limit: i64,
 ) -> Result<serde_json::Value, crate::AppError> {
-    let client = connect_agent().await?;
+    let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, &session_id).await?;
     get_session_entries_before_with_client(&client, session_id, before, user_exchange_limit).await
 }
 

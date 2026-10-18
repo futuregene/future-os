@@ -3,8 +3,8 @@ use crate::remote::services::ReplySink;
 use serde_json::{json, Value};
 
 use super::{
-    empty_entries_page, entries_vec, missing_session, paginate_events, paginate_items_with_cap,
-    paginate_messages, prepare_backward_entries_page_with_cap, reply, DEFAULT_MESSAGE_PAGE_LIMIT,
+    entries_vec, paginate_events, paginate_items_with_cap, paginate_messages,
+    prepare_backward_entries_page_with_cap, reply, DEFAULT_MESSAGE_PAGE_LIMIT,
 };
 
 /// The cursor meaning "the page at the end of the session". Clients open a
@@ -121,9 +121,6 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         }
                         reply(sink, true, page, None).await;
                     }
-                    Err(e) if missing_session(&e) => {
-                        reply(sink, true, empty_entries_page(), None).await
-                    }
                     Err(e) => reply(sink, false, Value::Null, Some(&e.to_string())).await,
                 }
                 return;
@@ -149,9 +146,6 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         None,
                     )
                     .await;
-                }
-                Err(e) if missing_session(&e) => {
-                    reply(sink, true, empty_entries_page(), None).await;
                 }
                 Err(e) => reply(sink, false, Value::Null, Some(&e.to_string())).await,
             }
