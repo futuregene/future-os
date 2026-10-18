@@ -394,7 +394,13 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   };
 
   const confirmUnpair = () => {
-    Alert.alert(t("sessions.unpair"), t("sessions.unpairConfirm"), [
+    // Name the machine the pairing being removed belongs to: the active pair,
+    // which is what `remote.unpair()` drops. `unpairConfirm` carries a
+    // `{{name}}` placeholder, and omitting the option leaves the raw
+    // placeholder in the sentence.
+    Alert.alert(t("sessions.unpair"), t("sessions.unpairConfirm", {
+      name: desktopLabel(activeDesktopId ?? ""),
+    }), [
       { text: t("chat.cancel"), style: "cancel" },
       {
         text: t("sessions.unpair"),
