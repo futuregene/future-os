@@ -17,6 +17,22 @@ pub(super) type ReadinessPause = (
 #[cfg(test)]
 pub(super) static READINESS_PAUSE: Mutex<Option<ReadinessPause>> = Mutex::new(None);
 
+/// One-shot injected build failure (tests only).
+///
+/// The connect/rebuild error arms are the bridge's "the transport could not be
+/// built after the credential refreshed" path. Reaching them for real needs a
+/// peer that completes the NATS `CONNECT` and then refuses the secure
+/// handshake — a broker behaviour the in-process `FakeNats` does not model, and
+/// one no fixture in this crate scripts. This counter is that failure, injected
+/// at the same statement its real trigger would leave the function through, so
+/// the arm's own bookkeeping (episode, flag reset, retry delay) runs unchanged.
+///
+/// Same shape and same justification as `pairing::INJECT_SAVE_FAILURE`: a
+/// `#[cfg(test)]` one-shot, consumed by `swap(0)`, with no production copy.
+#[cfg(test)]
+pub(super) static INJECT_BUILD_FAILURE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// All connection paths use the same subscription readiness and task ownership.
 pub(super) async fn build_transport(
     client: &async_nats::Client,
@@ -24,6 +40,12 @@ pub(super) async fn build_transport(
     handshake: &commands::HandshakeState,
     reply_slots: commands::ReplySlots,
 ) -> Result<TransportTasks, crate::AppError> {
+    #[cfg(test)]
+    if INJECT_BUILD_FAILURE.swap(0, Ordering::SeqCst) > 0 {
+        return Err(crate::AppError::RemoteTransport(
+            "injected: the secure handshake was refused".to_string(),
+        ));
+    }
     let mut candidate_tasks = lifecycle::CandidateTasks::default();
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(EVENT_QUEUE_CAPACITY);
     let coalesce = SUPERVISOR.coalesce_events(pair_id);

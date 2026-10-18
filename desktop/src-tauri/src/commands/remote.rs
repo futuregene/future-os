@@ -198,6 +198,46 @@ mod tests {
         assert!(!matches!(status.phase, remote::RemotePhase::Ready));
     }
 
+    /// Unpairing a device this machine does not have is not a fault: the wrapper
+    /// answers with the stopped projection and leaves the book empty. Covers the
+    /// `remote_unpair_device` command body, whose only production caller is the
+    /// Remote page's per-row button.
+    #[tokio::test]
+    async fn remote_unpair_device_is_a_noop_for_a_device_it_does_not_have() {
+        let _home = HomeGuard::new("remote_unpair_device");
+        let status = remote_unpair_device("pair_absent".into())
+            .await
+            .expect("a device this machine never paired is not a fault");
+        assert!(!matches!(status.phase, remote::RemotePhase::Ready));
+        assert!(
+            crate::remote::pairing::active_slot().is_none(),
+            "nothing was in control before the call, so nothing may be named after it"
+        );
+        assert!(
+            crate::remote::pairing::load_slots().is_empty(),
+            "a call for an absent device must not mint one"
+        );
+    }
+
+    /// Adding a device needs the account: the platform issues the code, so a
+    /// signed-out desktop stops at the credential check and never reaches the
+    /// network. Covers the `remote_add_device` command body.
+    #[tokio::test]
+    async fn remote_add_device_stops_at_the_account_check() {
+        let _home = HomeGuard::new("remote_add_device");
+        let error = remote_add_device()
+            .await
+            .expect_err("a signed-out desktop cannot mint an invitation");
+        assert!(
+            matches!(error, crate::AppError::NotSignedIn),
+            "the missing account must surface as NotSignedIn, got {error:?}"
+        );
+        assert!(
+            crate::remote::pairing::load_slots().is_empty(),
+            "a refused invitation must not leave a device behind"
+        );
+    }
+
     #[tokio::test]
     async fn remote_start_surfaces_a_degraded_status() {
         let _home = HomeGuard::new("remote_start_deg");

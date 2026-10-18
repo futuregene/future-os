@@ -1048,6 +1048,50 @@ mod tests {
         session.close(Duration::from_millis(200));
     }
 
+    /// The reader's `None` arm: the last handle dropped while output is still in
+    /// flight.
+    ///
+    /// The reader holds its **own** clone of the master (`PtySession::reader` →
+    /// `try_clone_reader`), so dropping the `Session` kills the child and closes the
+    /// session's copy of the master, while bytes already in the pty stay readable.
+    /// The reader's next successful `read` therefore upgrades a `Weak` that now has
+    /// nothing to upgrade — and returns instead of calling `on_data` on a gone
+    /// session. §4.1 filed this as unreachable ("a race window") until this test
+    /// measured it.
+    ///
+    /// The assertions are the parts a passing run can see: the drop is prompt, and
+    /// the reader family still serves a **new** session afterwards — a reader that
+    /// had not returned would still hold the dead session's cloned master, and the
+    /// next test in this process would be the one to notice. (No assertion on the
+    /// pid: a SIGKILLed child is a zombie nothing reaps here, and a zombie still
+    /// answers `kill(pid, 0)` — §10.4.)
+    #[cfg(unix)]
+    #[test]
+    fn a_dropped_session_ends_its_reader_instead_of_resurrecting() {
+        // A child that keeps a backlog in the pty, so the drop cannot land on an
+        // idle `read`. `yes` is exec'd as the direct child by `sh -c` (no pipeline,
+        // so no grandchild outlives it).
+        let session = spawn_with(test_support::script_command("yes flood"));
+        wait_until(&session, "the flood to reach the buffer", || {
+            !session.inner.lock().unwrap().buffer.is_empty()
+        });
+        let started = Instant::now();
+        drop(session);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "dropping the last handle took {elapsed:?}"
+        );
+
+        // The reader family is unaffected: a fresh session still drains its child.
+        let next = spawn_with(test_support::echo_command("after-the-drop"));
+        wait_until(&next, "the next session's output", || {
+            test_support::visible_text(&next.inner.lock().unwrap().buffer)
+                .contains("after-the-drop")
+        });
+        next.close(Duration::from_millis(200));
+    }
+
     /// A written line must reach the child, not merely be echoed by the
     /// terminal: the shell executing `exit 5` is the proof.
     /// WINDOWS-ONLY. Waits for the child's cursor query before writing the line -- the Windows fixture's handshake.

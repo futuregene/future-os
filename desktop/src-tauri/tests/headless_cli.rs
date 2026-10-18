@@ -693,6 +693,103 @@ fn a_deferred_remote_start_keeps_serving_and_stops_on_a_signal() {
     );
 }
 
+/// The account this run serves is pinned at authorization (`account_key`) and
+/// re-read from `auth.json` on every supervision iteration, so a login that is
+/// removed or replaced underneath a live server must end the run with *that*
+/// reason — otherwise the old account's remote ingress stays open until its JWT
+/// expires.
+///
+/// That arm is only reachable from the real entry point: the pinned account is
+/// read from the real file at process start and the loop is the entry point's
+/// own. This therefore spawns the binary, waits until the supervision loop is
+/// demonstrably running, and rotates the stored key the way a second login
+/// would. It asserts the arm's effect (the entry point stops serving with that
+/// exact reason and exit code) rather than that "a rewrite happened" — a run
+/// that ignored the change would keep the deferred phase and hit the budget.
+#[cfg(all(unix, feature = "headless"))]
+#[test]
+fn a_login_change_while_supervising_stops_the_run_with_that_reason() {
+    use std::time::Duration;
+
+    let home = tempfile::tempdir().unwrap();
+    let platform = FakePlatform::start(Platform::PairingDown);
+    signed_in_home(home.path(), &platform.url);
+    let auth = home.path().join(".future/agent/auth.json");
+    let authorized = std::fs::read_to_string(&auth).unwrap();
+
+    let mut guard = ChildGuard(foreground(home.path()).spawn().unwrap());
+    let child = &mut guard.0;
+    let mut log = Stderr::take(child);
+
+    // The whole preamble has to have run before either line appears: the account
+    // file was read, the embedded Agent started, the profile check passed, and
+    // the remote supervision loop produced its first phase.
+    log.wait_for("Platform login authorized", Duration::from_secs(300));
+    log.wait_for("Remote: Reconnecting", Duration::from_secs(300));
+    // A deferred phase is not terminal, so the run is still serving here — which
+    // is what makes the exit below the rotation's effect and not a startup
+    // failure that happened to arrive late.
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "a deferred remote start must still be serving before the login changes:\n{}",
+        log.collected
+    );
+
+    // Rotate the key atomically: a partially written file would be a corrupt-
+    // credentials arm (a different reason), not a login change.
+    let rotated = serde_json::json!({
+        "future": { "key": "test-only-rotated", "base_url": format!("{}/api", platform.url) },
+    })
+    .to_string();
+    let staging = home.path().join(".future/agent/auth.json.rotated");
+    std::fs::write(&staging, &rotated).unwrap();
+    std::fs::rename(&staging, &auth).unwrap();
+
+    let status = wait_for_exit(child, &mut log, &platform, Duration::from_secs(30));
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "a changed login must fail the entry point:\n{}",
+        log.collected
+    );
+    // The arm's own effect, spelled exactly: this is the message that says the
+    // pinned account is no longer the one on disk. Neither the revoked-pairing
+    // arm nor a startup failure can produce it.
+    assert!(
+        log.collected
+            .contains("Platform login changed or was removed. Remote access is closing"),
+        "the exit must name the login change:\n{}",
+        log.collected
+    );
+    assert!(
+        !log.collected.contains("Remote connection stopped"),
+        "the stop must come from the login check, not from a remote phase:\n{}",
+        log.collected
+    );
+    // The account that was serving is the original one: this line is what proves
+    // the arm compared against a pinned key rather than starting up already
+    // signed out. (`current_platform_url` strips the `/api` suffix, so the line
+    // carries the bare loopback origin.)
+    assert!(
+        log.collected
+            .contains(&format!("Platform login authorized ({}).", platform.url)),
+        "the run must have authorized the original account first:\n{}",
+        log.collected
+    );
+    assert!(
+        !authorized.contains("test-only-rotated"),
+        "the fixture must rotate away from the account it authorized"
+    );
+    // A stop must not silently repair or rewrite the login it just refused, and
+    // it must not print an invitation for the account it is abandoning.
+    assert_eq!(std::fs::read_to_string(&auth).unwrap(), rotated);
+    assert!(
+        !log.collected.contains("PHONE PAIRING"),
+        "a stopped run may not print an invitation:\n{}",
+        log.collected
+    );
+}
+
 /// The other terminal phase: a pairing the platform has revoked cannot be used,
 /// and the entry point must say so and stop — not serve an unusable credential
 /// and not hide the reason behind a generic exit.

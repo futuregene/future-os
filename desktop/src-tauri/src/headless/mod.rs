@@ -1019,6 +1019,80 @@ mod tests {
         );
     }
 
+    /// A CLI that answers discovery but cannot be started is reported and
+    /// skipped, exactly like a missing one: the bootstrap is best-effort and the
+    /// phone can still install skills. The fixture leaves the CLI's own identity
+    /// untouched (same bytes, size, mtime, inode) and removes only the program its
+    /// `#!` line names — the one step between the probe and the spawn that the
+    /// identity re-read does not pin.
+    #[cfg(unix)]
+    #[test]
+    fn a_cli_whose_interpreter_vanished_after_discovery_is_reported_and_skipped() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let marker = root.path().join("init-ran");
+        let directory = root.path().join("bin");
+        let interpreter = root.path().join("sh");
+        std::os::unix::fs::symlink("/bin/sh", &interpreter).unwrap();
+        let capabilities = future_rpc::cli_capabilities::CliCapabilities {
+            commands: vec!["skills.init".into()],
+            ..Default::default()
+        };
+        let reply = serde_json::json!({ "version": "1.2.3", "desktopCapabilities": capabilities })
+            .to_string();
+        std::fs::create_dir_all(&directory).unwrap();
+        let cli = directory.join("future");
+        std::fs::write(
+            &cli,
+            format!(
+                "#!{interpreter}\nif [ \"$1\" = version ]; then printf '%s' '{reply}'; exit 0; fi\nprintf 'ran' > '{marker}'\n",
+                interpreter = interpreter.display(),
+                marker = marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let discovered = with_path_and_broken_agent(&directory, || {
+            crate::cli_tool::resolve_for("skills.init").map_err(|error| error.to_string())
+        });
+        let identity_before = std::fs::metadata(&cli).unwrap();
+        // The state this test is about: the CLI is byte-for-byte the file
+        // discovery just accepted, and the program it needs is gone.
+        std::fs::remove_file(&interpreter).unwrap();
+
+        with_path_and_broken_agent(&directory, || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            // Must return normally: an unstartable CLI may not become a startup
+            // failure by any route.
+            runtime.block_on(bootstrap_builtin_skills());
+        });
+
+        let identity_after = std::fs::metadata(&cli).unwrap();
+        let same_identity = identity_before.len() == identity_after.len()
+            && identity_before.modified().unwrap() == identity_after.modified().unwrap()
+            && std::os::unix::fs::MetadataExt::ino(&identity_before)
+                == std::os::unix::fs::MetadataExt::ino(&identity_after);
+        let accepted = format!("{discovered:?}");
+        let ran = marker.exists();
+        assert!(
+            discovered.is_ok(),
+            "discovery must accept the fixture before the interpreter is removed: {accepted}"
+        );
+        assert!(
+            same_identity,
+            "the CLI itself must be untouched, so only the spawn can notice"
+        );
+        assert!(
+            !ran,
+            "a CLI that cannot be started must never run its `init`"
+        );
+    }
+
     /// No usable CLI means the step is skipped with a diagnostic, not a panic
     /// and not a startup failure.
     #[cfg(unix)]

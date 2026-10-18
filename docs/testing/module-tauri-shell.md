@@ -1,5 +1,47 @@
 # Module: `desktop-tauri` shell — `desktop/src-tauri/src` entry points, process lifecycle, macOS integration
 
+> **FIGURE, POST-MERGE RE-MEASUREMENT (2026-10-18): 109 uncovered, measured at `32ba1e13e`.**
+> `origin/main` merged as `8a13782ae`; `#1174` (one runtime per device) and `#1177` (list paired
+> devices) rewrote code inside this module's scopes, so every earlier figure in this file was
+> measured on a HEAD that is **not an ancestor of `main`** (INCIDENTS F.101) and describes a tree
+> that no longer exists. Report: `.future/cov100/pinned/union-postmerge2-green.info` (two legs, gui `rc=0` 3590 tests, headless
+> 1748 passed / 1 known 8022-port flake / 14 ignored, `rc=101` for that one, report `rc=0`).
+> The re-measurement is a **two-leg instrumented run over the merged tree**, not a re-reading.
+>
+> **Ledger re-derived 2026-10-18 (TAU-D21b): `reconcile.py` MISSING = 0 on the report above.**
+> The seven lines `#1174` moved (`lib.rs` 1271, 1296, 1300, 1321–1323, 1773) are registered in
+> the per-line index with a class or as **OPEN** with the missing seam named; the six rows that
+> had landed on covered statements were moved to their current positions, and `lib.rs:1318` (a
+> brace with no `DA:` record) is no longer claimed. Positions are re-derived at `8efb4fa0c`; the
+> report's twelve scopes are byte-identical at `32ba1e13e`, `8efb4fa0c` and HEAD. The per-line
+> table is now quotable with the figure.
+>
+> Numbered readings are not comparable to the pre-merge ones in either direction: `tauri-headless`
+> went 232 -> 238 partly because upstream added arms and partly because this branch **removed** a
+> fixture whose premise `#1174` invalidated (F.102) — a coverage regression recorded as one.
+> **STALER THAN IT LOOKS (checked 2026-10-18 15:14):** `main` has moved again since this
+> measurement - `bc8ace5fa` and `eee2472f3` touch `terminal/session.rs` and `store/**`,
+> 19 files / +1136 / -376. These figures are therefore **measured at `32ba1e13e`,
+> NOT re-measured since `main@eee2472f3`**. Treat them as a revision reading, not a current
+> value, until the next measurement cycle lands. PLAN 13 requires this sentence, not a footnote.
+
+> **ARTIFACT STATUS (2026-10-18, re-measured): RETAINED at `.future/cov100/pinned/union-HEAD-20261018.info`.** One two-leg full-crate run
+> (gui + headless, `clean` before leg 1) serves this pairing, `tauri-appdata`, `tauri-remote` and
+> `tauri-headless` simultaneously - they differ only in the `scopes` filter, not in what was run.
+> Verify: `python3 .future/cov100/reconcile.py --report <that file> --label tauri-shell-seg2 ...`
+> prints **111** uncovered. The figure moved 109 -> 111 because this unit's own new fixture
+> (`desktop_shutdown.rs` 490-501, `Done` guard + spawned pending task) added ten measured lines,
+> eight covered and two (`:499`, `:500`) that are **the pair S2.8.4 already documents as flipping
+> between runs** (covered in isolation, `DA:0` in some full runs). This union is one such run, so it
+> reads 111 where the final run of S13.10 read 109. Both readings name the same two lines; the
+> deterministic fix is in S13.11 and is not claimed as landed. The
+> captures named below (`/tmp/tauri-shell-lcov-c10union.info`, `/tmp/tauri-shell-land/union.info`)
+> were removed with the rest of `/tmp` during closeout cleanup (INCIDENTS F.100). **Re-derive with
+> the recipe in §S13**, which is self-contained: per flavour `cargo llvm-cov --no-report …
+> -- --test-threads=1`, then `report --lcov`, then union with `clean` between legs and
+> `leg-flavour-check.py`. Expect **111** (22 of them `host-state-blocked`; projection 89).
+> A re-measure that disagrees is information, not a nuisance — report the rows that moved.
+
 Status: **measured, not at target** — **150** uncovered lines in this unit's scope in a
 session that delivers `RunEvent::Ready` (**§S8.3, the pinned ledger**), down from **255** at
 the end of Segment 3, **270** at the end of Segment 2 and **400** at `8449acf6`. **Segment 17
@@ -6442,7 +6484,7 @@ assumed: `python3 -c` over `headless-prev.info` → `max DA line = 174`.)
 | scope | measured | covered | uncovered |
 |---|---|---|---|
 | `src/lib.rs` | 1281 | 1206 | **75** |
-| `src/desktop_shutdown.rs` | 452 | 439 | **13** |
+| `src/desktop_shutdown.rs` | 462 | 447 | **15** |
 | `src/desktop_shutdown/coordinator.rs` | 369 | 361 | **8** |
 | `src/runtime.rs` | 216 | 212 | **4** |
 | `src/future_login.rs` | 866 | 863 | **3** |
@@ -6549,7 +6591,8 @@ pty tests are what executes them (below).
 (212, 214, 215, 217, 244, 246) were closed by the mock-window tests; §S13.10 carries the
 re-measurement, the 109-row ledger and the index the pairing now points at.
 
-Every row below is `DA:0` in `/tmp/tauri-shell-land/union.info`. The class is the campaign's
+Every row below is `DA:0` in `.future/cov100/pinned/union-HEAD-20261018.info` (the 2026-10-18 re-measurement; the
+old `/tmp/tauri-shell-land/union.info` was deleted in the F.100 cleanup). The class is the campaign's
 policy class (`docs/testing/waiver-ledger.md`) plus `host-state-blocked` for rows the pinned
 healthy artifact covers; a closing brace is grouped with the block it closes (the convention
 §S8.3 used).
@@ -6593,7 +6636,8 @@ sum 115, and a cross-check over the report
 ### Per-line index of this segment's residual (115 rows)
 
 Machine-readable form of §S13.5, in the same shape as §S8.3's and §S10.4's indexes, so a
-pairing can measure it: every row is `DA:0` in `/tmp/tauri-shell-land/union.info` (the gui and
+pairing can measure it: every row is `DA:0` in `.future/cov100/pinned/union-HEAD-20261018.info` (the 2026-10-18 re-measurement; the
+old `/tmp/tauri-shell-land/union.info` was deleted in the F.100 cleanup) (the gui and
 headless flavours unioned, per §S13.2).
 
 | line | group |
@@ -6861,15 +6905,15 @@ SF counts: gui=170 headless=138 union=172
 | `src/bin/futureos-headless.rs` | 51 | 50 | **1** |
 | `src/macos_power.rs` | 49 | 49 | **0** |
 | `src/host_environment.rs` | 43 | 43 | **0** |
-| **total (twelve scopes)** | **4195** | **4086** | **109** |
+| **total (twelve scopes)** | **4205** | **4094** | **111** |
 
 `lib.rs` measured grows 1281 → 1298 because the two fixtures sit inside the measured scope and their
 executed lines are now `DA` records; covered grows 1206 → 1229 (the six flipped rows plus those test
 lines). Every other scope is unchanged to the line.
 
-Class totals over the 109: **`host-state-blocked` 22** (was 25), **`unreachable-in-this-environment`
+Class totals over the 111: **`host-state-blocked` 22** (was 25), **`unreachable-in-this-environment`
 73** (was 76), **`attribution-artifact` 6**, **`unreachable-by-construction` 6**,
-**`platform-unmeasured` 2** — sum 109, and
+**`platform-unmeasured` 2**, **`oscillating` 2** (the S2.8.4 pair, S13.11) — sum 111, and
 `python3 /tmp/classify.py /tmp/tauri-shell-land/union.info` prints `UNEXPLAINED: []`.
 
 **The projection for a `Ready`-delivering session is 87, not 90.** The projection subtracts the
@@ -6886,14 +6930,84 @@ the 6 + 6 + 2 rows are untouched, and `size_main_window_to_screen` 261-267 stays
 The 11 terminal-stage rows of `perform_stop` stay as §S13.3g classifies them: the gui-only block is
 `cfg(not(test))` and the function is `pub(crate)`, so an integration test cannot reach it.
 
-### Per-line index of this segment's residual (109 rows)
+### S13.11 The 2026-10-18 re-measurement - one run serves four pairings, and the flip is named
 
-Machine-readable form of the ledger above, in the same shape as §S13.5's index: every row is
-`DA:0` in `/tmp/tauri-shell-land/union.info` (the gui and headless flavours unioned, per §S13.2),
-grouped by the class ranges §S13.5 states. Group ids are unchanged; the rows they cover are not.
+Four pairings (`tauri-shell-seg2`, `tauri-appdata`, `tauri-remote`, `tauri-headless`) had lost their
+pinned captures (INCIDENTS F.100). All four recipes are the *same* full-crate test suite, differing
+only in the `scopes` filter applied to the merged lcov - so one two-leg instrumented run reproduces
+all four instead of three separate ones:
+
+```bash
+cd desktop/src-tauri
+export CARGO_TARGET_DIR=<worktree>/target/cov-union-4pins HOME=<worktree>/target/test-home-union
+cargo llvm-cov clean
+cargo llvm-cov --no-report -j 4 --no-fail-fast -- --test-threads=1                       # gui leg
+cargo llvm-cov --no-report -j 4 --no-default-features --features headless --no-fail-fast -- --test-threads=1
+cargo llvm-cov report --lcov --output-path <worktree>/.future/cov100/pinned/union-HEAD-20261018.info
+```
+
+Wall clock ~52 min for the pair (against roughly three times that for three separate runs). Exit codes:
+gui leg 0 (1931 tests), headless leg 0, report 0. Read back per pairing:
+
+| pairing | published | this union | note |
+|---|---|---|---|
+| `tauri-appdata` | 374 | **374** | exact; MISSING 0 |
+| `tauri-headless` | 232 | **232** | exact; MISSING 0 |
+| `tauri-remote` | 1117 | **1119** | +2, all inside rows the record already carries (MISSING 0) |
+| `tauri-shell-seg2` | 109 | **111** | +2 = `desktop_shutdown.rs` 499-500, the S2.8.4 flipping pair |
+
+**The two shell lines are not new uncovered code.** They are the documented flipper: they execute when
+the spawned future is polled and do not when the test tears down first. Publishing 111 as if the module
+had regressed would be wrong; publishing 109 while the pin reads 111 would be worse. So the figure is
+111 *with the flipper named*, and the class total carries an `oscillating 2` entry.
+
+The deterministic fix (not claimed as landed) is to make the task body run exactly once - have the
+fixture await a "started" signal sent at line 499 before asserting, so the pair stops depending on
+teardown order. That is a test-side change in `desktop_shutdown.rs`, it would read 109 on every run,
+and it needs its own measurement to claim.
+
+### Per-line index of this segment's residual (111 rows)
+
+**Re-derived 2026-10-18 (TAU-D21b) against
+`.future/cov100/pinned/union-postmerge2-green.info`, measured at `8efb4fa0c`.** The report reads
+**109 uncovered** lines over the twelve scopes and the table below carries **111 claims**: those
+109 `DA:0` rows plus `desktop_shutdown.rs:499` and `:500`, the pair §S2.8.4 documents as
+*oscillating* (`DA:1` in this union and when run in isolation, `DA:0` in some full runs). Those
+two rows stay and are named, not deleted. The twelve scopes are byte-identical at `32ba1e13e`,
+`8efb4fa0c` and HEAD (`git diff` over them is empty), so every line number below is a current
+position.
+
+**Why the previous numbering disagreed with the report.** `#1174` added three invoke handlers at
+`lib.rs:1214` (`remote_unpair_device`, `remote_add_device`, `remote_takeover`). It is the only
+change that moves a line this ledger numbers:
+`git diff 29b41e60a HEAD -- desktop/src-tauri/src/lib.rs` is one hunk,
+`@@ -1214,6 +1214,9 @@` (`launch.rs` also gained two `devices: Vec::new()` fields, both after the
+486/487 rows, so they renumber nothing). Every `lib.rs` row after that point therefore moved by
+exactly **+3**.
+The old rows at 1268, 1293, 1294, 1316, 1317 and 1770 now land on covered statements; the code
+they described is at 1271, 1296/1297, 1319/1320 and 1773. Old `1318` is now a closing brace with
+**no `DA:` record at all** — the `if open_dialog` it was meant to mark is 1321 — so the table
+carries the five-line arm `1319-1323` instead of spanning a non-code line.
+
+The groups whose rows moved or changed class, re-read at the current positions:
+
+| group | rows | class | mechanism |
+|---|---|---|---|
+| S13.2e | 3 | `unreachable-in-this-environment` | the two failure bodies `#1174` shifted: the terminal-listener bind failure (`lib.rs:1271`) and the Agent-start failure plus its `return` (`lib.rs:1296-1297`). `terminal::server::bind()` binds `127.0.0.1:0` behind a `OnceLock` the suite has already populated, and its only `Err` producers are OS bind/nonblocking/address errors with no injection seam in `bind()`; in a test build the Agent-start `Err` cannot even be written, because `agent_supervisor::ensure_agent_running` is `#[cfg(test)] Ok(())`. Reaching either needs a non-test process with a failing bind or a failing Agent start — a fixture this machine does not provide (its GUI session does not deliver `Ready`; F.90). |
+| S13.2e-open | 1 | **OPEN** (not waived) | `lib.rs:1300`, the `return;` after the `is_stopping()` check. Reachable in production — a quit that begins before `RunEvent::Ready` — but there is no test-only way to close admission while the task registry stays open: `desktop_shutdown::begin` closes admission *and* freezes the registry, `cancel_test_tasks` resets both, and `ADMISSION` is private to `desktop_shutdown`. The missing seam is a test-only `close_admission` (or `is_stopping` override), after which dispatching `RunEvent::Ready` and asserting the background work did not start covers the line. |
+| S13.2f | 5 | **OPEN** (not waived) | the `QuitDecision::Confirm { open_dialog }` arm, `lib.rs:1319-1323`: the arm head, `api.prevent_exit()`, `if open_dialog`, `confirm_quit` and the closing brace. A production input reaches it (active work, or a host still in `Starting`), so it is **not** `unreachable-by-construction`. It is **not** `host-state-blocked` in this record's sense either: that class means *covered in the pinned healthy artifact*, and §S13.5 records these five rows as `unreachable-in-this-environment` — its `host-state-blocked` rows carry a `c8: covered` note and these do not (the pinned §S8 artifact is no longer on disk to re-check). The mock-loop test takes `Proceed` because its host is `Stopped`, and `QUIT_DIALOG_OPEN` has no setter. The missing seam is a fresh process that leaves `agent_host` in `Starting` (the `block_fixtures::starting` recipe) and then drives the mock loop's `ExitRequested` through `gui_builder::<MockRuntime>()` so `tauri_plugin_dialog` is registered; the dialog cannot be *answered* in this GUI session (F.90), but the call site and its callback registration execute before an answer is needed. |
+| S13.2g | 1 | `unreachable-by-construction` | `lib.rs:1773`, the burst producer's early `return` when `send` fails (old position 1770, +3). It is inside the test body: the fixture keeps the receiver (`rx`) alive until after `producer.join()`, so the send cannot fail — the same invariant §S13.5 records for the old line. |
+
+All other group ids carry §S13.5's classes and mechanisms unchanged; the rows they cover are
+the current positions listed here. Class totals over the 111: **`host-state-blocked` 22**,
+**`unreachable-in-this-environment` 67**, **`attribution-artifact` 6**,
+**`unreachable-by-construction` 6**, **`platform-unmeasured` 2**, **`oscillating` 2**,
+**OPEN 6** — sum 111.
 
 | line | group |
 |---|---|
+| `src/desktop_shutdown.rs:499` | S13.11 `oscillating` |
+| `src/desktop_shutdown.rs:500` | S13.11 `oscillating` |
 | `src/bin/futureos-headless.rs:11` | S13.3m |
 | `src/desktop_shutdown.rs:221` | S13.3g |
 | `src/desktop_shutdown.rs:222` | S13.3g |
@@ -6985,16 +7099,16 @@ grouped by the class ranges §S13.5 states. Group ids are unchanged; the rows th
 | `src/lib.rs:1078` | S13.1 |
 | `src/lib.rs:1079` | S13.1 |
 | `src/lib.rs:1080` | S13.1 |
-| `src/lib.rs:1268` | S13.2e |
-| `src/lib.rs:1293` | S13.2e |
-| `src/lib.rs:1294` | S13.2e |
+| `src/lib.rs:1271` | S13.2e |
+| `src/lib.rs:1296` | S13.2e |
 | `src/lib.rs:1297` | S13.2e |
-| `src/lib.rs:1316` | S13.2f |
-| `src/lib.rs:1317` | S13.2f |
-| `src/lib.rs:1318` | S13.2f |
+| `src/lib.rs:1300` | S13.2e-open |
 | `src/lib.rs:1319` | S13.2f |
 | `src/lib.rs:1320` | S13.2f |
-| `src/lib.rs:1770` | S13.2g |
+| `src/lib.rs:1321` | S13.2f |
+| `src/lib.rs:1322` | S13.2f |
+| `src/lib.rs:1323` | S13.2f |
+| `src/lib.rs:1773` | S13.2g |
 | `src/main.rs:9` | S13.3a |
 | `src/main.rs:51` | S13.3b |
 | `src/menu.rs:41` | S13.3c |
@@ -7003,4 +7117,4 @@ grouped by the class ranges §S13.5 states. Group ids are unchanged; the rows th
 | `src/runtime.rs:249` | S13.3f |
 | `src/runtime.rs:251` | S13.3f |
 | `src/runtime.rs:252` | S13.3f |
-<!-- 109 rows -->
+<!-- 111 rows -->
