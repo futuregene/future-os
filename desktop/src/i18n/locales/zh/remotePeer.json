@@ -18,7 +18,6 @@
   "statusAgentUnavailable": "本机服务不可用",
   "peersSummary": "已连接 {{connected}}/{{total}} 台",
   "reconnectAll": "全部重连",
-  "statusRunning": "运行中",
   "statusUnread": "未读",
   "selector": {
     "all": "全部设备",

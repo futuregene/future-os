@@ -119,6 +119,8 @@ async function mount(props: {
   onOpenUsage?: () => void;
   persistedEntryIds?: string[];
   streaming?: boolean;
+  /** The workspace the conversation works in; omitted for a chat conversation. */
+  workspaceName?: string | null;
 }) {
   const onFork = props.onFork ?? vi.fn();
   const onContinueRun = props.onContinueRun ?? vi.fn();
@@ -158,6 +160,7 @@ async function mount(props: {
         sessionId="sess_1"
         streaming={props.streaming ?? false}
         title="Remote conversation"
+        workspaceName={props.workspaceName ?? null}
       />,
     );
   });
@@ -818,5 +821,46 @@ it("names the host in the header, and falls back to the id without a peer", asyn
   const badge = view.container.querySelector("[data-testid='thread-machine']")!;
   expect(badge.textContent).toBe("💻Studio iMac");
   expect(badge.getAttribute("title")).toBe("Studio iMac");
+  await view.unmount();
+});
+
+/**
+ * The header names the workspace this conversation works in.
+ *
+ * A workspace holds several conversations under one heading, and the header is
+ * the only place on screen that still says which of that machine's folders this
+ * one belongs to once the list is out of sight — which is what the phone says
+ * under its title and the desktop said nothing about. A chat conversation has
+ * no workspace of its own, so it gets no qualifier rather than an empty one.
+ */
+it("names the conversation's workspace, and omits it for a chat conversation", async () => {
+  const inWorkspace = await mount({
+    entries: [entry("e1", "user", "hi")],
+    workspaceName: "future-os",
+  });
+  const badge = inWorkspace.container.querySelector("[data-testid='remote-thread-workspace']")!;
+  expect(badge.textContent).toBe("future-os");
+  expect(badge.getAttribute("title")).toBe("future-os");
+  await inWorkspace.unmount();
+
+  const chat = await mount({ entries: [entry("e1", "user", "hi")] });
+  expect(chat.container.querySelector("[data-testid='remote-thread-workspace']")).toBeNull();
+  await chat.unmount();
+});
+
+/**
+ * A run in flight is watched in the transcript, not announced in the corner.
+ *
+ * The header used to carry a "Running" word beside the usage button, which said
+ * the same thing the reply itself says — the text arriving, the inline tool rows
+ * resolving, the elapsed timer — and drew the eye to the frame instead of to the
+ * answer.
+ */
+it("does not label a running conversation in the header", async () => {
+  const view = await mount({
+    entries: [entry("e1", "user", "hi"), entry("e2", "assistant", "half a repl")],
+    streaming: true,
+  });
+  expect(view.container.querySelector("header")!.textContent ?? "").not.toContain("Running");
   await view.unmount();
 });
