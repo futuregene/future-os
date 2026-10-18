@@ -106,7 +106,11 @@ fn is_protected_credential(future_dir: &Path, resolved: &Path) -> bool {
         .unwrap_or_default();
 
     // Remote bridge identity (nkey_seed + user_jwt) sits directly under ~/.future.
-    if name == "remote_pairing.json" && resolved.parent() == Some(future_dir) {
+    // Both spellings of the credential file are secrets: the book is just the
+    // multi-device shape of the same key material.
+    if matches!(name, "remote_pairing.json" | "remote_pairings.json")
+        && resolved.parent() == Some(future_dir)
+    {
         return true;
     }
 
@@ -871,6 +875,7 @@ mod tests {
             "agent/models.json",
             "agent-app/auth.json",
             "remote_pairing.json",
+            "remote_pairings.json",
             "channels/config.json",
         ] {
             let cred = write_under(&future_dir, rel);

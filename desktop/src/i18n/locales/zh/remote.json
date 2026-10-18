@@ -36,7 +36,8 @@
     "webBind": "部分功能暂时不可用，请稍后再试（{{code}}）"
   },
   "error": {
-    "generic": "操作未完成，请稍后再试（LC999）"
+    "generic": "操作未完成，请稍后再试（LC999）",
+    "limitReached": "这台电脑的已配对设备已达上限。请先解除一台。"
   },
   "statusConnected": "已连接",
   "statusConnecting": "连接中",
@@ -51,5 +52,15 @@
   "clientKind.desktop": "{{name}}（电脑）",
   "clientKind.mobile": "{{name}}（手机）",
   "clientKind.other": "{{name}}",
-  "clientUnknown": "已连接的设备"
+  "clientUnknown": "已连接的设备",
+  "deviceActive": "正在控制",
+  "deviceStandby": "待命",
+  "deviceOffline": "离线",
+  "deviceWaiting": "等待配对",
+  "devicePaired": "已配对设备",
+  "takeover": "让这台控制",
+  "addDevice": "添加设备",
+  "addDeviceHint": "再配对一台手机或电脑。同一时刻只有一台控制这台机器，连上的那台即接管。",
+  "unpairDeviceConfirmTitle": "解除这台设备？",
+  "unpairDeviceConfirmDesc": "{{name}} 将无法再连接这台电脑。其它设备保持配对。"
 }

@@ -73,7 +73,47 @@ pub struct RemoteStatus {
     /// the UI has to work without it and must not read "unknown" as "nothing is
     /// connected". It exists because the connection stopped being phone-only:
     /// the wording cannot say what the device is unless the device says so.
+    ///
+    /// On a machine with several devices this describes the one in control; the
+    /// full set is [`RemoteStatus::devices`].
     pub client: Option<ClientIdentity>,
+    /// Every device this desktop has paired, one entry each.
+    ///
+    /// The single-device fields above are the projection of the *controlling*
+    /// one (or the first device when nothing has claimed control), so a
+    /// frontend written before multi-device keeps working. A newer frontend
+    /// reads this list to show who is paired, who is online, and who is
+    /// driving.
+    pub devices: Vec<RemoteDevice>,
+}
+
+/// Whether a paired device is the one driving this desktop.
+///
+/// `Standby` is a device that is still paired and may still be connected — it
+/// simply is not allowed to command this machine until its user asks for
+/// control back or the other device disconnects. Encoded as a string on the
+/// wire so an older client that does not know the field ignores it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceControl {
+    Active,
+    Standby,
+}
+
+/// One paired device, as the Remote page lists it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteDevice {
+    pub pair_id: String,
+    pub phase: RemotePhase,
+    pub control: DeviceControl,
+    /// Transport ready: the bridge is connected and serving this pairing.
+    pub connected: bool,
+    pub client: Option<ClientIdentity>,
+    /// An invitation not yet claimed, for this device's slot.
+    pub pairing_code: Option<String>,
+    pub pairing_code_expires_at: Option<i64>,
+    pub desktop_id: String,
 }
 
 /// A client's description of itself, sent on `secure_ready`.
@@ -110,6 +150,7 @@ pub(super) fn runtime_active(status: &RemoteStatus) -> bool {
 pub(super) fn empty() -> RemoteStatus {
     RemoteStatus {
         client: None,
+        devices: Vec::new(),
         phase: RemotePhase::Stopped,
         reason: None,
         recovery: None,

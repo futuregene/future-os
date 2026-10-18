@@ -299,10 +299,14 @@ kills, crashes, or tool subprocess termination all complete.
 - The platform issues short-lived NATS JWTs per pairing and role; the server
   stores only a hash of the refresh token. The Desktop renews with account
   credentials; the phone renews with device-bound refresh credentials.
-- Currently each desktop allows only one pending/active pairing under one
-  account; re-pairing revokes the old binding. This is not a protocol that
-  natively supports multiple phones — extending the UI alone must not be
-  claimed as multi-device support.
+- A desktop may hold several devices at once: the platform keeps up to
+  `remote_control.max_pairings_per_desktop` (default 5) `pending`/`active`
+  pairings per desktop, one per client. `pair/code` takes `keep_existing`,
+  which decides whether the invitation *adds* a device or *replaces* every one
+  this desktop holds — replacing is the default, and is what every desktop
+  released before 2026-10-18 sends. Only one device is **in control** at a
+  time, and that is the host's decision rather than the platform's: both
+  connections are peers and the desktop is the only place they meet (§2.2.3).
 - The current database marks active the moment the phone claims, while the
   Desktop only persists the pairing when the handshake confirms; the two phases
   differ and must not share one "connected" description.
@@ -315,6 +319,63 @@ kills, crashes, or tool subprocess termination all complete.
 | `POST /client/v1/remote/pair/revoke` | revoke the binding |
 | `GET /client/v1/remote/devices` | list the account's pairings |
 | `DELETE /client/v1/remote/devices/:pair_id` | revoke a specified pairing by account permission |
+| `DELETE /client/v1/remote/devices/desktop/:desktop_id` | revoke every pairing that desktop holds |
+
+### 2.2.3 Several devices, one in control (2026-10-18)
+
+**Platform.** A pairing row is per device, so several of them can exist for one
+`desktop_id`; the per-desktop cap replaces the old one-row constraint and is
+counted under an advisory lock, because a cap is a count followed by an insert.
+Revoking a desktop takes the whole set (`…/devices/desktop/:desktop_id`): with
+a cap above one, revoking rows individually would leave every pair id the
+caller did not know about still refreshable, which is exactly the wrong
+outcome for "I lost that machine".
+
+**Desktop.** The credentials live in `~/.future/remote_pairings.json`, a book
+of slots keyed by `pair_id` plus the `pair_id` currently in control. Each slot
+carries its own NKey and secure identity — two slots must never share a key,
+because the platform derives the NATS user from the public key and hashes its
+claims into the JWT `jti`, so one key in two pairings is one NATS user with two
+namespaces. A single credential in `~/.future/remote_pairing.json` is read as a
+one-slot book and the file is left in place: an older build still finds a
+pairing there instead of minting a new invitation (which would revoke the one
+the book holds). An explicit unpair removes both files.
+
+**One runtime per slot.** The supervisor keeps a `pair_id → runtime` map, and
+each device gets its own NATS connection, presence heartbeat, credential
+refresh, command loop and event queue. A device losing its link or its JWT is
+that device's problem; the others keep serving. A dead slot is rebuilt on its
+own (`restart_slot`), never by restarting the whole machine.
+
+**Who controls, and how it moves.** One `pair_id` is in control, persisted in
+the book so a restart cannot hand the machine to someone else. It moves in
+exactly three places, and nowhere else:
+
+- the **first** secure handshake of a pairing — the device has just been
+  scanned or added, so it is the one in front of the machine. Later handshakes
+  are reconnects and leave control alone: reclaiming on reconnect would make
+  two devices evict each other forever;
+- an explicit `takeover` command from a paired device;
+- `remote_takeover` from the desktop's own UI.
+
+The previous controller is told on its own `p.{pair}.state.control` packet and
+sees `control: "standby"` in presence; its client stops reconnecting until its
+user asks for control back. A machine with exactly one device claims it at
+start — there is no arbitration to do.
+
+**What a standby device may not do.** Its business commands are refused in
+this process with `superseded`, before any handler runs, so nothing already in
+flight survives the moment control moves. It also receives no agent events and
+no catalog snapshots; its presence packet says why. `takeover`, `get_presence`
+and `unpair` are the only commands it may speak. The payload it gets back from
+`get_presence` is the light one: the conversation list is the machine's, not
+every paired device's.
+
+**Still next.** The Remote page's device list UI (add a device, unpair one,
+"let this one control"), and the client halves of standby (mobile and the
+desktop client role). The runtime already exposes all of it: `RemoteStatus`
+carries `devices[]` with `control`, and `remote_add_device`,
+`remote_unpair_device`, `remote_takeover` exist as commands.
 
 ### 2.2.1 Mobile multi-Desktop pairing (2026-09-12)
 

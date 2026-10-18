@@ -420,7 +420,7 @@ mod tests {
         let peers = remote_peer_list().await.expect("list");
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].desktop_id, fx.paired.creds.desktop_id);
-        teardown().await;
+        teardown(&fx.pair_id).await;
     }
 
     /// Pairing through the command is the path the UI takes. It is also the one
@@ -461,7 +461,7 @@ mod tests {
             .expect("a valid link pairs");
         assert!(peer.connected, "{peer:?}");
 
-        teardown().await;
+        teardown(&fx.pair_id).await;
     }
 
     #[tokio::test]
@@ -488,7 +488,7 @@ mod tests {
         assert!(warning.is_some());
         assert!(remote_peer_list().await.expect("list").is_empty());
 
-        teardown().await;
+        teardown(&fx.pair_id).await;
     }
 
     #[tokio::test]
@@ -509,7 +509,7 @@ mod tests {
             .expect("the paired host is in the list");
         assert!(peer.connected, "{peer:?}");
 
-        teardown().await;
+        teardown(&fx.pair_id).await;
     }
 
     #[tokio::test]
@@ -572,7 +572,7 @@ mod tests {
         .expect("request with a lane");
         assert!(routed["sessions"].is_array());
 
-        teardown().await;
+        teardown(&fx.pair_id).await;
     }
 
     /// The command is the only thing that knows which conversation the view is
@@ -623,19 +623,19 @@ mod tests {
             .await
             .expect("an intent for an unconnected host is not a failure");
 
-        teardown().await;
+        teardown(&fx.pair_id).await;
     }
 
     /// A command against an unpaired host fails with a code the UI can act on
     /// rather than a generic message.
     #[tokio::test]
     async fn commands_reject_an_unpaired_host() {
-        let (_home, _fx) = start("peer-cmd-unpaired").await;
+        let (_home, fx) = start("peer-cmd-unpaired").await;
         let error = remote_peer_sessions("desktop_nobody".into())
             .await
             .expect_err("an unpaired host has no catalogue");
         assert!(error.to_string().contains("peer_not_paired"), "{error}");
-        teardown().await;
+        teardown(&fx.pair_id).await;
     }
 
     /// The file list command addresses a session and defaults the path to the
@@ -660,7 +660,7 @@ mod tests {
             "the command must reach the host, got: {error}"
         );
 
-        teardown().await;
+        teardown(&fx.pair_id).await;
     }
 
     /// Downloading asks the host for a transfer it never prepared, so it fails —
@@ -699,7 +699,7 @@ mod tests {
             "a download that failed must not leave a file at the destination"
         );
 
-        teardown().await;
+        teardown(&fx.pair_id).await;
     }
 
     /// The happy path through the command, end to end: the client asks a real
@@ -749,7 +749,7 @@ mod tests {
         assert_eq!(name, "report.txt");
         assert_eq!(std::fs::read(&destination).expect("read back"), contents);
 
-        teardown().await;
+        teardown(&fx.pair_id).await;
     }
 
     /// A preview is pulled into this machine's cache, under the host's own name.
@@ -793,7 +793,7 @@ mod tests {
             contents
         );
 
-        teardown().await;
+        teardown(&fx.pair_id).await;
     }
 
     /// A file the host will not preview is still previewed here.
@@ -837,7 +837,7 @@ mod tests {
             contents
         );
 
-        teardown().await;
+        teardown(&fx.pair_id).await;
     }
 
     /// The preview command retries with the original variant when the host cannot
@@ -870,7 +870,7 @@ mod tests {
             "the retry must reach the host, got: {error}"
         );
 
-        teardown().await;
+        teardown(&fx.pair_id).await;
     }
 
     /// The upload command, end to end: a real file, a real host, and the id a
@@ -903,7 +903,7 @@ mod tests {
         };
         assert_eq!(uploaded.content_hash, expected);
 
-        teardown().await;
+        teardown(&fx.pair_id).await;
     }
 
     /// The caller's own name wins, because the host shows it in the conversation.
@@ -932,7 +932,7 @@ mod tests {
         // The host's display name for it is the one it was given, not the path's.
         assert_eq!(uploaded.name, "Holiday photo.jpg");
 
-        teardown().await;
+        teardown(&fx.pair_id).await;
     }
 
     /// A path that cannot be read fails before anything reaches the host.
@@ -962,7 +962,7 @@ mod tests {
             "got: {error}"
         );
 
-        teardown().await;
+        teardown(&fx.pair_id).await;
     }
 
     /// A mock app whose handle the emitter can be built from. The window is

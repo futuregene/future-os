@@ -6,14 +6,32 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub fn load_creds() -> Option<PairingCreds> {
     super::host().load()
 }
+/// Every paired device, in pairing order.
+pub fn load_slots() -> Vec<PairingCreds> {
+    super::host().load_slots()
+}
+/// Which device drives this machine, as persisted.
+pub fn active_slot() -> Option<String> {
+    super::host().active_slot()
+}
+pub fn set_active(pair_id: &str) -> Result<(), crate::AppError> {
+    super::host().set_active(pair_id)
+}
+pub fn remove_slot(pair_id: &str) -> Result<(), crate::AppError> {
+    super::host().remove_slot(pair_id)
+}
 pub fn save_creds(c: &PairingCreds) -> Result<(), crate::AppError> {
     super::host().save(c)
 }
 pub fn clear_creds() -> Result<(), crate::AppError> {
     super::host().clear()
 }
-pub async fn create_pairing() -> Result<super::services::Invitation, crate::AppError> {
-    super::host().invite().await
+/// Publish an invitation. `keep_existing` adds a device beside the paired ones
+/// instead of replacing them; the field means the same thing on the platform.
+pub async fn create_pairing(
+    keep_existing: bool,
+) -> Result<super::services::Invitation, crate::AppError> {
+    super::host().invite(keep_existing).await
 }
 pub async fn refresh_bridge_jwt(c: PairingCreds) -> Result<PairingCreds, crate::AppError> {
     super::host().refresh(c).await

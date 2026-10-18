@@ -47,18 +47,116 @@ fn pairing_path() -> Result<PathBuf, crate::AppError> {
     Ok(crate::store::future_dir()?.join("remote_pairing.json"))
 }
 
+/// Where the multi-device credential book lives.
+///
+/// A separate file from [`pairing_path`], deliberately: the legacy file keeps
+/// describing exactly one pairing in the shape older builds parse, so a
+/// downgrade still finds a pairing and does not mint a new invitation (which
+/// would revoke the one the book holds). The old file is therefore read as a
+/// book with one slot, and left on disk until an explicit unpair.
+fn book_path() -> Result<PathBuf, crate::AppError> {
+    Ok(crate::store::future_dir()?.join("remote_pairings.json"))
+}
+
+const BOOK_VERSION: u32 = 2;
+
+/// Every device this desktop has paired, plus which one is in control.
+///
+/// One slot per `pair_id`. Each carries its own NKey and secure identity — two
+/// slots must never share a key: the platform derives a NATS user from the
+/// public key and hashes its claims into the JWT `jti`, so one key in two
+/// pairings is a single NATS user with two namespaces, and the broker's
+/// per-pair isolation stops meaning anything.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PairingBook {
+    #[serde(default = "book_version")]
+    version: u32,
+    /// The device currently driving this desktop. `None` when nothing has
+    /// claimed control yet.
+    #[serde(default)]
+    active: Option<String>,
+    #[serde(default)]
+    slots: Vec<PairingCreds>,
+}
+
+fn book_version() -> u32 {
+    BOOK_VERSION
+}
+
+impl PairingBook {
+    /// Every device, in the order they were first paired.
+    pub(crate) fn slots(&self) -> &[PairingCreds] {
+        &self.slots
+    }
+
+    /// Which device drives this machine, if any.
+    pub(crate) fn active(&self) -> Option<&str> {
+        self.active.as_deref()
+    }
+
+    /// The slot a single-slot caller means: the one in control, else the first.
+    ///
+    /// Until the per-slot runtime lands, every caller is a single-slot caller,
+    /// so this is the whole of the compatibility story.
+    fn primary(&self) -> Option<&PairingCreds> {
+        match self.active.as_deref() {
+            Some(pair_id) => self.slots.iter().find(|slot| slot.pair_id == pair_id),
+            None => None,
+        }
+        .or_else(|| self.slots.first())
+    }
+
+    fn slot(&self, pair_id: &str) -> Option<&PairingCreds> {
+        self.slots.iter().find(|slot| slot.pair_id == pair_id)
+    }
+
+    /// Insert or replace by `pair_id`; a re-pair of the same device keeps its
+    /// position, so the list does not reshuffle when a token is renewed.
+    fn upsert(&mut self, creds: PairingCreds) {
+        match self
+            .slots
+            .iter_mut()
+            .find(|slot| slot.pair_id == creds.pair_id)
+        {
+            Some(slot) => *slot = creds,
+            None => self.slots.push(creds),
+        }
+    }
+}
+
 pub fn load_creds() -> Option<PairingCreds> {
     load_creds_checked().ok().flatten()
 }
 
 /// Terminal startup must not turn corrupt saved credentials into a new pairing.
 pub(crate) fn load_creds_checked() -> Result<Option<PairingCreds>, crate::AppError> {
-    let path = pairing_path()?;
-    if !path.try_exists()? {
-        return Ok(None);
+    Ok(load_book_checked()?.primary().cloned())
+}
+
+fn load_book_checked() -> Result<PairingBook, crate::AppError> {
+    let path = book_path()?;
+    if path.try_exists()? {
+        let value = crate::config_io::read_json_object(&path)?;
+        return Ok(serde_json::from_value(value)?);
     }
-    let value = crate::config_io::read_json_object(&path)?;
-    Ok(Some(serde_json::from_value(value)?))
+    // An installation paired before multi-device kept one credential here. It
+    // becomes the book's only slot — and the one in control, because a single
+    // device is trivially the one driving the machine.
+    let legacy = pairing_path()?;
+    if !legacy.try_exists()? {
+        return Ok(PairingBook {
+            version: BOOK_VERSION,
+            active: None,
+            slots: Vec::new(),
+        });
+    }
+    let creds: PairingCreds = serde_json::from_value(crate::config_io::read_json_object(&legacy)?)?;
+    Ok(PairingBook {
+        version: BOOK_VERSION,
+        active: Some(creds.pair_id.clone()),
+        slots: vec![creds],
+    })
 }
 
 /// One-shot injected failure for `save_creds` (tests only): the credential
@@ -77,36 +175,136 @@ pub fn save_creds(creds: &PairingCreds) -> Result<(), crate::AppError> {
             "injected save failure".to_string(),
         ));
     }
-    let path = pairing_path()?;
+    let path = book_path()?;
     crate::config_io::with_config_lock(&path, || {
+        let mut book = load_book_checked()?;
         let mut creds = creds.clone();
         // Credential refresh may have started before pairing committed. Never
         // overwrite a pinned identity with that stale pending invitation.
-        if let Some(stored) = load_creds().filter(|stored| stored.pair_id == creds.pair_id) {
+        if let Some(stored) = book.slot(&creds.pair_id) {
             if stored
                 .secure
                 .as_ref()
                 .is_some_and(|identity| identity.peer_public_key.is_some())
             {
-                creds.secure = stored.secure;
+                creds.secure = stored.secure.clone();
             }
         }
-        let value = serde_json::to_value(&creds)
+        let saved_pair_id = creds.pair_id.clone();
+        book.upsert(creds);
+        // Something has to be in control, or a single-device desktop would
+        // report itself as paired but unclaimed. The takeover rules that decide
+        // *which* device that is arrive with the per-slot runtime; until then
+        // the only slot there is.
+        if book.active.is_none() {
+            book.active = book.slots.first().map(|slot| slot.pair_id.clone());
+        }
+        let value = serde_json::to_value(&book)
             .map_err(|error| crate::AppError::Message(format!("encode pairing creds: {error}")))?;
-        crate::config_io::write_json_atomic(&path, &value, true)
+        crate::config_io::write_json_atomic(&path, &value, true)?;
+        // Tell the control rules this device exists, so no command has to read
+        // the book to find out.
+        crate::remote::note_known_device(&saved_pair_id);
+        Ok(())
     })
 }
 
+/// Forget every device. This is the unpair / re-pair path, whose published
+/// meaning is "this machine has no devices": clearing some of them would leave
+/// a pairing the user was told was gone.
 pub fn clear_creds() -> Result<(), crate::AppError> {
-    let path = pairing_path()?;
-    if path.exists() {
-        std::fs::remove_file(&path)
-            .map_err(|error| crate::AppError::Message(format!("remove pairing creds: {error}")))?;
+    for slot in load_book_checked()
+        .map(|book| book.slots)
+        .unwrap_or_default()
+    {
+        crate::remote::forget_known_device(&slot.pair_id);
+    }
+    for path in [book_path()?, pairing_path()?] {
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|error| {
+                crate::AppError::Message(format!("remove pairing creds: {error}"))
+            })?;
+        }
     }
     Ok(())
 }
 
-pub async fn create_pairing() -> Result<(PairingCreds, String, Option<i64>), crate::AppError> {
+/// Every device this desktop has paired.
+///
+/// The runtime starts one bridge per slot and keeps them all connected; which
+/// one drives the machine is [`PairingBook::active`]. Callers that only pair and
+/// unpair want [`load_creds`] ("the device in control") instead.
+pub fn load_book() -> Option<PairingBook> {
+    load_book_checked()
+        .ok()
+        .filter(|book| !book.slots.is_empty())
+}
+
+/// Persist which device drives this machine.
+///
+/// Written through the same lock and atomic replace as the credentials
+/// themselves, because a control pointer that survived a crash but disagreed
+/// with the slots would describe a device this machine no longer has.
+pub fn set_active(pair_id: &str) -> Result<bool, crate::AppError> {
+    let path = book_path()?;
+    crate::config_io::with_config_lock(&path, || {
+        let mut book = load_book_checked()?;
+        if !book.slots.iter().any(|slot| slot.pair_id == pair_id) {
+            return Ok(false);
+        }
+        if book.active.as_deref() == Some(pair_id) {
+            return Ok(false);
+        }
+        book.active = Some(pair_id.to_string());
+        let value = serde_json::to_value(&book)
+            .map_err(|error| crate::AppError::Message(format!("encode pairing creds: {error}")))?;
+        crate::config_io::write_json_atomic(&path, &value, true)?;
+        Ok(true)
+    })
+}
+
+/// Forget one device, leaving the rest paired.
+///
+/// When the slot being removed is the one in control, the pointer is cleared in
+/// the same write. There is no promotion: the remaining devices are other
+/// people's connections to this machine, and picking one for them would decide
+/// who is sitting in front of the computer.
+pub fn remove_slot(pair_id: &str) -> Result<(), crate::AppError> {
+    let path = book_path()?;
+    let book = crate::config_io::with_config_lock(&path, || {
+        let mut book = load_book_checked()?;
+        book.slots.retain(|slot| slot.pair_id != pair_id);
+        if book.active.as_deref() == Some(pair_id) {
+            book.active = None;
+        }
+        let value = serde_json::to_value(&book)
+            .map_err(|error| crate::AppError::Message(format!("encode pairing creds: {error}")))?;
+        crate::config_io::write_json_atomic(&path, &value, true).map(|()| book)
+    })?;
+    // Nothing is left. Both files go: an empty book would still answer "this
+    // machine has a credential file", and the legacy file would keep
+    // describing a device that was just unpaired.
+    crate::remote::forget_known_device(pair_id);
+    if book.slots.is_empty() {
+        for path in [book_path()?, pairing_path()?] {
+            if path.exists() {
+                std::fs::remove_file(&path).map_err(|error| {
+                    crate::AppError::Message(format!("remove pairing creds: {error}"))
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Publish a fresh invitation.
+///
+/// `keep_existing` is forwarded verbatim to the platform, where `false` replaces
+/// every device this desktop holds and `true` adds one beside them. The wording
+/// matters: this function has no opinion, because the platform owns the cap.
+pub async fn create_pairing(
+    keep_existing: bool,
+) -> Result<(PairingCreds, String, Option<i64>), crate::AppError> {
     let key_pair = nkeys::KeyPair::new_user();
     let nkey_seed = key_pair
         .seed()
@@ -120,6 +318,7 @@ pub async fn create_pairing() -> Result<(PairingCreds, String, Option<i64>), cra
             "desktop_id": desktop_id,
             "desktop_public_key": key_pair.public_key(),
             "desktop_name": "FutureOS GUI",
+            "keep_existing": keep_existing,
         }))
         .send()
         .await
@@ -550,6 +749,71 @@ mod http_tests {
     }
 
     #[test]
+    fn a_legacy_single_pairing_is_read_as_the_book_s_only_slot() {
+        let _home = HomeGuard::new("pairing-legacy-book");
+        let legacy = pairing_path().unwrap();
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, serde_json::to_vec(&fixture_creds()).unwrap()).unwrap();
+
+        let creds = load_creds().expect("a legacy credential still loads");
+        assert_eq!(creds.pair_id, "pair_test");
+
+        save_creds(&creds).unwrap();
+        // The legacy file survives the migration. An older build reads it and
+        // finds a pairing; deleting it here would make that build mint a fresh
+        // invitation, which revokes the pairing the book holds.
+        assert!(legacy.exists(), "migration must not delete the legacy file");
+        let book: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(book_path().unwrap()).unwrap()).unwrap();
+        assert_eq!(book["version"], json!(2));
+        assert_eq!(
+            book["active"],
+            json!("pair_test"),
+            "a single device is trivially the one in control"
+        );
+        assert_eq!(book["slots"][0]["pairId"], json!("pair_test"));
+        assert_eq!(load_creds().unwrap().pair_id, "pair_test");
+    }
+
+    #[test]
+    fn the_book_holds_one_slot_per_pairing_and_keeps_their_order() {
+        let _home = HomeGuard::new("pairing-book-slots");
+        let first = fixture_creds();
+        save_creds(&first).unwrap();
+        let mut second = fixture_creds();
+        second.pair_id = "pair_second".to_string();
+        save_creds(&second).unwrap();
+        // A credential refresh of the first device must neither append a
+        // duplicate nor move it behind the second.
+        let mut renewed = first.clone();
+        renewed.jwt_expires_at += 60;
+        save_creds(&renewed).unwrap();
+
+        let book = load_book_checked().unwrap();
+        assert_eq!(book.slots.len(), 2, "one slot per pair id");
+        assert_eq!(book.slots[0].pair_id, "pair_test");
+        assert_eq!(book.slots[1].pair_id, "pair_second");
+        assert_eq!(book.slots[0].jwt_expires_at, renewed.jwt_expires_at);
+        assert_eq!(book.active.as_deref(), Some("pair_test"));
+        assert_eq!(load_creds().unwrap().pair_id, "pair_test");
+    }
+
+    #[test]
+    fn clearing_removes_the_book_and_the_legacy_file() {
+        let _home = HomeGuard::new("pairing-clear-all");
+        let legacy = pairing_path().unwrap();
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, serde_json::to_vec(&fixture_creds()).unwrap()).unwrap();
+        save_creds(&fixture_creds()).unwrap();
+        assert!(book_path().unwrap().exists());
+
+        clear_creds().unwrap();
+        assert!(!book_path().unwrap().exists());
+        assert!(!legacy.exists(), "unpair must not leave a file behind");
+        assert!(load_creds().is_none());
+    }
+
+    #[test]
     fn public_key_rejects_a_bad_seed() {
         let _home = HomeGuard::new("pairing-bad-seed");
         let mut creds = fixture_creds();
@@ -575,7 +839,7 @@ mod http_tests {
         sign_in(platform.url());
         let code = platform.respond_pair_code("nats://127.0.0.1:4222");
 
-        let (creds, returned_code, code_expires_at) = create_pairing().await.unwrap();
+        let (creds, returned_code, code_expires_at) = create_pairing(false).await.unwrap();
         let invitation = reqwest::Url::parse(&returned_code).unwrap();
         let fields: std::collections::HashMap<_, _> = invitation.query_pairs().collect();
         assert_eq!(fields["code"], code);
@@ -621,8 +885,40 @@ mod http_tests {
         save_creds(&fixture_creds()).unwrap();
         platform.respond_pair_code("nats://127.0.0.1:4222");
 
-        let (creds, _, _) = create_pairing().await.unwrap();
+        let (creds, _, _) = create_pairing(false).await.unwrap();
         assert_eq!(creds.desktop_id, "desktop_test");
+    }
+
+    /// Adding a device must reach the platform as "keep the ones I have". The
+    /// default is the opposite, and getting it wrong would silently cut every
+    /// already-paired device off the moment a second one is added.
+    #[tokio::test]
+    async fn adding_a_device_asks_the_platform_to_keep_the_existing_ones() {
+        let _home = HomeGuard::new("pairing-keep-existing");
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+        platform.respond_pair_code("nats://127.0.0.1:4222");
+        platform.respond_pair_code("nats://127.0.0.1:4222");
+        create_pairing(true).await.unwrap();
+        create_pairing(false).await.unwrap();
+
+        let bodies: Vec<Value> = platform
+            .requests()
+            .iter()
+            .filter(|(_, path, _)| path.ends_with("/client/v1/remote/pair/code"))
+            .map(|(_, _, body)| serde_json::from_str(body).unwrap())
+            .collect();
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(
+            bodies[0]["keep_existing"],
+            json!(true),
+            "adding a device keeps the paired ones"
+        );
+        assert_eq!(
+            bodies[1]["keep_existing"],
+            json!(false),
+            "re-pairing replaces the machine's devices"
+        );
     }
 
     #[tokio::test]
@@ -630,7 +926,7 @@ mod http_tests {
         let _home = HomeGuard::new("pairing-create-errors");
         // Nothing listening → transport failure.
         sign_in("http://127.0.0.1:9");
-        let error = create_pairing().await.unwrap_err();
+        let error = create_pairing(false).await.unwrap_err();
         assert!(matches!(error, crate::AppError::RemoteTransport(_)));
         assert_eq!(error_code(&error), Some("network"));
 
@@ -642,7 +938,7 @@ mod http_tests {
             500,
             json!({ "error": "boom", "message": "server exploded" }),
         );
-        let error = create_pairing().await.unwrap_err();
+        let error = create_pairing(false).await.unwrap_err();
         assert_eq!(error_code(&error), Some("server"));
         match error {
             crate::AppError::Remote {
@@ -674,7 +970,7 @@ mod http_tests {
                 "nats_ws_url": "ws://127.0.0.1:4222",
             }),
         );
-        let error = create_pairing().await.unwrap_err();
+        let error = create_pairing(false).await.unwrap_err();
         assert!(error.to_string().contains("invalid JWT"));
     }
 
@@ -688,7 +984,7 @@ mod http_tests {
             200,
             json!({ "unexpected": 1 }),
         );
-        let error = create_pairing().await.unwrap_err();
+        let error = create_pairing(false).await.unwrap_err();
         assert!(error
             .to_string()
             .contains("Failed to parse create pairing code"));
@@ -847,7 +1143,7 @@ mod http_tests {
 
         // No error/message fields → synthesized message, no code.
         platform.push("/client/v1/remote/pair/code", 500, json!({}));
-        let (status, code, message) = remote_error_parts(create_pairing().await.unwrap_err());
+        let (status, code, message) = remote_error_parts(create_pairing(false).await.unwrap_err());
         assert_eq!(status, 500);
         assert!(code.is_none());
         assert!(message.contains("HTTP 500"));
@@ -858,7 +1154,7 @@ mod http_tests {
             500,
             json!({ "error": "  ", "message": " " }),
         );
-        let (status, code, message) = remote_error_parts(create_pairing().await.unwrap_err());
+        let (status, code, message) = remote_error_parts(create_pairing(false).await.unwrap_err());
         assert_eq!(status, 500);
         assert!(code.is_none());
         assert!(message.contains("HTTP 500"));
@@ -891,7 +1187,7 @@ mod http_tests {
                 "nats_ws_url": "ws://127.0.0.1:4222",
             }),
         );
-        let error = create_pairing().await.unwrap_err();
+        let error = create_pairing(false).await.unwrap_err();
         assert!(
             error.to_string().contains("pairing_expiry_required"),
             "got {error}"

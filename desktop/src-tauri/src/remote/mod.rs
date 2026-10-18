@@ -56,6 +56,19 @@ use std::sync::{
 };
 use std::{collections::HashMap, sync::LazyLock};
 
+/// Record that this process has a credential for `pair_id`.
+///
+/// Called by the host's credential store whenever a device is saved or removed,
+/// so the control rules can answer "do we have this device?" without reading the
+/// file on every command.
+pub(crate) fn note_known_device(pair_id: &str) {
+    SUPERVISOR.remember_device(pair_id);
+}
+
+pub(crate) fn forget_known_device(pair_id: &str) {
+    SUPERVISOR.forget_device(pair_id);
+}
+
 fn host() -> &'static dyn services::RemoteHost {
     crate::remote_host::host()
 }
