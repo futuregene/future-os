@@ -1206,7 +1206,6 @@ function ReadyAppShell({
                           onOpenRemoteSession={openRemoteSession}
                           onReconnectRemoteAll={reconnectRemotePeers}
                           onRefreshRemote={refreshRemote}
-                          onStartConversation={(desktopId: string) => startRemoteConversation(desktopId)}
                           onToggleAutoConnect={value => void changeSettings({ autoConnectRemote: value })}
                           onToggleLeftPanel={handleToggleLeftPanel}
                           remoteStatus={remoteStatus}

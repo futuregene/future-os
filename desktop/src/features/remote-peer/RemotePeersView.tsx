@@ -37,17 +37,10 @@ import {
 export function RemoteClientSection({
   onOpenSettings,
   onReconnectAll,
-  onStartConversation,
   refreshNonce,
 }: {
-  /**
-   * Open a new conversation on that host. Owned by the shell because it decides
-   * what the user is looking at; this section only knows the machines.
-   */
-  onStartConversation: (desktopId: string) => void;
   /** Open that machine's settings, as a page of the window the user is in. */
   onOpenSettings: (peer: RemotePeer) => void;
-  /**
   /**
    * Bring every paired machine up, the stopped ones included.
    *
@@ -255,7 +248,6 @@ export function RemoteClientSection({
                     key={peer.desktopId}
                     onDisconnect={() => void run(peer.desktopId, () => disconnectRemotePeer(peer.desktopId))}
                     onEdit={() => onOpenSettings(peer)}
-                    onNewConversation={() => onStartConversation(peer.desktopId)}
                     onReconnect={() => void run(peer.desktopId, () => connectRemotePeer(peer.desktopId))}
                     onUnpair={() => setUnpairTarget(peer)}
                     peer={peer}
@@ -311,7 +303,6 @@ function PeerRow({
   busy,
   onDisconnect,
   onEdit,
-  onNewConversation,
   onReconnect,
   onUnpair,
   peer,
@@ -319,17 +310,12 @@ function PeerRow({
   busy: boolean;
   onDisconnect: () => void;
   onEdit: () => void;
-  onNewConversation: () => void;
   onReconnect: () => void;
   onUnpair: () => void;
   peer: RemotePeer;
 }) {
   const { t } = useTranslation("remotePeer");
   const status = peerBadge(peer, t);
-  // Starting a conversation needs the host's *agent*, not just its bridge: the
-  // bridge can be reachable while every prompt fails. Offering the button there
-  // would hand the user a box whose messages cannot go anywhere.
-  const canConverse = peerStatus(peer) === "connected";
   // A machine the user turned off offers the way back; so does one that could
   // not be reached. Only a live connection offers to stop.
   const showDisconnect = peer.connected && !peer.stopped;
@@ -351,17 +337,10 @@ function PeerRow({
         {peer.error && !peer.stopped ? <div className="mt-1 text-xs text-danger">{peer.error}</div> : null}
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        {canConverse
-          ? (
-              <Button disabled={busy} onClick={onNewConversation} size="sm" variant="primary">
-                {t("newConversation")}
-              </Button>
-            )
-          : null}
         {showDisconnect
           ? <Button disabled={busy} onClick={onDisconnect} size="sm">{t("disconnect")}</Button>
           : <Button disabled={busy} onClick={onReconnect} size="sm" variant="primary">{t("connect")}</Button>}
-        <Button disabled={busy} onClick={onEdit} size="sm" variant="ghost">{t("edit")}</Button>
+        <Button disabled={busy} onClick={onEdit} size="sm">{t("edit")}</Button>
         {/* Last, and marked: it is the one action here that removes the row it
             sits on, and the only one that is confirmed. */}
         <Button disabled={busy} onClick={onUnpair} size="sm" variant="danger-soft">{t("unpair")}</Button>
