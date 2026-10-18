@@ -165,19 +165,16 @@ fn v2_database_upgrades_to_current_schema_with_the_skills_table() {
     connection
         .execute_batch(
             "CREATE TABLE entries (
-                session_id TEXT NOT NULL,
-                position INTEGER NOT NULL,
-                entry_id TEXT NOT NULL,
-                entry_type TEXT NOT NULL,
-                run_id TEXT,
-                metadata_json TEXT NOT NULL,
+                session_id TEXT NOT NULL, position INTEGER NOT NULL, entry_id TEXT NOT NULL,
+                entry_type TEXT NOT NULL, role TEXT, run_id TEXT, timestamp_ms INTEGER,
+                metadata_json TEXT NOT NULL, content_json TEXT,
                 PRIMARY KEY(session_id, position)
-            );
+             );
              CREATE TABLE runs (
-                session_id TEXT NOT NULL,
-                run_id TEXT NOT NULL,
-                status TEXT NOT NULL,
-                run_sequence INTEGER,
+                session_id TEXT NOT NULL, run_id TEXT NOT NULL, status TEXT NOT NULL,
+                run_sequence INTEGER, epoch INTEGER, started_at_ms INTEGER, completed_at_ms INTEGER,
+                error TEXT, cache_write_tokens INTEGER, input_baseline INTEGER, cache_read_baseline INTEGER,
+                input_tokens INTEGER, cache_read_tokens INTEGER, output_tokens INTEGER, duration_ms INTEGER,
                 PRIMARY KEY(session_id,run_id)
              );
              PRAGMA application_id = 1179997266;
@@ -195,6 +192,42 @@ fn v2_database_upgrades_to_current_schema_with_the_skills_table() {
         Ok(())
     })
     .unwrap();
+}
+
+#[test]
+fn damaged_current_history_is_not_recreated_on_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agent.db");
+    drop(Database::open(&path).unwrap());
+    let conn = Connection::open(&path).unwrap();
+    conn.execute("INSERT INTO sessions(id) VALUES ('keep')", [])
+        .unwrap();
+    conn.execute_batch("DROP TABLE run_events").unwrap();
+    drop(conn);
+    let error = match Database::open(&path) {
+        Ok(_) => panic!("missing authoritative history must not be recreated"),
+        Err(error) => error,
+    };
+    assert!(error
+        .to_string()
+        .contains("history structure is incomplete"));
+    let conn = Connection::open(&path).unwrap();
+    let missing: bool = conn
+        .query_row(
+            "SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='run_events')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(missing);
+    let preserved: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sessions WHERE id='keep')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(preserved);
 }
 
 #[test]

@@ -1361,3 +1361,10 @@ executables reject schema 5 rather than interpreting snapshots as missing raw
 histories.
 
 `managed_directory_cleanup(kind, directory_id, first_seen_at, delete_requested_at)` records unowned managed directories and explicit deletion intent. It has no ownership FK: intent must survive owner deletion. Unknown owners are retained; only explicit deletion plus absence of live references permits physical cleanup.
+
+`app_schema_migrations(version, checksum, applied_at)` records the Desktop schema
+contract. `app_database_identity(id='main', database_id, restore_generation)`
+records persistent database lineage independently of the data-root path. The
+Desktop application_id is `0x46554150` and user_version is `1`; legacy migration
+markers remain in `schema_migrations`. The shared settings/workspace writers
+reject incompatible headers before creating or modifying tables.

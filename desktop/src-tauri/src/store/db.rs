@@ -193,6 +193,7 @@ pub(super) fn connect() -> Result<PooledConnection, crate::AppError> {
     }
     ensure_app_dirs()?;
     let conn = Connection::open(&path)?;
+    super::migrations::admit(&conn)?;
     conn.execute_batch(CONNECTION_PRAGMAS)?;
     Ok(PooledConnection {
         conn: Some(conn),
@@ -387,7 +388,7 @@ fn apply_agent_session_binding_migration(conn: &Connection) -> Result<(), crate:
 /// database already has each column from `SCHEMA`, so it records the migration
 /// without re-running its `ALTER`; an upgraded database executes the `ALTER`
 /// and records both steps in one SQLite transaction.
-fn apply_versioned_migrations(conn: &Connection) -> Result<(), crate::AppError> {
+pub(super) fn apply_versioned_migrations(conn: &Connection) -> Result<(), crate::AppError> {
     apply_migrations(conn, VERSIONED_MIGRATIONS)
 }
 

@@ -11,6 +11,7 @@ mod deletions;
 mod legacy_history;
 mod managed_cleanup;
 mod markdown_refs;
+mod migrations;
 mod records;
 mod review_snapshots;
 mod runs;
@@ -106,7 +107,7 @@ pub fn app_data_path() -> Result<AppDataPath, crate::AppError> {
 pub fn initialize_app_store() -> Result<(), crate::AppError> {
     ensure_app_dirs()?;
     let conn = connect()?;
-    apply_schema(&conn)?;
+    migrations::initialize(&conn)?;
     drop(conn);
     // Reconcile GUI threads against the agent's session list (orphan-session
     // cleanup) runs later, off the launch path, once the agent is reachable —
@@ -198,7 +199,11 @@ pub fn clear_all_data() -> Result<(), crate::AppError> {
         conn.execute(&format!("DROP TABLE IF EXISTS \"{table}\""), [])?;
     }
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    conn.pragma_update(None, "user_version", 0)?;
+    // A reset retains only control-plane deletion intent. Create the known core
+    // before adopting a new database identity; explicit reset already authorized it.
     apply_schema(&conn)?;
+    migrations::initialize(&conn)?;
     app_settings::restore_device_id(&conn, device_id.as_deref())?;
     drop(conn);
 

@@ -119,3 +119,29 @@ one Agent client, with durable per-session acknowledgement/retry handling.
 ## Managed directory cleanup
 
 Restoring an older app.db never authorizes deleting newer files. Unowned images, chat workspaces and review repositories are recorded in `managed_directory_cleanup` and kept in place. Explicit conversation/workspace deletion records cleanup intent in the deletion transaction. Cleanup rechecks live shared owners under a write lock and retains intent on failure. Age alone never authorizes deletion of unknown data.
+
+## Database admission and upgrade contract
+
+Desktop now uses application_id `0x46554150` and user_version `1`. Known legacy
+Desktop layouts and CLI settings/workspace bootstrap databases are adopted through
+the existing release migrations. `app_schema_migrations` records the new contract
+checksum; `app_database_identity` persists database and restore identities. The
+historical migration identities remain unchanged. A current contract checks core
+columns, foreign-key targets and the conversation binding index before serving.
+It does not replay historical destructive cleanup. Row-level orphan runs remain
+addressable for reconciliation and cancellation.
+
+Before upgrading a populated unversioned Desktop database, a verified SQLite
+snapshot is published under `app/backups/`. Before upgrading a recognized older
+Agent schema, a snapshot is published under `agent/backups/`. Snapshots contain
+committed WAL contents, use unique names, retain original tables and are never
+overwritten on retry. Failure to create/verify the snapshot prevents migration.
+These are independent database snapshots, not a coordinated two-store backup or
+an attachment backup; those require the later backup/restore work.
+
+The Desktop adoption contract is committed only after structural validation.
+Legacy migration steps retain their own transaction boundaries: a failed later
+step leaves earlier committed steps resumable, rather than claiming the entire
+upgrade rolled back. The original snapshot remains available. Corrupt current
+history structures are reported, never masked by creating empty authoritative
+tables. Shared CLI writers reject foreign/future Desktop database headers too.

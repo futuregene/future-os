@@ -839,4 +839,11 @@ WAL 截断不等待读锁，未完成则重试。启动和后台均不自动执�
 新库启用增量回收；已有 NONE 模式的库保持原布局，释放的空间由 SQLite
 内部复用。旧程序明确拒绝 schema 5，避免把已整理的历史误判为空日志。
 
-`managed_directory_cleanup(kind, directory_id, first_seen_at, delete_requested_at)` records unowned managed directories and explicit deletion intent. It has no ownership FK: intent must survive owner deletion. Unknown owners are retained; only explicit deletion plus absence of live references permits physical cleanup.
+`managed_directory_cleanup(kind, directory_id, first_seen_at, delete_requested_at)`
+登记无归属的托管目录及明确删除凭据。它不使用归属外键，删除所有者后仍需保留操作意图。
+未知归属保留原文件；只有明确删除且没有存活引用时，才允许物理清理。
+
+`app_schema_migrations(version, checksum, applied_at)` 记录 Desktop schema 契约。
+`app_database_identity(id='main', database_id, restore_generation)` 记录独立于目录路径的数据库身份。
+Desktop 的 application_id 为 `0x46554150`，user_version 为 `1`；历史迁移仍使用
+`schema_migrations`。共享设置/工作区写入口在建表或修改数据前拒绝不兼容的数据库头。
