@@ -67,6 +67,15 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 use serde_json::{json, Value};
 
+/// Readiness budget for a spawned child, NOT an assertion about speed.
+///
+/// The child starts an embedded agent, discovers the CLI and connects to a broker before it can
+/// print `Remote: Ready`; on a shared CI runner that took longer than the original 30 s and the
+/// fixture failed while the child was still coming up (it passes on this host, 70 s wall clock for
+/// the whole test). Raising the budget keeps the assertion intact - the phase must be REACHED - and
+/// removes a load dependency the campaign has already paid for once (INCIDENTS F.105).
+const READY_BUDGET: Duration = Duration::from_secs(90);
+
 const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
@@ -842,7 +851,7 @@ fn a_live_broker_drives_the_generation_watch_and_reconnect() {
 
     let mut child = ChildRun::spawn(home);
     assert!(
-        child.wait_for("Remote: Ready", Duration::from_secs(30)),
+        child.wait_for("Remote: Ready", READY_BUDGET),
         "the live broker must accept the generation; transcript:\n{}",
         child.text()
     );
@@ -907,7 +916,7 @@ fn a_healthy_generation_resets_the_budget_and_a_retryable_reconnect_arms_the_ret
 
     let mut child = ChildRun::spawn(home);
     assert!(
-        child.wait_for("Remote: Ready", Duration::from_secs(30)),
+        child.wait_for("Remote: Ready", READY_BUDGET),
         "the live broker must accept the generation; transcript:\n{}",
         child.text()
     );
@@ -1062,7 +1071,7 @@ fn a_freshly_refreshed_credential_rejected_on_a_live_link_is_terminal() {
 
     let mut child = ChildRun::spawn(home);
     assert!(
-        child.wait_for("Remote: Ready", Duration::from_secs(40)),
+        child.wait_for("Remote: Ready", READY_BUDGET),
         "the generation must be live before the refusal; transcript:\n{}",
         child.text()
     );
@@ -1117,7 +1126,7 @@ fn a_reconnect_for_a_device_the_book_no_longer_holds_stops_that_runtime() {
 
     let mut child = ChildRun::spawn(home.clone());
     assert!(
-        child.wait_for("Remote: Ready", Duration::from_secs(40)),
+        child.wait_for("Remote: Ready", READY_BUDGET),
         "the generation must be live before the book changes; transcript:\n{}",
         child.text()
     );
@@ -1184,7 +1193,7 @@ fn a_reconnect_with_a_pre_v2_slot_forgets_it() {
 
     let mut child = ChildRun::spawn(home.clone());
     assert!(
-        child.wait_for("Remote: Ready", Duration::from_secs(40)),
+        child.wait_for("Remote: Ready", READY_BUDGET),
         "the v2 generation must be live first; transcript:\n{}",
         child.text()
     );
@@ -1273,7 +1282,7 @@ fn a_reconnect_the_platform_revokes_is_forgotten() {
 
     let mut child = ChildRun::spawn(home.clone());
     assert!(
-        child.wait_for("Remote: Ready", Duration::from_secs(40)),
+        child.wait_for("Remote: Ready", READY_BUDGET),
         "the controlling device must come up; transcript:\n{}",
         child.text()
     );
@@ -1443,7 +1452,7 @@ fn the_reconnect_budget_exhausts_into_a_terminal_watch() {
 
     let mut child = ChildRun::spawn(home);
     assert!(
-        child.wait_for("Remote: Ready", Duration::from_secs(40)),
+        child.wait_for("Remote: Ready", READY_BUDGET),
         "the controlling device must come up before the refusals; transcript:\n{}",
         child.text()
     );
