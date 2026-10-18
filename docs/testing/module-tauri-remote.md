@@ -2004,3 +2004,94 @@ any row outside `supervisor/start.rs` — the file-level arithmetic in §14.2 is
 moves exactly one file. It did not add a production seam (§6.2). It did not re-label the four remaining
 lines as `unreachable-by-construction`: §14.4 shows a writer that *could* satisfy each, which is a
 missing seam, not an impossible state.
+
+## 15. The post-merge re-measurement: what the 994 new lines are, and the two harness envelopes
+
+**Measured at `16ea6f388`** (report `.future/cov100/pinned/union-refresh4.info`, gui leg `rc=0` and headless leg `rc=0`, both whole-crate,
+`clean` between them). `origin/main` was merged at `52d80801f`; #1179/#1184/#1188 add **994 lines**
+inside these scopes.
+
+    uncovered in scope: 1500 across 52 files
+      remote/real_network.rs      788    <- harness envelope (see 15.1)
+      remote/verify_e2e.rs        433    <- harness envelope + InstalledHost fixture (see 15.2)
+      everything else             279    <- production lines, listed per file in 15.3
+
+### 15.1 `remote/real_network.rs` 50-1065 — the real-network harness, 788 lines
+
+One envelope row, not 788 rows. Every line in the file is the harness that drives a **real
+`nats-server` and a real agent process** (`REAL_NET`, `real-network.md`): the fixtures are `#[ignore]`d
+because nothing in a normal `cargo test` run can start a broker, and the file's own module
+documentation says so. A per-line ledger for it would be 788 rows all carrying the same sentence,
+which is exactly the shape F.94 ruled out.
+
+* class: `unreachable-in-this-environment`
+* mechanism: `#[ignore]`d real-broker harness. The ignored drivers DO run - `real-network.md` records
+  six of them executing against a live broker - but only under `cargo test -- --ignored` with a
+  broker on `NATS_URL`, which no measurement run does.
+* the honest consequence: this file contributes 788 uncovered lines to every figure in this record
+  and always will, until the metric changes to "covered or registered" with the envelope as one
+  registered object.
+
+### 15.2 `remote/verify_e2e.rs` 350-450, 2642-2688, … — the cross-process `InstalledHost` fixture, 433 lines
+
+The second envelope, same class and a different mechanism: these are the **child-process** fixtures
+(`InstalledHost`) that spawn the real binary to drive the e2e path end to end. They are `#[ignore]`d
+for the same reason as 15.1 - a spawn needs a broker - but they exist because the arm they reach has
+no in-process route.
+
+* class: `unreachable-in-this-environment`
+* mechanism: `#[ignore]`d cross-process fixture; needs a spawned binary plus a broker.
+* the biggest contiguous run is **419-450 (32 lines)**, the child's own harness body.
+
+### 15.3 The 279 production lines, by file
+
+These are the new code the merge brought in. None of them is waived: **they are OPEN work, and each
+needs a fixture that does not exist yet.** The largest clusters, measured rather than estimated:
+
+| file | uncovered | what it is |
+|---|---|---|
+| `remote/supervisor/start.rs` | 49 | the per-slot retry/restart paths #1179 reworked |
+| `remote/test_support.rs` | 47 | fixture bodies the merge added; reachable only from tests that do not exist |
+| `remote_host/sync_measurement.rs` | 40 | the measurement lane |
+| `remote_host/lean.rs` | 19 | the lean-fetch feature gates |
+| `remote/commands.rs` | 12 | the device-command arms #1179 added |
+| `remote_host/business/*` | 39 | catalog / settings / prompt / providers / wire-limits arms |
+| the rest (16 files) | 73 | one to ten lines each |
+
+**Not registered, deliberately.** Writing a class for these today would be guessing: this campaign's
+reviews have twice fallen hundreds of registrations whose mechanism was a plausible sentence rather
+than a read arm. They stay MISSING until a unit reads them, which is what the per-module tickets are
+for.
+
+### 15.4 The arithmetic, so a reader can check it without the tool
+
+    1500 uncovered
+    - 788  real_network.rs envelope          (registered, 15.1 + 15.5)
+    - 433  verify_e2e.rs envelope            (registered, 15.2 + 15.5)
+    ------
+     279  production lines
+    - 146  already carried by rows written before this merge (D22/D23/D26)
+    ------
+     133  still MISSING
+
+Those 133 are the number a reader will see in `reconcile.py`, and it is the honest one: they are code
+#1179 added that no unit has read yet. They are not waived and this record does not pretend they are.
+
+### 15.5 The two envelope claims, derived from the union
+
+Every range below is generated from `union-refresh4.info` (a line is in the range iff its `DA:0`),
+so the claim and the report cannot drift apart without the gate saying so.
+
+| file | lines | class | mechanism |
+|---|---|---|---|
+| `src/remote/real_network.rs` 50-63, 66-68, 70-72, 74-76, 78-86, 88-92, 95-118, 120-126, 128-130, 132-133, 135-136, 138-146, 148, 152-161, 163-169, 171, 174-184, 188-190, 193, 196-199, 203-206, 210-213, 215-228, 230, 233-236, 240-253, 255-258, 260-263, 265, 267, 269, 272-278, 280, 282-283, 287-295, 298-307, 309-332, 334-343, 346-347, 349-353, 360-368, 371, 373-377, 381-388, 391, 393-397, 402-409, 411-414, 423-438, 440, 443-465, 467, 472-498, 500-507, 509-514, 518-528, 530-532, 548-561, 563-589, 591-616, 618-624, 626-632, 634-637, 639-648, 658-664, 667-679, 681-686, 688, 691-711, 715-727, 729-732, 734, 736, 739-755, 757-761, 768-774, 776-782, 784-788, 791, 794-803, 805-833, 836-842, 844, 846, 852-862, 864, 869-889, 892-902, 904, 906-910, 912-914, 916-918, 921-922, 925, 930-934, 936-939, 941, 944-949, 953-954, 956, 958, 960, 963-968, 971-979, 981-990, 992, 994, 996-997, 1000-1001, 1009-1016, 1018-1019, 1021-1022, 1025-1026, 1030-1031, 1034-1041, 1043-1045, 1047-1053, 1055-1056, 1058-1065 | 788 | `unreachable-in-this-environment` | the real-network harness: `#[ignore]`d, drives a real `nats-server` and agent process (15.1) |
+| `src/remote/verify_e2e.rs` 350-353, 357-360, 365-376, 379-385, 404-417, 419-450, 453, 456-458, 1976, 2174, 2559, 2605, 2642-2653, 2657-2668, 2670-2674, 2676-2677, 2679-2688, 2693-2698, 2700-2713, 2716-2718, 2723-2729, 2731-2744, 2747-2752, 2754-2756, 2759, 2761, 2769-2770, 2772-2776, 2778-2786, 2788, 2793-2798, 2802-2803, 2805-2812, 2817-2822, 2824-2828, 2830-2837, 2842-2858, 2862-2867, 2870-2879, 2890, 2893-2894, 2897-2900, 2904-2905, 2908-2910, 2913-2919, 2921-2922, 2926-2931, 2934-2935, 2939, 2953-2954, 2957-2965, 2970-2979, 2984-2985, 2987-2988, 2991-2992, 2996-3000, 3003, 3005, 3007-3008, 3011-3020, 3023-3025, 3028-3029, 3034-3041, 3044-3047, 3049-3051, 3053-3058, 3061-3062, 3065, 3072, 3075-3077, 3080-3081, 3084-3085, 3089-3092, 3096-3097, 3100-3106, 3108-3110, 3131-3132, 3134-3139, 3142, 3144, 3148-3150, 3152-3155, 3160-3163, 3165, 3168-3169, 3172-3173, 3176-3177, 3181-3191, 3193-3195 | 433 | `unreachable-in-this-environment` | the cross-process `InstalledHost` fixtures: `#[ignore]`d, spawn the real binary (15.2) |
+
+### 15.6 What this section does NOT claim
+
+* It does not claim the module is at any particular percentage: **1500 uncovered, of which 1221 are
+  two documented envelopes**.
+* It does not re-derive the per-line table in §4 - that table still carries the previous revision's
+  numbering and must be re-derived before its rows are quoted again.
+* It does not fix anything. It records, so that the next reader starts from the measurement instead
+  of from a banner.
