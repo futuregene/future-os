@@ -5,9 +5,11 @@ import type { StoredRun, StoredThread } from "../../integrations/storage/threadS
 import type { ComposerSendPayload } from "./Composer";
 import type { LiveTick } from "./liveStreamTick";
 import { listen } from "@tauri-apps/api/event";
+import i18n from "../../i18n";
 import { sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
 import { createRun, storedTimeToIso } from "../../integrations/storage/threadStore";
 import { errorMessage } from "../../lib/errors";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import {
   buildAgentFailureContent,
   buildAgentFailureTitle,
@@ -64,6 +66,19 @@ export async function runSendPipeline(
   // decode rejects the send, leaves the composer draft intact, and surfaces a
   // concrete error instead of showing an attachment the model never received.
   const preparedAttachments = await persistImageAttachments(attachments, thread.id);
+  // A durable copy that failed is not silent: the message still goes out (the
+  // file is readable now, and its temp original is kept), but the reader learns
+  // *now* that the chip they are about to see will stop resolving — instead of
+  // finding out days later, from a bubble claiming a file was "moved or
+  // deleted" that they never touched.
+  if (preparedAttachments.unpersisted.length > 0) {
+    emitFutureEvent("toast", {
+      message: i18n.t("agent:attachment.copyFailed", {
+        names: preparedAttachments.unpersisted.map(item => item.name).join("、"),
+      }),
+      tone: "error",
+    });
+  }
   const importedAttachments = preparedAttachments.attachments;
 
   let stopStreamUpdates: (() => void) | null = null;

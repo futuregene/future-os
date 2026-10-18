@@ -6,7 +6,7 @@ import { sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
 import { createRun, getRun, listRunEvents, updateRunStatus } from "../../integrations/storage/threadStore";
 import { buildReferenceContext } from "./buildReferencePrompt";
 import { runSendPipeline } from "./sendPipeline";
-import { finalizeTemporaryAttachmentSources } from "./threadAttachments";
+import { finalizeTemporaryAttachmentSources, persistImageAttachments } from "./threadAttachments";
 import { updatePendingMessageFromRunEvents } from "./threadRunProjection";
 
 vi.mock("../../integrations/storage/threadStore", async (importOriginal) => {
@@ -31,6 +31,7 @@ vi.mock("./threadAttachments", () => ({
   persistImageAttachments: vi.fn(async () => ({
     attachments: [],
     temporarySources: [],
+    unpersisted: [],
   })),
 }));
 vi.mock("./buildReferencePrompt", () => ({
@@ -173,6 +174,33 @@ describe("runSendPipeline terminal-status handling", () => {
       .pop();
     expect(assistant?.status).toBe("complete");
     expect(assistant?.content).toBe("final answer");
+  });
+
+  it("says so at send time when an attachment's durable copy failed", async () => {
+    // `import_ephemeral_attachment` failing used to be swallowed: the message
+    // went out holding the temp path, and days later the bubble reported a file
+    // "moved or deleted" nobody had touched. The send still goes out (the image
+    // is readable now, and its temp source is kept), but the failure is
+    // announced at the moment it happens.
+    vi.mocked(getRun).mockResolvedValue(storedRun({ status: "completed", endedAt: 2_000 }));
+    vi.mocked(persistImageAttachments).mockResolvedValueOnce({
+      attachments: [{ kind: "image", name: "shot.png", path: "/tmp/futureos-attachments/shot.png", temporary: true }],
+      temporarySources: [],
+      unpersisted: [{ name: "shot.png", path: "/tmp/futureos-attachments/shot.png" }],
+    });
+    const setMessages = vi.fn<(value: SetStateAction<AgentMessage[]>) => void>();
+
+    await runSendPipeline(makeDeps(setMessages), { content: "look", attachments: [] });
+
+    expect(emitFutureEvent).toHaveBeenCalledWith("toast", expect.objectContaining({
+      message: expect.stringContaining("shot.png"),
+      tone: "error",
+    }));
+    // The turn still went out, with the path it has.
+    const user = foldMessages(setMessages).find(message => message.role === "user");
+    expect(user?.attachments?.[0]?.path).toBe("/tmp/futureos-attachments/shot.png");
+    // And nothing deletes a temp source this send never promoted.
+    expect(finalizeTemporaryAttachmentSources).toHaveBeenCalledWith([]);
   });
 
   it("keeps the failed row and still renders when the backend settled a truncated stream", async () => {
