@@ -2242,10 +2242,7 @@ describe("app shell collapsed-panel affordances", () => {
       act(() => rail().onNewChat?.());
       expect(document.querySelector("[data-child='new-conversation']")).not.toBeNull();
 
-      const hub = children.remoteHub as {
-        onStartConversation: (desktopId: string) => void;
-      };
-      act(() => hub.onStartConversation("desktop_a"));
+      act(() => rail().onNewChatOnRemote?.("desktop_a", null));
 
       // The machine's composer takes the column: the draft is addressed with an
       // empty session id, which is the host's own signal to create one.
@@ -2264,11 +2261,7 @@ describe("app shell collapsed-panel affordances", () => {
      */
     it("starts a draft on a chosen host and adopts the conversation the host creates", () => {
       const view = mount(<AppShell />);
-      // The entry lives on the desktop-management screen.
-      act(() => rail().onManageDesktops?.());
-      const hub = children.remoteHub as { onStartConversation: (desktopId: string) => void };
-
-      act(() => hub.onStartConversation("desktop_a"));
+      act(() => rail().onNewChatOnRemote?.("desktop_a", null));
       expect(composer().sessionId).toBe("");
 
       act(() => composer().onCreated?.("sess_new"));
@@ -2521,7 +2514,7 @@ describe("app shell collapsed-panel affordances", () => {
     it("does not ask a host to compact a conversation that does not exist yet", async () => {
       const view = mount(<AppShell />);
       act(() => rail().onManageDesktops?.());
-      act(() => (children.remoteHub as { onStartConversation: (id: string) => void }).onStartConversation("desktop_a"));
+      act(() => rail().onNewChatOnRemote?.("desktop_a", null));
 
       await act(async () => {
         (children.remoteComposer as { onCompact: () => void }).onCompact();
@@ -2578,10 +2571,9 @@ describe("app shell collapsed-panel affordances", () => {
     });
 
     /** A draft with no workspace in mind does not invent one. */
-    it("sends no workspace for a draft started from the machine's page", () => {
+    it("sends no workspace for a draft started from the rail", () => {
       const view = mount(<AppShell />);
-      act(() => rail().onManageDesktops?.());
-      act(() => (children.remoteHub as { onStartConversation: (id: string) => void }).onStartConversation("desktop_a"));
+      act(() => rail().onNewChatOnRemote?.("desktop_a", null));
 
       expect((children.remoteComposer as { workspaceId?: string | null }).workspaceId).toBeNull();
       view.unmount();
@@ -2618,7 +2610,7 @@ describe("app shell collapsed-panel affordances", () => {
     it("hands a draft's model and level to its composer", () => {
       const view = mount(<AppShell />);
       act(() => rail().onManageDesktops?.());
-      act(() => (children.remoteHub as { onStartConversation: (id: string) => void }).onStartConversation("desktop_a"));
+      act(() => rail().onNewChatOnRemote?.("desktop_a", null));
 
       const composer = children.remoteComposer as { freshModelId?: string | null; freshThinkingLevel?: string | null };
       expect(composer).toHaveProperty("freshModelId");
@@ -2630,7 +2622,7 @@ describe("app shell collapsed-panel affordances", () => {
     it("offers no files panel for a conversation that does not exist yet", () => {
       const view = mount(<AppShell />);
       act(() => rail().onManageDesktops?.());
-      act(() => (children.remoteHub as { onStartConversation: (id: string) => void }).onStartConversation("desktop_a"));
+      act(() => rail().onNewChatOnRemote?.("desktop_a", null));
 
       // A draft has no session on the host, so there is nothing to list: the
       // panel is not merely empty, it is not rendered at all.
@@ -2662,7 +2654,7 @@ describe("app shell collapsed-panel affordances", () => {
     it("offers no settings for a conversation that does not exist yet", () => {
       const view = mount(<AppShell />);
       act(() => rail().onManageDesktops?.());
-      act(() => (children.remoteHub as { onStartConversation: (id: string) => void }).onStartConversation("desktop_a"));
+      act(() => rail().onNewChatOnRemote?.("desktop_a", null));
 
       expect(children.conversationSettings).toBeNull();
       view.unmount();

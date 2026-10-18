@@ -85,7 +85,6 @@ function addRowButton(container: HTMLElement): HTMLButtonElement {
 async function mount() {
   const onOpenSettings = vi.fn();
   const onReconnectAll = vi.fn(async () => {});
-  const onStartConversation = vi.fn();
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -94,7 +93,6 @@ async function mount() {
       <RemoteClientSection
         onOpenSettings={onOpenSettings}
         onReconnectAll={onReconnectAll}
-        onStartConversation={onStartConversation}
       />,
     );
   });
@@ -106,7 +104,6 @@ async function mount() {
     input: () => container.querySelector<HTMLInputElement>("input")!,
     onOpenSettings,
     onReconnectAll,
-    onStartConversation,
     button: (label: string) => [...container.querySelectorAll("button")]
       .find(node => node.textContent === label),
     /**
@@ -178,12 +175,18 @@ beforeEach(() => {
   unpairRemotePeer.mockReset().mockResolvedValue(null);
 });
 
-it("offers a new conversation on a reachable host, and names it", async () => {
+/**
+ * A machine's row is about the machine, not about starting chats: conversations
+ * from every host live in the shared conversation list, and a second entry point
+ * here would make the user pick between two answers to "where do I start one".
+ * The row therefore offers connect/disconnect, settings and unpair only.
+ */
+it("keeps a machine's row to machine actions", async () => {
   const view = await mount();
-  expect(view.button("New conversation")).toBeTruthy();
+  const labels = [...view.container.querySelectorAll("[data-testid='peer-row'] button")]
+    .map(node => node.textContent?.trim());
 
-  await act(async () => view.button("New conversation")!.click());
-  expect(view.onStartConversation).toHaveBeenCalledWith("desktop_a");
+  expect(labels).toEqual(["Disconnect", "Settings", "Unpair"]);
   await view.unmount();
 });
 
@@ -230,27 +233,7 @@ it("folds the pairing form away, and names the box when it is opened", async () 
   await view.unmount();
 });
 
-/**
- * The link is up but the agent is not: every prompt would fail, so the button is
- * withheld rather than handing the user a composer that cannot deliver.
- */
-it("withholds the new conversation button when the host's agent is unreachable", async () => {
-  listRemotePeers.mockResolvedValue([peer({ agentAvailable: false })]);
-  const view = await mount();
-
-  expect(view.button("New conversation")).toBeUndefined();
-  await view.unmount();
-});
-
-it("withholds the new conversation button while disconnected", async () => {
-  listRemotePeers.mockResolvedValue([peer({ connected: false })]);
-  const view = await mount();
-
-  expect(view.button("New conversation")).toBeUndefined();
-  await view.unmount();
-});
-
-// ── pairing a new computer ──────────────────────────────────────────────────
+// ── pairing a new computer ────────────────────────────────────────────────
 
 it("pairs from a pasted link, and keeps the box empty after it", async () => {
   const view = await mount();

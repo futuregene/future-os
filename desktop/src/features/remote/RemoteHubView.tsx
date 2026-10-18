@@ -43,7 +43,6 @@ export function RemoteHubView({
   leftPanelExpanded,
   onOpenRemoteSession,
   onReconnectRemoteAll,
-  onStartConversation,
   onToggleAutoConnect,
   onToggleLeftPanel,
   onRefreshRemote,
@@ -61,8 +60,6 @@ export function RemoteHubView({
    * for the machines it is supposed to keep live — so this page only asks for it.
    */
   onReconnectRemoteAll: () => Promise<void>;
-  /** Open a new conversation on a paired computer; owned by the shell. */
-  onStartConversation: (desktopId: string) => void;
   onToggleAutoConnect: (value: boolean) => void;
   onToggleLeftPanel: () => void;
   onRefreshRemote: () => Promise<void>;
@@ -149,7 +146,6 @@ export function RemoteHubView({
           <RemoteClientSection
             onOpenSettings={setSettingsFor}
             onReconnectAll={onReconnectRemoteAll}
-            onStartConversation={onStartConversation}
             refreshNonce={refreshNonce}
           />
         </Direction>
