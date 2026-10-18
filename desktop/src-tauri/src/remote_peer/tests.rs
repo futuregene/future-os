@@ -63,7 +63,7 @@ async fn a_desktop_client_pairs_with_a_real_host_and_reads_its_catalog() {
     // Whether the host's *agent* is reachable is the test machine's business,
     // not the client's, so it is not asserted from here — the reading of the
     // host's report is unit-tested where it lives (`agent_available`).
-    let mut client = connected.session;
+    let client = connected.session;
 
     let data = client
         .request(
@@ -116,7 +116,7 @@ async fn a_second_connection_reconnects_with_ik_after_the_secret_is_cleared() {
         !second.consumed_invitation,
         "a reconnect must not claim to have paired again"
     );
-    let mut second = second.session;
+    let second = second.session;
     let data = second
         .request(
             &second.command_subject("list"),
@@ -254,7 +254,7 @@ async fn a_command_the_host_does_not_implement_surfaces_its_error() {
     let nats = FakeNats::start().await;
     let (pair_id, host_invitation) = start_host(&platform, &nats).await;
     let paired = claim(&platform, &host_invitation, &pair_id, nats.url()).await;
-    let mut client = session::connect(&paired.creds).await.expect("pair").session;
+    let client = session::connect(&paired.creds).await.expect("pair").session;
 
     let error = client
         .request(
@@ -613,7 +613,7 @@ async fn scripted_peer(pair_id: &str, drop_replies: usize) -> (session::PeerSess
  */
 #[tokio::test]
 async fn a_lost_reply_is_retried_under_the_same_command_identity() {
-    let (mut peer, host) = scripted_peer("pair_retry", 1).await;
+    let (peer, host) = scripted_peer("pair_retry", 1).await;
 
     let data = peer
         .request(
@@ -644,7 +644,7 @@ async fn a_lost_reply_is_retried_under_the_same_command_identity() {
  */
 #[tokio::test]
 async fn a_command_that_keeps_losing_its_reply_is_abandoned_after_three_attempts() {
-    let (mut peer, host) = scripted_peer("pair_retry_exhausted", usize::MAX).await;
+    let (peer, host) = scripted_peer("pair_retry_exhausted", usize::MAX).await;
 
     let error = peer
         .request(
@@ -678,7 +678,7 @@ async fn a_command_that_keeps_losing_its_reply_is_abandoned_after_three_attempts
  */
 #[tokio::test]
 async fn a_write_command_is_not_retried() {
-    let (mut peer, host) = scripted_peer("pair_retry_write", usize::MAX).await;
+    let (peer, host) = scripted_peer("pair_retry_write", usize::MAX).await;
 
     let error = peer
         .request(
