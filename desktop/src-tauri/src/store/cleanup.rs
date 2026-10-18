@@ -876,6 +876,9 @@ mod tests {
             .app_dir;
         std::fs::create_dir_all(&app_dir).expect("create app dir");
         let conn = Connection::open(PathBuf::from(&app_dir).join("app.db")).expect("open app db");
+        // Admission must recognize this as a legacy application database,
+        // rather than an unrelated file that happens to have a runs table.
+        future_app_settings::ensure_table(&conn).expect("legacy settings bootstrap");
         conn.execute_batch(
             "CREATE TABLE runs (
                  id TEXT PRIMARY KEY,

@@ -984,6 +984,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_session_entries_reports_failures() {
+        let _home = super::super::test_support::TestHome::new("import-fetch-errors-schema");
         let mock = super::super::test_support::mock_agent();
 
         mock.push(
@@ -1000,6 +1001,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_session_entries_decodes_typed_only_response() {
+        let _home = super::super::test_support::TestHome::new("import-fetch-typed-schema");
         let mock = super::super::test_support::mock_agent();
         mock.push_typed_data(
             "get_session_entries",
@@ -1109,6 +1111,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_session_entries_survives_transport_error() {
+        let _home = super::super::test_support::TestHome::new("import-fetch-transport-schema");
         let mock = super::super::test_support::mock_agent();
         mock.push(
             "get_session_entries",

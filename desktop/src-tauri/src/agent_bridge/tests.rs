@@ -339,6 +339,7 @@ mod bridge_tests {
 
     #[tokio::test]
     async fn session_read_wrappers_decode_or_default() {
+        let _home = TestHome::new("bridge-read-schema");
         let mock = mock_agent();
 
         mock.push_data(
@@ -468,6 +469,7 @@ mod bridge_tests {
 
     #[tokio::test]
     async fn session_read_wrappers_surface_failures() {
+        let _home = TestHome::new("bridge-read-errors-schema");
         let mock = mock_agent();
 
         mock.push("get_messages", Reply::Status(tonic::Code::Internal, "boom"));
@@ -531,6 +533,7 @@ mod bridge_tests {
 
     #[tokio::test]
     async fn session_setter_wrappers() {
+        let _home = TestHome::new("bridge-setters-schema");
         let mock = mock_agent();
 
         mock.push("set_model", Reply::Data("{}".to_string()));

@@ -2019,6 +2019,7 @@ mod flow_tests {
     async fn prepare_download_flows() {
         let _lock = mock_agent_lock();
         let _home = HomeGuard::new("xfer-download");
+        crate::remote::test_support::init_store();
         let agent = ensure_mock_agent();
         let session = unique("sess");
 
@@ -2725,6 +2726,7 @@ mod flow_tests {
     async fn prepare_download_variant_rejects_disallowed_types_and_unknown_variants() {
         let _lock = mock_agent_lock();
         let _home = HomeGuard::new("xfer-disallowed");
+        crate::remote::test_support::init_store();
         let agent = ensure_mock_agent();
         let session = unique("sess");
         let dir = std::env::temp_dir().join(unique("futureos-dl-disallowed"));
