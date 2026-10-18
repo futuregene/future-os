@@ -238,7 +238,6 @@ mod tests {
         );
     }
 
-
     #[tokio::test]
     async fn remote_start_surfaces_a_degraded_status() {
         let _home = HomeGuard::new("remote_start_deg");

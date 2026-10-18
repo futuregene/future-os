@@ -3996,7 +3996,6 @@ mod slot_tests {
         stop();
     }
 
-
     /// A machine whose only connected device was never given control still has
     /// *somebody* to publish to. `controlling_pair` is what every event lane
     /// reads, and `None` there would mean a working device receives nothing.

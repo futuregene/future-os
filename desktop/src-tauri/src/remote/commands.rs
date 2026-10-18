@@ -6244,8 +6244,6 @@ mod bridge_tests {
         }
     }
 
-
-
     /// A standby device may ask about itself — that is how the phone shows
     /// "connected to the machine, not driving it" — but the answer carries its
     /// own liveness only. The conversation list belongs to the machine, and
