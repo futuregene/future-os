@@ -36,7 +36,8 @@
     "webBind": "Some features are temporarily unavailable. Try again later. ({{code}})"
   },
   "error": {
-    "generic": "The action could not be completed. Try again later. (LC999)"
+    "generic": "The action could not be completed. Try again later. (LC999)",
+    "limitReached": "This computer already has the maximum number of devices. Unpair one first."
   },
   "statusConnected": "Connected",
   "statusConnecting": "Connecting",
@@ -51,5 +52,15 @@
   "clientKind.desktop": "{{name}} (a computer)",
   "clientKind.mobile": "{{name}} (a phone)",
   "clientKind.other": "{{name}}",
-  "clientUnknown": "A connected device"
+  "clientUnknown": "A connected device",
+  "deviceActive": "In control",
+  "deviceStandby": "Standby",
+  "deviceOffline": "Offline",
+  "deviceWaiting": "Waiting to pair",
+  "devicePaired": "A paired device",
+  "takeover": "Let this control",
+  "addDevice": "Add a device",
+  "addDeviceHint": "Pair another phone or computer. Only one drives this machine at a time; the one that connects takes over.",
+  "unpairDeviceConfirmTitle": "Unpair this device?",
+  "unpairDeviceConfirmDesc": "{{name}} will no longer connect to this computer. The other devices stay paired."
 }

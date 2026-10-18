@@ -11,12 +11,18 @@ import { RemoteHostSection } from "./RemoteView";
 const startRemote = vi.fn<() => Promise<unknown>>();
 const stopRemote = vi.fn<() => Promise<unknown>>();
 const unpairRemote = vi.fn<() => Promise<unknown>>();
+const addRemoteDevice = vi.fn<() => Promise<unknown>>();
+const unpairRemoteDevice = vi.fn<(pairId: string) => Promise<unknown>>();
+const takeoverRemote = vi.fn<(pairId: string) => Promise<unknown>>();
 
 vi.mock("./remoteClient", async importOriginal => ({
   ...await importOriginal<typeof import("./remoteClient")>(),
   startRemote: () => startRemote(),
   stopRemote: () => stopRemote(),
   unpairRemote: () => unpairRemote(),
+  addRemoteDevice: () => addRemoteDevice(),
+  unpairRemoteDevice: (pairId: string) => unpairRemoteDevice(pairId),
+  takeoverRemote: (pairId: string) => takeoverRemote(pairId),
 }));
 
 const openExternalUrl = vi.fn<(url: string) => Promise<void>>();
@@ -97,11 +103,17 @@ beforeEach(() => {
   startRemote.mockReset();
   stopRemote.mockReset();
   unpairRemote.mockReset();
+  addRemoteDevice.mockReset();
+  unpairRemoteDevice.mockReset();
+  takeoverRemote.mockReset();
   openExternalUrl.mockReset();
   startWindowDrag.mockReset();
   startRemote.mockResolvedValue(undefined);
   stopRemote.mockResolvedValue(undefined);
   unpairRemote.mockResolvedValue(undefined);
+  addRemoteDevice.mockResolvedValue(undefined);
+  unpairRemoteDevice.mockResolvedValue(undefined);
+  takeoverRemote.mockResolvedValue(undefined);
   openExternalUrl.mockResolvedValue(undefined);
   refresh = vi.fn<() => Promise<void>>(async () => {});
   (document as unknown as { execCommand: () => boolean }).execCommand = () => true;
@@ -527,5 +539,136 @@ describe("remoteHostSection", () => {
     await mount({ remoteStatus: null });
     expect(buttonByText("Pair & start")).toBeTruthy();
     expect(buttonByText("Unpair")).toBeUndefined();
+  });
+});
+
+describe("remoteView device list", () => {
+  const control = {
+    pairId: "pair_alpha",
+    phase: "ready" as const,
+    control: "active" as const,
+    connected: true,
+    client: { kind: "mobile", name: "Pixel 9" },
+    pairingCode: null,
+    pairingCodeExpiresAt: null,
+    desktopId: "desk_1",
+  };
+  const standby = {
+    pairId: "pair_beta",
+    phase: "ready" as const,
+    control: "standby" as const,
+    connected: true,
+    client: { kind: "desktop", name: "studio-imac" },
+    pairingCode: null,
+    pairingCodeExpiresAt: null,
+    desktopId: "desk_1",
+  };
+  const invited = {
+    pairId: "pair_gamma",
+    phase: "ready" as const,
+    control: "standby" as const,
+    connected: false,
+    client: null,
+    pairingCode: "futureos://remote/pair?code=xyz",
+    pairingCodeExpiresAt: Math.floor(Date.now() / 1000) + 120,
+    desktopId: "desk_1",
+  };
+
+  it("lists every device and says which one is in control", async () => {
+    await mount({
+      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, standby] }),
+    });
+
+    expect(container.textContent).toContain("Pixel 9 (a phone)");
+    expect(container.textContent).toContain("studio-imac (a computer)");
+    expect(container.textContent).toContain("In control");
+    expect(container.textContent).toContain("Standby");
+    // The single-device card is replaced, not duplicated.
+    expect(container.textContent).not.toContain("Paired as");
+  });
+
+  it("offers a takeover only for the device that is not in control", async () => {
+    await mount({
+      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, standby] }),
+    });
+    const takeovers = [...container.querySelectorAll("button")]
+      .filter(button => (button.textContent ?? "").trim() === "Let this control");
+    expect(takeovers).toHaveLength(1);
+
+    await act(async () => {
+      takeovers[0]?.click();
+    });
+    await flush();
+    expect(takeoverRemote).toHaveBeenCalledWith("pair_beta");
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  it("unpairs one device without touching the others", async () => {
+    await mount({
+      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, standby] }),
+    });
+    const unpairs = [...container.querySelectorAll("button")]
+      .filter(button => (button.textContent ?? "").trim() === "Unpair");
+    expect(unpairs).toHaveLength(2);
+
+    await act(async () => {
+      unpairs[1]?.click();
+    });
+    await flush();
+    expect(container.textContent).toContain("Unpair this device?");
+    expect(container.textContent).toContain("studio-imac (a computer) will no longer connect to this computer. The other devices stay paired.");
+
+    // The shared confirm dialog's destructive button is "Delete".
+    await act(async () => {
+      buttonByText("Delete")?.click();
+    });
+    await flush();
+    expect(unpairRemoteDevice).toHaveBeenCalledWith("pair_beta");
+    expect(unpairRemote).not.toHaveBeenCalled();
+  });
+
+  it("adds a device and shows the invitation for the slot that is waiting", async () => {
+    await mount({
+      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control] }),
+    });
+    expect(container.textContent).not.toContain("Pairing code");
+
+    addRemoteDevice.mockResolvedValue(status({
+      pairId: "pair_alpha",
+      phase: "ready",
+      devices: [control, invited],
+    }));
+    await act(async () => {
+      buttonByText("Add a device")?.click();
+    });
+    await flush();
+    expect(addRemoteDevice).toHaveBeenCalledTimes(1);
+
+    await mount({
+      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, invited] }),
+    });
+    expect(container.textContent).toContain("Waiting to pair");
+    expect(container.textContent).toContain("Pairing code");
+    expect(container.querySelector("[role='img']")).not.toBeNull();
+    // A device waiting to be claimed cannot take control yet.
+    expect(buttonByText("Let this control")).toBeUndefined();
+  });
+
+  it("says the cap is reached instead of a generic failure", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await mount({
+        remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control] }),
+      });
+      addRemoteDevice.mockRejectedValue(new Error("Remote { code: Some(\"pairing_limit_reached\") }"));
+      await act(async () => {
+        buttonByText("Add a device")?.click();
+      });
+      await flush();
+      expect(container.textContent).toContain("This computer already has the maximum number of devices. Unpair one first.");
+    }
+    finally {
+      consoleError.mockRestore();
+    }
   });
 });

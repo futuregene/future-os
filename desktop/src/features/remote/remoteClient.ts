@@ -28,6 +28,28 @@ export interface RecoveryProgress {
   nextRetryAt: number | null;
 }
 
+/** Whether a paired device is the one driving this computer. */
+export type DeviceControl = "active" | "standby";
+
+/**
+ * One paired device, as the host section lists it.
+ *
+ * `connected` is the transport, `control` is the right to command: a device can
+ * be connected and standing by — that is what lets it take back over without
+ * re-pairing — and the two must not be conflated in the UI.
+ */
+export interface RemoteDevice {
+  pairId: string;
+  phase: RemotePhase;
+  control: DeviceControl;
+  connected: boolean;
+  client: { name: string; kind: string } | null;
+  /** An invitation for this device that nobody has claimed yet. */
+  pairingCode: string | null;
+  pairingCodeExpiresAt: number | null;
+  desktopId: string;
+}
+
 export interface RemoteStatus {
   agentAvailable?: boolean;
   phase: RemotePhase;
@@ -56,6 +78,12 @@ export interface RemoteStatus {
    * because the connection stopped being phone-only.
    */
   client: { name: string; kind: string } | null;
+  /**
+   * Every paired device. Absent from a backend that predates multi-device, so
+   * the page falls back to the single-device flow rather than reporting an
+   * empty machine.
+   */
+  devices?: RemoteDevice[];
 }
 
 export interface RemoteFailurePresentation {
@@ -161,6 +189,21 @@ export async function getRemotePairingStatus() {
 
 export async function unpairRemote() {
   return invokeCommand<RemoteStatus>("remote_unpair");
+}
+
+/** Pair one more device; the platform decides whether the cap allows it. */
+export async function addRemoteDevice() {
+  return invokeCommand<RemoteStatus>("remote_add_device");
+}
+
+/** Unpair one device and leave the others paired. */
+export async function unpairRemoteDevice(pairId: string) {
+  return invokeCommand<RemoteStatus>("remote_unpair_device", { pairId });
+}
+
+/** Make `pairId` the device that drives this computer. */
+export async function takeoverRemote(pairId: string) {
+  return invokeCommand<RemoteStatus>("remote_takeover", { pairId });
 }
 
 export async function openUrl(url: string) {
