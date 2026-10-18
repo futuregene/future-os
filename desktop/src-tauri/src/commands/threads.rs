@@ -1730,7 +1730,6 @@ mod tests {
         script_mock_agent(MockScript::default());
     }
 
-    /// A session the agent no longer knows about is an **empty page**, not an
     /// Missing history is actionable; storage failures must retain their own
     /// diagnostics instead of being collapsed into a successful empty page.
     #[tokio::test]

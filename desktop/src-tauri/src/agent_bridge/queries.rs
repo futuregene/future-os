@@ -364,7 +364,11 @@ async fn read_history_page_with_client(
                 .execute_command(command)
                 .await
                 .map_err(|e| format!("get_session_entries failed: {e}"))?
-                .into_inner()
+                .into_inner();
+            if super::client::is_session_not_found(&response) {
+                return Err("Conversation history is unavailable: restore its matching Agent database or legacy sessions backup.".into());
+            }
+            let response = response
                 .ok_or_rpc_error("get_session_entries returned an error")
                 .map_err(|error| error.to_string())?;
             future_rpc::decode::decode_session_entries_page(&response)
