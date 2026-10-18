@@ -17,6 +17,7 @@ import { useComposerInset } from "../agent/useComposerInset";
 import { useQuestionNav } from "../agent/useQuestionNav";
 import { useStickyAutoScroll } from "../agent/useStickyAutoScroll";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
+import { RemoteAttachmentProvider } from "./RemoteAttachmentOrigin";
 import { foldLiveReply, stripRunCopies } from "./remoteLiveReplies";
 import { setRemotePeerVisibleSession } from "./remotePeerClient";
 import { withRemoteRunNotices } from "./remoteRunNotices";
@@ -440,6 +441,12 @@ The same two layers this app's own conversation uses (`AgentThread`):
             {/* `space-y-5`, the spacing this app's own message list uses: the two
                 transcripts put the same gap between turns. */}
             <div className="space-y-5">
+              {/* Every attachment path in this transcript is a path on `desktopId` —
+                  the host read those files, and the metadata records them as they
+                  were there. The chip asks this machine to open them, which can
+                  only fail, so each row says where they really are and the chip
+                  fetches before it opens. Scoped to the rows, not the frame: only
+                  the chip needs it. */}
               {rendered.map((message, index) => {
                 /**
                  * Whether this turn is a settled point.
@@ -453,27 +460,29 @@ The same two layers this app's own conversation uses (`AgentThread`):
                  */
                 const settled = index !== rendered.length - 1 || !streaming;
                 return (
-                  <MessageBlock
-                    dataMessageId={message.id}
-                    hovered={hoveredId === message.id}
-                    isLast={index === rendered.length - 1}
-                    key={message.id}
-                    // The host refuses to continue anything that did not fail, so the
-                    // affordance appears exactly where it would be accepted — and it
-                    // is addressed by the host's own run id.
-                    onContinue={settled && message.status === "failed" && message.runId
-                      ? () => onContinueRun(message.runId!)
-                      : undefined}
-                    onFork={settled ? () => forkAt(rendered, index, persistedEntryIds, onFork) : undefined}
-                    onHover={setHoveredId}
-                    onLeave={id => setHoveredId(current => (current === id ? null : current))}
-                    // No status is stamped on: a reply's own status is what it is. The
-                    // view used to mark the *last settled* reply "streaming" while the
-                    // host reported a run in flight, which put a cursor on the previous
-                    // answer and left the new one invisible.
-                    message={message}
-                    resolveActivityTarget={resolveActivityTarget}
-                  />
+                  <RemoteAttachmentProvider key={message.id} value={{ desktopId, sessionId }}>
+                    <MessageBlock
+                      dataMessageId={message.id}
+                      hovered={hoveredId === message.id}
+                      isLast={index === rendered.length - 1}
+                      key={message.id}
+                      // The host refuses to continue anything that did not fail, so the
+                      // affordance appears exactly where it would be accepted — and it
+                      // is addressed by the host's own run id.
+                      onContinue={settled && message.status === "failed" && message.runId
+                        ? () => onContinueRun(message.runId!)
+                        : undefined}
+                      onFork={settled ? () => forkAt(rendered, index, persistedEntryIds, onFork) : undefined}
+                      onHover={setHoveredId}
+                      onLeave={id => setHoveredId(current => (current === id ? null : current))}
+                      // No status is stamped on: a reply's own status is what it is. The
+                      // view used to mark the *last settled* reply "streaming" while the
+                      // host reported a run in flight, which put a cursor on the previous
+                      // answer and left the new one invisible.
+                      message={message}
+                      resolveActivityTarget={resolveActivityTarget}
+                    />
+                  </RemoteAttachmentProvider>
                 );
               })}
             </div>

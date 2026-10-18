@@ -54,6 +54,7 @@ describe("persistImageAttachments", () => {
         temporary: false,
       }],
       temporarySources: ["/tmp/futureos-attachments/ok.png"],
+      unpersisted: [],
     });
     expect(importEphemeralAttachment).toHaveBeenCalledTimes(1);
     expect(deleteTempAttachment).not.toHaveBeenCalled();
@@ -75,7 +76,55 @@ describe("persistImageAttachments", () => {
         thumbnail: "/thumb/ok.jpg",
       }],
       temporarySources: ["/tmp/futureos-attachments/ok.png"],
+      unpersisted: [],
     });
+  });
+
+  it("reports a failed durable copy instead of swallowing it", async () => {
+    // The bubble would keep a temp path either way; what must not happen is
+    // that nobody learns about it. The attachment is returned as it was (the
+    // turn can still be sent) and the failure is named.
+    generateImageThumbnail.mockResolvedValue("/thumb/ok.jpg");
+    importEphemeralAttachment.mockRejectedValue(new Error("disk full"));
+
+    await expect(persistImageAttachments([
+      { kind: "image", name: "ok.png", path: "/tmp/futureos-attachments/ok.png", temporary: true },
+    ], "thread-1")).resolves.toEqual({
+      attachments: [{
+        kind: "image",
+        name: "ok.png",
+        path: "/tmp/futureos-attachments/ok.png",
+        temporary: true,
+        thumbnail: "/thumb/ok.jpg",
+      }],
+      // Nothing was promoted, so nothing may be deleted after the send.
+      temporarySources: [],
+      unpersisted: [{ name: "ok.png", path: "/tmp/futureos-attachments/ok.png" }],
+    });
+    expect(deleteTempAttachment).not.toHaveBeenCalled();
+  });
+
+  it("reports the same failure for a pasted file, not only an image", async () => {
+    importEphemeralAttachment.mockRejectedValue(new Error("permission denied"));
+
+    const result = await persistImageAttachments([
+      { kind: "file", name: "report.pdf", path: "/tmp/futureos-attachments/report.pdf", temporary: true },
+    ], "thread-1");
+
+    expect(result.unpersisted).toEqual([
+      { name: "report.pdf", path: "/tmp/futureos-attachments/report.pdf" },
+    ]);
+  });
+
+  it("reports nothing when every durable copy succeeded", async () => {
+    generateImageThumbnail.mockResolvedValue("/thumb/ok.jpg");
+    importEphemeralAttachment.mockResolvedValue("/origin/ok.png");
+
+    const result = await persistImageAttachments([
+      { kind: "image", name: "ok.png", path: "/tmp/futureos-attachments/ok.png", temporary: true },
+    ], "thread-1");
+
+    expect(result.unpersisted).toEqual([]);
   });
 
   it("keeps a local (non-ephemeral) image's path and attaches its thumbnail", async () => {
@@ -91,6 +140,7 @@ describe("persistImageAttachments", () => {
         thumbnail: "/thumb/local.jpg",
       }],
       temporarySources: [],
+      unpersisted: [],
     });
     expect(importEphemeralAttachment).not.toHaveBeenCalled();
   });
@@ -110,7 +160,7 @@ describe("persistImageAttachments non-image handling", () => {
   it("passes non-image attachments through both phases untouched", async () => {
     const file = { kind: "file" as const, path: "/a/b.pdf", name: "b.pdf" };
     const result = await persistImageAttachments([file], "t1");
-    expect(result).toEqual({ attachments: [file], temporarySources: [] });
+    expect(result).toEqual({ attachments: [file], temporarySources: [], unpersisted: [] });
     expect(validateImageAttachment).not.toHaveBeenCalled();
   });
 
@@ -121,6 +171,7 @@ describe("persistImageAttachments non-image handling", () => {
     ], "t1")).resolves.toEqual({
       attachments: [{ kind: "file", name: "report.pdf", path: "/origin/report.pdf", temporary: false }],
       temporarySources: ["/tmp/futureos-attachments/report.pdf"],
+      unpersisted: [],
     });
   });
 });
