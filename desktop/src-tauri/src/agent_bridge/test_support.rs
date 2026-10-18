@@ -515,6 +515,40 @@ pub(crate) fn stream_event(run_id: &str, idx: i64, event_type: &str, data: &str)
     }
 }
 
+/// Arm one synthetic `SQLITE_BUSY` for the NEXT store initialization a
+/// [`TestHome`] performs.
+///
+/// The retry arm in `TestHome::new` exists for a real condition — a task outside
+/// the cancel registries still holding the freshly published `app.db`'s write
+/// lock — and that condition has no deterministic seam from a test: it needs a
+/// peer writer inside the ~µs window between `create_dir_all` and the first
+/// `initialize_app_store`. This hook therefore fails the *first* attempt with
+/// the exact error shape production produces (`SqliteFailure` with
+/// `ErrorCode::DatabaseBusy`), which is what makes the retry body testable —
+/// the retried call is the real one, against the real store.
+///
+/// `test_support` is compiled only under `#[cfg(test)]`, so this is not a
+/// production seam.
+static BUSY_FAULT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn arm_busy_fault() {
+    BUSY_FAULT.store(true, Ordering::SeqCst);
+}
+
+/// `crate::store::initialize_app_store()` with the one-shot busy fault applied.
+fn initialize_test_store() -> Result<(), crate::AppError> {
+    if BUSY_FAULT.swap(false, Ordering::SeqCst) {
+        return Err(crate::AppError::Database(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ffi::ErrorCode::DatabaseBusy,
+                extended_code: 5,
+            },
+            Some("database is locked".to_string()),
+        )));
+    }
+    crate::store::initialize_app_store()
+}
+
 /// HOME redirect + store initialization for tests that touch the SQLite
 /// store. Holds the process-wide `TEST_HOME_LOCK` for its whole lifetime.
 pub(crate) struct TestHome {
@@ -550,7 +584,7 @@ impl TestHome {
         // hold its lock for a moment (slow CI runners widen this window).
         // Every step of initialize_app_store is idempotent, so retry the
         // unlucky attempt instead of failing the test.
-        let mut result = crate::store::initialize_app_store();
+        let mut result = initialize_test_store();
         for _ in 0..4 {
             match result {
                 Err(crate::AppError::Database(rusqlite::Error::SqliteFailure(
@@ -561,7 +595,7 @@ impl TestHome {
                     _,
                 ))) => {
                     std::thread::sleep(std::time::Duration::from_millis(500));
-                    result = crate::store::initialize_app_store();
+                    result = initialize_test_store();
                 }
                 _ => break,
             }
@@ -801,5 +835,33 @@ mod tests {
         if let Some(real_home) = real_home {
             std::env::set_var("HOME", real_home);
         }
+    }
+
+    /// `TestHome::new` retries a `SQLITE_BUSY` from the store initialization and
+    /// keeps going, instead of failing the whole test on the first busy attempt.
+    ///
+    /// The condition is a real one (a task outside the cancel registries holding
+    /// the freshly published `app.db`), but it has no deterministic seam, so the
+    /// first attempt is failed with the exact production error shape by
+    /// [`arm_busy_fault`]; the retry then runs against the real store, and the
+    /// assertions below prove the retried initialization actually succeeded.
+    #[test]
+    fn test_home_retries_a_busy_store_initialization() {
+        arm_busy_fault();
+        let home = TestHome::new("busy-retry");
+        assert!(
+            !BUSY_FAULT.load(Ordering::SeqCst),
+            "the armed fault is consumed by the first attempt"
+        );
+        // The retry's own initialization is what left a usable store behind.
+        assert!(
+            crate::store::get_app_settings().is_ok(),
+            "the retried initialization created the store"
+        );
+        assert!(
+            home.path().exists(),
+            "the test home survives the retry: {}",
+            home.path().display()
+        );
     }
 }

@@ -130,10 +130,18 @@ later segments, whose own accounting (§32/§33) is 25 tags checked over two pas
 10 of them enumeration-only. All three findings are acted on, and they resolve in
 two different ways:
 
-* **`D25` is OPEN** (segment 12): its 4 lines leave the waiver count, because the
-  `unreachable-by-construction` category was false — an ordinary Space press
-  reaches them — and no consumer exists for a test to assert. It waits on a
-  product decision (§8.11).
+* **`D25` is CLOSED BY DELETION** (2026-10-17, user decision A — supersedes the
+  "waits on a product decision" state): its 4 lines leave the ledger because the
+  **code they describe no longer exists**. PR **#1170** (`a82f35ce8`) removed the
+  inert `spacePressedRef` (23 lines) and is merged into `main`; verified there, not
+  taken from the report — `grep -c spacePressedRef` = 0, `hold space` = 0,
+  `event.code === "Space"` = 0. So the denominator shrank by exactly the code
+  removed: files with uncovered lines **35 -> 34**, uncovered lines **61 -> 57**,
+  measured lines **12,800 -> 12,796**, line coverage **99.5234% -> 99.5545%**
+  (12,739 / 12,796). Nothing was waived and no category was invented for them: a
+  line that no longer exists needs no justification. The finding that made A right
+  stands — the `unreachable-by-construction` tag was answering a question the
+  ledger does not ask.
 * **`D41` is covered** (segment 13, §8.18): that falsified tag was an
   *environment* claim, and the environment turned out to be the test harness. The
   line is now reached by an assertion-bearing test beside the hook
@@ -157,7 +165,7 @@ and `review-desktop.md` §32 is the review's own final accounting.)
 
 Segment 10 (same day) adds no coverage and changes no test: it is the adversarial
 review of those tags (§10). Segment 11 adds the four non-React tags' checks and
-the calibration that follows from them. Segment 12 acts on the review's `D25`
+the calibration that follows from them. Segment 12 acted on the review's `D25`
 finding and on the stale source comment behind a segment-9 premise — no coverage
 change (§3/§8.11/§8.17). **Segment 13 acts on the review's `D41` finding, and
 segment 14 on its `D54` finding, by covering the line in each case** — the
@@ -350,7 +358,7 @@ waived. No production file was touched.
 
 Suite total 4320 → 4331 tests (+11), 316 files, all green. The 14 tags added are
 D41–D54 in §5 — note that `D41` is no longer a waiver: segment 13 covered the line
-(§8.18), and §8.11/§5 record `D25`'s move to OPEN.
+(§8.18), and §8.11/§5 record `D25`'s move to OPEN — which as of 2026-10-17 is **superseded by deletion**: the user chose option A and PR #1170 removed the dead state, so `D25`'s four lines left the residual by disappearing rather than by staying OPEN.
 
 ### Segment 12 (same day) — the rework after the independent review
 
@@ -585,7 +593,7 @@ every arithmetic statement in this record.
 
 | tag | path:line | status | why it is not waived, and what would close it |
 |---|---|---|---|
-| `D25` | `src/features/filepreview/ImagePreview.tsx:200,201,205,206` | **OPEN — not waived** (registered as `unreachable-by-construction` until segment 12) | The category was falsified by the independent review (REV-DESK, `review-desktop.md` §1 `D25`), and verified independently by the supervisor's own run of that probe: one Space `keydown` + one `keyup` takes all four lines from `DA:0` to `DA:1`, because the effect at 198–215 registers both window listeners unconditionally. The truthful mechanism is therefore *not* unreachability but the absence of a **consumer**: `spacePressedRef` is written at 201 and 206 and read **only** by the re-entry guard on line 200 (`!spacePressedRef.current`), so no observable behaviour depends on it and no assertion-bearing test can pin it. **The resolution is a product decision (§8.11)**: wire the docblock's "hold space and drag to pan" affordance (then the lines have a real test), or have the module owner confirm the affordance is dead (then the state — and with it the lines — goes). Neither may be done unilaterally, and deleting the state *to make the lines disappear* is the forbidden inverse of the waiver policy. |
+| `D25` | `src/features/filepreview/ImagePreview.tsx:200,201,205,206` | **CLOSED BY DELETION (2026-10-17, user decision A)** — the lines no longer exist (PR #1170 `a82f35ce8`, merged); they leave the residual because the code was removed, not because a category was found (registered as `unreachable-by-construction` until segment 12) | The category was falsified by the independent review (REV-DESK, `review-desktop.md` §1 `D25`), and verified independently by the supervisor's own run of that probe: one Space `keydown` + one `keyup` takes all four lines from `DA:0` to `DA:1`, because the effect at 198–215 registers both window listeners unconditionally. The truthful mechanism is therefore *not* unreachability but the absence of a **consumer**: `spacePressedRef` is written at 201 and 206 and read **only** by the re-entry guard on line 200 (`!spacePressedRef.current`), so no observable behaviour depends on it and no assertion-bearing test can pin it. **The resolution is a product decision (§8.11)**: wire the docblock's "hold space and drag to pan" affordance (then the lines have a real test), or have the module owner confirm the affordance is dead (then the state — and with it the lines — goes). Neither may be done unilaterally, and deleting the state *to make the lines disappear* is the forbidden inverse of the waiver policy. |
 
 **The same review's second finding, `D41`, was resolved by covering the line
 (segment 13).** It is recorded here because the *dispute* was real and its
@@ -835,8 +843,15 @@ backstop.
    up as a deliberate test change rather than silently.
 
 11. **`ImagePreview`'s space-to-pan affordance is documented but not wired, and
-the state behind it is read only by its own re-entry guard — a product question
-for the module owner, recorded and not fixed.** *(Corrected in segment 12: the
+the state behind it is read only by its own re-entry guard — RESOLVED 2026-10-17:
+the user chose to DELETE the dead state (option A), and PR #1170 (`a82f35ce8`)
+did it and is merged.** Verified on `main`, not from the report: `grep -c
+spacePressedRef` = 0, `hold space` = 0, `event.code === "Space"` = 0, and line 37's
+doc comment now says "When zoomed in, drag to pan; panning is clamped to the image
+bounds". 23 lines deleted; wheel zoom, double-click toggle, the buttons and the
+clamp logic untouched. The four lines leave the OPEN table by DISAPPEARING:
+files with uncovered lines 35 -> 34, uncovered lines 61 -> 57, measured lines
+12,800 -> 12,796, line coverage 99.5234% -> 99.5545%. Nothing was waived. *(Corrected in segment 12: the
 independent review falsified the category this item originally justified,
 `review-desktop.md` §1 `D25`.)* What is **not** true is the earlier framing
 ("unreachable by construction"): an ordinary Space press reaches all four lines —

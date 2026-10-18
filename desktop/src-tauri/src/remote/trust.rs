@@ -191,4 +191,30 @@ mod tests {
         assert!(bundle_at(&path, &|| Err::<Vec<Vec<u8>>, String>("I/O error".into())).is_none());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
+
+    /// A failed snapshot write keeps the bundle that is already there.
+    ///
+    /// The write is made to fail deterministically by occupying the staging
+    /// path with a directory: `std::fs::write` refuses it, which is the `Err`
+    /// arm `bundle_at` has to answer with the previous bundle rather than with
+    /// `None` (a `None` would send async-nats back to the platform store the
+    /// snapshot exists to avoid).
+    #[test]
+    fn a_failed_write_keeps_the_previous_bundle() {
+        let path = temp_bundle("relay-bundle-writefail");
+        assert!(bundle_at(&path, &|| Ok::<_, String>(vec![vec![5u8; 24]])).is_some());
+        let previous = std::fs::read_to_string(&path).expect("bundle written");
+        let staging = path.with_extension("pem.tmp");
+        std::fs::create_dir(&staging).expect("occupy the staging path");
+
+        let chosen = bundle_at(&path, &|| Ok::<_, String>(vec![vec![9u8; 24]]));
+        assert_eq!(chosen.as_deref(), Some(path.as_path()));
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("bundle kept"),
+            previous,
+            "the failed write must not replace the usable bundle"
+        );
+        assert!(staging.is_dir(), "the failing staging path is left alone");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
 }

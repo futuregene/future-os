@@ -550,6 +550,10 @@ mod tests {
     fn retention_never_evicts_a_running_session() {
         let manager = manager_with_shell();
         let running = create(&manager, "thread-running");
+        // The live tab is the *oldest* entry in the exit order: the queue is
+        // bookkeeping, not proof of exit, so the eviction loop must pop it and
+        // skip it (the `continue`) instead of trusting the queue.
+        manager.note_exit(&running.id);
         let mut exited = Vec::new();
         for index in 0..(EXITED_LIMIT + 2) {
             let info = create_exiting(&manager, &format!("thread-exit-{index}"), 0);

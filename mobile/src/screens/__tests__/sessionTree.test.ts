@@ -1,5 +1,4 @@
-import { buildSessionTree, catalogRows, groupMergedRows, mergedRows } from "../sessionTree";
-import type { MergedSessionRow } from "../../remote/mergeSessions";
+import { buildSessionTree, catalogRows, groupMergedRows } from "../sessionTree";
 import type { RemoteSession, RemoteWorkspace } from "../../remote/types";
 
 const session = (
@@ -214,39 +213,4 @@ test("merged groups with the same place and machine are ordered by their key", (
   ]);
   expect(workspaces.map(group => group.key)).toEqual(["desktop_1::w", "desktop_1::w2"]);
   expect(workspaces.flatMap(group => group.rows.map(item => item.key))).toEqual(["a", "b"]);
-});
-
-/**
- * A group's fold belongs to the group, not to whichever machine the phone is
- * talking to.
- *
- * Opening a conversation in a peer's workspace moves the phone onto that
- * machine — the row opens where it lives. While a heading's fold key depended on
- * that choice (the active machine's plain workspace id, every peer's qualified
- * by its machine), that move renamed *every* heading in the list: a group the
- * reader had folded earlier, while that machine was the one being read, came
- * back folded under them and its neighbour opened, with no tap on any heading.
- * Every heading therefore folds by its own machine — the one it lives on, which
- * the phone's position cannot change.
- */
-test("a workspace's fold belongs to its machine, not to the phone's place", () => {
-  const project = (id: string): RemoteSession =>
-    session(id, undefined, { mode: "workspace", workspaceId: "w", workspaceName: "Project" });
-  const rows: MergedSessionRow[] = [
-    { key: "desk-a::a1", desktopId: "desk-a", lastMessageAt: 1, session: project("a1") },
-    { key: "desk-b::b1", desktopId: "desk-b", lastMessageAt: 1, session: project("b1") },
-  ];
-  const heading = (collapsed: Set<string>) =>
-    mergedRows(rows, "", "workspace", collapsed).filter(row => row.kind === "workspace");
-  const listed = (collapsed: Set<string>) =>
-    mergedRows(rows, "", "workspace", collapsed).flatMap(row =>
-      row.kind === "session" ? [row.session.title] : [],
-    );
-
-  // Same-named workspaces on two machines, one fold key each — neither plain.
-  expect(heading(new Set()).map(row => (row.kind === "workspace" ? row.workspace.id : "")))
-    .toEqual(["desk-a::w", "desk-b::w"]);
-  // And folding one leaves the other open, whichever machine the phone is on.
-  expect(listed(new Set(["desk-a::w"]))).toEqual(["b1"]);
-  expect(listed(new Set(["desk-b::w"]))).toEqual(["a1"]);
 });

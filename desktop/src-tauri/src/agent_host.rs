@@ -133,7 +133,7 @@ impl AgentHost {
                 }
             }
         }
-        let deadline = Instant::now() + START_TIMEOUT;
+        let deadline = Instant::now() + start_timeout();
         let mut state = self.0.state.lock().unwrap();
         loop {
             match &state.phase {
@@ -357,6 +357,364 @@ impl AgentHost {
             handle.request_shutdown(Duration::from_secs(5));
         }
         self.0.changed.notify_all();
+    }
+}
+
+/// How long `start` waits before it cancels a worker that has not published a
+/// phase. Production always uses `START_TIMEOUT`; the re-exec fixtures can shorten
+/// it through their own case environment, which is the only way to observe the
+/// deadline arm without holding a start for three minutes. The override is
+/// compiled out of every non-test build.
+fn start_timeout() -> Duration {
+    #[cfg(test)]
+    if let Ok(millis) = std::env::var("FUTURE_AGENT_HOST_TEST_START_MS") {
+        if let Ok(millis) = millis.parse::<u64>() {
+            return Duration::from_millis(millis);
+        }
+    }
+    START_TIMEOUT
+}
+
+#[cfg(test)]
+mod block_fixtures {
+    //! The `agent_host` residual block, driven through the same subprocess
+    //! re-exec `agent_host::tests` uses: each case owns its process, `FUTURE_HOME`
+    //! and agent socket, so a one-way phase, a blocked startup or a stop deadline
+    //! cannot leak into the shared libtest process.
+    use super::*;
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+
+    const CASE: &str = "FUTURE_AGENT_HOST_BLOCK_CASE";
+
+    #[test]
+    fn a_stopping_desktop_refuses_a_start_before_any_worker_exists() {
+        run_case("stopping");
+    }
+
+    #[test]
+    fn a_ready_host_accepts_a_repeated_start_without_a_second_worker() {
+        run_case("ready-repeat");
+    }
+
+    #[test]
+    fn a_start_that_never_becomes_ready_fails_at_the_startup_deadline() {
+        run_case("timeout");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_worker_that_cannot_finish_fails_the_stop_at_the_cleanup_deadline() {
+        run_case("stop-deadline");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stop_during_the_external_environment_check_never_publishes_ready() {
+        run_case("external-stop");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stop_before_prepare_is_reported_as_a_clean_cancellation() {
+        run_case("cancel-prepare");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_prepare_that_sees_a_moved_home_is_a_real_failure() {
+        run_case("moved-home");
+    }
+
+    fn run_case(case: &str) {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/host-fixtures");
+        std::fs::create_dir_all(&parent).unwrap();
+        let home = tempfile::tempdir_in(&parent).unwrap();
+        // The socket path must stay short: a unix `sun_path` is 104 bytes on
+        // macOS, so `target/host-fixtures/...` would exceed it and the connect
+        // would fail with ENAMETOOLONG instead of the missing-endpoint error.
+        let socket = tempfile::tempdir().unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "agent_host::block_fixtures::host_fixture",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CASE, case)
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .env("FUTURE_HOME", home.path().join(".future"))
+            .env("FUTURE_DESKTOP_AGENT_MODE", "auto")
+            .env("FUTURE_AGENT_SOCKET", socket.path().join("agent.sock"))
+            .env_remove("FUTURE_AGENT_GRPC_ADDR")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if case == "timeout" {
+            command.env("FUTURE_AGENT_HOST_TEST_START_MS", "300");
+        }
+        let mut child = command.spawn().unwrap();
+        // The cleanup-deadline case spends `STOP_TIMEOUT` waiting on purpose.
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "{case} timed out: {} {}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let output = child.wait_with_output().unwrap();
+        // Hoisted: the message arguments of a passing assertion are evaluated
+        // on failure alone, so an inline `from_utf8_lossy` here would be a
+        // residual line in every run.
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{case}: {stdout} {stderr}");
+    }
+
+    /// A cancelled start returns as soon as it observes the new phase, which can
+    /// precede the worker publishing its terminal one; wait for the worker too.
+    fn settled(host: &AgentHost, want: impl Fn(&Phase) -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut phase = host.phase();
+        while Instant::now() < deadline && !want(&phase) {
+            std::thread::sleep(Duration::from_millis(10));
+            phase = host.phase();
+        }
+        want(&phase)
+    }
+
+    /// Waits until the worker has the fixture file open for reading, then returns
+    /// the writer that unblocks it. `ENXIO` means no reader is open yet.
+    #[cfg(unix)]
+    fn blocked_reader(path: &Path) -> std::fs::File {
+        use std::os::unix::fs::OpenOptionsExt;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(path)
+            {
+                Ok(writer) => return writer,
+                Err(error) if error.raw_os_error() == Some(libc::ENXIO) => {
+                    let target = path.display();
+                    assert!(
+                        Instant::now() < deadline,
+                        "the fixture never reached its read: {target}"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("open fixture {}: {error}", path.display()),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn fifo(path: &Path) {
+        use std::os::unix::ffi::OsStrExt;
+        let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+    }
+
+    #[test]
+    fn host_fixture() {
+        let Ok(case) = std::env::var(CASE) else {
+            return;
+        };
+        let host = AgentHost::default();
+        if case == "stopping" {
+            // `begin` closes producer admission synchronously, before its worker
+            // runs: the guard is what `start` must observe.
+            let _ = crate::desktop_shutdown::begin("fixture");
+            let error = host.start("auto".into()).unwrap_err();
+            assert!(error.to_string().contains("Desktop is stopping"), "{error}");
+            assert_eq!(host.phase(), Phase::Idle);
+            assert!(!host.owns_agent());
+            return;
+        }
+        if case == "ready-repeat" {
+            let _mock = crate::agent_bridge::test_support::mock_agent();
+            host.start(crate::agent_bridge::raw_agent_addr()).unwrap();
+            assert_eq!(host.phase(), Phase::Ready);
+            assert!(
+                !host.owns_agent(),
+                "an attached Agent stays owned by its own process"
+            );
+            host.start("auto".into()).unwrap();
+            assert_eq!(host.phase(), Phase::Ready);
+            host.stop().unwrap();
+            assert_eq!(host.phase(), Phase::Stopped);
+            return;
+        }
+        if case == "timeout" {
+            let endpoint = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            endpoint.set_nonblocking(true).unwrap();
+            let address = endpoint.local_addr().unwrap();
+            let starter = host.clone();
+            let thread = std::thread::spawn(move || starter.start(format!("http://{address}")));
+            // A peer that accepts but never answers keeps the probe in flight,
+            // which is the state the startup deadline has to cut short.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let _peer = loop {
+                match endpoint.accept() {
+                    Ok((peer, _)) => break peer,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "the probe did not connect");
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("accept probe: {error}"),
+                }
+            };
+            let error = thread.join().unwrap().unwrap_err().to_string();
+            assert!(error.contains("startup timed out"), "{error}");
+            let phase = host.phase();
+            assert!(
+                matches!(phase, Phase::Failed(_)),
+                "a timed-out start never publishes Ready: {phase:?}"
+            );
+            let cleanup = host.stop().unwrap_err().to_string();
+            assert!(cleanup.contains("startup timed out"), "{cleanup}");
+            return;
+        }
+        #[cfg(unix)]
+        if case == "stop-deadline" {
+            // Block the storage import: the worker then cannot reach `finished`
+            // before the stop deadline, which is the arm under test.
+            let sessions = root_sessions();
+            std::fs::write(
+                sessions.join("a.jsonl"),
+                serde_json::json!({"id":"e1","type":"user","role":"user","content":[{"type":"text","text":"fixture"}],"timestamp":"2026-01-01T00:00:00Z"}).to_string() + "\n",
+            )
+            .unwrap();
+            let blocked = sessions.join("b.jsonl");
+            fifo(&blocked);
+            let starter = host.clone();
+            let thread = std::thread::spawn(move || starter.start("auto".into()));
+            let mut writer = blocked_reader(&blocked);
+            // Opening the writer unblocks the reader's `File::open`; its next
+            // cancellation checkpoint runs *before* the read that then blocks.
+            // Let it settle into the read, or the cancel below would abort the
+            // import at that checkpoint instead of leaving it stuck.
+            std::thread::sleep(Duration::from_millis(200));
+            assert_eq!(
+                host.phase(),
+                Phase::Starting,
+                "the import must still be in flight, not finished"
+            );
+            let started = Instant::now();
+            let error = host.stop();
+            let error = error.unwrap_err().to_string();
+            assert!(error.contains("cleanup timed out"), "{error}");
+            let elapsed = started.elapsed();
+            assert!(
+                elapsed >= STOP_TIMEOUT,
+                "the deadline is what fails the stop: {elapsed:?}"
+            );
+            assert!(matches!(host.phase(), Phase::Failed(_)));
+            // Release the worker so the process exits with no stuck import.
+            use std::io::Write;
+            let _ = writer.write_all(b"\n");
+            drop(writer);
+            let _ = thread.join();
+            return;
+        }
+        #[cfg(unix)]
+        if case == "external-stop" {
+            let _mock = crate::agent_bridge::test_support::mock_agent();
+            let agent_dir = future_rpc::home::future_home().join("agent");
+            std::fs::create_dir_all(&agent_dir).unwrap();
+            let auth = agent_dir.join("auth.json");
+            fifo(&auth);
+            let starter = host.clone();
+            let address = crate::agent_bridge::raw_agent_addr();
+            let thread = std::thread::spawn(move || starter.start(address));
+            // The reader proves the worker is inside the external-owner policy
+            // check, i.e. after the probe resolved and before it takes the lock.
+            let mut writer = blocked_reader(&auth);
+            host.request_stop();
+            use std::io::Write;
+            writer.write_all(b"{}").unwrap();
+            drop(writer);
+            let error = thread.join().unwrap().unwrap_err().to_string();
+            assert!(
+                error.contains("startup was cancelled"),
+                "a stop in that window is a cancellation, not a ready: {error}"
+            );
+            let stopped = settled(&host, |phase| *phase == Phase::Stopped);
+            let phase = host.phase();
+            assert!(
+                stopped,
+                "the cancelled attach publishes a terminal phase: {phase:?}"
+            );
+            assert!(!host.owns_agent());
+            return;
+        }
+        #[cfg(unix)]
+        if case == "cancel-prepare" {
+            let agent_dir = future_rpc::home::future_home().join("agent");
+            std::fs::create_dir_all(&agent_dir).unwrap();
+            let auth = agent_dir.join("auth.json");
+            fifo(&auth);
+            let starter = host.clone();
+            let thread = std::thread::spawn(move || starter.start("auto".into()));
+            let mut writer = blocked_reader(&auth);
+            // Cancellation lands before `prepare`, whose first checkpoint then
+            // reports a typed startup cancellation rather than a failure.
+            host.request_stop();
+            use std::io::Write;
+            writer
+                .write_all(br#"{"future":{"base_url":"https://fixture.invalid/api"}}"#)
+                .unwrap();
+            drop(writer);
+            let error = thread.join().unwrap().unwrap_err().to_string();
+            assert!(error.contains("startup was cancelled"), "{error}");
+            let stopped = settled(&host, |phase| *phase == Phase::Stopped);
+            let phase = host.phase();
+            assert!(
+                stopped,
+                "a cancelled prepare publishes a terminal phase: {phase:?}"
+            );
+            return;
+        }
+        #[cfg(unix)]
+        if case == "moved-home" {
+            let agent_dir = future_rpc::home::future_home().join("agent");
+            std::fs::create_dir_all(&agent_dir).unwrap();
+            let auth = agent_dir.join("auth.json");
+            fifo(&auth);
+            let starter = host.clone();
+            let thread = std::thread::spawn(move || starter.start("auto".into()));
+            let mut writer = blocked_reader(&auth);
+            // A root that moved after the configuration was captured is refused
+            // by the service rather than silently initialized elsewhere.
+            let moved = std::env::temp_dir().join("future-agent-host-moved-home");
+            std::env::set_var("FUTURE_HOME", &moved);
+            use std::io::Write;
+            writer
+                .write_all(br#"{"future":{"base_url":"https://fixture.invalid/api"}}"#)
+                .unwrap();
+            drop(writer);
+            let error = thread.join().unwrap().unwrap_err().to_string();
+            assert!(error.contains("home changed"), "{error}");
+            assert!(matches!(host.phase(), Phase::Failed(_)));
+            assert!(!moved.join("agent").exists());
+            return;
+        }
+        panic!("unknown case {case}");
+    }
+
+    #[cfg(unix)]
+    fn root_sessions() -> std::path::PathBuf {
+        let sessions = future_rpc::home::future_home().join("agent/sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        sessions
     }
 }
 

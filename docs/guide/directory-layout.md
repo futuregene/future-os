@@ -43,8 +43,7 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 │   └── run_events/            # per-run event logs (JSONL)
 ├── workspaces/
 │   └── chat/                  # per-thread chat workspaces (agent session / thread id)
-├── remote_pairings.json       # remote bridge credential book: one slot per paired device
-├── remote_pairing.json        # legacy single-device bridge identity (read as a one-slot book, then left in place)
+├── remote_pairing.json        # desktop remote-bridge identity (nkey_seed + user_jwt)
 ├── remote_pending_revokes.json # desktop revoke compensation (pair IDs + platform, no tokens)
 ├── approval_rule.json         # user-level path approval rules
 ├── windows-capabilities.json  # Windows sandbox ACL cleanup metadata
@@ -217,12 +216,8 @@ Owned by the Tauri desktop app (see `desktop/`):
   See [internal desktop NATS](../internals/desktop-nats.md).
 
 The desktop remote bridge keeps its pairing identity (`nkey_seed` +
-`user_jwt` + NATS addresses) in `~/.future/remote_pairings.json` (at the
-`~/.future` root, not under `app/`) — one slot per device it has paired, with
-the `pair_id` currently in control. An installation paired before multi-device
-kept a single credential in `~/.future/remote_pairing.json`; that file is read
-as a one-slot book and left in place, so a downgraded build still finds a
-pairing instead of minting a new invitation. An explicit unpair removes both.
+`user_jwt` + NATS addresses) in `~/.future/remote_pairing.json` (at the
+`~/.future` root, not under `app/`).
 
 ## `~/.future/workspaces/chat/` — chat workspaces
 

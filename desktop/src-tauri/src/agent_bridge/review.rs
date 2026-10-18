@@ -1021,4 +1021,82 @@ mod tests {
             std::env::set_var("HOME", saved);
         }
     }
+
+    /// The window between `retry`'s snapshot reads and its changeset write is
+    /// not a seam-less TOCTOU: `shadow_review::materialize` runs `git` as a
+    /// subprocess inside it. A `git` on `PATH` that deletes the Run row on its
+    /// first invocation and then defers to the real one makes the ordering
+    /// deterministic, so the deleted-parent arm is ordinary tested code rather
+    /// than a timing race.
+    #[cfg(unix)]
+    #[test]
+    fn retry_reports_a_run_deleted_while_the_changeset_is_materialized() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::path::Path;
+
+        /// Restores `PATH` and the probe variables even if an assertion fails.
+        struct Shim {
+            prev_path: String,
+        }
+
+        impl Drop for Shim {
+            fn drop(&mut self) {
+                std::env::set_var("PATH", &self.prev_path);
+                std::env::remove_var("RETRY_PROBE_DB");
+                std::env::remove_var("RETRY_PROBE_RUN");
+                std::env::remove_var("RETRY_PROBE_SENTINEL");
+            }
+        }
+
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (fx, thread, run) = fixture("retry-deleted");
+        let ws_path =
+            store::get_workspace(&store::get_thread(&thread.id).unwrap().unwrap().workspace_id)
+                .unwrap()
+                .unwrap()
+                .path;
+        fs::write(Path::new(&ws_path).join("keep.txt"), "before\n").unwrap();
+        super::capture_before(&thread.id, &run.id);
+        fs::write(Path::new(&ws_path).join("keep.txt"), "before\nafter\n").unwrap();
+        super::capture_after(&thread.id, &run.id);
+
+        let bin = fx.base.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let shim = bin.join("git");
+        fs::write(
+            &shim,
+            "#!/bin/sh\n\
+             if [ -n \"$RETRY_PROBE_SENTINEL\" ] && [ ! -f \"$RETRY_PROBE_SENTINEL\" ]; then\n\
+               : > \"$RETRY_PROBE_SENTINEL\"\n\
+               python3 -c 'import os,sqlite3;c=sqlite3.connect(os.environ[\"RETRY_PROBE_DB\"]);\
+             c.execute(\"DELETE FROM runs WHERE id=?\",(os.environ[\"RETRY_PROBE_RUN\"],));c.commit()'\n\
+               sleep 1\n\
+             fi\n\
+             exec /usr/bin/git \"$@\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let prev_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{}", bin.display(), prev_path));
+        std::env::set_var(
+            "RETRY_PROBE_DB",
+            future_app_settings::app_db_path().unwrap(),
+        );
+        std::env::set_var("RETRY_PROBE_RUN", &run.id);
+        std::env::set_var("RETRY_PROBE_SENTINEL", fx.base.join("armed"));
+        let _shim = Shim { prev_path };
+
+        let error = super::retry(&run.id).expect_err("the parent row is gone");
+        assert!(
+            error.to_string().contains("was deleted"),
+            "expected the deleted-parent arm, got: {error}"
+        );
+        assert!(
+            store::get_run_changeset(&run.id).unwrap().is_none(),
+            "no changeset is written for a Run that no longer exists"
+        );
+    }
 }

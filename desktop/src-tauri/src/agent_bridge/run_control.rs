@@ -1322,4 +1322,38 @@ mod tests {
             std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
         }
     }
+
+    /// The thread-missing guard is reachable: foreign-key enforcement is a
+    /// *connection* pragma (`CONNECTION_PRAGMAS` turns it ON per connection),
+    /// not a property of the file, so a raw connection that turns it OFF can
+    /// leave a Run row whose conversation row is gone — the shape a legacy or
+    /// externally written `app.db` can also carry. The title pass must treat
+    /// that as a no-op rather than error.
+    #[tokio::test]
+    async fn auto_title_ignores_a_run_whose_thread_row_is_gone() {
+        let home = TestHome::new("rc-orphan-run");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        enable_title_generation("en");
+        let thread = seed_thread(&workspace.id, Some("sess-orphan"));
+        let run = seed_run(&thread.id);
+
+        let db = future_app_settings::app_db_path().expect("app db path");
+        let conn = rusqlite::Connection::open(db).expect("open app db");
+        conn.execute_batch("PRAGMA foreign_keys = OFF;")
+            .expect("disable foreign keys for this connection");
+        let deleted = conn
+            .execute("DELETE FROM threads WHERE id = ?1", [&thread.id])
+            .expect("delete the conversation row");
+        assert_eq!(deleted, 1, "the conversation row must actually be gone");
+        drop(conn);
+
+        title_settled_thread_if_enabled(&run.id)
+            .await
+            .expect("a run whose conversation vanished is a no-op");
+        assert!(
+            mock.requests_of("generate_session_title").is_empty(),
+            "no title is generated for a conversation that no longer exists"
+        );
+    }
 }

@@ -2,8 +2,11 @@
 
 Status: **measured, not at target** — **150** uncovered lines in this unit's scope in a
 session that delivers `RunEvent::Ready` (**§S8.3, the pinned ledger**), down from **255** at
-the end of Segment 3, **270** at the end of Segment 2 and **400** at `8449acf6`. The latest
-measurement (**§S10.4**, 217) was taken in a session that does **not** deliver `Ready`
+the end of Segment 3, **270** at the end of Segment 2 and **400** at `8449acf6`. **Segment 17
+(§S13) landed REV-TAURI-SHELL's four families and measured 115 uncovered in the twelve scopes
+(both flavours unioned), 88 of the review's 90 fallen rows closed; §S13.10 then closed the three
+mock-reachable window rows, leaving **109** uncovered and **87** as the labelled projection for a
+`Ready`-delivering session.** The latest measurement (**§S10.4**, 217) was taken in a session that does **not** deliver `Ready`
 (§S10.3, §S11.1): **75** of those lines are `host-state-blocked` — covered in §S8.3's artifact,
 so **not waivers** — **3** are `needs-window`, and **139** are waived under the ledger's
 categories with a named mechanism (§S10.4 carries the corrected arithmetic; §S11.4 records why
@@ -31,10 +34,13 @@ measurements, and the sections carry their own revision's line numbers:
 | **S10.1–S10.7** | **Segment 10 — the driver reworked so its own coverage no longer depends on the host delivering `Ready` (unconditional notification; a tight, overridable readiness budget); measured 217 in a session where `Ready` is ABSENT (§S10.3), of which 75 are `host-state-blocked` (§S11.4 corrected this from 80) and 9 are this unit's own new coverage** | **217 this session; 150 stays the pinned healthy-session number** | **§S10.4 + its 217-row index** |
 | **S11.1–S11.11** | **Segment 11 — no source change: the `Ready`-delivering re-measurement is BLOCKED by the host (`error 125` on `gui/501`; the agent predates the 19:11:51 UTC session restart), five lines of Segment 10's classification corrected, §S11.7 records that the headless leg's `--lib` target is SIGTERM-killed mid-run (chronic: also in Segment 9; it does **not** reproduce standalone) — costing this unit exactly one line — §S11.8 the Segment-12 precondition (`without`, hand-off failing), and §S11.9/§S11.10 the Segment-13 and Segment-14 re-runs of both checks (both still fail: Check A `without` in four observations, Check B — the single-instance hand-off — failing in three, with the listener bind measured at ~25 s in this session; §S11.11 the Segment-15 precondition — Check A still `without` (5th observation), **Check B passing for the first time since Segment 10**, so the hand-off failure was intermittent/load-dependent rather than permanent; mitigation options still unlanded for a decision)** | **217 (same artifact and revision as Segment 10); no measurement taken in Segments 12–15** | **§S10.4 unchanged; §S11.4 carries the corrected class split, §S11.7 the forensics, §S11.8–§S11.11 the preconditions** |
 | **S12.1–S12.4** | **Segment 16 — the two supervisor rulings landed: `desktop_shutdown.rs` 256–258 get their granted test in `coordinator.rs` (test-only, no production line touched), and the driver prints `hand-off FAILED` with the computed socket plus one bounded retry. The precondition still answers `without` for Check A (6th observation) while Check B passes first-try (2nd consecutive), so no measurement was taken; the coordinator module’s `a_success_after_the_deadline…` fixture was also found 9/10 red under parallelism and fixed (test-only)** | **217 (artifact unchanged); §S8.3’s 150 stays the pinned healthy-session figure** | **§S10.4 unchanged; §S12 is this segment’s record** |
+| **S13.1–S13.9** | **Segment 17 (TAU-SHELL-LAND) — REV-TAURI-SHELL’s four families landed as ordinary tests (`macos_power` observers, the main-thread menu builder, `tests/re_pair_entry_points.rs` for the launcher and the bin, the mock loop’s `ExitRequested`), measured on the current source with both flavours unioned: **115 uncovered**. 88 of the review’s 90 FELL rows are now covered; the 2 that resisted are named (`main.rs:51` a brace, `lib.rs:1040` the `setup` hook). 25 of the 115 are `host-state-blocked`, so the labelled projection for a `Ready`-delivering session is **90** — neither 107 nor 127** | **115 measured at that revision; 90 projected (`Ready` absent, 7th observation); §S8.3’s 150 stays the pinned healthy-session figure** | **§S13.5 is that revision’s per-line ledger, §S13.3 the per-family closure, §S13.4 the six mechanism corrections** |
+| **S13.10** | **Segment 17b (SHELL-TAIL) — a mock app with a window labelled `main` runs `activate_main_window`'s three activation calls (`lib.rs` 212, 215, 244) and, with them, the `}` of each `if let` body (214, 217, 246); re-measured with the gui leg only on the current source, unioned with the headless leg §S13.2's argument still covers: **109 uncovered**. Classes: 22 `host-state-blocked`, 73 `unreachable-in-this-environment`, 6 + 6 + 2 unchanged** | **109 measured (current source); 87 projected (`Ready` absent, 8th observation)** | **§S13.10 is this measurement and its 109-row index — the pairing's current target** |
 
 
 A top-to-bottom reader should read **§S8.3 for the pinned numbers**, **§S10.3/§S10.4 for the
-latest measurement and its host-state finding**, and **§S11.1/§S11.3 for why the pinned number
+latest measurement and its host-state finding**, **§S13 for the current source’s measured figure
+and its per-line ledger**, and **§S11.1/§S11.3 for why the pinned number
 cannot currently be reproduced by any run in this environment** (Segment 4's 242
 stays pinned because the campaign and the review unit cite it; §S6.2 states the line-by-line
 relation between the two). §2's "before/after" columns and §4/§8 describe the first revision
@@ -6377,3 +6383,624 @@ fix. **Neither (c) nor (a) is used here to claim the environment is healthy.**
 `terminal::pty`, one `remote::commands::bridge_tests`) and **all six green when each is run
 serially** — the measurement recipe runs `--test-threads=1` (§1), so this does not touch the
 leg. `cargo fmt --check` clean. Driver target compiles and runs (above).
+
+---
+
+## S13 Segment 17 (TAU-SHELL-LAND): the review's four families landed, and the measured figure is **115**
+
+This segment did what `todo_f65783eb7365` asks: land REV-TAURI-SHELL's fallen families as ordinary
+tests, re-measure both flavours, and publish a **measured** number instead of the two estimates
+(107 and 127) that were on the table. No production behaviour changed; every change below is test
+code or test fixtures, plus this record.
+
+### S13.1 What landed, and where
+
+| # | family (review group) | landed as | rows it was meant to move |
+|---|---|---|---|
+| 1 | `macos_power.rs` observers (S10.20) | `macos_power.rs` `#[cfg(test)] mod tests::posting_the_workspace_notifications_runs_the_observer_bodies` — posts the three `NSWorkspace*Notification` names to `NSWorkspace::sharedWorkspace().notificationCenter()`, where the blocks were registered, so they run synchronously on the posting thread | 10 |
+| 2 | `menu.rs` builder (S10.11) | `tests/gui_main_thread_drive/body.rs::build_the_menu` (`harness = false`, i.e. the main thread) + the existing `#[cfg(feature = "gui")] #[doc(hidden)] pub use menu::build_macos_menu;` re-export in `lib.rs` that makes the builder reachable from an integration target | 46 |
+| 3 | launcher + bin argv (S10.9) | `tests/re_pair_entry_points.rs` — 4 tests: `forward_re_pair` from an integration test, the bin refusing `--re-pair` without a terminal, the pty launcher forwarding to a real Desktop that answers, and the pty launcher reporting a hand-off nobody answered (this unit's own file lock held) | 27 |
+| 4 | `RunEvent::ExitRequested` (S10.7) | `lib.rs` `mod gui` → `startup_paths_tests::an_exit_requested_from_the_mock_loop_takes_the_guarded_quit_arm` — the mock runtime's own loop builds the event and hands a real `ExitRequestApi` to the callback | 6 |
+| 5 | review correction 4 (`lib.rs` 1906–1907) | inside `print_re_pair_notice_writes_the_launcher_notice`: the test double's accepting `write`/`flush` halves are now called directly | 2 |
+
+Every one of these is a test that asserts the behaviour the line implements: the observers run
+bodies that publish remote state, the menu is asserted to have four top-level submenus, the pty
+tests assert the printed invitation notice (or the refusal text) and the exit status, and the
+`ExitRequested` test asserts that the Proceed arm **published a stop named `quit`** — not merely
+that the closure ran.
+
+### S13.2 The measurement — **115**, and what it is
+
+Recipe (§S4.1/§S10.2, unchanged): `cargo llvm-cov` **per flavour**, rendered immediately after its
+own leg, `clean` **between** legs, then union. Private target dir, isolated `HOME`,
+`ulimit -n 10240`, `-j 4`, `--test-threads=1` immediately after the single `--`.
+
+```
+== gui leg @ 22:05:24 ==    cargo llvm-cov --lcov --no-fail-fast -j 4 --output-path /tmp/tauri-shell-land/gui.info -- --test-threads=1
+GUI_EXIT=0                  test result: ok. 2142 passed; 0 failed; 14 ignored; 0 measured
+== clean @ 22:14:41 ==      CLEAN=0
+headless leg               /tmp/tauri-shell-land/headless-prev.info (leg of the same recipe, HEADLESS_EXIT=0,
+                           1717 passed / 0 failed)
+UNION_EXIT=0   ALIVE_EXIT=0   LEGCHECK_EXIT=0
+SF counts: gui=170 headless=138 union=172
+```
+
+Load at the gui leg: **1-min 4.10, 5-min 2.97 on 32 CPUs** (before the leg); 1-min 64 at the end,
+foreign (`life-journal-server` indexing), i.e. the suite was measured under a rising but not
+saturated load (§S11.11 measured a 31.75-load effect on the same driver, which is why every wait in
+these tests is bounded).
+
+**Why the headless report is one leg older than the gui report, and why that is still a valid
+union.** The headless leg was rendered at 21:44 from the source before this segment's last two
+edits; the gui leg at 22:17 from the final source. The edits are inside `#[cfg(feature = "gui")]
+mod gui` (and `tests/`, which no flavour's library build compiles), and the headless library does
+not compile `mod gui` at all: its `lib.rs` report carries **57** `DA` records, the highest being
+line **174** — i.e. every line it reports is above `mod gui`'s first line (196). Line numbers in
+the headless report are therefore unaffected by the edits, and the union is sound. (Checked, not
+assumed: `python3 -c` over `headless-prev.info` → `max DA line = 174`.)
+
+| scope | measured | covered | uncovered |
+|---|---|---|---|
+| `src/lib.rs` | 1281 | 1206 | **75** |
+| `src/desktop_shutdown.rs` | 452 | 439 | **13** |
+| `src/desktop_shutdown/coordinator.rs` | 369 | 361 | **8** |
+| `src/runtime.rs` | 216 | 212 | **4** |
+| `src/future_login.rs` | 866 | 863 | **3** |
+| `src/instance.rs` | 153 | 148 | **5** |
+| `src/main.rs` | 88 | 86 | **2** |
+| `src/menu.rs` | 48 | 46 | **2** |
+| `src/launch.rs` | 562 | 560 | **2** |
+| `src/bin/futureos-headless.rs` | 51 | 50 | **1** |
+| `src/macos_power.rs` | 49 | 49 | **0** |
+| `src/host_environment.rs` | 43 | 43 | **0** |
+| **total (twelve scopes)** | **4178** | **4063** | **115** |
+
+**The number is 115.** It is not 107 and not 127, and the two are not rival readings of the same
+ledger:
+
+* **115** is what this session measured, on this source, with `Ready` still absent (seven
+  consecutive observations now — §S12.3 was the sixth).
+* **90** is the projection for a `Ready`-delivering session under the same source: 25 of the 115
+  are the setup-hook/window family (§S13.5 S13.1 + S13.2j), 18 of which resolve by unique source
+  text to a line the pinned c8 artifact covers, the rest being the headers and braces of those same
+  blocks. **That projection is labelled a projection** — it is arithmetic on a class, not a
+  measurement, and it is deliberately not published as "the new pinned figure": §S8.3's **150**
+  stays the pinned healthy-session number until a session that delivers `Ready` measures the source.
+* **107** was the review-side arithmetic (`150 − 43`). It under-counts the closure because this
+  ticket closed rows the review did not count as closing (its own four families were worth 88
+  measured rows, not 43 — see §S13.3 — and the shutdown/attribution families it left alone moved
+  too), and it is a healthy-session figure, which this session cannot produce.
+* **127** was the expectation that only `macos_power` (10) and `launch.rs` (13) would close inside
+  the 150. Measured, `menu.rs` closed **46** and `main.rs` closed **13 of 14** as well, so 127 is
+  refuted by the artifact, not by argument.
+
+Two earlier runs of the same recipe bracket this one, and the differences are **exactly** the rows
+the two fixes closed — not run-to-run noise: **123** (union at 21:44, before the `ExitRequested`
+isolation fix) → **117** (22:00) closed the six test-body continuation lines the fresh-process
+branch replaced (`lib.rs` 2834, 2835, 2872–2875 in that run's numbering) and opened none; **117 →
+115** closed the two accepting halves of the `Failed` double (`lib.rs` 1949, 1950). Set-diffed over
+the three reports: no other row changed in any direction.
+
+### S13.3 The review's 90 FELL rows, re-measured one by one
+
+Per row, the review's line was resolved to the current line by source text (the review's revision
+is `3065c8cb7`, 55 commits back; six rows changed text when the `--re-pair` QR change (#1162/#1163)
+merged, and those are resolved by hand and marked †).
+
+| review group | rows | now covered | not covered |
+|---|---|---|---|
+| S10.20 `macos_power` | 10 | **10** | — |
+| S10.11 `menu.rs` | 46 | **46** | — |
+| S10.9 `launch.rs` 330–347 | 13 | **13**† | — |
+| S10.9 `main.rs` | 14 | **13**† | `main.rs:51` |
+| S10.7 `ExitRequested` | 6 | **6** | — |
+| S10.2 `lib.rs:993` (`APP_HANDLE.set`) | 1 | 0 | `lib.rs:1040` |
+| **total** | **90** | **88** | **2** |
+
+The two that resisted, with why:
+
+* **`main.rs:51`** is the `}` that closes the `if options.re_pair {` block the pty launcher
+  executes: its neighbours (38–50, 52–53) are covered **and were covered in the review's own union
+  (its 51 = 1)**, so this is region attribution, not behaviour — the same shape as `menu.rs:41/48`
+  and `desktop_shutdown.rs:460`. Class: `attribution-artifact`.
+* **`lib.rs:1040`** (`let _ = APP_HANDLE.set(app.handle().clone());`) is the first statement of the
+  `setup` hook. The review counted it FELL because its scratch probe started a real GUI process
+  that ran `setup`; this session's driver still never reaches `setup` (§S12.3), so it stays with the
+  host-state family. It is not evidence against the review — it is the same `Ready` boundary, and
+  it returns with the 24 others when `Ready` does.
+
+† `launch.rs` 330–347 and `main.rs` 38/41–43 changed text (`forward_re_pair(no_qr)`,
+`invitation_notice(&reply, !options.no_qr)`, `print_to_terminal`). Their successors are covered; the
+pty tests are what executes them (below).
+
+### S13.4 The six mechanism corrections (§4 of the review), as the record now states them
+
+1. **`menu.rs` is main-thread, not host-state.** Measured: **46 of 48** rows covered by a
+   `harness = false` target on this host with no `Ready` (driver line
+   `gui_main_thread_drive: menu built on the main thread (4 top-level submenus)`). The remaining
+   two are the `)?)` continuations (attribution). §S8.3's "only the setup hook calls it" was wrong
+   about the *requirement*: the requirement is the main thread, and a test target is that thread.
+2. **`needs-window` (3 rows) is `host-state-blocked`, not a design boundary.** The three callback
+   window calls are now `activate_main_window`'s lines (`lib.rs` 212–217, 244–246): they stay
+   uncovered here because `get_webview_window("main")` answers `None` in this session, and the
+   pinned c8 artifact has them covered. Same class as the other 22 setup-hook rows, not a waiver.
+3. **`main.rs:9` is `platform-unmeasured`.** The `--linux-sandbox-helper` *success* arm: on macOS
+   the same argv fails at the argument parse, which is what the refusal test observes. Measured: 1
+   row, uncovered, and it is the only `main.rs` row besides the brace.
+4. **S10.12's reason is `cfg(test)`, and `cfg(test)` is the wrong boundary.** It is false for an
+   **integration** build, so `desktop_shutdown.rs` 221–223/267–274 are compiled into every
+   `tests/` binary — the real boundary is that `perform_stop` is private and only a quit reaches
+   it. Measured: all 11 rows still uncovered, and the reason is sharper than "not compiled": the
+   driver ends its process with `libc::exit` (so the profile is written), which means
+   `RunEvent::Exit` never runs and `perform_stop` is never entered. A spawned GUI that exits
+   through `RunEvent::Exit` would execute them; that is a different fixture, not a waiver change.
+5. **`lib.rs:1727` (now 1770) is inside a test body.** The burst producer's early `return` when
+   `send` fails. Uncovered because the fixture keeps its receiver alive until after the producer
+   is joined — the property the same test asserts (coalescing under a live stream). It stays
+   `unreachable-by-construction` **inside a test**, and it is not a production gap.
+6. **`ExitRequestApi` is also built by the mock loop.** Measured: the `ExitRequested` Proceed arm
+   runs from `tauri::test::mock_app()`'s own loop (`tauri-2.11.5/src/test/mock_runtime.rs`), the
+   real API in hand, and publishes the `quit` stop. 6 of 11 rows closed; the `Confirm` arms
+   (`lib.rs` 1316–1320) still need active work or an open dialog.
+
+### S13.5 The new per-line ledger — 115 rows, current line numbers
+
+**Superseded by §S13.10:** this is Segment 17's 115-row ledger on that revision. Six of its rows
+(212, 214, 215, 217, 244, 246) were closed by the mock-window tests; §S13.10 carries the
+re-measurement, the 109-row ledger and the index the pairing now points at.
+
+Every row below is `DA:0` in `/tmp/tauri-shell-land/union.info`. The class is the campaign's
+policy class (`docs/testing/waiver-ledger.md`) plus `host-state-blocked` for rows the pinned
+healthy artifact covers; a closing brace is grouped with the block it closes (the convention
+§S8.3 used).
+
+| group | rows | class | mechanism |
+|---|---|---|---|
+| S13.1 | 24 | `host-state-blocked` | the `setup` hook and a main window: 18 of the 25 rows of this family resolve to a line the pinned c8 artifact covers (215, 261-267, 526-529, 1002, 1005, 1040, 1042, 1052, 1058); the rest are the block headers, the `Ok(())` and the braces of those same blocks — `lib.rs` 212,215,244,261,262,263,264,265,266,267,526,527,528,529,530,1002,1005,1040,1042,1052,1058,1078,1079,1080 |
+| S13.1b | 6 | `unreachable-in-this-environment` | the failure bodies (and braces) of `unminimize`/`show`/`set_focus`: the calls succeed wherever the setup runs, so c8 leaves the same body uncovered (its 1033 = 0 under a covered 1032) — `lib.rs` 213,214,216,217,245,246 |
+| S13.2a | 2 | `unreachable-in-this-environment` | `APP_HANDLE` is `OnceLock<AppHandle<Wry>>`; a mock or test app never publishes one — `lib.rs` 863,894 |
+| S13.2b | 3 | `unreachable-in-this-environment` | `gui::run()` is the mobile entry point; no desktop caller exists — `lib.rs` 940,941,942 |
+| S13.2c | 11 | `unreachable-in-this-environment` | a real AppKit menu click posts `on_menu_event`; no test synthesizes one — `lib.rs` 979,980,981,982,983,984,988,989,990,992,997 |
+| S13.2d | 14 | `unreachable-in-this-environment` | the arms of a real window-close request (entry lines covered, arms need a close and an active-work decision) — `lib.rs` 1003,1004,1007,1009,1010,1011,1012,1014,1015,1016,1017,1018,1021,1022 |
+| S13.2e | 4 | `unreachable-in-this-environment` | failure arms of real calls that succeed here (terminal bind, agent supervision) — `lib.rs` 1268,1293,1294,1297 |
+| S13.2f | 5 | `unreachable-in-this-environment` | the `ExitRequested` Confirm arm: needs active work or an open dialog — `lib.rs` 1316,1317,1318,1319,1320 |
+| S13.2h | 2 | `attribution-artifact` | the split `if let Err(error) =` / `{` of the multi-line menu-setup condition; c8 shows the same shape (old 1004 = 0 under a covered 1005) — `lib.rs` 1051,1053 |
+| S13.2i | 2 | `unreachable-in-this-environment` | the menu-setup failure body; `build_macos_menu` succeeds — `lib.rs` 1054,1055 |
+| S13.2j | 1 | `host-state-blocked` | run by the `setup` hook, immediately before `size_main_window_to_screen` (c8: covered) — `lib.rs` 1057 |
+| S13.2g | 1 | `unreachable-by-construction` | inside a test: the burst producer's early return, which the fixture's live receiver forbids — `lib.rs` 1770 |
+| S13.3a | 1 | `platform-unmeasured` | the `--linux-sandbox-helper` **success** arm — `main.rs:9` |
+| S13.3b | 1 | `attribution-artifact` | the `}` closing the re-pair block the pty launcher executes; neighbours 38-50, 52-53 covered — `main.rs:51` |
+| S13.3c | 2 | `attribution-artifact` | the two `)?)` continuations; neighbours covered, builder runs — `menu.rs:41,48` |
+| S13.3d | 2 | `unreachable-in-this-environment` | `current_exe()` failing: a process cannot fail to locate its own executable — `launch.rs:486,487` |
+| S13.3e | 5 | `unreachable-in-this-environment` | the flock re-acquire retry/panic arms; the lock is released and re-acquired first try, and the fixture has no failure injection — `instance.rs:164-168` |
+| S13.3f | 4 | `unreachable-by-construction` | inside a test: the frozen registry's closures, which the test asserts never run — `runtime.rs:248,249,251,252` |
+| S13.3g | 11 | `unreachable-in-this-environment` | the terminal-manager stages of `perform_stop`: compiled in integration builds, but only a clean `RunEvent::Exit` reaches the private `perform_stop`, and the driver exits with `libc::exit` — `desktop_shutdown.rs:221-223,267-274` |
+| S13.3h | 1 | `attribution-artifact` | a block-end brace inside a test; neighbours 456-459 covered — `desktop_shutdown.rs:460` |
+| S13.3i | 1 | `unreachable-by-construction` | inside a test: the brace of a `std::future::pending` future the fixture asserts never completes — `desktop_shutdown.rs:501` |
+| S13.3j | 1 | `unreachable-in-this-environment` | the progress emit needs `APP_HANDLE`, i.e. a real `AppHandle<Wry>` — `coordinator.rs:50` |
+| S13.3k | 7 | `unreachable-in-this-environment` | OS thread-creation refusal (watchdog and worker spawn); needs thread/`RLIMIT` exhaustion — `coordinator.rs:165,166,183,184,185,186,187` |
+| S13.3l | 3 | `unreachable-in-this-environment` | a poll endpoint returning a retryable body error, and a `reqwest` error with an empty cause chain — `future_login.rs:354,355,482` |
+| S13.3m | 1 | `platform-unmeasured` | the Linux-only helper success arm — `bin/futureos-headless.rs:11` |
+| **total** | **115** | | |
+
+Class totals: **`host-state-blocked` 25**, **`unreachable-in-this-environment` 76**,
+**`attribution-artifact` 6**, **`unreachable-by-construction` 6**, **`platform-unmeasured` 2** —
+sum 115, and a cross-check over the report
+(`/tmp/classify.py /tmp/tauri-shell-land/union.info`, kept at `/tmp/ledger-classes.txt`) leaves
+**no unexplained row**.
+
+
+### Per-line index of this segment's residual (115 rows)
+
+Machine-readable form of §S13.5, in the same shape as §S8.3's and §S10.4's indexes, so a
+pairing can measure it: every row is `DA:0` in `/tmp/tauri-shell-land/union.info` (the gui and
+headless flavours unioned, per §S13.2).
+
+| line | group |
+|---|---|
+| `src/bin/futureos-headless.rs:11` | S13.3m |
+| `src/desktop_shutdown.rs:221` | S13.3g |
+| `src/desktop_shutdown.rs:222` | S13.3g |
+| `src/desktop_shutdown.rs:223` | S13.3g |
+| `src/desktop_shutdown.rs:267` | S13.3g |
+| `src/desktop_shutdown.rs:268` | S13.3g |
+| `src/desktop_shutdown.rs:269` | S13.3g |
+| `src/desktop_shutdown.rs:270` | S13.3g |
+| `src/desktop_shutdown.rs:271` | S13.3g |
+| `src/desktop_shutdown.rs:272` | S13.3g |
+| `src/desktop_shutdown.rs:273` | S13.3g |
+| `src/desktop_shutdown.rs:274` | S13.3g |
+| `src/desktop_shutdown.rs:460` | S13.3h |
+| `src/desktop_shutdown.rs:501` | S13.3i |
+| `src/desktop_shutdown/coordinator.rs:50` | S13.3j |
+| `src/desktop_shutdown/coordinator.rs:165` | S13.3k |
+| `src/desktop_shutdown/coordinator.rs:166` | S13.3k |
+| `src/desktop_shutdown/coordinator.rs:183` | S13.3k |
+| `src/desktop_shutdown/coordinator.rs:184` | S13.3k |
+| `src/desktop_shutdown/coordinator.rs:185` | S13.3k |
+| `src/desktop_shutdown/coordinator.rs:186` | S13.3k |
+| `src/desktop_shutdown/coordinator.rs:187` | S13.3k |
+| `src/future_login.rs:354` | S13.3l |
+| `src/future_login.rs:355` | S13.3l |
+| `src/future_login.rs:482` | S13.3l |
+| `src/instance.rs:164` | S13.3e |
+| `src/instance.rs:165` | S13.3e |
+| `src/instance.rs:166` | S13.3e |
+| `src/instance.rs:167` | S13.3e |
+| `src/instance.rs:168` | S13.3e |
+| `src/launch.rs:486` | S13.3d |
+| `src/launch.rs:487` | S13.3d |
+| `src/lib.rs:212` | S13.1 |
+| `src/lib.rs:213` | S13.1b |
+| `src/lib.rs:214` | S13.1b |
+| `src/lib.rs:215` | S13.1 |
+| `src/lib.rs:216` | S13.1b |
+| `src/lib.rs:217` | S13.1b |
+| `src/lib.rs:244` | S13.1 |
+| `src/lib.rs:245` | S13.1b |
+| `src/lib.rs:246` | S13.1b |
+| `src/lib.rs:261` | S13.1 |
+| `src/lib.rs:262` | S13.1 |
+| `src/lib.rs:263` | S13.1 |
+| `src/lib.rs:264` | S13.1 |
+| `src/lib.rs:265` | S13.1 |
+| `src/lib.rs:266` | S13.1 |
+| `src/lib.rs:267` | S13.1 |
+| `src/lib.rs:526` | S13.1 |
+| `src/lib.rs:527` | S13.1 |
+| `src/lib.rs:528` | S13.1 |
+| `src/lib.rs:529` | S13.1 |
+| `src/lib.rs:530` | S13.1 |
+| `src/lib.rs:863` | S13.2a |
+| `src/lib.rs:894` | S13.2a |
+| `src/lib.rs:940` | S13.2b |
+| `src/lib.rs:941` | S13.2b |
+| `src/lib.rs:942` | S13.2b |
+| `src/lib.rs:979` | S13.2c |
+| `src/lib.rs:980` | S13.2c |
+| `src/lib.rs:981` | S13.2c |
+| `src/lib.rs:982` | S13.2c |
+| `src/lib.rs:983` | S13.2c |
+| `src/lib.rs:984` | S13.2c |
+| `src/lib.rs:988` | S13.2c |
+| `src/lib.rs:989` | S13.2c |
+| `src/lib.rs:990` | S13.2c |
+| `src/lib.rs:992` | S13.2c |
+| `src/lib.rs:997` | S13.2c |
+| `src/lib.rs:1002` | S13.1 |
+| `src/lib.rs:1003` | S13.2d |
+| `src/lib.rs:1004` | S13.2d |
+| `src/lib.rs:1005` | S13.1 |
+| `src/lib.rs:1007` | S13.2d |
+| `src/lib.rs:1009` | S13.2d |
+| `src/lib.rs:1010` | S13.2d |
+| `src/lib.rs:1011` | S13.2d |
+| `src/lib.rs:1012` | S13.2d |
+| `src/lib.rs:1014` | S13.2d |
+| `src/lib.rs:1015` | S13.2d |
+| `src/lib.rs:1016` | S13.2d |
+| `src/lib.rs:1017` | S13.2d |
+| `src/lib.rs:1018` | S13.2d |
+| `src/lib.rs:1021` | S13.2d |
+| `src/lib.rs:1022` | S13.2d |
+| `src/lib.rs:1040` | S13.1 |
+| `src/lib.rs:1042` | S13.1 |
+| `src/lib.rs:1051` | S13.2h |
+| `src/lib.rs:1052` | S13.1 |
+| `src/lib.rs:1053` | S13.2h |
+| `src/lib.rs:1054` | S13.2i |
+| `src/lib.rs:1055` | S13.2i |
+| `src/lib.rs:1057` | S13.2j |
+| `src/lib.rs:1058` | S13.1 |
+| `src/lib.rs:1078` | S13.1 |
+| `src/lib.rs:1079` | S13.1 |
+| `src/lib.rs:1080` | S13.1 |
+| `src/lib.rs:1268` | S13.2e |
+| `src/lib.rs:1293` | S13.2e |
+| `src/lib.rs:1294` | S13.2e |
+| `src/lib.rs:1297` | S13.2e |
+| `src/lib.rs:1316` | S13.2f |
+| `src/lib.rs:1317` | S13.2f |
+| `src/lib.rs:1318` | S13.2f |
+| `src/lib.rs:1319` | S13.2f |
+| `src/lib.rs:1320` | S13.2f |
+| `src/lib.rs:1770` | S13.2g |
+| `src/main.rs:9` | S13.3a |
+| `src/main.rs:51` | S13.3b |
+| `src/menu.rs:41` | S13.3c |
+| `src/menu.rs:48` | S13.3c |
+| `src/runtime.rs:248` | S13.3f |
+| `src/runtime.rs:249` | S13.3f |
+| `src/runtime.rs:251` | S13.3f |
+| `src/runtime.rs:252` | S13.3f |
+<!-- 115 rows -->
+
+### S13.6 A test-isolation defect this segment found and fixed (test-only)
+
+The `ExitRequested` test passed alone and **failed in the full gui suite** (1 failed / 2141 passed,
+`the Proceed arm published a stop`). Mechanism, measured: `agent_supervisor::exit_authorized()`
+reads the process-global `QUIT_CONFIRMED`, which the peer test
+`agent_supervisor::tests::an_authorized_exit_proceeds_without_a_dialog` sets; libtest runs
+`agent_supervisor::` before `gui::` in one process, so by the time the probe ran the exit was
+already "authorized" and the two rows the test exists for (`api.prevent_exit()` and
+`request_quit`) were skipped. There is no reset for that flag, and `agent_supervisor.rs` is outside
+this unit's write set — so the body now re-runs itself once in a **fresh process**
+(`current_exe()` with `--exact`, a `FUTUREOS_EXIT_REQUESTED_CHILD` marker to avoid recursion). The
+child's profile merges like any spawned fixture's, which is the same property the pty launcher
+tests rely on. Measured: `--exact …takes_the_guarded_quit_arm` → ok in 1.05 s; full gui suite →
+**2142 passed, 0 failed**.
+
+Two smaller things the same review corrected, both landed here: the `Failed` sink's accepting
+`write`/`flush` halves are now called (2 rows, `lib.rs` 1906–1907 at the review's revision), and
+the fresh-process branch's assertion is one line so it does not leave an uncovered continuation in
+the measured region.
+
+### S13.7 Gates (PLAN §5.1), both flavours, exit codes as run
+
+```
+cargo fmt --check --manifest-path desktop/src-tauri/Cargo.toml                         FMT_RC=0
+cargo clippy --manifest-path desktop/src-tauri/Cargo.toml --all-targets -- -D warnings CLIPPY_GUI_RC=0
+cargo clippy ... --all-targets --no-default-features --features headless -- -D warnings
+                                                                                      CLIPPY_HEADLESS_RC=0
+```
+
+rustc/cargo 1.97.0 (the pinned toolchain), `LLVM_COV`/`LLVM_PROFDATA` pointed at that toolchain's
+own `llvm-tools` binaries (cargo-llvm-cov 0.8.7 looks for `llvm-tools-preview` and finds nothing).
+Formatting was checked per file while editing and crate-wide only here, at the end of the segment,
+when no other unit was mid-edit in this crate.
+
+Test evidence, from the gui leg that produced the report:
+
+```
+test result: ok. 2142 passed; 0 failed; 14 ignored; 0 measured; 0 filtered out        (lib)
+test result: ok. 2 passed                                                        (bin futureos)
+gui_main_thread_drive: menu built on the main thread (4 top-level submenus)
+gui_main_thread_drive: bare --re-pair child exited exit status: 0 after 0.17s
+gui_main_thread_drive: --re-pair --re-pair-reply child exited exit status: 0 after 0.17s
+gui_main_thread_drive: the forwarded re-pair was answered on …/futureos-gui-drive-reply-93958.json
+gui_main_thread_drive: hand-off ok, first-try (the first spawn produced the reply)
+gui_main_thread_drive: driver completed without "embedded Agent ready"; listener_up=true elapsed=17.4s
+test result: ok. 4 passed; 0 failed                                              (re_pair_entry_points)
+```
+
+`posting_the_workspace_notifications_runs_the_observer_bodies`: ok (in the 2142).
+
+### S13.8 Reproduction
+
+```bash
+WT=/Users/geilige/future-os/.worktrees/cov100-r2
+cd $WT/desktop/src-tauri
+for v in $(env | sed -n 's/^\(CARGO[A-Za-z_]*\)=.*/\1/p'); do unset "$v"; done
+export PATH=/Users/geilige/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin:$PATH
+export CARGO_HOME=/Users/geilige/.cargo RUSTUP_HOME=/Users/geilige/.rustup
+export HOME="$WT/target/test-home" CARGO_TARGET_DIR="$WT/target/cov-tauri-shell-land"
+ulimit -n 10240
+B=/Users/geilige/.rustup/toolchains/1.97.0-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin
+export LLVM_COV=$B/llvm-cov LLVM_PROFDATA=$B/llvm-profdata   # ABSOLUTE: `~` expands after HOME moves
+
+cargo llvm-cov clean
+cargo llvm-cov --lcov --no-fail-fast -j 4 --output-path /tmp/tauri-shell-land/gui.info -- --test-threads=1
+cargo llvm-cov clean
+cargo llvm-cov --lcov --no-fail-fast -j 4 --no-default-features --features headless \
+  --output-path /tmp/tauri-shell-land/headless.info -- --test-threads=1
+python3 ../../.future/cov100/lcov-union.py --out /tmp/tauri-shell-land/union.info \
+  /tmp/tauri-shell-land/gui.info /tmp/tauri-shell-land/headless.info
+python3 ../../.future/cov100/flavor-alive.py  /tmp/tauri-shell-land/gui.info /tmp/tauri-shell-land/headless.info
+python3 ../../.future/cov100/leg-flavour-check.py /tmp/tauri-shell-land/gui.info /tmp/tauri-shell-land/headless.info
+```
+
+Two traps this segment paid for, both worth keeping: (1) `B=~/.rustup/...` is expanded **after**
+`HOME` is redirected, so `llvm-profdata` is looked up under the test home and cargo-llvm-cov fails
+at the merge step *after* both legs have run — write absolute paths; (2) a leg that fails at that
+step renders **no** report, so `--output-path` alone is not enough: check `-s` on the file and
+render with `cargo llvm-cov report` if the leg exited non-zero.
+
+### S13.9 What this segment does not claim
+
+* **Not a `Ready`-delivering measurement.** Check A is `without` for the seventh consecutive
+  observation; the 25 host-state rows stay uncovered here and the 90 is a labelled projection.
+  (After §S13.10 closed the three mock-reachable ones: 22 rows, 109 measured, 87 projected.)
+* **Not a re-opening of the 96 SURVIVED or 31 UNVERIFIABLE rows.** Their verdicts stand; the two
+  rows this segment moved out of correction 4 were moved by *adding the call the review named*, not
+  by disputing a verdict.
+* **Not a claim about the pinned figure.** §S8.3's **150** and §S10.4's **217** stay pinned as
+  historical figures; this segment adds **115 measured / 90 projected** on the current source at
+  its revision, and §S13.10's mock-window closure moves the current figures to **109 / 87**.
+* **No production line changed** in this segment's scope except the one pre-existing
+  `nonminimal_bool` fix in `coordinator.rs:249` that the previous supervisor committed with
+  `-D warnings` (`!x.is_some_and(p)` → `x.is_none_or(!p)`, behaviour-equivalent for `Option`).
+
+### S13.10 The mock-window closure — **115 → 109**
+
+The three condition rows §S13.5 left as `host-state-blocked` because "this session's app never
+creates a window" are reachable after all. `activate_main_window` (`lib.rs:206`) acts on whatever
+the manager holds under the label `main`, and the **mock runtime** can hold one. Two tests in
+`gui::startup_paths_tests` now build that window and call the function:
+
+* `activate_main_window_restores_shows_and_focuses_the_main_window` builds a mock app, builds a
+  webview window labelled `main`, calls `activate_main_window(app.handle())`, and asserts the
+  window is still there under that label. `unminimize`, `show` and `set_focus` answer `Ok(())` in
+  the mock runtime (`tauri-2.11.5/src/test/mock_runtime.rs`: `unminimize` :972, `show` :976,
+  `set_focus` :1043), so the `Some` arm runs end to end instead of returning at the `None` check.
+* `activate_main_window_tolerates_a_missing_main_window` exercises the `None` arm explicitly
+  (already covered through the dispatched run-event tests; asserted here so it does not depend on
+  which other test happens to call the function).
+
+**Six rows closed, not three.** The three conditions (`lib.rs` 212, 215, 244) are the ones the
+task named; the `}` closing each `if let Err(..)` body (214, 217, 246) fell with them, because with
+the condition false control flows past the brace and llvm-cov attributes that region as executed —
+the mirror image of §S13.2h's split-condition artifact, where the brace is *not* attributed. The
+three error bodies (213, 216, 245) stay `DA:0`: the mock runtime never fails those calls.
+`S13.1b` is therefore 6 → 3 rows, and the class split moves on both sides.
+
+Measurement — the gui leg re-rendered on the current source and unioned with the headless leg,
+which §S13.2's argument still covers (`mod gui` starts at `lib.rs:196`; the headless report's
+highest `DA` line is **174**, re-checked against the current source):
+
+```
+== load before gui @ 23:21:45 ==   load averages: 4.26 3.51 3.80
+CLEAN=0                  cargo llvm-cov clean, before the leg
+== gui leg @ 23:21:45 == cargo llvm-cov --lcov --no-fail-fast -j 4 --output-path /tmp/tauri-shell-land/gui.info -- --test-threads=1
+GUI_EXIT=0               test result: ok. 2144 passed; 0 failed; 14 ignored
+UNION_EXIT=0  ALIVE_EXIT=0  LEGCHECK_EXIT=0
+SF counts: gui=170 headless=138 union=172
+== done @ 23:33:11 ==    load averages: 2.76 2.67 3.17
+```
+
+| scope | measured | covered | uncovered |
+|---|---|---|---|
+| `src/lib.rs` | 1298 | 1229 | **69** |
+| `src/desktop_shutdown.rs` | 452 | 439 | **13** |
+| `src/desktop_shutdown/coordinator.rs` | 369 | 361 | **8** |
+| `src/runtime.rs` | 216 | 212 | **4** |
+| `src/future_login.rs` | 866 | 863 | **3** |
+| `src/instance.rs` | 153 | 148 | **5** |
+| `src/main.rs` | 88 | 86 | **2** |
+| `src/menu.rs` | 48 | 46 | **2** |
+| `src/launch.rs` | 562 | 560 | **2** |
+| `src/bin/futureos-headless.rs` | 51 | 50 | **1** |
+| `src/macos_power.rs` | 49 | 49 | **0** |
+| `src/host_environment.rs` | 43 | 43 | **0** |
+| **total (twelve scopes)** | **4195** | **4086** | **109** |
+
+`lib.rs` measured grows 1281 → 1298 because the two fixtures sit inside the measured scope and their
+executed lines are now `DA` records; covered grows 1206 → 1229 (the six flipped rows plus those test
+lines). Every other scope is unchanged to the line.
+
+Class totals over the 109: **`host-state-blocked` 22** (was 25), **`unreachable-in-this-environment`
+73** (was 76), **`attribution-artifact` 6**, **`unreachable-by-construction` 6**,
+**`platform-unmeasured` 2** — sum 109, and
+`python3 /tmp/classify.py /tmp/tauri-shell-land/union.info` prints `UNEXPLAINED: []`.
+
+**The projection for a `Ready`-delivering session is 87, not 90.** The projection subtracts the
+`host-state-blocked` class (22 now: 109 − 22). The expectation was 90 because it counted only the
+three condition rows as closing; the three braces are `unreachable-in-this-environment` and they
+closed too, so the arithmetic lands three lower. §S8.3's **150** still stays the pinned
+healthy-session figure until a session that delivers `Ready` measures this source — the 87 is
+arithmetic on a class, labelled as such, exactly like the 90 it replaces.
+
+What this section does **not** claim: the other 22 `host-state-blocked` rows still need a session
+that delivers `Ready` (the host action is `todo_3917fe72dae3`), the 76 → 73 environment rows and
+the 6 + 6 + 2 rows are untouched, and `size_main_window_to_screen` 261-267 stays — the mock's
+`current_monitor()` returns `None` (`mock_runtime.rs`:785), so that call site remains unreachable.
+The 11 terminal-stage rows of `perform_stop` stay as §S13.3g classifies them: the gui-only block is
+`cfg(not(test))` and the function is `pub(crate)`, so an integration test cannot reach it.
+
+### Per-line index of this segment's residual (109 rows)
+
+Machine-readable form of the ledger above, in the same shape as §S13.5's index: every row is
+`DA:0` in `/tmp/tauri-shell-land/union.info` (the gui and headless flavours unioned, per §S13.2),
+grouped by the class ranges §S13.5 states. Group ids are unchanged; the rows they cover are not.
+
+| line | group |
+|---|---|
+| `src/bin/futureos-headless.rs:11` | S13.3m |
+| `src/desktop_shutdown.rs:221` | S13.3g |
+| `src/desktop_shutdown.rs:222` | S13.3g |
+| `src/desktop_shutdown.rs:223` | S13.3g |
+| `src/desktop_shutdown.rs:267` | S13.3g |
+| `src/desktop_shutdown.rs:268` | S13.3g |
+| `src/desktop_shutdown.rs:269` | S13.3g |
+| `src/desktop_shutdown.rs:270` | S13.3g |
+| `src/desktop_shutdown.rs:271` | S13.3g |
+| `src/desktop_shutdown.rs:272` | S13.3g |
+| `src/desktop_shutdown.rs:273` | S13.3g |
+| `src/desktop_shutdown.rs:274` | S13.3g |
+| `src/desktop_shutdown.rs:460` | S13.3h |
+| `src/desktop_shutdown.rs:501` | S13.3i |
+| `src/desktop_shutdown/coordinator.rs:50` | S13.3j |
+| `src/desktop_shutdown/coordinator.rs:165` | S13.3k |
+| `src/desktop_shutdown/coordinator.rs:166` | S13.3k |
+| `src/desktop_shutdown/coordinator.rs:183` | S13.3k |
+| `src/desktop_shutdown/coordinator.rs:184` | S13.3k |
+| `src/desktop_shutdown/coordinator.rs:185` | S13.3k |
+| `src/desktop_shutdown/coordinator.rs:186` | S13.3k |
+| `src/desktop_shutdown/coordinator.rs:187` | S13.3k |
+| `src/future_login.rs:354` | S13.3l |
+| `src/future_login.rs:355` | S13.3l |
+| `src/future_login.rs:482` | S13.3l |
+| `src/instance.rs:164` | S13.3e |
+| `src/instance.rs:165` | S13.3e |
+| `src/instance.rs:166` | S13.3e |
+| `src/instance.rs:167` | S13.3e |
+| `src/instance.rs:168` | S13.3e |
+| `src/launch.rs:486` | S13.3d |
+| `src/launch.rs:487` | S13.3d |
+| `src/lib.rs:213` | S13.1b |
+| `src/lib.rs:216` | S13.1b |
+| `src/lib.rs:245` | S13.1b |
+| `src/lib.rs:261` | S13.1 |
+| `src/lib.rs:262` | S13.1 |
+| `src/lib.rs:263` | S13.1 |
+| `src/lib.rs:264` | S13.1 |
+| `src/lib.rs:265` | S13.1 |
+| `src/lib.rs:266` | S13.1 |
+| `src/lib.rs:267` | S13.1 |
+| `src/lib.rs:526` | S13.1 |
+| `src/lib.rs:527` | S13.1 |
+| `src/lib.rs:528` | S13.1 |
+| `src/lib.rs:529` | S13.1 |
+| `src/lib.rs:530` | S13.1 |
+| `src/lib.rs:863` | S13.2a |
+| `src/lib.rs:894` | S13.2a |
+| `src/lib.rs:940` | S13.2b |
+| `src/lib.rs:941` | S13.2b |
+| `src/lib.rs:942` | S13.2b |
+| `src/lib.rs:979` | S13.2c |
+| `src/lib.rs:980` | S13.2c |
+| `src/lib.rs:981` | S13.2c |
+| `src/lib.rs:982` | S13.2c |
+| `src/lib.rs:983` | S13.2c |
+| `src/lib.rs:984` | S13.2c |
+| `src/lib.rs:988` | S13.2c |
+| `src/lib.rs:989` | S13.2c |
+| `src/lib.rs:990` | S13.2c |
+| `src/lib.rs:992` | S13.2c |
+| `src/lib.rs:997` | S13.2c |
+| `src/lib.rs:1002` | S13.1 |
+| `src/lib.rs:1003` | S13.2d |
+| `src/lib.rs:1004` | S13.2d |
+| `src/lib.rs:1005` | S13.1 |
+| `src/lib.rs:1007` | S13.2d |
+| `src/lib.rs:1009` | S13.2d |
+| `src/lib.rs:1010` | S13.2d |
+| `src/lib.rs:1011` | S13.2d |
+| `src/lib.rs:1012` | S13.2d |
+| `src/lib.rs:1014` | S13.2d |
+| `src/lib.rs:1015` | S13.2d |
+| `src/lib.rs:1016` | S13.2d |
+| `src/lib.rs:1017` | S13.2d |
+| `src/lib.rs:1018` | S13.2d |
+| `src/lib.rs:1021` | S13.2d |
+| `src/lib.rs:1022` | S13.2d |
+| `src/lib.rs:1040` | S13.1 |
+| `src/lib.rs:1042` | S13.1 |
+| `src/lib.rs:1051` | S13.2h |
+| `src/lib.rs:1052` | S13.1 |
+| `src/lib.rs:1053` | S13.2h |
+| `src/lib.rs:1054` | S13.2i |
+| `src/lib.rs:1055` | S13.2i |
+| `src/lib.rs:1057` | S13.2j |
+| `src/lib.rs:1058` | S13.1 |
+| `src/lib.rs:1078` | S13.1 |
+| `src/lib.rs:1079` | S13.1 |
+| `src/lib.rs:1080` | S13.1 |
+| `src/lib.rs:1268` | S13.2e |
+| `src/lib.rs:1293` | S13.2e |
+| `src/lib.rs:1294` | S13.2e |
+| `src/lib.rs:1297` | S13.2e |
+| `src/lib.rs:1316` | S13.2f |
+| `src/lib.rs:1317` | S13.2f |
+| `src/lib.rs:1318` | S13.2f |
+| `src/lib.rs:1319` | S13.2f |
+| `src/lib.rs:1320` | S13.2f |
+| `src/lib.rs:1770` | S13.2g |
+| `src/main.rs:9` | S13.3a |
+| `src/main.rs:51` | S13.3b |
+| `src/menu.rs:41` | S13.3c |
+| `src/menu.rs:48` | S13.3c |
+| `src/runtime.rs:248` | S13.3f |
+| `src/runtime.rs:249` | S13.3f |
+| `src/runtime.rs:251` | S13.3f |
+| `src/runtime.rs:252` | S13.3f |
+<!-- 109 rows -->

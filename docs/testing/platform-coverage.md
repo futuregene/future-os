@@ -12,12 +12,11 @@ Therefore a local "100%" means *100% of Windows-reachable code*, and nothing
 about the rest. This file lists what is outside that claim and names the
 platform that does measure it.
 
-How to reproduce the underlying check:
-
-```bash
-python .future/cov100/verify.py blindspot <crate> [doc]   # files absent from the report
-python .future/cov100/verify.py crate <crate> 99.99 <report>  # fails if a source file contributes no data and is not waived
-```
+How to reproduce the underlying check: **there is no script for this in the repository.**
+The check is a manual comparison - take the crate's scopes, read which source files contribute no
+`DA:` record in the authoritative report, and compare that set against the table below. The
+campaign's `reconcile.py` reports "MISSING" for ledger rows but does **not** detect a source file
+that contributes no data at all, which is the blind spot this file exists to name.
 
 ## Files not measured by a Windows run
 
@@ -50,14 +49,29 @@ python .future/cov100/verify.py crate <crate> 99.99 <report>  # fails if a sourc
    `tests/*.rs` and bin targets). The gate's completeness check detects the
    first; the plan forbids the second.
 
-## Regeneration (required at closeout)
+## Maintenance: HAND-MAINTAINED, not generated
 
-This file is **generated** by `.future/cov100/gen-platform-coverage.py` and must be
-regenerated against the FINAL authoritative report, then checked with:
+**This file is hand-maintained.** It is *not* produced by any script in this repository: the
+`gen-platform-coverage.py` / `verify.py` pair this section used to name does not exist here and
+never has (`git log -- .future/cov100/gen-platform-coverage.py .future/cov100/verify.py` is empty).
+The tables below were counted directly, and the date of the last edit is the commit date of this
+line's file.
 
-```bash
-python .future/cov100/verify.py blindspot <crate> docs/testing/platform-coverage.md
-```
+If the aggregate ever needs to be trustworthy at a glance, the honest route is a real parser over
+the sources (count `#[cfg]`-gated `#[test]` functions), not a grep -- a quick grep census on
+2026-10-17 disagreed with itself between two variants, which is why no such census is published
+here as mechanical.
+
+> **Correction, verified 2026-10-17:** **neither script exists in this repository** — not at those
+> paths, and not at any commit (`git log -- .future/cov100/gen-platform-coverage.py
+> .future/cov100/verify.py` is empty). The file is therefore hand-maintained; the counts in §Test
+> bodies this host does not execute cannot be regenerated and were not: the 119/47 figure is the
+> recorded 116/46 plus the three macOS-gated `lib.rs` tests added this revision, and no mechanical
+> re-derivation was possible.
+> This is the same defect class as `docs/testing/waiver-ledger.md`'s header, which claimed
+> generation by a non-existent `gen-final-docs.py` and was corrected the same way. Anyone who
+> needs a trustworthy aggregate should count `#[cfg]`-gated `#[test]` functions directly rather
+> than trust this line.
 
 Two distinct questions, deliberately kept apart:
 
@@ -87,7 +101,10 @@ stated plainly that "the Linux CI job is the first place they actually run" —
 which is the honest form, and the reason this section exists rather than being
 folded into a percentage.
 
-Counted on this host: **116 gated-away `#[test]` function(s) in 46 file(s)**, plus 125 further gated helper(s) in 35 file(s) that those tests (or production) would use.
+Counted on this host: **119 gated-away `#[test]` function(s) in 47 file(s)** (116 in 46 before
+2026-10-17, + the three macOS-gated tests in `desktop/src-tauri/src/lib.rs` below), plus 125 further
+gated helper(s) in 35 file(s) that those tests (or production) would use. The aggregate is
+hand-maintained: see the note in §Regeneration.
 
 | file | gated-away `#[test]` function(s) |
 |---|---|
@@ -114,6 +131,7 @@ Counted on this host: **116 gated-away `#[test]` function(s) in 46 file(s)**, pl
 | agent/src/sandbox/windows/capability.rs | `save_atomic_cleans_up_temporary_on_write_failure` |
 | agent/src/session/manager.rs | `load_rejects_session_with_only_blank_lines` |
 | desktop/src-tauri/src/agent_supervisor.rs | `cleanup_windows_sandbox_permissions_is_a_noop_off_windows` |
+| desktop/src-tauri/src/lib.rs | `embedded_dock_icon_decodes_to_an_image`, `dock_icon_setup_is_a_noop_without_the_main_thread` (in `#[cfg(all(test, target_os = "macos"))] mod macos_dock_icon_tests`), `an_exit_requested_from_the_mock_loop_takes_the_guarded_quit_arm` (`#[cfg(target_os = "macos")]`) |
 | desktop/src-tauri/src/auth_store.rs | `write_sets_owner_only_permissions` |
 | desktop/src-tauri/src/remote_host/files.rs | `staging_dir_is_owner_only` |
 | desktop/src-tauri/src/remote_host/session_files.rs | `symlinks_cannot_escape_the_root` |
@@ -137,6 +155,30 @@ Counted on this host: **116 gated-away `#[test]` function(s) in 46 file(s)**, pl
 | tui/src/crash.rs | `raw_write_stderr_writes_bytes` |
 | tui/src/external_editor.rs | `create_draft_file_reports_unwritable_directory` |
 | tui/src/index.rs | `run_interactive_fails_fast_without_tty` |
+
+**Coverage consequence of the `lib.rs` row (measured 2026-10-17, this campaign's host is macOS).**
+The three macOS-gated tests matter in opposite directions, and the second one is easy to miss:
+
+* `embedded_dock_icon_decodes_to_an_image` / `dock_icon_setup_is_a_noop_without_the_main_thread`
+  only assert platform behaviour (a Dock icon, a thread check), so their absence costs no line.
+* `an_exit_requested_from_the_mock_loop_takes_the_guarded_quit_arm` is the **only** non-dialog path
+  any test has into `agent_supervisor::request_quit`: the function's other callers are production
+  sites (`lib.rs` 1011 in the `CloseRequested` handler, `lib.rs` 1313 in `ExitRequested`) and
+  `agent_supervisor.rs:179`, which is inside a modal dialog callback. It is therefore the only test
+  that executes **14 lines** of `request_quit` — `agent_supervisor.rs` 188, 189, 191, 192, 196-199,
+  212-215, 219-220.
+
+That last point is **measured as a differential, not inferred from the `cfg`**: at `aff0501b3`
+(the segment-3 union, which does not contain this test — `grep -c` over that revision's `lib.rs`
+is **0**) **not one** of the 14 lines has a nonzero hit; at `36c568972` (the D8 union, which does)
+**all 14** do. That 14-line move is exactly the `agent_supervisor` 81 → 67 drop recorded in
+`module-tauri-headless.md` §4.3, so the one test is the whole explanation.
+
+Consequence for the module figure: `module-tauri-headless.md`'s **283** is a **macOS** figure. A
+Linux run of the same suite does not compile that test and should report those 14 lines as residual
+(inference from the `cfg` plus the differential above — Linux itself was not measured here). The
+module record says so in §4.3; this entry is the platform-side half of the same fact. It is *not* a
+waiver: the lines are covered, on one platform.
 
 Gated non-test helpers (not tests themselves, but unavailable on this host,
 so any Windows path that would have used them cannot be exercising them):
