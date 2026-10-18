@@ -8465,3 +8465,48 @@ module-tauri-appdata | 376 = 350 WAIVED + 24 OPEN + 2 deliberate exclusions | me
 --lib legs, both green: gui 2214 passed / headless 1769 passed / 14 ignored each); NOT re-measured
 since main@74c6bd8aa
 ```
+
+## S33. The post-merge re-measurement: 376 -> 532, and where every one of the new lines came from
+
+**Measured at `16ea6f388`** (report `.future/cov100/pinned/union-refresh4.info`, gui leg `rc=0`, headless leg `rc=0`, whole crate,
+`clean` between legs). `origin/main` was merged at `52d80801f`.
+
+    tauri-appdata: 376 -> 532 uncovered (+156), 26 -> 39 files with uncovered lines
+
+**Neither number is wrong, and the difference is not the measurement.** I checked that first, because
+"the figure rose after a merge" is the shape of a narrower run as well as the shape of new code. Both
+reports were read with `reconcile.py` over the same ten scopes:
+
+    union-d25.info       376 uncovered, 26 files, MISSING 0      (the published figure)
+    union-refresh4.info  532 uncovered, 39 files, MISSING 61     (this measurement)
+
+### S33.1 The +156, file by file
+
+Every line of the increase is a file `main` created or extended, not a registration this record lost:
+
+| file | delta | why |
+|---|---|---|
+| `agent_bridge/reconciliation.rs` | **+39** | #1188's failed-session recovery; 0 uncovered before, the file grew by 127 lines |
+| `commands/threads.rs` | **+24** | the same change: thread-source recovery |
+| `agent_bridge/observer.rs` | **+22** | new observer arms |
+| `store/migrations.rs` | **+17** | **a new file** (#1188's migration runner) |
+| `store/cleanup.rs` | **+15** | managed cleanup |
+| `store/legacy_history.rs` | **+10** | **a new file** |
+| `desktop_shutdown.rs`, `store/thread_sources.rs`, … | +29 | smaller new arms |
+
+The three new files alone (`migrations.rs`, `managed_cleanup.rs`, `thread_sources.rs`) arrived with the
+merge; nothing in this record's own scope was deleted or reclassified.
+
+### S33.2 What is and is not registered
+
+* **471 lines are covered by the ledger below** (532 − 61).
+* **61 lines are MISSING**: `reconcile.py` reports them as uncovered with no row. They are the new
+  #1188 arms above. **They are OPEN work, not waivers** - nobody has read them, and this record does not
+  write a class for code it has not read. That is the same rule the 133 unregistered lines in
+  `module-tauri-remote.md` are held to.
+* The 24 `OPEN` rows this record already carried are unchanged and still open.
+
+### S33.3 What this section does not claim
+
+The module is not at any percentage. It is at **532 uncovered, 61 of them unregistered**, measured at a
+stated sha, with the older per-line table still carrying the previous revision's numbering.
