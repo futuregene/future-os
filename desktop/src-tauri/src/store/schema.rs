@@ -428,11 +428,8 @@ pub(super) const DROPPED_TABLES: &[&str] = &[
     "data_sources",
     "skill_enablements",
     "skills",
-    // messages / run_events / tool_calls / tool_outputs — now from agent JSONL
-    "messages",
-    "run_events",
-    "tool_outputs",
-    "tool_calls",
+    // History tables are retired only by the transactional preservation
+    // migration, never by this unconditional best-effort cleanup.
 ];
 
 /// Columns to drop from existing tables (now read from agent).
