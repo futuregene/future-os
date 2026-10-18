@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use super::client::run_control_command;
 use super::*;
 
 // ── Crash-recovery run reanimation ───────────────────────────────────────
@@ -300,6 +301,9 @@ pub(super) enum ActiveRunAction {
     /// The Agent is still executing this exact run. Reattach a collector if no
     /// live collector owns the replica lease (a failed acquire means healthy).
     Attach,
+    /// A failed runtime lease must acknowledge cancellation, not be reattached
+    /// as if a task were still producing events.
+    RecoverFault,
     /// The Agent's journal has a durable terminal marker for this run: mirror
     /// its exact state onto the row.
     SettleTerminal {
@@ -332,6 +336,14 @@ pub(super) fn plan_active_run_reconciliation(
         .and_then(|run| run.get("runId"))
         .and_then(|id| id.as_str());
     if is_streaming && active_run_id == Some(canonical_run_id) {
+        if matches!(
+            state
+                .pointer("/activeRun/state")
+                .and_then(serde_json::Value::as_str),
+            Some("cancellation_stuck" | "persistence_degraded")
+        ) {
+            return ActiveRunAction::RecoverFault;
+        }
         return ActiveRunAction::Attach;
     }
     if queued_run_ids(state).any(|run_id| run_id == canonical_run_id) {
@@ -383,6 +395,15 @@ pub(super) async fn reconcile_active_run_once(
     canonical_run_id: &str,
     age_secs: u64,
 ) -> Result<(), String> {
+    if crate::store::get_thread(&run.thread_id)
+        .map_err(|error| error.to_string())?
+        .is_none()
+    {
+        return settle_orphaned_run(
+            &run.run_id,
+            "The conversation for this run no longer exists.",
+        );
+    }
     let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
     // Query by the canonical id (not the local row id): remote-attached runs
     // carry a synthetic local id the Agent never saw, while its durable
@@ -417,6 +438,48 @@ pub(super) async fn reconcile_active_run_once(
     let state_value = future_rpc::decode::response_data(&state);
     match plan_active_run_reconciliation(&state_value, canonical_run_id, age_secs) {
         ActiveRunAction::Skip => Ok(()),
+        ActiveRunAction::RecoverFault => {
+            // The Agent verifies task ownership and commits cancellation before
+            // releasing a dead lease. Do not infer completion from the ACK.
+            let response = client
+                .execute_command(run_control_command(
+                    "abort",
+                    run.session_id.clone(),
+                    Some(canonical_run_id.to_owned()),
+                ))
+                .await
+                .map_err(|error| error.to_string())?
+                .into_inner();
+            if !response.success {
+                return Err(response.error);
+            }
+            let response = client
+                .execute_command(get_run_state_command(
+                    run.session_id.clone(),
+                    canonical_run_id.to_owned(),
+                ))
+                .await
+                .map_err(|error| error.to_string())?
+                .into_inner();
+            if response.success {
+                let state = future_rpc::decode::response_data(&response);
+                if state
+                    .pointer("/activeRun/runId")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(canonical_run_id)
+                {
+                    if let Some(terminal) = state.get("requestedRun") {
+                        return settle_from_agent_terminal(
+                            &run.run_id,
+                            terminal["status"].as_str().unwrap_or(""),
+                            terminal["error"].as_str(),
+                        )
+                        .map_err(|error| error.to_string());
+                    }
+                }
+            }
+            Ok(())
+        }
         ActiveRunAction::Attach => {
             // The Agent is still streaming this run but no pipeline collector
             // owns it (a crashed collector, a run started by another client,

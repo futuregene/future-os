@@ -10,7 +10,9 @@
 ## Automatic import
 
 The new Agent, under the instance lock and before serving externally, imports
-old `sessions/*.jsonl` and their sibling `run-events/` files. Each session is
+old `sessions/*.jsonl` and their sibling `run-events/` files. Startup scans again
+for files restored later; per-session records prevent duplicate imports,
+automatic retries of skipped sessions, and resurrection after deletion. Each session is
 an independent transaction: successful data commits together with the import
 record; material corruption skips the whole session while other sessions
 continue. Only a confirmable truncated trailing line is allowed, keeping the
@@ -23,6 +25,31 @@ records are kept independently of sessions: successful items are not
 re-imported, skipped items are not auto-retried, and deleted items are not
 resurrected. A skipped session may still keep its Desktop entry, which fails
 explicitly when opened — never faking an empty history.
+
+## Older Desktop databases
+
+The `v1.2.4-history-preservation` migration runs transactionally before legacy
+GUI tables are removed. It copies every column of `messages`, `run_events`,
+`tool_calls`, and `tool_outputs` to read-only `legacy_*` archives. Tables with
+foreign keys to the retired tables are also archived and rebuilt from the
+current schema, preserving shared columns and reinstalling indexes. Migration
+failure keeps the original tables and leaves the marker unapplied for retry.
+Fresh databases record the same migration without creating empty archives.
+
+`legacy_thread_bindings(thread_id, session_id)` preserves read bindings before
+the released duplicate-binding migration detaches older projections. Agent
+history remains authoritative. Missing or empty sources can display preserved
+GUI messages (including mixed-message attachment metadata); this recovery read
+returns the complete archive without mixing Agent pagination cursors. Archives
+are not LLM context: an unbound recovered thread cannot silently create an empty
+Agent session. Restore its original Agent data to continue it faithfully.
+
+Missing source data without an archive is an explicit history error, not an
+empty conversation. Startup catalogue reconciliation preserves missing
+conversations and assets: absence from a different or partially restored Agent
+database is not proof of deletion. Explicit conversation deletion clears its
+archives too. Already deleted history needs an earlier backup; this migration
+cannot recreate bytes removed by an older build.
 
 ## Inspection and explicit retry
 

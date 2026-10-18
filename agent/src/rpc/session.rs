@@ -471,6 +471,47 @@ impl ServerSession {
         self.runtime.request_abort(expected_run_id)?;
         self.shell_cancel_generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // A dead task cannot acknowledge cooperative cancellation. The session
+        // read lock held by the RPC caller fences a new prompt while we commit
+        // its terminal marker and release the exact failed lease.
+        if !self.runtime.has_owned_task() {
+            if let Some(active) = self.runtime.snapshot().filter(|active| {
+                matches!(
+                    active.phase,
+                    crate::runtime::RunPhase::CancellationStuck
+                        | crate::runtime::RunPhase::PersistenceDegraded
+                )
+            }) {
+                let lease = crate::runtime::RunLease {
+                    run_id: active.run_id,
+                    epoch: active.epoch,
+                    run_sequence: active.run_sequence,
+                };
+                if !self.ephemeral {
+                    self.broadcaster.recover_storage()?;
+                    // Never replace an already committed outcome. Recovery is
+                    // ordered after all accepted appends, including a commit
+                    // whose acknowledgement was lost before the task died.
+                    self.persistence.recover_with_entries(Vec::new())?;
+                    let session = self.session_manager.load(&self.session_id)?;
+                    if crate::session::find_run_terminal(&session.entries, &lease.run_id).is_none()
+                    {
+                        let terminal = crate::session::SessionEntry::run_terminal(
+                            &lease.run_id,
+                            crate::session::RUN_STATE_CANCELLED,
+                            0,
+                            0,
+                            Some("Terminated by user after the run task exited."),
+                        );
+                        self.persistence.recover_with_entries(vec![terminal])?;
+                    }
+                }
+                anyhow::ensure!(
+                    self.runtime.finish_cancelled_fault(&lease),
+                    "failed run task has not exited; retry cancellation"
+                );
+            }
+        }
         Ok(())
     }
 

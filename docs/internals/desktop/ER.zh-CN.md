@@ -153,10 +153,11 @@ Thread 表示用户可恢复、可继续、可管理的一段对话。
 
 Message 表示对话中的一条消息。
 
-**GUI 存储：`messages` 表已删除（`DROPPED_TABLES` 在旧库清除）。** 消息由 Agent
-SQLite 的 `entries` 与 `message_blocks` 持久化，是唯一真源；
-GUI 通过 `get_session_entries` gRPC 命令读取并投影为界面消息，不再落 GUI
-SQLite，也没有第二份副本需要合并仲裁。
+**运行时历史保存在 Agent SQLite**（`entries` 和 `message_blocks`），由
+`get_session_entries` 读取并投影。升级会先将旧 GUI 表复制为只读 `legacy_*` 恢复归档，
+再退役原表；归档不参与运行时双写，也不是模型上下文。`legacy_thread_bindings` 保留被
+去重分离的旧对话的读取身份。事务迁移 `v1.2.4-history-preservation` 和恢复边界见
+[SQLite 迁移](../../architecture/sqlite-migration.zh-CN.md)。
 
 关系：
 

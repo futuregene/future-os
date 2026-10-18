@@ -216,6 +216,33 @@ impl SessionRuntime {
         recovered
     }
 
+    /// Release an explicitly cancelled fault only after its writer has exited
+    /// and the caller has committed a durable terminal record.
+    pub fn finish_cancelled_fault(&self, lease: &RunLease) -> bool {
+        let task = self.task.lock();
+        if task.is_some()
+            || !self.control.snapshot().is_some_and(|active| {
+                active.run_id == lease.run_id
+                    && active.epoch == lease.epoch
+                    && matches!(
+                        active.phase,
+                        super::RunPhase::CancellationStuck | super::RunPhase::PersistenceDegraded
+                    )
+            })
+        {
+            return false;
+        }
+        let finished = self.control.finish(lease);
+        drop(task);
+        if finished {
+            self.stop_cancellation_timer();
+            if let Some(sender) = self.completion_tx.lock().as_ref() {
+                let _ = sender.send(lease.clone());
+            }
+        }
+        finished
+    }
+
     /// Spawn and register the only task allowed for this session. The monitor
     /// is runtime-owned, so a panic cannot silently orphan the lifecycle state.
     pub fn spawn(
@@ -343,6 +370,35 @@ mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
     use tokio::sync::Notify;
+
+    #[tokio::test]
+    async fn cancelling_a_fault_cannot_release_a_live_writer_or_a_different_epoch() {
+        let runtime = Arc::new(SessionRuntime::new(Arc::new(AtomicBool::new(false))));
+        let lease = runtime.begin(Some("fault"), None).unwrap();
+        let release = Arc::new(Notify::new());
+        let task_release = release.clone();
+        runtime
+            .spawn(lease.clone(), async move {
+                task_release.notified().await;
+            })
+            .unwrap();
+        runtime.mark_stuck(&lease, "injected fault");
+        assert!(!runtime.finish_cancelled_fault(&lease));
+        release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while runtime.has_owned_task() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut wrong = lease.clone();
+        wrong.epoch += 1;
+        assert!(!runtime.finish_cancelled_fault(&wrong));
+        assert!(runtime.finish_cancelled_fault(&lease));
+        assert!(runtime.snapshot().is_none());
+        assert_eq!(runtime.active_task_count(), 0);
+    }
 
     #[tokio::test]
     async fn runtime_owns_task_until_matching_run_finishes() {
