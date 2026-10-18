@@ -1777,6 +1777,45 @@
           }
         ]
       },
+      "remote-workspace-add-asks-machine": {
+        "note": "The workspace section's + asks which machine before it opens a folder form, as the phone's new-conversation dialog does.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1500
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  const add = [...document.querySelectorAll(\"button[aria-label='新建工作区'], button[aria-label='New workspace']\")][0];\n  if (!add) throw new Error('the workspace section offers no way to add a workspace');\n  add.click();\n  return new Promise((resolve) => {\n    setTimeout(() => {\n      const dialog = document.querySelector(\"[role='dialog']\");\n      if (!dialog) throw new Error('the + went straight on instead of asking which machine');\n      const title = (dialog.querySelector('h2') || {}).textContent || '';\n      if (!title.includes('选择设备') && !title.includes('Choose a device'))\n        throw new Error('the dialog is not the machine step: ' + title);\n      const rows = [...dialog.querySelectorAll('button[aria-label]')]\n        .map(node => (node.getAttribute('aria-label') || '') + (node.disabled ? ' (disabled)' : ''));\n      if (!rows.some(label => label.includes('本机') || label.includes('This computer')))\n        throw new Error('this machine is not offered: ' + JSON.stringify(rows));\n      if (!rows.some(label => label.includes('iMac')))\n        throw new Error('the paired machine is not offered: ' + JSON.stringify(rows));\n      if (!rows.some(label => label.includes('disabled')))\n        throw new Error('a machine that cannot take work does not say why: ' + JSON.stringify(rows));\n      resolve(rows.join(' / '));\n    }, 250);\n  });\n})()"
+          },
+          {
+            "shot": "d-remote-workspace-add-asks-machine.png"
+          }
+        ]
+      },
+      "remote-workspace-create-on-host": {
+        "note": "Picking the paired machine opens a typed-path form for that machine: this computer has no folder picker for another one's disk.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1500
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  const add = [...document.querySelectorAll(\"button[aria-label='新建工作区'], button[aria-label='New workspace']\")][0];\n  if (!add) throw new Error('the workspace section offers no way to add a workspace');\n  add.click();\n  return new Promise((resolve) => setTimeout(resolve, 250));\n})()"
+          },
+          {
+            "eval": "(() => {\n  const dialog = document.querySelector(\"[role='dialog']\");\n  if (!dialog) throw new Error('the machine step did not open');\n  const host = [...dialog.querySelectorAll('button[aria-label]')]\n    .find(node => (node.getAttribute('aria-label') || '').includes('iMac'));\n  if (!host) throw new Error('the paired machine is not offered');\n  host.click();\n  return new Promise((resolve) => {\n    setTimeout(() => {\n      const form = document.querySelector(\"[role='dialog']\");\n      if (!form) throw new Error('picking a machine closed the flow');\n      const title = (form.querySelector('h2') || {}).textContent || '';\n      if (!title.includes('工作室 iMac')) throw new Error('the form does not name the machine: ' + title);\n      const path = form.querySelector(\"input[aria-label='目录路径']\");\n      const name = form.querySelector(\"input[aria-label='名称（可选）']\");\n      if (!path || !name) throw new Error('the form is missing the path/name fields');\n      const create = [...form.querySelectorAll('button')].find(node => (node.textContent || '').trim() === '新建');\n      if (!create) throw new Error('the form offers no create action');\n      if (!create.disabled) throw new Error('an empty path is submit-ready');\n      resolve(title);\n    }, 250);\n  });\n})()"
+          },
+          {
+            "shot": "d-remote-workspace-create-on-host.png"
+          }
+        ]
+      },
       "remote-add-one-machine": {
         "note": "With one machine on screen, the chat section's + starts a conversation on that machine.",
         "url": "http://localhost:5299/shot/",

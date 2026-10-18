@@ -1,4 +1,5 @@
 import type { DeviceFilter, MergedConversation, RemoteCatalog, RemoteWorkspaceTarget } from "../../features/remote-peer/mergeConversations";
+import type { RemotePeer, RemoteWorkspaceRow } from "../../features/remote-peer/remotePeerClient";
 import type { SettingsTab } from "../../features/settings/SettingsDialog";
 import type { FutureAuthState, ProvidersView } from "../../integrations/agent/providers";
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
@@ -12,6 +13,7 @@ import { saveComposerDraft } from "../../features/agent/composerDraft";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { sessionMentionOptions } from "../../features/agent/sessionMention";
 import { useSkillRecommendation } from "../../features/agent/useSkillRecommendation";
+import { peerStatus } from "../../features/remote-peer/peerStatus";
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
@@ -21,12 +23,14 @@ import { sendRemoteContinuation } from "../../features/remote-peer/remotePromptO
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
 import { remoteSkillRecoSource } from "../../features/remote-peer/remoteSkillRecoSource";
 import { RemoteUsageDialog } from "../../features/remote-peer/RemoteUsageDialog";
+import { RemoteWorkspaceCreateDialog } from "../../features/remote-peer/RemoteWorkspaceCreateDialog";
 import { RemoteWorkspaceRenameDialog } from "../../features/remote-peer/RemoteWorkspaceRenameDialog";
 import { useRemoteApprovals } from "../../features/remote-peer/useRemoteApprovals";
 import { useRemoteConversationSettings } from "../../features/remote-peer/useRemoteConversationSettings";
 import { useRemoteSkillCatalog } from "../../features/remote-peer/useRemoteSkillCatalog";
 import { useRemoteSkillRecommend } from "../../features/remote-peer/useRemoteSkillRecommend";
 import { useRemoteTimeline } from "../../features/remote-peer/useRemoteTimeline";
+import { WorkspaceDeviceDialog } from "../../features/remote-peer/WorkspaceDeviceDialog";
 import { startRemote, stopRemote } from "../../features/remote/remoteClient";
 import { RemoteHubView } from "../../features/remote/RemoteHubView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
@@ -185,6 +189,16 @@ function ReadyAppShell({
   // Bumped on every workspace-header "+" click so the new-conversation view
   // remounts and re-opens the create dialog even when we're already on it.
   const [newWorkspaceNonce, setNewWorkspaceNonce] = useState(0);
+  /**
+   * The workspace "+" flow's machine step.
+   *
+   * The form behind it only knows this computer's folder picker, so with
+   * another machine paired the machine is asked for first — the same first
+   * question the phone's new-conversation dialog opens on.
+   */
+  const [workspaceDeviceChoice, setWorkspaceDeviceChoice] = useState(false);
+  /** The host whose create-workspace form is open, if any. */
+  const [remoteWorkspaceHost, setRemoteWorkspaceHost] = useState<RemotePeer | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
 
@@ -659,12 +673,39 @@ function ReadyAppShell({
   // we're already on the new-conversation view. The nonce forces a remount so a
   // previously-cancelled dialog reopens.
   function handleOpenNewWorkspace() {
+    // A machine that can take work makes "which disk is this folder on?" the
+    // first question: the form behind this button only browses *this*
+    // computer. With nothing else able to answer there is nothing to choose,
+    // and the form opens straight away as it always did.
+    if (remotePeers.some(peer => peerStatus(peer) === "connected")) {
+      setWorkspaceDeviceChoice(true);
+      return;
+    }
+    openLocalWorkspaceForm();
+  }
+
+  /** The local half of the workspace "+": the form's picker browses this disk. */
+  function openLocalWorkspaceForm() {
     setSection("workspace");
     setNewChatWorkspaceId(null);
     setNewConversationMode("workspace");
     setNewWorkspaceForm("open");
     setNewWorkspaceNonce(nonce => nonce + 1);
     setCenterMode("new-chat");
+  }
+
+  /**
+   * A workspace was just created on a host.
+   *
+   * The host's catalogue is re-read so the row shows under that machine, and
+   * the user lands where the local flow leaves them: a composer in the new
+   * workspace — a draft on the host, which creates the session when the first
+   * prompt is sent.
+   */
+  function handleRemoteWorkspaceCreated(desktopId: string, workspace: RemoteWorkspaceRow) {
+    setRemoteWorkspaceHost(null);
+    void refreshRemotePeers();
+    startRemoteConversation(desktopId, workspace.id);
   }
 
   async function handleAddWorkspace(input: WorkspaceCreateRequest) {
@@ -1353,6 +1394,31 @@ function ReadyAppShell({
               conversation={remoteRename}
               onClose={() => setRemoteRename(null)}
               onRenamed={() => void refreshRemotePeers()}
+            />
+          )
+        : null}
+      {workspaceDeviceChoice
+        ? (
+            <WorkspaceDeviceDialog
+              onClose={() => setWorkspaceDeviceChoice(false)}
+              onPickLocal={() => {
+                setWorkspaceDeviceChoice(false);
+                openLocalWorkspaceForm();
+              }}
+              onPickPeer={(peer) => {
+                setWorkspaceDeviceChoice(false);
+                setRemoteWorkspaceHost(peer);
+              }}
+              peers={remotePeers}
+            />
+          )
+        : null}
+      {remoteWorkspaceHost
+        ? (
+            <RemoteWorkspaceCreateDialog
+              onClose={() => setRemoteWorkspaceHost(null)}
+              onCreated={workspace => handleRemoteWorkspaceCreated(remoteWorkspaceHost.desktopId, workspace)}
+              peer={remoteWorkspaceHost}
             />
           )
         : null}
