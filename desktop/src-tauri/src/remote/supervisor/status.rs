@@ -125,13 +125,26 @@ fn device_row(
 }
 
 pub fn status() -> RemoteStatus {
+    status_focused(None)
+}
+
+/// The machine's status, with `prefer` chosen as the device the answer is
+/// *about*.
+///
+/// A start that mints an invitation, and an add-a-device, both need their
+/// answer to describe the device they just created: that is the invitation
+/// whose QR code is on screen. Leaving the choice to the control pointer made
+/// both report some other device whenever the process also held one — and the
+/// host-bridge fixture, which pairs `status().pair_id`, then pointed a client
+/// at a pairing the machine was not serving.
+pub(in crate::remote) fn status_focused(prefer: Option<&str>) -> RemoteStatus {
     let active = SUPERVISOR.active_pair();
     let guard = SUPERVISOR.state.lock().unwrap();
     if guard.is_empty() {
         // Nothing is running: the truth is whatever stopped it. `last_error_code`
         // is the only record of why, and it is deliberately process-lifetime.
         drop(guard);
-        return stopped_status();
+        return stopped_status(prefer);
     }
 
     // Every paired device, in pairing order, plus any runtime that holds an
@@ -161,13 +174,17 @@ pub fn status() -> RemoteStatus {
     // projects, and what the page shows first.
     devices.sort_by_key(|device| device.control != DeviceControl::Active);
 
-    let focus = match devices
-        .iter()
-        .find(|device| device.control == DeviceControl::Active)
+    let focus = match prefer
+        .and_then(|pair_id| devices.iter().find(|device| device.pair_id == pair_id))
+        .or_else(|| {
+            devices
+                .iter()
+                .find(|device| device.control == DeviceControl::Active)
+        })
         .or_else(|| devices.first())
     {
         Some(focus) => focus.clone(),
-        None => return stopped_status(),
+        None => return stopped_status(prefer),
     };
     let runtime = guard.get(&focus.pair_id);
 
@@ -253,7 +270,11 @@ fn web_warning(runtime: Option<&RemoteState>) -> Option<String> {
 /// Nothing is running. A bridge that stopped on its own (revoked pairing)
 /// explains itself through the last recorded error code instead of a bare
 /// "not running".
-fn stopped_status() -> RemoteStatus {
+///
+/// `prefer` means the same thing as in [`status_focused`]: the caller asked
+/// about one device (one it just created), and even with nothing running the
+/// answer must be about that device rather than the persisted controller.
+fn stopped_status(prefer: Option<&str>) -> RemoteStatus {
     let error_code = SUPERVISOR.last_error_code.lock().unwrap().clone();
     // Startup retries run before a bridge instance exists, so this state cannot
     // be inferred from the runtime map. Expose it explicitly so the UI shows an
@@ -322,6 +343,27 @@ fn stopped_status() -> RemoteStatus {
             )
         })
         .collect::<Vec<_>>();
+    let preferred = prefer.and_then(|pair_id| {
+        devices
+            .iter()
+            .find(|device| device.pair_id == pair_id)
+            .map(|device| {
+                (
+                    device.pair_id.clone(),
+                    device.pairing_code.clone(),
+                    device.pairing_code_expires_at,
+                )
+            })
+    });
+    let (pair_id, pairing_code, pairing_code_expires_at) = preferred.unwrap_or_else(|| {
+        (
+            pairing::load_creds()
+                .map(|creds| creds.pair_id)
+                .unwrap_or_default(),
+            None,
+            None,
+        )
+    });
     RemoteStatus {
         phase,
         reason,
@@ -335,7 +377,9 @@ fn stopped_status() -> RemoteStatus {
             },
         }),
         devices,
-        pair_id: pairing::load_creds().map(|c| c.pair_id).unwrap_or_default(),
+        pair_id,
+        pairing_code,
+        pairing_code_expires_at,
         ..empty()
     }
 }

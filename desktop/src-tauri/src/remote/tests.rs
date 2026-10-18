@@ -3651,3 +3651,46 @@ mod multi_device_tests {
         );
     }
 }
+
+/// The answer a start or an add returns must describe the device that
+/// operation produced.
+///
+/// This is not cosmetic: whatever pairs what those commands returned (the
+/// host-bridge fixture does exactly that) would otherwise be pointed at another
+/// device's pairing — a client that then talks to a subject the machine is not
+/// serving, times out, and leaves its own runtime behind for the next fixture.
+mod start_focus_tests {
+    use super::runtime_tests::test_creds_for_multi_device as test_creds;
+    use super::*;
+    use crate::remote::types::DeviceControl;
+
+    #[test]
+    fn a_focused_status_names_that_device_even_when_another_one_controls() {
+        let _home = test_support::HomeGuard::new("remote-focus-status");
+        let controller = test_creds("pair_ctrl_focus");
+        let newcomer = test_creds("pair_new_focus");
+        pairing::save_creds(&controller).unwrap();
+        pairing::save_creds(&newcomer).unwrap();
+        pairing::set_active(&controller.pair_id).unwrap();
+        SUPERVISOR.restore_active(Some(controller.pair_id.clone()));
+
+        let focused = super::supervisor::status_focused(Some(&newcomer.pair_id));
+        assert_eq!(
+            focused.pair_id, newcomer.pair_id,
+            "a start/add must answer about the device it produced"
+        );
+        assert_eq!(
+            focused.devices[0].pair_id, controller.pair_id,
+            "but the list still leads with whoever controls"
+        );
+        assert_eq!(focused.devices[0].control, DeviceControl::Active);
+
+        // An unknown or absent focus falls back to the controller, so the
+        // untouched status() is unchanged.
+        assert_eq!(
+            super::supervisor::status_focused(Some("pair_absent")).pair_id,
+            controller.pair_id
+        );
+        assert_eq!(status().pair_id, controller.pair_id);
+    }
+}

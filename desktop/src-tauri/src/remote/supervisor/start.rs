@@ -82,6 +82,16 @@ pub(in crate::remote) async fn start_generation(
         SUPERVISOR.claim_control(&plans[0].creds.pair_id);
     }
 
+    // The device whose invitation this start minted, if any: the answer must
+    // describe *that* device, because its QR code is what the user is looking
+    // at. Without it the answer would name whichever device happens to hold the
+    // control pointer — and anything that pairs what a start returned (the
+    // host-bridge fixture does exactly that) would point at the wrong pairing.
+    let minted = plans
+        .iter()
+        .find(|plan| plan.pairing_code.is_some())
+        .map(|plan| plan.creds.pair_id.clone());
+
     // One device failing to come up must not take the others down: each slot
     // has its own connection and its own credential. The start only reports a
     // failure when *no* device could be started, which is the case a user can
@@ -126,7 +136,7 @@ pub(in crate::remote) async fn start_generation(
                     SUPERVISOR.start_retry_next_at.store(0, Ordering::Release);
                 })
                 .unwrap_or(());
-            let mut status = status();
+            let mut status = status_focused(minted.as_deref());
             if web_bind_failed {
                 status.warning_code = Some("web_bind".to_string());
             }
@@ -161,9 +171,10 @@ pub async fn add_device() -> Result<RemoteStatus, crate::AppError> {
         SUPERVISOR.start_requested.store(true, Ordering::Release);
     }
     let epoch = SUPERVISOR.access.current();
+    let added = plan.creds.pair_id.clone();
     let _start_guard = SUPERVISOR.start_lock.lock().await;
     start_slot(plan, epoch, true, false).await?;
-    Ok(status())
+    Ok(status_focused(Some(&added)))
 }
 
 /// Resolve every paired device into a plan, dropping the ones the platform has
@@ -487,15 +498,15 @@ pub(in crate::remote) fn spawn_runtime_reconnect(pair_id: String) {
         SUPERVISOR.spawn(async move {
             let _start_guard = SUPERVISOR.start_lock.lock().await;
             match restart_slot(&pair_id).await {
-                Ok(()) => {}
+                // A retryable refusal is not a dead end: hand it to the start
+                // retry worker, exactly as a failed `start_once` does. Its own
+                // attempt is what records the episode and backs off.
+                Ok(status) if retryable_start_status(&status) => spawn_start_retry(),
+                Ok(_) => {}
                 Err(error) => {
                     eprintln!("remote: automatic bridge reconnect failed [RT001]: {error}");
-                    if pairing::error_code(&error).is_some_and(|code| code == "network") {
-                        spawn_start_retry();
-                    } else {
-                        *SUPERVISOR.last_error_code.lock().unwrap() =
-                            Some("reconnect_required".to_string());
-                    }
+                    *SUPERVISOR.last_error_code.lock().unwrap() =
+                        Some("reconnect_required".to_string());
                 }
             }
         });
@@ -503,27 +514,33 @@ pub(in crate::remote) fn spawn_runtime_reconnect(pair_id: String) {
 }
 
 /// Refresh and reinstall one device's runtime, without touching the others.
+///
+/// Errors are funneled through `start_failure` — the same conversion a fresh
+/// `start_once` applies — so a refusal keeps its classification (episode,
+/// `last_error_code`, retryability) instead of turning into a bare string. A
+/// reconnect that the platform now refuses is not a different kind of failure
+/// just because this device was already up.
 #[cfg(not(test))]
-async fn restart_slot(pair_id: &str) -> Result<(), crate::AppError> {
+async fn restart_slot(pair_id: &str) -> Result<RemoteStatus, crate::AppError> {
     let Some(creds) = pairing::load_slots()
         .into_iter()
         .find(|slot| slot.pair_id == pair_id)
     else {
         // The device is gone; the runtime must not outlive its credential.
         stop_slot(pair_id);
-        return Ok(());
+        return Ok(empty());
     };
     if creds.handshake_version != 2 || creds.secure.is_none() {
         forget_slot(pair_id)?;
-        return Ok(());
+        return Ok(empty());
     }
     let creds = match pairing::refresh_bridge_jwt(creds).await {
         Ok(creds) => creds,
         Err(error) if pairing::is_invalid_or_revoked_error(&error) => {
             forget_slot(pair_id)?;
-            return Ok(());
+            return Ok(empty());
         }
-        Err(error) => return Err(error),
+        Err(error) => return start_failure(error),
     };
     let plan = SlotPlan {
         creds,
@@ -531,7 +548,10 @@ async fn restart_slot(pair_id: &str) -> Result<(), crate::AppError> {
         pairing_code_expires_at: None,
     };
     let epoch = SUPERVISOR.access.current();
-    start_slot(plan, epoch, true, false).await
+    match start_slot(plan, epoch, true, false).await {
+        Ok(()) => Ok(status_focused(Some(pair_id))),
+        Err(error) => start_failure(error),
+    }
 }
 
 pub(in crate::remote) fn record_runtime_failure(now: u64) -> u8 {
