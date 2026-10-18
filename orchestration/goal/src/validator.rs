@@ -6,6 +6,36 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 const OUTPUT_BYTES: usize = 16_384;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Summary prefix for a validator that never produced a verdict (the shell
+/// could not start it, or could not even parse the command line). The ledger
+/// otherwise records only the exit status, and a bare `exit 2` cannot tell a
+/// rejected artifact from a malformed `--verify` string.
+const COULD_NOT_RUN_PREFIX: &str = "validator could not run";
+
+/// Whether a failed receipt says the validator never ran. The status stays
+/// `Failed` on purpose: a gate that cannot start still must not complete the
+/// todo, and the validation budget must still bound a command that can never
+/// pass. Only the reported reason changes.
+pub fn could_not_run(receipt: &crate::state::TaskValidation) -> bool {
+    receipt.summary.starts_with(COULD_NOT_RUN_PREFIX)
+}
+
+/// Exit statuses that say "the shell never executed the command" rather than
+/// "the command judged the artifact": POSIX shells use 126 (found but not
+/// executable) and 127 (not found); cmd.exe uses 9009. A command line the
+/// shell cannot parse exits 2 before running anything — but exit 2 is also a
+/// legitimate validator status (`grep` exits 2 on a read error), so require
+/// the shell's own diagnostic.
+fn shell_could_not_run(code: i32, stderr: &[u8]) -> bool {
+    match code {
+        126 | 127 | 9009 => true,
+        2 => String::from_utf8_lossy(stderr)
+            .to_lowercase()
+            .contains("syntax error"),
+        _ => false,
+    }
+}
+
 struct ProcessTree(u32);
 impl Drop for ProcessTree {
     fn drop(&mut self) {
@@ -49,19 +79,36 @@ pub async fn validate(
     use crate::state::{task_validation_receipt, RecoveryKind, ValidationStatus};
     let result = execute(cwd, command, timeout).await;
     let (status, summary, exit) = match result {
-        Ok((code, output)) if code == Some(0) => (
-            ValidationStatus::Passed,
-            format!("validator passed (exit 0)\n{output}"),
-            code,
-        ),
-        Ok((code, output)) => (
-            ValidationStatus::Failed,
-            format!(
-                "validator exited {} — repair output, not acceptance criteria\n{output}",
-                code.unwrap_or(-1)
-            ),
-            code,
-        ),
+        Ok((code, stdout, stderr)) => {
+            let output = format!(
+                "stdout (tail):\n{}\nstderr (tail):\n{}",
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr)
+            );
+            match code {
+                Some(0) => (
+                    ValidationStatus::Passed,
+                    format!("validator passed (exit 0)\n{output}"),
+                    code,
+                ),
+                Some(exit) if shell_could_not_run(exit, &stderr) => (
+                    ValidationStatus::Failed,
+                    format!(
+                        "{COULD_NOT_RUN_PREFIX}: the shell could not start the command (exit {exit}) \
+                         — this is not a verdict on the artifact; fix the --verify command\n{output}"
+                    ),
+                    code,
+                ),
+                _ => (
+                    ValidationStatus::Failed,
+                    format!(
+                        "validator exited {} — repair output, not acceptance criteria\n{output}",
+                        code.unwrap_or(-1)
+                    ),
+                    code,
+                ),
+            }
+        }
         Err(error) => (
             ValidationStatus::Inconclusive,
             format!("validator failed to run: {error}"),
@@ -76,7 +123,7 @@ async fn execute(
     cwd: &Path,
     command: &str,
     timeout: Duration,
-) -> anyhow::Result<(Option<i32>, String)> {
+) -> anyhow::Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
     #[cfg(windows)]
     let mut cmd = {
         let mut c = tokio::process::Command::new("cmd.exe");
@@ -108,14 +155,7 @@ async fn execute(
     // a pipe after its parent exits). Dropping these futures closes the pipes.
     let result = tokio::time::timeout(timeout, async {
         let (status, out, err) = tokio::try_join!(child.wait(), drain(stdout), drain(stderr))?;
-        Ok::<_, std::io::Error>((
-            status.code(),
-            format!(
-                "stdout (tail):\n{}\nstderr (tail):\n{}",
-                String::from_utf8_lossy(&out),
-                String::from_utf8_lossy(&err)
-            ),
-        ))
+        Ok::<_, std::io::Error>((status.code(), out, err))
     })
     .await;
     drop(tree);
@@ -147,6 +187,68 @@ mod tests {
         assert!(!receipt.ok);
         assert_eq!(receipt.exit_code, Some(7));
         assert!(receipt.summary.contains("diagnostic"));
+        // A command that ran and returned a verdict is NOT "could not run".
+        assert!(!could_not_run(&receipt), "{}", receipt.summary);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn missing_command_is_reported_as_could_not_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let receipt = validate(
+            dir.path(),
+            "future-goal-validator-that-does-not-exist --check",
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(!receipt.ok);
+        assert_eq!(receipt.exit_code, Some(127));
+        assert!(could_not_run(&receipt), "{}", receipt.summary);
+        assert!(
+            receipt.summary.to_lowercase().contains("not found"),
+            "stderr must be retained: {}",
+            receipt.summary
+        );
+    }
+
+    /// The exact shape that rejected five tickets: an unsubstituted
+    /// placeholder (`--report <pinned union>`) reads to `sh` as a redirection,
+    /// so the command line never parses and nothing runs. Exit 2 alone is not
+    /// proof of that — the shell's own diagnostic has to back it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shell_syntax_error_is_could_not_run_not_a_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        let receipt = validate(
+            dir.path(),
+            "python3 reconcile.py --report <pinned union> ; python3 staletable.py | grep '^tauri-appdata'",
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(!receipt.ok);
+        assert_eq!(receipt.exit_code, Some(2));
+        assert!(could_not_run(&receipt), "{}", receipt.summary);
+        assert!(
+            receipt.summary.contains("syntax error"),
+            "stderr must be retained: {}",
+            receipt.summary
+        );
+    }
+
+    /// Exit 2 without a shell parse error is a verdict (or at least the
+    /// command's own usage error), not "the shell could not start it".
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn valid_exit_2_is_not_classified_as_could_not_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let receipt = validate(
+            dir.path(),
+            "echo no-match 1>&2; exit 2",
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(receipt.exit_code, Some(2));
+        assert!(!could_not_run(&receipt), "{}", receipt.summary);
     }
     #[cfg(unix)]
     #[tokio::test]
