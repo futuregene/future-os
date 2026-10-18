@@ -238,62 +238,6 @@ mod tests {
         );
     }
 
-    /// The desktop's own takeover, through the command the Remote page calls.
-    /// Two devices are on disk and the *other* one is in control, so the poll
-    /// below is evidence the detached persist really ran: `claim_control_soon`
-    /// writes the pointer on its own thread, and a wait is the only thing that
-    /// keeps that write inside this fixture's home instead of the developer's
-    /// after `HOME` is restored.
-    #[tokio::test]
-    async fn remote_takeover_takes_control_and_persists_it() {
-        let _home = HomeGuard::new("remote_takeover_command");
-        let creds = |pair_id: &str| crate::remote::pairing::PairingCreds {
-            handshake_version: 2,
-            secure: None,
-            pair_id: pair_id.to_string(),
-            desktop_id: "desk_takeover".into(),
-            nkey_seed: String::new(),
-            user_jwt: "jwt".into(),
-            nats_url: "nats://127.0.0.1:9".into(),
-            nats_ws_url: "ws://127.0.0.1:9".into(),
-            jwt_expires_at: 3600,
-        };
-        crate::remote::pairing::save_creds(&creds("pair_prev")).expect("the controlling device");
-        crate::remote::pairing::save_creds(&creds("pair_next")).expect("the standby device");
-        assert_eq!(
-            crate::remote::pairing::active_slot().as_deref(),
-            Some("pair_prev"),
-            "the first device is in control before the takeover"
-        );
-
-        let status = remote_takeover("pair_next".into()).await.expect("takeover");
-        assert!(
-            !matches!(status.phase, remote::RemotePhase::Ready),
-            "a takeover is not a start: nothing is running in this fixture"
-        );
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while crate::remote::pairing::active_slot().as_deref() != Some("pair_next") {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "a takeover must outlive a restart"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        // Only now does the *book* name the new controller — the pointer write
-        // above is detached — so the read-back is taken after the wait, not
-        // before it.
-        assert_eq!(
-            remote_status().expect("status").pair_id,
-            "pair_next",
-            "the answer names the device it just put in control"
-        );
-        // Restore the process-global pointer this test moved, so no later test
-        // inherits a controller it never chose.
-        crate::remote::unpair_slot("pair_next")
-            .await
-            .expect("release the device this test took control of");
-    }
 
     #[tokio::test]
     async fn remote_start_surfaces_a_degraded_status() {

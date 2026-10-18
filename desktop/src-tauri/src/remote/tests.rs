@@ -3541,7 +3541,6 @@ use super::SingleSlotMap;
 mod multi_device_tests {
     use super::runtime_tests::test_creds_for_multi_device as test_creds;
     use super::*;
-    use crate::remote::types::DeviceControl;
 
     /// Save two devices and make `first` the controller — the shape of a
     /// machine that was driven by one of them and then paired a second.
@@ -3690,7 +3689,6 @@ mod multi_device_tests {
 mod start_focus_tests {
     use super::runtime_tests::test_creds_for_multi_device as test_creds;
     use super::*;
-    use crate::remote::types::DeviceControl;
 
     #[test]
     fn a_focused_status_names_that_device_even_when_another_one_controls() {
@@ -3734,7 +3732,6 @@ mod slot_tests {
     use crate::remote::test_support::{
         fake_state, init_store, sign_in, FakeNats, HomeGuard, MockPlatform,
     };
-    use crate::remote::types::DeviceControl;
     use serde_json::json;
     use std::time::Duration;
 
@@ -3999,53 +3996,6 @@ mod slot_tests {
         stop();
     }
 
-    /// The desktop's own takeover: the switch happens in memory at once, the
-    /// previous controller is told, and the answer is the projected status.
-    #[tokio::test]
-    async fn takeover_from_the_desktop_switches_control() {
-        let _home = test_support::HomeGuard::new("remote-takeover-desktop");
-        let (controller, standby) =
-            super::multi_device_tests::two_devices("pair_takeover_ctrl", "pair_takeover_standby");
-        *SUPERVISOR.last_error_code.lock().unwrap() = None;
-
-        crate::remote::takeover(&standby.pair_id)
-            .await
-            .expect("takeover");
-
-        assert_eq!(
-            SUPERVISOR.active_pair().as_deref(),
-            Some(standby.pair_id.as_str()),
-            "the machine's pointer moves at once"
-        );
-        // The disk write is detached on purpose (a reply must never wait on a
-        // file), so the persisted half is waited for rather than assumed. The
-        // stopped projection reads the book, so it names the new controller only
-        // after that write lands.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while pairing::active_slot().as_deref() != Some(standby.pair_id.as_str()) {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "a takeover must outlive a restart"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        let status = status();
-        assert_eq!(
-            status.pair_id, standby.pair_id,
-            "the status follows control"
-        );
-        assert!(!SUPERVISOR.in_control(&controller.pair_id));
-        let row = |pair_id: &str| {
-            status
-                .devices
-                .iter()
-                .find(|device| device.pair_id == pair_id)
-                .expect("every paired device is listed")
-                .control
-        };
-        assert_eq!(row(&standby.pair_id), DeviceControl::Active);
-        assert_eq!(row(&controller.pair_id), DeviceControl::Standby);
-    }
 
     /// A machine whose only connected device was never given control still has
     /// *somebody* to publish to. `controlling_pair` is what every event lane

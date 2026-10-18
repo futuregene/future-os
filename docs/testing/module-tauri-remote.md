@@ -36,6 +36,31 @@
 > `reconcile.py` reporting MISSING 0 / COVERED 0. **Re-pin at HEAD before quoting anything** — this
 > module's figure has twice been stale by the time it was published.
 
+> **MERGE NOTE (2026-10-18, ): four of this campaign's tests were DELETED, not repaired.**
+>  ("connecting is not taking over") removed the behaviour they asserted: a device's first secure
+> handshake used to claim the machine, and now it claims only a free machine - a new device comes up in
+> **standby** and is told who holds it. Four tests written before that change therefore failed after the
+> merge, and they failed on both flavours and on macOS, so this is semantics and not platform:
+>
+>     remote::commands::bridge_tests::a_first_confirmation_stands_the_previous_controller_down
+>     remote::commands::bridge_tests::a_first_secure_handshake_stands_the_previous_controller_down
+>     remote::tests::slot_tests::takeover_from_the_desktop_switches_control
+>     commands::remote::tests::remote_takeover_takes_control_and_persists_it
+>
+> They are deleted rather than updated because  ships the replacement and tests it itself:
+> `remote::commands::bridge_tests::a_standby_device_is_refused_and_a_takeover_moves_control` drives a real
+> bridge, refuses a standby device's command with `superseded`, and then moves control with an explicit
+> takeover. Rewriting ours would have produced a second test of the same rule with a weaker fixture (ours
+> seeded the pairing book without an installed runtime, which the stricter `takeover` now refuses with
+> `device_offline` - that is what the failures were reporting).
+>
+> **Consequence for the figure, stated rather than absorbed:** the lines those four tests executed are no
+> longer covered by this campaign's own tests. The published 1083 is measured on the pre-merge tree and the
+> module record already carries a merge-time re-derivation as a follow-up; that re-derivation must set the
+> new `expect`, and the four tests' lines will read `DA:0` until something covers them again. This is the
+> F.102 pattern - a fixture whose premise upstream changed - and, as there, deleting it is a coverage
+> regression recorded as one.
+
 Scope (unit TAU-A, goal `goal_160bc247aa63`, todo `todo_dd42c37ab9b9`):
 
 ```
