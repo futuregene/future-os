@@ -126,6 +126,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // and its sheet have to say the connection is gone and offer a retry. Every
   // other capture runs against a live desktop, so this is opt-in.
   const connectionDropped = new URLSearchParams(window.location.search).get("connection") === "dropped";
+  // `?held=1` makes another paired device the one driving this desktop: the
+  // phone is connected and in standby, so it can show who holds the machine and
+  // offer to take it back. This is the state connecting must NOT silently
+  // resolve, so it needs a fixture of its own.
+  const heldByAnother = new URLSearchParams(window.location.search).get("held") === "1";
   const [olderLoaded, setOlderLoaded] = useState(false);
   // `?leanRender=<mode>` renders a lean (or, for the control, full) lane slice
   // instead of the demo conversation — see shot/mock/leanRender.ts.
@@ -205,8 +210,16 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       bridgeInstanceId: "bridge_1",
       lastHeartbeatTs: BOOT_TIME,
       agentAvailable: true,
+      control: heldByAnother ? "standby" : "active",
+      holder: heldByAnother
+        ? { pairId: "pair_lab_desktop", name: "实验室的 MacBook Air", kind: "desktop" }
+        : null,
       ...(connectionDropped ? { disconnected: true } : {}),
     },
+    // Taking over is an action, not a state: the mock answers it the way the
+    // desktop does (success), and the banner disappearing is what a capture's
+    // assertion can see.
+    takeControl: async () => undefined,
     desktopOnline: !connectionDropped,
     hasConnectedContent: true,
     agentAvailable: true,

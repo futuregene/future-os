@@ -54,6 +54,7 @@ pub(super) fn build_workspaces_snapshot() -> Option<(serde_json::Value, String)>
 /// either; a caller that needs the recovery signal uses
 /// [`presence_heartbeat_payload`].
 pub(super) fn light_presence_payload(pair_id: &str, bridge_instance_id: &str) -> serde_json::Value {
+    let in_control = super::SUPERVISOR.in_control(pair_id);
     json!({
         "online": true,
         "agentAvailable": host().agent_available(),
@@ -61,17 +62,27 @@ pub(super) fn light_presence_payload(pair_id: &str, bridge_instance_id: &str) ->
         "bridgeInstanceId": bridge_instance_id,
         // Additive: an older client ignores it, a newer one uses it to tell
         // "connected to the machine" from "allowed to drive the machine".
-        "control": control_label(pair_id),
+        "control": if in_control { "active" } else { "standby" },
+        // Who holds it, when somebody else does. This is what lets a client ask
+        // its user "taking over disconnects <name>" instead of either taking the
+        // machine silently or refusing without saying why. Absent for the
+        // controller itself: it is not displacing anyone.
+        "holder": if in_control { json!(null) } else { holder_payload() },
         "lastHeartbeatTs": unix_timestamp(),
     })
 }
 
-/// Whether `pair_id` may drive this machine, as the wire spells it.
-fn control_label(pair_id: &str) -> &'static str {
-    if super::SUPERVISOR.in_control(pair_id) {
-        "active"
-    } else {
-        "standby"
+/// The controller's self-declared identity, in the shape the wire carries.
+fn holder_payload() -> serde_json::Value {
+    match super::SUPERVISOR.controller_identity() {
+        Some(identity) => json!({
+            "pairId": super::SUPERVISOR.active_pair(),
+            "name": identity.name,
+            "kind": identity.kind,
+        }),
+        // A controller that never said what it is: the client is told the
+        // machine is taken, and names it neutrally.
+        None => json!({ "pairId": super::SUPERVISOR.active_pair() }),
     }
 }
 

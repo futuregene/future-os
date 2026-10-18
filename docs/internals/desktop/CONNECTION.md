@@ -351,17 +351,32 @@ own (`restart_slot`), never by restarting the whole machine.
 the book so a restart cannot hand the machine to someone else. It moves in
 exactly three places, and nowhere else:
 
-- the **first** secure handshake of a pairing — the device has just been
-  scanned or added, so it is the one in front of the machine. Later handshakes
-  are reconnects and leave control alone: reclaiming on reconnect would make
-  two devices evict each other forever;
 - an explicit `takeover` command from a paired device;
-- `remote_takeover` from the desktop's own UI.
+- `remote_takeover` from the desktop's own UI;
+- the **first** secure handshake of a pairing — **but only when no other device
+  holds the machine**. Connecting is not taking over: if someone else is
+  driving, the new device comes up in standby and is told who it would
+  displace, and its own `takeover` (which its user has to ask for) is what moves
+  control. The alternative — claiming on every first handshake — silently
+  disconnects whatever the other person was in the middle of, which is a
+  decision the person holding the phone should make, not a side effect of
+  connecting.
+
+A later handshake is a reconnect and never claims: reclaiming on reconnect
+would make two devices evict each other forever. A machine with exactly one
+device claims it at start — there is no arbitration to do.
 
 The previous controller is told on its own `p.{pair}.state.control` packet and
 sees `control: "standby"` in presence; its client stops reconnecting until its
-user asks for control back. A machine with exactly one device claims it at
-start — there is no arbitration to do.
+user asks for control back.
+
+**Telling a client whom it would displace.** The presence payload carries
+`holder` whenever the receiving device is *not* in control: the controller's
+`pairId` plus the name and kind it declared on `secure_ready`. That is what
+lets a client show "«name» is controlling this desktop — take over?" instead of
+either stealing the machine silently or refusing without saying why. A
+controller that never declared a name yields the pair id alone, and clients fall
+back to neutral wording rather than inventing an identity.
 
 **What a standby device may not do.** Its business commands are refused in
 this process with `superseded`, before any handler runs, so nothing already in
@@ -371,11 +386,10 @@ and `unpair` are the only commands it may speak. The payload it gets back from
 `get_presence` is the light one: the conversation list is the machine's, not
 every paired device's.
 
-**Still next.** The Remote page's device list UI (add a device, unpair one,
-"let this one control"), and the client halves of standby (mobile and the
-desktop client role). The runtime already exposes all of it: `RemoteStatus`
-carries `devices[]` with `control`, and `remote_add_device`,
-`remote_unpair_device`, `remote_takeover` exist as commands.
+**Still next.** The desktop client role's standby UI ("connect to another
+computer" has the same question to ask). The mobile half is done: the sessions
+screen shows the holder by name with a "take over" button
+(`TakeControlBanner`), and it is the only path that displaces anyone.
 
 ### 2.2.1 Mobile multi-Desktop pairing (2026-09-12)
 
