@@ -82,6 +82,16 @@ pub(in crate::remote) async fn start_generation(
         SUPERVISOR.claim_control(&plans[0].creds.pair_id);
     }
 
+    // The device whose invitation this start minted, if any: the answer must
+    // describe *that* device, because its QR code is what the user is looking
+    // at. Without it the answer would name whichever device happens to hold the
+    // control pointer — and anything that pairs what a start returned (the
+    // host-bridge fixture does exactly that) would point at the wrong pairing.
+    let minted = plans
+        .iter()
+        .find(|plan| plan.pairing_code.is_some())
+        .map(|plan| plan.creds.pair_id.clone());
+
     // One device failing to come up must not take the others down: each slot
     // has its own connection and its own credential. The start only reports a
     // failure when *no* device could be started, which is the case a user can
@@ -126,7 +136,7 @@ pub(in crate::remote) async fn start_generation(
                     SUPERVISOR.start_retry_next_at.store(0, Ordering::Release);
                 })
                 .unwrap_or(());
-            let mut status = status();
+            let mut status = status_focused(minted.as_deref());
             if web_bind_failed {
                 status.warning_code = Some("web_bind".to_string());
             }
@@ -161,9 +171,10 @@ pub async fn add_device() -> Result<RemoteStatus, crate::AppError> {
         SUPERVISOR.start_requested.store(true, Ordering::Release);
     }
     let epoch = SUPERVISOR.access.current();
+    let added = plan.creds.pair_id.clone();
     let _start_guard = SUPERVISOR.start_lock.lock().await;
     start_slot(plan, epoch, true, false).await?;
-    Ok(status())
+    Ok(status_focused(Some(&added)))
 }
 
 /// Resolve every paired device into a plan, dropping the ones the platform has

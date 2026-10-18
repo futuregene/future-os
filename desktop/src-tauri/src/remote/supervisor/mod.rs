@@ -43,6 +43,8 @@ pub(super) use self::state::{
     SUPERVISOR,
 };
 pub use self::status::status;
+#[allow(unused_imports)]
+pub(super) use self::status::status_focused;
 
 /// Make `pair_id` the device that drives this machine.
 ///
