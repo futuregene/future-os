@@ -380,6 +380,7 @@ async fn read_history_page_with_client(
 /// model/thinking selectors.
 pub async fn get_session_state(session_id: String) -> Result<serde_json::Value, crate::AppError> {
     let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, &session_id).await?;
     let response = client
         .execute_command(get_state_command(session_id))
         .await
@@ -474,6 +475,7 @@ pub async fn set_session_model(
     model_id: String,
 ) -> Result<(), crate::AppError> {
     let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, &session_id).await?;
     client
         .execute_command(set_model_command(model_id, session_id))
         .await
@@ -502,6 +504,7 @@ pub async fn set_session_thinking_level(
     level: String,
 ) -> Result<(), crate::AppError> {
     let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, &session_id).await?;
     client
         .execute_command(set_thinking_level_command(level, session_id))
         .await
@@ -517,6 +520,7 @@ pub async fn generate_session_title(
     language: String,
 ) -> Result<serde_json::Value, crate::AppError> {
     let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, &session_id).await?;
     let command = crate::agent_proto::RpcCommand {
         mode: language,
         ..base_command("generate_session_title", session_id)
@@ -540,6 +544,7 @@ pub async fn generate_session_title(
 /// Rename a session: update the agent's session name, then mirror to the GUI store.
 pub async fn rename_session(session_id: String, name: String) -> Result<(), crate::AppError> {
     let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, &session_id).await?;
     client
         .execute_command(set_session_name_command(name.clone(), session_id.clone()))
         .await

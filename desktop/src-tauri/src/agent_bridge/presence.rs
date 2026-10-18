@@ -117,6 +117,37 @@ mod tests {
     use serde_json::json;
 
     #[tokio::test]
+    async fn foreign_database_cannot_compact_or_rename_the_original_conversation() {
+        let home = TestHome::new("mutation-source-fence");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "source");
+        let thread = seed_thread(&workspace.id, Some("session"));
+        crate::store::record_thread_source(
+            &thread.id,
+            "session",
+            "original-database",
+            "generation",
+        )
+        .unwrap();
+        assert!(crate::agent_bridge::compact_agent_session("session".into())
+            .await
+            .is_err());
+        assert!(
+            crate::agent_bridge::rename_session("session".into(), "foreign title".into())
+                .await
+                .is_err()
+        );
+        assert!(!crate::agent_bridge::wait_for_agent_idle("session").await);
+        for command in ["compact", "set_session_name", "get_state"] {
+            assert!(mock.requests_of(command).is_empty());
+        }
+        assert_eq!(
+            crate::store::get_thread(&thread.id).unwrap().unwrap().title,
+            thread.title
+        );
+    }
+
+    #[tokio::test]
     async fn stopping_a_foreign_source_settles_only_the_local_run() {
         let home = TestHome::new("abort-source-fence");
         let mock = mock_agent();

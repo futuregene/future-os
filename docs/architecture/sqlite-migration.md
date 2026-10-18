@@ -250,3 +250,27 @@ fence. Version 1 pending journals remain supported. Backup verification rejects
 unmanifested SQLite sidecars; snapshot publication and complete tree staging sync
 directory entries as well as file bodies. Added cases cover these boundaries but
 are only compiled locally, as local unit-test execution is intentionally disabled.
+
+### Preflight verification on repeated recovery
+
+Before another forward rename, resume verifies every replacement root across its
+installed and staged locations: hashes, SQLite integrity, and the complete managed
+file/directory inventory must match the restore manifest. Omitted records, duplicate
+directories or damaged replacements keep startup fenced before more originals move.
+Rollback verifies original preimages independently, so a damaged replacement does
+not prevent rollback of intact originals. An interrupted rollback retains its
+direction even when the next command is `resume`.
+
+Nonzero Desktop headers must agree with the entire migration ledger (count, range,
+and each checksum). A regressed header or extra/future ledger row cannot replay
+old steps. Background startup/run reconciliation and stream attachment verify known
+source ownership on the same Agent connection before querying state, repairing local
+rows or requesting fault cancellation. Compaction, title generation and remote
+session settings obey the same source boundary. The five-second idle-confirmation
+budget includes connecting, source verification and all RPCs; timeout is never
+proof of a stopped session. The independent 25-second explicit Force quit watchdog
+remains in place.
+
+Regression cases cover omitted attachments, damaged staged replacements, repeated
+rollback interruption, contradictory migration ledgers, foreign-database background
+repair and mutation. Tests are compiled by static checks but are not run locally.

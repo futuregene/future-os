@@ -927,6 +927,7 @@ mod tests {
                     .retain(|file| file.path != "app/images/t/original.png");
                 write_json(&archive.join("manifest.json"), &manifest).unwrap();
             } else {
+                fs::create_dir_all(archive.join("agent/sessions")).unwrap();
                 fs::write(
                     archive.join("agent/sessions/unlisted.jsonl"),
                     b"historical input",
