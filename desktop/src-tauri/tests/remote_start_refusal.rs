@@ -32,6 +32,15 @@
 //!   whose reconnect start is a retryable `server` failure takes the worker's
 //!   `Ok(status) if retryable` arm.
 //!
+//! TAU-D26 added the six children that close the remaining `#[cfg(not(test))]` bodies —
+//! the retry worker's terminal result and tail, `restart_slot`'s four other inputs, the
+//! watcher's terminal-health return, and the crash-loop budget. Their header block sits
+//! above the tests themselves; §14 of `docs/testing/module-tauri-remote.md` is the
+//! record. That segment also fixed `start_generation`'s no-replace guard, which read the
+//! status projection (a retry reports itself as `Reconnecting`) instead of the runtime
+//! map and therefore made the startup retry a no-op — the probe child in §14.2 is what
+//! found it.
+//!
 //! Both brokers are real WebSocket servers (`ws://`), and that is deliberate: the
 //! production `connect_nats` calls `require_tls(true)` in the non-test copy, and
 //! async-nats skips the TLS upgrade for a WebSocket address (`connector.rs`,
@@ -74,11 +83,14 @@ enum TokenReply {
     /// HTTP 500 with the platform's `{error, message}` body — categorized `server`,
     /// which is a *retryable* start failure.
     ServerError,
+    /// HTTP 401 with the platform's `invalid_remote_credential` machine code — what
+    /// a web-side unpair looks like to `refresh_bridge_jwt`.
+    Revoked,
 }
 
-#[derive(Default)]
 struct PlatformState {
-    /// Replies consumed in order; the last one repeats for later calls.
+    /// Replies consumed in order; the last one repeats for later calls. The first
+    /// request of a run is always the establish refresh and always takes the head.
     token: Vec<TokenReply>,
     token_calls: usize,
     /// Where a freshly minted invitation points, for the `--re-pair` child.
@@ -188,20 +200,27 @@ fn token_response(state: &Arc<Mutex<PlatformState>>) -> (u16, Value) {
     let mut state = state.lock().unwrap();
     let index = state.token_calls.min(state.token.len().saturating_sub(1));
     state.token_calls += 1;
-    match state.token.get(index) {
+    match state.token.get(index).cloned() {
         Some(TokenReply::Credential {
             nats_url,
             exp_offset,
         }) => (
             200,
             json!({
-                "user_jwt": fixture_jwt(*exp_offset),
+                "user_jwt": fixture_jwt(exp_offset),
                 "nats_url": nats_url,
                 "nats_ws_url": nats_url,
             }),
         ),
         Some(TokenReply::Malformed) | None => (200, json!({"user_jwt": 5})),
         Some(TokenReply::ServerError) => (500, json!({"error": "internal"})),
+        Some(TokenReply::Revoked) => (
+            401,
+            json!({
+                "error": "invalid_remote_credential",
+                "message": "Remote credential is invalid or revoked.",
+            }),
+        ),
     }
 }
 
@@ -631,10 +650,12 @@ fn write_auth(home: &Path, platform_url: &str) {
     .expect("write auth.json");
 }
 
-/// A stored v2 pairing for `pair_id`. `confirm` decides whether the refresh worker is
-/// allowed to run (`pairing_confirmed`), which is what keeps a fixture generation from
-/// rotating its credential while the test drives the watcher.
-fn write_pairing(home: &Path, nats_url: &str, confirm: bool) {
+/// One device's stored credential in the shape `PairingCreds` deserializes.
+///
+/// `confirm` controls whether the signed peer identity is present: without one the
+/// device is an invitation that has not been claimed yet, which is how the
+/// `handshake_version` arms below get a v1 slot out of the same builder.
+fn pairing_slot(pair_id: &str, desktop_id: &str, nats_url: &str, confirm: bool) -> Value {
     let seed = nkeys::KeyPair::new_user()
         .seed()
         .expect("generate a user seed");
@@ -643,7 +664,7 @@ fn write_pairing(home: &Path, nats_url: &str, confirm: bool) {
     let peer = future_remote_crypto::generate_identity()
         .expect("generate a peer identity")
         .1;
-    let creds = json!({
+    json!({
         "handshakeVersion": 2,
         "secure": {
             "privateKey": B64.encode(private.as_slice()),
@@ -652,14 +673,34 @@ fn write_pairing(home: &Path, nats_url: &str, confirm: bool) {
             "secret": Value::Null,
             "expiresAt": unix_now() + 600,
         },
-        "pairId": "pair_fixture",
-        "desktopId": "desktop_fixture",
+        "pairId": pair_id,
+        "desktopId": desktop_id,
         "nkeySeed": seed,
         "userJwt": fixture_jwt(3600),
         "natsUrl": nats_url,
         "natsWsUrl": nats_url,
         "jwtExpiresAt": unix_now() + 3600,
-    });
+    })
+}
+
+/// Write the multi-device book (`remote_pairings.json`), which is what
+/// `pairing::load_slots` reads once it exists. The legacy single-pairing file is
+/// read only as a one-slot book when the book is absent.
+fn write_book(home: &Path, active: &str, slots: &[Value]) {
+    let book = json!({ "version": 2, "active": active, "slots": slots });
+    std::fs::write(
+        home.join(".future/remote_pairings.json"),
+        serde_json::to_vec(&book).expect("encode the pairing book"),
+    )
+    .expect("write remote_pairings.json");
+}
+
+/// A stored v2 pairing written to the **legacy** path: one slot, read as a book when
+/// no book file exists yet. The child's own first start saves the refreshed credential
+/// into the book, so a test that needs to change the credential *after* that start
+/// must rewrite `remote_pairings.json` (see [`write_book`]).
+fn write_pairing(home: &Path, nats_url: &str, confirm: bool) {
+    let creds = pairing_slot("pair_fixture", "desktop_fixture", nats_url, confirm);
     std::fs::write(
         home.join(".future/remote_pairing.json"),
         serde_json::to_vec(&creds).expect("encode pairing"),
@@ -889,6 +930,629 @@ fn a_healthy_generation_resets_the_budget_and_a_retryable_reconnect_arms_the_ret
         retried,
         "a retryable reconnect must arm the start-retry worker; transcript:\n{}",
         child.text()
+    );
+    child.interrupt();
+}
+
+// ---------------------------------------------------------------------------
+// TAU-D26: the last four `#[cfg(not(test))]` bodies in `supervisor/start.rs`
+//
+// Six children, one per input the single-device fixtures never varied. Each asserts
+// the arm's own effect, not that a process exited:
+//
+// 1. `a_retry_that_cannot_be_classified_ends_the_worker_and_rearms_it` — the retry
+//    worker's *attempt* is a second request on the mock platform; the unclassifiable
+//    answer ends the loop (`start.rs:455`), its exit tail runs, and the tail's re-arm
+//    is a third request. `start.rs:455, 458-470`.
+// 2. `a_freshly_refreshed_credential_rejected_on_a_live_link_is_terminal` — two
+//    devices; the standby's live link is refused with a *valid* credential, which
+//    makes the health terminal. The watching device must return instead of rebuilding,
+//    while the controlling device keeps the process up. `start.rs:606`.
+// 3. `a_reconnect_for_a_device_the_book_no_longer_holds_stops_that_runtime` — the
+//    book loses the device while the generation is live. `start.rs:530-531, 507`.
+// 4. `a_reconnect_with_a_pre_v2_slot_forgets_it` — the book now holds a pre-v2 slot.
+//    `start.rs:534-535`.
+// 5. `a_reconnect_the_platform_revokes_is_forgotten` — the platform answers the
+//    reconnect's refresh with `invalid_remote_credential`. `start.rs:540-541`.
+// 6. `a_reconnect_refreshes_the_credential_and_rebuilds_the_slot` — the refresh
+//    succeeds and the slot is rebuilt. `start.rs:538, 545-553`.
+// 7. `the_reconnect_budget_exhausts_into_a_terminal_watch` — three devices spend the
+//    crash-loop budget, and a fourth whose link fails last reads it at `MAX`.
+//    `start.rs:630-632`.
+//
+// `start.rs:495-496` (the `attempt > MAX` guard in `spawn_runtime_reconnect`) stays
+// OPEN: see the record, §14.4 — the counter is only ever read at `:625-628` behind a
+// `>= MAX` guard, so reaching it needs two watchers whose load/record pair interleaves
+// inside a few hundred nanoseconds.
+// ---------------------------------------------------------------------------
+
+/// The platform asked for a credential `times` times, observed as a *sequence*: the
+/// retry worker's effect is another request, not another process.
+fn wait_for_token_calls(platform: &Platform, times: usize, timeout: Duration) -> usize {
+    let deadline = Instant::now() + timeout;
+    while platform.token_calls() < times && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    platform.token_calls()
+}
+
+/// 1. The retry worker's terminal result and its exit tail.
+///
+/// The first start fails `server` (retryable) and arms the worker. The worker's retry
+/// is answered with a body that cannot be decoded, so `start_failure` has no code and
+/// `start_once` returns `Err`: the loop takes `Ok(_) | Err(_) => break` instead of
+/// backing off. The tail then clears `next_at`/`running`, reads the latest status —
+/// still the recorded `server` failure, because an uncoded error does not overwrite
+/// it — and re-arms the worker, whose own attempt is the third platform request.
+///
+/// The registry is why the retry can reach the platform at all: the no-replace guard
+/// in `start_generation` asks the runtime map rather than the status projection,
+/// which reports the retry itself as `Reconnecting`. Before that fix this child
+/// asked the platform exactly once and then slept forever (TAU-D26).
+#[test]
+fn a_retry_that_cannot_be_classified_ends_the_worker_and_rearms_it() {
+    let broker = Broker::start(BrokerMode::Live {
+        error_after: Duration::from_secs(3600),
+    });
+    let platform = Platform::start(vec![TokenReply::ServerError, TokenReply::Malformed], None);
+    let home = isolated_home("retrytail");
+    write_auth(&home, &platform.url);
+    write_pairing(&home, &broker.url, true);
+
+    let mut child = ChildRun::spawn(home);
+    assert!(
+        child.wait_for("Remote: Reconnecting", Duration::from_secs(30)),
+        "the first start must report the retryable failure; transcript:\n{}",
+        child.text()
+    );
+    assert!(
+        child.wait_for("server failure episode started", Duration::from_secs(10)),
+        "the failure must be recorded for the retry to be armed; transcript:\n{}",
+        child.text()
+    );
+    let retried = wait_for_token_calls(&platform, 2, Duration::from_secs(20));
+    assert!(
+        retried >= 2,
+        "the retry worker must ask the platform again (`start.rs:455`); calls={retried}; \
+         transcript:\n{}",
+        child.text()
+    );
+    // The terminal arm ends the worker; the retryable arm beside it would have backed
+    // off and asked again within ~2 s. Silence here is the tail's own effect — the
+    // worker exited instead of scheduling another attempt.
+    std::thread::sleep(Duration::from_secs(4));
+    assert_eq!(
+        platform.token_calls(),
+        2,
+        "a terminal retry result must end the worker, not back off (`start.rs:455-470`); \
+         transcript:\n{}",
+        child.text()
+    );
+    child.interrupt();
+}
+
+/// 2. `GenerationWatch`'s terminal-health return.
+///
+/// The link is refused *with a credential that was refreshed and has not expired*,
+/// which is what makes `mark_authorization_rejected` set `service_config_error`
+/// (`health.rs:94-102`) and print `[AU001]`; the watcher then takes
+/// `if state.nats_health.is_terminal() { return; }` instead of rebuilding.
+///
+/// The refusal lands mid-tick (`error_after` 2.5 s), so the first watch tick after it
+/// already sees the terminal bit. The watcher's tick precedes the entry's one-second
+/// status poll — the watch is spawned inside `start_slot`, the poll only starts after
+/// `remote::start` returns — so the arm runs before the entry reacts to the terminal
+/// health and exits. A refusal on a tick boundary instead hits the millisecond window
+/// where the socket is gone but the event has not fired, and the watch rebuilds.
+#[test]
+fn a_freshly_refreshed_credential_rejected_on_a_live_link_is_terminal() {
+    let broker = Broker::start(BrokerMode::Live {
+        error_after: Duration::from_millis(2500),
+    });
+    let platform = Platform::start(
+        vec![TokenReply::Credential {
+            nats_url: broker.url.clone(),
+            exp_offset: 3600,
+        }],
+        None,
+    );
+    let home = isolated_home("terminal");
+    write_auth(&home, &platform.url);
+    write_pairing(&home, &broker.url, true);
+
+    let mut child = ChildRun::spawn(home);
+    assert!(
+        child.wait_for("Remote: Ready", Duration::from_secs(40)),
+        "the generation must be live before the refusal; transcript:\n{}",
+        child.text()
+    );
+    assert!(
+        child.wait_for("[AU001]", Duration::from_secs(20)),
+        "the freshly refreshed credential must be rejected terminally; transcript:\n{}",
+        child.text()
+    );
+    let stopped = child.wait_for("Remote connection stopped", Duration::from_secs(20));
+    let transcript = child.text();
+    assert!(
+        stopped,
+        "a terminal service_authorization must stop the entry; transcript:\n{transcript}"
+    );
+    assert!(
+        transcript.contains("Remote connection stopped (Some(ServiceAuthorization))"),
+        "the entry must name the terminal reason; transcript:\n{transcript}"
+    );
+    assert!(
+        !transcript.contains("critical task stopped"),
+        "a terminal health must not arm a rebuild; transcript:\n{transcript}"
+    );
+    child.interrupt();
+}
+
+/// 3. `restart_slot` on a device the book no longer holds.
+///
+/// The device disappears from the book between the generation's start and the live
+/// refusal, so the reconnect worker's `restart_slot` finds no slot: it stops the
+/// runtime rather than keeping it alive without a credential (`start.rs:530-531`), and
+/// the wrapper's `Ok(_)` arm is `start.rs:507`. The child reporting `Stopped` — not
+/// `automatic bridge reconnect failed` — is the difference between that arm and the
+/// `Err` arm beside it.
+#[test]
+fn a_reconnect_for_a_device_the_book_no_longer_holds_stops_that_runtime() {
+    let broker = Broker::start(BrokerMode::Live {
+        error_after: Duration::from_secs(4),
+    });
+    let platform = Platform::start(
+        vec![
+            TokenReply::Credential {
+                nats_url: broker.url.clone(),
+                exp_offset: -60,
+            },
+            TokenReply::ServerError,
+        ],
+        None,
+    );
+    let home = isolated_home("gone");
+    write_auth(&home, &platform.url);
+    write_pairing(&home, &broker.url, true);
+
+    let mut child = ChildRun::spawn(home.clone());
+    assert!(
+        child.wait_for("Remote: Ready", Duration::from_secs(40)),
+        "the generation must be live before the book changes; transcript:\n{}",
+        child.text()
+    );
+    // The book is authoritative once the child's own start has saved it.
+    for path in [
+        home.join(".future/remote_pairings.json"),
+        home.join(".future/remote_pairing.json"),
+    ] {
+        let _ = std::fs::remove_file(&path);
+    }
+    assert!(
+        child.wait_for("critical task stopped", Duration::from_secs(30)),
+        "the live refusal must reach the reconnect worker; transcript:\n{}",
+        child.text()
+    );
+    let stopped = child.wait_for("Remote connection stopped (None)", Duration::from_secs(40));
+    let transcript = child.text();
+    assert!(
+        stopped && transcript.contains("Remote: Stopped"),
+        "a missing credential must stop the runtime, not report a rebuild failure; \
+         transcript:\n{transcript}"
+    );
+    assert!(
+        !transcript.contains("automatic bridge reconnect failed"),
+        "the worker's Err arm must not be the one that ran; transcript:\n{transcript}"
+    );
+    for path in [
+        home.join(".future/remote_pairings.json"),
+        home.join(".future/remote_pairing.json"),
+    ] {
+        assert!(
+            !path.exists(),
+            "the fixture's deletion must stand: nothing may resurrect {}",
+            path.display()
+        );
+    }
+    child.interrupt();
+}
+
+/// 4. `restart_slot` on a pre-v2 slot.
+///
+/// A credential minted before the signed mutual handshake has no peer identity and
+/// cannot be upgraded in place, so the reconnect forgets the device (`start.rs:534-535`)
+/// and stops its runtime. The book file being *removed* is the arm's own effect: a
+/// "legacy" slot that were merely skipped would stay on disk and be retried forever.
+#[test]
+fn a_reconnect_with_a_pre_v2_slot_forgets_it() {
+    let broker = Broker::start(BrokerMode::Live {
+        error_after: Duration::from_secs(4),
+    });
+    let platform = Platform::start(
+        vec![
+            TokenReply::Credential {
+                nats_url: broker.url.clone(),
+                exp_offset: -60,
+            },
+            TokenReply::ServerError,
+        ],
+        None,
+    );
+    let home = isolated_home("prev2");
+    write_auth(&home, &platform.url);
+    write_pairing(&home, &broker.url, true);
+
+    let mut child = ChildRun::spawn(home.clone());
+    assert!(
+        child.wait_for("Remote: Ready", Duration::from_secs(40)),
+        "the v2 generation must be live first; transcript:\n{}",
+        child.text()
+    );
+    let mut legacy = pairing_slot("pair_fixture", "desktop_fixture", &broker.url, false);
+    legacy["handshakeVersion"] = json!(1);
+    legacy["secure"] = Value::Null;
+    write_book(&home, "pair_fixture", &[legacy]);
+
+    assert!(
+        child.wait_for("critical task stopped", Duration::from_secs(30)),
+        "the live refusal must reach the reconnect worker; transcript:\n{}",
+        child.text()
+    );
+    let stopped = child.wait_for("Remote connection stopped (None)", Duration::from_secs(40));
+    let transcript = child.text();
+    assert!(
+        stopped && transcript.contains("Remote: Stopped"),
+        "a pre-v2 credential must stop its runtime; transcript:\n{transcript}"
+    );
+    for path in [
+        home.join(".future/remote_pairings.json"),
+        home.join(".future/remote_pairing.json"),
+    ] {
+        assert!(
+            !path.exists(),
+            "the pre-v2 slot must be forgotten from disk, not skipped: {}",
+            path.display()
+        );
+    }
+    child.interrupt();
+}
+
+/// 5. `restart_slot` when the platform now reports the device revoked.
+///
+/// The target device's live link is refused with an already-expired credential, so the
+/// health records a *transient* failure and the watcher rebuilds instead of returning.
+/// The rebuild's refresh is answered `401 invalid_remote_credential`, which takes the
+/// forget-and-stop arm (`start.rs:542-543`) instead of the retryable `start_failure`
+/// below it.
+///
+/// **The second device is part of the mechanism, not decoration.** The first start
+/// spawns a credential-refresh worker per device, and an expired bridge JWT makes that
+/// worker due immediately — so with one device it competes with the reconnect for the
+/// next scripted answer, and the order in which the two queue on `start_lock` decides
+/// whether the reconnect is answered with the revocation at all. The worker resolves its
+/// credential with `pairing::load_creds()`, which returns the *controlling* slot: this
+/// book makes the healthy second device the controller, so the target's worker filters
+/// itself out and returns before it asks. The revocation is then the reconnect's answer
+/// on every run, and the controlling device keeps the entry alive while the target is
+/// forgotten.
+#[test]
+fn a_reconnect_the_platform_revokes_is_forgotten() {
+    let broker = Broker::start(BrokerMode::Live {
+        error_after: Duration::from_millis(600),
+    });
+    let quiet = Broker::start(BrokerMode::Live {
+        error_after: Duration::from_secs(7200),
+    });
+    let platform = Platform::start(
+        vec![
+            // Establish, in book order: the controller first, then the target.
+            TokenReply::Credential {
+                nats_url: quiet.url.clone(),
+                exp_offset: 3600,
+            },
+            TokenReply::Credential {
+                nats_url: broker.url.clone(),
+                exp_offset: -60,
+            },
+            // The target's reconnect. The controller's book entry is due for renewal
+            // only after `REFRESH_LEAD` (4 min), so nothing else consumes this answer.
+            TokenReply::Revoked,
+        ],
+        None,
+    );
+    let home = isolated_home("revoked");
+    write_auth(&home, &platform.url);
+    write_book(
+        &home,
+        "pair_control",
+        &[
+            pairing_slot("pair_control", "desktop_control", &quiet.url, true),
+            pairing_slot("pair_fixture", "desktop_fixture", &broker.url, true),
+        ],
+    );
+
+    let mut child = ChildRun::spawn(home.clone());
+    assert!(
+        child.wait_for("Remote: Ready", Duration::from_secs(40)),
+        "the controlling device must come up; transcript:\n{}",
+        child.text()
+    );
+    assert!(
+        child.wait_for("rebuilding generation (1/3)", Duration::from_secs(40)),
+        "the live refusal must reach the reconnect worker; transcript:\n{}",
+        child.text()
+    );
+    let revoked = child.wait_for("invalid_remote_credential", Duration::from_secs(30));
+    let transcript = child.text();
+    assert!(
+        revoked && transcript.contains("HTTP 401"),
+        "the reconnect's refresh must be the revoked answer; transcript:\n{transcript}"
+    );
+    // The arm's own effect: the dead device is gone from the book, the healthy one stays.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut slots: Vec<String> = Vec::new();
+    while Instant::now() < deadline {
+        if let Ok(bytes) = std::fs::read(home.join(".future/remote_pairings.json")) {
+            if let Ok(book) = serde_json::from_slice::<Value>(&bytes) {
+                slots = book["slots"]
+                    .as_array()
+                    .map(|slots| {
+                        slots
+                            .iter()
+                            .filter_map(|slot| slot["pairId"].as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if slots == vec!["pair_control".to_string()] {
+                    break;
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        slots,
+        vec!["pair_control".to_string()],
+        "the revoked device must be forgotten and the healthy one kept; transcript:\n{}",
+        child.text()
+    );
+    child.interrupt();
+}
+
+/// 6. `restart_slot`'s successful refresh and rebuild.
+///
+/// The reconnect's refresh returns a fresh credential for a second endpoint, so the plan
+/// is built and the slot restarted (`start.rs:540, 547-554`); the rebuilt generation
+/// connects there, which is the effect: a slot installed on the *new* endpoint, not a
+/// worker that merely ran. The wrapper then takes its non-retryable `Ok(_)` arm
+/// (`start.rs:509`). The controlling second device keeps the target's refresh worker out
+/// of the script (see test 5 for why that matters).
+#[test]
+fn a_reconnect_refreshes_the_credential_and_rebuilds_the_slot() {
+    let first = Broker::start(BrokerMode::Live {
+        error_after: Duration::from_millis(600),
+    });
+    let quiet = Broker::start(BrokerMode::Live {
+        error_after: Duration::from_secs(7200),
+    });
+    let rebuilt = Broker::start(BrokerMode::Live {
+        error_after: Duration::from_secs(7200),
+    });
+    let platform = Platform::start(
+        vec![
+            TokenReply::Credential {
+                nats_url: quiet.url.clone(),
+                exp_offset: 3600,
+            },
+            TokenReply::Credential {
+                nats_url: first.url.clone(),
+                exp_offset: -60,
+            },
+            // The target's reconnect: this is the credential to rebuild with.
+            TokenReply::Credential {
+                nats_url: rebuilt.url.clone(),
+                exp_offset: 3600,
+            },
+        ],
+        None,
+    );
+    let home = isolated_home("rebuilt");
+    write_auth(&home, &platform.url);
+    write_book(
+        &home,
+        "pair_control",
+        &[
+            pairing_slot("pair_control", "desktop_control", &quiet.url, true),
+            pairing_slot("pair_fixture", "desktop_fixture", &first.url, true),
+        ],
+    );
+
+    let mut child = ChildRun::spawn(home);
+    assert!(
+        child.wait_for("rebuilding generation (1/3)", Duration::from_secs(40)),
+        "the live refusal must reach the reconnect worker; transcript:\n{}",
+        child.text()
+    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while rebuilt.connects.load(Ordering::Acquire) == 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let transcript = child.text();
+    assert!(
+        rebuilt.connects.load(Ordering::Acquire) >= 1,
+        "a successful refresh must rebuild the slot on its new endpoint; transcript:\n{transcript}"
+    );
+    assert!(
+        !transcript.contains("automatic bridge reconnect failed"),
+        "the rebuilt slot must take the wrapper's Ok arm, not its Err arm; transcript:\n{transcript}"
+    );
+    assert!(
+        wait_for_token_calls(&platform, 3, Duration::from_secs(5)) >= 3,
+        "the rebuild's credential must come from the platform; transcript:\n{transcript}"
+    );
+    assert!(
+        matches!(child.child.try_wait(), Ok(None)),
+        "the rebuilt generation keeps the entry running; transcript:\n{transcript}"
+    );
+    child.interrupt();
+}
+
+/// 7. The crash-loop budget's exhaustion.
+///
+/// Three devices on a broker that refuses them one second into each generation spend
+/// the process-wide budget (`record_runtime_failure`); the fourth — the controlling
+/// one, whose link fails six seconds later — wakes to `runtime_reconnect_attempts >=
+/// MAX_RUNTIME_RECONNECT_ATTEMPTS` and takes the terminal exit (`start.rs:630-632`)
+/// instead of arming a fourth rebuild. The entry then reports
+/// `GenerationUnhealthy`, which is `can_reconnect == false` in `status.rs` and
+/// therefore only reachable after three recorded failures.
+#[test]
+fn the_reconnect_budget_exhausts_into_a_terminal_watch() {
+    let early = Broker::start(BrokerMode::Live {
+        error_after: Duration::from_millis(600),
+    });
+    let late = Broker::start(BrokerMode::Live {
+        error_after: Duration::from_millis(5500),
+    });
+    let credential = |url: &str| TokenReply::Credential {
+        nats_url: url.to_string(),
+        exp_offset: -60,
+    };
+    let platform = Platform::start(
+        vec![
+            credential(&early.url),
+            credential(&early.url),
+            credential(&early.url),
+            credential(&late.url),
+            TokenReply::ServerError,
+        ],
+        None,
+    );
+    let home = isolated_home("budget");
+    write_auth(&home, &platform.url);
+    write_book(
+        &home,
+        "pair_late",
+        &[
+            pairing_slot("pair_e1", "desktop_e1", &early.url, true),
+            pairing_slot("pair_e2", "desktop_e2", &early.url, true),
+            pairing_slot("pair_e3", "desktop_e3", &early.url, true),
+            pairing_slot("pair_late", "desktop_late", &late.url, true),
+        ],
+    );
+
+    let mut child = ChildRun::spawn(home);
+    assert!(
+        child.wait_for("Remote: Ready", Duration::from_secs(40)),
+        "the controlling device must come up before the refusals; transcript:\n{}",
+        child.text()
+    );
+    // The budget is spent by the three early devices; whichever attempt number the
+    // race produced, it must reach the third one.
+    let spent = child.wait_for("rebuilding generation (3/3)", Duration::from_secs(40));
+    assert!(
+        spent,
+        "three devices must spend the reconnect budget; transcript:\n{}",
+        child.text()
+    );
+    let terminal = child.wait_for(
+        "Remote connection stopped (Some(GenerationUnhealthy))",
+        Duration::from_secs(40),
+    );
+    let transcript = child.text();
+    assert!(
+        terminal,
+        "the fourth watch must report the exhausted budget, not arm another rebuild; \
+         transcript:\n{transcript}"
+    );
+    assert!(
+        !transcript.contains("rebuilding generation (4/3)"),
+        "an exhausted budget must not arm a fourth rebuild; transcript:\n{transcript}"
+    );
+    child.interrupt();
+}
+
+/// 8. `restart_slot`'s rebuild that cannot connect.
+///
+/// The refresh succeeds (a token answered, a plan built) and the *new* endpoint is then
+/// unreachable. That is `start_slot`'s `Err` inside `restart_slot` (`start.rs:555`),
+/// converted by `start_failure` so the failure keeps its classification: the entry
+/// records a retryable `network` and keeps retrying instead of printing the worker's
+/// bare-error line. A dead endpoint is used rather than a refused credential because an
+/// authorization answer would make the *refresh worker's* generation terminal, while an
+/// unreachable one only makes it back off. As in tests 5 and 6, the controlling second
+/// device keeps that worker out of the script.
+#[test]
+fn a_reconnect_whose_rebuild_cannot_connect_is_retryable() {
+    let first = Broker::start(BrokerMode::Live {
+        error_after: Duration::from_millis(600),
+    });
+    let quiet = Broker::start(BrokerMode::Live {
+        error_after: Duration::from_secs(7200),
+    });
+    // A port that was bound and released: connecting to it is refused by the host, which
+    // async-nats reports as IO, i.e. a *retryable* transport failure.
+    let dead = {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("reserve a dead endpoint");
+        let url = format!("ws://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        drop(listener);
+        url
+    };
+    let platform = Platform::start(
+        vec![
+            TokenReply::Credential {
+                nats_url: quiet.url.clone(),
+                exp_offset: 3600,
+            },
+            TokenReply::Credential {
+                nats_url: first.url.clone(),
+                exp_offset: -60,
+            },
+            // The target's reconnect: a plan built for an endpoint that will refuse IO.
+            TokenReply::Credential {
+                nats_url: dead,
+                exp_offset: 3600,
+            },
+        ],
+        None,
+    );
+    let home = isolated_home("rebuild-refused");
+    write_auth(&home, &platform.url);
+    write_book(
+        &home,
+        "pair_control",
+        &[
+            pairing_slot("pair_control", "desktop_control", &quiet.url, true),
+            pairing_slot("pair_fixture", "desktop_fixture", &first.url, true),
+        ],
+    );
+
+    let mut child = ChildRun::spawn(home);
+    assert!(
+        child.wait_for("rebuilding generation (1/3)", Duration::from_secs(40)),
+        "the live refusal must reach the reconnect worker; transcript:\n{}",
+        child.text()
+    );
+    // `start_failure` records the code it classified, so this line is the proof that
+    // `start_slot` ran and its Err was converted rather than rethrown.
+    let classified = child.wait_for("network failure episode started", Duration::from_secs(40));
+    let transcript = child.text();
+    assert!(
+        classified,
+        "a rebuilt slot that cannot connect must be classified, not rethrown; \
+         transcript:\n{transcript}"
+    );
+    assert!(
+        !transcript.contains("automatic bridge reconnect failed"),
+        "the worker's bare-error line must not be the one that ran; transcript:\n{transcript}"
+    );
+    assert!(
+        wait_for_token_calls(&platform, 3, Duration::from_secs(5)) >= 3,
+        "the rebuild's plan must come from the platform; transcript:\n{transcript}"
+    );
+    assert!(
+        matches!(child.child.try_wait(), Ok(None)),
+        "a retryable rebuild failure keeps the entry running; transcript:\n{transcript}"
     );
     child.interrupt();
 }

@@ -286,7 +286,7 @@ mod runtime_tests {
         test_creds(pair_id, "nats://127.0.0.1:1", 3600)
     }
 
-    fn test_creds(pair_id: &str, nats_url: &str, expires_in: i64) -> pairing::PairingCreds {
+    pub(super) fn test_creds(pair_id: &str, nats_url: &str, expires_in: i64) -> pairing::PairingCreds {
         let key_pair = nkeys::KeyPair::new_user();
         pairing::PairingCreds {
             handshake_version: 2,
@@ -3541,7 +3541,7 @@ mod multi_device_tests {
 
     /// Save two devices and make `first` the controller — the shape of a
     /// machine that was driven by one of them and then paired a second.
-    fn two_devices(first: &str, second: &str) -> (pairing::PairingCreds, pairing::PairingCreds) {
+    pub(super) fn two_devices(first: &str, second: &str) -> (pairing::PairingCreds, pairing::PairingCreds) {
         let a = test_creds(first);
         let b = test_creds(second);
         pairing::save_creds(&a).unwrap();
@@ -3714,4 +3714,735 @@ mod start_focus_tests {
         );
         assert_eq!(status().pair_id, controller.pair_id);
     }
+}
+
+/// The per-device runtime's own entry points: what a start, an add and a
+/// removal do when the machine has no runtime yet, claims its only device, is
+/// asked to keep an existing slot, or loses its controller. Each one is a
+/// decision about *which* device answers a command, so they are pinned here
+/// instead of inferred from the Remote page.
+mod slot_tests {
+    use super::runtime_tests::test_creds;
+    use super::*;
+    use crate::remote::test_support::{
+        fake_state, init_store, sign_in, FakeNats, HomeGuard, MockPlatform,
+    };
+    use crate::remote::types::DeviceControl;
+    use serde_json::json;
+    use std::time::Duration;
+
+    /// Install one fake bridge under `pair_id` and clear it again on drop.
+    ///
+    /// `install_fake_state` owns its own broker; these tests need the broker
+    /// (or the state's security) in their own hands, so they install directly
+    /// and restore in `Drop` — panic-safe, which is the `FLAKES.md` item 27
+    /// requirement every fixture here shares.
+    struct Slot {
+        pair_id: String,
+    }
+
+    impl Slot {
+        async fn install(broker: &FakeNats, pair_id: &str) -> Slot {
+            let state = fake_state(broker, pair_id).await;
+            Self::install_state(state)
+        }
+
+        /// The first install of a test: the state must be empty, so a leaked
+        /// bridge from another test is a failure here instead of a mystery in
+        /// whichever test it poisons next.
+        fn install_state(state: crate::remote::RemoteState) -> Slot {
+            assert!(
+                SUPERVISOR.state.lock().unwrap().is_empty(),
+                "a previous test leaked SUPERVISOR.state; fix that test"
+            );
+            Self::install_into(state)
+        }
+
+        /// A second device for a test that is about two of them; no emptiness
+        /// check, because the first one is legitimately still there.
+        fn install_into(state: crate::remote::RemoteState) -> Slot {
+            let pair_id = state.pair_id.clone();
+            SUPERVISOR
+                .state
+                .lock()
+                .unwrap()
+                .insert(pair_id.clone(), state);
+            Slot { pair_id }
+        }
+    }
+
+    impl Drop for Slot {
+        fn drop(&mut self) {
+            let taken = SUPERVISOR
+                .state
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .remove(&self.pair_id);
+            if let Some(state) = taken {
+                crate::remote::supervisor::abort_generation(state);
+            }
+            SUPERVISOR.release_control(&self.pair_id);
+        }
+    }
+
+    /// `add_device` mints a *keep-existing* invitation and connects only the
+    /// device it just paired — the machine's running devices are not touched.
+    /// Its answer names that device, because the invitation on screen is its
+    /// QR code and the caller pairs whatever `pair_id` it returned.
+    #[tokio::test]
+    async fn add_device_connects_and_names_the_device_it_paired() {
+        let _home = HomeGuard::new("remote-add-device");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        let code = platform.respond_pair_code(nats.url());
+        SUPERVISOR.start_requested.store(false, Ordering::Release);
+        SUPERVISOR.restore_active(None);
+
+        let status = crate::remote::supervisor::add_device()
+            .await
+            .expect("add device");
+
+        assert!(matches!(status.phase, RemotePhase::Ready), "{status:?}");
+        let shown = status
+            .pairing_code
+            .as_deref()
+            .expect("the new device is still an invitation");
+        assert!(
+            shown.contains(&code),
+            "the answer must carry the invitation that was just minted: {shown}"
+        );
+        assert!(
+            SUPERVISOR.start_requested.load(Ordering::Acquire),
+            "adding a device means the machine is running"
+        );
+        {
+            let slots = SUPERVISOR.state.lock().unwrap();
+            assert!(
+                slots.contains_key(&status.pair_id),
+                "the slot the command started is the one it answered about"
+            );
+            assert_eq!(slots.len(), 1, "only the new device was started");
+        }
+        assert!(
+            pairing::load_slots().is_empty(),
+            "an unconfirmed device is not in the book yet: it lives in the runtime"
+        );
+        let invitation = SUPERVISOR
+            .state
+            .lock()
+            .unwrap()
+            .get(&status.pair_id)
+            .and_then(|state| state.pairing_code.clone())
+            .expect("the runtime holds the invitation until the phone confirms");
+        assert!(invitation.contains(&code));
+        // The platform was asked to *keep* what was already paired.
+        let add_request = platform
+            .requests()
+            .into_iter()
+            .find(|(_, path, _)| path == "/client/v1/remote/pair/code")
+            .expect("the pairing request");
+        assert!(
+            add_request.2.contains("keep_existing"),
+            "an added device must not replace the machine's existing ones: {}",
+            add_request.2
+        );
+
+        stop();
+    }
+
+    /// A machine with exactly one saved device and no controller claims it at
+    /// start. There is no arbitration to do, and *not* claiming would make the
+    /// device ask its own user to take the machine from nobody.
+    #[tokio::test]
+    async fn a_single_saved_device_claims_the_machine_at_start() {
+        let _home = HomeGuard::new("remote-start-single-claim");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        let creds = test_creds("pair_single_claim", nats.url(), 3600);
+        pairing::save_creds(&creds).unwrap();
+        // `save_creds` makes a lone device the controller, so the state this
+        // test is about - a book that holds a device and no pointer - has to be
+        // written down explicitly. That is exactly what `remove_slot` leaves on
+        // disk between its write and `promote_a_lone_device`.
+        let path = crate::store::future_dir()
+            .unwrap()
+            .join("remote_pairings.json");
+        let mut book: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        book["active"] = serde_json::Value::Null;
+        std::fs::write(&path, serde_json::to_vec(&book).unwrap()).unwrap();
+        platform.respond_refresh(nats.url());
+        SUPERVISOR.restore_active(None);
+        assert_eq!(pairing::active_slot(), None, "nobody claimed it yet");
+
+        let status = start(RemoteStartInput {}).await.expect("start");
+
+        assert!(matches!(status.phase, RemotePhase::Ready), "{status:?}");
+        assert_eq!(
+            SUPERVISOR.active_pair().as_deref(),
+            Some(creds.pair_id.as_str()),
+            "the only device on the machine is the one driving it"
+        );
+        assert_eq!(
+            pairing::active_slot().as_deref(),
+            Some(creds.pair_id.as_str()),
+            "and the claim is written down, so a restart keeps it"
+        );
+
+        stop();
+    }
+
+    /// Promotion after a removal is for the *unclaimed* case only. A pointer
+    /// that already names a device is left exactly as the user left it —
+    /// re-deciding it here would silently overrule them.
+    #[test]
+    fn promotion_leaves_a_claimed_pointer_alone() {
+        let _home = test_support::HomeGuard::new("remote-promote-claimed");
+        let (controller, standby) = super::multi_device_tests::two_devices(
+            "pair_promote_ctrl",
+            "pair_promote_standby",
+        );
+        SUPERVISOR.restore_active(Some(controller.pair_id.clone()));
+
+        crate::remote::supervisor::promote_a_lone_device();
+
+        assert_eq!(
+            SUPERVISOR.active_pair().as_deref(),
+            Some(controller.pair_id.as_str()),
+            "a machine that already has a controller keeps it"
+        );
+        assert!(!SUPERVISOR.in_control(&standby.pair_id));
+    }
+
+    /// A second start that is explicitly *not* a replacement leaves a slot that
+    /// is already installed alone: the device's own recovery decides when its
+    /// generation is rebuilt, not an unrelated `start`.
+    #[tokio::test]
+    async fn a_start_without_replace_keeps_an_installed_slot() {
+        let _home = HomeGuard::new("remote-start-keep-slot");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        let creds = test_creds("pair_keep_slot", nats.url(), 3600);
+        pairing::save_creds(&creds).unwrap();
+        platform.respond_refresh(nats.url());
+        SUPERVISOR.start_requested.store(true, Ordering::Release);
+
+        let slot = Slot::install(&nats, &creds.pair_id).await;
+        // The slot must look *unhealthy*, or the check before the loop returns
+        // early with the running status and the per-slot guard is never
+        // consulted. A finished critical task plus an exhausted crash-loop
+        // budget is that shape: `slot_health` reports `Failed`, so the caller
+        // goes on to try the slot and finds it already installed.
+        SUPERVISOR
+            .state
+            .lock()
+            .unwrap()
+            .get(&slot.pair_id)
+            .expect("installed")
+            .cmd_task
+            .abort();
+        SUPERVISOR.runtime_reconnect_attempts.store(
+            crate::remote::supervisor::MAX_RUNTIME_RECONNECT_ATTEMPTS,
+            Ordering::Release,
+        );
+        wait_until("the slot to read as failed", Duration::from_secs(5), || {
+            matches!(status().phase, RemotePhase::Failed)
+        })
+        .await;
+        let before = SUPERVISOR
+            .state
+            .lock()
+            .unwrap()
+            .get(&slot.pair_id)
+            .expect("installed")
+            .generation_id;
+
+        let status = super::start_once(false).await.expect("kept slot");
+
+        assert_eq!(status.pair_id, creds.pair_id);
+        assert_eq!(
+            SUPERVISOR
+                .state
+                .lock()
+                .unwrap()
+                .get(&slot.pair_id)
+                .expect("still installed")
+                .generation_id,
+            before,
+            "the installed generation must not be rebuilt"
+        );
+        assert_eq!(
+            SUPERVISOR
+                .state
+                .lock()
+                .unwrap()
+                .get(&slot.pair_id)
+                .expect("still installed")
+                .pairing_code,
+            None,
+            "the running device keeps its own runtime; the start did not take it over"
+        );
+        SUPERVISOR
+            .runtime_reconnect_attempts
+            .store(0, Ordering::Release);
+        stop();
+    }
+
+    /// The desktop's own takeover: the switch happens in memory at once, the
+    /// previous controller is told, and the answer is the projected status.
+    #[tokio::test]
+    async fn takeover_from_the_desktop_switches_control() {
+        let _home = test_support::HomeGuard::new("remote-takeover-desktop");
+        let (controller, standby) = super::multi_device_tests::two_devices(
+            "pair_takeover_ctrl",
+            "pair_takeover_standby",
+        );
+        *SUPERVISOR.last_error_code.lock().unwrap() = None;
+
+        crate::remote::takeover(&standby.pair_id)
+            .await
+            .expect("takeover");
+
+        assert_eq!(
+            SUPERVISOR.active_pair().as_deref(),
+            Some(standby.pair_id.as_str()),
+            "the machine's pointer moves at once"
+        );
+        // The disk write is detached on purpose (a reply must never wait on a
+        // file), so the persisted half is waited for rather than assumed. The
+        // stopped projection reads the book, so it names the new controller only
+        // after that write lands.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while pairing::active_slot().as_deref() != Some(standby.pair_id.as_str()) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a takeover must outlive a restart"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let status = status();
+        assert_eq!(status.pair_id, standby.pair_id, "the status follows control");
+        assert!(!SUPERVISOR.in_control(&controller.pair_id));
+        let row = |pair_id: &str| {
+            status
+                .devices
+                .iter()
+                .find(|device| device.pair_id == pair_id)
+                .expect("every paired device is listed")
+                .control
+        };
+        assert_eq!(row(&standby.pair_id), DeviceControl::Active);
+        assert_eq!(row(&controller.pair_id), DeviceControl::Standby);
+    }
+
+    /// A machine whose only connected device was never given control still has
+    /// *somebody* to publish to. `controlling_pair` is what every event lane
+    /// reads, and `None` there would mean a working device receives nothing.
+    #[tokio::test]
+    async fn controlling_pair_falls_back_to_the_only_running_device() {
+        let _home = test_support::HomeGuard::new("remote-controlling-pair");
+        let nats = FakeNats::start().await;
+        let slot = Slot::install(&nats, "pair_controlling_only").await;
+        SUPERVISOR.restore_active(None);
+
+        assert_eq!(
+            SUPERVISOR.controlling_pair().as_deref(),
+            Some(slot.pair_id.as_str()),
+            "one connected device needs no pointer to be the machine's device"
+        );
+
+        // With two connected devices and no pointer there is nobody to pick.
+        let second =
+            Slot::install_into(fake_state(&nats, "pair_controlling_second").await);
+        assert_eq!(
+            SUPERVISOR.controlling_pair(),
+            None,
+            "choosing between two devices is the user's decision, not a default"
+        );
+        drop(second);
+        drop(slot);
+    }
+
+    /// A client that is not connected makes the device `Failed` when nobody
+    /// asked it to run — "reconnecting" is a statement about intent, and a
+    /// stopped bridge that lost its socket is simply down.
+    #[tokio::test]
+    async fn a_disconnected_client_is_failed_when_no_start_was_requested() {
+        let _home = test_support::HomeGuard::new("remote-status-disconnected");
+        let nats = FakeNats::start().await;
+        let slot = Slot::install(&nats, "pair_status_disconnected").await;
+        SUPERVISOR.start_requested.store(false, Ordering::Release);
+        let client = SUPERVISOR
+            .state
+            .lock()
+            .unwrap()
+            .get(&slot.pair_id)
+            .expect("installed")
+            .client
+            .clone();
+        nats.kill();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while client.connection_state() == async_nats::connection::State::Connected {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the client must notice the dead broker");
+
+        let current = status();
+
+        assert_eq!(
+            current.phase,
+            RemotePhase::Failed,
+            "a stopped bridge with no socket is failed, not reconnecting: {current:?}"
+        );
+        assert_eq!(current.reason, Some(RemoteFailureReason::Network));
+    }
+
+    /// Unpairing the machine notifies every connected device before the bridge
+    /// goes away: the phone treats that packet as immediate offline state.
+    #[tokio::test]
+    async fn unpair_notifies_every_connected_device() {
+        let _home = test_support::HomeGuard::new("remote-unpair-notices");
+        init_store();
+        let nats = FakeNats::start().await;
+        let slot = Slot::install(&nats, "pair_unpair_notice").await;
+        let mut tap = nats.tap();
+
+        super::unpair().await.expect("unpair");
+
+        let notice = test_support::await_publish_matching(
+            &mut tap,
+            &format!("p.{}.presence", slot.pair_id),
+            Duration::from_secs(5),
+            |published| published.json()["unpaired"] == json!(true),
+        )
+        .await;
+        assert_eq!(notice.json()["online"], json!(false));
+        assert_eq!(
+            notice.json()["pairId"],
+            json!(slot.pair_id),
+            "the notice names the device it is about"
+        );
+        assert!(
+            SUPERVISOR.state.lock().unwrap().is_empty(),
+            "the bridge is stopped"
+        );
+    }
+
+    /// Unpairing *one* device tells that device, by name.
+    #[tokio::test]
+    async fn unpairing_one_device_notifies_that_device_by_name() {
+        let _home = test_support::HomeGuard::new("remote-unpair-slot-notice");
+        init_store();
+        let nats = FakeNats::start().await;
+        let creds = test_creds("pair_unpair_slot_notice", nats.url(), 3600);
+        pairing::save_creds(&creds).unwrap();
+        pairing::set_active(&creds.pair_id).unwrap();
+        let _slot = Slot::install(&nats, &creds.pair_id).await;
+        SUPERVISOR.restore_active(Some(creds.pair_id.clone()));
+        let mut tap = nats.tap();
+
+        super::unpair_slot(&creds.pair_id)
+            .await
+            .expect("unpair slot");
+
+        let notice = test_support::await_publish_matching(
+            &mut tap,
+            &format!("p.{}.presence", creds.pair_id),
+            Duration::from_secs(5),
+            |published| published.json()["unpaired"] == json!(true),
+        )
+        .await;
+        assert_eq!(notice.json()["reason"], json!("unpaired"));
+        assert_eq!(notice.json()["pairId"], json!(creds.pair_id));
+        assert!(
+            SUPERVISOR.state.lock().unwrap().is_empty(),
+            "only the removed device's runtime is gone"
+        );
+    }
+
+    /// `stop_gracefully` outside a process shutdown delivers the notice on the
+    /// process runtime, and `notify_mobile_disconnect` delivers it in place:
+    /// both are ordinary paths that must not depend on the exit freeze.
+    #[tokio::test]
+    async fn a_graceful_stop_and_a_notice_call_reach_a_connected_device() {
+        let _home = test_support::HomeGuard::new("remote-graceful-notice");
+        init_store();
+        let nats = FakeNats::start().await;
+        let slot = Slot::install(&nats, "pair_graceful_notice").await;
+        SUPERVISOR.start_requested.store(true, Ordering::Release);
+        let mut tap = nats.tap();
+
+        assert!(
+            !crate::desktop_shutdown::is_stopping(),
+            "not at process exit"
+        );
+        super::stop_gracefully("test_sleep").await;
+
+        let notice = test_support::await_publish_matching(
+            &mut tap,
+            &format!("p.{}.presence", slot.pair_id),
+            Duration::from_secs(5),
+            |published| published.json()["disconnected"] == json!(true),
+        )
+        .await;
+        assert_eq!(notice.json()["reason"], json!("test_sleep"));
+
+        // `notify_mobile_disconnect` is the await-in-place sibling.
+        let slot = Slot::install(&nats, "pair_notify_notice").await;
+        let mut tap = nats.tap();
+        super::notify_mobile_disconnect("power_off").await;
+        let notice = test_support::await_publish_matching(
+            &mut tap,
+            &format!("p.{}.presence", slot.pair_id),
+            Duration::from_secs(5),
+            |published| published.json()["disconnected"] == json!(true),
+        )
+        .await;
+        assert_eq!(notice.json()["reason"], json!("power_off"));
+        drop(slot);
+    }
+
+    /// Poll `condition` until it holds, or fail with `what` after `timeout`.
+    async fn wait_until(what: &str, timeout: Duration, mut condition: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + timeout;
+        while !condition() {
+            assert!(std::time::Instant::now() < deadline, "{what} never happened");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// A device whose transport cannot seal (a v2 pairing that has not
+    /// handshaked yet) has nothing to say offline: the notice is skipped rather
+    /// than published unsealed.
+    #[tokio::test]
+    async fn a_slot_without_an_active_secure_channel_announces_nothing() {
+        let _home = test_support::HomeGuard::new("remote-inert-notice");
+        let nats = FakeNats::start().await;
+        let creds = test_creds("pair_inert_notice", nats.url(), 3600);
+        let mut state = fake_state(&nats, &creds.pair_id).await;
+        // A v2 identity with no channel yet: `seal` answers `None`.
+        state.security = secure::Transport::new(&creds);
+        assert!(state.security.seal("p.presence", b"x").unwrap().is_none());
+        let slot = Slot::install_state(state);
+        let mut tap = nats.tap();
+
+        crate::remote::supervisor::stop_slot(&slot.pair_id);
+
+        test_support::assert_no_publish(
+            &mut tap,
+            &format!("p.{}.presence", slot.pair_id),
+            Duration::from_millis(300),
+        )
+        .await;
+        assert!(SUPERVISOR.state.lock().unwrap().is_empty());
+    }
+    /// A resume whose recovery attempt is refused with a *retryable* status
+    /// re-arms the start retry: the recovery is not finished just because one
+    /// attempt came back.
+    ///
+    /// The runtime installed here is terminal-healthy on purpose. Without it
+    /// `start_once(false)` returns the "already running" status before it ever
+    /// asks the platform (a resumed machine reports `Reconnecting`, which
+    /// `runtime_active` treats as running) and the recovery arms are never
+    /// reached — the same early return the shipping resume relies on.
+    #[tokio::test]
+    async fn a_resume_refused_with_a_retryable_status_arms_the_retry() {
+        let _home = HomeGuard::new("remote-resume-retry");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        platform.push(
+            "/client/v1/remote/pair/code",
+            503,
+            json!({ "error": "busy", "message": "try later" }),
+        );
+        let state = fake_state(&nats, "pair_resume_retry").await;
+        state
+            .nats_health
+            .service_config_error
+            .store(true, Ordering::Release);
+        let _slot = Slot::install_state(state);
+        SUPERVISOR.start_requested.store(true, Ordering::Release);
+        SUPERVISOR.suspended.store(true, Ordering::Release);
+        *SUPERVISOR.last_error_code.lock().unwrap() = None;
+
+        crate::remote::supervisor::handle_system_resume();
+
+        wait_until(
+            "the resume recovery to record a server failure",
+            Duration::from_secs(10),
+            || SUPERVISOR.last_error_code.lock().unwrap().as_deref() == Some("server"),
+        )
+        .await;
+        assert!(
+            !SUPERVISOR.resume_recovery_running.load(Ordering::Acquire),
+            "the recovery budget is released once the attempt has an answer"
+        );
+        assert!(!SUPERVISOR.suspended.load(Ordering::Acquire));
+        // The code is the proof of which arm ran: `start_failure` maps `server`
+        // to `Reconnecting`, so the status it returned here was retryable and
+        // the retry arm is the only one it can take. The *projection* afterwards
+        // still reports the installed slot's own terminal health, which is why
+        // it is not the thing asserted.
+        assert_eq!(
+            SUPERVISOR.start_retry_since.load(Ordering::Acquire),
+            0,
+            "the retry worker (a stub in this build) has not started"
+        );
+        SUPERVISOR.start_requested.store(false, Ordering::Release);
+        *SUPERVISOR.last_error_code.lock().unwrap() = None;
+    }
+
+    /// A resume whose recovery fails for a *local*, uncategorized reason records
+    /// `reconnect_required` instead: there is nothing to retry, and the page
+    /// must not keep claiming the machine is coming back.
+    #[tokio::test]
+    async fn a_resume_with_a_local_fault_records_reconnect_required() {
+        let _home = HomeGuard::new("remote-resume-local-fault");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        let mut creds = test_creds("pair_resume_fault", nats.url(), 3600);
+        // A seed that is not a seed: the local NKey cannot be rebuilt, which is
+        // an `AppError::Message` and therefore unclassified.
+        creds.nkey_seed = "not-a-seed".to_string();
+        pairing::save_creds(&creds).unwrap();
+        platform.respond_refresh(nats.url());
+        let state = fake_state(&nats, &creds.pair_id).await;
+        state
+            .nats_health
+            .service_config_error
+            .store(true, Ordering::Release);
+        let _slot = Slot::install_state(state);
+        SUPERVISOR.start_requested.store(true, Ordering::Release);
+        SUPERVISOR.suspended.store(true, Ordering::Release);
+        *SUPERVISOR.last_error_code.lock().unwrap() = None;
+
+        crate::remote::supervisor::handle_system_resume();
+
+        wait_until(
+            "the resume to record its failure",
+            Duration::from_secs(10),
+            || {
+                SUPERVISOR.last_error_code.lock().unwrap().as_deref() == Some("reconnect_required")
+            },
+        )
+        .await;
+        assert!(
+            !SUPERVISOR.resume_recovery_running.load(Ordering::Acquire),
+            "a failed recovery must not leave the resume flag set"
+        );
+        SUPERVISOR.start_requested.store(false, Ordering::Release);
+        *SUPERVISOR.last_error_code.lock().unwrap() = None;
+    }
+
+    /// A start whose transport cannot be built (the peer refuses the secure
+    /// handshake after `CONNECT` succeeded) is reported as the categorized
+    /// failure it is — not as a panic and not as a half-installed slot.
+    #[tokio::test]
+    async fn a_start_whose_transport_cannot_be_built_reports_the_failure() {
+        let _home = HomeGuard::new("remote-start-build-failure");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        let creds = test_creds("pair_build_failure", nats.url(), 3600);
+        pairing::save_creds(&creds).unwrap();
+        platform.respond_refresh(nats.url());
+        transport::INJECT_BUILD_FAILURE.store(1, Ordering::SeqCst);
+
+        let status = start(RemoteStartInput {}).await.expect("categorized");
+
+        assert_eq!(
+            transport::INJECT_BUILD_FAILURE.load(Ordering::SeqCst),
+            0,
+            "the injected failure must be the one that was consumed"
+        );
+        assert!(
+            matches!(status.phase, RemotePhase::Reconnecting),
+            "a transport failure is retryable, not terminal: {status:?}"
+        );
+        assert_eq!(status.reason, Some(RemoteFailureReason::Network));
+        assert!(
+            SUPERVISOR.state.lock().unwrap().is_empty(),
+            "a slot whose transport failed is never installed"
+        );
+        SUPERVISOR.start_requested.store(false, Ordering::Release);
+    }
+
+    /// The credential refresh's own rebuild can fail after the *new* credential
+    /// connected. It must keep the running generation, clear the refresh flag,
+    /// and wait for the next renewal instead of tearing the bridge down.
+    #[tokio::test]
+    async fn a_refresh_whose_transport_cannot_be_rebuilt_keeps_the_running_bridge() {
+        let _home = HomeGuard::new("remote-refresh-build-failure");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        // Already inside the renewal lead, so the worker does not sleep.
+        let creds = test_creds("pair_refresh_build", nats.url(), 60);
+        pairing::save_creds(&creds).unwrap();
+        platform.respond_refresh(nats.url());
+        let state = fake_state(&nats, &creds.pair_id).await;
+        let pairing_confirmed = state.pairing_confirmed.clone();
+        let generation = state.generation_id;
+        let slot = Slot::install_state(state);
+        let handshake = crate::remote::commands::HandshakeState::new(
+            creds.clone(),
+            pairing_confirmed.clone(),
+            format!("bridge_{}", crate::remote::test_support::unique("refresh")),
+        );
+        transport::INJECT_BUILD_FAILURE.store(1, Ordering::SeqCst);
+
+        let task = transport::spawn_credential_refresh(
+            slot.pair_id.clone(),
+            crate::remote::commands::new_reply_slots(),
+            pairing_confirmed,
+            handshake,
+        );
+
+        wait_until(
+            "the refresh to attempt its rebuild",
+            Duration::from_secs(10),
+            || transport::INJECT_BUILD_FAILURE.load(Ordering::SeqCst) == 0,
+        )
+        .await;
+        wait_until(
+            "the refresh flag to be cleared",
+            Duration::from_secs(10),
+            || !SUPERVISOR.credential_refreshing.load(Ordering::Acquire),
+        )
+        .await;
+        assert_eq!(
+            SUPERVISOR
+                .state
+                .lock()
+                .unwrap()
+                .get(&slot.pair_id)
+                .expect("the generation is untouched")
+                .generation_id,
+            generation,
+            "a failed rebuild must not replace the running generation"
+        );
+        assert!(
+            platform
+                .requests()
+                .iter()
+                .any(|(_, path, _)| path == "/client/v1/remote/auth/token"),
+            "the failure is after the new credential was fetched"
+        );
+        task.abort();
+    }
+
 }

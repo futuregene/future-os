@@ -198,6 +198,103 @@ mod tests {
         assert!(!matches!(status.phase, remote::RemotePhase::Ready));
     }
 
+    /// Unpairing a device this machine does not have is not a fault: the wrapper
+    /// answers with the stopped projection and leaves the book empty. Covers the
+    /// `remote_unpair_device` command body, whose only production caller is the
+    /// Remote page's per-row button.
+    #[tokio::test]
+    async fn remote_unpair_device_is_a_noop_for_a_device_it_does_not_have() {
+        let _home = HomeGuard::new("remote_unpair_device");
+        let status = remote_unpair_device("pair_absent".into())
+            .await
+            .expect("a device this machine never paired is not a fault");
+        assert!(!matches!(status.phase, remote::RemotePhase::Ready));
+        assert!(
+            crate::remote::pairing::active_slot().is_none(),
+            "nothing was in control before the call, so nothing may be named after it"
+        );
+        assert!(
+            crate::remote::pairing::load_slots().is_empty(),
+            "a call for an absent device must not mint one"
+        );
+    }
+
+    /// Adding a device needs the account: the platform issues the code, so a
+    /// signed-out desktop stops at the credential check and never reaches the
+    /// network. Covers the `remote_add_device` command body.
+    #[tokio::test]
+    async fn remote_add_device_stops_at_the_account_check() {
+        let _home = HomeGuard::new("remote_add_device");
+        let error = remote_add_device()
+            .await
+            .expect_err("a signed-out desktop cannot mint an invitation");
+        assert!(
+            matches!(error, crate::AppError::NotSignedIn),
+            "the missing account must surface as NotSignedIn, got {error:?}"
+        );
+        assert!(
+            crate::remote::pairing::load_slots().is_empty(),
+            "a refused invitation must not leave a device behind"
+        );
+    }
+
+    /// The desktop's own takeover, through the command the Remote page calls.
+    /// Two devices are on disk and the *other* one is in control, so the poll
+    /// below is evidence the detached persist really ran: `claim_control_soon`
+    /// writes the pointer on its own thread, and a wait is the only thing that
+    /// keeps that write inside this fixture's home instead of the developer's
+    /// after `HOME` is restored.
+    #[tokio::test]
+    async fn remote_takeover_takes_control_and_persists_it() {
+        let _home = HomeGuard::new("remote_takeover_command");
+        let creds = |pair_id: &str| crate::remote::pairing::PairingCreds {
+            handshake_version: 2,
+            secure: None,
+            pair_id: pair_id.to_string(),
+            desktop_id: "desk_takeover".into(),
+            nkey_seed: String::new(),
+            user_jwt: "jwt".into(),
+            nats_url: "nats://127.0.0.1:9".into(),
+            nats_ws_url: "ws://127.0.0.1:9".into(),
+            jwt_expires_at: 3600,
+        };
+        crate::remote::pairing::save_creds(&creds("pair_prev")).expect("the controlling device");
+        crate::remote::pairing::save_creds(&creds("pair_next")).expect("the standby device");
+        assert_eq!(
+            crate::remote::pairing::active_slot().as_deref(),
+            Some("pair_prev"),
+            "the first device is in control before the takeover"
+        );
+
+        let status = remote_takeover("pair_next".into()).await.expect("takeover");
+        assert!(
+            !matches!(status.phase, remote::RemotePhase::Ready),
+            "a takeover is not a start: nothing is running in this fixture"
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while crate::remote::pairing::active_slot().as_deref() != Some("pair_next") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a takeover must outlive a restart"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        // Only now does the *book* name the new controller — the pointer write
+        // above is detached — so the read-back is taken after the wait, not
+        // before it.
+        assert_eq!(
+            remote_status().expect("status").pair_id,
+            "pair_next",
+            "the answer names the device it just put in control"
+        );
+        // Restore the process-global pointer this test moved, so no later test
+        // inherits a controller it never chose.
+        crate::remote::unpair_slot("pair_next")
+            .await
+            .expect("release the device this test took control of");
+    }
+
     #[tokio::test]
     async fn remote_start_surfaces_a_degraded_status() {
         let _home = HomeGuard::new("remote_start_deg");

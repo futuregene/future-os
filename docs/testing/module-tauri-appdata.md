@@ -1,5 +1,42 @@
 # Module: `desktop-tauri` app-data slice (`commands`, `tasks`, `store`, `scheduler`, `agent_bridge`, `agent_providers`, `shadow_review`)
 
+> **FIGURE (2026-10-18, TAU-D25): 376 uncovered, measured at `ab0045699`** — this branch's HEAD on
+> top of merged `8a13782ae`. Report: `.future/cov100/pinned/union-d25.info` (two `--lib` legs, **both
+> green**: gui **2214 passed / 0 failed / 14 ignored / 575.60 s**, headless **1769 passed / 0 failed /
+> 14 ignored / 446.77 s**, rendered per flavour with `cargo llvm-cov clean --workspace` between them,
+> unioned by `lcov-union.py`; `flavor-alive` ok on both legs, `leg-flavour-check` LEG IDENTITY ok apart
+> from its standing `bin/futureos-headless.rs` expectation, which no `--lib` leg can satisfy).
+> **NOT re-measured since `origin/main@74c6bd8aa`**, which has moved past this tree and touches two
+> files inside these scopes (`store/schema.rs`, `store/threads.rs`). PLAN §13's sentence, not a
+> footnote: quote this figure only with that paragraph.
+>
+> **376 = 350 WAIVED + 24 OPEN + 2 deliberate exclusions**, over **26 files**, all 376 registered:
+> `reconcile.py` reads **MISSING 0 / COVERED 0 / ABSENT 0** against that report. The ladder from the
+> previous revision is measured, not projected: **387 → 376** at `ab0045699` — TAU-D25's three
+> `#[tauri::command]` tests close 11 of the 13 `#1177` device-command lines, the two that remain
+> (`commands/remote.rs` 43 and 62) are the attribute lines themselves and join the WAIVED block as
+> `attribution-artifact`; `agent_bridge/client.rs:232` reads `DA:0` again (the brace that has
+> oscillated all campaign) and `agent_bridge/observer.rs:702` has no `DA` record at all in this union,
+> so that file leaves the uncovered set. §S32 records each movement.
+>
+> Every earlier figure in this file describes a tree that no longer exists: `#1174` (one runtime per
+> device) and `#1177` (list paired devices) rewrote code inside these scopes, so the pre-merge rows
+> were re-derived twice (TAU-D21, TAU-D24) before this measurement. Numbered readings are not
+> comparable to the pre-merge ones in either direction: `tauri-headless` went 232 -> 238 partly
+> because upstream added arms and partly because this branch **removed** a fixture whose premise
+> `#1174` invalidated (F.102) — a coverage regression recorded as one.
+
+> **ARTIFACT STATUS (2026-10-18, TAU-D25): the figure is pinned in-repo at
+> `.future/cov100/pinned/union-d25.info`** — 725808 bytes, md5 `874212b7ae7a1f72c7b0be6d0094ada3`, the
+> union of `target/cov-tauri-appdata/d25/{gui,headless}.info` (both retained in the worktree's `target/`
+> until the next cycle cleans it). The pin is worktree-local, like the other `union-*.info` files this
+> campaign cites and unlike `tauri-headless-237-union.info`, which is the only force-added one. Re-derive
+> with §1's recipe: both flavours as `cargo llvm-cov --no-report --lib`, `clean --workspace` between the
+> legs, then `report --lcov` per leg and `lcov-union.py --out … gui.info headless.info`. Expect
+> **376 = 350 WAIVED + 24 OPEN + 2 exclusions** over 26 files. `/tmp/appdata-busy/union.info` and
+> `/tmp/appdata-rework/union-pair.info` were removed during the F.100 cleanup; this record no longer
+> cites either.
+
 Status: **not at target**. This file is the coverage record for the **app-data
 slice** of `desktop/src-tauri` (unit **TAU-B**, successor of the round-1
 `module-tauri.md`, which keeps the whole-crate ledger and the §5.1 waivers this
@@ -6626,11 +6663,17 @@ scopes; `leg-flavour-check` reports that one FAIL while every file-shape check p
 sources excluded, `no_gui.rs` + `headless/mod.rs` present, 136 ≤ 145 — and `flavor-alive` is ok on
 both.)
 
-**374 = 348 WAIVED + 24 OPEN + 2 deliberate exclusions.** The three blocks below are the authority —
-**membership is positional**, so reclassifying a row means moving it. Sums, by block membership:
-`OPEN 24`, `exclusion 2`, `WAIVED 348`, `total 374`, over **26 files** (the published cost measured 27;
-`agent_bridge/review.rs` and `agent_bridge/observer.rs` are now fully covered at HEAD and appear in no
-row).
+**387 = 348 WAIVED + 37 OPEN + 2 deliberate exclusions at `32ba1e13e`; 376 = 350 WAIVED + 24 OPEN +
+2 at `ab0045699`, which is the figure this section now registers.** The three blocks below are the
+authority for the **current** report, `.future/cov100/pinned/union-d25.info` — **26 files, measured at
+`ab0045699`, NOT re-measured since `main@74c6bd8aa`**. **Membership is positional**, so reclassifying a
+row means moving it. Sums, by block membership: `OPEN 24`, `exclusion 2`, `WAIVED 350`, `total 376`.
+§S32 (TAU-D25) closed 11 of the 13 `#1177` wrapper lines with three tests, moved their two attribute
+lines into WAIVED, re-registered the oscillating `client.rs:232`, and recorded that
+`observer.rs:702` carries no `DA` record in this union (so that file leaves the uncovered set and its
+row becomes prose). The split recorded at the previous revision — `387 = 348 + 37 + 2`, 27 files — is
+the first half of this paragraph. `agent_bridge/review.rs` is fully covered at HEAD and appears in no
+row.
 
 The published figure this replaces was **378 = 368 WAIVED + 10 OPEN** at `42cb69d10`; the first
 re-measurement of this segment reported **378 = 352 WAIVED + 24 OPEN + 2 exclusions** at `4b8ade52f`.
@@ -6665,19 +6708,33 @@ behind the unchanged 378 was already different from the published one. What move
 | `src/tasks.rs:454-455` | OPEN — `get_thread` returning `None` / `Err` after the binding step. The `Err` half is the same unreadable-`threads`-table fixture as 223; the `None` half needs a thread deleted between bind and read. 2 lines |
 | `src/store/threads.rs:269` | OPEN — `reseed_thread_auto_title`'s empty-title early return; same one-call fixture as 250. 1 line |
 
+**The three `#1177` device commands are no longer OPEN here** (TAU-D25, §S32): `remote_unpair_device`
+(43-48), `remote_add_device` (54-56) and `remote_takeover` (62-65) each have a test in
+`commands::remote::tests` now, so 11 of those 13 lines read `DA:1`. The two that remain — the
+`#[tauri::command]` attribute lines at **43** and **62** — are in the WAIVED block below as
+`attribution-artifact`, because the attribute itself executes nothing while its body at 48/65 does.
+
 **The 2 deliberate-exclusion lines**
 
-| `src/commands/remote.rs:69-70` | **deliberate-exclusion** — `open_url` is a plain `pub fn` and `open_url_with`'s opener argument is injected, but the command's own opener runs `open::that_detached`, which on macOS spawns `/usr/bin/open` (open-5.4.0 `macos.rs:4`). The line is reachable on this host on every run; what stands in the way is a decision not to launch the developer's browser from a test suite. That is the same shape as an `#[ignore]`, so it is registered as an exclusion and **not** under any of the four policy categories. 2 lines |
+| `src/commands/remote.rs:97-98` | **deliberate-exclusion** — `open_url`'s own opener closure: `open::that_detached(u).map_err(…)` (97) and its `})` (98). `open_url` is a plain `pub fn` and `open_url_with`'s opener argument is injected, but the command's own opener spawns `/usr/bin/open` on macOS (open-5.4.0 `macos.rs:4`). The line is reachable on this host on every run; what stands in the way is a decision not to launch the developer's browser from a test suite. That is the same shape as an `#[ignore]`, so it is registered as an exclusion and **not** under any of the four policy categories. The row read `69-70` before `#1177` inserted the three device commands above it. 2 lines |
 
-**The 348 WAIVED lines**
+**The 350 WAIVED lines**
+
+**Not a row, because the line is not in this report:** `agent_bridge/observer.rs:702`
+(`#[cfg(not(test))] drop(task);`, the non-test twin of the registry push at 696-700) carried a `DA:0`
+record at `32ba1e13e` and has **no `DA` record at all** in `union-d25.info` — ABSENT, which is "no
+evidence" rather than "covered". It is a real construct and will need a row again if a later report
+re-emits the record; at this revision a row for it would be a claim on a line the report does not
+have, so it is recorded here in prose and `agent_bridge/observer.rs` is absent from the uncovered set.
 
 | `src/agent_bridge/client.rs:215-218, 248-249` | WAIVED — `unreachable-by-construction`: a `JoinError` requires the spawned connection task to panic or abort; `verify()`/`connect_verified()` have no such input (214 = 824, 219 = 824; 246 = 367, 250 = 361). 6 lines |
-| `src/agent_bridge/client.rs:232` | WAIVED — `attribution-artifact`: the closing brace of the `if !matches!` return block, 231 = 3 and 235 = 367 — the same construct that oscillated across three runs at §S26.2. 1 line |
+| `src/agent_bridge/client.rs:232` | WAIVED — `attribution-artifact`: the closing brace of the `if !matches!` return block. It reads `0` at `ab0045699` while 231 = 1 and 235 = 381, and it read `1` at `32ba1e13e` (231 = 2, 235 = 659) — the construct §S26.2 recorded oscillating across three runs, so the row is a per-revision fact, not a permanent one. 1 line |
 | `src/agent_bridge/client.rs:1065` | WAIVED — `attribution-artifact`: the `matches!(` call-site line inside an `assert!` (1064 = 2, 1066 = 2). Same class as the row previously written at 1016; the file grew and the construct moved. 1 line |
 | `src/agent_bridge/config_observer.rs:97` | WAIVED — `unreachable-by-construction`: `APP_HANDLE` is `OnceLock<AppHandle<Wry>>`; a `MockRuntime` handle is a different type (96 = 4, 98 = 4). 1 line |
 | `src/agent_bridge/headless.rs:149-150, 160-161` | WAIVED — `unreachable-by-construction`: the same `JoinError` family for the prompt task (148 = 19, 151 = 16). 4 lines |
 | `src/agent_bridge/import.rs:188` | WAIVED — `attribution-artifact`: the closing brace of a covered `if let` (186 = 48, 189 = 4). 1 line |
 | `src/agent_bridge/import.rs:628` | WAIVED — `attribution-artifact`: the `)?;` tail of `create_imported_run`'s call, whose arguments (623-627) and next statement (629) all read 13. 1 line |
+| `src/commands/remote.rs:43, 62` | WAIVED — `attribution-artifact`: the two `#[tauri::command]` **attribute lines** of `remote_unpair_device` and `remote_takeover`. Their bodies now execute (`44-48` and `63-65` read `1` after §S32's tests; `54-56` likewise, and its attribute at 53 has no `DA` record at all) — what reads `0` is the attribute, which expands to generated code and executes nothing of its own. Same class and same wording as `commands/agent.rs:5` above. 2 lines |
 | `src/agent_bridge/queries.rs:168` | WAIVED — `attribution-artifact`: the `||` line whose second disjunct is evaluated (167 = 4, 169-170 = 2); §S20.1 refuted the recorded mechanism. 1 line |
 | `src/agent_bridge/stream.rs:439` | WAIVED — `attribution-artifact`: a brace between executed lines (438 = 39, 440 = 39). 1 line |
 | `src/agent_bridge/test_support.rs:832` | WAIVED — `unreachable-by-construction`: `Some(saved)` in a test's HOME restore, where `saved` is read (823) AFTER `remove_var("HOME")` (822), so it is always `None`. 1 line |
@@ -6686,8 +6743,8 @@ behind the unchanged 378 was already different from the published one. What move
 | `src/commands/agent.rs:5` | WAIVED — `attribution-artifact`: a `#[tauri::command]` attribute line; the body at 6 is covered. 1 line |
 | `src/commands/agent.rs:78` | WAIVED — `unreachable-by-construction`: the same-poll `try_recv` needs `replica_lease::collect` to complete in one poll; no seam in another module (§S16.3). 1 line |
 | `src/commands/debug.rs:15, 17-19, 97, 99-101` | WAIVED — `unreachable-by-construction`: concrete `tauri::AppHandle` (Wry) in `clear_app_data`/`set_future_environment`; `generate_handler!` cannot be instantiated for `MockRuntime` (the injection seam `clear_app_data_with`/`set_future_environment_with` is already taken by the tests that cover the bodies). 8 lines |
-| `src/commands/files.rs:283-288` | WAIVED — `unreachable-by-construction`: `prepare_image_preview(app: tauri::AppHandle)`, same concrete-handle barrier as the generic `_with` split beside it. 6 lines |
-| `src/commands/files.rs:1024` | WAIVED — `unreachable-by-construction`: `old_home` is read at 1017 AFTER `HOME` is removed at 1016, so it is always `None`. 1 line |
+| `src/commands/files.rs:287-292` | WAIVED — `unreachable-by-construction`: `prepare_image_preview(app: tauri::AppHandle, path: String)` behind `#[cfg(feature = "gui")]`. Its signature (288-290), the delegation body (291) and the brace (292) never run because no test can hand it a concrete `AppHandle<Wry>`; the generic `prepare_image_preview_with` beside it is covered (295-296 = 2, and it is what the tests call). The row read `283-288` before `#1174` moved the command down four lines; §S31 re-pointed it. 6 lines |
+| `src/commands/files.rs:1029` | WAIVED — `unreachable-by-construction`: `std::env::set_var("HOME", old_home)` inside `if let Some(old_home) = old_home` (1028). `old_home` is read from `HOME` at **1022**, i.e. after `remove_var("HOME")` at **1021**, under `TEST_HOME_LOCK`; it is `None` on every run (1028 = 2, 1030 = 2, 1031 = 2). The block is also redundant, since 1034 restores the `real_home` saved at 1020. The same construct as `test_support.rs:832` above. 1 line |
 | `src/commands/login.rs:9` | WAIVED — `attribution-artifact`: the attribute line of an `AppHandle<R>`-only command (10-12 = 2). 1 line |
 | `src/commands/login.rs:205, 221` | WAIVED — `attribution-artifact`: the `matches!(` call-site lines inside asserts (204/206 and 220/222 covered). 2 lines |
 | `src/commands/remote_peer.rs:81` | WAIVED — `attribution-artifact`: the attribute line of an `AppHandle<R>`-only command (82-84 = 1). 1 line |
@@ -8184,4 +8241,227 @@ unit's write set, so the replacement line is:
 module-tauri-appdata | 374 = 348 WAIVED + 24 OPEN + 2 deliberate exclusions | measured 2026-10-18,
 report /tmp/appdata-busy/union.info (gui 169 files + headless 136 files, union 170); the four moved
 lines are test_support.rs's DatabaseBusy retry arm, closed by a cfg(test)-only fault hook (§S30.1)
+```
+
+## S31 — the 11 unregistered lines registered, and the rows the merge moved (2026-10-18, TAU-D24)
+
+**Revision: the report this section registers is `.future/cov100/pinned/union-postmerge2-green.info` —
+387 uncovered over 27 files, measured at `32ba1e13e`; NOT re-measured since `main@eee2472f3`** (PLAN
+§13's sentence, not a footnote). This segment changed **no source**, so the figure is unchanged by
+design: the work is registration, not coverage.
+
+### S31.1 Ten more lines than `MISSING` reported
+
+`reconcile.py` said MISSING 11. A **row-level** join (each claim resolved to a report file, then to a
+line) found **21** uncovered lines no ledger row claimed. The difference is the tool's own deliberate
+generosity: `cited_numbers()` accepts a bare number anywhere in the section, so a number that merely
+appears in prose counts as "mentioned". The ten that were mentioned but unregistered were
+`files.rs` 289-292, `observer.rs` 702, `commands/remote.rs` 48, 54, 55, 97, 98. **MISSING 0 is
+necessary and not sufficient** — the same conclusion F.103 reached one layer up, now measured one layer
+down.
+
+### S31.2 What each line is, read before it was classified
+
+*(**Superseded by §S32** for the three `remote.rs` rows: those wrappers now have tests and 11 of the 13
+lines read `DA:1`. The table below is kept as the record of what the lines looked like at `32ba1e13e`,
+which is what its mechanism text describes.)*
+
+| lines | arm (read at HEAD) | adjudication |
+|---|---|---|
+| `src/commands/remote.rs:43-48` | `remote_unpair_device(pair_id)` — `#[tauri::command]`, body `remote::unpair_slot(&pair_id).await` | **OPEN**, no class. Its only caller is `desktop/src/features/remote/remoteClient.ts:201`; the delegate is covered ten times in `remote/tests.rs`, so this is a missing call, not a missing seam. `remote_unpair_is_a_noop_without_credentials` calls the sibling wrapper directly — the same three lines with an argument close it. 6 lines |
+| `src/commands/remote.rs:54-56` | `remote_add_device()`, body `remote::add_device().await` | **OPEN**. Delegate covered by `remote::tests::multi_device_tests::add_device_connects_and_names_the_device_it_paired` (landed on this branch *after* the measured revision). A `HomeGuard` makes the wrapper deterministic offline: `future_login::future_api_key()` returns `NotSignedIn` before the `POST` is sent (`remote_host/pairing.rs:316`). 3 lines |
+| `src/commands/remote.rs:62-65` | `remote_takeover(pair_id)`, body `remote::takeover(&pair_id).await` | **OPEN**. Delegate covered by `takeover_from_the_desktop_switches_control`. The hazard for whoever lands it: `claim_control_soon` persists on a **detached** thread (`supervisor/state.rs:294`), so the fixture must poll `remote::pairing::active_slot()` before `HomeGuard` drops, or the write lands in the developer's real pairing book. 4 lines |
+| `src/commands/files.rs:1029` | `std::env::set_var("HOME", old_home)` under `if let Some(old_home) = old_home` | **`unreachable-by-construction`**: `old_home` is read from `HOME` at 1022, *after* `remove_var("HOME")` at 1021, under `TEST_HOME_LOCK` — `None` on every run (1028/1030/1031 all read 2). The block is redundant (1034 restores the `real_home` saved at 1020). Registered, not "fixed": a test-only edit would move every line below it in a file whose numbers the report pins. 1 line |
+
+**Why no fixture was landed for the 13 wrapper lines, when it is cheap.** The sibling test costs ~15
+lines, and the remote module's own tests already cover every delegate. But landing it without
+re-measuring would leave this ledger claiming `DA:0` for lines the tree now executes — the F.101 shape
+(a record describing a tree that no longer exists) — and re-measuring is the ~55-minute two-leg run this
+ticket was told not to spend. The fixture and the re-measurement therefore go together, as the successor
+ticket; both seams are written down above so that run needs no rediscovery.
+
+### S31.3 The four rows the merge had moved, and the one it covered
+
+| row (pre-merge) | now | why |
+|---|---|---|
+| `files.rs:283-288` | `files.rs:287-292` | `#1174` moved `prepare_image_preview` down four lines; the old range pointed at its doc comment and an earlier command (283-286 are no longer `DA` records at all). |
+| `files.rs:1024` | `files.rs:1029` | the same dead restore, five lines lower; the mechanism text quoted 1016/1017 and now quotes 1021/1022. |
+| `remote.rs:69-70` | `remote.rs:97-98` | `#1177` inserted the three device commands above `open_url`; the exclusion now names its opener closure, not the function. |
+| `client.rs:232` | **dropped** | the row was `attribution-artifact` for a brace that has oscillated across three runs (§S26.2). At `32ba1e13e` it reads `DA:1` (231 = 2, 235 = 659) — it is no longer an uncovered line, so a row claiming it is a contradiction. Dropped rather than re-worded; `pairings.json`'s one `covered_justification` went with it. |
+| *(none)* | `observer.rs:702` | newly registered: `#[cfg(not(test))] drop(task);`, the non-test twin of the registry push at 696-700 — in no test translation unit, with a `DA:0` record from the gap between two executed regions (700 = 96, 703 = 96). §S18.5 previously said this file was fully covered; that sentence was wrong by this one line and is corrected. |
+
+### S31.4 The gates
+
+| gate | result |
+|---|---|
+| `reconcile.py --report .future/cov100/pinned/union-postmerge2-green.info --section "S18.5 Residual ledger" --doc docs/testing/module-tauri-appdata.md` over the ten scopes | **27 files, uncovered=387, mentioned 387, MISSING 0**, no STALE block printed (COVERED 0, ABSENT 0), `rc=0` |
+| row-level join over the same slice (the recipe below — no shipped tool does this join) | **387 claims, 387 uncovered, 0 uncovered-unclaimed, 0 claimed-covered, 0 claimed-absent** |
+| block membership (`reconcile.claimed_uncovered` per block) | **OPEN 37 + exclusion 2 + WAIVED 348 = 387**, matching the §S18.5 header |
+| `staletable.py --gate` (`tauri-appdata` row) | **387 claims / 387 uncovered / MISSING 0 / STALE 0 / ABSENT 0 / COVERED 0 — PASS** |
+| `staletable.py --gate` (whole registry) | summary **failing 0**; the command still exits NOT OK on the same three pairings it named before this segment — `channels-wide` (15 covered rows), `tauri-shell` (161), `cli-wide` (4) — none of them this record, and the counts are identical before and after (measured either side of the edit). |
+
+`pairings.json`'s `tauri-appdata.expect` is now `uncovered 387 / claims 387 / missing 0 / covered 0 /
+absent 0`, so `staletable` prints no DRIFT for this pairing for the first time at this report.
+
+**The row-level join, so it does not depend on a `/tmp` script** (F.100's lesson). It resolves each
+claim through `claim_targets`, which is what makes the difference between a row that NAMES a line and a
+line that merely appears as a number:
+
+```python
+import sys; sys.path.insert(0, '.future/cov100'); import reconcile as rec
+P = '/Users/geilige/future-os/.worktrees/cov100-r2/'
+rep = P + '.future/cov100/pinned/union-postmerge2-green.info'
+scopes = [P + 'desktop/src-tauri/src/' + s for s in ('commands', 'tasks.rs', 'store', 'scheduler',
+          'agent_bridge', 'agent_providers', 'shadow_review', 'error.rs', 'auth_store.rs', 'agent_events.rs')]
+text = open(P + 'docs/testing/module-tauri-appdata.md').read()
+sliced = rec.slice_section(text, 'S18.5 Residual ledger')
+counts = rec.report_counts(rep, scopes); need = rec.key_files(counts, scopes)
+unc = {(k, ln) for k, ls in rec.key_files(rec.report_lines(rep, scopes), scopes).items() for ln in ls}
+claimed = {(t, ln) for path, ln in rec.claimed_uncovered(sliced)
+           for t in rec.claim_targets(path, ln, need)}
+print(len(unc), len(claimed), len(unc - claimed), len(claimed - unc))
+```
+
+It prints `387 387 0 0` — the four numbers this section's table quotes.
+
+**One thing in that entry was wrong and is corrected.** Its post-merge `note` claimed "every one of the
+**1197** DA:0 lines is classified (1080 waived + 117 OPEN)" — those are `tauri-remote`'s numbers,
+copied across. At this report the scope has 387 uncovered lines; the note now says what this unit
+measured and does not re-use another unit's arithmetic.
+
+### S31.5 What this segment did not do, and the successor
+
+* **No source change, no re-measurement**: the ticket's own instruction (a run costs ~55 minutes and the
+  report is retained in-repo), and the tree in these ten scopes has not changed since `32ba1e13e` — the
+  only in-scope drift is the *test* file §S30.1 already recorded, which is outside the ten scopes'
+  production lines.
+* **Not landed: the 13 wrapper lines' fixture.** It is ~15 lines in `commands/remote.rs`'s test module
+  plus the detached-persist wait; it must be landed **with** a two-leg re-measurement so the ladder
+  `387 -> 374` is measured rather than projected. Successor: the fixture and that run.
+* **For the supervisor's published files** (outside this unit's write set): `docs/testing/waiver-ledger.md`
+  and `.future/cov100/FINAL-REPORT.md` still quote `374 = 348 WAIVED + 24 OPEN + 2`. The replacement
+  line, at the report this record now registers, is:
+
+```
+module-tauri-appdata | 387 = 348 WAIVED + 37 OPEN + 2 deliberate exclusions | measured at 32ba1e13e,
+report .future/cov100/pinned/union-postmerge2-green.info (two legs, gui rc=0 / headless rc=101 for the
+one port-8022 flake); NOT re-measured since main@eee2472f3
+```
+
+## S32 — the three device commands covered, and a measured 387 → 376 (2026-10-18, TAU-D25)
+
+**Revision: `ab0045699`** (this branch's HEAD on top of merged `8a13782ae`). Report:
+**`.future/cov100/pinned/union-d25.info`** — union of `target/cov-tauri-appdata/d25/{gui,headless}.info`,
+**26 files, 376 uncovered**. **NOT re-measured since `origin/main@74c6bd8aa`**, which has moved past this
+tree and changes `store/schema.rs` and `store/threads.rs` inside these scopes: this is a revision
+reading (PLAN §13), not a current value.
+
+### S32.1 What was landed: three tests, no production change
+
+`commands/remote.rs`'s test module gained one test per `#[tauri::command]` the Remote page calls, and
+nothing else in the crate changed:
+
+| command | test | mechanism it uses |
+|---|---|---|
+| `remote_unpair_device` (43-48) | `remote_unpair_device_is_a_noop_for_a_device_it_does_not_have` | a fresh `HomeGuard`; the id is absent from the book, so `remote::unpair_slot` runs its whole body — `queue_revoke` skipped, `remove_slot` on an empty book, `release_control`, `stop_slot`, `promote_a_lone_device` — and returns the stopped projection. Asserts the phase, that no controller is named, and that no device was minted. |
+| `remote_add_device` (54-56) | `remote_add_device_stops_at_the_account_check` | signed out, so `future_login::future_api_key()` returns `AppError::NotSignedIn` before `http_client()?.post(…)` — asserted as the *variant*, so the test cannot pass by accidentally reaching a socket. |
+| `remote_takeover` (62-65) | `remote_takeover_takes_control_and_persists_it` | two slots on disk with the **other** one in control, then the wrapper. `SUPERVISOR.claim_control_soon` persists on a detached thread, so the test polls `remote::pairing::active_slot()` to `pair_next` and only then reads `remote_status().pair_id`; the poll is what keeps that write inside the fixture's home instead of the developer's. It ends with `unpair_slot` so the process-global pointer it moved does not leak into a later test. |
+
+**Measured effect** (the union, not a projection): `commands/remote.rs` goes from **15** uncovered lines
+to **4** — `43, 62, 97, 98`. Lines 44-48, 54-56 and 63-65 read `1`.
+
+### S32.2 Three movements the measurement found that the projection did not predict
+
+The ticket's `expect` was **374** (13 wrapper lines closed). The measurement says **376**, fully
+accounted, and the two extra lines are not waivers invented to reach a number:
+
+1. **`commands/remote.rs:43` and `:62` are the `#[tauri::command]` attribute lines** and still read `0`
+   while their bodies read `1`. llvm-cov attributes the generated wrapper to the `fn` line; the
+   attribute executes nothing. Note line 53 — the same attribute for `remote_add_device` — has **no
+   `DA` record at all**, so whether an attribute line even carries a record is an artifact of the
+   region-gap fill. Class: `attribution-artifact`, with the same wording this ledger already uses for
+   `commands/agent.rs:5`. They were OPEN rows while the bodies were uncovered; they are now WAIVED
+   rows on their own, and the OPEN block lost all 13.
+2. **`agent_bridge/client.rs:232` reads `DA:0` again** (231 = 1, 235 = 381). It was `DA:1` in the
+   `32ba1e13e` report — the same brace §S26.2 recorded oscillating across three runs — so TAU-D24 had
+   dropped its row as a contradiction. Re-measuring restored the need for it: a new `attribution-artifact`
+   row, worded so the next reader knows the value is per-revision.
+3. **`agent_bridge/observer.rs:702` has no `DA` record at all** in this union (698-700 and 703 all
+   present and positive). ABSENT is "no evidence", not "covered" — but a row claiming it would be a
+   claim on a line the report does not contain, so the row became prose and `observer.rs` left the
+   uncovered set (27 files → **26**). If a later report re-emits the record, it is MISSING again and
+   must be re-registered; that is the loud direction.
+
+So **376 = 350 WAIVED + 24 OPEN + 2 deliberate exclusions**, and the ladder is
+`387 (348 + 37 + 2) → 376 (350 + 24 + 2)`: 11 closed, 2 reclassified, 1 re-registered, 1 fallen out of
+the report. The OPEN count returning to 24 is a **coincidence**, not the ticket's 374 split — the two
+attribute lines are the difference, and they are unwrappable from the body they annotate.
+
+### S32.3 The measurement
+
+| leg | result | files | wall |
+|---|---|---|---|
+| gui (`--lib`, `-j 4`) | **2214 passed / 0 failed / 14 ignored** | 170 | 575.60 s |
+| headless (`--lib --no-default-features --features headless`) | **1769 passed / 0 failed / 14 ignored** | 137 | 446.77 s |
+| union (`lcov-union.py --out … gui.info headless.info`) | — | 171 | — |
+
+Both legs `rc=0` — **the first appdata measurement this campaign with no port-8022 flake at all**, so
+the figure is not an upper bound this time. `cargo llvm-cov clean --workspace` ran before **each** leg
+(the §S30.2 flavour-drop trap). `flavor-alive`: ok on both (gui covered 72445 / uncovered 1970;
+headless 59173 / 1610). `leg-flavour-check`: every shape check ok (gui-only `commands/agent.rs` and
+`menu.rs` excluded from headless, `no_gui.rs` + `headless/mod.rs` present, 137 ≤ 145) with its one
+standing FAIL — `bin/futureos-headless.rs` is absent because both legs are `--lib`, which no lib leg
+can satisfy.
+
+**One condition to record, because it is exactly INCIDENTS F.105's:** the gui leg ran alone, but the
+headless leg overlapped another unit's `llvm-cov` (TAU-D26, remote) for part of its test phase; the
+supervisor stopped that worker when the process table showed two instrumented runs. F.105's harm is a
+suite that *fails* on the shared port 8022 and thereby executes less code, inflating the count. This
+headless leg recorded **0 failures**, so the condition that inflates did not occur, and the two legs
+were measured under different `CARGO_TARGET_DIR`s (`cov-tauri-appdata` here) so no artifact was shared.
+Had a 8022 failure appeared, the honest response would have been to re-run the leg rather than quote
+the number.
+
+`lcov-union.py`'s docstring advertises a positional output path; the script only accepts `--out`. That
+gap cost one failed invocation in this run (the union wrote nothing and `sed` then failed on a missing
+file — caught because the script echoes `UNION_EXIT`), and the run was **not** repeated: the two leg
+reports were intact, so only the union step was re-run. Flagging it rather than editing a shared tool
+outside this unit's write set.
+
+### S32.4 The gates
+
+| gate | result |
+|---|---|
+| `reconcile.py --report .future/cov100/pinned/union-d25.info --section "S18.5 Residual ledger"` over the ten scopes | **26 files, uncovered=376, mentioned 376, MISSING 0**, no STALE block (COVERED 0 / ABSENT 0), `rc=0` |
+| row-level join (`claim_targets`, the §S31.4 recipe) | **376 claims / 376 uncovered / 0 unclaimed / 0 claimed-covered / 0 claimed-absent** |
+| block membership | **OPEN 24 + exclusion 2 + WAIVED 350 = 376**, matching §S18.5's header |
+| `staletable.py --gate` (`tauri-appdata` row) | **376 / 376 / MISSING 0 / STALE 0 / ABSENT 0 / COVERED 0 — PASS**, no DRIFT line |
+| `rustfmt --check` on the changed file | clean |
+| `cargo clippy --all-targets -- -D warnings` | **rc=0, both flavours** (gui; `--no-default-features --features headless`) |
+| new tests, filtered run | `cargo test --lib -- commands::remote::tests --test-threads=1` → **14 passed, 0 failed** |
+
+### S32.5 What is left, and the next useful check
+
+* **24 OPEN + 2 exclusions + 3 `cost-deferred`** = the same three families §S18.5 lists; this segment
+  changed none of them. The 24 OPEN are 15 cheap mock/store fixtures, 8 `tasks.rs` production failure
+  arms, and `run_control.rs` — each with its fixture written in §S18.5/§S29.2.
+* **`origin/main` has moved past the measured tree**, and it touches `store/schema.rs` and
+  `store/threads.rs` in these scopes. The next measurement cycle must run on a merged tree; the figure
+  to beat is **376**, and the scopes to re-check are exactly the ten in this record:
+
+```
+git diff --stat 8a13782ae origin/main -- desktop/src-tauri/src/commands desktop/src-tauri/src/tasks.rs \
+  desktop/src-tauri/src/store desktop/src-tauri/src/scheduler desktop/src-tauri/src/agent_bridge \
+  desktop/src-tauri/src/agent_providers desktop/src-tauri/src/shadow_review desktop/src-tauri/src/error.rs \
+  desktop/src-tauri/src/auth_store.rs desktop/src-tauri/src/agent_events.rs
+```
+* **For the supervisor's published files** (outside this unit's write set): `docs/testing/waiver-ledger.md`
+  and `.future/cov100/FINAL-REPORT.md` still quote `374 = 348 WAIVED + 24 OPEN + 2`. The replacement
+  line, at the report this record now registers, is:
+
+```
+module-tauri-appdata | 376 = 350 WAIVED + 24 OPEN + 2 deliberate exclusions | measured at ab0045699
+(branch test/cov100-r2 on merged main 8a13782ae), report .future/cov100/pinned/union-d25.info (two
+--lib legs, both green: gui 2214 passed / headless 1769 passed / 14 ignored each); NOT re-measured
+since main@74c6bd8aa
 ```
