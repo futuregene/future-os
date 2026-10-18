@@ -450,7 +450,7 @@ executed here.
 
 ## 6. Waiver ledger (`lines-100-or-waived`)
 
-**213 uncovered lines in 21 files**, taken from `/tmp/agb-p6.info` with the
+**213 uncovered lines in 21 files**, taken from `/tmp/agb-p7.info` with the
 command in §1. Each row's first cell is `` `path`:lines `` — that shape matters:
 `.future/cov100/reconcile.py` reads a claim from a row's *first cell only*, so the
 earlier version of this table (path, count and line list in separate cells, with

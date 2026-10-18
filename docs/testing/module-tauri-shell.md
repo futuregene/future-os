@@ -1,40 +1,62 @@
 # Module: `desktop-tauri` shell — `desktop/src-tauri/src` entry points, process lifecycle, macOS integration
 
-> **FIGURE, POST-MERGE RE-MEASUREMENT (2026-10-18): 109 uncovered, measured at `32ba1e13e`.**
-> `origin/main` merged as `8a13782ae`; `#1174` (one runtime per device) and `#1177` (list paired
-> devices) rewrote code inside this module's scopes, so every earlier figure in this file was
-> measured on a HEAD that is **not an ancestor of `main`** (INCIDENTS F.101) and describes a tree
-> that no longer exists. Report: `.future/cov100/pinned/union-postmerge2-green.info` (two legs, gui `rc=0` 3590 tests, headless
-> 1748 passed / 1 known 8022-port flake / 14 ignored, `rc=101` for that one, report `rc=0`).
-> The re-measurement is a **two-leg instrumented run over the merged tree**, not a re-reading.
+> **FIGURE, POST-MERGE RE-MEASUREMENT (2026-10-18, TAU-D31): 111 uncovered, measured at
+> `16ea6f388`.** Report `.future/cov100/pinned/union-refresh4.info` (5 853 166 B, 178 `SF:`
+> records; gui leg `rc=0`, headless leg `rc=0`, clean between legs, unioned by `lcov-union.py`).
+> This supersedes the `32ba1e13e` reading below: the tree now carries the merge, and the twelve
+> scopes are **byte-identical at `16ea6f388` and `HEAD`** (`git diff` over them is empty), so the
+> figure describes the tree the reader has (F.101). The per-line index was re-derived against it
+> (§S13.12); `reconcile.py` reads **MISSING 0, COVERED 0, ABSENT 0** over the twelve scopes.
 >
-> **Ledger re-derived 2026-10-18 (TAU-D21b): `reconcile.py` MISSING = 0 on the report above.**
+> **The number stayed 111; the composition did not.** Two claims left and two entered.
+> `instance.rs` gained six lines at the merge — the two three-line
+> `ensure_restore_complete` guards in `InstanceGuard::at` (`:43-45`, `:70-72`; their closing
+> braces `:45` and `:72` are the uncovered rows, an `if let` join region whose `None` side no
+> fixture takes) — and the same +6 shift moved
+> the re-acquire test's rows `164-168` to **`170-174`**. At the same time `desktop_shutdown.rs`
+> `499-500`, the S2.8.4 flipper, read **`DA:1` in this union**: they were claims in the previous
+> index and are now **named in prose, not claimed** (§S13.12.1), because a row that disagrees with
+> the report it is paired with is the STALE defect this campaign keeps finding. The class totals
+> move with the same two-for-two: `attribution-artifact` 6 → 8, `oscillating` 2 → 0.
+>
+> `origin/main` was merged twice on this branch: `52d80801f` (which is where `#1186`'s
+> `instance.rs` restore guards arrive, alongside `#1187` and `#1191`) and `9651e5049` (`#1192`,
+> `#1194`, `#1195`). `#1174` (one runtime per device) and `#1177` (list paired devices) rewrote
+> code inside this module's scopes earlier still. The pre-merge figure this file carried was
+> measured on a HEAD that is **not an ancestor of `main`** (INCIDENTS F.101) and describes a tree
+> that no longer exists; the text below is kept as that measurement's history.
+>
+> **Ledger re-derived 2026-10-18 (TAU-D21b): `reconcile.py` MISSING = 0 on the 109-line
+> reading.**
 > The seven lines `#1174` moved (`lib.rs` 1271, 1296, 1300, 1321–1323, 1773) are registered in
 > the per-line index with a class or as **OPEN** with the missing seam named; the six rows that
 > had landed on covered statements were moved to their current positions, and `lib.rs:1318` (a
-> brace with no `DA:` record) is no longer claimed. Positions are re-derived at `8efb4fa0c`; the
-> report's twelve scopes are byte-identical at `32ba1e13e`, `8efb4fa0c` and HEAD. The per-line
-> table is now quotable with the figure.
+> brace with no `DA:` record) is no longer claimed. Positions were re-derived at `8efb4fa0c`; the
+> report's twelve scopes were byte-identical at `32ba1e13e`, `8efb4fa0c` and HEAD *as HEAD stood
+> then* — the current HEAD carries the merge, which is what §S13.12 re-derives against. The
+> per-line table is now quotable with the figure.
 >
 > Numbered readings are not comparable to the pre-merge ones in either direction: `tauri-headless`
 > went 232 -> 238 partly because upstream added arms and partly because this branch **removed** a
 > fixture whose premise `#1174` invalidated (F.102) — a coverage regression recorded as one.
-> **STALER THAN IT LOOKS (checked 2026-10-18 15:14):** `main` has moved again since this
-> measurement - `bc8ace5fa` and `eee2472f3` touch `terminal/session.rs` and `store/**`,
-> 19 files / +1136 / -376. These figures are therefore **measured at `32ba1e13e`,
-> NOT re-measured since `main@eee2472f3`**. Treat them as a revision reading, not a current
-> value, until the next measurement cycle lands. PLAN 13 requires this sentence, not a footnote.
+> **STALER THAN IT LOOKS (checked 2026-10-19): the two readings below are history.** `main` moved
+> after `32ba1e13e` (`bc8ace5fa`, `eee2472f3`, then `#1187`/`#1188`); the figure in the previous
+> paragraph is the one to quote. This record's pairing is now `measured_at 16ea6f388`, and the
+> twelve scopes are unchanged between that revision and HEAD, which is what `staletable.py`'s
+> freshness check compares. PLAN 13 requires this sentence, not a footnote.
 
-> **ARTIFACT STATUS (2026-10-18, re-measured): RETAINED at `.future/cov100/pinned/union-HEAD-20261018.info`.** One two-leg full-crate run
+> **ARTIFACT STATUS (2026-10-18, TAU-D31): RETAINED at `.future/cov100/pinned/union-refresh4.info`.** One two-leg full-crate run
 > (gui + headless, `clean` before leg 1) serves this pairing, `tauri-appdata`, `tauri-remote` and
 > `tauri-headless` simultaneously - they differ only in the `scopes` filter, not in what was run.
 > Verify: `python3 .future/cov100/reconcile.py --report <that file> --label tauri-shell-seg2 ...`
-> prints **111** uncovered. The figure moved 109 -> 111 because this unit's own new fixture
-> (`desktop_shutdown.rs` 490-501, `Done` guard + spawned pending task) added ten measured lines,
-> eight covered and two (`:499`, `:500`) that are **the pair S2.8.4 already documents as flipping
-> between runs** (covered in isolation, `DA:0` in some full runs). This union is one such run, so it
-> reads 111 where the final run of S13.10 read 109. Both readings name the same two lines; the
-> deterministic fix is in S13.11 and is not claimed as landed. The
+> prints **111** uncovered, of which all 111 are claimed in the index below (0 claimed as covered).
+> The figure is numerically the same as `union-HEAD-20261018.info`'s and is not the same residual:
+> that reading's two extra claims were `desktop_shutdown.rs:499`/`:500`, the S2.8.4 flipper
+> (covered in isolation, `DA:0` in some full runs), while this union reads them `DA:1` and instead
+> carries the merge's two new `instance.rs` join lines (`:45`, `:72`). A flipper claimed as
+> uncovered is a STALE row the moment the union runs the other way, so the pair is now **named**
+> in §S13.12.1 and not claimed; the deterministic fix (a started-signal before line 499) is still
+> in S13.11 and is not claimed as landed. The
 > captures named below (`/tmp/tauri-shell-lcov-c10union.info`, `/tmp/tauri-shell-land/union.info`)
 > were removed with the rest of `/tmp` during closeout cleanup (INCIDENTS F.100). **Re-derive with
 > the recipe in §S13**, which is self-contained: per flavour `cargo llvm-cov --no-report …
@@ -42,8 +64,12 @@
 > `leg-flavour-check.py`. Expect **111** (22 of them `host-state-blocked`; projection 89).
 > A re-measure that disagrees is information, not a nuisance — report the rows that moved.
 
-Status: **measured, not at target** — **150** uncovered lines in this unit's scope in a
-session that delivers `RunEvent::Ready` (**§S8.3, the pinned ledger**), down from **255** at
+Status: **measured, not at target** — the current figure is **111 uncovered at `16ea6f388`** (the
+merged tree, §S13.12), of which **105 are classified with a mechanism and 6 are OPEN** (the
+lib.rs rows §S13.2e-open/§S13.2f name), with 22 of the 111 in the `host-state-blocked` class —
+covered in §S8.3's artifact, so **not waivers**, projection **89** for a `Ready`-delivering
+session. History: **150** uncovered lines in a session that delivers `RunEvent::Ready`
+(**§S8.3, the pinned ledger**), down from **255** at
 the end of Segment 3, **270** at the end of Segment 2 and **400** at `8449acf6`. **Segment 17
 (§S13) landed REV-TAURI-SHELL's four families and measured 115 uncovered in the twelve scopes
 (both flavours unioned), 88 of the review's 90 fallen rows closed; §S13.10 then closed the three
@@ -6968,14 +6994,32 @@ and it needs its own measurement to claim.
 
 ### Per-line index of this segment's residual (111 rows)
 
-**Re-derived 2026-10-18 (TAU-D21b) against
-`.future/cov100/pinned/union-postmerge2-green.info`, measured at `8efb4fa0c`.** The report reads
-**109 uncovered** lines over the twelve scopes and the table below carries **111 claims**: those
-109 `DA:0` rows plus `desktop_shutdown.rs:499` and `:500`, the pair §S2.8.4 documents as
-*oscillating* (`DA:1` in this union and when run in isolation, `DA:0` in some full runs). Those
-two rows stay and are named, not deleted. The twelve scopes are byte-identical at `32ba1e13e`,
-`8efb4fa0c` and HEAD (`git diff` over them is empty), so every line number below is a current
-position.
+**Re-derived 2026-10-18 (TAU-D31) against
+`.future/cov100/pinned/union-refresh4.info`, measured at `16ea6f388`** — the campaign's
+post-merge union, and the tree this checkout has (`git diff 16ea6f388..HEAD` over the twelve
+scopes is empty). The report reads **111 uncovered** lines over the twelve scopes and the table
+below carries **111 claims**: one row per `DA:0` line, nothing else. Two things changed against
+the previous revision of this index, and both are *reading* changes, not code changes:
+
+* **`desktop_shutdown.rs:499` and `:500` are no longer claims.** They are the pair §S2.8.4
+  documents as *oscillating* — `DA:0` in some full runs, `DA:1` in others — and this union is
+  one of the others. They were the only two rows in the old index whose disagreement with the
+  report had a *documented* cause; the other two covered claims (`instance.rs:166`/`:168`) were
+  earlier positions of the rows re-derived below. Keeping the pair would report `COVERED 2`
+  forever and put a documented flipper next to any real STALE row, so they are named in
+  §S13.12.1 instead; the deterministic fix
+  (await a started signal sent at 499) is still not landed and still not claimed.
+* **`instance.rs` gained six lines (two guards) and the shift moved five rows.**
+  `InstanceGuard::at` now calls `future_rpc::home::ensure_restore_complete` on both sides of the
+  lock (`:43-45`, `:70-72`); the two
+  closing braces (`:45`, `:72`) are the uncovered rows, an `if let` join region whose `None`
+  side no fixture takes. The +6 those six lines add to the file moves the re-acquire test's
+  rows `164-168` to `170-174` with the statements unchanged — verified at both revisions, not
+  by arithmetic (§S13.12.2).
+
+Every other row is the same line number and the same statement as the previous index: the merge
+did not touch `lib.rs`, `desktop_shutdown.rs`, `runtime.rs`, `future_login.rs`, `launch.rs`,
+`main.rs`, `menu.rs`, `macos_power.rs`, `host_environment.rs` or `bin/futureos-headless.rs`.
 
 **Why the previous numbering disagreed with the report.** `#1174` added three invoke handlers at
 `lib.rs:1214` (`remote_unpair_device`, `remote_add_device`, `remote_takeover`). It is the only
@@ -7000,14 +7044,13 @@ The groups whose rows moved or changed class, re-read at the current positions:
 
 All other group ids carry §S13.5's classes and mechanisms unchanged; the rows they cover are
 the current positions listed here. Class totals over the 111: **`host-state-blocked` 22**,
-**`unreachable-in-this-environment` 67**, **`attribution-artifact` 6**,
-**`unreachable-by-construction` 6**, **`platform-unmeasured` 2**, **`oscillating` 2**,
-**OPEN 6** — sum 111.
+**`unreachable-in-this-environment` 67**, **`attribution-artifact` 8**,
+**`unreachable-by-construction` 6**, **`platform-unmeasured` 2**,
+**OPEN 6** — sum 111. (`oscillating` is **0**: the S2.8.4 pair is not claimed in this index,
+§S13.12.1. The two `attribution-artifact` rows added at the merge are `instance.rs` 45 and 72.)
 
 | line | group |
 |---|---|
-| `src/desktop_shutdown.rs:499` | S13.11 `oscillating` |
-| `src/desktop_shutdown.rs:500` | S13.11 `oscillating` |
 | `src/bin/futureos-headless.rs:11` | S13.3m |
 | `src/desktop_shutdown.rs:221` | S13.3g |
 | `src/desktop_shutdown.rs:222` | S13.3g |
@@ -7033,11 +7076,13 @@ the current positions listed here. Class totals over the 111: **`host-state-bloc
 | `src/future_login.rs:354` | S13.3l |
 | `src/future_login.rs:355` | S13.3l |
 | `src/future_login.rs:482` | S13.3l |
-| `src/instance.rs:164` | S13.3e |
-| `src/instance.rs:165` | S13.3e |
-| `src/instance.rs:166` | S13.3e |
-| `src/instance.rs:167` | S13.3e |
-| `src/instance.rs:168` | S13.3e |
+| `src/instance.rs:45` | S13.3e-join |
+| `src/instance.rs:72` | S13.3e-join |
+| `src/instance.rs:170` | S13.3e |
+| `src/instance.rs:171` | S13.3e |
+| `src/instance.rs:172` | S13.3e |
+| `src/instance.rs:173` | S13.3e |
+| `src/instance.rs:174` | S13.3e |
 | `src/launch.rs:486` | S13.3d |
 | `src/launch.rs:487` | S13.3d |
 | `src/lib.rs:213` | S13.1b |
@@ -7118,3 +7163,125 @@ the current positions listed here. Class totals over the 111: **`host-state-bloc
 | `src/runtime.rs:251` | S13.3f |
 | `src/runtime.rs:252` | S13.3f |
 <!-- 111 rows -->
+
+### S13.12 The post-merge re-derivation (TAU-D31): same figure, two rows swapped, and six rows left OPEN
+
+Ticket `todo_6aa85f2841be`. This segment registers; it does **not** re-measure. The report is the
+campaign's retained post-merge union, shared with `tauri-appdata`, `tauri-remote` and
+`tauri-headless`:
+
+```
+.future/cov100/pinned/union-refresh4.info   5 853 166 B, 178 SF:, md5 5fb223725194aed41049418eaa3e1224
+measured at 16ea6f388   gui leg rc=0, headless leg rc=0, clean between legs, lcov-union.py
+$ git diff --stat 16ea6f388..HEAD -- <the twelve scopes>      # empty
+```
+
+The empty diff is the point of the re-point: the previous pairing was `measured_at 32ba1e13e`, and
+`staletable.py`'s freshness check read `STALE: 1 file(s) changed in scope since 32ba1e13e
+(desktop/src-tauri/src/instance.rs)` — the merge added the restore guards there.
+
+Per file, `union-postmerge2-green` (109) against `union-refresh4` (111):
+
+| scope | 109 (`32ba1e13e`) | 111 (`16ea6f388`) | attribution |
+|---|---|---|---|
+| `src/lib.rs` | 69 | **69** | unchanged |
+| `src/desktop_shutdown.rs` | 13 | **13** | unchanged (`:499`/`:500` read `DA:1` here, §S13.12.1) |
+| `src/desktop_shutdown/coordinator.rs` | 8 | **8** | unchanged |
+| `src/runtime.rs` | 4 | **4** | unchanged |
+| `src/future_login.rs` | 3 | **3** | unchanged |
+| `src/instance.rs` | 5 | **7** | **+2**: the two new `ensure_restore_complete` guards' join braces, `:45` and `:72` (§S13.12.2) |
+| `src/main.rs` | 2 | **2** | unchanged |
+| `src/menu.rs` | 2 | **2** | unchanged |
+| `src/launch.rs` | 2 | **2** | unchanged |
+| `src/bin/futureos-headless.rs` | 1 | **1** | unchanged |
+| `src/macos_power.rs`, `src/host_environment.rs` | 0 | **0** | unchanged |
+| **total** | **109** | **111** | **+2, one file** |
+
+Class totals over the 111 (the groups' classes are inherited from §S13.5 unless §S13.12 says
+otherwise): **`host-state-blocked` 22**, **`unreachable-in-this-environment` 67**,
+**`attribution-artifact` 8** (was 6: the two join braces), **`unreachable-by-construction` 6**,
+**`platform-unmeasured` 2**, **OPEN 6** — sum 111. `oscillating` is **0** in this index, and
+that is a filing decision, not a measurement (§S13.12.1). The projection for a `Ready`-delivering
+session is therefore **89** (111 − 22), unchanged.
+
+**The six OPEN rows stay OPEN.** `lib.rs:1300` (S13.2e-open) and `lib.rs:1319-1323` (S13.2f) are
+this ticket's explicit non-goal: they are reachable production paths whose missing seam is named in
+the index, and nothing in this segment touches `lib.rs`. They are counted in the 111 and in the
+`OPEN 6` above, not absorbed into a neighbour's waiver.
+
+#### S13.12.1 The flipper pair, named rather than claimed
+
+`desktop_shutdown.rs:499` and `:500` are the pair §S2.8.4 documents as oscillating: they execute
+when the spawned future is polled before teardown and do not when the test tears down first. The
+previous index claimed them, because the union it was paired with read them `DA:0`. **This union
+reads them `DA:1`.** Two rows that disagree with the report they are checked against are exactly
+the STALE defect this campaign keeps finding, and a documented flipper is not a licence to keep
+one: reconcile cannot tell a justified `COVERED 2` from a stale row, and the supervisor review
+that would have to is the same review this ledger exists to shorten.
+
+So they are stated here, once, with their reading: in `union-refresh4` the task body runs before
+teardown and both lines read `DA>0`; in some full runs they read `DA:0` and would re-enter the
+index as two `DA:0` rows. The deterministic fix — await a "started" signal sent at 499 before
+asserting — is still S13.11's, still test-side, still not claimed as landed.
+
+#### S13.12.2 The `instance.rs` re-derivation, statement by statement
+
+The merge added six lines to `InstanceGuard::at` (three before the lock, three after):
+
+```
+new  43:         if let Some(home) = directory.parent() {
+new  44:             future_rpc::home::ensure_restore_complete(home)?;
+new  45:         }                                  <-- uncovered: the if-let join
+...
+new  70:         if let Some(home) = directory.parent() {
+new  71:             future_rpc::home::ensure_restore_complete(home)?;
+new  72:         }                                  <-- uncovered: the if-let join
+```
+
+Both rows are **`attribution-artifact`**: 43-44 and 70-71 are covered in this union (the guard runs
+and returns `Ok`), and only the join region — the `None` side of `directory.parent()` — has no
+counter. No fixture passes a path without a parent (`tempfile::tempdir().path()` always has one),
+and a `None` parent would mean locking `/`, which is not a state this test suite should create.
+Deleting the guard removes the lines, so the mechanism describes the executed path, not the API
+surface.
+
+The +6 shifts the re-acquire test's rows. **The statements are identical at both revisions** —
+checked line by line, not inferred:
+
+| old (`32ba1e13e`) | new (`16ea6f388`) | statement |
+|---|---|---|
+| 164 | **170** | `Err(_) if std::time::Instant::now() < deadline => {` |
+| 165 | **171** | `std::thread::sleep(Duration::from_millis(10));` |
+| 166 | **172** | `}` |
+| 167 | **173** | `Err(error) => {` |
+| 168 | **174** | `panic!("re-acquiring the lock after release failed: {error}")` |
+
+Mechanism (S13.3e, restated because the id's text carries the old positions): the lock is released
+and re-acquired on the first pass, and the fixture has no failure injection — the retry arm needs a
+second `InstanceGuard::at` to fail while a peer holds the lock, and the panic arm needs that to
+persist for the full 2 s deadline. That is an ordering between two threads, not a state the test
+can build deterministically; the same reasoning this record already applies to the
+`desktop_shutdown` race windows. Neighbouring evidence, read from the union: 166 (the deadline),
+168 (`match`), 169 (`Ok(_) => break`) and 178 (the loop's close) are covered; 175-177 are bare
+braces with no `DA:` record at all.
+
+#### S13.12.3 The two sentences
+
+```
+$ python3 .future/cov100/reconcile.py --report .future/cov100/pinned/union-refresh4.info \
+    --doc docs/testing/module-tauri-shell.md --label tauri-shell-seg2 \
+    --section "Per-line index of this segment's residual (111 rows)" --scope <each of the twelve>
+[tauri-shell-seg2] files with uncovered lines=10 uncovered lines=111
+  mentioned in module-tauri-shell.md: 111
+  MISSING (uncovered, not mentioned): 0
+                                 # no STALE block: COVERED 0, ABSENT 0
+$ echo $?
+0
+```
+
+`COVERED 0` is asserted the way the tool states it — no `STALE` block at all — and checked
+independently by the row-claim comparison: **111 parsed claims for 111 uncovered lines, both
+directions empty** (`claims 111 / resolved 111 / uncovered 111`). The heading still says 111 rows
+because the count did not change; what changed is which two lines those rows name, and the pairing
+in `.future/cov100/pairings.json` was re-pointed to this report and this heading in the same edit
+(the mismatch the ticket warns about is the one §S13.11 already paid for once).
