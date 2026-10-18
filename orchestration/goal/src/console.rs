@@ -12581,7 +12581,7 @@ mod verify_failure_reason_tests {
         assert_eq!(receipt.exit_code, Some(2));
         let reason = verify_failure_text(&receipt);
         assert!(reason.contains("could not run"), "{reason}");
-        assert!(reason.contains("syntax error"), "{reason}");
+        assert!(reason.to_lowercase().contains("syntax error"), "{reason}");
         assert!(!reason.contains("rejected the output"), "{reason}");
     }
 

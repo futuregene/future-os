@@ -228,8 +228,9 @@ mod tests {
         assert!(!receipt.ok);
         assert_eq!(receipt.exit_code, Some(2));
         assert!(could_not_run(&receipt), "{}", receipt.summary);
+        // dash prints `Syntax error: ...`, bash/sh `syntax error near ...`.
         assert!(
-            receipt.summary.contains("syntax error"),
+            receipt.summary.to_lowercase().contains("syntax error"),
             "stderr must be retained: {}",
             receipt.summary
         );
