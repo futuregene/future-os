@@ -1,7 +1,8 @@
-import { createElement } from "react";
+import { act, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { setThemeMode } from "../../lib/theme";
 import { flushAsync, renderHook } from "../../test/renderHook";
 
 import { useCodeHighlighter } from "./useCodeHighlighter";
@@ -117,6 +118,22 @@ describe("useCodeHighlighter", () => {
     loadLanguageImpl = async (lang) => {
       loadedLanguages.push(lang);
     };
+    h.unmount();
+  });
+
+  it("uses the syntax palette of the active app theme", async () => {
+    loadedLanguages.push("json");
+    const h = renderHook(() => useCodeHighlighter());
+    await flushAsync();
+    h.current.highlight("{}", "json");
+    expect(fakeHighlighter.codeToTokens).toHaveBeenLastCalledWith("{}", { lang: "json", theme: "github-light" });
+
+    act(() => setThemeMode("dark"));
+    h.current.highlight("{}", "json");
+    // A different theme is a different cache entry, not a stale reuse.
+    expect(fakeHighlighter.codeToTokens).toHaveBeenLastCalledWith("{}", { lang: "json", theme: "github-dark" });
+
+    act(() => setThemeMode("light"));
     h.unmount();
   });
 

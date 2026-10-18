@@ -34,7 +34,7 @@ export function RemoteUsageDialog({
 
   if (error) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20" role="dialog">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-overlay" role="dialog">
         <div className="w-full max-w-md rounded-lg border border-line bg-surface p-4 shadow-panel">
           <p className="text-sm text-danger">{t("usageUnavailable", { message: error })}</p>
           <button

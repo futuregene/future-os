@@ -37,7 +37,7 @@ FutureOS desktop app: Tauri + React + TypeScript, frontend `src/`, Tauri backend
 
 ## GUI Development Principles (Long-term Memory)
 
-1. **Colors**: Use only semantic tokens from `docs/internals/desktop/COLOR.md`; no bare Tailwind colors (`blue-300`…). Status badges use `<Badge tone>`; categorical colors (event categories / error subtypes) are intentional exceptions.
+1. **Colors**: Use only semantic tokens from `docs/internals/desktop/COLOR.md`; no bare Tailwind colors (`blue-300`…). Tokens are theme-aware CSS variables with light and dark values, so don't hard-code a light-only value (a white panel, fixed dark text) — it breaks the other theme. Status badges use `<Badge tone>`; categorical colors (event categories / error subtypes) are intentional exceptions.
 2. **Tauri Invoke**: All `invoke` calls go through `integrations/tauri/invoke.ts`'s `invokeCommand` — never call `invoke` directly. Command params: structured input via `{ input }`, single scalars via named keys. (Other `@tauri-apps/api` capabilities — event `listen`, dialog, `convertFileSrc`, window/webview — are not wrapped by `invoke.ts`; import them directly as needed.)
 3. **Cross-component Events**: Use `lib/futureEvents.ts` typed `emitFutureEvent` / `onFutureEvent`; never use raw `window` CustomEvent.
 4. **Async / Polling**: Cancellation-safe loading uses `lib/useAsyncResource`, polling uses `lib/usePolling` (don't hand-roll `cancelled` flag effects or `setInterval`). When polling connection/status changes, **don't flash `checking` on every tick** — retry silently, only update state when you have a result.

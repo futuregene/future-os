@@ -3,6 +3,13 @@
     "title": "Language",
     "description": "Choose the display language of the app"
   },
+  "theme": {
+    "title": "Theme",
+    "description": "Light, dark, or follow the system appearance",
+    "light": "Light",
+    "dark": "Dark",
+    "system": "System"
+  },
   "approvalTier": {
     "title": "Approval mode",
     "manual": "Manual",

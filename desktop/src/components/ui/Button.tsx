@@ -12,10 +12,10 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const variants: Record<ButtonVariant, string> = {
-  "danger": "border-danger bg-danger text-white hover:opacity-90",
+  "danger": "border-danger-fill bg-danger-fill text-white hover:opacity-90",
   "danger-soft": "border-danger-line bg-danger-soft text-danger hover:brightness-95",
   "ghost": "border-transparent bg-transparent text-ink-soft hover:bg-surface-subtle hover:text-ink",
-  "primary": "border-accent bg-accent text-white hover:bg-accent-hover disabled:bg-accent-disabled",
+  "primary": "border-accent-fill bg-accent-fill text-white hover:bg-accent-fill-hover disabled:bg-accent-fill-disabled",
   "secondary": "border-line bg-surface text-ink hover:bg-surface-subtle",
   // Muted outlined action button used in toolbars/embeds (icon + short label).
   "toolbar": "border-line bg-surface text-ink-soft hover:bg-surface-subtle hover:text-ink",

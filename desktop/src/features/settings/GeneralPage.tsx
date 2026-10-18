@@ -1,11 +1,13 @@
 import type { Language } from "../../i18n";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
+import type { ThemeMode } from "../../lib/theme";
 import { useTranslation } from "react-i18next";
 import { Select } from "../../components/ui/Select";
 import { getLanguage, LANGUAGE_LABELS, setLanguage, SUPPORTED_LANGUAGES } from "../../i18n";
 import { automaticApprovalAvailable, effectiveApprovalTier } from "../../integrations/agent/automaticApproval";
 import { useSandboxAvailability } from "../../integrations/agent/useSandboxAvailability";
 import { isLinux, isWindows } from "../../lib/platform";
+import { setThemeMode, THEME_MODES, useThemeMode } from "../../lib/theme";
 import { linuxUnavailableReasonKey } from "./linuxSandboxStatus";
 import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";
 
@@ -35,6 +37,7 @@ export function GeneralPage({
   onToggleAutoTitleFirstTurn: (value: boolean) => void;
 }) {
   const { t } = useTranslation("settings");
+  const themeMode = useThemeMode();
   const sandboxAvailability = useSandboxAvailability();
   const autoAvailable = automaticApprovalAvailable(futureSessionStatus);
   const visibleApprovalTier = effectiveApprovalTier(approvalTier, futureSessionStatus);
@@ -55,6 +58,23 @@ export function GeneralPage({
             {SUPPORTED_LANGUAGES.map(lang => (
               <option key={lang} value={lang}>
                 {LANGUAGE_LABELS[lang]}
+              </option>
+            ))}
+          </Select>
+        </SettingsRow>
+        <SettingsRow
+          title={t("theme.title")}
+          description={t("theme.description")}
+        >
+          <Select
+            size="sm"
+            value={themeMode}
+            wrapperClassName="w-32"
+            onChange={e => setThemeMode(e.target.value as ThemeMode)}
+          >
+            {THEME_MODES.map(mode => (
+              <option key={mode} value={mode}>
+                {t(`theme.${mode}`)}
               </option>
             ))}
           </Select>

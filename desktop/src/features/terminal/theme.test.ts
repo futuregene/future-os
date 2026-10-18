@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { TERMINAL_THEME } from "./theme";
+import { TERMINAL_DARK_THEME, TERMINAL_THEME, terminalTheme } from "./theme";
 
 /**
  * WCAG 2.x relative luminance (sRGB) and contrast ratio.
  *
- * Every ANSI foreground must stay readable on the terminal's white
- * background: programs write colors assuming a dark terminal (PowerShell's
- * prompt and PSReadLine output white / bright-* text), and a too-light
- * spelling renders as white-on-white. These bounds pin the fix so a palette
- * edit cannot silently reintroduce invisible text.
+ * Every ANSI foreground must stay readable on its palette's background:
+ * programs write colors assuming a dark terminal (PowerShell's prompt and
+ * PSReadLine output white / bright-* text), and a too-light spelling on white —
+ * or a too-dark one on the dark surface — renders as invisible text. These
+ * bounds pin both palettes so an edit cannot silently reintroduce that.
  */
 
 function luminance(hex: string): number {
@@ -30,49 +30,78 @@ function contrast(foreground: string, background: string): number {
   return (light + 0.05) / (dark + 0.05);
 }
 
+const palettes: Array<{
+  name: string;
+  theme: typeof TERMINAL_THEME | typeof TERMINAL_DARK_THEME;
+  /** ANSI spellings programs use for plain body text (4.5:1 floor). */
+  bodyText: string[];
+  /** Spellings that are deliberately invisible on this background. */
+  exempt: string[];
+}> = [
+  {
+    name: "light",
+    theme: TERMINAL_THEME,
+    bodyText: ["black", "white"],
+    exempt: [],
+  },
+  {
+    name: "dark",
+    theme: TERMINAL_DARK_THEME,
+    // On a dark terminal `black` is a background / deliberately-invisible
+    // color (ANSI 40), exactly as in every dark terminal palette.
+    bodyText: ["white"],
+    exempt: ["black"],
+  },
+];
+
 describe("terminal theme", () => {
-  it("keeps the terminal light to match the light-only app", () => {
+  it("ships a light palette for the light app theme and a dark one for the dark", () => {
     expect(luminance(TERMINAL_THEME.background)).toBeGreaterThan(0.5);
+    expect(luminance(TERMINAL_DARK_THEME.background)).toBeLessThan(0.1);
+    expect(terminalTheme("light")).toBe(TERMINAL_THEME);
+    expect(terminalTheme("dark")).toBe(TERMINAL_DARK_THEME);
   });
 
-  it("every ANSI foreground stays readable on the background", () => {
+  it.each(palettes)("keeps every ANSI foreground readable in the $name palette", ({ theme, bodyText, exempt }) => {
     const foregrounds = {
-      black: TERMINAL_THEME.black,
-      red: TERMINAL_THEME.red,
-      green: TERMINAL_THEME.green,
-      yellow: TERMINAL_THEME.yellow,
-      blue: TERMINAL_THEME.blue,
-      magenta: TERMINAL_THEME.magenta,
-      cyan: TERMINAL_THEME.cyan,
-      white: TERMINAL_THEME.white,
-      brightBlack: TERMINAL_THEME.brightBlack,
-      brightRed: TERMINAL_THEME.brightRed,
-      brightGreen: TERMINAL_THEME.brightGreen,
-      brightYellow: TERMINAL_THEME.brightYellow,
-      brightBlue: TERMINAL_THEME.brightBlue,
-      brightMagenta: TERMINAL_THEME.brightMagenta,
-      brightCyan: TERMINAL_THEME.brightCyan,
-      brightWhite: TERMINAL_THEME.brightWhite,
+      black: theme.black,
+      red: theme.red,
+      green: theme.green,
+      yellow: theme.yellow,
+      blue: theme.blue,
+      magenta: theme.magenta,
+      cyan: theme.cyan,
+      white: theme.white,
+      brightBlack: theme.brightBlack,
+      brightRed: theme.brightRed,
+      brightGreen: theme.brightGreen,
+      brightYellow: theme.brightYellow,
+      brightBlue: theme.brightBlue,
+      brightMagenta: theme.brightMagenta,
+      brightCyan: theme.brightCyan,
+      brightWhite: theme.brightWhite,
     };
     for (const [name, color] of Object.entries(foregrounds)) {
+      if (exempt.includes(name))
+        continue;
       // 3:1 is the floor for the dimmest deliberate text; the plain-text
-      // spellings (white/black, what programs use for body text) must meet
-      // the 4.5:1 normal-text bar.
-      const floor = name === "white" || name === "black" ? 4.5 : 3;
-      const ratio = contrast(color, TERMINAL_THEME.background);
+      // spellings (what programs use for body text) must meet the 4.5:1
+      // normal-text bar.
+      const floor = bodyText.includes(name) ? 4.5 : 3;
+      const ratio = contrast(color, theme.background);
       expect(
         ratio,
-        `ANSI ${name} (${color}) contrast ${ratio.toFixed(2)}:1 is below ${floor}:1 on ${TERMINAL_THEME.background}`,
+        `ANSI ${name} (${color}) contrast ${ratio.toFixed(2)}:1 is below ${floor}:1 on ${theme.background}`,
       ).toBeGreaterThanOrEqual(floor);
     }
   });
 
-  it("keeps the ANSI ordering: white darker than brightWhite, black darker than brightBlack", () => {
-    expect(luminance(TERMINAL_THEME.white)).toBeLessThan(
-      luminance(TERMINAL_THEME.brightWhite),
+  it.each(palettes)("keeps the ANSI ordering in the $name palette", ({ theme }) => {
+    expect(luminance(theme.white)).toBeLessThan(
+      luminance(theme.brightWhite),
     );
-    expect(luminance(TERMINAL_THEME.black)).toBeLessThan(
-      luminance(TERMINAL_THEME.brightBlack),
+    expect(luminance(theme.black)).toBeLessThan(
+      luminance(theme.brightBlack),
     );
   });
 });
