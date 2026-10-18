@@ -59,6 +59,8 @@ const children = vi.hoisted(() => ({
   skillsView: null as unknown,
   tasksView: null as unknown,
   terminalPanel: null as unknown,
+  workspaceDeviceDialog: null as unknown,
+  remoteWorkspaceCreateDialog: null as unknown,
   workspaceDialogs: null as unknown,
 }));
 
@@ -147,6 +149,24 @@ vi.mock("../../features/remote-peer/RemoteUsageDialog", async () => {
     RemoteUsageDialog: (props: unknown) => {
       children.usageDialog = props;
       return createElement("div", { "data-child": "remote-usage" });
+    },
+  };
+});
+vi.mock("../../features/remote-peer/WorkspaceDeviceDialog", async () => {
+  const { createElement } = await import("react");
+  return {
+    WorkspaceDeviceDialog: (props: unknown) => {
+      children.workspaceDeviceDialog = props;
+      return createElement("div", { "data-child": "workspace-device-dialog" });
+    },
+  };
+});
+vi.mock("../../features/remote-peer/RemoteWorkspaceCreateDialog", async () => {
+  const { createElement } = await import("react");
+  return {
+    RemoteWorkspaceCreateDialog: (props: unknown) => {
+      children.remoteWorkspaceCreateDialog = props;
+      return createElement("div", { "data-child": "remote-workspace-create" });
     },
   };
 });
@@ -341,7 +361,14 @@ vi.mock("./hooks/useRemoteStatus", () => ({
 // Stubbed so the shell can be given paired hosts and their catalogues; the real
 // hook polls the backend.
 vi.mock("./hooks/useRemotePeers", () => ({
-  useRemotePeers: () => mocks.remotePeers ?? { catalogs: [], peers: [], refresh: mocks.hooks.refreshRemotePeers },
+  // `refresh` is supplied even when a test hands over only peers/catalogues:
+  // every consumer of the hook gets it, and a shell handler that re-reads the
+  // hosts after a write must not depend on which fields a test happened to set.
+  useRemotePeers: () => ({
+    catalogs: mocks.remotePeers?.catalogs ?? [],
+    peers: mocks.remotePeers?.peers ?? [],
+    refresh: mocks.hooks.refreshRemotePeers,
+  }),
 }));
 vi.mock("./hooks/useThreadStore", () => ({ useThreadStore: () => mocks.store.threadStore }));
 vi.mock("./hooks/useUnreadThreads", () => ({ useUnreadThreads: () => (mocks.store.unreadThreadIds as Set<string>) ?? new Set() }));
@@ -966,6 +993,22 @@ describe("app shell layout", () => {
 });
 
 describe("app shell workspace handlers", () => {
+  /** A paired host whose agent answers — it can take work. */
+  function hostPeer() {
+    return {
+      agentAvailable: true,
+      bridgeInstanceId: "bridge_1",
+      connected: true,
+      desktopId: "desktop_a",
+      error: null,
+      features: [],
+      icon: "laptop",
+      name: "Studio iMac",
+      pairId: "pair_1",
+      stopped: false,
+    };
+  }
+
   it("creates a workspace and refreshes the store onto the active thread", async () => {
     const view = mount(<AppShell />);
     // Arrange: the composer's props only exist once the new-conversation view is
@@ -977,6 +1020,68 @@ describe("app shell workspace handlers", () => {
     expect((mocks.hooks.createWorkspace as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith({ createDirectory: true, path: "/tmp/new" });
     expect(mocks.refreshStore).toHaveBeenCalledWith("t1");
     expect(created).toBe(chatWorkspace);
+    view.unmount();
+  });
+
+  /**
+   * The workspace "+" asks which machine before the form.
+   *
+   * The form behind it only browses *this* computer's disk, so with a host
+   * paired the machine is the first question — the one the old flow quietly
+   * answered for the user by opening the local folder picker.
+   */
+  it("asks which machine before opening the create-workspace form", () => {
+    mocks.remotePeers = { catalogs: [], peers: [hostPeer()] };
+    const view = mount(<AppShell />);
+    act(() => rail().onNewWorkspace());
+
+    expect(view.container.querySelector("[data-child='workspace-device-dialog']")).not.toBeNull();
+    // No local form was opened on the way: the user is answering the machine
+    // question first, exactly as the phone's dialog does.
+    expect(children.newConversation).toBeNull();
+    expect((children.workspaceDeviceDialog as { peers: unknown[] }).peers).toHaveLength(1);
+
+    act(() => (children.workspaceDeviceDialog as { onPickLocal: () => void }).onPickLocal());
+    expect(view.container.querySelector("[data-child='workspace-device-dialog']")).toBeNull();
+    expect(children.newConversation).toMatchObject({ initialWorkspaceForm: "open" });
+    view.unmount();
+  });
+
+  /**
+   * A machine that answers wins the workspace "+" nothing: with no machine able
+   * to take the workspace there is no choice to make, so the form opens in one
+   * step as it always did.
+   */
+  it("opens the local form directly when no machine can take work", () => {
+    mocks.remotePeers = { catalogs: [], peers: [{ ...hostPeer(), agentAvailable: false }] };
+    const view = mount(<AppShell />);
+    act(() => rail().onNewWorkspace());
+
+    expect(view.container.querySelector("[data-child='workspace-device-dialog']")).toBeNull();
+    expect(children.newConversation).toMatchObject({ initialWorkspaceForm: "open" });
+    view.unmount();
+  });
+
+  it("creates the workspace on the host the picker named and lands in a draft there", async () => {
+    mocks.remotePeers = { catalogs: [], peers: [hostPeer()] };
+    const view = mount(<AppShell />);
+    act(() => rail().onNewWorkspace());
+    act(() => (children.workspaceDeviceDialog as { onPickPeer: (peer: unknown) => void }).onPickPeer(hostPeer()));
+
+    expect(view.container.querySelector("[data-child='remote-workspace-create']")).not.toBeNull();
+    expect(children.remoteWorkspaceCreateDialog).toMatchObject({ peer: hostPeer() });
+
+    const created = { id: "ws_new", name: "New", path: "/tmp/new", pinned: false };
+    await act(async () => {
+      (children.remoteWorkspaceCreateDialog as { onCreated: (workspace: typeof created) => void }).onCreated(created);
+    });
+
+    // The host's catalogue is re-read so the new workspace shows under it...
+    expect(mocks.hooks.refreshRemotePeers).toHaveBeenCalled();
+    // ...and the user lands where the local flow leaves them: a composer in the
+    // new workspace, on the host — a draft there, which the first prompt turns
+    // into a session.
+    expect(children.remoteComposer).toMatchObject({ desktopId: "desktop_a", workspaceId: "ws_new" });
     view.unmount();
   });
 
