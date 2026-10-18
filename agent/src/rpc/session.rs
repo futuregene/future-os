@@ -106,6 +106,8 @@ pub struct ServerSession {
     /// Short-lock authoritative lifecycle and task owner. This prevents abort
     /// from making a session reusable before the matching task actually exits.
     pub runtime: Arc<crate::runtime::SessionRuntime>,
+    /// One recovery transaction per fault, including concurrent abort readers.
+    fault_recovery: parking_lot::Mutex<()>,
     /// Process-local queued-run state. It deliberately resets when the Agent
     /// process restarts; `agent_instance_id` lets clients reconcile that loss.
     pub scheduler: Arc<crate::runtime::InMemoryRunQueue>,
@@ -283,6 +285,7 @@ impl ServerSession {
             cwd: cwd.to_string(),
             is_streaming,
             runtime,
+            fault_recovery: parking_lot::Mutex::new(()),
             scheduler,
             scheduled_snapshots: HashMap::new(),
             deleting: false,
@@ -440,18 +443,16 @@ impl ServerSession {
             epoch: active.epoch,
             run_sequence: active.run_sequence,
         };
-        self.broadcaster.recover_storage()?;
-        let terminal = crate::session::SessionEntry::run_terminal(
-            &lease.run_id,
+        let _recovery = self.fault_recovery.lock();
+        self.persist_fault_outcome(
+            &lease,
             crate::session::RUN_STATE_INTERRUPTED_BY_RESTART,
-            0,
-            0,
-            Some("persistence recovered after an uncertain outcome"),
+            "persistence recovered after an uncertain outcome",
+        )?;
+        anyhow::ensure!(
+            self.runtime.recover_persistence_degraded(&lease),
+            "persistence recovery lost the active run lease"
         );
-        self.persistence.recover_with_entries(vec![terminal])?;
-        if !self.runtime.recover_persistence_degraded(&lease) {
-            anyhow::bail!("persistence recovery lost the active run lease");
-        }
         Ok(lease)
     }
 
@@ -468,49 +469,67 @@ impl ServerSession {
     }
 
     pub fn abort_run(&self, expected_run_id: Option<&str>) -> Result<()> {
+        let _recovery = self.fault_recovery.lock();
+        if self.runtime.snapshot().is_none() && !self.ephemeral {
+            if let Some(run_id) = expected_run_id.filter(|id| !id.is_empty()) {
+                if self
+                    .session_manager
+                    .run_terminal(&self.session_id, run_id)?
+                    .is_some()
+                {
+                    return Ok(());
+                }
+            }
+        }
         self.runtime.request_abort(expected_run_id)?;
         self.shell_cancel_generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        // A dead task cannot acknowledge cooperative cancellation. The session
-        // read lock held by the RPC caller fences a new prompt while we commit
-        // its terminal marker and release the exact failed lease.
-        if !self.runtime.has_owned_task() {
-            if let Some(active) = self.runtime.snapshot().filter(|active| {
-                matches!(
-                    active.phase,
-                    crate::runtime::RunPhase::CancellationStuck
-                        | crate::runtime::RunPhase::PersistenceDegraded
-                )
-            }) {
-                let lease = crate::runtime::RunLease {
-                    run_id: active.run_id,
-                    epoch: active.epoch,
-                    run_sequence: active.run_sequence,
-                };
-                if !self.ephemeral {
-                    self.broadcaster.recover_storage()?;
-                    // Never replace an already committed outcome. Recovery is
-                    // ordered after all accepted appends, including a commit
-                    // whose acknowledgement was lost before the task died.
-                    self.persistence.recover_with_entries(Vec::new())?;
-                    let session = self.session_manager.load(&self.session_id)?;
-                    if crate::session::find_run_terminal(&session.entries, &lease.run_id).is_none()
-                    {
-                        let terminal = crate::session::SessionEntry::run_terminal(
-                            &lease.run_id,
-                            crate::session::RUN_STATE_CANCELLED,
-                            0,
-                            0,
-                            Some("Terminated by user after the run task exited."),
-                        );
-                        self.persistence.recover_with_entries(vec![terminal])?;
-                    }
-                }
-                anyhow::ensure!(
-                    self.runtime.finish_cancelled_fault(&lease),
-                    "failed run task has not exited; retry cancellation"
-                );
-            }
+        if let Some(active) = self.runtime.snapshot().filter(|active| {
+            matches!(
+                active.phase,
+                crate::runtime::RunPhase::CancellationStuck
+                    | crate::runtime::RunPhase::PersistenceDegraded
+            )
+        }) {
+            let lease = crate::runtime::RunLease {
+                run_id: active.run_id,
+                epoch: active.epoch,
+                run_sequence: active.run_sequence,
+            };
+            self.persist_fault_outcome(
+                &lease,
+                crate::session::RUN_STATE_CANCELLED,
+                "Terminated by user after the run task exited.",
+            )?;
+            anyhow::ensure!(
+                self.runtime.finish_cancelled_fault(&lease),
+                "failed run task has not exited; retry cancellation"
+            );
+        }
+        Ok(())
+    }
+
+    fn persist_fault_outcome(
+        &self,
+        lease: &crate::runtime::RunLease,
+        outcome: &str,
+        reason: &str,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            !self.runtime.has_owned_task(),
+            "failed run task has not exited; retry recovery"
+        );
+        if !self.ephemeral {
+            self.broadcaster.recover_storage()?;
+            // Drain every accepted append before the atomic outcome check. A
+            // commit whose ACK was lost must keep its original terminal result.
+            self.persistence.recover_with_entries(Vec::new())?;
+            self.session_manager.settle_run_if_unfinished(
+                &self.session_id,
+                &lease.run_id,
+                outcome,
+                reason,
+            )?;
         }
         Ok(())
     }
@@ -4621,6 +4640,53 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_fault_cancellation_is_durable_idempotent_and_fenced_from_new_work() {
+        let session = make_persistent_test_session("concurrent-fault");
+        let lease = session.runtime.begin(Some("lost-run"), None).unwrap();
+        let saved = crate::session::Session::snapshot(
+            session.session_id.clone(),
+            session.cwd.clone(),
+            "mock".into(),
+            String::new(),
+            String::new(),
+            vec![
+                crate::session::SessionEntry::session_info(
+                    serde_json::json!({"cwd":session.cwd,"model":"mock"}),
+                    "mock".into(),
+                    String::new(),
+                ),
+                crate::session::SessionEntry::run_started("lost-run", lease.epoch),
+            ],
+        );
+        session.session_manager.save(&saved).unwrap();
+        assert!(session
+            .runtime
+            .mark_persistence_degraded(&lease, "injected failure"));
+        let gate = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    gate.wait();
+                    session.abort_run(Some("lost-run")).unwrap();
+                });
+            }
+        });
+        let saved = session.session_manager.load(&session.session_id).unwrap();
+        let terminals = saved
+            .entries
+            .iter()
+            .filter(|entry| entry.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL)
+            .count();
+        assert_eq!(terminals, 1);
+        assert!(session.runtime.snapshot().is_none());
+        let next = session.runtime.begin(Some("new-run"), None).unwrap();
+        assert!(session.abort_run(Some("lost-run")).is_err());
+        assert_eq!(session.runtime.snapshot().unwrap().run_id, next.run_id);
+        session.runtime.begin_finalizing(&next);
+        session.runtime.finish(&next);
+    }
+
+    #[test]
     fn recover_persistence_degraded_rejects_healthy_run() {
         let mut session = make_test_session("healthy");
         session
@@ -4677,9 +4743,14 @@ mod tests {
             .runtime
             .mark_persistence_degraded(&lease, "disk full"));
         let error = session.recover_persistence_degraded().unwrap_err();
+        assert!(error.to_string().contains("task has not exited"), "{error}");
         assert!(
-            error.to_string().contains("lost the active run lease"),
-            "{error}"
+            session
+                .session_manager
+                .run_terminal("recover-occupied", "run-stuck")
+                .unwrap()
+                .is_none(),
+            "a live task must never receive a fabricated terminal marker"
         );
         hold.notify_one();
         // Let the spawned task wake, run to completion, and release the slot

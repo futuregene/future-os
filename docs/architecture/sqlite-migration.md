@@ -171,3 +171,7 @@ safe at every rename boundary. The fence is removed only after the operation has
 finished; a successful forward restore also verifies the final file set. Recovery
 work directories are retained, never automatically reclaimed by orphan cleanup.
 The tool never stops an existing process or removes instance lock files.
+
+## Fault termination
+
+Abort and persistence retry share a serialized fault-outcome boundary. An immediate SQLite transaction preserves existing terminal results and settles only an unfinished exact run. A live task cannot receive a fabricated terminal or release its lease. Repeated cancellation of a settled run is idempotent while stale requests cannot affect newer work. `abort_retry` propagates recovery failures.

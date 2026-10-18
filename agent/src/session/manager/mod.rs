@@ -236,6 +236,53 @@ impl Manager {
         Ok(super::find_unterminated_run(&entries))
     }
 
+    pub(crate) fn run_terminal(&self, id: &str, run_id: &str) -> Result<Option<serde_json::Value>> {
+        let (id, run_id) = (id.to_owned(), run_id.to_owned());
+        self.storage()?.db.call(move |db| {
+            let entries = super::sqlite_store::read_run_markers(db, &id)?
+                .into_iter()
+                .map(serde_json::from_value)
+                .collect::<std::result::Result<Vec<SessionEntry>, _>>()?;
+            Ok(super::find_run_terminal(&entries, &run_id))
+        })
+    }
+
+    /// Atomic recovery outcome: an acknowledged or ambiguously committed
+    /// terminal wins over every retry. Only the exact unfinished run is closed.
+    pub(crate) fn settle_run_if_unfinished(
+        &self,
+        id: &str,
+        run_id: &str,
+        state: &str,
+        reason: &str,
+    ) -> Result<serde_json::Value> {
+        let (id, run_id, state, reason) = (
+            id.to_owned(),
+            run_id.to_owned(),
+            state.to_owned(),
+            reason.to_owned(),
+        );
+        let session_id = id.clone();
+        let result = self.storage()?.db.call(move |db| {
+            let tx = crate::session::database::begin_write_transaction(db)?;
+            let entries = super::sqlite_store::read_run_markers(&tx, &id)?
+                .into_iter()
+                .map(serde_json::from_value)
+                .collect::<std::result::Result<Vec<SessionEntry>, _>>()?;
+            if let Some(terminal) = super::find_run_terminal(&entries, &run_id) {
+                return Ok(terminal);
+            }
+            let terminal = SessionEntry::run_terminal(&run_id, &state, 0, 0, Some(&reason));
+            let payload = terminal.content.clone().unwrap_or_default();
+            super::sqlite_store::insert_transcript_entries(&tx, &id, Self::encoded(&[terminal])?)?;
+            tx.execute("UPDATE sessions SET revision=revision+1 WHERE id=?1", [&id])?;
+            tx.commit()?;
+            Ok(payload)
+        })?;
+        self.invalidate_display_projection(&session_id);
+        Ok(result)
+    }
+
     pub fn save(&self, session: &Session) -> Result<()> {
         #[cfg(test)]
         if self
