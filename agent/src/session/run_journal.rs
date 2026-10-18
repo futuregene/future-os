@@ -68,17 +68,19 @@ pub fn find_unterminated_run(entries: &[SessionEntry]) -> Option<String> {
     open
 }
 
-/// Continue run ordering without persisting queued work. New markers carry an
+/// Continue run ordering including recovered queued inputs. New markers carry an
 /// explicit sequence; legacy markers contribute their count so an upgraded
 /// session never reuses a sequence already visible in its history.
 pub fn next_run_sequence(entries: &[SessionEntry]) -> u64 {
     let mut started_count = 0_u64;
     let mut max_sequence = 0_u64;
     for entry in entries {
-        if entry.entry_type != ENTRY_TYPE_RUN_STARTED {
+        if !is_run_marker(&entry.entry_type) {
             continue;
         }
-        started_count = started_count.saturating_add(1);
+        if entry.entry_type == ENTRY_TYPE_RUN_STARTED {
+            started_count = started_count.saturating_add(1);
+        }
         if let Some(sequence) = entry
             .content
             .as_ref()

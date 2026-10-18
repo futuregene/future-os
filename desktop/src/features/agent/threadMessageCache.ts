@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@future-os/thread-projection";
+import type { HistoryStatus } from "../../integrations/storage/threads";
 
 /** Keep recent conversation snapshots warm across keyed AgentThread remounts. */
 const MAX_CACHED_THREADS = 12;
@@ -6,7 +7,7 @@ const MAX_CACHED_THREADS = 12;
 interface ThreadMessageSnapshot {
   agentSessionId: string | null;
   messages: AgentMessage[];
-  cursor?: { before: number; hasMore: boolean };
+  cursor?: { before: number; hasMore: boolean; history?: HistoryStatus };
 }
 
 const snapshots = new Map<string, ThreadMessageSnapshot>();
@@ -38,7 +39,7 @@ export function setThreadMessageSnapshot(
   threadId: string,
   agentSessionId: string | null,
   messages: AgentMessage[],
-  cursor?: { before: number; hasMore: boolean },
+  cursor?: { before: number; hasMore: boolean; history?: HistoryStatus },
 ) {
   snapshots.delete(threadId);
   snapshots.set(threadId, { agentSessionId, messages, cursor });

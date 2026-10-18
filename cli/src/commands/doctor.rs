@@ -719,22 +719,50 @@ async fn check_sessions() -> CheckResult {
         lines.push("No session directory — no sessions created yet".to_string());
     }
 
-    // Agent connectivity — failures ignored.
+    // Ask the storage owner. Legacy JSONL file counts do not prove that a
+    // current database is readable, and transport failures are not healthy.
     let client = RunClient::new(&grpc_addr());
-    if let Ok(data) = client.list_sessions().await {
-        let n = data
-            .get("sessions")
-            .and_then(Value::as_array)
-            .map(|a| a.len())
-            .unwrap_or(0);
-        if n > 0 {
-            lines.push(format!("{n} session(s) tracked by agent"));
+    let status = match client.storage_health().await {
+        Ok(data) => {
+            lines.push(format!(
+                "{} session(s), database={}, schema={}",
+                data["sessions"], data["databaseId"], data["schemaVersion"]
+            ));
+            let mut issue = false;
+            for field in [
+                "failedImports",
+                "unrecoverableQueuedInputs",
+                "catalogueConflicts",
+            ] {
+                let count = data[field].as_u64().unwrap_or(0);
+                if count > 0 {
+                    issue = true;
+                    lines.push(format!(
+                        "{field}: {count}; original data retained for recovery"
+                    ));
+                }
+            }
+            let pending = data["pendingHistoryIndexes"].as_u64().unwrap_or(0);
+            if pending > 0 {
+                lines.push(format!(
+                    "{pending} history index(es) will rebuild when opened"
+                ));
+            }
+            if issue {
+                Status::Issue
+            } else {
+                Status::Ok
+            }
         }
-    }
+        Err(error) => {
+            lines.push(format!("Database health was not verified: {error}"));
+            Status::Warn
+        }
+    };
 
     CheckResult {
         name: "Sessions".to_string(),
-        status: Status::Ok,
+        status,
         lines,
     }
 }
@@ -1198,6 +1226,17 @@ mod tests {
             "list_sessions".into(),
             "{\"sessions\":[{\"id\":\"s1\"},{\"id\":\"s2\"}]}".into(),
         );
+        agent.responses.insert(
+            "get_storage_health".into(),
+            serde_json::json!({
+                "databaseId":"mock-db","restoreGeneration":"mock-restore",
+                "schemaVersion":future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION,
+                "sessions":2,"deletedSessions":0,"failedImports":0,
+                "unrecoverableQueuedInputs":0,"pendingQueuedInputs":0,
+                "pendingHistoryIndexes":0,"catalogueConflicts":0,
+            })
+            .to_string(),
+        );
         let addr = crate::test_server::spawn_mock(agent).await;
         // All five binaries resolvable on PATH (fake versions).
         let bin_dir = dir.path().join("bin");
@@ -1319,7 +1358,7 @@ mod tests {
         // Sessions: 2 jsonl + agent-tracked count.
         assert!(stdout.contains("2 JSONL file(s)"), "stdout: {stdout}");
         assert!(
-            stdout.contains("2 session(s) tracked by agent"),
+            stdout.contains("2 session(s), database="),
             "stdout: {stdout}"
         );
         // Skills: one up-to-date with version, one needs update.

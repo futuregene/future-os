@@ -91,10 +91,10 @@ impl ControlPlane {
     /// by `delete_session` only after the session is gone from memory and disk —
     /// there is nothing to reconcile against afterwards, so the payload carries
     /// just the identity.
-    pub fn publish_session_deleted(&self, session_id: &str) {
+    pub fn publish_session_deleted(&self, session_id: &str, database_id: Option<&str>) {
         self.broadcaster.broadcast(SseEvent::new(
             "session_deleted",
-            serde_json::json!({"sessionId": session_id}),
+            serde_json::json!({"sessionId": session_id,"databaseId":database_id}),
         ));
     }
 }

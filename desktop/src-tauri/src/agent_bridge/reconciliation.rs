@@ -54,6 +54,9 @@ pub(super) async fn check_and_reanimate_run(
     thread_id: &str,
 ) -> Result<(), String> {
     let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
+    super::verify_session_database(&mut client, session_id)
+        .await
+        .map_err(|error| format!("database source: {error}"))?;
     let state = client
         .execute_command(get_run_state_command(
             session_id.to_string(),
@@ -162,6 +165,9 @@ pub(super) async fn reconcile_run_gone(
     let mut client = connect_agent()
         .await
         .map_err(|e| format!("reconcile connect: {e}"))?;
+    super::verify_session_database(&mut client, session_id)
+        .await
+        .map_err(|error| format!("database source: {error}"))?;
     let state = client
         .execute_command(get_run_state_command(
             session_id.to_string(),
@@ -405,6 +411,9 @@ pub(super) async fn reconcile_active_run_once(
         );
     }
     let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
+    super::verify_session_database(&mut client, &run.session_id)
+        .await
+        .map_err(|error| format!("database source: {error}"))?;
     // Query by the canonical id (not the local row id): remote-attached runs
     // carry a synthetic local id the Agent never saw, while its durable
     // journal marker is keyed by the canonical id it adopted. For GUI runs
@@ -743,6 +752,9 @@ async fn reconcile_settled_run_once(
     canonical_run_id: &str,
 ) -> Result<SettledRunOutcome, String> {
     let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
+    super::verify_session_database(&mut client, &row.session_id)
+        .await
+        .map_err(|error| format!("database source: {error}"))?;
     let state = client
         .execute_command(get_run_state_command(
             row.session_id.clone(),
@@ -836,6 +848,11 @@ pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "Thread has no agent session".to_string())?;
 
+    let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
+    super::verify_session_database(&mut client, session_id)
+        .await
+        .map_err(|error| format!("database source: {error}"))?;
+
     // Don't create a duplicate run if one is already active or waiting on an
     // approval decision — the observer is already projecting it.
     fn is_active(status: &str) -> bool {
@@ -846,7 +863,6 @@ pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
         observer::ensure_observer_for_thread(session_id, thread_id)?;
         return Ok(active.id.clone());
     }
-    let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
     let state = client
         .execute_command(get_state_command(session_id.to_string()))
         .await
@@ -897,6 +913,52 @@ mod settled_run_tests {
     };
     use super::*;
     use crate::store;
+
+    #[tokio::test]
+    async fn foreign_database_cannot_reanimate_settle_or_terminate_local_runs() {
+        let home = TestHome::new("reconciliation-source-fence");
+        let workspace = seed_workspace(home.path(), "source");
+        let thread = seed_thread(&workspace.id, Some("session"));
+        store::record_thread_source(&thread.id, "session", "original-database", "generation")
+            .unwrap();
+        let run = seed_run(&thread.id);
+        let mock = mock_agent();
+        // The default mock reports a different database. No get_state or abort
+        // may follow that mismatch, even when the run id exists in both copies.
+        assert!(check_and_reanimate_run("session", &run.id, &thread.id)
+            .await
+            .is_err());
+        assert!(
+            reconcile_run_gone(&run.id, &run.id, "session", &thread.id, "lost stream")
+                .await
+                .is_err()
+        );
+        let active = store::ActiveRun {
+            run_id: run.id.clone(),
+            thread_id: thread.id.clone(),
+            session_id: "session".into(),
+            created_at: run.created_at,
+        };
+        assert!(
+            reconcile_active_run_once(&active, &run.id, WATCHDOG_ORPHAN_SECS)
+                .await
+                .is_err()
+        );
+        assert!(attach_remote_stream(&thread.id).await.is_err());
+        assert_eq!(store::get_run(&run.id).unwrap().unwrap().status, "running");
+        store::fail_run_if_active(&run.id, "lost stream", "stream_interrupted").unwrap();
+        let settled = store::UnverifiedRun {
+            run_id: run.id.clone(),
+            thread_id: thread.id.clone(),
+            session_id: "session".into(),
+            started_at: run.started_at,
+        };
+        assert!(reconcile_settled_run_once(&settled, &run.id).await.is_err());
+        assert!(attach_remote_stream(&thread.id).await.is_err());
+        assert_eq!(store::get_run(&run.id).unwrap().unwrap().status, "failed");
+        assert!(mock.requests_of("get_state").is_empty());
+        assert!(mock.requests_of("abort").is_empty());
+    }
 
     /// Seed a thread with an Agent session and one run the desktop settled in an
     /// unverified shape — the only rows the repair pass considers.

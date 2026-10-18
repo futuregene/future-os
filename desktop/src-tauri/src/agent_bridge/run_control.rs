@@ -143,6 +143,7 @@ pub(super) async fn abort_agent_thread(
         store::get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
     let session_id = thread.agent_session_id.unwrap_or(thread.id);
     let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, &session_id).await?;
     let canonical_run_id = match local_run_id.filter(|run_id| !run_id.is_empty()) {
         Some(local_run_id) => Some(
             AGENT_REPLICAS
@@ -169,7 +170,7 @@ pub(super) async fn abort_agent_thread(
 /// Abort an in-flight run for an already-resolved agent session id. Unlike
 /// [`abort_agent_thread`] it takes the session id directly (the quit guard reads
 /// it from `store::active_run_sessions`, so there is no thread to reload) and
-/// does not touch the store — on force-quit we only need the agent to stop
+/// accepts orphaned rows while checking any recorded source — on force-quit we need the agent to stop
 /// streaming before the process exits; startup convergence settles the run rows
 /// on the next launch. Best-effort at the call site: aborting a session that
 /// already finished is a harmless no-op on the agent side.
@@ -181,6 +182,7 @@ pub(super) async fn abort_agent_thread(
 /// the session stopped — deleting the conversation — go on with its work.
 pub(crate) async fn abort_session(session_id: &str) -> Result<(), crate::AppError> {
     let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, session_id).await?;
     let canonical_run_id = match probe_session(&mut client, session_id).await? {
         SessionProbe::Unknown => return Ok(()),
         SessionProbe::ActiveRun(run_id) => run_id,
@@ -389,6 +391,7 @@ pub async fn compact_agent_session(
     let mut client = connect_agent()
         .await
         .map_err(|error| format!("Future Agent unreachable: {error}"))?;
+    super::verify_session_database(&mut client, &session_id).await?;
     let response = client
         .execute_command(compact_command(session_id, String::new()))
         .await
@@ -415,33 +418,43 @@ pub async fn compact_agent_session(
 /// it, and no later poll would answer differently — so that definitive answer
 /// counts as confirmation rather than a timeout.
 pub(crate) async fn wait_for_agent_idle(session_id: &str) -> bool {
-    let Ok(mut client) = connect_agent().await else {
-        return false;
-    };
-    // ~5s budget at 200ms intervals.
-    for _ in 0..25 {
-        match client
-            .execute_command(get_state_command(session_id.to_string()))
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let Ok(mut client) = connect_agent().await else {
+            return false;
+        };
+        if super::verify_session_database(&mut client, session_id)
             .await
+            .is_err()
         {
-            Ok(response) => {
-                let response = response.into_inner();
-                if is_session_not_found(&response) {
-                    return true;
-                }
-                if let Some(state) = future_rpc::decode::decode_get_state(&response) {
-                    if !state.is_streaming {
+            return false;
+        }
+        // The outer timeout bounds connection, source verification and every poll.
+        for _ in 0..25 {
+            match client
+                .execute_command(get_state_command(session_id.to_string()))
+                .await
+            {
+                Ok(response) => {
+                    let response = response.into_inner();
+                    if is_session_not_found(&response) {
                         return true;
                     }
-                } else {
-                    return false;
+                    if let Some(state) = future_rpc::decode::decode_get_state(&response) {
+                        if !state.is_streaming {
+                            return true;
+                        }
+                    } else {
+                        return false;
+                    }
                 }
+                Err(_) => return false,
             }
-            Err(_) => return false,
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
-    false
+        false
+    })
+    .await
+    .unwrap_or(false)
 }
 
 fn is_agent_unavailable_error(error: &crate::AppError) -> bool {
@@ -456,6 +469,26 @@ mod tests {
         seed_workspace, Reply, TestHome,
     };
     use super::*;
+
+    #[tokio::test]
+    async fn an_unanswered_state_rpc_cannot_exceed_the_idle_confirmation_budget() {
+        let _home = TestHome::new("rc-stalled-idle");
+        let mock = mock_agent();
+        let (entered, observed) = tokio::sync::oneshot::channel();
+        let (answer, data) = tokio::sync::oneshot::channel();
+        mock.push("get_state", Reply::Deferred { entered, data });
+        let waiting = tokio::spawn(async { wait_for_agent_idle("session").await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), observed)
+            .await
+            .unwrap()
+            .unwrap();
+        let idle = tokio::time::timeout(std::time::Duration::from_secs(10), waiting)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(answer);
+        assert!(!idle, "an unanswered RPC cannot prove the session stopped");
+    }
 
     #[tokio::test]
     async fn stale_local_rows_can_stop_without_cancelling_a_newer_run_and_queued_rows_are_cancelled_exactly(

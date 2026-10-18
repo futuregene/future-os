@@ -9,7 +9,7 @@ use std::{
 use tonic::transport::Channel;
 
 pub const AGENT_PROTOCOL_VERSION: u32 = 2;
-pub const AGENT_STORAGE_SCHEMA_VERSION: u32 = 6;
+pub const AGENT_STORAGE_SCHEMA_VERSION: u32 = 7;
 /// Coordinated Agent release expected by RPC consumers. This differs from the
 /// CLI/TUI display version in bare development builds; suffixes are ignored.
 pub const EXPECTED_AGENT_VERSION: &str = env!("EXPECTED_AGENT_VERSION");
@@ -371,6 +371,8 @@ impl LocalStartPermit {
 }
 
 pub fn check_instance_lock(home: &Path) -> Result<(), ConnectionError> {
+    crate::home::ensure_restore_complete(home)
+        .map_err(|error| ConnectionError::StartupBlocked(error.to_string()))?;
     let path = home.join("agent").join("agent-instance.lock");
     let file = match std::fs::OpenOptions::new()
         .read(true)

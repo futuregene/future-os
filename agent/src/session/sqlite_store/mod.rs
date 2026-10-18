@@ -96,6 +96,8 @@ impl SqliteStore {
         let result = self.db.call(move |db| {
             let tx = crate::session::database::begin_write_transaction(db)?;
             for session in sessions {
+                tx.execute("INSERT INTO session_tombstones(session_id,deleted_at_ms) VALUES (?1,?2) ON CONFLICT DO NOTHING",rusqlite::params![&session,chrono::Utc::now().timestamp_millis()])?;
+                tx.execute("DELETE FROM queued_run_receipts WHERE session_id=?1",[&session])?;
                 tx.execute("DELETE FROM sessions WHERE id=?1", [&session])?;
                 tx.execute(
                     "UPDATE legacy_imports SET status='deleted' WHERE session_id=?1",

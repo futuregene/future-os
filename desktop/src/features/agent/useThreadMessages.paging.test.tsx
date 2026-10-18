@@ -58,6 +58,40 @@ beforeEach(() => {
 });
 
 describe("on-demand history", () => {
+  it("retains readonly recovery status and fences older-page requests to that source", async () => {
+    const recovered = { source: "legacy", availability: "missing", canContinue: false, sourceKey: "legacy:database:generation:thread" };
+    page.mockResolvedValueOnce({ ...history(["u2"], 10), history: recovered });
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(<Harness />));
+    expect(current.historyStatus).toEqual(recovered);
+    page.mockResolvedValueOnce({ ...history(["u1"], 0, false), history: recovered });
+    await act(async () => current.loadOlderHistory());
+    expect(page).toHaveBeenLastCalledWith("synthetic", 10, 10, recovered.sourceKey);
+    expect(current.messages.map(message => message.content)).toEqual(["u1", "u2"]);
+    act(() => root.unmount());
+  });
+
+  it("replaces cached history when a restore changes the source identity", async () => {
+    page.mockResolvedValueOnce({ ...history(["old"], 10), history: {
+      source: "agent",
+      availability: "ready",
+      canContinue: true,
+      sourceKey: "agent:db:old-generation:s",
+    } });
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(<Harness />));
+    page.mockResolvedValueOnce({ ...history(["restored"], 0, false), history: {
+      source: "agent",
+      availability: "ready",
+      canContinue: true,
+      sourceKey: "agent:db:new-generation:s",
+    } });
+    await act(async () => current.reloadThreadHistory("synthetic"));
+    expect(current.messages.map(message => message.content)).toEqual(["restored"]);
+    expect(current.hasOlderHistory).toBe(false);
+    act(() => root.unmount());
+  });
+
   it("fills the entire history cache for search and reuses it on the next query", async () => {
     page.mockResolvedValueOnce(history(["u3"], 20));
     const root = createRoot(document.createElement("div"));

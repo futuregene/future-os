@@ -141,6 +141,7 @@ export function AgentThread({
     loadOlderHistory,
     loadAllHistoryForSearch,
     historyError,
+    historyStatus,
     sessionChanged,
     retryHistory,
     messages,
@@ -411,6 +412,11 @@ export function AgentThread({
             {t("thread.sessionChanged")}
           </div>
         )}
+        {historyStatus?.canContinue === false && (
+          <div role="status" className="text-ink-soft px-4 py-2 text-sm">
+            {t(historyStatus.source === "legacy" ? "thread.historyRecoveryReadonly" : "thread.historyReadonly")}
+          </div>
+        )}
         {historyError && (
           <div role="alert" className="text-danger px-4 py-2 text-sm">
             {historyError}
@@ -531,7 +537,7 @@ export function AgentThread({
             </div>
             <Composer
               className="pointer-events-auto mx-auto w-full max-w-3xl"
-              disabled={!thread || loadingThread || loadingStore}
+              disabled={!thread || loadingThread || loadingStore || historyStatus?.canContinue === false}
               modelId={modelId}
               modelOptions={modelOptions}
               modelsEmptyReason={

@@ -10,6 +10,7 @@ use crate::utils::default_session_dir;
 #[cfg(test)]
 use anyhow::anyhow;
 use anyhow::Result;
+use rusqlite::params;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -152,6 +153,7 @@ impl Manager {
             );
             let store = SqliteStore::open_cancellable(&self.database_path(), cancellation.clone())?;
             store.import_legacy_cancellable(&self.dir, None, cancellation)?;
+            store.recover_queued_receipts(None, false)?;
             cancellation.check()?;
             let _ = self.store.set(store);
             tracing::info!("session storage: ready");
@@ -195,6 +197,18 @@ impl Manager {
         started: SessionEntry,
     ) -> Result<()> {
         let id = id.to_owned();
+        let run_id = started
+            .content
+            .as_ref()
+            .and_then(|content| content["run_id"].as_str())
+            .unwrap_or_default()
+            .to_owned();
+        let merged = user
+            .meta
+            .as_ref()
+            .and_then(|meta| meta["coalesced_run_ids"].as_array())
+            .cloned()
+            .unwrap_or_default();
         let values = Self::encoded(&[user, started])?;
         self.storage()?.db.call(move |db| {
             // Reads the existing markers before it writes: take the write lock
@@ -215,6 +229,10 @@ impl Manager {
                 )?;
             }
             super::sqlite_store::insert_transcript_entries(&tx, &id, values)?;
+            tx.execute("UPDATE queued_run_receipts SET status='started',payload_json=NULL,user_entry_json=NULL WHERE session_id=?1 AND run_id=?2",params![id,run_id])?;
+            for merged_run in merged.iter().filter_map(serde_json::Value::as_str) {
+                tx.execute("UPDATE queued_run_receipts SET status='merged',payload_json=NULL,user_entry_json=NULL WHERE session_id=?1 AND run_id=?2",params![id,merged_run])?;
+            }
             tx.execute("UPDATE sessions SET revision=revision+1 WHERE id=?1", [&id])?;
             tx.commit()?;
             Ok(())
@@ -234,6 +252,53 @@ impl Manager {
             .map(serde_json::from_value)
             .collect::<std::result::Result<_, _>>()?;
         Ok(super::find_unterminated_run(&entries))
+    }
+
+    pub(crate) fn run_terminal(&self, id: &str, run_id: &str) -> Result<Option<serde_json::Value>> {
+        let (id, run_id) = (id.to_owned(), run_id.to_owned());
+        self.storage()?.db.call(move |db| {
+            let entries = super::sqlite_store::read_run_markers(db, &id)?
+                .into_iter()
+                .map(serde_json::from_value)
+                .collect::<std::result::Result<Vec<SessionEntry>, _>>()?;
+            Ok(super::find_run_terminal(&entries, &run_id))
+        })
+    }
+
+    /// Atomic recovery outcome: an acknowledged or ambiguously committed
+    /// terminal wins over every retry. Only the exact unfinished run is closed.
+    pub(crate) fn settle_run_if_unfinished(
+        &self,
+        id: &str,
+        run_id: &str,
+        state: &str,
+        reason: &str,
+    ) -> Result<serde_json::Value> {
+        let (id, run_id, state, reason) = (
+            id.to_owned(),
+            run_id.to_owned(),
+            state.to_owned(),
+            reason.to_owned(),
+        );
+        let session_id = id.clone();
+        let result = self.storage()?.db.call(move |db| {
+            let tx = crate::session::database::begin_write_transaction(db)?;
+            let entries = super::sqlite_store::read_run_markers(&tx, &id)?
+                .into_iter()
+                .map(serde_json::from_value)
+                .collect::<std::result::Result<Vec<SessionEntry>, _>>()?;
+            if let Some(terminal) = super::find_run_terminal(&entries, &run_id) {
+                return Ok(terminal);
+            }
+            let terminal = SessionEntry::run_terminal(&run_id, &state, 0, 0, Some(&reason));
+            let payload = terminal.content.clone().unwrap_or_default();
+            super::sqlite_store::insert_transcript_entries(&tx, &id, Self::encoded(&[terminal])?)?;
+            tx.execute("UPDATE sessions SET revision=revision+1 WHERE id=?1", [&id])?;
+            tx.commit()?;
+            Ok(payload)
+        })?;
+        self.invalidate_display_projection(&session_id);
+        Ok(result)
     }
 
     pub fn save(&self, session: &Session) -> Result<()> {

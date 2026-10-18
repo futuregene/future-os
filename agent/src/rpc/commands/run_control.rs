@@ -310,7 +310,9 @@ pub(crate) fn handle_abort_retry(
 ) -> String {
     let session_id = {
         let sess = session.read();
-        sess.abort();
+        if let Err(error) = sess.abort_run(None) {
+            return RpcResponse::build_fail(id, "abort_retry", &error.to_string());
+        }
         sess.session_id.clone()
     };
     state

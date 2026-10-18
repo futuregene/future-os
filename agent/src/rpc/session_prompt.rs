@@ -205,12 +205,42 @@ impl ServerSession {
         if self.deleting {
             return Err(crate::runtime::RunQueueError::Deleting.into());
         }
+        let receipt_fingerprint = crate::session::compaction_ops::canonical_hash(
+            &serde_json::json!({
+                "message":prompt.message,"modelContext":prompt.model_context,"images":images,"attachments":attachments
+            }),
+        )?;
+        let persistence_unavailable = |error: anyhow::Error| {
+            crate::runtime::RunQueueError::PersistenceUnavailable(error.to_string())
+        };
+        if !self.ephemeral && !self.scheduler.knows_request(client_request_id) {
+            if let Some((run, sequence, fingerprint)) = self
+                .session_manager
+                .queued_receipt(&self.session_id, client_request_id)
+                .map_err(persistence_unavailable)?
+            {
+                anyhow::ensure!(
+                    fingerprint == receipt_fingerprint
+                        && requested_run_id.is_none_or(|id| id.is_empty() || id == run),
+                    "client request id already belongs to another accepted input"
+                );
+                return Ok(crate::runtime::RunAck {
+                    run_id: run,
+                    run_epoch: 0,
+                    accepted_state: crate::runtime::RunAcceptedState::Existing,
+                    run_sequence: Some(u64::try_from(sequence)?),
+                    queue_position: None,
+                });
+            }
+        }
         if !self.scheduler.knows_request(client_request_id) {
             if let Some(run_id) = requested_run_id.filter(|run_id| !run_id.is_empty()) {
                 let journal_exists = self
                     .session_manager
-                    .storage()?
-                    .has_events(&self.session_id, run_id)?;
+                    .storage()
+                    .map_err(persistence_unavailable)?
+                    .has_events(&self.session_id, run_id)
+                    .map_err(persistence_unavailable)?;
                 let transcript_exists = self
                     .session_manager
                     .load(&self.session_id)
@@ -225,7 +255,11 @@ impl ServerSession {
                                 == Some(run_id)
                         })
                     });
-                if journal_exists || transcript_exists {
+                let admitted = self
+                    .session_manager
+                    .has_queued_receipt_run(&self.session_id, run_id)
+                    .map_err(persistence_unavailable)?;
+                if journal_exists || transcript_exists || admitted {
                     return Err(
                         crate::runtime::RunQueueError::DuplicateRunId(run_id.to_string()).into(),
                     );
@@ -272,6 +306,10 @@ impl ServerSession {
             attachments: attachments.to_vec(),
             settings: settings.clone(),
         })?;
+        let durable_payload = payload.clone();
+        let queue_only = self.runtime.snapshot().is_some()
+            || self.runtime.has_owned_task()
+            || self.scheduler.active().is_some();
         let (ack, superseded, superseded_active) = if busy_policy
             == crate::runtime::BusyPolicy::SupersedeSession
         {
@@ -290,7 +328,51 @@ impl ServerSession {
         if ack.accepted_state == crate::runtime::RunAcceptedState::Existing {
             return Ok(ack);
         }
+        if queue_only && !self.ephemeral {
+            // Store the accepted input without resolving live attachment paths.
+            let mut message = build_user_message_with_model_context(
+                prompt.message,
+                prompt.model_context,
+                images,
+                attachments,
+                false,
+                &|_| None,
+            );
+            let metadata = message.metadata.get_or_insert_with(serde_json::Map::new);
+            metadata.insert("run_id".into(), ack.run_id.clone().into());
+            metadata.insert("client_request_id".into(), client_request_id.into());
+            let user = crate::session::agent_message_to_entry(&message);
+            if let Err(error) = self.session_manager.record_queued_receipt(
+                &self.session_id,
+                client_request_id,
+                &ack,
+                &receipt_fingerprint,
+                &durable_payload,
+                &user,
+            ) {
+                let _ = self.scheduler.cancel_queued(
+                    &ack.run_id,
+                    crate::runtime::QueuedCancellationReason::Cancelled,
+                );
+                return Err(persistence_unavailable(error).into());
+            }
+        }
         for request in superseded {
+            if !self.ephemeral {
+                if let Err(error) = self
+                    .session_manager
+                    .cancel_queued_receipt(&self.session_id, &request.run_id)
+                {
+                    let _ = self.scheduler.cancel_queued(
+                        &ack.run_id,
+                        crate::runtime::QueuedCancellationReason::Cancelled,
+                    );
+                    let _ = self
+                        .session_manager
+                        .cancel_queued_receipt(&self.session_id, &ack.run_id);
+                    return Err(persistence_unavailable(error).into());
+                }
+            }
             self.scheduled_snapshots.remove(&request.run_id);
         }
         self.scheduled_snapshots.insert(
@@ -360,68 +442,82 @@ impl ServerSession {
         // while the EXECUTION configuration (model, thinking level, cwd,
         // permissions, sandbox) comes from the LAST folded request: the user's
         // latest instruction decides how the combined turn runs.
-        // Fold BEFORE the run is activated so `prompt_internal` builds the user
-        // message once, from the merged payload (the fold is not reversible at
-        // that point). If activation then fails, the error arm below cancels the
-        // front request, and the folded requests are gone with it: their
-        // content was admitted, never answered, and their clients hold `merged`
-        // receipts. The window is narrow (persistence is checked above, and a
-        // scheduled run needs no shared-loop lock) and the failure mode is the
-        // pre-existing one for the front request itself — an inaccessible
-        // workspace or a lost lease race drops the whole turn, folded or not.
+        // Fold before activation so the merged message is built once. If
+        // activation fails, close every unstarted receipt together and retain
+        // the original inputs in history without waiting for a process restart.
         let folded = self.scheduler.drain_coalescing_after_first();
-        for trailing in &folded {
-            let trailing_payload: ScheduledPromptPayload =
-                serde_json::from_value(trailing.payload.clone())?;
-            if !payload.message.is_empty() && !trailing_payload.message.is_empty() {
-                payload.message.push_str("\n\n");
-            }
-            payload.message.push_str(&trailing_payload.message);
-            if !payload.model_context.is_empty() && !trailing_payload.model_context.is_empty() {
-                payload.model_context.push_str("\n\n");
-            }
-            payload
-                .model_context
-                .push_str(&trailing_payload.model_context);
-            payload.images.extend(trailing_payload.images);
-            payload.attachments.extend(trailing_payload.attachments);
-        }
-        // The front request keeps the run identity it was acknowledged with
-        // (run id, sequence, client request id) — only the effective settings
-        // move to the last folded request.
-        let coalesced_run_ids: Vec<String> = folded
-            .iter()
-            .map(|trailing| trailing.run_id.clone())
+        let affected: Vec<String> = std::iter::once(request.run_id.clone())
+            .chain(folded.iter().map(|run| run.run_id.clone()))
             .collect();
-        let mut snapshot = self.scheduled_snapshots.remove(&request.run_id);
-        for trailing in &folded {
-            if let Some(folded_snapshot) = self.scheduled_snapshots.remove(&trailing.run_id) {
-                snapshot = Some(folded_snapshot);
+        let activation = (|| {
+            for trailing in &folded {
+                let trailing_payload: ScheduledPromptPayload =
+                    serde_json::from_value(trailing.payload.clone())?;
+                if !payload.message.is_empty() && !trailing_payload.message.is_empty() {
+                    payload.message.push_str("\n\n");
+                }
+                payload.message.push_str(&trailing_payload.message);
+                if !payload.model_context.is_empty() && !trailing_payload.model_context.is_empty() {
+                    payload.model_context.push_str("\n\n");
+                }
+                payload
+                    .model_context
+                    .push_str(&trailing_payload.model_context);
+                payload.images.extend(trailing_payload.images);
+                payload.attachments.extend(trailing_payload.attachments);
             }
-        }
-        let snapshot =
-            snapshot.ok_or_else(|| anyhow::anyhow!("accepted run snapshot is unavailable"))?;
-        // Keep the payload's own copy of the effective settings consistent, so a
-        // later reader sees the configuration this run actually uses.
-        payload.settings = snapshot.settings.clone();
-        debug_assert_eq!(snapshot.settings.model, payload.settings.model);
-        #[cfg(test)]
-        {
-            let mut slots = SCHEDULED_DEQUEUE_HOOK.lock();
-            if let Some(hook) = slots.remove(&request.run_id) {
-                hook(self);
+            // The front request keeps the run identity it was acknowledged with
+            // (run id, sequence, client request id) — only the effective settings
+            // move to the last folded request.
+            let coalesced_run_ids: Vec<String> = folded
+                .iter()
+                .map(|trailing| trailing.run_id.clone())
+                .collect();
+            let mut snapshot = self.scheduled_snapshots.remove(&request.run_id);
+            for trailing in &folded {
+                if let Some(folded_snapshot) = self.scheduled_snapshots.remove(&trailing.run_id) {
+                    snapshot = Some(folded_snapshot);
+                }
             }
-        }
-        let lease = self.prompt_internal(
-            PromptText::new(&payload.message, &payload.model_context),
-            &payload.images,
-            &payload.attachments,
-            Some(&request.run_id),
-            Some(&request.client_request_id),
-            Some(&request),
-            Some(snapshot),
-            &coalesced_run_ids,
-        )?;
+            let snapshot =
+                snapshot.ok_or_else(|| anyhow::anyhow!("accepted run snapshot is unavailable"))?;
+            // Keep the payload's own copy of the effective settings consistent, so a
+            // later reader sees the configuration this run actually uses.
+            payload.settings = snapshot.settings.clone();
+            debug_assert_eq!(snapshot.settings.model, payload.settings.model);
+            #[cfg(test)]
+            {
+                let mut slots = SCHEDULED_DEQUEUE_HOOK.lock();
+                if let Some(hook) = slots.remove(&request.run_id) {
+                    hook(self);
+                }
+            }
+            self.prompt_internal(
+                PromptText::new(&payload.message, &payload.model_context),
+                &payload.images,
+                &payload.attachments,
+                Some(&request.run_id),
+                Some(&request.client_request_id),
+                Some(&request),
+                Some(snapshot),
+                &coalesced_run_ids,
+            )
+        })();
+        let lease = match activation {
+            Ok(lease) => lease,
+            Err(error) => {
+                if !self.ephemeral {
+                    if let Err(storage_error) = self
+                        .session_manager
+                        .cancel_queued_receipts(&self.session_id, &affected)
+                    {
+                        tracing::error!(%storage_error,"unstarted accepted inputs retained for restart recovery");
+                    }
+                    self.flush_cancelled_receipts_when_idle();
+                }
+                return Err(error);
+            }
+        };
         Ok(crate::runtime::RunAck {
             run_id: lease.run_id,
             run_epoch: lease.epoch,

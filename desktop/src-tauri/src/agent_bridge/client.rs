@@ -270,7 +270,15 @@ impl RpcResponseExt for RpcResponse {
         } else if self.error.is_empty() {
             Err(fallback.to_string().into())
         } else {
-            Err(self.error.into())
+            let code = if is_session_not_found(&self) {
+                future_rpc::session_errors::SESSION_NOT_FOUND_CODE.into()
+            } else {
+                self.error_code
+            };
+            Err(crate::AppError::AgentCommand {
+                code,
+                message: self.error,
+            })
         }
     }
 }

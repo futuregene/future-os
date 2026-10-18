@@ -36,13 +36,15 @@ impl Manager {
     pub(crate) fn load_metadata(&self, id: &str) -> Result<Session> {
         let session_id = id.to_owned();
         let rows = self.storage()?.db.call(move |db| {
-            let mut stmt = db.prepare(
-                "SELECT payload FROM history_shapes WHERE session_id=?1 ORDER BY position",
-            )?;
-            let rows = stmt
-                .query_map([session_id], |r| r.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(rows)
+            crate::session::history::with_history_index(db, &session_id, |connection| {
+                let mut stmt = connection.prepare(
+                    "SELECT payload FROM history_shapes WHERE session_id=?1 ORDER BY position",
+                )?;
+                let rows = stmt
+                    .query_map([&session_id], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
         })?;
         let entries = rows
             .into_iter()

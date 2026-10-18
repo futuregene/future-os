@@ -39,6 +39,11 @@ pub(crate) enum Reply {
     RejectCode(&'static str, String),
     /// Transport-level failure (tonic status).
     Status(tonic::Code, &'static str),
+    /// Simulate the production instance fence after the endpoint is replaced.
+    BoundData {
+        instance: &'static str,
+        data: serde_json::Value,
+    },
     /// Signal request arrival, then wait for a test-controlled JSON response.
     Deferred {
         entered: tokio::sync::oneshot::Sender<()>,
@@ -134,6 +139,10 @@ struct MockAgent;
 /// echoes the requested run id so tests that let the pipeline generate one
 /// still get a consistent acknowledgement.
 fn default_reply_data(cmd: &RpcCommand) -> String {
+    if cmd.r#type == "get_session_presence" {
+        return serde_json::json!({"databaseId":"test-agent-database","restoreGeneration":"test-generation",
+            "sessions":cmd.session_ids.iter().map(|id|serde_json::json!({"sessionId":id,"status":"present"})).collect::<Vec<_>>()}).to_string();
+    }
     if cmd.r#type == "get_agent_readiness" {
         return serde_json::json!({"version":crate::build_info::VERSION,"agentInstanceId":"agent-test","protocolVersion":future_rpc::connection::AGENT_PROTOCOL_VERSION,"dataRootId":"0".repeat(64),"storageSchemaVersion":future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION}).to_string();
     }
@@ -161,6 +170,12 @@ impl FutureAgent for MockAgent {
         &self,
         request: tonic::Request<RpcCommand>,
     ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
+        let expected_instance = request
+            .metadata()
+            .get(future_rpc::connection::EXPECTED_INSTANCE_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
         let cmd = request.into_inner();
         let reply = {
             let mut state = STATE
@@ -216,6 +231,17 @@ impl FutureAgent for MockAgent {
                 Ok(tonic::Response::new(response))
             }
             Reply::Status(code, message) => Err(tonic::Status::new(code, message)),
+            Reply::BoundData { instance, data } => {
+                if expected_instance != instance {
+                    return Err(tonic::Status::failed_precondition("Agent instance changed"));
+                }
+                Ok(tonic::Response::new(rpc_response(
+                    &cmd,
+                    true,
+                    data.to_string(),
+                    String::new(),
+                )))
+            }
             Reply::Deferred { entered, data } => {
                 let _ = entered.send(());
                 let data = data

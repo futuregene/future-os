@@ -1208,7 +1208,10 @@ are not the same as the public history RPC's optional fields.
 | `history_shapes` | PK `(session_id,position)`; `payload` | foreign key cascades to the entry; body-free derived structures for pairing, dedup, placeholders, and run annotations |
 | `history_display` | PK `(session_id,ordinal)`; `source_position/is_user/payload` | foreign key cascades to session; `history_users(session_id,is_user,ordinal)` serves reverse-order whole-round paging. source_position nullable, meaning a synthetic placeholder; not a second body copy |
 | `legacy_imports` | PK `session_id`; `status/fingerprint/error_file/error_line/error_kind/warnings` | status limited to imported/skipped/deleted; per-session import result and anti-resurrection tombstone, no bodies |
-| `storage_meta` | PK `key`; `value` | database-level control flags, e.g. the one-time import completion state |
+| `storage_meta` | PK `key`; `value` | database identity, restore generation and database-level control flags |
+| `session_tombstones` | PK `session_id`; `deleted_at_ms` | durable deletion evidence independent of native/imported session rows |
+| `queued_run_receipts` | PK `(session_id,run_id)`; unique `(session_id,client_request_id)` | durable accepted input, request fingerprint, sequence and disposition; restart preserves interrupted input without execution |
+| `history_index_state` | PK `session_id`; `projection_version` | disposable index validity; transactional invalidation and per-session reconstruction from authoritative records |
 | `compaction_operations` | PK `(session_id,input_key)`; `input_digest/operation_id/state/result_json` | foreign key cascades to session; state limited to started/completed/failed. Makes manual and automatic compaction idempotent across restarts: a same-key success replays the recorded result instead of recomputing it; summaries themselves are not stored here |
 | `fork_operations` | PK `request_id`; `request_fingerprint/parent_session_id/child_session_id/created_at_ms` | `child_session_id` unique and cascading; `fork_operations_parent` serves parent lookup. Records a completed fork so a retried request reuses the child session rather than creating a second one |
 | `skills`, `skills_meta`, `skill_installations`, `skill_operations` | `skills` PK `name` (`version/deleted/installed_at_ms/updated_at_ms`); `skills_meta` PK `key`; `skill_installations` PK `location` (`name/scope/source/version/package_sha256/observed_at_ms`; scope `app`/`global`, source `managed`/`external`); `skill_operations` PK `name` (`kind` install/uninstall, `phase` prepared/replaced) | the Agent's installed-skill registry (`agent/src/skills/registry.rs`, included in the same schema batch so a mutator that runs before the Agent starts still leaves a file the Agent accepts). `skill_installations_name` serves name lookup; `*.json` packages under `~/.future/agent/skills` stay the file source of truth |
@@ -1359,3 +1362,25 @@ or in the background. New databases enable incremental reclamation; populated
 NONE-mode databases keep their layout and reuse freed space internally. Older
 executables reject schema 5 rather than interpreting snapshots as missing raw
 histories.
+
+`managed_directory_cleanup(kind, directory_id, first_seen_at, delete_requested_at)` records unowned managed directories and explicit deletion intent. It has no ownership FK: intent must survive owner deletion. Unknown owners are retained; only explicit deletion plus absence of live references permits physical cleanup.
+
+`app_schema_migrations(version, checksum, applied_at)` records the Desktop schema
+contract. `app_database_identity(id='main', database_id, restore_generation)`
+records persistent database lineage independently of the data-root path. The
+Desktop application_id is `0x46554150` and user_version is `1`; legacy migration
+markers remain in `schema_migrations`. The shared settings/workspace writers
+reject incompatible headers before creating or modifying tables.
+
+
+`thread_sources(thread_id, session_id, database_id, restore_generation)` is Desktop
+contract 2's source binding. It cascades with a thread; a different Agent database
+cannot replace the binding. Cursor source keys include the restore generation.
+
+
+Desktop contract 3 adds `agent_delete_sources(session_id, database_id)` with a
+cascade FK to `agent_delete_outbox`. This control state survives explicit reset
+with the outbox; thread deletion cannot erase ownership evidence needed for safe
+retry. Missing evidence leaves intent deferred rather than adopting the current
+Agent database. Cursor keys also fence the Agent instance, while durable source
+bindings retain database family and restore generation.

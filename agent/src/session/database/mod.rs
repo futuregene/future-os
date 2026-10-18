@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
-pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 6;
+pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 7;
 // Fail compilation if the storage owner and the client handshake drift.
 const _: () =
     assert!(CURRENT_SCHEMA_VERSION == future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION as i64);

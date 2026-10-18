@@ -185,14 +185,11 @@ impl Manager {
         fragment_offset: Option<i64>,
     ) -> Result<serde_json::Value> {
         let id = id.to_owned();
-        let page = self.storage()?.db.call(move |db| {
-            let tx = db.transaction()?;
-            let skipped: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')", [&id], |r| r.get(0))?;
+        let page = self.storage()?.db.call(move |db| super::with_history_index(db, &id, |connection| {
+            let skipped: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')", [&id], |r| r.get(0))?;
             if skipped { anyhow::bail!("session migration was skipped"); }
-            let page = read_display_page(&tx, &id, before, offset, limit)?;
-            tx.commit()?;
-            Ok(page)
-        })?;
+            read_display_page(connection, &id, before, offset, limit)
+        }))?;
         materialize_display_page(page, before, fragment_offset)
     }
 }
