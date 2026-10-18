@@ -72,6 +72,7 @@ async function mount(messages: AgentMessage[]) {
         sessionId="sess_1"
         streaming={false}
         title="Remote conversation"
+        workspaceName={null}
       />,
     );
   });
