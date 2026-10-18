@@ -229,6 +229,15 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
             "ALTER TABLE workspaces ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
         )],
     )?;
+    super::managed_cleanup::migrate(conn)?;
+    // Thread reads require these columns even if an optional migration fails.
+    // Preserve the released migration identities and execute required entries first.
+    for migration in VERSIONED_MIGRATIONS
+        .iter()
+        .filter(|migration| migration.1 == "threads")
+    {
+        apply_migrations(conn, std::slice::from_ref(migration))?;
+    }
     // Run archiving is optional UI metadata. A failed upgrade must not block
     // the Agent/file-tool main flow; read paths project its missing column as
     // NULL and the archive action reports its own unavailable error.
@@ -1301,6 +1310,29 @@ mod tests {
             )
             .unwrap();
         assert_eq!(recorded, 1);
+    }
+
+    #[test]
+    fn required_thread_columns_survive_optional_migration_failure() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("fixtures/v1.2.1.sql"))
+            .unwrap();
+        conn.execute_batch(
+            "DELETE FROM schema_migrations WHERE version='v1.1.3-runs-archived-at';
+            CREATE TRIGGER refuse_optional BEFORE INSERT ON schema_migrations
+            WHEN NEW.version='v1.1.3-runs-archived-at' BEGIN SELECT RAISE(ABORT,'injected'); END;",
+        )
+        .unwrap();
+        apply_schema(&conn).unwrap();
+        for column in ["asset_root_id", "title_seed"] {
+            assert!(column_exists(&conn, "threads", column).unwrap());
+        }
+        conn.prepare(&format!(
+            "SELECT {} FROM threads",
+            super::super::threads::THREAD_COLUMNS
+        ))
+        .unwrap();
+        apply_schema(&conn).unwrap();
     }
 
     #[test]

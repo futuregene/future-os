@@ -229,7 +229,7 @@ pub(super) async fn agent_prompt_inner(
         .filter(|id| !id.is_empty());
     if stored_session_id.is_empty()
         && (crate::store::legacy_session_id(&thread_id)?.is_some()
-            || !crate::store::legacy_history_entries(&thread_id)?.is_empty())
+            || crate::store::has_legacy_history(&thread_id)?)
     {
         return Err("This conversation has preserved history but no writable Agent session. Restore its matching Agent database or continue from the original conversation; a new empty session was not created.".into());
     }
@@ -240,7 +240,7 @@ pub(super) async fn agent_prompt_inner(
         .into());
     }
     let mut command_client = connect_agent().await?;
-    if !crate::store::legacy_history_entries(&thread_id)?.is_empty() {
+    if crate::store::has_legacy_history(&thread_id)? {
         let history =
             super::queries::get_session_entries_before(stored_session_id.clone(), i64::MAX, 1)
                 .await?;

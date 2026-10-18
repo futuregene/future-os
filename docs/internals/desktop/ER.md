@@ -1359,3 +1359,5 @@ or in the background. New databases enable incremental reclamation; populated
 NONE-mode databases keep their layout and reuse freed space internally. Older
 executables reject schema 5 rather than interpreting snapshots as missing raw
 histories.
+
+`managed_directory_cleanup(kind, directory_id, first_seen_at, delete_requested_at)` records unowned managed directories and explicit deletion intent. It has no ownership FK: intent must survive owner deletion. Unknown owners are retained; only explicit deletion plus absence of live references permits physical cleanup.

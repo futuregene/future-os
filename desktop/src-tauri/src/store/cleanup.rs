@@ -381,7 +381,7 @@ pub async fn reconcile_empty_conversations() -> Result<usize, crate::AppError> {
     };
     let mut removed = 0;
     for (thread_id, session_id) in candidates {
-        if !super::legacy_history_entries(&thread_id)?.is_empty() {
+        if super::has_legacy_history(&thread_id)? {
             continue;
         }
         match crate::agent_bridge::session_has_messages(&session_id).await {
@@ -427,39 +427,28 @@ fn empty_thread_candidates(
         .map_err(crate::AppError::from)
 }
 
-/// Reclaim per-thread image directories (`~/.future/app/images/<tid>`) whose
-/// thread no longer lives in the DB. This is the primary reclamation path for
-/// attachment thumbnails and workspace-mode originals: there is no per-delete
-/// physical executor, and threads can be removed out-of-band by the TUI/CLI
-/// (`delete_session`) without the GUI observing it. A thread counts as "gone"
-/// once it is absent or soft-deleted (`status = 'deleted'`) — there is no
-/// soft-delete undo, so a deleted thread's images are safe to drop. Runs once at
-/// startup, best-effort. Returns the number of directories removed.
+/// Preserve unowned image directories unless an explicit delete authorized cleanup.
+/// A restored app.db may be older than the files beside it.
 pub fn reconcile_orphan_images() -> Result<usize, crate::AppError> {
-    reclaim_orphan_subdirs(crate::store::app_images_root()?, live_thread_ids)
+    reclaim_orphan_subdirs(crate::store::app_images_root()?, "images", live_thread_ids)
 }
 
-/// Reclaim per-thread temporary chat-workspace directories
-/// (`~/.future/app/workspaces/chat/<tid>`) whose thread no longer lives in the
-/// DB. Deleting a thread only flags its temp workspace `pending_cleanup`; there
-/// is no per-delete physical executor, so without this sweep the scratch dirs
-/// leak forever. Symmetric to `reconcile_orphan_images`. User workspaces live at
-/// their own user-chosen paths (never under this root), so this can never touch
-/// them. Runs once at startup, best-effort. Returns the number removed.
+/// Retain unowned chat workspaces for recovery; retry explicitly requested cleanup.
 pub fn reconcile_orphan_chat_workspaces() -> Result<usize, crate::AppError> {
     reclaim_orphan_subdirs(
         crate::store::chat_workspaces_root()?,
+        "chat",
         live_chat_workspace_dir_ids,
     )
 }
 
-/// Reclaim per-workspace shadow-review repos (`~/.future/app/review/<wsid>`)
-/// whose workspace is gone or soft-deleted. Keyed by workspace (the repo is
-/// shared across a workspace's runs), so a live workspace's repo is always
-/// kept — only absent/`deleted_at` workspaces are reclaimed. Runs once at
-/// startup, best-effort. Returns the number removed.
+/// Retain unowned review repositories; retry explicitly requested cleanup.
 pub fn reconcile_orphan_review_repos() -> Result<usize, crate::AppError> {
-    reclaim_orphan_subdirs(crate::store::review_repos_root()?, live_workspace_ids)
+    reclaim_orphan_subdirs(
+        crate::store::review_repos_root()?,
+        "review",
+        live_workspace_ids,
+    )
 }
 
 /// Live attachment-root ids. Fork descendants keep their ancestor's root alive
@@ -481,7 +470,9 @@ fn live_chat_workspace_dir_ids(conn: &Connection) -> rusqlite::Result<HashSet<St
          UNION
          SELECT agent_session_id FROM threads
          WHERE agent_session_id IS NOT NULL AND agent_session_id != ''
-           AND status != 'deleted'";
+           AND status != 'deleted'
+         UNION SELECT b.session_id FROM legacy_thread_bindings b
+         JOIN threads t ON t.id=b.thread_id WHERE t.status != 'deleted'";
     let mut stmt = conn.prepare(SQL)?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
     rows.collect()
@@ -516,24 +507,53 @@ fn orphan_subdirs(root: &Path, live: &HashSet<String>) -> Result<Vec<PathBuf>, c
     Ok(orphans)
 }
 
-/// Remove every subdir of `root` whose name has no live owner id (resolved by
-/// `live_ids`). A missing root is 0; each removal is best-effort. Returns the
-/// number of directories removed.
+/// Retain unreferenced data from partial restores. Only explicit deletion intent
+/// permits removal; recheck live owners under the write lock before touching disk.
 fn reclaim_orphan_subdirs(
     root: PathBuf,
+    kind: &str,
     live_ids: fn(&Connection) -> rusqlite::Result<HashSet<String>>,
 ) -> Result<usize, crate::AppError> {
     if !root.exists() {
         return Ok(0);
     }
-    let orphans = {
-        let conn = connect()?;
-        orphan_subdirs(&root, &live_ids(&conn)?)?
-    };
-    for dir in &orphans {
-        let _ = std::fs::remove_dir_all(dir);
+    let mut conn = connect()?;
+    let candidates = orphan_subdirs(&root, &live_ids(&conn)?)?;
+    let mut removed = 0;
+    for dir in candidates {
+        let Some(id) = dir.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if live_ids(&tx)?.contains(id) {
+            continue;
+        }
+        tx.execute(
+            "INSERT INTO managed_directory_cleanup(kind,directory_id,first_seen_at)
+             VALUES (?1,?2,?3) ON CONFLICT DO NOTHING",
+            params![kind, id, now_millis()],
+        )?;
+        let authorized: bool = tx.query_row(
+            "SELECT delete_requested_at IS NOT NULL FROM managed_directory_cleanup
+             WHERE kind=?1 AND directory_id=?2",
+            params![kind, id],
+            |row| row.get(0),
+        )?;
+        if authorized {
+            match std::fs::remove_dir_all(&dir) {
+                Ok(()) => {
+                    tx.execute(
+                        "DELETE FROM managed_directory_cleanup WHERE kind=?1 AND directory_id=?2",
+                        params![kind, id],
+                    )?;
+                    removed += 1;
+                }
+                Err(error) => eprintln!("FutureOS: managed directory cleanup deferred: {error}"),
+            }
+        }
+        tx.commit()?;
     }
-    Ok(orphans.len())
+    Ok(removed)
 }
 
 /// Test shim preserving the original `orphan_image_dirs` name/signature.
@@ -1214,7 +1234,7 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_orphan_images_removes_dead_thread_dirs() {
+    fn restored_database_preserves_unknown_images_until_explicit_deletion() {
         let (_home, conn) = guarded_conn("cleanup_images");
         seed_full(&conn);
         drop(conn);
@@ -1226,9 +1246,21 @@ mod tests {
         std::fs::create_dir_all(root.join("t_sess")).expect("live dir");
         std::fs::create_dir_all(root.join("ghost")).expect("orphan dir");
         let removed = reconcile_orphan_images().expect("reconcile");
-        assert_eq!(removed, 1);
+        assert_eq!(removed, 0);
         assert!(root.join("t_sess").is_dir(), "live thread's dir kept");
-        assert!(!root.join("ghost").exists(), "orphan dir reclaimed");
+        assert!(root.join("ghost").is_dir(), "unknown owner is preserved");
+        let conn = connect().unwrap();
+        let pending: i64 = conn.query_row("SELECT count(*) FROM managed_directory_cleanup WHERE directory_id='ghost' AND delete_requested_at IS NULL", [], |r| r.get(0)).unwrap();
+        assert_eq!(pending, 1);
+        conn.execute(
+            "UPDATE managed_directory_cleanup SET delete_requested_at=1 WHERE directory_id='ghost'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        assert_eq!(reconcile_orphan_images().unwrap(), 1);
+        assert!(!root.join("ghost").exists());
+        assert_eq!(reconcile_orphan_images().unwrap(), 0);
     }
 
     #[test]
@@ -1243,19 +1275,19 @@ mod tests {
         std::fs::create_dir_all(chat_root.join("t_sess")).expect("thread dir");
         std::fs::create_dir_all(chat_root.join("sess_live")).expect("session dir");
         std::fs::create_dir_all(chat_root.join("gone")).expect("orphan dir");
-        assert_eq!(reconcile_orphan_chat_workspaces().expect("reconcile"), 1);
+        assert_eq!(reconcile_orphan_chat_workspaces().expect("reconcile"), 0);
         assert!(chat_root.join("t_sess").is_dir());
         assert!(chat_root.join("sess_live").is_dir());
-        assert!(!chat_root.join("gone").exists());
+        assert!(chat_root.join("gone").exists());
 
         // Review repos: keyed by workspace id.
         let review_root = std::path::PathBuf::from(std::env::var("HOME").expect("home"))
             .join(".future/app/review");
         std::fs::create_dir_all(review_root.join("ws1")).expect("live repo");
         std::fs::create_dir_all(review_root.join("ws_ghost")).expect("orphan repo");
-        assert_eq!(reconcile_orphan_review_repos().expect("reconcile"), 1);
+        assert_eq!(reconcile_orphan_review_repos().expect("reconcile"), 0);
         assert!(review_root.join("ws1").is_dir());
-        assert!(!review_root.join("ws_ghost").exists());
+        assert!(review_root.join("ws_ghost").exists());
     }
 
     #[cfg(unix)]

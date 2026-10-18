@@ -133,6 +133,18 @@ pub fn legacy_session_id(thread_id: &str) -> Result<Option<String>, crate::AppEr
         .optional()?)
 }
 
+pub fn has_legacy_history(thread_id: &str) -> Result<bool, crate::AppError> {
+    let conn = connect()?;
+    if !table_exists(&conn, "legacy_messages")? {
+        return Ok(false);
+    }
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM legacy_messages WHERE thread_id=?1)",
+        [thread_id],
+        |row| row.get(0),
+    )?)
+}
+
 pub fn legacy_history_entries(thread_id: &str) -> Result<Vec<Value>, crate::AppError> {
     let conn = connect()?;
     read_entries(&conn, thread_id).map_err(Into::into)

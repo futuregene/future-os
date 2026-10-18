@@ -115,3 +115,7 @@ Reclamation runs once per batch (up to 4096 pages), rather than once per session
 This is a page budget, not a latency guarantee; large freelists can remain for
 later deletes or startup compaction. Desktop uses bounded local transactions and
 one Agent client, with durable per-session acknowledgement/retry handling.
+
+## Managed directory cleanup
+
+Restoring an older app.db never authorizes deleting newer files. Unowned images, chat workspaces and review repositories are recorded in `managed_directory_cleanup` and kept in place. Explicit conversation/workspace deletion records cleanup intent in the deletion transaction. Cleanup rechecks live shared owners under a write lock and retains intent on failure. Age alone never authorizes deletion of unknown data.

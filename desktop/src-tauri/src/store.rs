@@ -9,6 +9,7 @@ mod cleanup;
 mod db;
 mod deletions;
 mod legacy_history;
+mod managed_cleanup;
 mod markdown_refs;
 mod records;
 mod review_snapshots;
@@ -56,7 +57,7 @@ pub(crate) use db::close_pool;
 pub use deletions::{
     is_agent_session_tombstoned, pending_agent_session_deletes, settle_agent_session_deletes,
 };
-pub use legacy_history::{legacy_history_entries, legacy_session_id};
+pub use legacy_history::{has_legacy_history, legacy_history_entries, legacy_session_id};
 pub use markdown_refs::resolve_markdown_references;
 pub use records::*;
 pub use review_snapshots::{

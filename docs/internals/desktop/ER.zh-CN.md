@@ -838,3 +838,5 @@ SQLite 重用 rowid 导致历史费用顺序变化。未整理的历史对话仍
 WAL 截断不等待读锁，未完成则重试。启动和后台均不自动执行全库 VACUUM。
 新库启用增量回收；已有 NONE 模式的库保持原布局，释放的空间由 SQLite
 内部复用。旧程序明确拒绝 schema 5，避免把已整理的历史误判为空日志。
+
+`managed_directory_cleanup(kind, directory_id, first_seen_at, delete_requested_at)` records unowned managed directories and explicit deletion intent. It has no ownership FK: intent must survive owner deletion. Unknown owners are retained; only explicit deletion plus absence of live references permits physical cleanup.
