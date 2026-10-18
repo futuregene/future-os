@@ -66,6 +66,7 @@ async function mount(props: {
         sessionId="sess_1"
         streaming={false}
         title="A conversation"
+        workspaceName={null}
       />,
     );
   });

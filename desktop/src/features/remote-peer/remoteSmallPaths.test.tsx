@@ -85,6 +85,7 @@ async function mountView(messages: AgentMessage[], onFork: (source: string, fork
         sessionId="sess_1"
         streaming={false}
         title="A conversation"
+        workspaceName={null}
       />,
     );
   });
