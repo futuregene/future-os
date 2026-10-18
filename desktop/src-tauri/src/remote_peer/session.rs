@@ -510,8 +510,16 @@ impl PeerSession {
     /// A command on [`retryable_command`]'s whitelist is re-sent after a
     /// transport failure (see [`Self::exchange_retrying`]); every other command
     /// makes exactly one attempt.
+    ///
+    /// `&self` rather than `&mut self`: the runtime keeps a host's session
+    /// behind an `Arc` so a caller can await a round trip *without* the
+    /// process-wide runtime lock. Nothing here mutates the session — the traffic
+    /// keys have their own mutex and the NATS client is shared by design — so
+    /// the exclusive borrow was only ever a signature, and it was what forced
+    /// the lock to be held across a network wait (and therefore what made one
+    /// host's slow command stall the peer list of every other host).
     pub(crate) async fn request(
-        &mut self,
+        &self,
         subject: &str,
         mut payload: Value,
         timeout: Duration,
@@ -543,7 +551,7 @@ impl PeerSession {
     /// Never retried here: a body with no `type` is not on the whitelist, and
     /// the chunk lane has its own retry (`transfer::retrying`).
     pub(crate) async fn request_bytes(
-        &mut self,
+        &self,
         subject: &str,
         plaintext: &[u8],
         timeout: Duration,
@@ -563,7 +571,7 @@ impl PeerSession {
     /// The *last* error is the one returned, so a caller sees the failure that
     /// exhausted the budget rather than the first one.
     async fn exchange_retrying(
-        &mut self,
+        &self,
         subject: &str,
         plaintext: &[u8],
         timeout: Duration,
@@ -584,7 +592,7 @@ impl PeerSession {
 
     /// Seal a request, await its reply, and unwrap the host's envelope.
     async fn exchange(
-        &mut self,
+        &self,
         subject: &str,
         plaintext: &[u8],
         timeout: Duration,
@@ -949,7 +957,7 @@ async fn handshake(
         .map_err(|_| crate::AppError::Message("remote_secure_channel_invalid".into()))?;
     let confirmed = Confirmed::from_confirmation(&confirmation, &creds.pair_id)?;
 
-    let mut session = PeerSession {
+    let session = PeerSession {
         pair_id: creds.pair_id.clone(),
         client: client.clone(),
         channel: std::sync::Arc::new(std::sync::Mutex::new(channel)),

@@ -6,6 +6,7 @@
   "adding": "正在连接…",
   "slotWarning": "在此配对会取代那台电脑当前的手机配对。之后可以用新的链接重新配对。",
   "empty": "还没有远程桌面。",
+  "loading": "正在读取已配对的电脑…",
   "connect": "连接",
   "connecting": "正在连接…",
   "disconnect": "断开",
