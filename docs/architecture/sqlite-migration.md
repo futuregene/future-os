@@ -9,6 +9,16 @@
 
 ## Automatic import
 
+TUI and Desktop use the same Agent storage upgrade code. Released SQLite
+schemas 2, 3, 4, 5 and 6 upgrade directly to schema 7, with a verified
+pre-upgrade snapshot in `agent/backups/`. Admission validates the history
+structure belonging to the source version: schemas 2–4 predate
+`run_snapshots`, so migration creates that table after preserving the old
+database. Schemas 5 and later must retain their existing snapshots; missing
+authoritative history remains an error. Skills-only bootstrap databases also
+retain installation records and uninstall tombstones. Regression fixtures
+freeze the DDL from historical commits rather than relabel the current schema.
+
 The new Agent, under the instance lock and before serving externally, imports
 old `sessions/*.jsonl` and their sibling `run-events/` files. Startup scans again
 for files restored later; per-session records prevent duplicate imports,
