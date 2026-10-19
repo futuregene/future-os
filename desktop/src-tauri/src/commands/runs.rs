@@ -96,8 +96,7 @@ async fn agent_events(
         .unwrap_or_else(|| run.thread_id.clone());
     let replay =
         agent_bridge::get_events_since_payload(sid, run_id.to_string(), since_sequence).await?;
-    let records: Vec<store::RunEventRecord> = replay
-        .events
+    let records: Vec<store::RunEventRecord> = replay_events(replay, since_sequence)
         .into_iter()
         .enumerate()
         .map(|(i, e)| store::RunEventRecord {
@@ -116,6 +115,39 @@ async fn agent_events(
         })
         .collect();
     Ok(records)
+}
+
+/// The events a replay actually carries, from whichever representation the
+/// Agent answered with.
+///
+/// A settled run's raw event rows are retired into a projection snapshot the
+/// moment the run completes (journal compaction publishes the snapshot, then
+/// deletes the rows), and from then on `get_events_since` answers that run with
+/// `events: []` plus the folded projection. Reading only `events` therefore
+/// made every finished run look as if it had recorded nothing — the settle-time
+/// re-projection of a reply rebuilt it from an empty log and dropped the
+/// segment timeline it had been streaming (the reply reloaded as prose followed
+/// by its tool rows, instead of the chronological slices) along with its token
+/// count.
+///
+/// The snapshot is the same event sequence the live lane saw, coalesced: same
+/// `idx` values, strictly increasing, so it feeds the projector unchanged. The
+/// caller's cursor still applies — a client that already ingested part of the
+/// run must not be handed it again.
+fn replay_events(
+    replay: future_rpc::payloads::EventsSincePayload,
+    since_sequence: i64,
+) -> Vec<future_rpc::payloads::ReplayEventPayload> {
+    let mut events = replay.events;
+    // Only a reply that carried no raw events can be a snapshot-only answer;
+    // when both arrive the raw tail is the one the caller asked for.
+    if events.is_empty() {
+        if let Some(projection) = replay.projection {
+            events = projection.events;
+        }
+    }
+    events.retain(|event| event.idx > since_sequence);
+    events
 }
 
 #[tauri::command]
@@ -442,6 +474,107 @@ mod tests {
         assert_eq!(events[1].sequence, 1);
         assert_eq!(events[1].created_at, 0);
         script_mock_agent(MockScript::default());
+    }
+
+    /// A finished run's raw rows are retired into a projection snapshot when the
+    /// run completes, after which `get_events_since` answers with no events and
+    /// only the folded projection. Reading just the event list made the run look
+    /// empty, so the settle-time re-projection of the reply threw its segment
+    /// timeline away — the settled reply reloaded as prose followed by its tool
+    /// rows instead of the chronological slices it streamed as.
+    #[tokio::test]
+    async fn list_run_events_reads_a_retired_runs_projection_snapshot() {
+        use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_events_snapshot");
+        create_run(run_input(&thread.id, "run_snap")).expect("create run");
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([snapshot_replay()]),
+            ..Default::default()
+        });
+        let events = list_run_events("run_snap".into()).await.expect("events");
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| (event.event_type.as_str(), event.sequence))
+                .collect::<Vec<_>>(),
+            vec![("agent_start", 0), ("tool_start", 1), ("agent_end", 2)]
+        );
+        assert_eq!(
+            events[1].payload.as_deref(),
+            Some("{\"tool_name\":\"shell\"}")
+        );
+        assert_eq!(events[2].created_at, 1704067202000);
+        script_mock_agent(MockScript::default());
+    }
+
+    /// The snapshot is a whole run, not a tail: a client that already ingested
+    /// part of it must not be handed the prefix again.
+    #[tokio::test]
+    async fn list_run_events_since_trims_a_projection_snapshot_to_the_cursor() {
+        use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_events_snapshot_since");
+        create_run(run_input(&thread.id, "run_snap_since")).expect("create run");
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([snapshot_replay()]),
+            ..Default::default()
+        });
+        let events = list_run_events_since("run_snap_since".into(), 1)
+            .await
+            .expect("events");
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| (event.event_type.as_str(), event.sequence))
+                .collect::<Vec<_>>(),
+            vec![("agent_end", 2)]
+        );
+        script_mock_agent(MockScript::default());
+    }
+
+    /// The mocked `get_events_since` answer for a run whose rows were retired.
+    fn snapshot_replay() -> (String, String) {
+        (
+            "get_events_since".to_string(),
+            serde_json::json!({
+                "events": [],
+                "projection": {
+                    "runId": "run_snap",
+                    "cursor": 2,
+                    "events": [
+                        {
+                            "eventId": "s0",
+                            "type": "agent_start",
+                            "data": "{}",
+                            "idx": 0,
+                            "timestamp": "2024-01-01T00:00:00Z",
+                        },
+                        {
+                            "eventId": "s1",
+                            "type": "tool_start",
+                            "data": "{\"tool_name\":\"shell\"}",
+                            "idx": 1,
+                            "timestamp": "2024-01-01T00:00:01Z",
+                        },
+                        {
+                            "eventId": "s2",
+                            "type": "agent_end",
+                            "data": "{}",
+                            "idx": 2,
+                            "timestamp": "2024-01-01T00:00:02Z",
+                        },
+                    ],
+                },
+            })
+            .to_string(),
+        )
     }
 
     #[tokio::test]
