@@ -75,6 +75,10 @@ impl PreparedInstaller {
             // CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB. A restrictive
             // parent job must fail launch, rather than kill recovery on exit.
             .creation_flags(0x08000000 | 0x01000000)
+            // The GUI has detached its console; the observer writes its own log.
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .args([
                 "-NoLogo",
                 "-NoProfile",

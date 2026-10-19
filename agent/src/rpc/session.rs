@@ -1267,10 +1267,10 @@ impl ServerSession {
 
         // Same platform-shell contract as the shell tool (bash -c on Unix,
         // the PowerShell wrapper on Windows) so exit codes are reliable.
-        let (program, args) = crate::sandbox::shell_invocation(command);
-        let mut process = std::process::Command::new(program);
+        let mut process = crate::sandbox::backend::PreparedShell::plain(command)
+            .into_command()?
+            .into_std();
         process
-            .args(&args)
             .current_dir(cwd)
             .env("PWD", cwd)
             .stdout(std::process::Stdio::piped())
@@ -2600,6 +2600,89 @@ mod tests {
     }
 
     // ─── execute_shell ──────────────────────────────────────────────────────
+
+    #[cfg(windows)]
+    #[test]
+    fn shells_run_after_console_detach() {
+        const CHILD: &str = "FUTURE_TEST_DETACHED_SHELL_RESULT";
+        if let Some(result_path) = std::env::var_os(CHILD) {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::System::Console::{
+                AllocConsole, FreeConsole, SetStdHandle, STD_INPUT_HANDLE,
+            };
+            // Only this isolated process changes console state. Install a real
+            // console input handle, then detach exactly as the GUI host does.
+            unsafe {
+                FreeConsole();
+                assert_ne!(AllocConsole(), 0);
+            }
+            let input = std::fs::File::open("CONIN$").unwrap();
+            unsafe {
+                assert_ne!(SetStdHandle(STD_INPUT_HANDLE, input.as_raw_handle()), 0);
+                assert_ne!(FreeConsole(), 0);
+            }
+            let workspace = tempfile::tempdir().unwrap();
+            let cwd = workspace.path().to_string_lossy().into_owned();
+            let result = ServerSession::execute_shell_at(
+                &cwd,
+                "Write-Output detached-rpc-ok",
+                std::time::Duration::from_secs(30),
+                &std::sync::atomic::AtomicU64::new(0),
+                0,
+            )
+            .unwrap();
+            assert_eq!(result["exitCode"], 0);
+            assert!(result["output"]
+                .as_str()
+                .unwrap()
+                .contains("detached-rpc-ok"));
+            let output = tokio::runtime::Runtime::new().unwrap().block_on(
+                crate::tools::with_workspace_scope(cwd, "all".into(), async {
+                    crate::tools::shell::execute(serde_json::json!({
+                        "command": "Write-Output detached-tool-ok"
+                    }))
+                    .await
+                    .unwrap()
+                }),
+            );
+            assert!(output.contains("detached-tool-ok"), "{output}");
+            std::fs::write(result_path, "both shells passed").unwrap();
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let result_path = directory.path().join("result");
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "rpc::session::tests::shells_run_after_console_detach",
+                "--nocapture",
+            ])
+            .env(CHILD, &result_path)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            std::fs::read_to_string(result_path).unwrap(),
+            "both shells passed"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn execute_shell_does_not_create_a_console() {
+        let workspace = tempfile::tempdir().unwrap();
+        let script = r#"Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class FutureOSRpcConsoleProbe { [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); }'; [FutureOSRpcConsoleProbe]::GetConsoleWindow().ToInt64()"#;
+        let result = ServerSession::execute_shell_at(
+            &workspace.path().to_string_lossy(),
+            script,
+            std::time::Duration::from_secs(30),
+            &std::sync::atomic::AtomicU64::new(0),
+            0,
+        )
+        .unwrap();
+        assert_eq!(result["exitCode"], 0, "{result}");
+        assert_eq!(result["output"].as_str().unwrap().trim(), "0");
+    }
 
     #[test]
     #[cfg(unix)]

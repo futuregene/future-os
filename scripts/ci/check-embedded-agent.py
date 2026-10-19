@@ -46,9 +46,23 @@ def main():
     ]
     if platform.system() == "Windows":
         suites.append((
+            "windows-gui-image",
+            ["-p", "futureos", "--test", "windows_stack"],
+        ))
+        suites.append((
             "windows-shell-console",
             ["-p", "future-agent", "--lib",
              "sandbox::backend::tests::plain_windows_shell_runs_without_a_console"],
+        ))
+        suites.append((
+            "windows-shell-detached-host",
+            ["-p", "future-agent", "--lib",
+             "rpc::session::tests::shells_run_after_console_detach"],
+        ))
+        suites.append((
+            "windows-rpc-shell-console",
+            ["-p", "future-agent", "--lib",
+             "rpc::session::tests::execute_shell_does_not_create_a_console"],
         ))
     summary = {
         "platform": platform.platform(),

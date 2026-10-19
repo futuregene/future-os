@@ -13,6 +13,20 @@
 
 use std::path::Path;
 
+#[test]
+fn the_desktop_binary_uses_the_windows_gui_subsystem() {
+    let image = std::fs::read(Path::new(env!("CARGO_BIN_EXE_futureos")))
+        .expect("read the built desktop binary");
+    let pe = u32::from_le_bytes(image[0x3c..0x40].try_into().unwrap()) as usize;
+    assert_eq!(&image[pe..pe + 4], b"PE\0\0", "not a PE image");
+    let optional = pe + 24;
+    let subsystem = u16::from_le_bytes(image[optional + 0x44..optional + 0x46].try_into().unwrap());
+    assert_eq!(
+        subsystem, 2,
+        "Desktop must use IMAGE_SUBSYSTEM_WINDOWS_GUI to avoid a console flashing at launch"
+    );
+}
+
 /// `SizeOfStackReserve` from the PE32+ optional header of an image.
 fn stack_reserve(image: &[u8]) -> u64 {
     let pe = u32::from_le_bytes(image[0x3c..0x40].try_into().unwrap()) as usize;
