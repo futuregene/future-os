@@ -49,17 +49,37 @@ impl Manager {
             )?;
             let mut results = Vec::new();
             for id in ids {
-                let (present, deleted, skipped): (bool, bool, bool) = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND revision>=0),
+                // Presence answers ONE question: does this id belong to this
+                // database? Any row in `sessions` is proof that it does —
+                // including the `revision=-1` placeholder `bind_events` writes
+                // when a session is created, before its first transcript entry
+                // exists. Requiring `revision>=0` made a brand-new session
+                // report `missing`, which the Desktop's source fence then
+                // refused to prompt: the first message could never land, so the
+                // revision could never advance. That is a deadlock, not
+                // evidence that the conversation belongs to another database.
+                //
+                // Two rules keep the widening honest:
+                // - a tombstone always wins. A deleted identity refuses
+                //   re-creation, but constructing the refused session still
+                //   leaves its placeholder row behind; that leftover row must
+                //   not resurrect the id (`deleted` stays the answer).
+                // - listing (`list_sessions`) still requires `revision>=0`, so
+                //   an empty session stays hidden until its first turn lands.
+                let (has_row, live_row, deleted, skipped): (bool, bool, bool, bool) = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1),
+                     EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND revision>=0),
                      EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1),
                      EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')",
-                    [&id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )?;
+                        [&id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    )?;
                 ensure!(
-                    !(present && deleted),
+                    !(live_row && deleted),
                     "session catalogue conflicts with a deletion tombstone"
                 );
+                let present = has_row && !deleted;
                 let status = if deleted {
                     "deleted"
                 } else if skipped {
