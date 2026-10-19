@@ -112,6 +112,21 @@ recorded **per pairing** in `remote_pairings.json` (`controlUrl`), so one
 desktop can hold an official device and a self-hosted one at the same time,
 each talking to the relay that issued it.
 
+Managing those pairings from a terminal is the same command in both modes:
+
+```bash
+future remote devices                  # each device's endpoint is named
+future remote devices add              # mints a v3 relay invitation here
+future remote devices remove <id|#>    # deletes that pairing's room, signed by its key
+future remote devices remove --all     # every device, each at its own issuer
+```
+
+No FutureOS login is involved: the relay has no accounts, and `add` only asks the
+running Desktop. A relay behind a private CA needs no flag for these commands —
+they read the same `FUTURE_RELAY_CA` / `relay.json` `ca` the Desktop uses. That
+CA is applied only to a pairing on the relay it belongs to, so an old device
+pointing at a different relay is not granted that trust.
+
 ## 4. Run the official relay and a self-hosted one together
 
 Nothing special is required. A machine can hold several pairings, each with its

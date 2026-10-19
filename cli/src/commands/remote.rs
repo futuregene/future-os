@@ -66,6 +66,9 @@ const PENDING_REVOKES_FILE: &str = "remote_pending_revokes.json";
 /// The lock the Desktop holds for the lifetime of the process; holding it is
 /// exactly "a Desktop owns this data directory" (`instance.rs`).
 const DESKTOP_LOCK_FILE: &str = "desktop.lock";
+/// The self-hosted relay this installation points at, and the CA it needs
+/// (`relay.rs`'s `SETTINGS_FILE`).
+const RELAY_SETTINGS_FILE: &str = "relay.json";
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -1033,7 +1036,7 @@ async fn revoke_relay(device: &Device) -> Result<(), String> {
     let path = format!("/v1/rooms/{}", device.pair_id);
     let (public_key, timestamp, signature) =
         crate::relay::sign::sign(&key, "DELETE", &path, crate::relay::now(), &[])?;
-    let response = client()?
+    let response = client_trusting(relay_ca_for(device).as_deref())?
         .delete(format!("{}{path}", base.trim_end_matches('/')))
         .header("x-future-public-key", public_key)
         .header("x-future-timestamp", timestamp)
@@ -1064,10 +1067,111 @@ async fn response_error(response: reqwest::Response, action: &str) -> String {
 }
 
 fn client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
+    client_trusting(None)
+}
+
+/// An HTTP client that additionally trusts `ca`, a PEM bundle.
+///
+/// `None` is the platform client every other call uses. A self-hosted relay
+/// commonly serves a certificate from a private CA, and without its root the
+/// signed DELETE fails during the TLS handshake — the command would then report
+/// a removal it could not deliver, on a machine where the room is the only thing
+/// keeping the pairing alive.
+fn client_trusting(ca: Option<&Path>) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder().timeout(REQUEST_TIMEOUT);
+    if let Some(ca) = ca {
+        let pem = std::fs::read(ca)
+            .map_err(|error| format!("Cannot read the relay CA {}: {error}", ca.display()))?;
+        // `from_pem_bundle`, not `from_pem`: the single-certificate form only
+        // *stores* the bytes for the rustls backend and is checked when the
+        // client is built — or not at all — so a garbage file would be accepted
+        // here and fail much later as an opaque TLS error during the revoke.
+        let certificates = reqwest::Certificate::from_pem_bundle(&pem)
+            .map_err(|error| format!("{} is not a PEM certificate: {error}", ca.display()))?;
+        if certificates.is_empty() {
+            return Err(format!("{} holds no certificate.", ca.display()));
+        }
+        for certificate in certificates {
+            builder = builder.add_root_certificate(certificate);
+        }
+    }
+    builder
         .build()
         .map_err(|error| format!("Cannot create an HTTP client: {error}"))
+}
+
+/// The extra TLS root for this pairing's relay, if one is configured.
+///
+/// The Desktop applies the same two sources (`FUTURE_RELAY_CA`, then
+/// `relay.json`'s `ca`) to its own NATS client, and this command must agree with
+/// it or its requests never leave the machine on a private-CA relay.
+///
+/// The *environment* variable is an operator naming one CA for this invocation,
+/// so it applies to whatever relay the pairing names. The *persisted* CA belongs
+/// to the relay this installation currently points at, so it is used only for a
+/// pairing on that same origin — a device left over from a previous relay must
+/// not inherit that trust just because it is still in the book.
+fn relay_ca_for(device: &Device) -> Option<PathBuf> {
+    let base = device.control_url.as_deref()?;
+    if let Ok(from_env) = std::env::var("FUTURE_RELAY_CA") {
+        let path = from_env.trim();
+        if !path.is_empty() {
+            return Some(PathBuf::from(path));
+        }
+    }
+    let settings = relay_settings();
+    let ca = settings.ca?;
+    let configured = settings.url?;
+    (origin(&configured) == origin(base)).then(|| PathBuf::from(ca))
+}
+
+/// `~/.future/relay.json` as this command needs it: the relay now in use, and
+/// the CA that relay needs.
+#[derive(Debug, Default)]
+struct RelaySettings {
+    url: Option<String>,
+    ca: Option<String>,
+}
+
+fn relay_settings() -> RelaySettings {
+    // The environment wins over the file, exactly as the Desktop resolves it.
+    let from_env = std::env::var("FUTURE_RELAY_URL").ok();
+    let env_url = from_env
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(|url| url.trim_end_matches('/').to_string());
+    let document = future_dir()
+        .ok()
+        .map(|future| future.join(RELAY_SETTINGS_FILE))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .unwrap_or(Value::Null);
+    let field = |name: &str| {
+        document
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    RelaySettings {
+        url: env_url.or_else(|| field("url")),
+        ca: field("ca"),
+    }
+}
+
+/// `scheme://host[:port]` — what "the same relay" means. An unparsable URL is its
+/// own origin, so a typo can only ever match itself.
+fn origin(url: &str) -> String {
+    match reqwest::Url::parse(url) {
+        Ok(parsed) => match (parsed.host_str(), parsed.port()) {
+            (Some(host), Some(port)) => format!("{}://{host}:{port}", parsed.scheme()),
+            (Some(host), None) => format!("{}://{host}", parsed.scheme()),
+            (None, _) => url.trim_end_matches('/').to_string(),
+        },
+        Err(_) => url.trim_end_matches('/').to_string(),
+    }
 }
 
 // ── use ─────────────────────────────────────────────────────────────────────
@@ -1919,6 +2023,273 @@ mod tests {
             value["devices"].as_array().map(Vec::len),
             Some(0),
             "{value}"
+        );
+    }
+
+    // ── relay (self-hosted) support ─────────────────────────────────────────
+
+    fn relay_device(pair_id: &str, relay: &str) -> Device {
+        Device {
+            pair_id: pair_id.into(),
+            desktop_id: Some("desk-1".into()),
+            control_url: Some(relay.into()),
+            nkey_seed: Some("S".into()),
+        }
+    }
+
+    /// The persisted CA belongs to the relay this installation points at, so it
+    /// is used for a pairing on that origin and nowhere else.
+    #[tokio::test]
+    async fn the_persisted_relay_ca_applies_only_to_its_own_relay() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        std::fs::create_dir_all(home.future()).unwrap();
+        std::fs::write(
+            home.future().join(RELAY_SETTINGS_FILE),
+            json!({ "url": "https://relay.example.com", "ca": "/etc/relay-ca.pem" }).to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            relay_ca_for(&relay_device("pair_A", "https://relay.example.com")),
+            Some(PathBuf::from("/etc/relay-ca.pem"))
+        );
+        // Same relay, spelled with a trailing slash and an explicit port default.
+        assert_eq!(
+            relay_ca_for(&relay_device("pair_A", "https://relay.example.com/")),
+            Some(PathBuf::from("/etc/relay-ca.pem"))
+        );
+        // A device left over from another relay does not inherit that trust.
+        assert_eq!(
+            relay_ca_for(&relay_device("pair_B", "https://old.example.net")),
+            None
+        );
+        assert_eq!(
+            relay_ca_for(&relay_device("pair_C", "http://relay.example.com")),
+            None,
+            "a different scheme is a different origin"
+        );
+        assert_eq!(
+            relay_ca_for(&relay_device("pair_D", "https://relay.example.com:8443")),
+            None,
+            "a different port is a different origin"
+        );
+    }
+
+    /// The environment variable is the operator naming one CA for this
+    /// invocation, so it applies to whatever relay the pairing names.
+    #[tokio::test]
+    async fn the_environment_ca_applies_to_any_relay() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let _ca = EnvGuard::set(&[("FUTURE_RELAY_CA", std::ffi::OsString::from("/env/ca.pem"))]);
+        assert_eq!(
+            relay_ca_for(&relay_device("pair_A", "https://anywhere.example")),
+            Some(PathBuf::from("/env/ca.pem"))
+        );
+        // The environment also wins over the file, as it does in the Desktop.
+        assert_eq!(
+            relay_ca_for(&relay_device("pair_A", "https://relay.example.com")),
+            Some(PathBuf::from("/env/ca.pem"))
+        );
+    }
+
+    /// Nothing configured means the default trust store — not an error.
+    #[tokio::test]
+    async fn no_relay_ca_means_the_platform_trust_store() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        std::fs::create_dir_all(home.future()).unwrap();
+        std::fs::write(
+            home.future().join(RELAY_SETTINGS_FILE),
+            json!({ "url": "https://relay.example.com" }).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            relay_ca_for(&relay_device("pair_A", "https://relay.example.com")),
+            None
+        );
+        // A platform pairing has no relay at all.
+        let platform_device = Device {
+            pair_id: "pair_P".into(),
+            desktop_id: None,
+            control_url: None,
+            nkey_seed: None,
+        };
+        assert_eq!(relay_ca_for(&platform_device), None);
+    }
+
+    /// A configured CA that cannot be read, parsed, or even holds a certificate is
+    /// reported here — not left to fail later as an opaque TLS error during the
+    /// revoke, which is the one request that cannot be retried by hand.
+    #[test]
+    fn an_unusable_relay_ca_is_reported() {
+        let home = tempfile::tempdir().unwrap();
+
+        let missing = home.path().join("nope.pem");
+        let error = client_trusting(Some(&missing)).expect_err("a missing CA file is an error");
+        assert!(error.contains("Cannot read the relay CA"), "{error}");
+
+        let empty = home.path().join("empty.pem");
+        std::fs::write(&empty, b"").unwrap();
+        let error = client_trusting(Some(&empty)).expect_err("an empty CA file is an error");
+        assert!(error.contains("holds no certificate"), "{error}");
+
+        // The mistake an operator actually makes: naming a key, a config, or the
+        // wrong file. `from_pem` would have accepted it and failed at the TLS
+        // handshake much later.
+        let not_a_cert = home.path().join("not-a-cert.pem");
+        std::fs::write(&not_a_cert, b"not a certificate").unwrap();
+        let error = client_trusting(Some(&not_a_cert)).expect_err("a non-PEM file is an error");
+        assert!(error.contains("holds no certificate"), "{error}");
+
+        // A PEM block whose body is not DER: rejected as a certificate rather
+        // than handed to rustls.
+        let broken = home.path().join("broken.pem");
+        std::fs::write(
+            &broken,
+            b"-----BEGIN CERTIFICATE-----\nnot base64\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+        let error = client_trusting(Some(&broken)).expect_err("a broken PEM is an error");
+        assert!(error.contains("not a PEM certificate"), "{error}");
+    }
+
+    /// A real root certificate — the platform store this process already trusts —
+    /// must still build a client. Guards the validation above from becoming so
+    /// strict that every valid CA is refused; skipped where no bundle is readable.
+    #[test]
+    fn a_real_ca_bundle_builds_a_trusting_client() {
+        let candidates = [
+            "/etc/ssl/cert.pem",
+            "/etc/ssl/certs/ca-certificates.crt",
+            "/etc/pki/tls/certs/ca-bundle.crt",
+        ];
+        let Some(bundle) = candidates.iter().map(Path::new).find(|path| path.is_file()) else {
+            eprintln!("no platform CA bundle on this host; nothing to check");
+            return;
+        };
+        assert!(
+            client_trusting(Some(bundle)).is_ok(),
+            "{} must be accepted as a CA bundle",
+            bundle.display()
+        );
+    }
+
+    /// One machine can hold an official device and a self-hosted one at the same
+    /// time, and `remove --all` sends each to the issuer that knows it.
+    #[tokio::test]
+    async fn remove_all_revokes_each_device_at_its_own_issuer() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let platform_requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let platform = crate::test_server::spawn_http_recording(
+            vec![crate::test_server::HttpRoute::json(
+                "/client/v1/remote/pair/revoke",
+                200,
+                "{\"ok\":true}",
+            )],
+            Some(platform_requests.clone()),
+        )
+        .await;
+        let relay_requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let relay = crate::test_server::spawn_http_recording(
+            vec![crate::test_server::HttpRoute::json(
+                "/v1/rooms/pair_RELAY",
+                200,
+                "{\"ok\":true}",
+            )],
+            Some(relay_requests.clone()),
+        )
+        .await;
+        let auth = auth_file();
+        std::fs::create_dir_all(auth.parent().unwrap()).unwrap();
+        std::fs::write(
+            &auth,
+            json!({ "future": { "key": "sk-test", "base_url": format!("{platform}/api") } })
+                .to_string(),
+        )
+        .unwrap();
+        let key = nkeys::KeyPair::new_user();
+        home.write(
+            BOOK_FILE,
+            &json!({
+                "version": 2,
+                "active": null,
+                "slots": [
+                    { "pairId": "pair_PLATFORM", "nkeySeed": "S" },
+                    { "pairId": "pair_RELAY", "controlUrl": relay, "nkeySeed": key.seed().unwrap() }
+                ]
+            })
+            .to_string(),
+        );
+
+        let (code, _, stderr) = run(&["remote", "devices", "remove", "--all", "--yes"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stderr.is_empty(), "both issuers confirmed: {stderr}");
+        assert!(!home.exists(BOOK_FILE));
+
+        let platform_requests = platform_requests.lock().unwrap();
+        assert_eq!(
+            platform_requests.len(),
+            1,
+            "the official device goes to the platform"
+        );
+        assert!(
+            platform_requests[0].contains("pair_PLATFORM"),
+            "{}",
+            platform_requests[0]
+        );
+        let relay_requests = relay_requests.lock().unwrap();
+        assert_eq!(
+            relay_requests.len(),
+            1,
+            "the relay device goes to its relay"
+        );
+        assert!(
+            relay_requests[0].starts_with("DELETE /v1/rooms/pair_RELAY"),
+            "{}",
+            relay_requests[0]
+        );
+        assert!(
+            relay_requests[0].contains(&format!("x-future-public-key: {}", key.public_key())),
+            "{}",
+            relay_requests[0]
+        );
+        assert!(
+            !relay_requests[0].contains("authorization:"),
+            "the relay has no accounts, so no bearer token may be sent: {}",
+            relay_requests[0]
+        );
+    }
+
+    /// `add` asks the Desktop, so it needs no account of its own — which is what
+    /// makes it work in relay mode, where there is no Future login at all.
+    #[tokio::test]
+    async fn add_needs_no_account() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let _desktop = RunningDesktop::claim(&home);
+        let _answer = answer_requests(
+            &home,
+            json!({
+                "pairId": "pair_RELAY",
+                "link": "futureos://remote/pair?v=3&code=abc&desktopId=d&desktopKey=U&secureKey=K&secret=S",
+                "expiresAt": 1_800_000_000i64,
+            }),
+        );
+        // No auth.json anywhere: relay mode has no account to read.
+        assert!(!auth_file().exists());
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "add", "--json"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        let value: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(value["pairId"], "pair_RELAY");
+        assert!(
+            value["link"]
+                .as_str()
+                .is_some_and(|link| link.contains("v=3")),
+            "a relay invitation is v3 and is passed through as-is: {value}"
         );
     }
 

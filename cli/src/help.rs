@@ -307,9 +307,18 @@ pairing is connected, so the request goes to the running Desktop (the window, or
 futureos-headless) and the answer carries the invitation. A machine with no
 device at all prints one as the Desktop starts.
 
-remove revokes the device where it was minted before dropping it locally: at the
-Future platform, or by deleting its room at the relay that issued it. A revoke
-that cannot be delivered now is queued and retried by the next Desktop that runs.
+Self-hosted relays work the same way, and a machine may hold an official device
+and a self-hosted one at the same time: `list` names each device's endpoint, and
+`remove` sends it to the issuer that knows it — the platform API, or the relay's
+own room. A relay with a private CA needs no extra flag here: the CA this
+installation already uses (FUTURE_RELAY_CA, or the `ca` in ~/.future/relay.json)
+is applied to that relay's requests, and one persisted for a *different* relay is
+not.
+
+remove revokes the device where it was minted before dropping it locally. A
+platform revoke that cannot be delivered now is queued and retried by the next
+Desktop that runs; a relay has no account to queue against, so an undeliverable
+room deletion is reported and the room expires on its own.
 
 use writes the same pointer the window's "Let this control" writes. A running
 Desktop keeps its current controller until it restarts: control is an in-memory
@@ -341,6 +350,10 @@ can serve the new device, so this needs one: a window, or futureos-headless. Wit
 none running, the answer is "start the Desktop" — and a machine with no device at
 all prints an invitation as it starts, which is also the recovery path after
 `remove --all`.
+
+The invitation is whatever the Desktop is configured to mint: an official
+`v=2` link, or a self-hosted relay's `v=3` one. Relay mode needs no FutureOS
+account, and neither does this command — it only asks the Desktop.
 
 Existing devices stay paired: this adds beside them. `remove --all` followed by
 `add` is what replaces the pairing on a machine whose phone is being retired.
