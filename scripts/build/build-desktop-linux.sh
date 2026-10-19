@@ -5,8 +5,8 @@
 # so this script has none of the macOS signing/notarization machinery.
 #
 # Produces:
-#   FutureOS_<bundle-version>_<arch>.deb  (futureos + futureos-headless + future)
-#   FutureOS-portable-linux.tar.gz        (same executables + Readme.txt)
+#   FutureOS_<artifact-version>_<arch>.deb  (futureos + futureos-headless + future)
+#   FutureOS_<artifact-version>_linux_<arch>-portable.tar.gz
 
 set -euo pipefail
 
@@ -76,10 +76,10 @@ require_tool dpkg-deb "Install the Debian package tools."
 TRIPLE="$(rustc -Vv | sed -n 's/^host: //p')"
 [[ -n "$TRIPLE" ]] || fail "could not read the host triple from rustc -Vv"
 
-if [[ -z "${FUTURE_VERSION:-}" ]]; then
-  FUTURE_VERSION="$(node scripts/version.mjs)"
-  export FUTURE_VERSION
-fi
+VERSIONS="$(node scripts/version.mjs --json)"
+FUTURE_VERSION="$(node -p 'JSON.parse(process.argv[1]).version' "$VERSIONS")"
+ARTIFACT_VERSION="$(node -p 'JSON.parse(process.argv[1]).artifactVersion' "$VERSIONS")"
+export FUTURE_VERSION
 
 echo "    host triple: $TRIPLE"
 echo "    version    : $FUTURE_VERSION"
@@ -95,8 +95,6 @@ echo "==> Preparing unified CLI/Desktop build"
 
 echo "==> Setting Tauri bundle version"
 node scripts/version.mjs --set-bundle
-BUNDLE_VERSION="$(node -e \
-  "process.stdout.write(require('./desktop/src-tauri/tauri.conf.json').version)")"
 
 echo "==> Building standalone headless desktop (release, no GUI features)"
 cargo build --release -p future-cli -p futureos --no-default-features \
@@ -113,8 +111,8 @@ DEB="$(find target/release/bundle/deb -maxdepth 1 -name '*.deb' -print -quit)"
 # Debian arch convention (Tauri uses amd64/arm64), independent of the Rust
 # host triple naming.
 case "$TRIPLE" in
-  x86_64-*)  DEB_ARCH="amd64" ;;
-  aarch64-*) DEB_ARCH="arm64" ;;
+  x86_64-*)  DEB_ARCH="amd64"; ASSET_ARCH="x86_64" ;;
+  aarch64-*) DEB_ARCH="arm64"; ASSET_ARCH="aarch64" ;;
   *) fail "unsupported architecture in host triple: $TRIPLE" ;;
 esac
 
@@ -126,7 +124,8 @@ cp "target/release/futureos-headless" "$dir/futureos-headless"
 cp "target/release/future" "$dir/future"
 chmod +x "$dir"/*
 cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"
-tar -czf FutureOS-portable-linux.tar.gz -C "$dir" .
+PORTABLE="FutureOS_${ARTIFACT_VERSION}_linux_${ASSET_ARCH}-portable.tar.gz"
+tar -czf "$PORTABLE" -C "$dir" .
 
 deb_extract_dir="$(mktemp -d)"
 dpkg-deb --extract "$DEB" "$deb_extract_dir"
@@ -135,19 +134,19 @@ if [[ ! -x "$deb_extract_dir/usr/bin/futureos-headless" ]]; then
   fail "the .deb does not contain executable /usr/bin/futureos-headless"
 fi
 rm -rf -- "$deb_extract_dir"
-tar -tzf FutureOS-portable-linux.tar.gz ./futureos-headless >/dev/null \
+tar -tzf "$PORTABLE" ./futureos-headless >/dev/null \
   || fail "the portable archive does not contain ./futureos-headless"
 
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"
-DEB_NAME="FutureOS_${BUNDLE_VERSION}_${DEB_ARCH}.deb"
+DEB_NAME="FutureOS_${ARTIFACT_VERSION}_${DEB_ARCH}.deb"
 # Skip the copies when the package already lives in OUT_DIR (the default is
 # the repo root, where the tarball was just assembled) — `cp -f a a` fails.
 [[ "$OUT_DIR/$DEB_NAME" -ef "$DEB" ]] || cp -f "$DEB" "$OUT_DIR/$DEB_NAME"
-[[ "$OUT_DIR/FutureOS-portable-linux.tar.gz" -ef FutureOS-portable-linux.tar.gz ]] \
-  || cp -f FutureOS-portable-linux.tar.gz "$OUT_DIR/FutureOS-portable-linux.tar.gz"
+[[ "$OUT_DIR/$PORTABLE" -ef "$PORTABLE" ]] \
+  || cp -f "$PORTABLE" "$OUT_DIR/$PORTABLE"
 
 echo
 echo "Done:"
 echo "  $OUT_DIR/$DEB_NAME"
-echo "  $OUT_DIR/FutureOS-portable-linux.tar.gz"
+echo "  $OUT_DIR/$PORTABLE"

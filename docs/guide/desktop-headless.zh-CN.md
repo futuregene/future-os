@@ -13,7 +13,7 @@
 
 - Linux `.deb` 和 portable 发布包已包含 `futureos-headless` 及匹配版本的 `future` CLI；
   也可以按第 5 节从源码构建，源码安装（`make install`）会把 `futureos-headless`
-  装在 `future-desktop` 同一个 bin 目录。独立入口不依赖 GTK/WebKit，默认无头启动。
+  装在 `futureos` 同一个 bin 目录。独立入口不依赖 GTK/WebKit，默认无头启动。
   CLI-only 压缩包仍只提供 `future`，不提供 Desktop 后端入口。
 - 默认端点和数据目录没有外部服务占用时，完整 Agent 运行在 headless Desktop 自身进程中。
   匹配 CLI 放在程序旁边或 PATH 中，用于技能和维护。也可以提前独立启动外部 Agent，

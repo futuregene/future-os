@@ -169,6 +169,10 @@ function main() {
   const { version, artifactVersion } = resolveVersions();
 
   switch (arg) {
+    case "--artifact-version":
+      process.stdout.write(artifactVersion);
+      break;
+
     case "--json":
       process.stdout.write(
         JSON.stringify({

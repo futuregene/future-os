@@ -40,6 +40,49 @@ stages the real CLI after compilation. Setup prepares the repository-level
 dependencies; app run targets still
 need the platform SDKs and a suitable emulator or device.
 
+Local packaging uses the same public filenames as Actions. `<version>` is the artifact
+version from `scripts/version.mjs` (for example `0.0.2-<hash>`), while installer
+metadata uses its numeric bundle version. Windows outputs
+`FutureOS_<version>_x64-setup[-unsigned].exe` and
+`FutureOS_<version>_windows_x64-portable[-unsigned].zip`; `-Sign` removes
+`-unsigned`. The installer and portable scripts copy final packages to the
+repository root by default (`-OutDir` overrides it). `make package-desktop`
+uses these platform scripts; on Linux it builds headless before bundling.
+
+### Distribution filenames
+
+These are the final public filenames. `<V>` is the artifact version, `<B>` the
+numeric bundle version, and `<N>` the build number. `<S>` is empty for signed
+packages and `-unsigned` when platform code signing is absent. An architecture
+written with “or” means either value, not literal filename text.
+
+| Artifact | Filename | Producer |
+|---|---|---|
+| macOS DMG | `FutureOS_<V>_<aarch64 or x64><S>.dmg` | Actions, local platform script, Make |
+| macOS updater | `FutureOS_<V>_<aarch64 or x64><S>.app.tar.gz` | Actions, with matching `.sig` |
+| Windows installer | `FutureOS_<V>_x64-setup<S>.exe` | Actions, local platform script, Make; Actions also produces `.sig` |
+| Windows portable | `FutureOS_<V>_windows_x64-portable<S>.zip` | Platform Actions, local portable script; excluded from coordinated publishing |
+| Linux Debian | `FutureOS_<V>_<amd64 or arm64>.deb` | Actions, local platform script, Make; coordinated publishing also produces `.sig` |
+| Linux portable | `FutureOS_<V>_linux_<x86_64 or aarch64>-portable.tar.gz` | Actions, local platform script, Make |
+| Linux CLI | `FutureOS_<V>_linux_<x86_64 or aarch64>-cli.tar.gz` | Actions |
+| Android APK | `FutureOS_<V>_android-universal.apk` | Actions |
+| iOS IPA | `FutureOS_<B>_<N>.ipa` | Actions, uploaded only to TestFlight |
+| Update manifest | `latest.json` | Release/test/nightly coordinators |
+
+`.sig` is an updater signature, separate from macOS Developer ID / Windows
+Authenticode code signing. Linux does not use `-unsigned`. Ordinary local
+packaging does not generate updater archives or `.sig` files by default.
+
+`npm run tauri:build`, `npm run desktop:package`, and the Tauri CLI are lower-level
+build entrypoints. Their raw packages under `target/release/bundle/` use `<B>`;
+they do not perform the platform scripts' final renaming and copying. Use
+`make package-desktop` or a platform script for Actions-compatible final names.
+Actions likewise builds raw bundles before staging the public names above.
+
+Standalone desktop and Android Actions upload to `dev/<V>/`. Coordinated builds
+publish to `test/<V>/`, `nightly/<V>/`, or `releases/<V>/`. Test/nightly `<V>` is
+`0.0.2-<N>`, without the display version's `+test` / `+nightly` suffix.
+
 ## macOS
 
 Install dependencies:
@@ -60,14 +103,14 @@ make install-cli    # unified `future` CLI only
 make install-desktop    # desktop app + matching CLI
 make install-desktop-headless   # GUI-free `futureos-headless` server + matching CLI
 make install-skills # built-in skills + the /future-goal skill
-make package-desktop    # desktop bundle → .app + .dmg in target/release/bundle/
+make package-desktop    # named DMG in the repository root; raw bundles in target/release/bundle/
 scripts/build/build-desktop-macos.sh  # local DMG; auto-signs when a Developer ID certificate is available
 ```
 
 `scripts/build/build-desktop-macos.sh` builds the unified `future` CLI sidecar together
 with the GUI. It automatically uses a single `Developer ID Application` identity
-from the macOS Keychain and writes a `*-sign.dmg`; if no unambiguous identity
-is available, it falls back to the normal DMG. Run it with `--help` for
+from the macOS Keychain. Signed output is `FutureOS_<version>_<arch>.dmg`;
+if no unambiguous identity is available, output ends in `-unsigned.dmg`. Run it with `--help` for
 certificate selection, output-directory and Apple notarization options.
 
 ## Linux (Debian/Ubuntu)
@@ -117,14 +160,14 @@ sudo apt install -y protobuf-compiler                             # optional —
 Build and install:
 
 ```bash
-scripts/build/build-desktop-linux.sh --out-dir ./dist   # → ./dist/FutureOS_<version>_amd64.deb + FutureOS-portable-linux.tar.gz
+scripts/build/build-desktop-linux.sh --out-dir ./dist   # → ./dist/FutureOS_<version>_amd64.deb + FutureOS_<version>_linux_<arch>-portable.tar.gz
 scripts/dev/start-desktop-linux.sh                    # local Linux Desktop + agent development session
 make install        # or install straight from source: GUI + headless Desktop + unified `future` CLI + skills → /usr/local/bin (sudo)
 make install-cli    # unified `future` CLI only
 make install-desktop    # desktop app + matching CLI
 make install-desktop-headless   # GUI-free `futureos-headless` server + matching CLI
 make install-skills # built-in skills + the /future-goal skill
-make package-desktop    # desktop bundle → .deb in target/release/bundle/
+make package-desktop    # named .deb and portable archive in the repository root
 ```
 
 `scripts/dev/start-desktop-linux.sh` starts GUI development with an embedded
@@ -179,7 +222,7 @@ Push-Location desktop; npm install; npm run tauri:build -- --no-bundle; Pop-Loca
 $bin = "$env:USERPROFILE\.future\bin"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
 Copy-Item target\release\future.exe $bin
-Copy-Item target\release\futureos.exe "$bin\future-desktop.exe"
+Copy-Item target\release\futureos.exe "$bin\futureos.exe"
 ```
 
 **Headless desktop** — equivalent to `make install-desktop-headless`. The same CLI
@@ -196,8 +239,7 @@ Copy-Item target\release\futureos-headless.exe $bin
 **Installer package** — equivalent to `make package-desktop`:
 
 ```powershell
-node scripts\version.mjs --set-bundle
-Push-Location desktop; npm run tauri:build; Pop-Location   # → NSIS setup .exe under target\release\bundle\nsis\
+powershell -ExecutionPolicy Bypass -File scripts/build/build-desktop-windows-installer.ps1   # → named NSIS setup .exe in the repository root
 ```
 
 Notes:

@@ -18,6 +18,12 @@
   可选经由 `../release/sign-file.ps1` 做 Authenticode 签名。
 - `build-desktop-windows-portable.ps1` — 构建含 sidecar 二进制的便携 Windows zip。
 
+`make package-desktop` 复用上述平台脚本，最终包默认输出到仓库根目录，
+可用 `--out-dir`（macOS/Linux）或 `-OutDir`（Windows）修改。
+文件名包含产物版本和架构；macOS/Windows 未签名包使用 `-unsigned`，签名包不加后缀。
+完整列表和底层 Tauri 原始包的区别见[构建与安装指南](../docs/guide/build-and-install.zh-CN.md#分发产物命名)。
+`version.mjs --artifact-version` 只输出产物版本；`--json` 同时输出显示、产物和 bundle 版本。
+
 ## dev/
 
 本地开发会话。Desktop 默认启动内置 Agent；

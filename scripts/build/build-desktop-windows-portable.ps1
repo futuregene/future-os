@@ -7,7 +7,7 @@
     Replicates the CI "Windows portable" pipeline (.github/workflows/build.yml):
       1. build the CLI and desktop together through Tauri (--no-bundle),
       2. assemble FutureOS.exe + future.exe + Readme.txt
-         into FutureOS-portable-windows.zip.
+         into FutureOS_<version>_windows_<arch>-portable[-unsigned].zip.
 
     The resulting app needs the Microsoft Edge WebView2 runtime (ships with
     Windows 10/11). Keep FutureOS.exe and future.exe together — Desktop hosts its Agent in process by default. The matching CLI remains
@@ -115,11 +115,18 @@ Write-Host "    host triple: $triple"
 
 # Resolve ONE version string and pin it for every sub-build (CLI build.rs,
 # desktop build.rs) so they all agree. version.mjs derives it from git:
-# 0.0.0-<hash>+local[.dirty] locally, or the tag/CI value when set.
-if (-not $env:FUTURE_VERSION) {
-    $env:FUTURE_VERSION = (node scripts/version.mjs)
-    if ($LASTEXITCODE -ne 0) { throw "scripts/version.mjs failed to resolve a version." }
+# The public artifact version is resolved before pinning the display version.
+$versions = node scripts/version.mjs --json
+if ($LASTEXITCODE -ne 0) { throw "scripts/version.mjs failed to resolve a version." }
+$versions = $versions | ConvertFrom-Json
+$env:FUTURE_VERSION = $versions.version
+$artifactVersion = $versions.artifactVersion
+switch (($triple -split '-')[0]) {
+    'x86_64' { $assetArch = 'x64' }
+    'aarch64' { $assetArch = 'arm64' }
+    default { throw "Unsupported architecture in host triple: $triple" }
 }
+$suffix = if ($Sign) { '' } else { '-unsigned' }
 Write-Host "    version: $($env:FUTURE_VERSION)"
 
 if (-not $SkipDeps) {
@@ -157,7 +164,7 @@ if ($Sign) {
 
 if (-not $OutDir) { $OutDir = $Root }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-$zip = Join-Path $OutDir "FutureOS-portable-windows.zip"
+$zip = Join-Path $OutDir "FutureOS_${artifactVersion}_windows_${assetArch}-portable${suffix}.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force
 Remove-Item -Recurse -Force $stage

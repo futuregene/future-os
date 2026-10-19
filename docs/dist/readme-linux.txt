@@ -3,9 +3,8 @@ FutureOS 免安装版使用说明（Linux）
 
 【启动】
 将下载的压缩包解压到任意目录，然后运行 ./futureos。
-使用实际下载文件名：正式发布为
-FutureOS_<version>_linux_<arch>-portable.tar.gz（x86_64 或 aarch64）；
-本地开发构建可能叫 FutureOS-portable-linux.tar.gz。
+使用实际下载文件名：本地构建和正式发布均为
+FutureOS_<version>_linux_<arch>-portable.tar.gz（x86_64 或 aarch64）。
 futureos、futureos-headless 与 future 保持同目录。图形或无头入口优先连接兼容外部
 Agent；默认端点不存在且实例锁空闲时，在自身进程内运行完整 Agent。future 用于技能、
 维护及独立 CLI。不兼容或持锁不可用时直接报错，不启动第二份服务，不删除锁绕过检查。

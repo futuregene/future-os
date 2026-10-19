@@ -15,7 +15,7 @@ It does not daemonize or install a system service.
 - Linux `.deb` and portable releases include `futureos-headless` and the matching
   `future` CLI; you can also build them from source (section 5). A source install
   (`make install`) puts `futureos-headless` in the same `bin` directory as
-  `future-desktop`. The standalone entrypoint needs no GTK/WebKit and starts headless
+  `futureos`. The standalone entrypoint needs no GTK/WebKit and starts headless
   by default. The CLI-only archive still contains only `future`, not the Desktop
   backend entrypoint.
 - The complete Agent runs inside headless Desktop when no external service owns

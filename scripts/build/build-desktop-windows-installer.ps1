@@ -31,6 +31,9 @@
 .PARAMETER SkipDeps
     Skip `npm ci` in desktop/ (use when node_modules are already current).
 
+.PARAMETER OutDir
+    Directory to copy the named installer into. Defaults to the repository root.
+
 .PARAMETER Sign
     Authenticode-sign the sidecars, the app .exe and both installers. Opt-in: a
     plain local build stays unsigned so it needs no certificate.
@@ -59,6 +62,7 @@
 [CmdletBinding()]
 param(
     [switch]$SkipDeps,
+    [string]$OutDir,
     [switch]$Sign,
     [string]$CertSubject,
     [string]$TimestampUrl = "http://time.certum.pl/"
@@ -120,16 +124,25 @@ Write-Host "    host triple: $triple"
 
 # Resolve ONE version string and pin it for every sub-build (CLI build.rs,
 # desktop build.rs) so they all agree.
-if (-not $env:FUTURE_VERSION) {
-    $env:FUTURE_VERSION = (node scripts/version.mjs)
-    if ($LASTEXITCODE -ne 0) { throw "scripts/version.mjs failed to resolve a version." }
+$versions = node scripts/version.mjs --json
+if ($LASTEXITCODE -ne 0) { throw "scripts/version.mjs failed to resolve a version." }
+$versions = $versions | ConvertFrom-Json
+$env:FUTURE_VERSION = $versions.version
+$artifactVersion = $versions.artifactVersion
+switch (($triple -split '-')[0]) {
+    'x86_64' { $assetArch = 'x64' }
+    'aarch64' { $assetArch = 'arm64' }
+    default { throw "Unsupported architecture in host triple: $triple" }
 }
+$suffix = if ($Sign) { '' } else { '-unsigned' }
 Write-Host "    version: $($env:FUTURE_VERSION)"
 
 if (-not $SkipDeps) {
     Write-Host "==> Installing npm dependencies (desktop)" -ForegroundColor Cyan
     Push-Location desktop; try { Invoke-Native { npm ci } } finally { Pop-Location }
 }
+
+Invoke-Native { node scripts/version.mjs --set-bundle }
 
 Write-Host "==> Building desktop installers (Tauri)" -ForegroundColor Cyan
 $overlay = $null
@@ -177,9 +190,19 @@ if ($failLog) {
 
 Write-Host "==> Installer" -ForegroundColor Cyan
 $bundle = Join-Path $Root "target\release\bundle"
-$artifacts = @(Get-ChildItem -Path (Join-Path $bundle "nsis\*.exe") -ErrorAction SilentlyContinue)
-if (-not $artifacts) { throw "Tauri produced no installer under $bundle\nsis." }
-
+$source = Join-Path $bundle "nsis/FutureOS_$($versions.bundleVersion)_${assetArch}-setup.exe"
+if (-not (Test-Path $source)) { throw "Tauri produced no installer at $source." }
+$artifacts = @(Get-Item $source)
+if (-not $OutDir) { $OutDir = $Root }
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+$output = Join-Path (Resolve-Path $OutDir).Path "FutureOS_${artifactVersion}_${assetArch}-setup${suffix}.exe"
+if ($artifacts[0].FullName -ne $output) {
+    Copy-Item $artifacts[0].FullName $output -Force
+    if (Test-Path "$($artifacts[0].FullName).sig") {
+        Copy-Item "$($artifacts[0].FullName).sig" "$output.sig" -Force
+    }
+}
+$artifacts = @(Get-Item $output)
 foreach ($a in $artifacts) {
     # Independent check that the bundler really did call signCommand — a
     # silently-unsigned installer is exactly the failure worth catching here.
