@@ -34,7 +34,7 @@
     {
       "test": "scripted_requests::an_overfull_event_backlog_resumes_and_drops_the_newest",
       "observed": "Delivered nine events for capacity eight; three buffered pushes dropped. Publisher/subscriber flushes did not establish the assumed complete preloaded burst.",
-      "sourceFollowUp": "Unresolved: establish an observable deterministic prebuffer condition without sleeps or weakening capacity/drop assertions.",
+      "sourceFollowUp": "Replace publisher/subscriber flush and yield assumptions with a marker sent after the entire burst by the same publisher and received on a separate subscription of the same receiving connection. Keep the real Client stream and all original capacity/newest-drop assertions. Runtime remains unverified.",
       "runtimeRevalidated": false
     },
     {
@@ -52,7 +52,8 @@
       "RUSTC_WRAPPER= cargo clippy --offline --locked -p future-remote-interop --features network-tests --all-targets -- -D warnings"
     ],
     "passed": true,
-    "executedNetworkTests": 0
+    "executedNetworkTests": 0,
+    "note": "Includes the subsequent same-connection burst marker correction; static compilation does not prove runtime behavior."
   },
   "limitations": [
     "This failed independent interoperability run is separate from the passing package/application unit suites.",

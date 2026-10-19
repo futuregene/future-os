@@ -453,11 +453,20 @@ async fn an_overfull_event_backlog_resumes_and_drops_the_newest() {
     let (session, host) = scripted_peer(pair_id, 0).await;
     let owner = ClientGuard(Client::new(Arc::new(MemoryClientHost::empty())));
     let subscriptions = session.subscribe(None).await.expect("subscribe");
+    // Observe a marker on the same receiving connection, published by the same
+    // connection as the burst. A local flush/PONG alone does not establish when
+    // another connection's publishes have reached this subscriber's queues.
+    let barrier_subject = format!("p.{pair_id}.fixture.burst_ready");
+    let mut barrier = session
+        .client_for_test()
+        .subscribe(barrier_subject.clone())
+        .await
+        .expect("subscribe burst barrier");
     session
         .client_for_test()
         .flush()
         .await
-        .expect("subscription reached broker");
+        .expect("event and barrier subscriptions reached broker");
 
     let capacity = 8usize;
     let total = capacity + 4;
@@ -467,17 +476,23 @@ async fn an_overfull_event_backlog_resumes_and_drops_the_newest() {
             &json!({ "type": "agent_text", "data": "{}", "idx": idx }),
         )
         .await;
-        // Let the broker and the client's reader make progress as we inject, so
-        // the burst is buffered by the time the loop starts.
-        if idx % 4 == 0 {
-            tokio::task::yield_now().await;
-        }
     }
-    session
-        .client_for_test()
-        .flush()
+    host.publisher
+        .publish(barrier_subject.clone(), "burst_ready".into())
         .await
-        .expect("buffered burst precedes PONG");
+        .expect("publish marker after the complete burst");
+    host.publisher.flush().await.expect("marker reached broker");
+    let marker = tokio::time::timeout(Duration::from_secs(5), barrier.next())
+        .await
+        .expect("complete burst must reach the receiving connection")
+        .expect("barrier subscription remains open");
+    assert_eq!(marker.subject.as_str(), barrier_subject);
+    assert_eq!(marker.payload.as_ref(), b"burst_ready");
+    // NATS orders this publisher's messages on the receiving connection;
+    // async-nats dispatches them to subscriber queues in that order. Receiving
+    // the marker therefore establishes that all event frames are queued before
+    // the actual Client stream starts. The marker is outside every role lane.
+    drop(barrier);
 
     let (emitter, seen) = recording_emitter();
     let (_stream, _visible) = owner.0.spawn_fixture_stream(
