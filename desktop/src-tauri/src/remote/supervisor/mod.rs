@@ -31,6 +31,9 @@ pub(super) use self::start::{
     spawn_runtime_supervisor, spawn_start_retry, spawn_web_reconnect, start_failure,
     start_generation, start_once,
 };
+// `enable` is the GUI switch's start; the headless build enters through
+// `start`, so that configuration never names it.
+#[allow(unused_imports)]
 pub use self::start::{enable, start};
 #[cfg(test)]
 pub(super) use self::state::SingleSlotMap;
