@@ -2127,7 +2127,7 @@
             "wait": 2000
           },
           {
-            "eval": "(() => {\n  const t = document.body.innerText;\n  for (const wanted of ['正在控制', '待命', '离线', '添加设备'])\n    if (!t.includes(wanted)) throw new Error('the device list is missing ' + wanted + ': ' + t.slice(0, 400));\n  const rows = [...document.querySelectorAll('li')].map(li => (li.textContent || '').trim()).filter(Boolean);\n  if (rows.length !== 3) throw new Error('expected three device rows, got ' + rows.length + ': ' + JSON.stringify(rows));\n  const active = rows.find(r => r.includes('iPhone 17 Pro'));\n  if (!active.includes('正在控制')) throw new Error('the controlling device is not marked as such: ' + active);\n  if (active.includes('让这台控制')) throw new Error('the controlling device offers to take over from itself');\n  const standby = rows.find(r => r.includes('MacBook Air'));\n  if (!standby.includes('让这台控制')) throw new Error('a connected standby device offers no way to take control');\n  const offline = rows.find(r => r.includes('iPad mini'));\n  if (offline.includes('让这台控制')) throw new Error('an offline device is offered the machine; it has no bridge to command');\n  return 'rows=' + rows.length;\n})()"
+            "eval": "(() => {\n  const host = document.querySelector(\"[data-testid='remote-hub-host']\");\n  if (!host) throw new Error('the host direction is not on the page');\n  const t = host.innerText;\n  for (const wanted of ['正在控制', '待命', '离线', '添加设备'])\n    if (!t.includes(wanted)) throw new Error('the device list is missing ' + wanted + ': ' + t.slice(0, 400));\n  const rows = [...host.querySelectorAll('li')].map(li => (li.textContent || '').trim()).filter(Boolean);\n  if (rows.length !== 3) throw new Error('expected three device rows, got ' + rows.length + ': ' + JSON.stringify(rows));\n  // The row of the device driving this machine is the only one that can unpair\n  // from the list: that is the connection the machine is serving.\n  const unpairRows = rows.filter(r => r.includes('解除配对'));\n  if (unpairRows.length !== 1) throw new Error('expected exactly one row to offer 解除配对, got ' + unpairRows.length);\n  if (!unpairRows[0].includes('iPhone 17 Pro')) throw new Error('the unpair action is on the wrong device: ' + unpairRows[0]);\n  // Taking control moved to the device's own page; a list row is a door.\n  if (t.includes('让这台控制')) throw new Error('the list still carries a takeover button');\n  return 'rows=' + rows.length;\n})()"
           },
           {
             "shot": "d-remote-multi-device.png"
@@ -2135,7 +2135,7 @@
         ]
       },
       "remote-multi-device-reconnect": {
-        "note": "The same list while the bridge has lost its connection and is retrying: the status row says the network is unavailable and offers 重新连接.",
+        "note": "The same list while the bridge has lost its connection: every row reads 离线, and the section does not claim to be connecting.",
         "url": "http://localhost:5299/shot/?lang=zh&remoteDevices=reconnect",
         "steps": [
           {
@@ -2148,7 +2148,7 @@
             "wait": 2000
           },
           {
-            "eval": "(() => {\n  const host = document.querySelector(\"[data-testid='remote-hub-host']\");\n  if (!host) throw new Error('the host direction is not on the page');\n  const t = host.innerText;\n  for (const wanted of ['连接中', '正在尝试连接，请检查电脑网络。', '重新连接', '添加设备'])\n    if (!t.includes(wanted)) throw new Error('a dropped connection is not shown as such: missing ' + wanted + ': ' + t.slice(0, 400));\n  if (t.includes('已连接\\n') || t.includes('正在控制'))\n    throw new Error('the section still claims a live connection or a controlling device: ' + t.slice(0, 400));\n  return 'ok';\n})()"
+            "eval": "(() => {\n  const host = document.querySelector(\"[data-testid='remote-hub-host']\");\n  if (!host) throw new Error('the host direction is not on the page');\n  const t = host.innerText;\n  // With the transport down every row reads 离线; the section itself does not\n  // narrate the attempt, because the rows already say it.\n  const rows = [...host.querySelectorAll('li')].map(li => (li.textContent || '').trim()).filter(Boolean);\n  if (rows.length !== 3) throw new Error('expected three device rows, got ' + rows.length);\n  if (rows.some(r => !r.includes('离线')))\n    throw new Error('a row still claims a live connection: ' + JSON.stringify(rows));\n  if (t.includes('正在控制')) throw new Error('the section still names a controlling device while the bridge is down');\n  if (!t.includes('添加设备')) throw new Error('adding a device is gone while the bridge retries');\n  return 'ok';\n})()"
           },
           {
             "shot": "d-remote-multi-device-reconnect.png"
@@ -2156,7 +2156,7 @@
         ]
       },
       "remote-multi-device-waiting": {
-        "note": "Adding a device: the new invitation sits in the list as 等待配对 while its QR code is on screen.",
+        "note": "Adding a device: the QR code and the pairing code are in a floating window, and the list keeps only real connections.",
         "url": "http://localhost:5299/shot/?lang=zh&remoteDevices=waiting",
         "steps": [
           {
@@ -2169,7 +2169,13 @@
             "wait": 2000
           },
           {
-            "eval": "(() => {\n  const t = document.body.innerText;\n  for (const wanted of ['等待配对', '配对码', '添加设备'])\n    if (!t.includes(wanted)) throw new Error('the invitation is not on screen: missing ' + wanted + ': ' + t.slice(0, 400));\n  if (!document.querySelector('svg[role=img]')) throw new Error('no QR code is drawn for the invitation');\n  return 'ok';\n})()"
+            "tap": "添加设备"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => {\n  const dialog = document.querySelector(\"[role='dialog']\");\n  if (!dialog) throw new Error('the add-device window did not open');\n  const t = dialog.textContent || '';\n  for (const wanted of ['配对码', '取消'])\n    if (!t.includes(wanted)) throw new Error('the add window is missing ' + wanted + ': ' + t.slice(0, 300));\n  if (!dialog.querySelector('svg[role=img]')) throw new Error('no QR code is drawn for the invitation');\n  // An invitation is not a connection: it lives in this window, not in the list.\n  const host = document.querySelector(\"[data-testid='remote-hub-host']\");\n  const rows = [...host.querySelectorAll('li')].map(li => (li.textContent || '').trim()).filter(Boolean);\n  if (rows.length !== 3) throw new Error('the invitation leaked into the list: ' + JSON.stringify(rows));\n  if ((host.textContent || '').includes('等待配对')) throw new Error('the list says a device is waiting');\n  return 'ok';\n})()"
           },
           {
             "shot": "d-remote-multi-device-waiting.png"

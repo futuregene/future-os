@@ -22,7 +22,6 @@ pub use self::shutdown::{
     disconnect_device, handle_system_resume, handle_system_suspend, notify_mobile_disconnect, stop,
     stop_gracefully, unpair, unpair_slot,
 };
-pub use self::start::start;
 #[allow(unused_imports)]
 pub use self::start::{add_device, pair_new_device};
 #[allow(unused_imports)]
@@ -32,6 +31,7 @@ pub(super) use self::start::{
     spawn_runtime_supervisor, spawn_start_retry, spawn_web_reconnect, start_failure,
     start_generation, start_once,
 };
+pub use self::start::{enable, start};
 #[cfg(test)]
 pub(super) use self::state::SingleSlotMap;
 #[cfg(not(test))]

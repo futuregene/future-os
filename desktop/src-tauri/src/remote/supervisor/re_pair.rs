@@ -9,8 +9,7 @@
 //! * the machine has no device left, and a terminal asked for an invitation
 //!   (`future remote devices add` on an unpaired machine, `start.rs`'s
 //!   `pair_new_device`), where the cleanup is what stops a runtime that outlived
-//!   the pairing book `remove --all` emptied;
-//! * nothing is paired and the entry point starts a fresh remote session.
+//!   the pairing book `remove --all` emptied.
 //!
 //! Pairing replaces, so this is destructive by nature: the platform revokes the
 //! previous pairing as soon as the new code is created, and the device that was
@@ -18,7 +17,11 @@
 
 use super::*;
 
-/// Revoke the saved pairing, then start a fresh one.
+/// Revoke the saved pairing, then add a device with a fresh invitation.
+///
+/// "Start afresh" is *adding*, not starting: a plain start no longer mints an
+/// invitation for an empty machine (the GUI adds devices one at a time), so the
+/// invitation the caller is waiting for has to be asked for explicitly.
 pub async fn re_pair() -> Result<RemoteStatus, crate::AppError> {
     unpair().await?;
     // `unpair` only queues the revoke: it is also the Remote page's button and
@@ -31,7 +34,13 @@ pub async fn re_pair() -> Result<RemoteStatus, crate::AppError> {
     if let Err(error) = pairing::retry_pending_revokes().await {
         eprintln!("remote: re-pair could not settle the saved pairing's revoke: {error}");
     }
-    start(RemoteStartInput {}).await
+    // A categorized refusal (no account, network, server) is an answer the
+    // terminal can print, exactly as a start reports it; only an uncategorized
+    // local fault stays an error.
+    match add_device().await {
+        Ok(status) => Ok(status),
+        Err(error) => start_failure(error),
+    }
 }
 
 #[cfg(test)]
