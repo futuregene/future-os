@@ -216,7 +216,7 @@ test("the dot is green only when every machine is connected", () => {
   expect(dotColor()).toBe(lightColors.success);
 });
 
-test("a connected machine another device holds is yellow, not green", () => {
+test("a connected machine another device holds turns the whole set yellow", () => {
   // Connected is not the same as usable. Painting a standby machine green told
   // the user everything was fine while every command came back refused.
   const held: MachineSummary[] = [{
@@ -229,10 +229,38 @@ test("a connected machine another device holds is yellow, not green", () => {
   render(ready, true, held);
   expect(dotColor()).toBe(lightColors.warningDot);
 
-  // A set where one machine is ours to drive is still green: the phone has
-  // somewhere to work.
+  // A machine we may drive does not paint the held one green: the dot answers
+  // for the set, and the list the reader is looking at contains a machine this
+  // phone cannot use. Which one it is, and the takeover, are the rows' job.
   render(ready, true, [...held, { desktopId: "b", label: "b", active: false, status: "connected", control: "active" }]);
-  expect(dotColor()).toBe(lightColors.success);
+  expect(dotColor()).toBe(lightColors.warningDot);
+});
+
+test("three machines up and the open one in standby is yellow, not green", () => {
+  // The reported case: every desktop answered, so the dot was green — while the
+  // machine the screen is about was held by another device, and nothing could be
+  // done on it.
+  render(
+    ready,
+    true,
+    [
+      { desktopId: "desk", label: "desk", active: true, status: "connected", control: "standby" },
+      { desktopId: "phone", label: "phone", active: false, status: "connected", control: "active" },
+      { desktopId: "home", label: "home", active: false, status: "connected", control: "active" },
+    ],
+    true,
+    { name: "Studio iPad" },
+  );
+
+  expect(dotColor()).toBe(lightColors.warningDot);
+  open();
+  // The block's words belong to the open machine, so they say it is held —
+  // naming the device this phone would displace, even with peers paired.
+  expect(text()).toContain("connection.connectedStandby");
+  expect(text()).toContain("connection.controlHeldBy");
+  // The rows keep answering one machine each.
+  expect(machineDotColor("desk")).toBe(lightColors.warningDot);
+  expect(machineDotColor("phone")).toBe(lightColors.success);
 });
 
 test("a standby connection says so instead of claiming to be simply connected", () => {

@@ -362,8 +362,10 @@ every paired device's.
 **Still next.** The desktop client role's standby UI ("connect to another
 computer" has the same question to ask). The mobile half is done: the sessions
 screen keeps its cues to a yellow status dot — green would claim the machine
-works while nothing can be read from it — and puts the explanation and the
-"take over" button inside the popover that dot opens. The list page itself
+works while nothing can be read from it — and a paired machine that answers
+while another device holds it makes the whole set yellow, not only a phone whose
+one and only desktop is held. The explanation and the
+"take over" button live inside the popover that dot opens. The list page itself
 carries no prompt: it says something is wrong, the sheet says what, and the
 action sits next to the explanation. The picker's per-machine rows show the
 same state, so choosing a machine also tells you whether you may use it.
@@ -574,9 +576,10 @@ disconnected with its last error still recorded.
 "Reconnect all"; every row and every entry of the device picker carries the same five
 states (connected, agent unavailable, connecting, offline, stopped) from one place;
 and the Remote entry's dot answers for the paired machines — green only when every one
-of them is up, amber when some are, red when none are — falling back to this machine's
-own host-bridge state when nothing is paired. A merged list that is short of a machine
-is exactly the fact the reader has to be able to see.
+of them is up and ours to drive, amber when some are up or one is held by another
+device, red when none are — falling back to this machine's own host-bridge state when
+nothing is paired. A merged list that is short of a machine, or one short of
+what this phone may use, is exactly the fact the reader has to be able to see.
 
 **The conversation half is still single-slot on the desktop.** This window reads one
 remote conversation at a time (see the limitations below), whereas the phone gives
