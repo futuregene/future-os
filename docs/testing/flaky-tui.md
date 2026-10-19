@@ -1007,7 +1007,10 @@ work** (`git init`/`commit`/`worktree add`/`rev-parse`).
     138.27 s, 153.18 s — while the controlled *instant* failure printed its section
     normally in the same command on the same host. That is the shape to explain,
     and it points at something in the run's *end game* rather than at the hook
-    (which a normal run restores). It is registered, not fixed.
+    (which a normal run restores). It is registered, not fixed here. **Superseded by
+    §10:** the cause *is* the hook — `index::run` installed it with a bare
+    `set_hook` and never restored it — so the "end-game" reading above is wrong and
+    the anomaly is fixed, not registered.
 * **A reproduction attempt, and it falsifies the obvious recipe.** 14 concurrent
   copies of the single test with `--nocapture` (`/tmp/item24-repro.sh`, logs in
   `/tmp/item24/`): **14/14 pass**, and the slowest copy took **2.50 s** against the
@@ -1118,6 +1121,13 @@ a state transition* on live gRPC (`stream_fails: true`, a server-side stream fai
 Under load the transition can be slower than the sleep, which is the family items
 6/8/14/24 belong to; the same family's fix is to wait for the condition with a
 generous bound instead of sleeping a fixed 300 ms and asserting.
+
+**Outcome — and it is not the hypothesis.** 2026-10-19: reproduced on an 8-way
+whole-suite batch at load 86 with its text — `panicked at
+tui/src/rpc/grpc_client.rs:1776:14: never connected: Elapsed(())` — i.e. the 10 s
+bounded `conn.wait_for` in `wait_connected`, **not** one of the three 300 ms sleeps
+this section hypothesised; fixed by `CONNECT_STATE_BOUND = 60 s` (4x the worst of eight
+concurrent copies at that load: 0.91–14.96 s). Module record §9.10(b).
 
 ### 9.5 The whole-suite rate of this pass, stated plainly
 
@@ -1687,6 +1697,23 @@ defect no assertion needs). §14.1 strengthens the case for it — it would have
 61 s batch self-explanatory — so it stays recorded as the first thing to add if this
 sub-mode is hit again.
 
+**Answer, 2026-10-19 (module record §9.10(a)).** The child ran **every time**, with the
+pid the loop logged (`spawned pid=13007` in the loop's log ↔ `start pid=13007` in the
+stub's own marker), so the starved sub-mode is "the child ran but was never scheduled
+long enough to exit", not "the child never exec'd". Eight concurrent whole suites at
+`-j 8`, load 83–86: exit observed at **385, 386, 517, 764, 1150, 1920, 2303, 2435 ms** —
+25x inside the ~61 s window — and `connect=0 ms` on **all 196** logged attempts, so the
+window is ~480 attempts of the 125 ms `LAUNCH_PROBE_INTERVAL` and nothing else: expiry,
+when it comes, is the child's fork/exec latency, the one term this fixture does not
+control. **20 launch-test runs at loads up to 86** (2.6x the ticket's ≥30 floor) did not
+reproduce §14's red. **Decision — accept the flake with this load profile recorded; no
+runner seam** (unchanged in substance from this section, and now measured rather than
+assumed): a seam would fake the one thing the test exists to assert — that a
+really-spawned candidate that exits is really reported — and would delete the coverage
+`agent_supervisor.rs` gets only through this integration test. This section's
+instrumentation recipe is not superseded: it stays the first thing to re-apply if the
+sub-mode is ever hit.
+
 ## 15. A second rule-4b finding on my own work: one of §11.1's two new tests is itself load-sensitive
 
 The final gate run of §13's pass came back red, and the failing test is one I added in
@@ -1747,7 +1774,7 @@ patched blind at the end of a long pass.
 (its two regression checks in §10.3 were run and failed on the pre-fix code), so
 weakening it now would trade a real guard for a quieter log.
 
-## 16. The three backlog items: the instrumented rate (closed), the paused clock (verified, not adopted), and the last unreproduced flake
+## 16. The three backlog items: the instrumented rate (closed), the paused clock (verified, not adopted), and the last then-unreproduced flake
 
 ### 16.1 §9.3 closed: the instrumented rate is **0 of 8**, and every run kept its coverage
 
@@ -1781,8 +1808,11 @@ Two honest scope notes:
 * **Load was 4-10** for all eight runs (a quiet window — the 218 s first run is the
   instrumented build, not load). The campaign's instrumented failures were recorded at
   higher load, and §14 shows this host's behaviour is load-sensitive, so the correct
-  claim is "0/8 at load 4-10", not "0/8 period". A high-load instrumented batch is the
-  remaining measurement, and it needs other workers active.
+  claim is "0/8 at load 4-10", not "0/8 period". A high-load instrumented batch was the
+  remaining measurement, and it needed other workers active.
+* **That measurement.** Ran 2026-10-19: **8/8** at load 80.7–86.6,
+  rc 0, `profraw` written every run, 0 `BrokenPipe`/listing errors, 2199 passed each —
+  0/16 with these eight.
 * **Environment gotcha for the next worker (worth one minute to read).** This
   worktree's `cargo-llvm-cov` is **0.8.7**, while `docs/testing/module-tui.md` §1.1
   documents **0.9.1**. 0.8.7 looks for the component named `llvm-tools-preview`, but
@@ -1838,7 +1868,7 @@ is the better trade until the spin is ruled out.
 `flavor = "multi_thread"` and the test passes in 1.50 s. Nothing in the tree now
 depends on the experiment.
 
-### 16.3 §9.4 unchanged: `subscribe_failure_modes` is still unreproduced
+### 16.3 §9.4 at this pass: `subscribe_failure_modes` unreproduced (since reproduced and fixed — 2026-10-19)
 
 **0 reds in the 14 whole-suite runs of this pass** (including a load-~20 window), and
 0 in **56** whole-suite runs to date across §9-§16, against 2 sightings ever (60.87 s
@@ -1849,6 +1879,18 @@ wait for the condition, not a weakened assertion).
 
 **Next check for whoever gets a red:** the panic text now survives (§10), so the
 assertion is the whole answer; the file is `tui/src/rpc/grpc_client.rs:3832`.
+
+**Outcome (2026-10-19).** The red arrived in an 8-way whole-suite batch at load 86 —
+`2198 passed; 1 failed` — and §10's fix did its job: `panicked at
+tui/src/rpc/grpc_client.rs:1776:14: never connected: Elapsed(())`, i.e. the 10 s bounded
+`conn.wait_for` in `wait_connected`, **not** any of the four blocks' 300 ms sleeps. Eight
+concurrent copies of the test at that load took **0.91–14.96 s** for the same transition,
+a spread that straddles the old 10 s bound; `CONNECT_STATE_BOUND = 60 s` (4x the worst)
+now bounds it, for this and the other 24 `wait_conn`/`wait_connected` call sites. The
+fix's rate is §9.10(c): 0/16 instrumented runs, eight of them at load 80–86. Module
+record §9.10(b). For the next reader: at this revision the test is at
+`tui/src/rpc/grpc_client.rs:3853` (this section's 3832 is that pass's line number) and
+the bound is the `CONNECT_STATE_BOUND` const at 1791–1795.
 
 ### 16.4 The two items of this todo already settled elsewhere
 
@@ -1911,7 +1953,7 @@ mutation"*, not *"no process-global is touched"*. Read it as a triage filter, ex
 | variable(s) | sites | reachable by a test that skips the lock? | decision |
 |---|---|---|---|
 | **`PATH`** | 3 autocomplete helpers + 2 integration files | **yes** — measured (item 24; §13.3 reproduces it in 1 s) | **done in §13**: helpers → RAII, consumers → pinned |
-| **`HOME` / `USERPROFILE`** | `terminal.rs:1121`, `index.rs:1469/2618/2656/2687/2774/2835`, `app.rs:15517` | **yes** — the home is resolved by `crate::home` / `future_home()` (`tui_settings_path`, the crash-log path, skills) for anything that reads the user's `.future`, and many `app::`/`index::` tests do that without setting it and without the lock | **converted in §17.1 for the two autocomplete sites**; the nine here are the next item (same mechanical change, different files) |
+| **`HOME` / `USERPROFILE`** | `terminal.rs:1121`, `index.rs:1469/2618/2656/2687/2774/2835`, `app.rs:15517` | **yes** — the home is resolved by `crate::home` / `future_home()` (`tui_settings_path`, the crash-log path, skills) for anything that reads the user's `.future`, and many `app::`/`index::` tests do that without setting it and without the lock | **converted in §17.1 for the two autocomplete sites, and in §18 for these eight addresses — plus four sites in this table's blind spot the scanner never reported** |
 | `COLUMNS` / `LINES` | `terminal.rs:1047/1066/1167` | narrow — read only as the *fallback* in `columns_with_ioctl`/`rows_with_ioctl`, and consumers that care pass an explicit size | recorded; low value |
 | `TERM_PROGRAM` | `terminal_image.rs:669` | narrow — the capability detector; every image test sets its own | recorded |
 | `EDITOR` / `VISUAL` | `app.rs:18879/18932/18961/20750` | narrow — resolved per test, and each editor test sets it | recorded |
@@ -1920,7 +1962,8 @@ mutation"*, not *"no process-global is touched"*. Read it as a triage filter, ex
 | `FUTURE_HOME`, `FUTURE_AGENT_SOCKET` | `tui/tests/agent_sidecar_{launch,readiness}.rs` | no — separate binaries, one/test-file serialized (§13.2 A4/A5) | unchanged |
 | `FUTURE_AGENT_GRPC_ADDR` | `rpc/grpc_client.rs:2687` | n/a — the flagged function is a **helper** named `restore`, not a test; the scanner's function-level heuristic mislabels it | recorded |
 
-So the *reachable* set is `PATH` (done), `HOME`/`USERPROFILE` (2 done, 9 to go), and
+So the *reachable* set is `PATH` (done), `HOME`/`USERPROFILE` (2 done in §17.1,
+the rest in §18 — and §18.3 explains why this table's `HOME` row was incomplete), and
 nothing else rises above "narrow" — which is the classification the tool cannot make.
 
 ### 17.3 §15's flake fixed: the regression guard no longer reads the shared slot
@@ -1953,16 +1996,23 @@ The panic-based probe is gone, so the assertion touches no shared state.
 green**, no red anywhere in the batch, and the rewritten test `... ok` in all 12, against
 1 of ~14 before. That is the flake from §15 closed by construction rather than by luck.
 
-### 17.4 Items (2) and (4) of this todo: unchanged, and stated as such
+### 17.4 Items (2) and (4) of this todo: not re-measured at this pass, both answered 2026-10-19
 
 * **`agent_sidecar_launch.rs` starved-child sub-mode (§14)** — **not re-measured this
   pass**: the instrument-it-then-run-at-high-load check needs a load this session did not
   reach (my burners top out near 17; §14's collapse needed higher). The instrumentation
-  recipe stays exactly as §14.3 wrote it, and the decision it feeds (a runner seam vs
-  accepting the flake with its profile) is unchanged.
-* **`subscribe_failure_modes` (§9.4)** — still unreproduced: 0 reds in this pass's 12
-  whole-suite runs, so **0 of 68** whole-suite runs to date against 2 sightings ever. No
-  red means no assertion to name; nothing to fix yet.
+  recipe stays exactly as §14.3 wrote it. **Answered 2026-10-19** (module record
+  §9.10(a), and §14.3 now carries the answer): the child ran every time (the loop's
+  logged pid matched the stub's own `start pid=`), exit observed at 385 ms idle to
+  2435 ms at load 86 — 25x inside the window — `connect=0 ms` on all 196 logged attempts,
+  and **20 launch-test runs up to load 86 did not reproduce the red**; **accept the flake
+  with that load profile, no runner seam.**
+* **`subscribe_failure_modes` (§9.4)** — 0 reds at this pass: 0 in this pass's 12
+  whole-suite runs, i.e. **0 of 68** whole-suite runs to date, against 2 sightings ever.
+  **Answered 2026-10-19** (module record §9.10(b)): reproduced at load 86 *with its
+  text* — `never connected: Elapsed(())` at `grpc_client.rs:1776:14`, the 10 s bounded
+  `conn.wait_for`, not a 300 ms sleep — mechanism named, **fixed** by
+  `CONNECT_STATE_BOUND = 60 s`; rate 0/16 instrumented runs.
 * **The backlog** (instrumented rate, `start_paused`, the §9.1 drainer, the silent-kill
   line) was closed or decided in §16 and is not re-opened here.
 
@@ -1976,3 +2026,138 @@ green**, no red anywhere in the batch, and the rewritten test `... ok` in all 12
 | `cargo test -p future-tui --no-fail-fast -j 4` | 0 | lib 2198 passed, integration targets ok |
 | 3 x 4-way whole-suite batches (`-j 8`) | — | 12 suite runs, all green |
 | `global-leak-scan.py tui/src/components/autocomplete.rs` | — | `total candidates: 0` (was 2) |
+## 18. The `HOME` conversion finished: eight listed addresses, four the scanner cannot see, and a gate that corrected my own expectation
+
+§17.2 left the `HOME` row as "2 done, 9 to go". This section finishes the variable: every
+raw `set_var`/`remove_var` of `HOME` in the `tui` **lib binary** is now RAII. The count in
+that sentence was wrong (§18.2), and the address list was not the population (§18.3) —
+both are corrected here rather than quietly fixed.
+
+### 18.1 What changed
+
+Same mechanical change as §17.1: `EnvVarGuard::set`/`remove` at the site, trailing
+restore deleted. Where one test needs *several* values of the same variable, the site
+nests scoped guards instead of re-setting (§18.4).
+
+| site | was | now |
+|---|---|---|
+| `terminal.rs` `write_log_gated_by_env` | raw `set_var("HOME")` then `remove_var("HOME")` mid-test, both restored at the end after `unwrap`s | `EnvVarGuard::set` + nested `EnvVarGuard::remove`; `PI_TUI_WRITE_LOG` is a guard too |
+| `index.rs` `run_without_flags_drives_the_interactive_loop_and_exits_cleanly` | `old_home` + restore after `drop(pty)` | guard |
+| `index.rs` `run_interactive_terminal_init_failure` | same, restored *before* the assert | guard |
+| `index.rs` `run_print_against_mock_succeeds` | same | guard |
+| `index.rs` `run_interactive_fails_fast_without_tty` | same | guard |
+| `index.rs` `interactive_loop_runs_and_ctrl_c_quits` | same, after `drop(pty)` | guard |
+| `index.rs` `InteractiveFixture::with_delay` + `finish()` | field `old_home`, restored in `finish()` — which each of the five PTY tests calls only **after** `run_interactive` returns, so a panic in the loop skipped it | field `EnvVarGuard`; `finish()` only closes the pty |
+| `app.rs` `render_debug_env_paths_and_termux` | three raw `HOME` sets (`home` → `blocked` → `home`) and five restores at the end; `PI_TUI_DEBUG` ×2, `PI_DEBUG_REDRAW`, `TERMUX_VERSION` | one scoped guard per variable and per phase, so each is set for exactly the window it was set for before |
+| `footer.rs` `renders_home_relative_cwd_with_tilde`, `renders_raw_cwd_when_home_unset` | raw set/remove, restore folded into a helper before the `assert` | guards |
+| `crash.rs` `panic_hook_restores_terminal_and_writes_crash_log`, `panic_hook_survives_unwritable_crash_log` | raw sets for four different `HOME` values, one trailing `restore_env` | scoped guards, one per phase |
+
+Raw mutation of `HOME` in the lib binary is now **zero outside the four restore
+helpers** (`restore_env` in both `index.rs` and `crash.rs`, `restore_env2` in
+`app.rs`, `restore_home` in `footer.rs`) and their own unit tests — the same choice
+§17.1 made for
+`restore_env_var` in `autocomplete.rs`. The scanner's count for `tui/src` fell from
+**21 to 13** candidates; the 13 left are the rows §17.2 classifies as narrow
+(`COLUMNS`/`LINES`, `TERM_PROGRAM`, `EDITOR`/`VISUAL`, `LANG`/`LC_ALL`, the
+`keys.rs`/`terminal_image.rs` swaps, and the `grpc_client.rs` helper it mislabels).
+
+Also converted, because they ride in the same bodies and a leak would leave the feature
+on for whatever runs next: `PI_TUI_WRITE_LOG` (`terminal.rs`), `PI_TUI_DEBUG`,
+`PI_DEBUG_REDRAW`, `TERMUX_VERSION` (`app.rs`).
+
+### 18.2 The list was eight addresses, not nine
+
+`1 + 6 + 1 = 8`: one in `terminal.rs`, six in `index.rs`
+(`1469/2618/2656/2687/2774/2835`), one in `app.rs`. §17.2 said "nine" both in the table
+and in the summary line; both are corrected there. All eight are converted, including
+`2835`, which is the fixture helper rather than a test. The scanner's post-change answer
+for those addresses is not evidence of anything (§18.3): it went silent because the raw
+calls are gone, in the same way §17.1's note warned.
+
+### 18.3 The scanner cannot be the census: four more sites, for two different reasons
+
+The eight listed addresses were not the `HOME` population. Two more files carried the
+same shape, and `global-leak-scan.py` reported **neither of them, before or after**:
+
+* `footer.rs` `renders_home_relative_cwd_with_tilde` / `renders_raw_cwd_when_home_unset`.
+  The heuristic fires only when a panic-capable call precedes the **last** mutation. Here
+  the restore is folded into `restore_home(...)` and called *before* the `assert`, so
+  `first_panic > last_set` and the function is skipped. The leak is real all the same: a
+  panic in `render_footer` (or a failing `assert`) unwinds past the restore and leaves
+  the scratch value in place.
+* `crash.rs` `panic_hook_restores_terminal_and_writes_crash_log` /
+  `panic_hook_survives_unwritable_crash_log`. The body contains `catch_unwind`, which the
+  scanner counts as a panic-safe construct. But that `catch_unwind` catches the test's
+  **deliberate** panics; a failing `assert_eq!` two lines later still unwinds past the
+  trailing `restore_env`. In the second test, three different `HOME` values are set with
+  one restore at the end — the exact shape item 27 measured as destructive.
+
+So the tool was wrong in both directions on one variable: it listed eight sites and
+missed four, and its "0 candidates" answer after the conversion means *"no raw mutation
+in the files I flag"*, not *"this variable is clean"*. The population came from
+`grep -rn 'set_var("HOME"\|remove_var("HOME"' tui/src`, not from the scan — the same
+lesson §17.1 recorded, with a second mechanism behind it.
+
+### 18.4 Nested guards: the idiom, and the assertion that was wrong
+
+Three sites need several values of one variable, and they now nest scoped guards:
+
+* `terminal.rs`: set `HOME`, then remove it for the "no home" phase;
+* `app.rs`: `HOME` = first scratch dir → second scratch dir → back to the first;
+* `crash.rs`: three `HOME` values in sequence.
+
+Because that idiom is now load-bearing in three files, it has its own test:
+`test_env::tests::nested_guards_restore_in_reverse_order` (`lib.rs`). **My first version
+of it was wrong and failed**, which is why it is recorded rather than assumed:
+
+```
+assertion `left == right` failed: the removal guard must restore the value it saw
+  left: Ok("outer")
+ right: Ok("inner")
+```
+
+Both inner guards drop at the end of the inner block, so the *removal* guard restores
+`inner` and the `inner` guard **then** restores `outer`. After a scope the value is the
+enclosing scope's, not the innermost one's. The test now asserts all three levels: absent
+inside the innermost scope, `outer` after the inner scope closes, and the ambient value
+after the outer one. That is exactly what the converted `app.rs`/`crash.rs` phases rely
+on.
+
+### 18.5 Field and drop order
+
+Every guard is declared **after** the tempdir whose path it puts in `HOME`, so the guard
+drops (restoring) before the directory is removed. `InteractiveFixture` keeps that order
+as struct fields (`_home` then `_home_guard`); `finish()` no longer touches the
+environment, and the success-path order is unchanged (`pty` still closes first).
+
+### 18.6 Gates for this pass
+
+| command | exit | result |
+|---|---|---|
+| `cargo fmt -p future-tui -- --check` | 0 | clean |
+| `cargo clippy -p future-tui --all-targets -- -D warnings` | 0 | clean |
+| `cargo test -p future-tui --lib -j 4 -- index::tests:: terminal::tests:: crash::tests:: components::footer::tests::` | 0 | **138 passed, 0 failed** |
+| `cargo test ... app::tests::render_debug_env_paths_and_termux` | 0 | ok |
+| `cargo test ... test_env::tests::` | 0 | 4 passed (the new nested test included) |
+| `cargo test -p future-tui --no-fail-fast -j 4` | 0 | lib **2199 passed** (was 2198: +1, the nested test), every integration target ok |
+| 2 x 4-way whole-suite batches (`-j 8`) | — | **8/8 green**, lib 2199 in every run, 27 s and 33 s wall per round, load 2.8 → 5.75 |
+| `git diff --stat` | — | 6 files, +148 / −80 |
+
+### 18.7 What is not claimed, and what remains
+
+* **Not a rate.** No run went red before this change at these sites either — the leak is
+  only reachable through a *failing* assert there, so the evidence is the shape change,
+  the mechanism tests (`EnvVarGuard`'s Drop, the nested-order test) and the census, not a
+  before/after rate. §13.5's caution applies unchanged.
+* **Windows not measured.** None of these sites mutates `USERPROFILE`, so nothing is
+  *leaked* there; whether the scratch `HOME` actually isolates `crate::home` on Windows is
+  unchanged from §17.2 and was not run on Windows this pass.
+* **Items (2)–(5) of the ticket: (2) and (4) answered 2026-10-19, (3) run, (5) re-affirmed
+  — module record §9.10.** Item (2), the `agent_sidecar_launch` starved-child sub-mode, is
+  measured and **accepted with its load profile, no runner seam** (§14.3 carries the
+  answer); item (3), the high-load item-18 batch, is **run: 8/8 at load 80.7–86.6, rc 0,
+  coverage written every run** (0/16 with §16.1's eight); item (4),
+  `subscribe_failure_modes`, is **reproduced with its text and fixed**
+  (`CONNECT_STATE_BOUND = 60 s`); item (5), the two optional decisions (§9.1 drainer, the
+  silent kill in `ensure_agent_running_within`), is genuinely unchanged and re-justified.
+  For the record, this pass's counts were 68 whole-suite runs / 2 sightings ever.

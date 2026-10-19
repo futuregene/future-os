@@ -505,7 +505,7 @@ arm its comment named):
 | test | problem | fix |
 |---|---|---|
 | `tui/src/terminal.rs::noop_callbacks_invoke`, `tui/src/components/scoped_models_selector.rs::noop_callbacks_are_callable` | call no-op callbacks, assert nothing | assert a recorded call count |
-| `tui/src/crash.rs::raw_write_stderr_writes_bytes`, `tui/src/skills_cli.rs::parse_catalogue_rejects_output_without_a_json_object`, `tui/src/terminal_posix.rs` (4, POSIX-only) | no assertion in the body as written; some are `should_panic`-style | add the missing expectation or state here why the helper asserts || `tui/src/rpc/grpc_client.rs::reconnect_poll_session_change_and_stop` (with the three sibling `reconnect_poll_*` tests and `poked_exit_with_stop_set_returns_manager`) | they `sleep` to hit timing windows instead of waiting on an observable, and at least one does not exercise what its name promises: on a filtered instrumented run of that test alone, **none** of the reconnect loop ran (line `1240` = 0 hits) | drive the poll from an observable state, then stop without notifying and assert the poll returned — the deterministic route also covers `1241` (§5.2) |
+| `tui/src/crash.rs::raw_write_stderr_writes_bytes`, `tui/src/skills_cli.rs::parse_catalogue_rejects_output_without_a_json_object`, `tui/src/terminal_posix.rs` (4, POSIX-only) | no assertion in the body as written; some are `should_panic`-style | add the missing expectation or state here why the helper asserts |
 
 | `tui/src/rpc/grpc_client.rs::reconnect_poll_session_change_and_stop` (with the three sibling `reconnect_poll_*` tests and `poked_exit_with_stop_set_returns_manager`) | they `sleep` to hit timing windows instead of waiting on an observable, and at least one does not exercise what its name promises: on a filtered instrumented run of that test alone, **none** of the reconnect loop ran (line `1240` = 0 hits) | drive the poll from an observable state, then stop without notifying and assert the poll returned — the deterministic route also covers `1241` (§5.2) |
 
@@ -644,12 +644,22 @@ today, on this loaded host).
 | round-2 baseline (this worktree, before this unit) | **268** | 59 849 | 99.5489 % |
 | after the first pass of this unit | **24** | 60 157 | 99.9601 % |
 | **after the review rework (§9.8)** | **13** | 60 249 | **99.9784 %** |
+| **HEAD `6244e751b` (§9.11 — the re-reconcile)** | **27** | 60 399 | **99.9553 %** |
+| **HEAD + §9.13's tests (current)** | **19** | 60 427 | **99.9686 %** |
 
 The campaign's own baseline for `tui/src` is 270, not 268; the two-line gap is a
 measurement-scope difference, accounted for line by line in §9.7(a). All three
 numbers are `DA:0` counts of the same measurement form; the rework's eleven lines
 are the ones the adversarial review falsified (§9.8), and the 13 that remain are
 listed in §9.4 — with no row left in a falsified category.
+
+> **The last row is the current number, and it is larger for a good reason.** `27` is
+> the same measurement form on HEAD's tree: all thirteen rows above still read `DA:0`
+> (at shifted line numbers), and **fourteen `DA:0` lines are new** — thirteen in
+> `lib.rs`'s `absolute_tool`, which is §13's pinned-tool resolver and landed *after* the
+> §9.1 run, and one in `index.rs`'s main-loop resize arm. §9.11 has the per-line table
+> and the classification; nothing regressed, and the module is at **0 unwaived lines it
+> has forgotten about** rather than the 21 it had before §9.11.
 
 Per file, worst first, after the rework (`covlines.py files` on `tui-r2-crate.info`):
 
@@ -781,25 +791,42 @@ tests were deleted:
 
 ### 9.4 Residual ledger — every `DA:0` line, with its mechanism
 
-Re-measured after every edit; the line numbers below are `tui-r2-crate.info`, the
-run recorded in §9.1, and each row quotes the code it points at so a line shift
-is visible.
+Re-measured after every edit; the line numbers below are **HEAD's**
+(`/tmp/ftui10/alltargets.info`, §9.11(a)), and each row also names its **round-2**
+number from the §9.1 run, because `terminal.rs` and `agent_supervisor.rs` both grew
+between the two runs (§9.11(c)). The code each row quotes is the same code at both
+numbers, which is what makes the shift visible rather than ambiguous. The categories,
+mechanisms and proofs are unchanged from the round-2 table.
 
 | path:line | category | mechanism | how it is proven |
 |---|---|---|---|
-| `tui/src/terminal.rs:1219` | unreachable-by-construction | `the_injected_terminal_failure_is_reported_once`'s `Ok(_) => panic!` — the test sets `FORCE_NEW_FAILURE` immediately before, so the `Err` arm is the only reachable one; the arm fires only if the seam fails, i.e. if the test's premise is false. The seam is a process-global one-shot, so the discipline that keeps other tests out of its two-instruction window is `terminal_test_lock()` — recorded at the test and in §9.8 (hazard 3). | the same test's `Err` arm and the one-shot assertion (1229 is covered-adjacent) |
-| `tui/src/terminal.rs:1229`, `1230` | unreachable-in-this-environment | the *second* construction's `Err` arm: POSIX `Backend::new()` is infallible **and** the one-shot seam was spent by the preceding call in the same test — either fact alone would not be enough. Windows is the OS that can fail here (non-console handles). | `columns_rows_read_cached_size` builds a `Terminal` with no console and cannot fail |
-| `tui/src/terminal.rs:1289`, `1290`, `1293` | platform-unmeasured | `wait_outcomes_stay_handled`'s `ReadWait::Resize` arm. Verified in the source, not assumed: `terminal_posix.rs:250-301` can only return `Timeout`, `Input` or `Signal(_)`; `Resize` is the Windows console event. The reader loop's resize path is asserted on POSIX via `Signal(SIGWINCH)` (`reader_resize_updates_cached_size`, `TestPty::resize`). | `wait_reports_signal_input_and_timeout` (POSIX) covers the sibling arms |
+| `tui/src/terminal.rs:1243` (round-2: 1219) | unreachable-by-construction | `the_injected_terminal_failure_is_reported_once`'s `Ok(_) => panic!` — the test sets `FORCE_NEW_FAILURE` immediately before, so the `Err` arm is the only reachable one; the arm fires only if the seam fails, i.e. if the test's premise is false. The seam is a process-global one-shot, so the discipline that keeps other tests out of its two-instruction window is `terminal_test_lock()` — recorded at the test and in §9.8 (hazard 3). | the same test's `Err` arm and the one-shot assertion (1229 is covered-adjacent) |
+| `tui/src/terminal.rs:1253`, `1254` (round-2: 1229, 1230) | unreachable-in-this-environment | the *second* construction's `Err` arm: POSIX `Backend::new()` is infallible **and** the one-shot seam was spent by the preceding call in the same test — either fact alone would not be enough. Windows is the OS that can fail here (non-console handles). | `columns_rows_read_cached_size` builds a `Terminal` with no console and cannot fail |
+| `tui/src/terminal.rs:1313`, `1314`, `1317` (round-2: 1289, 1290, 1293) | platform-unmeasured | `wait_outcomes_stay_handled`'s `ReadWait::Resize` arm. Verified in the source, not assumed: `terminal_posix.rs:250-301` can only return `Timeout`, `Input` or `Signal(_)`; `Resize` is the Windows console event. The reader loop's resize path is asserted on POSIX via `Signal(SIGWINCH)` (`reader_resize_updates_cached_size`, `TestPty::resize`). | `wait_reports_signal_input_and_timeout` (POSIX) covers the sibling arms |
 | `tui/src/app.rs:3610` | attribution-artifact | the closing brace of `wait_for_agent`'s `if first_attempt` block. The assignment on 3609 demonstrably ran: its only reader is `if !first_attempt`, whose true side is what appends the "✅ Connected to agent" message asserted by `wait_for_agent_retries_until_agent_appears`. | that test asserts both messages (`retrying every 1s`, `Connected to agent`); re-checked against the new report (3601-3609 `DA=1`, **3610 `DA=0`**, 3611 `DA=1`) |
 | `tui/src/components/chat_area.rs:2651` | unreachable-by-construction | the second `width.max(3)` is the *format argument of an `assert!` message*: evaluated only when the assertion is about to fail, i.e. only by a test that must fail. | the sweep spans several widths incl. the `max(3)` floor |
-| `tui/src/agent_supervisor.rs:141`, `142`, `143` | unreachable-by-construction | `Child::try_wait()` returning `Err`. **Reason corrected (review §4.2):** nothing about *this host* prevents it — the construction does. The wait status of a child this process spawned and still owns is not something the OS refuses to report (no `waitpid` failure path, no external reaper). | the `Ok(Some(status))` arm is asserted verbatim by `a_sidecar_candidate_that_exits_…`, and the `Ok(None)` sibling by the readiness fixture |
-| `tui/src/agent_supervisor.rs:267` | unreachable-by-construction | `ensure_agent_running_refuses_an_unavailable_explicit_endpoint`'s `Ok(_) => panic!`. **Reason sharpened (review §4.5):** the first gate is `select_agent`'s "no local fallback" for an explicit non-local endpoint — the `panic!` arm would need a *reachable, matching-version* agent on port 1, which needs root to bind. (`cfg!(test)` refusing the launch path is secondary, not the premise.) | that test asserts the refusal text |
+| `tui/src/agent_supervisor.rs:170`, `171`, `172` (round-2: 141, 142, 143) | unreachable-by-construction | `Child::try_wait()` returning `Err`. **Reason corrected (review §4.2):** nothing about *this host* prevents it — the construction does. The wait status of a child this process spawned and still owns is not something the OS refuses to report (no `waitpid` failure path, no external reaper). | the `Ok(Some(status))` arm is asserted verbatim by `a_sidecar_candidate_that_exits_…`, and the `Ok(None)` sibling by the readiness fixture |
+| `tui/src/agent_supervisor.rs:299` (round-2: 267) | unreachable-by-construction | `ensure_agent_running_refuses_an_unavailable_explicit_endpoint`'s `Ok(_) => panic!`. **Reason sharpened (review §4.5):** the first gate is `select_agent`'s "no local fallback" for an explicit non-local endpoint — the `panic!` arm would need a *reachable, matching-version* agent on port 1, which needs root to bind. (`cfg!(test)` refusing the launch path is secondary, not the premise.) | that test asserts the refusal text |
+| `tui/src/lib.rs:165` | attribution-artifact | the closing brace of `absolute_tool`'s `if let Some(path)` block, with both `PATH` arms now asserted by `absolute_tool_falls_back_to_path_then_to_the_bare_name`. The instrumented report shows `DA:158`–`163` ≥ 1, **no `DA:` record at all for 164** (the `for` loop's own brace — a region end), `DA:165,0` and `DA:166,1`. Control therefore provably flowed through 165 and on to the fall-through on 166; the brace has no region of its own because the block exits normally. Same shape as `app.rs:3610` below. Not "fixed" by moving the brace: that would be a production edit for a counter. | the two `PATH` assertions plus the neighbours' counts in §9.11(c)'s report |
 | `tui/src/update.rs:104` | unreachable-in-this-environment | `check_manifest(&current, url, CHECK_TIMEOUT)` inside `check(current)`. `check` is entered only with a *published-channel* version: a real release/nightly build fetches `https://dl.future-os.cn/...`, while this harness build's version is a commit-hash build, for which `manifest_url` returns `None` at the line above. The body itself is covered directly by `http_check_only_notifies_for_a_valid_newer_manifest` / `http_timeout_and_oversized_manifest_are_silent` against a local server; only the const-URL plumbing differs. **Second reason (review §4.4):** covering it needs a build whose display version is a published label, and that same configuration fails the guard assertion in `index.rs` (`this build has no published channel`) — so the change is not free. **Pre-empting the obvious counterexample** ("parameterise the URL"): the two manifest URLs are production data chosen by `is_release`/`is_numbered_build`, and a test could only reach this line by (a) an *unasserted* call — forbidden by PLAN §4 — or (b) changing a production signature/inventing an env knob for one plumbing line, which is the metric-driven production edit the plan's fixed build version makes unnecessary. | those two tests + the guard assertion in `interactive_polls_the_update_check_when_not_offline` |
 
 Category totals: `unreachable-by-construction` 6, `unreachable-in-this-environment`
-3, `platform-unmeasured` 3, `attribution-artifact` 1 — **13 of 13 lines
+3, `platform-unmeasured` 3, `attribution-artifact` 2 — **14 of 14 lines
 accounted for, 0 unwaived, and no row left in a falsified category** (§9.8 lists
 the ten lines the review falsified and what now covers each).
+
+> **Superseded for HEAD by §9.11.** These fourteen rows are the ledger of the run
+> recorded in §9.1, plus §9.11(d)'s `lib.rs:165`. Re-reconciled against a report of
+> the current tree (commit
+> `6244e751b` and again at the `HEAD` of §9.13), every one of them still reads
+> `DA:0` — but at **shifted line
+> numbers**, because `terminal.rs` and `agent_supervisor.rs` both grew after that
+> run. Of the **fourteen further `DA:0` lines** that table never saw (thirteen in
+> `lib.rs`'s `absolute_tool`, one in `index.rs`'s loop), **eight are now covered by
+> tests**, five are `platform-unmeasured` (the Windows literal) and one is an
+> `attribution-artifact` closing brace. §9.11 maps old line → new line row by row;
+> §9.13 records the closure. Read them before quoting a number from this table for
+> anything but history.
 
 ### 9.5 Corrections to §§1–8 (stale rows only)
 
@@ -1027,7 +1054,21 @@ python3 .future/cov100/covlines.py detail /tmp/tui-r2-sibling.info --under .work
 rm -f target/cov-tui/llvm-cov-target/debug/future
 ```
 
-### 9.9 The §9.7(e) suite-killing flake — measured, instrumented, and still open
+### 9.9 The §9.7(e) suite-killing flake — measured, instrumented, and **not reproduced since fix B**
+
+> **Status corrected (2026-10-19, §9.11(f) below and `flaky-tui.md` §16.1).** This
+> section's original heading was "…and still open", and its body's key sentence was
+> "the rate did not move and this flake is NOT fixed". Both were true of the
+> 1/8 → 1/8 measurement they describe, and neither is the current state: after fix B
+> the class has not reproduced in **0 of 16 instrumented runs**, eight at load 4–10
+> (`flaky-tui.md` §16.1) and eight at load 80.7–86.6 (§9.10(c)), with the coverage
+> profile written on every one of the sixteen. The two faces the class had — a
+> `BrokenPipe` abort of the binary, and a run that reports nothing — did not appear
+> in any of them. What is *not* claimed: a mechanism-level proof that the route is
+> gone (fix B removes one proven route; §1.5 of the sibling record still names the
+> windows it could not close), so the honest status is "0/16 since the fix, at 8–20x
+> the load it was first measured at", not "closed". The rest of this section is kept
+> as written because it is the record of *how* the class was measured.
 
 §9.7(e) diagnosed this flake but left it open, and it kept its price: it is the
 reason §9.1's second flavour has no number ("all four attempts were lost"), and
@@ -1044,7 +1085,10 @@ belong in this module's ledger:
   catches `SIGTERM`, so a stalled run survives a plain `timeout` (measured: 26
   minutes and still alive).
 * **After this unit's fix** (same command, same 8 runs): **1 failure in 8 runs** —
-  i.e. **the rate did not move and this flake is NOT fixed**, even though the
+  i.e. **the rate did not move and this flake is NOT fixed** *(at that measurement:
+  this is the 1/8 → 1/8 pair. Superseded by the status note at the top of this
+  section — 0 of 16 instrumented runs after the fix, at load 4–10 and 80.7–86.6.
+  The sentence is kept because it is what the eight runs showed.)*, even though the
   route the probes prove (a write asleep inside the pipe is broken by the `dup2`
   that hands fd 1 back) is real and removed. The residual is written up in
   `flaky-tui.md` §1.3–§1.5, including exactly which explanations the instruments
@@ -1068,12 +1112,17 @@ belong in this module's ledger:
   when no writer exists and a stale close of a recycled low fd can no longer make
   the pipe readerless. No retry, no `--skip`, no sleep, no weakened assertion, and
   the 500 ms blocked-write window the test exists for is unchanged.
-* **Still open:** the rate did not move (1/8 → 1/8), so the route the probes prove
-  is either not the dominant one in a full run or is reached in a way the drain
-  does not cover; the failing run's fd-1 state and what was *ruled out*
+* **Then considered open, now not reproduced:** the rate did not move in that pair
+  (1/8 → 1/8), so at the time the route the probes prove looked like it was either
+  not the dominant one in a full run or was reached in a way the drain does not
+  cover; the failing run's fd-1 state and what was *ruled out*
   (readerless pipe, stale close of the read end, early teardown) are in
-  `flaky-tui.md` §1.3–§1.5 with the next check to run. Also **not** identified:
-  any call closing the read end during the window (the trace shows none).
+  `flaky-tui.md` §1.3–§1.5. **Sixteen instrumented runs later the class has not
+  reappeared** (0/8 at load 4–10, `flaky-tui.md` §16.1; 0/8 at load 80.7–86.6,
+  §9.10(c)), so "open" is no longer the accurate word for it — see the status note
+  at the top of this section. Still **not** identified: any call closing the read
+  end during the window (the trace shows none), which is why the status is
+  "not reproduced since the fix" rather than "closed by construction".
 * **Second, smaller item in the same handoff:** `app::tests::wait_for_agent_retries_until_agent_appears`
   was red in 1 of 8 instrumented attempts (`/tmp/tui-cov-crateB-1.log`,
   `2192 passed; 1 failed`). It bounds real startup with a **10 s wall-clock
@@ -1084,3 +1133,499 @@ belong in this module's ledger:
   instrumented; **0/16** full-suite runs during this unit's own before/after
   measurements. Registered with its mechanism and rate, not "fixed" (`FLAKES.md`
   §4: a flake that cannot be reproduced is recorded, not quietly patched).
+  **Decision recorded (`flaky-tui.md` §16.2): keep the wall-clock budget.** The
+  paused-clock form was verified over **75 runs** and *not* adopted: with
+  `start_paused` the retry loop's 1 s cadence is virtual while the readiness flip
+  depends on a real task being scheduled, so the loop busy-spins instead of
+  waiting, which removes the very latency the test is about. The sibling wait this
+  segment did bound (`wait_conn`, §9.10(b)) is a different shape — one state
+  transition with no cadence, where the bound was simply too short for the host;
+  that distinction is why one got a bigger bound and this one did not.
+
+### 9.10 Round 2, F-TUI-10 items 2–5: the launch loop instrumented, `subscribe_failure_modes` named and fixed, and the item-18 class measured at load 80–86
+
+The three items this segment could act on, plus the two decisions it was asked to
+confirm. Loads below are `uptime`'s 1-minute average taken *during* each batch, raised
+with bounded `sh -c 'while :; do :; done'` burner sets (34, then 74 processes) on a
+32-core (24P + 8E) macOS arm64 host; every batch is a `cargo test -p future-tui`
+invocation, so the load figure includes the suite's own threads.
+
+#### (a) `agent_sidecar_launch.rs` — the starved-child sub-mode, instrumented and NOT reproduced
+
+`flaky-tui.md` §14.3 asked one narrow question: in the 61 s failure, **does the stub's
+child ever run?** Two instruments, both temporary and both reverted (`git status` for
+`tui/` after this segment shows only the `grpc_client.rs` fix):
+
+* inside `ensure_agent_running_within`, an env-gated (`TUI_LAUNCH_DIAG`) append-only
+  writer that logs, per candidate, the spawn result and **pid**, and per attempt the
+  attempt number, the running wall clock and the `connect_verified` duration; at most
+  three `-> alive` lines are written per run (attempts 0–2 and every 40th), so logging
+  cannot itself be the load;
+* in the fixture, the stub script appends `start pid=<$$>` to a file, so *"the child
+  never exec'd"* and *"the child ran but its exit was not observed"* are distinguishable
+  without reading the loop's internals at all.
+
+Results — the child ran **every time**, with the pid the loop logged (e.g. loop says
+`spawned pid=13007`, stub file says `start pid=13007`):
+
+| shape | load | launch-test runs | exit observed at | child margin vs the 60 s window |
+|---|---|---|---|---|
+| idle, single run | 3 | 1 | attempt 3, **385 ms** | 160x |
+| 4 separate copies of the target binary | 40 | 4 | 513 / 894 / 1154 / 1540 ms | 39–117x |
+| 2 x 4 concurrent whole suites (`-j 8`) | 41–47, 83 | 8 | 384–775 ms (median 517) | ≥78x |
+| **8 concurrent whole suites (`-j 8`)** | **83–86** | **8** | **385, 386, 517, 764, 1150, 1920, 2303, 2435 ms** | **25x** |
+
+Two facts from the trace explain why the median barely moves and the tail does:
+
+* **`connect=0ms` on all 196 logged attempts.** The per-attempt cost is the 125 ms
+  `LAUNCH_PROBE_INTERVAL` sleep and nothing else, so the loop's cadence is nominal
+  (attempt 19 at +2435 ms = 128 ms/attempt) even at load 86. The window is therefore
+  effectively **480 attempts ≈ 61 s**, which is exactly the 61.35 s §14.1 measured —
+  expiry, not a slow loop.
+* **The variance is entirely the child's**, from 385 ms to 2.4 s, i.e. the fork/exec
+  latency, which is the one term the fixture does not control.
+
+**Decision: accept the flake with this load profile recorded; no runner seam.** The
+reasoning, stated so a reviewer can overrule it:
+
+1. 20 launch-test runs this segment (4 alone + 16 inside whole-suite batches) at loads
+    up to **86** — 2.6x the ticket's ≥30 floor — did not reproduce §14's red once. The
+   sub-mode needs the child unscheduled for the whole ~61 s, i.e. **25x** the worst
+   latency measured at that load.
+2. A seam (`Command`-shaped runner injected into `ensure_agent_running_within`) is a
+   *production* signature change whose purpose is to fake the one thing the test exists
+   to assert — that a really-spawned candidate that exits is really reported. It would
+   also delete the coverage this file's `#[cfg(test)]` guard keeps (`agent_supervisor.rs`
+   is lib-tested only through integration tests for exactly this reason).
+3. The residual risk is bounded and diagnosable: a recurrence costs 61 s, fails, and
+   the instrumentation in this section (or the same shape) names it in one run. Anyone
+   who hits it should re-apply the patch shape rather than re-derive it — `flaky-tui.md`
+   §14.3's "first thing to add" is unchanged by this measurement.
+
+#### (b) `rpc::grpc_client::tests::subscribe_failure_modes` — reproduced WITH its text, mechanism named, fixed
+
+The 8-way whole-suite batch at load **86** reddened one run: `2198 passed; 1 failed`,
+suite `115.95 s`, and — §10's fix paying off — the text was there:
+
+```
+thread 'rpc::grpc_client::tests::subscribe_failure_modes' panicked at tui/src/rpc/grpc_client.rs:1776:14:
+never connected: Elapsed(())
+```
+
+That line is `wait_connected`'s `.expect("never connected")` around
+`tokio::time::timeout(Duration::from_secs(10), conn.wait_for(|v| *v == want))`. So the
+failing step is **the 10 s bounded state wait in the fourth block, not any of the three
+300 ms sleeps** — which falsifies the "fixed-sleep → assert" hypothesis `flaky-tui.md`
+§9.4 recorded for this test (and the sibling "the bound is too short" class §9.9
+registered for `wait_for_agent_retries_until_agent_appears`).
+
+Is the transition merely slow, or stuck? Eight concurrent copies of the test alone, at
+load 86, same tree with the bound temporarily at 60 s:
+
+| run | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|
+| secs | **14.96** | 6.97 | 0.92 | 6.93 | 2.93 | 2.93 | 0.91 | 0.91 |
+
+0.91 s is the test's own three sleeps (idle speed), so the spread is the *host's*: the
+same transition took **14.96 s** in one run and 0.91 s in another, and the old 10 s
+bound sits inside that spread — one run would have failed, exactly as the suite did.
+
+**Fix** (`tui/src/rpc/grpc_client.rs`, test-only, one const): `CONNECT_STATE_BOUND =
+60 s` — 4x the worst measured value — now used by `wait_conn` (and therefore by all 25
+`wait_conn`/`wait_connected` call sites, which are the same class of local-mock
+handshake wait). A genuine regression now takes 60 s to report instead of 10 s, in the
+lib suite only. This is the §7.1/§12.1 convention ("a fixture must not assert the
+host's speed") applied to a state wait instead of a spawned child.
+
+* **Positive control, without touching the fix:** the pre-fix tree red at load 86 with
+  the quoted text; the post-fix tree passed the whole suite at load 81
+  (`/tmp/ftui10/gate-load.log`, lib 2199 passed / 25.73 s) and 8/8 instrumented runs at
+  load 80–86.
+* **Stated limitation, not redesigned:** the three earlier blocks assert
+  `!client.is_connected()` 300 ms after `connect_events()`. Under load those are
+  *trivially* true (the client has not finished failing yet), so they cannot
+  discriminate "failed as intended" from "still trying". Making them discriminating
+  needs a signal the client does not expose for these paths; recorded rather than
+  guessed at, and the block that actually reddened is the one now bounded properly.
+
+#### (c) The item-18 class at high load: **8/8 instrumented runs, coverage written every run**
+
+`flaky-tui.md` §16.1 measured 0/8 at load 4–10 and named the gap: the campaign's
+instrumented failures were recorded at higher load. Same command, same private target
+dir, `LLVM_COV`/`LLVM_PROFDATA` pointed at the 1.97.0 toolchain's own binaries (§16.1's
+gotcha), with the burners running throughout:
+
+| run | rc | secs | new `.profraw` | `BrokenPipe` / `io error when listing tests` | load (1 min) |
+|---|---|---|---|---|---|
+| 1 (incl. build) | 0 | 172 | +28 | 0 | 83.4 |
+| 2 | 0 | 69 | +2 | 0 | 81.3 |
+| 3 | 0 | 68 | +2 | 0 | 80.7 |
+| 4 | 0 | 70 | +2 | 0 | 83.8 |
+| 5 | 0 | 70 | +2 | 0 | 81.8 |
+| 6 | 0 | 73 | +2 | 0 | 85.0 |
+| 7 | 0 | 69 | +2 | 0 | 86.6 |
+| 8 | 0 | 70 | +2 | 0 | 84.4 |
+
+**`runs=8 failures=0` at load 80–86**, every run `2199 passed` (two logs sampled
+directly; `grep -c 'FAILED\|panicked'` is 0 in all eight) and `profraw_new=2` every
+time. Combined with §16.1 that is **0/16 instrumented runs**, 8 of them at 8–20x the
+load the class was first measured at. The honest scope: this is still a rate, not a
+proof — the class's original 5/8 was measured before fix B, and no run of this segment
+reproduced its two faces (no `BrokenPipe`, no lost report).
+
+#### (d) Item (5): the two decisions, re-affirmed rather than re-opened
+
+* **The silent kill in `ensure_agent_running_within` stays.** §12.1/§14.3 declined a
+  "window expired" line because it changes a user-visible message for a defect no
+  assertion needs. This segment adds the measurement that settles the remaining doubt:
+  with the loop at its nominal cadence and the child observed in ≤2.4 s at load 86, a
+  silent expiry can only mean a >60 s scheduling hole — an environment event, and one
+  the instrumentation above names in a single run. A permanent production line would
+  buy nothing that a re-applied diagnostic patch does not.
+* **The `reader_resize` absorption stays** (§9.1): a forwarding drainer would heal the
+  missing `test … ok` lines by writing ~40 bytes of escape sequences into the run log
+  for each one, and there is no in-band way to separate the two streams on the same
+  fd. Option 2 needs a production ordering change for a cosmetic gain. Unchanged.
+
+#### (e) Gates for this segment
+
+| command | exit | result |
+|---|---|---|
+| `cargo fmt -p future-tui -- --check` | 0 | clean |
+| `cargo clippy -p future-tui --all-targets -- -D warnings` | 0 | clean |
+| `cargo test -p future-tui --no-fail-fast -j 4` (load ~81, whole suite) | 0 | lib **2199 passed**, every integration target ok |
+| `cargo test -p future-tui --no-fail-fast -j 4` (load ~30, final, clean tree) | 0 | lib **2199 passed**, every integration target ok |
+| 2 x 4-way and 1 x 8-way whole-suite batches (`-j 8`) | — | **16 suite runs**, launch target 16/16, **1 red** (`subscribe_failure_modes`, load 86 — the fix's control) |
+| 8 instrumented `cargo llvm-cov -p future-tui --lib` runs, load 80–86 | 0 x 8 | profraw written every run (§(c)) |
+
+Temporary instrumentation: the `TUI_LAUNCH_DIAG` writer in `agent_supervisor.rs` and
+the stub marker in `tests/agent_sidecar_launch.rs` were **reverted** before the
+instrumented runs and the final gates; `git status -- tui/` shows only
+`rpc/grpc_client.rs` from this segment.
+
+### 9.11 Re-reconciled against HEAD: the round-2 rows survive at shifted numbers, and **fourteen `DA:0` lines arrived after that measurement**
+
+F-TUI-10's last item was a *record* item, so it opened with the cheap tripwire before
+touching prose — and the tripwire found the ledger had drifted. This section is that
+finding, stated so the next reader does not have to re-derive it.
+
+#### (a) Run identity for the report used here
+
+| | |
+|---|---|
+| tree | commit `6244e751b` (`test/cov100-r2`), working tree clean for `tui/`; the only commit that landed between the measurement and this record (`87ebfc086`) touches `.future/cov100/pairings.json` only, so `tui/` is identical |
+| command | §9.6's documented form: `cargo llvm-cov -p future-tui --no-fail-fast --lcov --output-path /tmp/ftui10/alltargets.info -j 4` |
+| tool pair | cargo-llvm-cov **0.8.7** + LLVM **22.1.6-rust** (the 1.97.0 toolchain's own `llvm-cov`/`llvm-profdata`, via `LLVM_COV`/`LLVM_PROFDATA` — the naming gotcha in `flaky-tui.md` §16.1) |
+| suite | green: `--lib` **2199 passed / 0 failed / 29.12 s**, plus 1, 3, 8, 5, 1 and 0 on the other targets; rc 0 |
+| metric | `covlines.py total … --under .worktrees/cov100-r2/tui/src` → **covered 60 372 / measured 60 399, uncovered 27, 99.9553 %** |
+| artefact | `/tmp/ftui10/alltargets.info` (also `/tmp/ftui10/clean.info`, the `--lib`-only form: 73 uncovered / 60 391 measured — **not comparable**, see (e)) |
+
+#### (b) The hazard that came first: a report of a *previous* revision looks valid
+
+The first report this segment rendered was built from the 42 `.profraw` files left in
+`target/cov-tui2` by the previous segment's eight instrumented runs — which ran while a
+temporary `TUI_LAUNCH_DIAG` diagnostic was still in `agent_supervisor.rs`. `llvm-cov`
+maps a profile onto the **current** source, so the result was a well-formed report with
+**69** uncovered lines whose rows sat at the reverted file's line numbers
+(`agent_supervisor.rs:161-182`, `lib.rs:144-158`). It parses, it renders, and every
+number in it is wrong for this tree. The tell is that those rows fall inside a region
+that no longer exists in that shape; the fix is to discard `.profraw` files across a
+source edit that changes line numbers, which is why the 42 old ones were moved to
+`/tmp/ftui10/profraw-prev/` rather than reused. Recorded because the same trap awaits
+anyone who re-renders a stale profile instead of re-running — the campaign has already
+lost time to a zeroed report, and this is its inverse.
+
+#### (c) The thirteen round-2 rows still read `DA:0` — at new line numbers
+
+`reconcile.py` against this report flags exactly two of the doc's rows, and both flags
+are pure line shift, not a fallen row. The full mapping, round-2 number → HEAD number,
+with the code each row points at (re-read at both numbers; unchanged in every case):
+
+| HEAD row | round-2 row (§9.1's run) | quoted code |
+|---|---|---|
+| **`terminal.rs:1243`** | 1219 in `terminal.rs` | `Ok(_) => panic!("the seam must make terminal construction fail")` |
+| **`terminal.rs:1253`, `1254`** | 1229, 1230 in `terminal.rs` | `Err(error) => assert_ne!(`, `error.to_string(),` — the second construction's `Err` arm |
+| **`terminal.rs:1313`, `1314`, `1317`** | 1289, 1290, 1293 in `terminal.rs` | `assert!(`, `!previous_was_resize,`, `previous_was_resize = true;` — `wait_outcomes_stay_handled`'s `Resize` arm |
+| `app.rs:3610` (unmoved) | 3610 in `app.rs` | the closing brace of `wait_for_agent`'s `if first_attempt` block |
+| `components/chat_area.rs:2651` (unmoved) | 2651 in `chat_area.rs` | `width.max(3)` — the format argument of an `assert!` message |
+| **`agent_supervisor.rs:170`, `171`, `172`** | 141, 142, 143 in `agent_supervisor.rs` | `Err(error) => {`, `failures.push(...)`, `break;` — the `try_wait()` `Err` arm |
+| **`agent_supervisor.rs:299`** | 267 in `agent_supervisor.rs` | `Ok(_) => panic!("a test build must not start an agent")` |
+| `update.rs:104` (unmoved) | 104 in `update.rs` | `check_manifest(&current, url, CHECK_TIMEOUT).await` |
+
+So `terminal.rs` grew by **24** lines above that test and `agent_supervisor.rs` by **29**
+above its attempt loop and **32** above the explicit-endpoint test (the launch-window doc
+block and `LAUNCH_PROBE_INTERVAL`'s comment, both from the flake work in §12.1 of the
+sibling record). That is why `reconcile.py` reports two flags at all: at the doc's own
+numbers, `terminal.rs:1219` now has **no `DA:` record** (the code moved to 1243) and
+`agent_supervisor.rs:267` is now **ordinary covered code** (the `panic!` arm moved to
+299). Neither is a regression and neither needs a waiver change — the fix is the
+mapping above, which is what this table is.
+
+The remaining three round-2 rows match their HEAD numbers without a flag only because
+those numbers happen to appear elsewhere in this document; treat the table, not the
+tool's flag count, as the mapping.
+
+#### (d) Fourteen new `DA:0` lines, in two groups
+
+| path:line | count | what the line is | category | decision |
+|---|---|---|---|---|
+| `lib.rs:144`–`148` | 5 | the Windows branch of `absolute_tool`'s standard-location list (`r"C:\Windows\System32"`, …), inside `if cfg!(windows)` | **`platform-unmeasured`** (shape 1: cannot execute here; both branches compile) | waiver, same rule as §9.4's three `platform-unmeasured` rows |
+| `lib.rs:158`–`163` | 6 | the `PATH` fallback loop in `absolute_tool` — reached only for a tool that is **not** in `/usr/bin`, `/bin`, `/usr/local/bin`, `/opt/homebrew/bin`. The six lines are 158, 159, 160, 161, 162 and 163. | **coverable → CLOSED** (§9.13(b)) | covered by `absolute_tool_falls_back_to_path_then_to_the_bare_name` |
+| `lib.rs:165`–`166` | 2 | the bare-name last resort, `PathBuf::from(format!("{name}{exe_suffix}"))` | **166 coverable → CLOSED (§9.13(b)); 165 reclassified `attribution-artifact` (§9.13(d))** | 166 covered by the same test; 165 is the closing brace of the `if let`, with no region of its own |
+| `index.rs:1033` (closed — §9.13(c)) | 1 | `UiInput::Resize => app.request_resize_render()` — the **main loop's** resize arm | **coverable → CLOSED (§9.13(c))**. Not unreachable: a race — the startup loop's `UiInput::Resize => {}` drops the event, and the raise sat at the transition | fixture fixed: the driver waits for the initial `prompt` (only the loop can fire that timer) before resizing; `DA:1033,1` in three instrumented runs |
+
+A note on why these arrived *after* a ledger that claimed 13 of 13 lines accounted for:
+`absolute_tool` is §13's pinned-tool resolver, which landed **after** §9.1's measurement
+run, and the four `lib.rs` rows are the part of it that only a non-standard tool or a
+missing tool reaches. The index.rs arm is a different story — see below. Neither is a
+mistake in the earlier ledger; both are the ledger's own rule ("re-measured after every
+edit") being applied one edit late.
+
+> **All nine coverable rows in this table are now closed or reclassified** — §9.13 has
+the measurements, the mechanism that made the `index.rs` arm a race, and the
+neighbours-count proof for the one closing brace. `coverable` is empty for this module.
+
+#### (e) Why the `--lib` form is not comparable, and why the totals moved
+
+> **Current totals are in §9.13(e): 19 uncovered / 60 427 / 99.9686 %.** The numbers
+> in this subsection are the *pre-closure* state and are kept as the comparison base.
+
+§9.2's row for the rework says 13 / 60 249 / 99.9784 %. This tree measures
+27 / 60 399 / 99.9553 %: **+14 uncovered and +150 measured**. The 150 measured lines are
+this unit's own additions (the §18 `HOME` conversions' comments and guard assertions, the
+`CONNECT_STATE_BOUND` constant and its doc block) — a doc-and-test-only change cannot
+reduce coverage, and it did not: the +14 are all *new code*, not newly-uncovered old code.
+
+The `--lib`-only form measures 73 uncovered / 60 391 measured for the same tree. That
+difference is scope, not behaviour: `--lib` instruments `#[cfg(test)]` code that the
+all-targets run exercises through the integration binaries too, and it omits those
+binaries' own lines. **Quote only the all-targets form** for this module, as §9.1/§9.6
+already do; the two numbers are not comparable and a future reader will otherwise think
+the suite regressed by 46 lines.
+
+#### (f) What this unit did and did not do with the fourteen
+
+Nothing was written to `tui/src` for this section: the ticket was a record
+reconciliation, and turning 9 coverable lines into tests is a different task with its
+own gates (and its own report to re-render afterwards). The recipes below are exact
+enough that the successor is mechanical:
+
+* **`lib.rs:158`–`166`** — `absolute_tool` is public (`crate::test_env::absolute_tool`
+  delegates to it). Two assertions cover all eight lines deterministically, under
+  `test_env::lock()` + `EnvVarGuard` (§18's convention, which is what makes the `PATH`
+  swap safe here): (1) a temp dir holding an executable named something no standard
+  directory has, `EnvVarGuard::set("PATH", that_dir)` → the answer must be
+  `dir.join(name)` and `is_file()`; (2) `PATH` = an empty temp dir and a name that
+  exists nowhere → the answer must equal the bare name, **not** an absolute path. Pick
+  a name with a per-run suffix so a real `/usr/local/bin` entry can never satisfy it.
+* **`index.rs:1033`** — the sibling test that *should* reach it exists
+  (`interactive_resize_during_and_after_startup`, §9.3) and covers the startup arm
+  (`index.rs:991`) in the same run, so the missing piece is specific: the second
+  `raise(SIGWINCH)` does not arrive at the main loop's arm. First step is not a test
+  but a measurement — log every `UiInput` the main loop receives during that test
+  (three added lines, reverted after) and see whether a `Resize` is ever received, is
+  received after the loop has already exited, or is not sent at all. Only then is the
+  fix either a fixture change (raise it earlier / resize the PTY rather than only
+  raising the signal, which is what `TestPty::resize` does and this test does not) or a
+  waiver with a named mechanism. **Not waived on inspection**: the arm is ordinary
+  product code on the platform this suite runs on, which is exactly the shape §8.5 says
+  must not be waived before the check is made.
+
+#### (g) The tripwire, before and after this section's edits
+
+> **Current: MISSING 0, STALE 0 at 19 uncovered — §9.13(e).** The table below is this
+> section's own before/after and is kept as written.
+
+```
+python3 .future/cov100/reconcile.py --report /tmp/ftui10/alltargets.info \
+    --scope tui/src --doc docs/testing/module-tui.md --label tui
+```
+
+| | before the edits | after the first draft | after the correction |
+|---|---|---|---|
+| files with uncovered lines | 7 | 7 | 7 |
+| uncovered lines | 27 | 27 | 27 |
+| mentioned in the doc | **6** | 21 | **27** |
+| MISSING | **21** | 6 | **0** |
+| STALE (rows whose number moved) | 2 | 2 | **0** |
+| exit | 0 | 0 | 0 |
+
+The `MISSING → 0` half is the real change: those 21 lines were named *nowhere* in this
+document before this section. The `STALE → 0` half needed two things rather than one, and
+the first draft got it wrong — which is why the middle column exists:
+
+* the first draft wrote a **row-by-row** claim in prose and a table with only the two
+  flagged rows, and it left `159` inside the range `158`–`163`. The tool then reported
+  **6 MISSING** (`159`, `1253`, `1254`, `1313`, `1314`, `1317`): the number had to be
+  present literally, and the eleven unflagged shifts had no table row to carry them. The
+  fix was the full mapping table, not a wording change.
+* STALE survived until §9.4's own first cells were renumbered to HEAD. A row that keeps
+  its round-2 number reads to the tool as "the doc claims this line is uncovered" —
+  `terminal.rs:1219` no longer has a `DA:` record and `agent_supervisor.rs:267` is now
+  covered, so both were permanent false alarms for the next reviewer. Keeping the old
+  number inside the same row preserves the provenance without the false alarm.
+
+**The predicted table in the first draft said 0/0 and was wrong.** It is left in this
+record as the middle column rather than quietly replaced, because "a tripwire I predicted
+would be clean was not" is exactly the class of error this campaign keeps paying for.
+
+### 9.12 The sibling record is stale in four places, and this todo's write set could not reach it
+
+`docs/testing/flaky-tui.md` carries the workstream history for the items this module's
+§9.10 closed, and **five** of its passages described them as open. That file was not in
+the written-scope of the segment that found this (`tui/src`, `tui/tests`,
+`docs/testing/module-tui.md`), so the edits were prepared here first.
+
+**APPLIED 2026-10-19** (TAU-D40, after the supervisor granted the file). The mapping from
+this section to the target record: §9.4 -> `flaky-tui.md` 1125-1130 (the hypothesis is kept
+and the measured outcome appended; the outcome is explicitly NOT the hypothesis), §16.1 ->
+the 8/8 batch paragraph, §17.4 and §18.7 -> the two 'unchanged' claims replaced with
+answers, §14.3 -> the narrow question closed with its answer and the decision. Text kept
+below as the preparation record:
+
+1. **§9.4** — status. Its body ends "the fix unmade on purpose"; that stands as history
+   but must be followed by: *"2026-10-19: reproduced on an 8-way whole-suite batch at
+   load 86 with its text — `panicked at tui/src/rpc/grpc_client.rs:1776:14: never
+   connected: Elapsed(())` — i.e. the 10 s bounded `conn.wait_for` in `wait_connected`,
+   **not** one of the three 300 ms sleeps this section hypothesised; fixed by
+   `CONNECT_STATE_BOUND = 60 s` (4x the worst of eight concurrent copies at that load:
+   0.91–14.96 s). Module record §9.10(b)."*
+2. **§16.1** — its last paragraph says the high-load instrumented batch "is the
+   remaining measurement". Append: *"Ran 2026-10-19: **8/8** at load 80.7–86.6, rc 0,
+   `profraw` written every run, 0 `BrokenPipe`/listing errors, 2199 passed each — 0/16
+   with these eight."*
+3. **§17.4** — calls items (2) and (4) "unchanged". Replace with the answers: item (2)
+   measured (child ran every time, exit at 385 ms idle to 2435 ms at load 86, `connect=0
+   ms` on all 196 logged attempts, 20 runs up to load 86 did not reproduce the red);
+   item (4) reproduced and fixed.
+4. **§18.7** — ends "Items (2)–(5) of the ticket are unchanged". Same correction, one
+   line, pointing at §9.10 here.
+
+Its **§14.3** also asks the narrow question this segment answered (does the stub's child
+ever run) and should close with the answer plus the decision (accept with the load
+profile, no runner seam) — the full reasoning is in §9.10(a) above.
+
+If the scope is granted, this is a single mechanical edit; if it is not, this section is
+the durable copy of what that edit must say.
+
+### 9.13 §9.11(d)'s nine coverable lines: eight covered, and the ninth is a `}`
+
+The re-reconcile left nine `DA:0` lines classified `coverable` (not waived). This
+section closes them; no line is left in that category.
+
+#### (a) Run identity
+
+| | |
+|---|---|
+| tree | `6244e751b` + this section's tests (`tui/src/lib.rs`, `tui/src/index.rs`) |
+| command | §9.6's documented form: `cargo llvm-cov -p future-tui --no-fail-fast --lcov --output-path /tmp/ftui10/after.info -j 4` |
+| tool pair | cargo-llvm-cov 0.8.7 + LLVM 22.1.6-rust (same as §9.11(a)) |
+| suite | green, `--lib` **2200 passed** (was 2199: +1, §9.13(b)) plus every other target; rc 0 in 48 s |
+| metric | **covered 60 408 / measured 60 427, uncovered 19, 99.9686 %** (was 27 / 60 399 / 99.9553 %) |
+
+#### (b) `lib.rs:158`–`163`, `166` — covered, one test, both arms
+
+`absolute_tool` has three resolution steps, and only the first was tested
+(`absolute_tool_ignores_a_swapped_path` asks for `sh`, which really is in `/usr/bin`).
+The other two are unreachable **unless the test asks for a tool that exists only where
+it put it**, so the new test (`absolute_tool_falls_back_to_path_then_to_the_bare_name`)
+generates a per-run name — `future-tui-absolute-tool-probe-<pid>` — because a fixed
+name like `future-tui-probe` could exist in `/usr/local/bin` on some host, in which
+case the standard location would answer and **both `PATH` arms would go untested while
+every assertion still passed**. Two assertions, each with a positive control by
+construction:
+
+* `PATH` = a temp dir holding the only copy, made executable → the answer is exactly
+  `dir.join(name)` **and** `is_file()`. Drop the `PATH` loop and the answer becomes the
+  bare name, which fails the equality; drop the `is_file()` check and the arm returns a
+  path that exists-but-is-not-a-file only in the negative case, which the second
+  assertion pins.
+* `PATH` = an empty dir, tool nowhere → the answer is the bare `name` and **not**
+  absolute. Drop the last resort and the function returns nothing to assert on.
+
+Both run under `test_env::lock()` with `EnvVarGuard` (§18's convention — the guard is
+what makes a `PATH` swap safe against a panic).
+
+#### (c) `index.rs:1033` — the loop's `Resize` arm: measured as a race, then fixed by construction
+
+The ticket said measure first, and the measurement changed the answer. The line is
+**not unreachable**; the test was **losing a race**:
+
+| observation | value |
+|---|---|
+| whole-suite run (§9.11's report): the arm's neighbours | `DA:1030,63` (the `recv` arm), `1031,6` (`match ui`), `1032,5` (`Input`), **`1033,0` (`Resize`)**, `1035,1` (`ExitSignal`) |
+| single-test run with a three-line `TUI_LOOP_DIAG` diagnostic (reverted): inputs seen by the loop | **`RESIZE`**, then `input` — i.e. it *does* arrive when the timing differs |
+| mechanism | both loops read the **same** `input_rx`, and the startup loop's `UiInput::Resize => {}` **drops** the event. The driver raised `SIGWINCH` right after `await_startup_complete`, which is exactly the startup→main transition, so which loop consumed it was a coin flip that the startup loop usually won. |
+
+Fix (fixture only, no production change): wait for a signal that **only the loop can
+produce** before raising. `fire_timer` is reached only from `App::on_tick`, and `on_tick`
+is called only from the loop's sleep arm — so the mock agent receiving `prompt` (the
+`InitialPrompt` timer, already used this way by
+`interactive_with_initial_prompt_message`) proves the startup future has returned.
+The driver now sets `args.messages` and calls `fx.await_command("prompt")` before the
+second resize, and it uses a new `PtyStdin::resize` that changes the PTY size **and**
+raises `SIGWINCH` (mirroring `TestPty::resize`) instead of a bare `raise`, so the event
+is a real resize rather than a spurious same-size signal.
+
+Verified **three filtered instrumented runs**: `DA:1033,1` in all three (a single
+whole-suite run of the old fixture gave `0`). The startup arm (`index.rs:991`) is still
+covered by the first raise, in the same test.
+
+#### (d) `lib.rs:165` — reclassified `attribution-artifact`, with the neighbours as proof
+
+One line of the nine is a closing brace and **cannot** be covered by any test:
+
+```
+158:        if let Some(path) = std::env::var_os("PATH") {
+...
+164:            }
+165:        }
+166:        PathBuf::from(format!("{name}{exe_suffix}"))
+```
+
+The instrumented report reads `DA:158`–`163` all ≥ 1, **no `DA:` record for 164 at
+all** (the `for` loop's brace — a region end), `DA:165,0`, `DA:166,1`. Control provably
+flowed through 165 into the fall-through on 166; the block's closing brace simply has
+no region of its own because the block exits normally. This is `app.rs:3610`'s shape
+exactly (same `attribution-artifact` category, same kind of proof), and the alternative —
+restructuring the production function so a brace gets a region — is precisely the
+metric-driven edit §9.4's `update.rs` row refuses on principle.
+
+#### (e) The result, and the tripwire
+
+| | before this section | after |
+|---|---|---|
+| uncovered lines | 27 | **19** |
+| measured | 60 399 | 60 427 |
+| line % | 99.9553 % | **99.9686 %** |
+| files with gaps | 7 | **6** |
+| `coverable` rows | 9 | **0** |
+
+The 19 are: **13** carried round-2 rows at HEAD's numbers (unchanged, not re-opened),
+**5** `platform-unmeasured` (`lib.rs:144`–`148`, the Windows literal) and **1**
+`attribution-artifact` (`lib.rs:165`). Category totals in §9.4 are now 14 rows.
+
+```
+python3 .future/cov100/reconcile.py --report /tmp/ftui10/after.info \
+    --scope tui/src --doc docs/testing/module-tui.md --label tui
+-> files with uncovered lines=6  uncovered lines=19
+   mentioned: 19  MISSING 0  STALE 0  exit 0
+```
+
+The one `STALE` the first run of that command reported was `index.rs:1033` — the row
+in §9.11(d) that said it was coverable-and-uncovered. That row is the one this section
+closed, so it is marked resolved there rather than left as a claim the report
+contradicts.
+
+#### (f) Positive controls, run
+
+* **`lib.rs`** — mutating the `PATH` arm (`if false && candidate.is_file()`) made
+  `absolute_tool_falls_back_to_path_then_to_the_bare_name` **fail** at its first
+  assertion with `left: "future-tui-absolute-tool-probe-75997"` (the bare name) vs
+  `right: "/var/folders/…/future-tui-absolute-tool-probe-75997"` (the `PATH` entry) —
+  so the test pins the arm and not merely the function. Restored, `test_env::tests` 5/5
+  green, blob identical to the committed shape.
+* **`index.rs`** — the control is the report itself: the *old* fixture in a whole-suite
+  instrumented run gave `DA:1033,0` (§9.11's `/tmp/ftui10/alltargets.info`), the new one
+  gives `DA:1033,1` in a whole suite and in three filtered runs. Five further solo runs
+  of the rewritten test pass (2.41–2.43 s each).
