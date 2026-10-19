@@ -128,7 +128,7 @@ event the phone does not read.
 | Option | Behavior |
 |---|---|
 | `--no-qr` | Print authorization/pairing links without drawing QR codes |
-| `--re-pair` | Explicitly revoke the saved phone pairing and create a new invitation |
+| `--re-pair` | Revoke every saved device pairing and create a new invitation |
 | `--help` | Show help without starting Desktop or Agent |
 
 For example:
@@ -138,7 +138,7 @@ For example:
 ./futureos-headless --re-pair
 ```
 
-`--re-pair` affects the previous phone binding. Use it to change phones or
+`--re-pair` affects every saved device pairing. Use it to change phones or
 intentionally replace a pairing, not to troubleshoot an ordinary network outage.
 Narrow terminals automatically fall back to text links; copy the link, or widen
 the terminal and restart.
@@ -147,6 +147,39 @@ The graphical `futureos` entry point takes `--re-pair` and `--no-qr` with the sa
 meaning and prints on the terminal that ran it. On Windows, run it from the
 terminal you want the code in: a graphical launch detaches from the console it
 started from, and `--re-pair` reattaches to that launching terminal to print.
+
+### 3.1 Managing paired devices from the terminal
+
+One machine can hold several paired devices (phones, another computer), but
+exactly one of them is **in control**: only it may command this machine, and the
+others stay paired in standby. `--re-pair` is "replace them all", which cannot
+address one device; use the `future` CLI for that:
+
+```bash
+future remote devices                  # every paired device, who is in control, issued by what
+future remote devices remove <id|#>    # unpair this one; the others stay paired
+future remote devices use <id|#>       # choose the one in control
+```
+
+- A device is named by its pair id — the `pair_` prefix and letter case are
+  decoration, and a unique prefix is enough — or by the row number the list prints.
+- `remove` revokes the device where it was minted (the Future platform, or its
+  room on a self-hosted relay) and only then drops the local slot. A headless
+  process that is running therefore stops serving that device at its next
+  credential refresh. A revoke that cannot be delivered is queued for the next
+  Desktop to retry; the local unpair still happens.
+- `use` writes the same pointer the window's "Let this control" writes. With a
+  Desktop running, control is an in-memory decision (a device asking to take over
+  moves it too), so a running Desktop keeps its current controller and the written
+  value applies at the next start.
+- These commands read `~/.future/remote_pairings.json` (an older single-pairing
+  file is read as one slot), so they need no running Desktop and, on a self-hosted
+  relay, no account.
+
+"Connected right now" and the name a device gave itself exist only in a running
+Desktop process — they are not in the pairing book. Adding a device is still a
+pairing step: the window's Remote page has "Add a device", and a headless server
+issues a replacement invitation with `futureos-headless --re-pair`.
 
 ## 4. Ctrl+C, SSH disconnects and restarting
 

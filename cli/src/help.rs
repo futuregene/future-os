@@ -13,6 +13,7 @@ Groups:
   config    Configure a model provider, and read/write global settings
   desktop   Read and change the desktop app's settings
   workspace List, and add, the desktop app's workspaces
+  remote    Manage the devices paired to this machine's remote desktop
   auth      Authentication & API key management
   account   Platform account info
   run       Send a prompt to the agent (one-shot, non-interactive)
@@ -49,6 +50,7 @@ Run 'future <group> --help' for per-group details.
   future config --help       Interactive model-provider setup
   future desktop --help      Desktop app settings
   future workspace --help    Desktop app workspaces (list/add)
+  future remote --help       Paired remote devices (list/remove/use)
   future run --help          All run options (model, fork, thinking, tools, etc.)
   future auth --help         Auth subcommands
   future account --help      Account subcommands
@@ -279,6 +281,105 @@ their defaults.
 
 The running desktop app is unaffected until it next reads the settings; a change
 made in the app's own Settings screen applies immediately."#;
+
+/// `future remote --help` output.
+pub const REMOTE_HELP: &str = r#"future remote — manage the devices paired to this machine's remote desktop
+
+Usage:
+  future remote devices [list] [--json]         Every paired device, and the one in control
+  future remote devices remove <id|#> [--yes]   Unpair one device; the others stay paired
+  future remote devices use <id|#>              Make a paired device the one in control
+
+Every action takes --json and prints the resulting device document instead of a
+sentence, which is the same shape `future remote devices --json` prints.
+
+A device is a phone or another computer that paired with this machine's remote
+desktop — the Remote page in the window, or futureos-headless. The list is the
+pairing book the Desktop itself reads (~/.future/remote_pairings.json), so these
+commands need no running Desktop; a self-hosted relay needs no account either.
+
+remove revokes the device where it was minted before dropping it locally: at the
+Future platform, or by deleting its room at the relay that issued it. A revoke
+that cannot be delivered now is queued and retried by the next Desktop that runs.
+
+use writes the same pointer the window's "Let this control" writes. A running
+Desktop keeps its current controller until it restarts: control is an in-memory
+decision there, and a device asking to take over moves it too.
+
+Adding a device is a pairing, not a management step: use the window's Remote page
+(Add a device). On a headless server, futureos-headless --re-pair replaces the
+existing pairing with a new invitation.
+
+Run `future remote devices --help` for the ids remove and use accept."#;
+
+/// The one-line usage every `future remote` argument error repeats.
+pub const REMOTE_USAGE: &str = r#"Usage:
+  future remote devices [list] [--json]
+  future remote devices remove <id|#> [--yes]
+  future remote devices use <id|#>"#;
+
+/// `future remote devices list --help` output.
+pub const REMOTE_LIST_HELP: &str = r#"future remote devices list — every device paired to this machine
+
+Usage:
+  future remote devices [list] [--json]
+
+Prints a row per device: its pair id, whether it is the one in control, and where
+it was minted (the Future platform, or a self-hosted relay's URL). The `pair_`
+prefix and the letter case of an id are decoration; remove and use accept either.
+
+With one device there is no arbitration: it is in control. With several, the
+device that last claimed the machine is; the others stay paired in standby and
+cannot command it.
+
+--json prints one object: desktopRunning, active (the pair id in control, or
+null), and devices[] with pairId, desktopId, control, endpoint and relayUrl.
+Credentials are never part of it.
+
+Live connection state — who is connected at this moment, and the name a device
+gave itself — is known only to a running Desktop: it is not in the pairing book."#;
+
+/// `future remote devices remove --help` output.
+pub const REMOTE_REMOVE_HELP: &str = r#"future remote devices remove — unpair one device, leaving the others paired
+
+Usage:
+  future remote devices remove <id|#> [--yes] [--json]
+
+<id|#> is a pair id (the `pair_` prefix and letter case may be omitted, and a
+unique prefix is enough) or the row number `future remote devices` prints.
+
+Asks for confirmation from the terminal unless --yes is given, and refuses to
+read an answer from a redirected stdin: a prompt nobody saw must not become
+"yes".
+
+The device is revoked before the local slot is dropped — at the Future platform,
+or by deleting its room at the relay that minted it. That order is why a Desktop
+that is running stops serving it at its next credential refresh instead of never.
+A revoke that cannot be delivered is queued in remote_pending_revokes.json for
+the next Desktop to retry; the local removal still happens, because that is what
+decides access to this machine.
+
+Removing the device in control leaves nobody in control (with one device left,
+that one controls anyway). Removing the last device removes the pairing file.
+
+--json prints the resulting device document, like `future remote devices --json`."#;
+
+/// `future remote devices use --help` output.
+pub const REMOTE_USE_HELP: &str = r#"future remote devices use — choose the device that drives this machine
+
+Usage:
+  future remote devices use <id|#> [--json]
+
+Writes the controlling device into the pairing book: the same pointer the
+window's "Let this control" writes and the runtime restores at start. Control
+moves the way an explicit takeover moves it, so the previous controller is no
+longer allowed to command this machine.
+
+A running Desktop keeps its current controller until it restarts — control is an
+in-memory decision there, and a device asking to take over moves it too. The
+written value is what the next start uses.
+
+--json prints the resulting device document, like `future remote devices --json`."#;
 
 /// `future task --help` output.
 pub const TASK_HELP: &str = r#"future task — manage scheduled tasks (reusable prompt + trigger + full-permission runs)

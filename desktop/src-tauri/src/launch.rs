@@ -29,20 +29,20 @@ pub const HELP: &str = "Usage: futureos [--re-pair [--no-qr]] [--help]
 
 Start the graphical Desktop.
 
-  --re-pair   Revoke the saved pairing and issue a fresh invitation, whatever
-              state the previous connection is in. The invitation is printed on
-              this terminal — a QR code and the complete link — by this process
-              when it starts Desktop, or by the running Desktop answering through
-              this process. Pairing a new device replaces the one that was
-              connected, so that device is cut off as soon as this runs — whether
-              or not the new code is ever scanned.
+  --re-pair   Revoke every saved device pairing and issue a fresh invitation,
+              whatever state the previous connection is in. The invitation is
+              printed on this terminal — a QR code and the complete link — by
+              this process when it starts Desktop, or by the running Desktop
+              answering through this process. The devices that were paired are
+              cut off as soon as this runs — whether or not the new code is ever
+              scanned.
   --no-qr     With --re-pair, print the invitation link without drawing a QR
               code. Use it on a narrow or redirected terminal.
   --help      Show this help without starting Desktop.
 
-To disconnect a paired device without pairing another one, use the Remote page's
-Unpair button instead. For phone remote access without GUI dependencies, run
-futureos-headless.";
+To disconnect one paired device without pairing another one, use the Remote page's
+device list (or `future remote devices`). For phone remote access without GUI
+dependencies, run futureos-headless.";
 
 /// The internal flag carrying where the answer goes. Only this entry point writes
 /// it (see [`notifier_command`]): it is how the launching process is told the
