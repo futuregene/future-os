@@ -1,4 +1,4 @@
-use crate::{CHUNK_BYTES, PAIR};
+use crate::CHUNK_BYTES;
 use future_remote_protocol::IncomingCmd;
 use future_remote_server::{
     services::*,
@@ -29,17 +29,21 @@ pub struct MemoryServerHost {
     downloads: Mutex<HashMap<String, Vec<u8>>>,
     sequence: AtomicU64,
     file_bytes: Vec<u8>,
+    catalog_label: String,
 }
 impl MemoryServerHost {
     pub fn new(creds: PairingCreds, file_bytes: Vec<u8>) -> Self {
+        let active = creds.pair_id.clone();
+        let catalog_label = creds.desktop_id.clone();
         Self {
             creds: Mutex::new(Some(creds)),
-            active: Mutex::new(Some(PAIR.into())),
+            active: Mutex::new(Some(active)),
             counts: Mutex::default(),
             uploads: Mutex::default(),
             downloads: Mutex::default(),
             sequence: AtomicU64::new(1),
             file_bytes,
+            catalog_label,
         }
     }
     pub fn metrics(&self) -> Value {
@@ -57,6 +61,7 @@ impl MemoryServerHost {
             return Err("fixture_refused".into());
         }
         match command.cmd_type.as_str() {
+            "list_sessions" => Ok(self.sessions("").expect("fixture catalog").0),
             "upload_init" => {
                 let id = format!("upload_{}", self.sequence.fetch_add(1, Ordering::Relaxed));
                 self.uploads.lock().unwrap().insert(
@@ -165,8 +170,8 @@ impl StateHost for MemoryServerHost {
     }
     fn sessions(&self, _: &str) -> Option<(Value, String)> {
         Some((
-            json!({"sessions": [], "version": {"epoch": "interop_catalog", "revision": 0}}),
-            "empty".into(),
+            json!({"sessions": [{"sessionId":"interop_session","title":self.catalog_label}], "version": {"epoch": "interop_catalog", "revision": 0}}),
+            self.catalog_label.clone(),
         ))
     }
     fn sessions_catalog(&self, pair: &str) -> Option<SessionsCatalog> {

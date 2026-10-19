@@ -62,6 +62,72 @@ where
     T::deserialize(input).map(Some)
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IsolationSuite {
+    pub version: u32,
+    pub suite: String,
+    pub endpoints: Vec<Endpoint>,
+    pub request_id: String,
+    pub flow_ids: IsolationIds,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Endpoint {
+    pub label: String,
+    pub message: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IsolationIds {
+    pub requests: String,
+    pub catalog: String,
+    pub events: String,
+    pub disconnect: String,
+    pub reconnect: String,
+}
+pub fn isolation() -> anyhow::Result<IsolationSuite> {
+    let suite: IsolationSuite = serde_json::from_str(include_str!(
+        "../../../packages/remote-client/fixtures/isolation.json"
+    ))?;
+    anyhow::ensure!(
+        suite.version == 1 && suite.suite == "client.isolation",
+        "unsupported isolation suite"
+    );
+    anyhow::ensure!(
+        suite.endpoints.len() == 2 && !suite.request_id.is_empty(),
+        "invalid isolation inputs"
+    );
+    let mut labels = BTreeSet::new();
+    for endpoint in &suite.endpoints {
+        anyhow::ensure!(
+            !endpoint.label.is_empty()
+                && endpoint.label.len() <= 32
+                && endpoint
+                    .label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                && labels.insert(&endpoint.label)
+                && !endpoint.message.is_empty(),
+            "invalid/duplicate endpoint"
+        );
+    }
+    let mut ids = BTreeSet::new();
+    for id in [
+        &suite.flow_ids.requests,
+        &suite.flow_ids.catalog,
+        &suite.flow_ids.events,
+        &suite.flow_ids.disconnect,
+        &suite.flow_ids.reconnect,
+    ] {
+        anyhow::ensure!(
+            id.starts_with("client.isolation.") && ids.insert(id),
+            "invalid/duplicate isolation ID"
+        );
+    }
+    Ok(suite)
+}
+
 pub fn suite() -> anyhow::Result<Suite> {
     let suite: Suite = serde_json::from_str(include_str!(
         "../../../packages/remote-client/fixtures/client.json"

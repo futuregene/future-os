@@ -20,7 +20,7 @@ native-file, GUI/headless exit or Mobile lifecycle integrations.
 
 ## Inputs and reports
 
-The sole shared input/expectation file is
+The base shared input/expectation file is
 [`client.json`](../../packages/remote-client/fixtures/client.json). It defines a
 version, request case IDs, event/file inputs and flow report IDs. Both language
 drivers reject unknown versions/kinds/fields and duplicate IDs. Objects compare
@@ -63,9 +63,24 @@ The TS command finds the host in root `target/debug` with the platform executabl
 suffix. `REMOTE_INTEROP_HOST` may supply an explicit path for a CI artifact. No
 existing broker, account service or running Agent is used or stopped.
 
-The current common surface covers first pairing and invitation-secret removal,
+The base common surface covers first pairing and invitation-secret removal,
 read/write replies, business refusal, duplicate replay, command-ID conflict,
-encrypted events, binary upload/download and IK reconnection/shutdown. Shared
-unit drivers with controlled time, lost-response/recovery/renewal/cancellation,
-multiple endpoint isolation, further security faults, affected CI wiring and
-runtime/performance acceptance remain part of the development plan.
+encrypted events, binary upload/download and IK reconnection/shutdown.
+
+[`isolation.json`](../../packages/remote-client/fixtures/isolation.json) adds five
+common report IDs for two real endpoints: duplicate request identity, catalog
+ownership despite equal session IDs, event ownership, independent stop and IK
+reconnection. Rust uses one Client and two Server supervisors on one broker;
+TS uses one Client instance per endpoint with two owned host/broker processes.
+The host accepts only a public alphanumeric/underscore fixture label, deriving
+separate desktop/pair identities; no credentials are passed in command arguments.
+All instances are explicitly stopped and awaited, with owned broker cleanup.
+These are core interoperability fixtures; original real Desktop Store/Agent,
+multiple application processes and native-file integrations are retained.
+
+The CI Remote job now selects packages by language/dependency and runs both
+interop drivers, including these flows. Its new scheduling regression declarations
+and interoperability extensions are not yet runtime evidence: no final CI run
+has been dispatched during development. Further real network faults, shared
+recovery/event/transfer behaviors, application migration audit and matched
+performance/manual acceptance remain part of the development plan.

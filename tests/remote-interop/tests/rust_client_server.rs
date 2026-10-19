@@ -103,3 +103,103 @@ async fn public_rust_roles_pair_request_publish_transfer_and_reconnect() -> anyh
     println!("remote-interop rust {} PASS", suite.flow_ids.shutdown);
     Ok(())
 }
+
+#[tokio::test]
+async fn one_rust_client_keeps_two_real_servers_separate() -> anyhow::Result<()> {
+    let suite = contract::isolation()?;
+    let broker = Broker::start().await?;
+    let first = Fixture::start_named(
+        &broker.nats_url,
+        &broker.websocket_url,
+        &suite.endpoints[0].label,
+    )
+    .await?;
+    let second = Fixture::start_named(
+        &broker.nats_url,
+        &broker.websocket_url,
+        &suite.endpoints[1].label,
+    )
+    .await?;
+    let fixtures = [&first, &second];
+    let host = Arc::new(MemoryClientHost::new(first.client_credentials.clone()));
+    host.upsert(second.client_credentials.clone())?;
+    let client = Client::new(host.clone());
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let emitter: future_remote_client::Emitter = Arc::new(move |event| {
+        let _ = events.send(event);
+    });
+    let result: anyhow::Result<()> = async {
+        let a = &first.client_credentials.desktop_id;
+        let b = &second.client_credentials.desktop_id;
+        let (a_status, b_status) = tokio::try_join!(
+            client.connect_with_emitter(a, Some(emitter.clone())),
+            client.connect_with_emitter(b, Some(emitter.clone()))
+        )?;
+        assert!(a_status.connected && b_status.connected);
+        assert_eq!(client.list().await?.len(), 2);
+        for (index, fixture) in fixtures.iter().enumerate() {
+            let command = json!({"id":suite.request_id, "type":"get_state", "message":suite.endpoints[index].message});
+            // The same request ID is independent on each real endpoint. Replaying
+            // one endpoint's request must hit its own deduplication cache.
+            for _ in 0..2 {
+                assert_eq!(client.request(&fixture.client_credentials.desktop_id, command.clone(), "list").await?, json!({"echo":suite.endpoints[index].message,"kind":"get_state"}));
+            }
+            assert_eq!(fixture.metrics()["executions"][&suite.request_id], 1);
+            assert_eq!(fixture.metrics()["identityBound"], true);
+        }
+        println!("remote-interop rust {} PASS", suite.flow_ids.requests);
+        for fixture in fixtures {
+            let desktop = &fixture.client_credentials.desktop_id;
+            let catalog = client.sessions(desktop).await?;
+            assert_eq!(catalog["desktopId"], *desktop);
+            assert_eq!(catalog["pairId"], fixture.client_credentials.pair_id);
+            assert_eq!(catalog["sessions"][0]["title"], *desktop);
+        }
+        println!("remote-interop rust {} PASS", suite.flow_ids.catalog);
+        for (index, fixture) in fixtures.iter().enumerate() {
+            fixture.emit_data(&suite.endpoints[index].message)?;
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let event = received.recv().await.expect("isolation event stream closed");
+                    if event.kind == "event" {
+                        for (source, endpoint) in suite.endpoints.iter().enumerate() {
+                            if event.payload["data"] == endpoint.message {
+                                assert_eq!(event.desktop_id, fixtures[source].client_credentials.desktop_id);
+                            }
+                        }
+                        if event.payload["data"] == suite.endpoints[index].message {
+                            assert_eq!(event.desktop_id, fixture.client_credentials.desktop_id);
+                            break;
+                        }
+                    }
+                }
+            }).await?;
+        }
+        println!("remote-interop rust {} PASS", suite.flow_ids.events);
+        client.disconnect(a).await;
+        let summaries = client.list().await?;
+        assert!(summaries.iter().any(|peer| peer.desktop_id == *a && peer.stopped && !peer.connected));
+        assert!(summaries.iter().any(|peer| peer.desktop_id == *b && !peer.stopped && peer.connected));
+        assert_eq!(client.request(b, json!({"id":"isolation_survivor","type":"get_state","message":suite.endpoints[1].message}), "list").await?, json!({"echo":suite.endpoints[1].message,"kind":"get_state"}));
+        assert!(first.metrics()["executions"].get("isolation_survivor").is_none());
+        assert_eq!(second.metrics()["executions"]["isolation_survivor"], 1);
+        println!("remote-interop rust {} PASS", suite.flow_ids.disconnect);
+        client.connect_with_emitter(a, Some(emitter)).await?;
+        assert!(client.list().await?.iter().all(|peer| peer.connected && !peer.stopped));
+        assert_eq!(client.request(a, json!({"id":"isolation_restored","type":"get_state","message":suite.endpoints[0].message}), "list").await?, json!({"echo":suite.endpoints[0].message,"kind":"get_state"}));
+        assert!(second.metrics()["executions"].get("isolation_restored").is_none());
+        assert!(host.load()?.peers.iter().all(|peer| peer.creds.secure.as_ref().is_some_and(|identity| identity.secret.is_none())));
+        println!("remote-interop rust {} PASS", suite.flow_ids.reconnect);
+        Ok(())
+    }.await;
+    let (client_cleanup, first_cleanup, second_cleanup) = tokio::join!(
+        client.shutdown(Duration::from_secs(5)),
+        first.shutdown(),
+        second.shutdown()
+    );
+    result?;
+    client_cleanup?;
+    first_cleanup?;
+    second_cleanup?;
+    Ok(())
+}

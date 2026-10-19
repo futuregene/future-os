@@ -35,9 +35,9 @@ export class Harness {
   private readonly pending = new Map<number, ReturnType<typeof deferred<Record<string, unknown>>>>();
   private sequence = 0;
   private brokerPid: number | undefined;
-  private constructor() {
+  private constructor(label?: string) {
     const executable = process.env.REMOTE_INTEROP_HOST ?? resolve("../../target/debug", `remote-interop-host${process.platform === "win32" ? ".exe" : ""}`);
-    this.child = spawn(executable, [], { stdio: ["pipe", "pipe", "pipe"] });
+    this.child = spawn(executable, label === undefined ? [] : [label], { stdio: ["pipe", "pipe", "pipe"] });
     // Stdout contains ephemeral credentials and is private control IPC. Never
     // forward it to CI output or attach it as a test snapshot.
     createInterface({ input: this.child.stdout }).on("line", line => {
@@ -64,16 +64,16 @@ export class Harness {
     });
     this.child.stdin.on("error", () => { /* exit rejects the pending operation */ });
   }
-  static async start(): Promise<{ harness: Harness; ready: Ready }> {
-    const harness = new Harness();
+  static async start(label?: string): Promise<{ harness: Harness; ready: Ready }> {
+    const harness = new Harness(label);
     try { return { harness, ready: await bounded(harness.readiness.promise, 30_000) }; }
     catch (error) { await harness.close(); throw error; }
   }
-  async command(type: "metrics" | "emit" | "shutdown"): Promise<Record<string, unknown>> {
+  async command(type: "metrics" | "emit" | "shutdown", data?: string): Promise<Record<string, unknown>> {
     const id = ++this.sequence;
     const pending = deferred<Record<string, unknown>>();
     this.pending.set(id, pending);
-    this.child.stdin.write(`${JSON.stringify({ id, type })}\n`);
+    this.child.stdin.write(`${JSON.stringify({ id, type, data })}\n`);
     try { return await bounded(pending.promise, 10_000); }
     finally { this.pending.delete(id); }
   }

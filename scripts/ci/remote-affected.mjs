@@ -55,7 +55,7 @@ export function remoteAffected(files, force = false) {
     if (input.startsWith('fixtures/') || input === 'tests/vectors.json') {
       add('rust', role, false);
       if (hasTS) add('typescript', role, false);
-      if (role === 'client' && input === 'fixtures/client.json') interop = true;
+      if (role === 'client' && ['fixtures/client.json', 'fixtures/isolation.json'].includes(input)) interop = true;
       continue;
     }
     // Schema/codegen and unclassified build inputs fail toward broader scope.

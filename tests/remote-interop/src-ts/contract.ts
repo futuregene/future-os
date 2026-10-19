@@ -1,4 +1,5 @@
 import input from "../../../packages/remote-client/fixtures/client.json";
+import isolationInput from "../../../packages/remote-client/fixtures/isolation.json";
 import type { RemoteCommand } from "@future-os/remote-client/types";
 
 export interface Step { command: RemoteCommand & { id: string }; data?: unknown; error?: string }
@@ -43,3 +44,20 @@ for (const item of input.cases) {
   }
 }
 export const suite = { ...input, cases: input.cases as unknown as Case[] };
+
+record(isolationInput, ["version", "suite", "endpoints", "requestId", "flowIds"], ["version", "suite", "endpoints", "requestId", "flowIds"]);
+if (isolationInput.version !== 1 || isolationInput.suite !== "client.isolation") throw new Error("unsupported isolation suite");
+if (!Array.isArray(isolationInput.endpoints) || isolationInput.endpoints.length !== 2 || typeof isolationInput.requestId !== "string" || !isolationInput.requestId) throw new Error("invalid isolation inputs");
+const labels = new Set<string>();
+for (const endpoint of isolationInput.endpoints) {
+  record(endpoint, ["label", "message"], ["label", "message"]);
+  if (typeof endpoint.label !== "string" || !/^[A-Za-z0-9_]{1,32}$/.test(endpoint.label) || labels.has(endpoint.label) || typeof endpoint.message !== "string" || !endpoint.message) throw new Error("invalid/duplicate endpoint");
+  labels.add(endpoint.label);
+}
+record(isolationInput.flowIds, ["requests", "catalog", "events", "disconnect", "reconnect"], ["requests", "catalog", "events", "disconnect", "reconnect"]);
+const isolationIds = new Set<string>();
+for (const id of Object.values(isolationInput.flowIds)) {
+  if (typeof id !== "string" || !id.startsWith("client.isolation.") || isolationIds.has(id)) throw new Error("invalid/duplicate isolation ID");
+  isolationIds.add(id);
+}
+export const isolation = isolationInput;

@@ -51,6 +51,7 @@ test('language locks and package configs keep independent scopes', () => {
 });
 test('real interop fixture and project edits require interop', () => {
   assert.equal(remoteAffected(['packages/remote-client/fixtures/client.json']).interop, true);
+  assert.equal(remoteAffected(['packages/remote-client/fixtures/isolation.json']).interop, true);
   assert.equal(remoteAffected(['tests/remote-interop/src-ts/client.ts']).interop, true);
 });
 test('documentation and unrelated application files do not schedule core suites', () => {

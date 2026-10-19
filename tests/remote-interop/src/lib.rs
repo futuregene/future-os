@@ -28,6 +28,35 @@ pub struct Fixture {
 }
 impl Fixture {
     pub async fn start(nats_url: &str, websocket_url: &str) -> anyhow::Result<Self> {
+        Self::start_with_ids(nats_url, websocket_url, DESKTOP, PAIR).await
+    }
+    pub async fn start_named(
+        nats_url: &str,
+        websocket_url: &str,
+        label: &str,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            !label.is_empty()
+                && label.len() <= 32
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'),
+            "invalid fixture label"
+        );
+        Self::start_with_ids(
+            nats_url,
+            websocket_url,
+            &format!("interop_{label}"),
+            &format!("pair_{label}"),
+        )
+        .await
+    }
+    async fn start_with_ids(
+        nats_url: &str,
+        websocket_url: &str,
+        desktop: &str,
+        pair: &str,
+    ) -> anyhow::Result<Self> {
         for endpoint in [nats_url, websocket_url] {
             let parsed = url::Url::parse(endpoint)?;
             anyhow::ensure!(
@@ -47,8 +76,8 @@ impl Fixture {
             URL_SAFE_NO_PAD.encode(serde_json::to_vec(&json!({"exp": expires}))?)
         );
         let client_credentials = PeerCreds {
-            pair_id: PAIR.into(),
-            desktop_id: DESKTOP.into(),
+            pair_id: pair.into(),
+            desktop_id: desktop.into(),
             device_id: "interop_client".into(),
             nkey_seed: client_key.seed()?,
             user_jwt: jwt.clone(),
@@ -67,8 +96,8 @@ impl Fixture {
         let creds = PairingCreds {
             handshake_version: 2,
             secure: Some(identity),
-            pair_id: PAIR.into(),
-            desktop_id: DESKTOP.into(),
+            pair_id: pair.into(),
+            desktop_id: desktop.into(),
             nkey_seed: desktop_key.seed()?,
             user_jwt: jwt,
             nats_url: nats_url.into(),
@@ -91,11 +120,14 @@ impl Fixture {
         })
     }
     pub fn emit(&self) -> anyhow::Result<()> {
+        self.emit_data(&contract::suite()?.event.data)
+    }
+    pub fn emit_data(&self, data: &str) -> anyhow::Result<()> {
         let event = contract::suite()?.event;
         self.server.publish_event(
             &event.session_id,
             &event.kind,
-            &event.data,
+            data,
             &event.run_id,
             event.idx,
             event.epoch,

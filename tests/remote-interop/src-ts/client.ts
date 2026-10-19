@@ -6,6 +6,7 @@ import { downloadPrepared, prepareDownload, uploadAttachments } from "@future-os
 import type { RemoteCredentials, RpcResponse, StreamEvent } from "@future-os/remote-client/types";
 import { suite } from "./contract";
 import { bounded, deferred, Harness, until } from "./harness";
+import { runIsolation } from "./isolation";
 
 function report(id: string): void { console.log(`remote-interop typescript ${id} PASS`); }
 async function main(): Promise<void> {
@@ -129,4 +130,4 @@ async function main(): Promise<void> {
     } finally { await harness.close(); }
   }
 }
-void main().catch(error => { console.error(`remote-interop TypeScript failed: ${error instanceof Error ? error.message : "unknown failure"}`); process.exitCode = 1; });
+void main().then(runIsolation).catch(error => { console.error(`remote-interop TypeScript failed: ${error instanceof Error ? error.message : "unknown failure"}`); process.exitCode = 1; });

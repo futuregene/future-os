@@ -6,6 +6,7 @@ TypeScript. They are not copied into Desktop or Mobile.
 | File | Purpose | Drivers |
 |---|---|---|
 | [client.json](client.json) | Real role interoperability: requests/deduplication, pairing, events, file bytes, reconnect and shutdown report IDs | [Independent interoperability project](../../../tests/remote-interop/README.md) |
+| [isolation.json](isolation.json) | Two real endpoints: request/deduplication, catalog/event ownership, stop and reconnect independence | Independent Rust and TS interoperability drivers |
 | [credentials.json](credentials.json) | Expiry boundaries, late renewal fencing, continuation and instance isolation | Rust `shared_credentials_tests.rs`; Node/Jest `sharedCredentials.test.ts` |
 | [requests.json](requests.json) | Controlled request-policy scenarios: send times, outcomes, retry identity, timeout budgets, recovery/probe counts and cancellation | Rust `shared_request_tests.rs`; Node/Jest `sharedRequests.test.ts` |
 
@@ -72,3 +73,16 @@ uses a host promise that ignores cancellation and checks ownership remains until
 it settles; no late credential cache or persistent-store adoption is allowed.
 These instance checks do not replace multiple endpoints inside one Rust runtime,
 application SecureStore transactions or live recovery fault coverage.
+
+`isolation.json` supplies two distinct endpoint labels/messages, the same request
+ID on both endpoints and five stable report IDs. The Rust driver connects one
+Client runtime to two Server supervisors on the same owned broker. The TS driver
+connects two Client instances to separate owned host/broker processes. Both use
+real handshakes, records, routing, replies and events; neither loads an app.
+Both keep the same remote session ID on each endpoint so catalog ownership cannot
+be inferred from a conveniently unique session ID. Rust also checks the public
+catalog's desktop/pair stamps. TS checks the corresponding role's returned catalog.
+Stopping one endpoint leaves the other answering; the stopped endpoint reconnects
+with its persisted IK identity without changing the survivor. These topologies
+are deliberately stated and do not claim cross-process application integration,
+relay JWT/ACL enforcement, automatic failure recovery or shared timeline dedup.

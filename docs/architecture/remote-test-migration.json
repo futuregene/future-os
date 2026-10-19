@@ -656,7 +656,8 @@
         "one_desktop_app_connects_to_several_headless_hosts_at_once",
         "a_spent_secret_that_cannot_be_dropped_is_only_housekeeping"
       ],
-      "target": null
+      "target": null,
+      "note": "Retained application integration: real application Store, process-local installation identity, independent headless application children and native cleanup. Additional independent core interoperability in tests/remote-interop/tests/rust_client_server.rs and src-ts/isolation.ts uses shared isolation.json; it does not replace these original cases. Neither location has final-CI execution evidence yet."
     },
     {
       "source": "desktop/src-tauri/src/remote_peer/platform.rs",

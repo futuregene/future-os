@@ -13,7 +13,12 @@ async fn send(value: Value) -> anyhow::Result<()> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let broker = Broker::start().await?;
-    let fixture = Fixture::start(&broker.nats_url, &broker.websocket_url).await?;
+    let fixture = match std::env::args().nth(1) {
+        Some(label) => {
+            Fixture::start_named(&broker.nats_url, &broker.websocket_url, &label).await?
+        }
+        None => Fixture::start(&broker.nats_url, &broker.websocket_url).await?,
+    };
     send(json!({"type":"ready", "brokerPid": broker.pid(), "credentials": fixture.client_credentials, "desktopNkey": fixture.desktop_nkey})).await?;
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     while let Some(line) = lines.next_line().await? {
@@ -21,7 +26,11 @@ async fn main() -> anyhow::Result<()> {
         let id = &command["id"];
         match command["type"].as_str() {
             Some("emit") => {
-                fixture.emit()?;
+                match command.get("data") {
+                    Some(Value::String(data)) => fixture.emit_data(data)?,
+                    None => fixture.emit()?,
+                    _ => anyhow::bail!("invalid fixture event data"),
+                }
                 send(json!({"id": id, "ok": true})).await?;
             }
             Some("metrics") => {
