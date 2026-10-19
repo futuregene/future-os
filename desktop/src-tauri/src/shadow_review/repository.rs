@@ -101,6 +101,8 @@ impl ShadowRepo {
         use crate::proc::NoWindow;
         let mut cmd = Command::new("git");
         cmd.no_window();
+        // Commands with explicit input override this with a pipe in run().
+        cmd.stdin(Stdio::null());
         cmd.env("GIT_DIR", &self.git_dir);
         // Bare handles (open_bare) have no work tree; only set it when present.
         if !self.workspace_path.as_os_str().is_empty() {

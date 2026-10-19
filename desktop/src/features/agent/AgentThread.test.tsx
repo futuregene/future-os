@@ -12,6 +12,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { AgentThread } from "./AgentThread";
+import { loadComposerDraft, saveComposerDraft } from "./composerDraft";
 
 /**
  * Every child is stubbed: this file is about `AgentThread`'s own composition —
@@ -167,6 +168,7 @@ let props: Parameters<typeof AgentThread>[0];
 
 beforeEach(() => {
   vi.clearAllMocks();
+  sessionStorage.clear();
   h.state.handleSend.mockResolvedValue(undefined);
   h.reco.evaluate.mockResolvedValue(null);
   h.agentState.current = null;
@@ -534,7 +536,7 @@ describe("agentThread recovery callbacks", () => {
     expect(h.state.handleSend).toHaveBeenCalledWith({
       attachments: [{ id: "att-1" }],
       content: "prompt u1",
-    });
+    }, expect.any(Function));
   });
 
   it("retries a message that carries no attachments with an empty list", async () => {
@@ -555,6 +557,31 @@ describe("agentThread recovery callbacks", () => {
     expect(payload.content).toBe("prompt u1");
     expect(Array.isArray(payload.attachments)).toBe(true);
     expect(payload.attachments).toEqual([]);
+  });
+
+  it("drops the rejected-first-message draft once the retry is accepted", async () => {
+    // A rejected first send is restored to this conversation's draft; retrying
+    // it from the failed bubble must not leave it prefilled on the next visit.
+    saveComposerDraft("T1", { text: "prompt u1", attachments: [] });
+    setMessages([user("u1"), assistant("a1")]);
+    rerender();
+    await click("[data-retry]");
+
+    const [, onAccepted] = h.state.handleSend.mock.calls[0]!;
+    expect(loadComposerDraft("T1")).not.toBeNull();
+    act(() => onAccepted?.());
+    expect(loadComposerDraft("T1")).toBeNull();
+  });
+
+  it("keeps a draft that no longer matches the retried message", async () => {
+    saveComposerDraft("T1", { text: "prompt u1 plus edits", attachments: [] });
+    setMessages([user("u1"), assistant("a1")]);
+    rerender();
+    await click("[data-retry]");
+
+    const [, onAccepted] = h.state.handleSend.mock.calls[0]!;
+    act(() => onAccepted?.());
+    expect(loadComposerDraft("T1")?.text).toBe("prompt u1 plus edits");
   });
 
   it("answers a recover-run retry with the named trigger message", async () => {

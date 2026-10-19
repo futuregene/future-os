@@ -17,9 +17,9 @@ export function ApprovalAssessments({ className, run, toolCallId }: { className?
     return null;
   return (
     <section className={cn("shrink-0 space-y-1", className)} aria-label={t("autoApproval.title")}>
-      <h3 className="text-[11px] font-medium text-ink-muted">{t("autoApproval.title")}</h3>
+      <h3 className="text-2xs font-medium text-ink-muted">{t("autoApproval.title")}</h3>
       {entries.map(entry => (
-        <div className="rounded-md border border-line-soft bg-surface/50 p-2 text-[11px]" key={entry.id}>
+        <div className="rounded-md border border-line-soft bg-surface/50 p-2 text-2xs" key={entry.id}>
           <div className="flex flex-wrap items-center gap-2 text-ink-soft">
             <Badge tone={entry.status === "approved" ? "success" : "danger"}>{t(`autoApproval.status.${entry.status}`)}</Badge>
             {entry.payload.effective.risk && (

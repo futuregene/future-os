@@ -1585,6 +1585,76 @@ mod tests {
         );
     }
 
+    // ── storage health contract ─────────────────────────────────────
+
+    /// A storage-health report with every field `storage_health` requires.
+    fn complete_storage_health() -> serde_json::Value {
+        serde_json::json!({
+            "databaseId": "mock-db",
+            "restoreGeneration": "mock-restore",
+            "schemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION,
+            "sessions": 0,
+            "deletedSessions": 0,
+            "failedImports": 0,
+            "unrecoverableQueuedInputs": 0,
+            "pendingQueuedInputs": 0,
+            "pendingHistoryIndexes": 0,
+            "catalogueConflicts": 0,
+        })
+    }
+
+    /// Run `storage_health` against a mock that answers with `report`.
+    async fn storage_health_against(report: serde_json::Value) -> Result<Value, String> {
+        let mut agent = MockAgent::default();
+        agent
+            .responses
+            .insert("get_storage_health".into(), report.to_string());
+        let addr = spawn_mock(agent).await;
+        RunClient::new(&addr).storage_health().await
+    }
+
+    #[tokio::test]
+    async fn storage_health_accepts_a_complete_report() {
+        let report = complete_storage_health();
+        let data = storage_health_against(report.clone())
+            .await
+            .expect("a complete report must be accepted");
+        assert_eq!(data["databaseId"], report["databaseId"]);
+        assert_eq!(data["pendingQueuedInputs"], 0);
+    }
+
+    /// Missing counters are rejected verbatim, not silently defaulted: a
+    /// forgetful Agent must not read as a healthy database.
+    #[tokio::test]
+    async fn storage_health_rejects_a_report_without_pending_queued_inputs() {
+        let mut report = complete_storage_health();
+        report
+            .as_object_mut()
+            .expect("object report")
+            .remove("pendingQueuedInputs");
+        let error = storage_health_against(report)
+            .await
+            .expect_err("a report without pendingQueuedInputs must be rejected");
+        assert!(
+            error.contains("incomplete storage health report"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn storage_health_rejects_a_schema_version_mismatch() {
+        let mut report = complete_storage_health();
+        report["schemaVersion"] =
+            serde_json::json!(u64::from(future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION) + 1);
+        let error = storage_health_against(report)
+            .await
+            .expect_err("a schema version mismatch must be rejected");
+        assert!(
+            error.contains("incomplete storage health report"),
+            "unexpected error: {error}"
+        );
+    }
+
     // ── execute_command surface ─────────────────────────────────────
 
     /// Every one-shot wrapper surfaces a command failure as Err.

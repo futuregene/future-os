@@ -205,7 +205,7 @@ function ArtifactCard({
             <div className="mt-1 text-xs text-ink-muted">{formatDateTime(storedTimeToIso(artifact.createdAt), i18n.language)}</div>
             {!artifact.path && artifact.content
               ? (
-                  <pre className="mt-2 max-h-32 overflow-auto rounded-md bg-surface-subtle p-2 text-[11px] leading-4 text-ink-soft">
+                  <pre className="mt-2 max-h-32 overflow-auto rounded-md bg-surface-subtle p-2 text-2xs leading-4 text-ink-soft">
                     <code>{artifact.content}</code>
                   </pre>
                 )

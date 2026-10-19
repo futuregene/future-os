@@ -25,7 +25,7 @@ export const ThinkingBlock = memo(({
   const Chevron = expanded ? ChevronUp : ChevronDown;
 
   return (
-    <div className="flex min-w-0 flex-col gap-1 text-[13px] leading-6 text-ink-muted">
+    <div className="flex min-w-0 flex-col gap-1 text-13 leading-6 text-ink-muted">
       <button
         aria-expanded={expanded}
         className="flex max-w-full cursor-pointer items-center gap-2 self-start text-left hover:text-ink"

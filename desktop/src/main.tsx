@@ -4,6 +4,8 @@ import { App } from "./app/App";
 import "./i18n";
 // Applies the persisted light/dark choice before the first React paint.
 import "./lib/theme";
+// Applies the persisted text size before the first React paint.
+import "./lib/fontSize";
 import "./styles/globals.css";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

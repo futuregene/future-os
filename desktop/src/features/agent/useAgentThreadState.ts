@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { abortRun, getRun } from "../../integrations/storage/threadStore";
 import { useCommittedRef } from "../../lib/useCommittedRef";
 import { usePolling } from "../../lib/usePolling";
+import { loadComposerDraft, saveComposerDraft } from "./composerDraft";
 import { useRunReattach } from "./useRunReattach";
 import { useSendMessage } from "./useSendMessage";
 import { useThreadMessages } from "./useThreadMessages";
@@ -38,6 +39,32 @@ function activeRunIdOf(recentRun: StoredRun | null): string | null {
   return recentRun && !matchesSettledRun(recentRun.status)
     ? recentRun.id
     : null;
+}
+
+/**
+ * Return a rejected first message to the conversation's composer draft.
+ *
+ * A prompt the Agent rejected never enters Agent history, so the conversation
+ * reloads without it — the staged bubble is the only copy left. The composer
+ * draft is where an unsent message belongs anyway: the conversation's composer
+ * restores it on its next mount, and sending it from there is an explicit
+ * retry that the normal send path persists.
+ *
+ * A draft the user typed while the send was settling wins: it is newer intent,
+ * and concatenating the two would fabricate a message nobody wrote.
+ */
+function restoreRejectedPromptToDraft(prompt: {
+  attachments?: MessageAttachment[];
+  content: string;
+  targetThreadId: string;
+}): void {
+  const existing = loadComposerDraft(prompt.targetThreadId);
+  if ((existing?.text ?? "").trim().length > 0 || (existing?.attachments?.length ?? 0) > 0)
+    return;
+  saveComposerDraft(prompt.targetThreadId, {
+    text: prompt.content,
+    attachments: prompt.attachments ?? [],
+  });
 }
 
 export function useAgentThreadState({
@@ -239,9 +266,17 @@ export function useAgentThreadState({
       attachments: pendingPrompt.attachments ?? [],
       content: pendingPrompt.content,
     }, () => onPromptConsumed(promptId)).catch(() => {
-      // Keep the prompt staged for a later visit, but retain this view's
-      // attempt marker. Clearing it here makes run/status updates resubmit a
-      // rejected first message indefinitely, creating failed runs and toasts.
+      // A rejected first send is latched, not retried. Keeping it staged made
+      // every later visit resend it with no visible trace of the attempt: the
+      // Agent rejects before recording the message, so each visit added another
+      // failed run, and any ref-anchored churn in this effect could repeat that
+      // at run/status rate (see #1213). Consume it here and hand the text back
+      // to the conversation's composer draft, so returning to the conversation
+      // offers the message for an explicit resend — the same recovery a
+      // composer-initiated rejection gets. The current view keeps its failed
+      // bubble, whose retry action sends it again without leaving the thread.
+      onPromptConsumed(promptId);
+      restoreRejectedPromptToDraft(pendingPrompt);
     }).finally(() => pendingPromptSends.delete(promptId));
   }, [
     handleSend,

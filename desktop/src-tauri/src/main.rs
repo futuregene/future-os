@@ -1,8 +1,21 @@
+// Explorer must start the GUI without first allocating a console window.
+#![cfg_attr(
+    all(windows, feature = "gui", not(test)),
+    windows_subsystem = "windows"
+)]
+
 #[cfg(not(test))]
 use futureos_lib::launch::{self, Launch};
 
 #[cfg(not(test))]
 fn main() -> std::process::ExitCode {
+    // Reuse a launching shell for help, errors and the --re-pair terminal check.
+    // Explorer has no console to attach to; never allocate one for a GUI launch.
+    #[cfg(all(windows, feature = "gui"))]
+    unsafe {
+        use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(result) = futureos_lib::dispatch_agent_helper(&args) {
         return match result {

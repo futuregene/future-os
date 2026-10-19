@@ -76,7 +76,7 @@ export function TextPreview({ path, onError }: { path: string; onError: () => vo
           )
         : null}
       <pre
-        className="min-w-full px-4 py-3 text-[11px] leading-4 whitespace-pre-wrap text-ink-soft"
+        className="min-w-full px-4 py-3 text-2xs leading-4 whitespace-pre-wrap text-ink-soft"
         style={highlighted ? { color: highlighted.fgColor } : undefined}
       >
         <code>

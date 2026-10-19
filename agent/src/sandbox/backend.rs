@@ -89,6 +89,9 @@ impl PreparedShell {
         // Piped output alone does not stop Windows allocating one for PowerShell.
         #[cfg(windows)]
         command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+        // Shell tools never read the host's terminal. Desktop may have detached
+        // it with FreeConsole, leaving a standard input handle unsafe to inherit.
+        command.stdin(std::process::Stdio::null());
         command.args(self.args);
         for (key, value) in self.env_delta {
             match value {

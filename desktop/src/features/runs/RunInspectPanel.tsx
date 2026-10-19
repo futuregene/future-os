@@ -396,7 +396,7 @@ function ToolCallDetail({
       />
       {approval}
       <div className="mt-2 shrink-0">
-        <div className="mb-1 text-[11px] font-medium text-ink-muted">
+        <div className="mb-1 text-2xs font-medium text-ink-muted">
           {details.command
             ? t("runInspect.command")
             : details.path
@@ -412,7 +412,7 @@ function ToolCallDetail({
                   <div
                     className={cn("mt-2", fill ? "flex min-h-0 flex-col" : "shrink-0")}
                   >
-                    <div className="mb-1 shrink-0 text-[11px] font-medium text-ink-muted">
+                    <div className="mb-1 shrink-0 text-2xs font-medium text-ink-muted">
                       {t("runInspect.content")}
                     </div>
                     <CopyablePre
@@ -436,7 +436,7 @@ function ToolCallDetail({
                           : "shrink-0",
                       )}
                     >
-                      <div className="mb-1 shrink-0 text-[11px] font-medium text-ink-muted">
+                      <div className="mb-1 shrink-0 text-2xs font-medium text-ink-muted">
                         stdout
                       </div>
                       <CopyablePre
@@ -450,7 +450,7 @@ function ToolCallDetail({
               {details.stderr
                 ? (
                     <div className="mt-2 shrink-0">
-                      <div className="mb-1 text-[11px] font-medium text-danger">
+                      <div className="mb-1 text-2xs font-medium text-danger">
                         stderr
                       </div>
                       <CopyablePre
@@ -529,7 +529,7 @@ function ToolDetailFields({
   return (
     <dl
       className={cn(
-        "grid shrink-0 grid-cols-2 gap-2 rounded-md border border-line-soft bg-surface/50 p-2 text-[11px]",
+        "grid shrink-0 grid-cols-2 gap-2 rounded-md border border-line-soft bg-surface/50 p-2 text-2xs",
         !noTopMargin && "mt-2",
       )}
     >
@@ -565,13 +565,13 @@ function ToolOutputPreview({
   return (
     <div className={cn(fill && "flex min-h-0 flex-col")}>
       <div className="mb-1 flex shrink-0 items-center justify-between gap-2">
-        <span className="truncate text-[11px] font-medium text-ink-muted">
+        <span className="truncate text-2xs font-medium text-ink-muted">
           {outputKindLabel(output.kind, t)}
         </span>
         {!fill && long
           ? (
               <button
-                className="h-6 rounded px-1.5 text-[11px] font-medium text-ink-muted transition-colors hover:bg-surface hover:text-ink"
+                className="h-6 rounded px-1.5 text-2xs font-medium text-ink-muted transition-colors hover:bg-surface hover:text-ink"
                 onClick={() => setExpanded(value => !value)}
                 type="button"
               >
