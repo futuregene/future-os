@@ -292,7 +292,14 @@ fn stopped_status(prefer: Option<&str>, no_runtime: bool) -> RemoteStatus {
     // The switch is on and there is nothing to serve: every device was removed,
     // or none was ever added. Reporting `Stopped` here would flip the switch
     // back off under the user's hand, and there is no failure to report.
-    let enabled_and_empty = SUPERVISOR.start_requested.load(Ordering::Acquire)
+    //
+    // Only a start that mints nothing on an empty machine can be in this state:
+    // an entry point that asks for an invitation (the headless desktop, the CLI)
+    // treats an empty book as "nothing to serve" and stops, which is exactly what
+    // its own callers watch for.
+    let switched_on = !SUPERVISOR.invite_when_empty.load(Ordering::Acquire);
+    let enabled_and_empty = switched_on
+        && SUPERVISOR.start_requested.load(Ordering::Acquire)
         && !reconnecting
         && error_code.is_none()
         && pairing::load_slots().is_empty()
