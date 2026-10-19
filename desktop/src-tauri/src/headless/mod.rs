@@ -8,8 +8,7 @@ use std::time::Duration;
 
 use crate::{future_login, remote, AppError};
 
-pub const HELP: &str =
-    "Usage: futureos-headless [--relay URL [--relay-ca PEM]] [--no-qr] [--re-pair]
+pub const HELP: &str = "Usage: futureos-headless [--relay URL [--relay-ca PEM]] [--help]
 
 Run Desktop's mobile remote entry in this terminal; Ctrl+C stops it.
 Guide platform login and phone pairing when needed; reuse an existing pairing.
@@ -20,12 +19,13 @@ With --relay, no Future account is needed at all.
               remembered for later launches; pass an empty value to go back.
   --relay-ca  PEM file with the relay's CA, when its certificate is not issued
               by a public CA.
-  --no-qr     Print authorization/pairing links instead of terminal QR codes.
-  --re-pair   Revoke every saved device pairing and create a new invitation.
   --help      Show this help without starting Desktop or Agent.
 
 Login uses your phone/computer browser; phone pairing uses the FutureOS app.
-First-time setup requires an interactive terminal. No background service is installed.";
+First-time setup requires an interactive terminal. No background service is installed.
+
+Pair a device, drop one, or choose which one is in control with `future remote
+devices` — from any terminal, while this entry is running.";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Launch {
@@ -35,8 +35,6 @@ pub enum Launch {
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Options {
-    pub no_qr: bool,
-    pub re_pair: bool,
     pub relay: Option<String>,
     pub relay_ca: Option<String>,
 }
@@ -50,8 +48,6 @@ impl Options {
             let arg = args[index].as_str();
             match arg {
                 "--help" | "-h" => help = true,
-                "--no-qr" => options.no_qr = true,
-                "--re-pair" => options.re_pair = true,
                 "--relay" | "--relay-ca" => {
                     index += 1;
                     let value = args
@@ -112,7 +108,7 @@ pub fn run(options: Options) -> Result<(), String> {
     let result = runtime.block_on(async {
         let signals = ShutdownSignals::new()?;
         let mut agent = agent::Agent;
-        let result = until_shutdown(signals.wait(), session(&options, &mut agent)).await;
+        let result = until_shutdown(signals.wait(), session(&mut agent)).await;
         agent.shutdown().await?;
         result
     });
@@ -147,7 +143,7 @@ async fn until_shutdown(
     }
 }
 
-async fn session(options: &Options, agent: &mut agent::Agent) -> Result<(), AppError> {
+async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
     eprintln!("FutureOS headless Desktop - foreground mode. Press Ctrl+C to stop.");
     // Fail on corrupt credentials rather than silently replacing the account.
     crate::auth_store::read()?;
@@ -156,7 +152,7 @@ async fn session(options: &Options, agent: &mut agent::Agent) -> Result<(), AppE
     // The login gate exists because the Future platform mints the invitation,
     // and with `--relay` it no longer does.
     let relay = crate::remote::relay::endpoint();
-    if relay.is_none() && (!paired || options.re_pair || future_login::future_api_key().is_err()) {
+    if relay.is_none() && (!paired || future_login::future_api_key().is_err()) {
         require_terminal()?;
     }
     if relay.is_some() {
@@ -171,7 +167,7 @@ async fn session(options: &Options, agent: &mut agent::Agent) -> Result<(), AppE
         );
         None
     } else {
-        ensure_login(options).await?;
+        ensure_login().await?;
         let key = future_login::future_api_key()?;
         let platform = crate::future_platform::current_platform_url();
         eprintln!("Platform login authorized ({platform}).");
@@ -192,11 +188,6 @@ async fn session(options: &Options, agent: &mut agent::Agent) -> Result<(), AppE
     // Built-in skills are installed by the window's post-login onboarding. A
     // server never renders that flow, so it runs the same CLI step itself.
     crate::runtime::spawn(bootstrap_builtin_skills());
-    if options.re_pair {
-        require_terminal()?;
-        eprintln!("Revoking the saved phone pairing (--re-pair).");
-        remote::unpair().await?;
-    }
     // Same background projections, approvals and persistence paths as Desktop.
     // Headless has no active-thread UI hint, so its compatibility monitor
     // observes only sessions the Agent reports as actively streaming.
@@ -217,6 +208,12 @@ async fn session(options: &Options, agent: &mut agent::Agent) -> Result<(), AppE
 
     eprintln!("Preparing the remote connection...");
     let mut status = remote::start(remote::RemoteStartInput {}).await?;
+    // `future remote devices add` asks this process for an invitation: only a
+    // process that can serve the new pairing may mint one, and a server has no
+    // window to print it in — the terminal that asked does. Started after the
+    // remote entry, so a request that arrives during startup is answered by a
+    // Desktop that is actually serving rather than refused as "off".
+    crate::remote::control::spawn_host();
     let mut shown_invitation = None;
     let mut invitation_expiry = None;
     let mut previous_state = String::new();
@@ -253,7 +250,7 @@ async fn session(options: &Options, agent: &mut agent::Agent) -> Result<(), AppE
                 | remote::RemotePhase::Revoked
                 | remote::RemotePhase::Stopped
         ) {
-            return Err(format!("Remote connection stopped ({:?}). Check platform login/network, then restart; use --re-pair only to replace a phone pairing.", status.reason).into());
+            return Err(format!("Remote connection stopped ({:?}). Check platform login/network, then restart; use `future remote devices` to pair or drop a device.", status.reason).into());
         }
         invitation_expiry = status.pairing_code_expires_at.or(invitation_expiry);
         if let Some(link) = pairing_link(&status) {
@@ -262,7 +259,6 @@ async fn session(options: &Options, agent: &mut agent::Agent) -> Result<(), AppE
                 print_invitation(
                     "PHONE PAIRING - scan in the FutureOS app, or paste this complete link",
                     &link,
-                    options,
                 )?;
                 eprintln!("Single-use invitation; expires at Unix time {}. Do not share it or save it in logs.", status.pairing_code_expires_at.unwrap_or_default());
                 shown_invitation = Some(link);
@@ -390,7 +386,7 @@ async fn bootstrap_builtin_skills() {
     crate::agent_bridge::refresh_skills().await;
 }
 
-async fn ensure_login(options: &Options) -> Result<(), AppError> {
+async fn ensure_login() -> Result<(), AppError> {
     if future_login::future_api_key().is_ok() {
         match future_login::fetch_profile().await {
             Ok(_) => return Ok(()),
@@ -408,7 +404,6 @@ async fn ensure_login(options: &Options) -> Result<(), AppError> {
     print_invitation(
         "PLATFORM LOGIN - scan with your phone camera/browser and authorize this server",
         &login.verification_uri_complete,
-        options,
     )?;
     println!(
         "If requested by the web page, enter user code: {}",
@@ -506,8 +501,10 @@ where
     })?
 }
 
-fn print_invitation(label: &str, link: &str, options: &Options) -> Result<(), AppError> {
-    let output = invitation_text(label, link, !options.no_qr, terminal_columns());
+/// Print one invitation: the label, the complete link, and the same link as a QR
+/// code when the terminal is wide enough to hold it.
+fn print_invitation(label: &str, link: &str) -> Result<(), AppError> {
+    let output = invitation_text(label, link, true, terminal_columns());
     let mut stdout = std::io::stdout().lock();
     stdout.write_all(output.as_bytes())?;
     stdout.flush()?;
@@ -522,10 +519,9 @@ pub(crate) fn terminal_columns() -> Option<usize> {
 /// The invitation block both terminal entry points print: label, link, and
 /// optionally the same link as a QR code.
 ///
-/// Shared rather than reimplemented for `futureos --re-pair`: the graphical
-/// entry point prints the invitation on the terminal that launched it, so the two
-/// must look and degrade the same way (a narrow terminal keeps the link and says
-/// why the QR is missing).
+/// The one renderer for invitation material in this crate: a narrow terminal
+/// keeps the link and says why the QR is missing, which is why no flag is needed
+/// to suppress the code — a redirected or narrow terminal already gets the link.
 pub(crate) fn invitation_text(label: &str, link: &str, qr: bool, columns: Option<usize>) -> String {
     let mut output = format!("\n{label}\n{link}\n");
     if qr {
@@ -564,9 +560,10 @@ fn prepare_terminal() {
 /// show.
 ///
 /// The Agent readiness gate belongs to this terminal: it prints the invitation
-/// only for a bridge that can actually serve the phone. The graphical entry
-/// point's `--re-pair` answer uses [`invitation_link`] instead, because the code
-/// itself is valid the moment it is minted and the probe has not run yet.
+/// only for a bridge that can actually serve the phone. A terminal asking for a
+/// new invitation (`future remote devices add`, via `remote::control`) uses
+/// [`invitation_link`] instead, because the code itself is valid the moment it is
+/// minted and the probe has not run yet.
 pub fn pairing_link(status: &remote::RemoteStatus) -> Option<String> {
     if status.phase != remote::RemotePhase::Ready || !status.agent_available {
         return None;
@@ -577,12 +574,12 @@ pub fn pairing_link(status: &remote::RemoteStatus) -> Option<String> {
 /// The invitation in a status, judged only by whether it can still be scanned.
 ///
 /// Separate from [`pairing_link`] on purpose: `agent_available` is a probe that
-/// starts with the bridge and answers on its own schedule. A `--re-pair` on the
-/// graphical entry point reads the status right after the start returns — before
-/// that probe can have answered — so gating the printed code on it reported "no
-/// pairing invitation" for a code the window was showing and the phone could
-/// scan. Whether the Agent is ready changes what a paired device can do, not
-/// whether the invitation works.
+/// starts with the bridge and answers on its own schedule. A device request reads
+/// the status right after the pairing is minted — before that probe can have
+/// answered — so gating the printed code on it reported "no pairing invitation"
+/// for a code the window was showing and the phone could scan. Whether the Agent
+/// is ready changes what a paired device can do, not whether the invitation
+/// works.
 pub fn invitation_link(status: &remote::RemoteStatus) -> Option<String> {
     let code = status.pairing_code.as_ref()?;
     if status
@@ -674,26 +671,34 @@ mod tests {
     }
 
     #[test]
-    fn standalone_launch_and_qr_are_default() {
+    fn standalone_launch_takes_only_the_relay_flags() {
         assert_eq!(parse(&[]).unwrap(), Launch::Headless(Options::default()));
         assert_eq!(
-            parse(&["--re-pair", "--no-qr"]).unwrap(),
+            parse(&["--relay", "https://relay.example"]).unwrap(),
             Launch::Headless(Options {
-                no_qr: true,
-                re_pair: true,
-                ..Options::default()
+                relay: Some("https://relay.example".into()),
+                relay_ca: None,
             })
         );
         assert_eq!(
-            parse(&["--re-pair"]).unwrap(),
+            parse(&["--relay=https://relay.example", "--relay-ca=/tmp/ca.pem"]).unwrap(),
             Launch::Headless(Options {
-                no_qr: false,
-                re_pair: true,
-                ..Options::default()
+                relay: Some("https://relay.example".into()),
+                relay_ca: Some("/tmp/ca.pem".into()),
             })
         );
-        for flag in ["--headless", "--headles", "--gui", "-psn_123"] {
-            assert!(parse(&[flag]).is_err());
+        for flag in [
+            "--headless",
+            "--headles",
+            "--gui",
+            "-psn_123",
+            "--re-pair",
+            "--no-qr",
+        ] {
+            assert!(
+                parse(&[flag]).is_err(),
+                "{flag} is not this entry point's option"
+            );
             assert!(parse(&["--help", flag]).is_err());
         }
         assert_eq!(parse(&["--help"]).unwrap(), Launch::Help);
@@ -950,8 +955,8 @@ mod tests {
         assert!(pairing_link(&status).is_none());
         status.phase = remote::RemotePhase::Ready;
         // The readiness probe gates what this terminal prints for a bridge, not
-        // whether the code is an invitation: `--re-pair` answers from a status
-        // taken before the probe has run.
+        // whether the code is an invitation: a device request answers from a
+        // status taken before the probe has run.
         status.agent_available = false;
         assert!(pairing_link(&status).is_none());
         assert_eq!(invitation_link(&status).as_deref(), Some(link.as_str()));
@@ -1180,7 +1185,7 @@ mod tests {
             .build()
             .unwrap();
         runtime
-            .block_on(ensure_login(&Options::default()))
+            .block_on(ensure_login())
             .expect("an accepted key must not require an interactive terminal");
         let _ = server.join();
     }
@@ -1197,7 +1202,7 @@ mod tests {
             .build()
             .unwrap();
         let error = runtime
-            .block_on(ensure_login(&Options::default()))
+            .block_on(ensure_login())
             .expect_err("a redirected login must fail");
         assert!(
             error.to_string().contains("interactive terminal"),
@@ -1217,7 +1222,7 @@ mod tests {
             .build()
             .unwrap();
         let error = runtime
-            .block_on(ensure_login(&Options::default()))
+            .block_on(ensure_login())
             .expect_err("an unreachable platform must be an error");
         assert!(
             error
@@ -1365,32 +1370,12 @@ mod tests {
     }
 
     /// The invitation writer is the one place the terminal prints pairing or
-    /// authorization material; with `--no-qr` it must print the link itself.
+    /// authorization material, and it writes that material itself (the harness
+    /// captures fd 1, so this asserts the call succeeds and the renderer's own
+    /// rules are tested separately through `invitation_text`).
     #[test]
-    fn print_invitation_writes_the_link_and_the_qr_only_when_asked() {
-        let options = Options {
-            no_qr: true,
-            re_pair: false,
-            relay: None,
-            relay_ca: None,
-        };
-        print_invitation(
-            "PLATFORM LOGIN",
-            "https://example.com/device?code=ABCD",
-            &options,
-        )
-        .expect("writing to the test's captured stdout must succeed");
-        let options = Options {
-            no_qr: false,
-            re_pair: false,
-            relay: None,
-            relay_ca: None,
-        };
-        print_invitation(
-            "PLATFORM LOGIN",
-            "https://example.com/device?code=ABCD",
-            &options,
-        )
-        .expect("the QR rendering path must not fail");
+    fn print_invitation_writes_the_link_and_the_qr() {
+        print_invitation("PLATFORM LOGIN", "https://example.com/device?code=ABCD")
+            .expect("writing to the test's captured stdout must succeed");
     }
 }

@@ -33,12 +33,11 @@ fn help_and_invalid_arguments_have_no_startup_side_effects() {
     let home = tempfile::tempdir().unwrap();
     let help = desktop(home.path()).arg("--help").output().unwrap();
     assert!(help.status.success());
-    assert!(String::from_utf8_lossy(&help.stdout)
-        .contains("Usage: futureos [--re-pair [--no-qr]] [--help]"));
+    assert!(String::from_utf8_lossy(&help.stdout).contains("Usage: futureos [--relay"));
     assert!(!home.path().join(".future").exists());
     for args in [
         vec!["--headless"],
-        vec!["--headless", "--no-qr"],
+        vec!["--headless", "--relay", "https://relay.example"],
         vec!["--help", "--headless"],
     ] {
         let invalid = desktop(home.path()).args(args).output().unwrap();
@@ -47,43 +46,26 @@ fn help_and_invalid_arguments_have_no_startup_side_effects() {
         assert!(invalid.stdout.is_empty());
         assert!(!home.path().join(".future").exists());
     }
-    // `--no-qr` is this entry point's flag now, but only next to `--re-pair`:
-    // alone there is no invitation for it to describe.
-    let invalid = desktop(home.path()).arg("--no-qr").output().unwrap();
-    assert_eq!(invalid.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&invalid.stderr);
-    assert!(stderr.contains("--no-qr"), "{stderr}");
-    assert!(stderr.contains("--re-pair"), "{stderr}");
-    assert!(invalid.stdout.is_empty());
-    assert!(!home.path().join(".future").exists());
-}
-
-/// `--re-pair` is accepted, but it revokes a live pairing the moment it runs, so
-/// an unattended launch (no terminal) must refuse — and refuse *before* touching
-/// any state. Rejecting the flag outright would also pass a "fails" assertion, so
-/// the reason is pinned by name here. `--no-qr` only changes how the invitation is
-/// printed, so it must not change that refusal.
-#[test]
-fn re_pair_without_a_terminal_is_refused_before_any_state() {
-    for args in [vec!["--re-pair"], vec!["--re-pair", "--no-qr"]] {
-        let home = tempfile::tempdir().unwrap();
-        let refused = desktop(home.path()).args(&args).output().unwrap();
-        assert_eq!(refused.status.code(), Some(1), "{args:?}");
-        let stderr = String::from_utf8_lossy(&refused.stderr);
-        assert!(stderr.contains("--re-pair"), "{args:?}: {stderr}");
-        assert!(
-            stderr.contains("interactive terminal"),
-            "{args:?}: {stderr}"
-        );
-        assert!(refused.stdout.is_empty(), "{args:?}");
-        assert!(!home.path().join(".future").exists(), "{args:?}");
+    // The pairing flags this entry point used to take are refused by name, and a
+    // refused launch still touches no state.
+    for flag in ["--re-pair", "--no-qr"] {
+        let invalid = desktop(home.path()).arg(flag).output().unwrap();
+        assert_eq!(invalid.status.code(), Some(1), "{flag}");
+        let stderr = String::from_utf8_lossy(&invalid.stderr);
+        assert!(stderr.contains(flag), "{flag}: {stderr}");
+        assert!(invalid.stdout.is_empty(), "{flag}");
+        assert!(!home.path().join(".future").exists(), "{flag}");
     }
 }
 
 #[cfg(feature = "headless")]
 #[test]
 fn standalone_help_and_invalid_arguments_have_no_startup_side_effects() {
-    for args in [vec!["--help"], vec!["-h"], vec!["--no-qr", "--help"]] {
+    for args in [
+        vec!["--help"],
+        vec!["-h"],
+        vec!["--relay", "https://relay.example", "--help"],
+    ] {
         let home = tempfile::tempdir().unwrap();
         let help = headless(home.path()).args(args).output().unwrap();
         assert!(help.status.success());
@@ -133,23 +115,19 @@ fn relay_flags_are_accepted_in_both_spellings() {
     }
 }
 
+/// The headless entry point starts with no runtime flag at all, and first-time
+/// setup refuses a redirected terminal *before* any state is touched.
 #[cfg(feature = "headless")]
 #[test]
-fn standalone_options_do_not_require_headless_flag() {
-    for args in [
-        vec!["--no-qr"],
-        vec!["--re-pair", "--no-qr"],
-        vec!["--re-pair"],
-    ] {
-        let home = tempfile::tempdir().unwrap();
-        let result = headless(home.path()).args(args).output().unwrap();
-        assert_eq!(result.status.code(), Some(1));
-        let error = String::from_utf8_lossy(&result.stderr);
-        assert!(error.contains("interactive terminal"), "{error}");
-        assert!(result.stdout.is_empty());
-        assert!(!home.path().join(".future/remote_pairing.json").exists());
-        assert!(!home.path().join(".future/app/app.db").exists());
-    }
+fn a_plain_launch_needs_no_headless_flag() {
+    let home = tempfile::tempdir().unwrap();
+    let result = headless(home.path()).output().unwrap();
+    assert_eq!(result.status.code(), Some(1));
+    let error = String::from_utf8_lossy(&result.stderr);
+    assert!(error.contains("interactive terminal"), "{error}");
+    assert!(result.stdout.is_empty());
+    assert!(!home.path().join(".future/remote_pairing.json").exists());
+    assert!(!home.path().join(".future/app/app.db").exists());
 }
 
 #[cfg(feature = "headless")]

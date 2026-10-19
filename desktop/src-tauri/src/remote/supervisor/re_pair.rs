@@ -1,13 +1,20 @@
-//! `--re-pair`: replace this machine's pairing from the command line.
+//! Replace this machine's pairing, in the only order that works.
 //!
-//! The two steps are the ones the Remote page's buttons perform, in the only
-//! order that works: the old binding is dropped first, because a fresh invitation
-//! cannot be issued while this machine still holds the previous one.
+//! The two steps are the ones the Remote page's buttons perform: the old binding
+//! is dropped first, because a fresh invitation cannot be issued while this
+//! machine still holds the previous one.
 //!
-//! What the operator is choosing is worth stating plainly, since it is the whole
-//! reason the flag exists: pairing replaces. The platform revokes the previous
-//! pairing as soon as the new code is created, so the device that was connected
-//! is cut off when this runs — whether or not the new code is ever scanned.
+//! Reached in two situations, both of which mean "there is nothing to keep":
+//!
+//! * the machine has no device left, and a terminal asked for an invitation
+//!   (`future remote devices add` on an unpaired machine, `start.rs`'s
+//!   `pair_new_device`), where the cleanup is what stops a runtime that outlived
+//!   the pairing book `remove --all` emptied;
+//! * nothing is paired and the entry point starts a fresh remote session.
+//!
+//! Pairing replaces, so this is destructive by nature: the platform revokes the
+//! previous pairing as soon as the new code is created, and the device that was
+//! connected is cut off whether or not the new code is ever scanned.
 
 use super::*;
 
@@ -30,6 +37,32 @@ pub async fn re_pair() -> Result<RemoteStatus, crate::AppError> {
 #[cfg(test)]
 mod tests {
     use crate::remote::test_support::{init_store, HomeGuard};
+
+    /// `pair_new_device` on a machine with nothing paired is the replace path:
+    /// with no slot to keep, adding beside the others and replacing them are the
+    /// same request, and the replace path is the one that stops a runtime left
+    /// behind by a pairing book emptied from another process.
+    ///
+    /// The observable here is the start's own refusal: no sign-in is a categorized
+    /// local refusal, and reaching it proves the start ran after the (empty)
+    /// revocation.
+    #[tokio::test]
+    async fn pairing_a_device_on_an_unpaired_machine_takes_the_replace_path() {
+        let _home = HomeGuard::new("remote-pair-new-unpaired");
+        init_store();
+        assert!(crate::remote::pairing::load_slots().is_empty());
+
+        let status = crate::remote::supervisor::pair_new_device()
+            .await
+            .expect("an unpaired machine still answers with a status");
+
+        assert!(!matches!(status.phase, crate::remote::RemotePhase::Ready));
+        assert_eq!(
+            status.reason,
+            Some(crate::remote::RemoteFailureReason::AccountAuthorization),
+            "{status:?}"
+        );
+    }
 
     /// Settling the saved pairing's revoke is best-effort: the invitation that
     /// gets minted next replaces the old binding anyway, so a queue this machine

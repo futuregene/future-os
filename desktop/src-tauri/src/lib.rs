@@ -618,31 +618,6 @@ mod gui {
         let _ = handle.emit("remote-activity", thread_id.to_string());
     }
 
-    /// Ask the window to open the Remote page, which is the only place a
-    /// `--re-pair` invitation (or its failure) becomes visible: the graphical entry
-    /// point prints no code, and a flag whose whole effect is off-screen would look
-    /// like it did nothing.
-    fn emit_remote_re_pair() {
-        emit_remote_re_pair_via(APP_HANDLE.get());
-    }
-
-    /// Route the notification through an optional handle (see
-    /// [`emit_review_updated_via`]): both arms are exercised with a mock handle,
-    /// because the process-global `APP_HANDLE` can only be filled by a real Wry
-    /// launch.
-    fn emit_remote_re_pair_via<R: tauri::Runtime>(handle: Option<&tauri::AppHandle<R>>) {
-        if let Some(handle) = handle {
-            emit_remote_re_pair_on(handle);
-        }
-    }
-
-    /// Emit on a caller-supplied handle, so the body is testable without a running
-    /// app (the process-global `APP_HANDLE` is only populated at setup).
-    fn emit_remote_re_pair_on<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) {
-        use tauri::Emitter;
-        let _ = handle.emit("remote-re-pair", ());
-    }
-
     /// Notify the frontend that the thread list changed behind its back — sessions
     /// created outside the GUI (TUI/CLI/channels) were imported into the store —
     /// so the sidebar re-lists threads. No payload: a bare invalidation signal.
@@ -938,7 +913,7 @@ mod gui {
 
     #[cfg_attr(mobile, tauri::mobile_entry_point)]
     pub fn run() -> Result<(), AppError> {
-        run_with(crate::launch::LaunchOptions::default())
+        run_with()
     }
 
     /// The plugin and event registration the Desktop app is built with.
@@ -952,22 +927,12 @@ mod gui {
     /// the only production caller.
     fn gui_builder<R: tauri::Runtime>() -> tauri::Builder<R> {
         tauri::Builder::<R>::new()
-            .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
                 // A second instance was launched — activate the existing window.
+                // Nothing is forwarded: the commands that change this machine's
+                // pairing live in the window and in `future remote devices`, which
+                // asks through `remote::control` rather than `argv`.
                 activate_main_window(app);
-                // A shell cannot re-pair this machine itself: the pairing and the
-                // data directory belong to this instance. What it can do is ask,
-                // through the channel that reaches us — its `argv` — and name a
-                // file to be answered in. Without that file the invitation only
-                // reaches the window below.
-                if let Some(crate::launch::Forwarded::RePair { reply, no_qr }) =
-                    crate::launch::forwarded_request(&args)
-                {
-                    spawn_remote_re_pair(match reply {
-                        Some(path) => RePairDelivery::Reply(path),
-                        None => RePairDelivery::Terminal { qr: !no_qr },
-                    });
-                }
             }))
             .plugin(tauri_plugin_dialog::init())
             .plugin(tauri_plugin_shell::init())
@@ -1022,9 +987,8 @@ mod gui {
             })
     }
 
-    /// Same as [`run`], with what the command line asked for. Mobile enters
-    /// through [`run`], so it always gets the defaults.
-    pub fn run_with(launch: crate::launch::LaunchOptions) -> Result<(), AppError> {
+    /// Start the window. Mobile enters through [`run`] as well.
+    pub fn run_with() -> Result<(), AppError> {
         // The combined Agent/Desktop dependency graph may include multiple
         // rustls providers. Select ring and hydrate tool environment before
         // Tauri starts threads or creates any HTTP clients.
@@ -1246,7 +1210,7 @@ mod gui {
         unsafe {
             let _ = windows::Win32::System::Console::FreeConsole();
         }
-        app.run(move |app_handle, event| dispatch_run_event(app_handle, event, launch));
+        app.run(dispatch_run_event);
         Ok(())
     }
 
@@ -1283,7 +1247,6 @@ mod gui {
     fn dispatch_run_event<R: tauri::Runtime>(
         app_handle: &tauri::AppHandle<R>,
         event: tauri::RunEvent,
-        launch: crate::launch::LaunchOptions,
     ) {
         match event {
             // `setup` runs while Tauri is still constructing its event loop.
@@ -1300,7 +1263,7 @@ mod gui {
                     if crate::desktop_shutdown::is_stopping() {
                         return;
                     }
-                    start_backend_background(handle, launch);
+                    start_backend_background(handle);
                 });
                 if let Err(error) = terminal::server::serve() {
                     eprintln!("FutureOS terminal server failed to start: {error}");
@@ -1338,10 +1301,7 @@ mod gui {
     /// drive it with a mock handle: every loop it starts takes `AppHandle<R>` and
     /// does its real work on the shared runtime, so the mock changes nothing about
     /// what is started. Behaviour for the real runtime is unchanged.
-    fn start_backend_background<R: tauri::Runtime>(
-        app: tauri::AppHandle<R>,
-        launch: crate::launch::LaunchOptions,
-    ) {
+    fn start_backend_background<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
         // Independent fixed-interval maintenance: app updates (24h),
         // Future balance (1h), and Future models (24h). Missed ticks while
         // suspended are skipped; each task runs at most once after resume.
@@ -1416,14 +1376,12 @@ mod gui {
         // Shadow-review maintenance (consistency check + crash recovery) runs
         // off the launch path so it never delays the window.
         crate::runtime::spawn_native(shadow_review::run_startup_maintenance);
-        // One launch, one remote start: a launch that asked to re-pair owns it, and
-        // running the auto-connect pass as well would race two starts for the same
-        // pairing (the loser's invitation is then revoked by the winner's).
-        if launch.re_pair {
-            spawn_remote_re_pair(RePairDelivery::Terminal { qr: !launch.no_qr });
-        } else {
-            spawn_remote_auto_connect();
-        }
+        // `future remote devices add` asks this process for an invitation, because
+        // only a process that can serve the new pairing may mint one. Started here,
+        // with the rest of the window's background work, so it is up as soon as the
+        // fixture tests and the real launch report Ready.
+        crate::remote::control::spawn_host();
+        spawn_remote_auto_connect();
     }
 
     /// Start the persisted remote bridge only after Tauri's runtime has entered its
@@ -1456,66 +1414,11 @@ mod gui {
         });
     }
 
-    /// Where a finished re-pair reports its outcome.
-    enum RePairDelivery {
-        /// This process is the Desktop and the command was typed at its terminal,
-        /// so the invitation goes there. `qr` is the user's `--no-qr` choice.
-        Terminal { qr: bool },
-        /// Another process asked and is waiting on this file: it owns the terminal
-        /// this Desktop was not started from, and it is the one that can print.
-        Reply(std::path::PathBuf),
-    }
-
-    /// `--re-pair`: replace the saved pairing, then report the outcome.
-    ///
-    /// Like the auto-connect pass, this never fails the launch: the outcome is a
-    /// status the Remote page renders, and the event below is what opens that page
-    /// when the invitation is not printed here.
-    fn spawn_remote_re_pair(delivery: RePairDelivery) {
-        crate::runtime::spawn(async move {
-            let reply = match crate::remote::re_pair().await {
-                Ok(status) => crate::launch::Reply::of_status(&status),
-                Err(error) => crate::launch::Reply::of_error(error.to_string()),
-            };
-            match delivery {
-                RePairDelivery::Terminal { qr } => {
-                    crate::launch::print_to_terminal(&crate::launch::invitation_notice(&reply, qr));
-                }
-                RePairDelivery::Reply(path) => {
-                    if let Err(error) = crate::launch::write_reply(&path, &reply) {
-                        eprintln!(
-                            "remote: could not deliver the re-pair result to the waiting \
-                             terminal: {error}"
-                        );
-                    }
-                }
-            }
-            emit_remote_re_pair();
-        });
-    }
-
-    /// Print the terminal delivery's notice — exactly the text the launcher itself
-    /// prints, so both audiences read the same invitation. Extracted so the notice
-    /// path is asserted against a writer instead of the process's own stdout.
-    ///
-    /// `#[cfg(test)]`: since upstream's QR change the production terminal path uses
-    /// `launch::print_to_terminal` (which can render the QR), so this writer-shaped
-    /// twin is exercised by the tests below and nothing else.
-    #[cfg(test)]
-    fn print_re_pair_notice<W: std::io::Write>(
-        terminal: &mut W,
-        reply: &crate::launch::Reply,
-    ) -> std::io::Result<()> {
-        terminal.write_all(crate::launch::invitation_notice(reply, false).as_bytes())?;
-        terminal.flush()
-    }
-
     #[cfg(test)]
     mod runtime_update_tests {
         use super::{
             apply_main_window_geometry, coalesce_runtime_updates, emit_approvals_updated_on,
             emit_approvals_updated_via, emit_remote_activity_on, emit_remote_activity_via,
-            emit_remote_re_pair, emit_remote_re_pair_on, emit_remote_re_pair_via,
             emit_review_updated_on, emit_review_updated_via, emit_runtime_updates_on,
             emit_threads_updated, emit_threads_updated_on, emit_threads_updated_via,
             main_window_geometry, runtime_update_drain_loop, sample_thread_streaming,
@@ -1634,7 +1537,6 @@ mod gui {
             let handle = app.handle();
             emit_review_updated_on(handle, "thread-1");
             emit_remote_activity_on(handle, "thread-1");
-            emit_remote_re_pair_on(handle);
             emit_approvals_updated_on(handle, "thread-1", "approval-1");
             emit_runtime_updates_on(
                 handle,
@@ -1723,10 +1625,6 @@ mod gui {
             // The public entry point reads the process-global handle, which no
             // test populates, so it takes the None arm without panicking.
             emit_threads_updated();
-            // Same two arms for the re-pair hand-off notification.
-            emit_remote_re_pair_via(Some(handle));
-            emit_remote_re_pair_via::<tauri::test::MockRuntime>(None);
-            emit_remote_re_pair();
         }
 
         #[test]
@@ -1802,169 +1700,6 @@ mod gui {
     mod startup_paths_tests {
         use super::*;
 
-        /// Poll for the answer the delivered re-pair was supposed to write, with a
-        /// deadline: the delivery happens on the background runtime, so the test
-        /// waits for the effect instead of assuming it already happened.
-        fn wait_for_reply(path: &std::path::Path) -> crate::launch::Reply {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-            let missing = path.display().to_string();
-            loop {
-                if let Some(reply) = crate::launch::read_reply(path) {
-                    return reply;
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "no answer at {missing}"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-        }
-
-        /// The answer has to reach whoever asked for it: another process named a file
-        /// and is waiting on it, and a re-pair that *fails* still has to answer — the
-        /// waiter would otherwise sit out its whole timeout for nothing.
-        #[test]
-        fn a_re_pair_answer_is_delivered_to_the_waiting_file() {
-            let _home = crate::auth_store::test_support::HomeGuard::new("re-pair-reply-file");
-            let reply_path = std::env::temp_dir().join(format!(
-                "futureos-re-pair-test-{}-{}.json",
-                std::process::id(),
-                line!()
-            ));
-            let _ = std::fs::remove_file(&reply_path);
-            spawn_remote_re_pair(RePairDelivery::Reply(reply_path.clone()));
-
-            let reply = wait_for_reply(&reply_path);
-            // This HOME has no pairing credentials, so the re-pair fails — and the
-            // failure *is* the answer: a reason, never a link the phone cannot use.
-            assert!(reply.link.is_none(), "{reply:?}");
-            assert!(reply.error.is_some(), "{reply:?}");
-            assert!(
-                crate::launch::invitation_notice(&reply, false)
-                    .contains("No pairing invitation was issued"),
-                "{reply:?}"
-            );
-            let _ = std::fs::remove_file(&reply_path);
-        }
-
-        /// A re-pair that fails *before* it can start one still has to be delivered —
-        /// the waiting launcher would otherwise sit out its whole timeout and then
-        /// report "another Desktop did not accept the request", which is not what
-        /// happened. Here the failure is the revocation itself: the pairing file's
-        /// directory is read-only, so it cannot be removed, and re-pairing must not
-        /// proceed past that.
-        #[test]
-        #[cfg(unix)]
-        fn a_failed_re_pair_is_delivered_as_a_reason() {
-            use std::os::unix::fs::PermissionsExt;
-
-            let _home = crate::auth_store::test_support::HomeGuard::new("re-pair-revoke-fails");
-            let root = std::env::temp_dir().join(format!(
-                "futureos-readonly-home-{}-{}",
-                std::process::id(),
-                line!()
-            ));
-            std::fs::remove_dir_all(&root).ok();
-            std::fs::create_dir_all(&root).unwrap();
-            std::fs::write(root.join("remote_pairing.json"), b"{}").unwrap();
-            std::env::set_var("FUTURE_HOME", &root);
-            // Removing a file needs write permission on its directory, so this is
-            // the one step that makes the revocation fail.
-            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o555)).unwrap();
-
-            let reply_path = std::env::temp_dir().join(format!(
-                "futureos-re-pair-failed-{}-{}.json",
-                std::process::id(),
-                line!()
-            ));
-            let _ = std::fs::remove_file(&reply_path);
-            spawn_remote_re_pair(RePairDelivery::Reply(reply_path.clone()));
-            let reply = wait_for_reply(&reply_path);
-
-            // Leave the filesystem as it was before judging the result.
-            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let _ = std::fs::remove_file(&reply_path);
-            std::env::remove_var("FUTURE_HOME");
-
-            assert!(reply.link.is_none(), "{reply:?}");
-            let error = reply
-                .error
-                .expect("a re-pair that failed must deliver the reason");
-            assert!(
-                error.contains("remove pairing creds"),
-                "the reason must be the revocation failure, not a start failure: {error}"
-            );
-        }
-
-        /// A delivery that cannot be written is reported, not fatal, and leaves the
-        /// named target exactly as it was — a directory here, which is also the
-        /// deterministic way to make `write_reply` fail.
-        #[test]
-        fn an_undeliverable_re_pair_answer_leaves_the_target_alone() {
-            let _home = crate::auth_store::test_support::HomeGuard::new("re-pair-undeliverable");
-            let directory = std::env::temp_dir().join(format!(
-                "futureos-re-pair-target-{}-{}",
-                std::process::id(),
-                line!()
-            ));
-            std::fs::remove_dir_all(&directory).ok();
-            std::fs::create_dir_all(&directory).unwrap();
-            spawn_remote_re_pair(RePairDelivery::Reply(directory.clone()));
-
-            // A failed re-pair is still attempted, so wait past the point the answer
-            // would have been written before judging the target untouched.
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            assert!(directory.is_dir(), "{directory:?} was replaced");
-            assert_eq!(
-                std::fs::read_dir(&directory).unwrap().count(),
-                0,
-                "a failed delivery must not leave partial files behind"
-            );
-            let _ = std::fs::remove_dir(&directory);
-        }
-
-        /// The terminal delivery prints the *launcher's* notice verbatim, so both
-        /// audiences read the same invitation — and the first writer failure is
-        /// reported to the caller instead of being swallowed inside the helper,
-        /// whether it happens while writing or while flushing.
-        #[test]
-        fn print_re_pair_notice_writes_the_launcher_notice() {
-            let reply = crate::launch::Reply::of_error("the remote start ended in Failed");
-            let mut sink = Vec::new();
-            print_re_pair_notice(&mut sink, &reply).expect("writing to memory cannot fail");
-            let written = String::from_utf8(sink).expect("the notice is UTF-8");
-            assert_eq!(written, crate::launch::invitation_notice(&reply, false));
-            assert!(
-                written.contains("No pairing invitation was issued"),
-                "{written}"
-            );
-
-            struct Failed(&'static str);
-            impl std::io::Write for Failed {
-                fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                    if self.0 == "write" {
-                        return Err(std::io::Error::other("closed"));
-                    }
-                    Ok(buf.len())
-                }
-                fn flush(&mut self) -> std::io::Result<()> {
-                    if self.0 == "flush" {
-                        return Err(std::io::Error::other("buffered flush failed"));
-                    }
-                    Ok(())
-                }
-            }
-            let write_error = print_re_pair_notice(&mut Failed("write"), &reply)
-                .expect_err("a closed sink must report the write failure");
-            assert_eq!(write_error.to_string(), "closed");
-            // The double's accepting halves, called directly (review correction 4).
-            assert!(std::io::Write::write(&mut Failed("flush"), b"ok").is_ok());
-            assert!(std::io::Write::flush(&mut Failed("write")).is_ok());
-            let flush_error = print_re_pair_notice(&mut Failed("flush"), &reply)
-                .expect_err("a sink that cannot flush must report it");
-            assert_eq!(flush_error.to_string(), "buffered flush failed");
-        }
-
         /// Points one of this process's descriptors at a file and restores it on
         /// drop, so a test can read what a path that writes to `stdout()` /
         /// `stderr()` really published. `println!`/`eprintln!` *macros* are captured
@@ -1980,10 +1715,6 @@ mod gui {
 
         #[cfg(unix)]
         impl FdCapture {
-            fn stdout() -> Self {
-                Self::begin(1, "stdout")
-            }
-
             /// A startup failure is reported on stderr, which is what a user sees.
             fn stderr() -> Self {
                 Self::begin(2, "stderr")
@@ -2052,142 +1783,6 @@ mod gui {
             }
         }
 
-        /// `--re-pair` typed at a terminal names no file, so the invitation goes to
-        /// *this* process's stdout. That is the whole difference between the two
-        /// deliveries, and it is asserted here: the notice is read back out of fd 1.
-        #[cfg(unix)]
-        #[test]
-        fn the_terminal_delivery_prints_the_launcher_notice_to_this_stdout() {
-            let _home = crate::auth_store::test_support::HomeGuard::new("re-pair-terminal");
-            let capture = FdCapture::stdout();
-            spawn_remote_re_pair(RePairDelivery::Terminal { qr: false });
-
-            // This HOME has no pairing credentials, so the re-pair fails and the
-            // *failure* is the invitation's content — the same notice the launcher
-            // prints for a file delivery.
-            let notice = capture.wait_for("No pairing invitation was issued");
-            drop(capture);
-            assert!(
-                notice.contains("No pairing invitation was issued"),
-                "{notice:?}"
-            );
-            assert!(
-                notice.contains("The Remote page in the Desktop window"),
-                "the terminal must be sent on to the Remote page: {notice:?}"
-            );
-        }
-
-        #[test]
-        fn start_thread_streaming_monitor_spawns_the_loop() {
-            // The spawned loop parks (APP_HANDLE is unset in tests) and sleeps; this
-            // exercises the spawn wrapper itself. It is harmless — no handle, no
-            // sample, just an idle poll on a process-lifetime runtime.
-            start_thread_streaming_monitor();
-        }
-
-        /// The Desktop's registration is runtime-generic: the same chain builds and
-        /// installs its plugins for a mock runtime. That is the property the seam
-        /// exists for — a plugin or hook that needed `Wry` would fail right here —
-        /// and the shell plugin is asserted through the state its own setup
-        /// installs, so dropping it from the chain fails this test.
-        #[test]
-        fn the_desktop_registration_builds_for_any_runtime() {
-            use tauri::Manager;
-
-            let builder = gui_builder::<tauri::test::MockRuntime>();
-            // The production builder lets Tauri install its default macOS menu, and
-            // `muda` may only build menus on the main thread — which no libtest
-            // thread is. `tauri::test::mock_builder` turns it off for the same
-            // reason; the registration under test is untouched by it.
-            #[cfg(target_os = "macos")]
-            let builder = builder.enable_macos_default_menu(false);
-            let mut context = tauri::test::mock_context(tauri::test::noop_assets());
-            // **This identifier is load-bearing, and an empty one kills the process.**
-            // The single-instance plugin this chain registers computes its socket as
-            // `/tmp/<identifier>_si.sock`; when a *live* listener is already there it
-            // answers with `std::process::exit(0)`
-            // (`notify_singleton` → exit, tauri-plugin-single-instance 2.4.3
-            // `platform_impl/macos.rs:23-31`). The mock context's identifier is the
-            // empty string — `/tmp/_si.sock` for *every* process on this host — so two
-            // concurrent runs of this suite (another worktree, another unit, a
-            // leftover child) silently kill one of them mid-suite: exit status 0, no
-            // test result line, and every test after this one unrun. A coverage
-            // measurement taken over such a run is partial with no error anywhere
-            // (measured: a gui leg that reported 927 of 2074 tests and lost
-            // `store`/`runtime`/`tasks` entirely). A process-unique identifier gives
-            // this test its own socket, which is why it no longer depends on what else
-            // is running on the host.
-            // The pid element is prefixed with a letter on purpose: D-Bus (which the
-            // single-instance plugin uses on LINUX) rejects a name element that
-            // starts with a digit, so `com.futureos.test.7995` is an invalid
-            // well-known name there and the plugin panics on `unwrap()`. Prefixing
-            // keeps the uniqueness this needs while staying a legal D-Bus name.
-            context.config_mut().identifier = format!("com.futureos.test.p{}", std::process::id());
-            // The app is built against `tauri.conf.json`, which carries the updater's
-            // plugin section; a mock context has none, and the updater refuses to
-            // initialize without one. Only the section's presence matters here.
-            context.config_mut().plugins.0.insert(
-                "updater".to_string(),
-                serde_json::json!({ "pubkey": "fixture", "endpoints": [] }),
-            );
-            let app = builder
-                .build(context)
-                .expect("the mock runtime accepts the Desktop's registration");
-            assert!(
-                app.try_state::<tauri_plugin_shell::Shell<tauri::test::MockRuntime>>()
-                    .is_some(),
-                "the registration must install the shell plugin"
-            );
-        }
-
-        /// The window's background work starts on the app it is handed: every loop
-        /// it starts takes an `AppHandle<R>`, so a mock handle reaches them, and
-        /// the loops do their real work on the shared runtime — drained here before
-        /// this test's HOME goes away.
-        #[test]
-        fn backend_background_work_starts_for_any_runtime() {
-            let _home = crate::auth_store::test_support::HomeGuard::new("backend-background");
-            let _mock = crate::agent_bridge::test_support::mock_agent();
-            crate::store::initialize_app_store().expect("init store");
-            let app = tauri::test::mock_app();
-            start_backend_background(
-                app.handle().clone(),
-                crate::launch::LaunchOptions::default(),
-            );
-            // The launch path's own reconciliation waits for Agent readiness (3s)
-            // and the startup maintenance job runs to completion; give both their
-            // window, then actually wait for the futures to be dropped.
-            std::thread::sleep(std::time::Duration::from_secs(4));
-            // The other launch shape: `--re-pair` takes the re-pair delivery in place
-            // of the auto-connect pass. No second wait — the delivery's own lines are
-            // the ones the terminal fixture asserts, and its task is drained below.
-            start_backend_background(
-                app.handle().clone(),
-                crate::launch::LaunchOptions {
-                    re_pair: true,
-                    no_qr: false,
-                },
-            );
-            crate::runtime::cancel_test_tasks();
-        }
-
-        /// Runs `child` in a fresh process and hands its output back to the caller —
-        /// which is the only way to observe a failure this host reports with
-        /// `eprintln!`: in this toolchain the harness's output capture is set for
-        /// *every* thread (`std::thread::spawn`ed maintenance jobs included), so an
-        /// in-process `dup2` of fd 2 sees nothing while the message shows up in the
-        /// harness's own dump. `--nocapture` in the child turns the capture off, so
-        /// the child's stderr is a real stream again. Inside the child this runs
-        /// `child` and returns `None`, so a fixture reads as one function:
-        ///
-        /// ```ignore
-        /// if let Some((status, stderr)) = in_child_process(MARKER, "path::to::test", || { … }) {
-        ///     assert!(status.success(), "{stderr}");
-        ///     assert!(stderr.contains("expected"), "{stderr}");
-        ///     return;
-        /// }
-        /// ```
-        ///
         /// The child gets its own `HOME`: the launch path it drives must never resolve
         /// the parent's temporary store.
         fn in_child_process(
@@ -2241,7 +1836,6 @@ mod gui {
                     dispatch_run_event(
                         app.handle(),
                         tauri::RunEvent::Ready,
-                        crate::launch::LaunchOptions::default(),
                     );
                 },
             ) {
@@ -2281,10 +1875,7 @@ mod gui {
                     crate::runtime::cancel_test_tasks();
                     let capture = FdCapture::stderr();
                     let app = tauri::test::mock_app();
-                    start_backend_background(
-                        app.handle().clone(),
-                        crate::launch::LaunchOptions::default(),
-                    );
+                    start_backend_background(app.handle().clone());
                     // The block runs three seconds after readiness; poll for the effect
                     // rather than sleeping blind, then hand the text to the parent.
                     capture.wait_for("FutureOS orphan-session reconcile failed");
@@ -2359,10 +1950,7 @@ mod gui {
                     crate::runtime::cancel_test_tasks();
                     let capture = FdCapture::stderr();
                     let app = tauri::test::mock_app();
-                    start_backend_background(
-                        app.handle().clone(),
-                        crate::launch::LaunchOptions::default(),
-                    );
+                    start_backend_background(app.handle().clone());
                     let text = capture.wait_for("FutureOS: removed 1 empty conversation(s)");
                     drop(capture);
                     crate::runtime::cancel_test_tasks();
@@ -2699,11 +2287,7 @@ mod gui {
             // command to arrive after this dispatch, so a leftover reconciliation
             // from an earlier test cannot satisfy it.
             let before = mock.requests_of("list_session_ids").len();
-            dispatch_run_event(
-                app.handle(),
-                tauri::RunEvent::Ready,
-                crate::launch::LaunchOptions::default(),
-            );
+            dispatch_run_event(app.handle(), tauri::RunEvent::Ready);
 
             // (1) The arm served the listener it was handed. `serve` can only
             // report this error after an accept loop took the listener, and the
@@ -2748,11 +2332,7 @@ mod gui {
             // An event this build has no arm for must change nothing: it is the
             // `_ => {}` arm Tauri's `#[non_exhaustive]` `RunEvent` forces, and it
             // must not start the launch path or close admission on the way past.
-            dispatch_run_event(
-                app.handle(),
-                tauri::RunEvent::MainEventsCleared,
-                crate::launch::LaunchOptions::default(),
-            );
+            dispatch_run_event(app.handle(), tauri::RunEvent::MainEventsCleared);
             assert!(
                 !crate::desktop_shutdown::is_stopping(),
                 "the wildcard arm must not close admission"
@@ -2761,11 +2341,7 @@ mod gui {
                 crate::desktop_shutdown::snapshot().is_none(),
                 "the wildcard arm must not publish a stop"
             );
-            dispatch_run_event(
-                app.handle(),
-                tauri::RunEvent::Exit,
-                crate::launch::LaunchOptions::default(),
-            );
+            dispatch_run_event(app.handle(), tauri::RunEvent::Exit);
 
             assert!(
                 crate::desktop_shutdown::is_stopping(),
@@ -2893,7 +2469,7 @@ mod gui {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 app.run(move |handle, event| {
                     if let tauri::RunEvent::ExitRequested { .. } = &event {
-                        dispatch_run_event(handle, event, crate::launch::LaunchOptions::default());
+                        dispatch_run_event(handle, event);
                         panic!("EXIT-REQUESTED-PROBE: the arm ran");
                     }
                 });
@@ -2948,11 +2524,7 @@ mod gui {
                 crate::desktop_shutdown::is_stopping(),
                 "the fixture closes admission"
             );
-            dispatch_run_event(
-                app.handle(),
-                tauri::RunEvent::Ready,
-                crate::launch::LaunchOptions::default(),
-            );
+            dispatch_run_event(app.handle(), tauri::RunEvent::Ready);
             // The spawned job runs on its own thread; this window is longer than the
             // three-second reconciliation it would start if it fell through.
             std::thread::sleep(std::time::Duration::from_millis(4_500));
@@ -3060,7 +2632,7 @@ mod gui {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 app.run(move |handle, event| {
                     if let tauri::RunEvent::ExitRequested { .. } = &event {
-                        dispatch_run_event(handle, event, crate::launch::LaunchOptions::default());
+                        dispatch_run_event(handle, event);
                         // A literal payload: this value is downcast as `&str` below,
                         // and a formatted panic would arrive as a `String`.
                         panic!("QUIT-CONFIRM-ARM: the Confirm arm ran");

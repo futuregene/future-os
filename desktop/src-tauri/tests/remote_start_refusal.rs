@@ -15,10 +15,14 @@
 //!   `RemoteAuthorization`, `start_failure` reports `service_authorization`, and the
 //!   headless entry exits non-zero **naming** the failure. The same child seeds a corrupt
 //!   pending-revoke file so `spawn_revoke_cleanup`'s error arm (`start.rs:653-655`) runs.
-//! * [`a_re_pair_reports_a_pending_revoke_it_cannot_settle_or_retire`] — the same corrupt
-//!   queue through the `--re-pair` entry point (a pty, because that flag is refused
-//!   without a terminal): `re_pair`'s own settlement pass and `create_pairing`'s retire
-//!   step both report the unreadable file, and the start after them is still refused.
+//! * [`an_unreadable_revoke_queue_is_reported_and_the_refusal_still_stands`] — the same
+//!   corrupt queue on an unpaired root (a pty, because first-time setup prints an
+//!   invitation and that is refused into a redirected stream): `re_pair`'s settlement pass
+//!   and `create_pairing`'s retire step both report the unreadable file, and the start
+//!   after them is still refused.
+//! * [`a_device_request_is_answered_by_the_running_headless_desktop`] — `future remote
+//!   devices add`'s file protocol against a real child: the request is served, the answer
+//!   carries a scannable v2 invitation, and the request is consumed.
 //! * [`a_live_broker_drives_the_generation_watch_and_reconnect`] — the broker accepts
 //!   the generation (`Ready`), a healthy watch tick runs, then the broker sends
 //!   `-ERR 'Authorization Violation'` on the *live* connection. With an already-expired
@@ -102,7 +106,7 @@ struct PlatformState {
     /// request of a run is always the establish refresh and always takes the head.
     token: Vec<TokenReply>,
     token_calls: usize,
-    /// Where a freshly minted invitation points, for the `--re-pair` child.
+    /// Where a freshly minted invitation points, for the child that mints one.
     pair_url: Option<String>,
 }
 
@@ -233,7 +237,7 @@ fn token_response(state: &Arc<Mutex<PlatformState>>) -> (u16, Value) {
     }
 }
 
-/// The invitation the platform mints for a `--re-pair` child. `pairing_code` must be
+/// The invitation the platform mints for the child's pairing request. `pairing_code` must be
 /// base64url JSON carrying `exp`: `create_pairing` derives the secure identity's expiry
 /// from it, and a code without one is refused before the identity exists.
 fn pair_code_response(state: &Arc<Mutex<PlatformState>>) -> (u16, Value) {
@@ -441,7 +445,6 @@ impl ChildRun {
         // exits (see wait_for_web_port_free).
         wait_for_web_port_free();
         let mut command = Command::new(env!("CARGO_BIN_EXE_futureos-headless"));
-        command.arg("--no-qr");
         // Hermetic: the fixture controls every variable the child reads. A developer
         // shell (or cargo's own environment) must not decide whether this child attaches
         // to a real Agent or to a real Desktop.
@@ -545,9 +548,9 @@ impl Drop for ChildRun {
     }
 }
 
-/// The `--re-pair` entry point refuses to run without a terminal, so its child gets a pty
-/// on stdin/stdout/stderr. `openpty` is the platform call the launcher record's test
-/// achieves with `/usr/bin/script`; owning the child directly keeps signals simple.
+/// A child that prints invitation material needs a terminal, so it gets a pty on
+/// stdin/stdout/stderr. `openpty` is the platform call the launcher record's test achieves
+/// with `/usr/bin/script`; owning the child directly keeps signals simple.
 struct PtyRun {
     child: Child,
     transcript: Arc<Mutex<String>>,
@@ -810,40 +813,109 @@ fn a_broker_that_refuses_the_credential_is_reported() {
     child.interrupt(); // already exited; keep the Drop path uniform
 }
 
-/// `--re-pair` from an unpaired root whose queued revoke cannot be read: both the
-/// settlement pass in `re_pair`'s caller (headless's `unpair`) and `create_pairing`'s
-/// `retire_pending_revoke` must **report** the unreadable file rather than panic, and the
-/// start that follows is still refused by the controlled broker.
+/// An unpaired root whose queued revoke cannot be read: both the settlement pass and
+/// `create_pairing`'s `retire_pending_revoke` must **report** the unreadable file rather
+/// than panic, and the start that follows is still refused by the controlled broker.
+///
+/// The pty is what lets the child get this far: first-time setup prints an invitation, and
+/// an entry point refuses to do that into a redirected stream.
 ///
 /// `remote_host/pairing.rs:261-263` is the retire log; `start.rs:648` is the second
-/// `spawn_revoke_cleanup` (the worker is already running from `unpair`) returning early.
+/// `spawn_revoke_cleanup` (the worker is already running from the first start) returning early.
 #[test]
-fn a_re_pair_with_an_unreadable_revoke_queue_reports_and_still_refuses() {
+fn an_unreadable_revoke_queue_is_reported_and_the_refusal_still_stands() {
     let broker = Broker::start(BrokerMode::Refuse);
     let platform = Platform::start(vec![], Some(broker.url.clone()));
-    let home = isolated_home("repair");
+    let home = isolated_home("revokequeue");
     write_auth(&home, &platform.url);
-    // No `remote_pairing.json`: `--re-pair` starts from an unpaired root.
+    // No pairing file: the child starts from an unpaired root, which is the path that mints
+    // an invitation — and therefore the path that retires a queued revoke.
     std::fs::write(
         home.join(".future/remote_pending_revokes.json"),
         b"{ this is not json",
     )
     .expect("write corrupt revoke queue");
 
-    let mut child = PtyRun::spawn(home, &["--re-pair", "--no-qr"]);
+    let mut child = PtyRun::spawn(home, &[]);
     let reported = child.wait_for("Remote connection stopped", Duration::from_secs(30));
     let transcript = child.text();
     assert!(
         reported,
-        "the start after the re-pair must still report the refusal; transcript:\n{transcript}"
+        "the start must report the refusal; transcript:\n{transcript}"
     );
     assert!(
         transcript.contains("could not retire the queued revoke"),
         "create_pairing must report the unreadable queued revoke; transcript:\n{transcript}"
     );
+    child.interrupt();
+}
+
+/// `future remote devices add` against a running headless Desktop.
+///
+/// The whole point of the command is that a server has no window: the request is a file,
+/// the answer is a file, and the invitation inside it is the one the phone can scan. This
+/// drives a real child — its control host, its supervisor and its platform — so the file
+/// protocol is exercised end to end rather than against a fixture.
+///
+/// The machine already has one device, which is the case the command is for ("add beside
+/// the ones paired"): that also keeps the child out of first-time setup, which refuses a
+/// redirected terminal.
+#[test]
+fn a_device_request_is_answered_by_the_running_headless_desktop() {
+    let broker = Broker::start(BrokerMode::Live {
+        error_after: Duration::from_secs(300),
+    });
+    let platform = Platform::start(
+        vec![TokenReply::Credential {
+            nats_url: broker.url.clone(),
+            exp_offset: 600,
+        }],
+        // Where a *new* invitation points: the fixture echoes it into `nats_url`.
+        Some(broker.url.clone()),
+    );
+    let home = isolated_home("control-add");
+    write_auth(&home, &platform.url);
+    write_pairing(&home, &broker.url, true);
+    let answer = home.join("answer.json");
+    let requests = home.join(".future/app/remote-control");
+    std::fs::create_dir_all(&requests).expect("create the control directory");
+    std::fs::write(
+        requests.join("0001.request.json"),
+        json!({ "op": "add-device", "reply": answer.display().to_string() }).to_string(),
+    )
+    .expect("write the request");
+
+    let mut child = ChildRun::spawn(home.clone());
     assert!(
-        transcript.contains("Revoking the saved phone pairing"),
-        "the child must have taken the --re-pair entry; transcript:\n{transcript}"
+        child.wait_for("Remote: Ready", READY_BUDGET),
+        "the Desktop must be serving before it can answer; transcript:\n{}",
+        child.text()
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !answer.is_file() {
+        assert!(
+            Instant::now() < deadline,
+            "no answer within 30s; transcript:\n{}",
+            child.text()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let reply: Value = serde_json::from_slice(&std::fs::read(&answer).expect("read the answer"))
+        .expect("the answer is JSON");
+    let link = reply["link"]
+        .as_str()
+        .unwrap_or_else(|| panic!("an invitation is the answer: {reply}"));
+    assert!(link.starts_with("futureos://remote/pair?v=2"), "{reply}");
+    assert!(
+        reply["pairId"].as_str().is_some_and(|id| !id.is_empty()),
+        "the answer names the device it is for: {reply}"
+    );
+    assert!(reply.get("error").is_none(), "{reply}");
+    // The request is consumed, not left for the next Desktop to act on again.
+    assert!(
+        !requests.join("0001.request.json").exists(),
+        "the served request must be removed"
     );
     child.interrupt();
 }

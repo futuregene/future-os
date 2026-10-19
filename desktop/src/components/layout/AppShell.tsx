@@ -560,14 +560,6 @@ function ReadyAppShell({
     void refreshStore();
   });
 
-  // `futureos --re-pair` replaced this machine's pairing from the command line.
-  // No terminal printout carries the new code, so the window has to show it:
-  // open the page that does, and refresh now rather than waiting out the poll.
-  useTauriEvent("remote-re-pair", () => {
-    setSection("remote");
-    void refreshRemote();
-  });
-
   // Sessions created outside the GUI (TUI/CLI/channels) were imported into the
   // store by the backend — refresh the thread list so they appear in the
   // sidebar without a user action.

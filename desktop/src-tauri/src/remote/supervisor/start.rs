@@ -179,6 +179,27 @@ pub async fn add_device() -> Result<RemoteStatus, crate::AppError> {
     Ok(status_focused(Some(&added)))
 }
 
+/// Mint an invitation for a device that is not paired yet.
+///
+/// This is what `future remote devices add` asks for. Adding beside existing
+/// devices is the ordinary case; with none left the machine is unpaired, and
+/// *replace* is then the same request — plus the cleanup it needs.
+///
+/// That cleanup is not cosmetic. The pairing book can be emptied from another
+/// process (`future remote devices remove --all`), while this one still holds the
+/// bridges of the devices that were just removed. `create_pairing` gives a known
+/// desktop back the *same* pair id, so minting the replacement without stopping
+/// them first would leave two bridges on one pair's subjects, with the stale one
+/// holding a credential the platform has already refused. `re_pair` — unpair,
+/// settle the queued revokes, start afresh — is exactly that cleanup, and with an
+/// empty book its revocation step has nothing left to revoke.
+pub async fn pair_new_device() -> Result<RemoteStatus, crate::AppError> {
+    if pairing::load_slots().is_empty() {
+        return re_pair().await;
+    }
+    add_device().await
+}
+
 /// Resolve every paired device into a plan, dropping the ones the platform has
 /// retired and minting an invitation when the machine has no device left.
 pub(in crate::remote) async fn establish_slots() -> Result<Vec<SlotPlan>, crate::AppError> {

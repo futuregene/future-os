@@ -100,6 +100,20 @@ futureos-headless --relay https://relay.example.com  # 无 GUI 服务器
 的 `controlUrl` 里的，所以一台桌面可以同时持有一个官方设备和一个自建设备，各自
 找当初签发它的中继。
 
+在终端管理这些配对，两种模式下是同一条命令：
+
+```bash
+future remote devices                  # 每台设备的 endpoint 都会标出来
+future remote devices add              # 在当前中继上签发 v3 邀请
+future remote devices remove <id|序号>  # 用该配对自己的密钥签名，删掉它的房间
+future remote devices remove --all     # 全部设备，各自交给自己的签发方
+```
+
+全程不涉及 FutureOS 登录：中继没有账号，`add` 也只是去问运行中的 Desktop。
+中继使用私有 CA 时这些命令也不需要额外参数——它们读的就是 Desktop 用的那份
+`FUTURE_RELAY_CA` / `relay.json` 的 `ca`；而且这份 CA 只作用于属于它的那个中继，
+指向别处的旧设备不会凭空获得这份信任。
+
 ## 4. 官方中继与自建中继共存
 
 不需要任何额外操作。一台机器可以持有多个配对，每个配对有自己的中继、自己的

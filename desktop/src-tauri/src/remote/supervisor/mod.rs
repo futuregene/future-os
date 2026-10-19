@@ -22,9 +22,9 @@ pub use self::shutdown::{
     disconnect_device, handle_system_resume, handle_system_suspend, notify_mobile_disconnect, stop,
     stop_gracefully, unpair, unpair_slot,
 };
-#[allow(unused_imports)]
-pub use self::start::add_device;
 pub use self::start::start;
+#[allow(unused_imports)]
+pub use self::start::{add_device, pair_new_device};
 #[allow(unused_imports)]
 pub(super) use self::start::{
     classify_nats_connect_error, connect_nats, establish_slots, forget_slot, promote_a_lone_device,

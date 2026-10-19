@@ -53,10 +53,9 @@ Windows PowerShell:
 
 No `--headless` flag is needed or accepted. `futureos` starts only the graphical
 Desktop; its former `--headless` option has been removed. Replace old commands
-such as `futureos --headless --no-qr` with `futureos-headless --no-qr`.
-The graphical entry point does accept `--re-pair`, which prints the new
-invitation — QR code and link — on the terminal that ran it, and `--no-qr` with
-it to print the link only.
+such as `futureos --headless --no-qr` with `futureos-headless`.
+Neither entry point takes pairing flags any more: devices are managed with
+`future remote devices` (section 3.1), which asks the running Desktop.
 Both executables share the backend, data and phone protocol; this is not a second
 implementation.
 
@@ -127,37 +126,32 @@ event the phone does not read.
 
 | Option | Behavior |
 |---|---|
-| `--no-qr` | Print authorization/pairing links without drawing QR codes |
-| `--re-pair` | Revoke every saved device pairing and create a new invitation |
+| `--relay URL` | Point new invitations at a self-hosted relay instead of the Future platform |
+| `--relay-ca` | PEM file with that relay's CA, when it is not issued by a public CA |
 | `--help` | Show help without starting Desktop or Agent |
 
 For example:
 
 ```bash
-./futureos-headless --no-qr
-./futureos-headless --re-pair
+./futureos-headless --relay https://relay.example.com
+./futureos-headless --help
 ```
 
-`--re-pair` affects every saved device pairing. Use it to change phones or
-intentionally replace a pairing, not to troubleshoot an ordinary network outage.
-Narrow terminals automatically fall back to text links; copy the link, or widen
-the terminal and restart.
-
-The graphical `futureos` entry point takes `--re-pair` and `--no-qr` with the same
-meaning and prints on the terminal that ran it. On Windows, run it from the
-terminal you want the code in: a graphical launch detaches from the console it
-started from, and `--re-pair` reattaches to that launching terminal to print.
+Invitations are printed as a QR code with the complete link beside it. A narrow
+terminal automatically falls back to the link alone and says why; there is no flag
+for it, and no flag for pairing either — see below.
 
 ### 3.1 Managing paired devices from the terminal
 
 One machine can hold several paired devices (phones, another computer), but
 exactly one of them is **in control**: only it may command this machine, and the
-others stay paired in standby. `--re-pair` is "replace them all", which cannot
-address one device; use the `future` CLI for that:
+others stay paired in standby. The `future` CLI manages them:
 
 ```bash
 future remote devices                  # every paired device, who is in control, issued by what
+future remote devices add              # pair a new device: print its invitation
 future remote devices remove <id|#>    # unpair this one; the others stay paired
+future remote devices remove --all     # unpair every device
 future remote devices use <id|#>       # choose the one in control
 ```
 
@@ -172,14 +166,20 @@ future remote devices use <id|#>       # choose the one in control
   Desktop running, control is an in-memory decision (a device asking to take over
   moves it too), so a running Desktop keeps its current controller and the written
   value applies at the next start.
-- These commands read `~/.future/remote_pairings.json` (an older single-pairing
-  file is read as one slot), so they need no running Desktop and, on a self-hosted
-  relay, no account.
+- `list`, `remove` and `use` read and write `~/.future/remote_pairings.json` (an
+  older single-pairing file is read as one slot), so they need no running Desktop
+  and, on a self-hosted relay, no account.
+- `add` is the exception. An invitation is only usable while the bridge for that
+  pairing is connected, so the request goes to the running Desktop — window or
+  headless — and the answer carries the invitation, printed as a QR code and link
+  in the terminal that asked. Existing devices stay paired; this adds beside them.
+  `remove --all` followed by `add` is how a machine's pairing is replaced, and the
+  `add` stops any stale bridge left by the removal before minting the replacement.
 
 "Connected right now" and the name a device gave itself exist only in a running
-Desktop process — they are not in the pairing book. Adding a device is still a
-pairing step: the window's Remote page has "Add a device", and a headless server
-issues a replacement invitation with `futureos-headless --re-pair`.
+Desktop process — they are not in the pairing book. A machine with no device at
+all prints an invitation as the Desktop starts, which is also the recovery path
+after `remove --all`.
 
 ## 4. Ctrl+C, SSH disconnects and restarting
 
@@ -284,12 +284,12 @@ hang.
 | Symptom | Action |
 |---|---|
 | `libwebkit2gtk-4.1.so.0` missing | This is the GUI binary; build and run `futureos-headless` instead |
-| `--headless` option removed or unknown | Use `futureos-headless` without that flag; `--re-pair` (and `--no-qr` with it) exists on both entry points, while the other options belong to `futureos-headless` |
+| `--headless` option removed or unknown | Use `futureos-headless` without that flag; `--re-pair`/`--no-qr` are gone — use `future remote devices add` and `remove --all` — while `--relay`/`--relay-ca` exist on both entry points |
 | Agent unavailable/incompatible or instance lock occupied | Read the reported owner/version, check the same user/data root, and upgrade or exit the external owner; never delete the lock or bypass it. Explicit endpoints and external mode are attach-only |
 | Built-in skills were not installed | Check the `[skills]` lines on stderr: `future init` needs the CLI beside `futureos-headless` or on PATH, and a network route to the skill catalogue. The phone can still install skills itself |
 | Interactive terminal required | Complete initial login/pairing in a real terminal, without pipes, redirection or non-interactive service startup |
 | Platform authorization denied or expired | Restart and sign in as instructed; the login code is not the app pairing code |
-| Pairing invitation expired | Restart to request an invitation; completed pairings do not require this |
+| Pairing invitation expired | Run `future remote devices add` for a new one (or restart with no device paired); completed pairings do not require this |
 | Another Desktop owns the directory | Exit its GUI or headless process; do not delete the lock file to bypass mutual exclusion |
 | The process disappears, or a node operator reports it was killed | A host OOM killer or a login node's per-user CPU/memory budget sends SIGKILL, which no process can report itself. Read `<root>/app/logs/desktop.log`: the last startup phase it recorded shows where it stopped; then check the host (`dmesg -T`, `journalctl -k`, or the node's own quota/job logs). If the legacy import is what trips the budget, move the data root off shared storage with `FUTURE_HOME` |
 | Phone cannot claim an invitation | Check matching production/test environments and that the invitation is unused and unexpired |

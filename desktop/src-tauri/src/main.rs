@@ -9,8 +9,9 @@ use futureos_lib::launch::{self, Launch};
 
 #[cfg(not(test))]
 fn main() -> std::process::ExitCode {
-    // Reuse a launching shell for help, errors and the --re-pair terminal check.
-    // Explorer has no console to attach to; never allocate one for a GUI launch.
+    // Reuse a launching shell for help and error output (a terminal launch of
+    // `futureos --help` or a refused flag). Explorer has no console to attach to;
+    // never allocate one for a GUI launch.
     #[cfg(all(windows, feature = "gui"))]
     unsafe {
         use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
@@ -31,44 +32,7 @@ fn main() -> std::process::ExitCode {
             println!("{}", launch::HELP);
             std::process::ExitCode::SUCCESS
         }
-        Ok(Launch::Gui(options)) => {
-            if options.re_pair {
-                // Checked first, before any state is touched: the flag revokes a
-                // live pairing, so a launch that cannot ask a human first must not
-                // begin.
-                if let Err(error) = launch::require_terminal() {
-                    eprintln!("{error}\n\n{}", launch::HELP);
-                    return std::process::ExitCode::FAILURE;
-                }
-                // Hydration can move the data directory (a login shell may supply
-                // FUTURE_HOME), so it happens before asking who owns it. A failure
-                // here is not fatal — the launch below reports it properly.
-                let _ = launch::prepare_host_environment();
-                if launch::another_desktop_is_running() {
-                    // Another Desktop holds the pairing, so this process cannot
-                    // perform the re-pair — but it can be the one that stays and
-                    // prints, which is the whole point of asking from a shell.
-                    return match launch::forward_re_pair(options.no_qr) {
-                        Ok(reply) => {
-                            launch::print_to_terminal(&launch::invitation_notice(
-                                &reply,
-                                !options.no_qr,
-                            ));
-                            std::process::ExitCode::SUCCESS
-                        }
-                        Err(message) => {
-                            eprintln!("{message}");
-                            std::process::ExitCode::FAILURE
-                        }
-                    };
-                }
-            }
-            start_desktop(options)
-        }
-        // Only ever spawned by the branch above: this process carries the request
-        // to the running Desktop and exits at the hand-off, so it must not touch
-        // the pairing itself — the reply travels back to the process that asked.
-        Ok(Launch::ForwardRePair { .. }) => start_desktop(launch::LaunchOptions::default()),
+        Ok(Launch::Gui) => start_desktop(),
         Err(error) => {
             eprintln!("{error}\n\n{}", launch::HELP);
             std::process::ExitCode::FAILURE
@@ -77,11 +41,11 @@ fn main() -> std::process::ExitCode {
 }
 
 #[cfg(not(test))]
-fn start_desktop(options: launch::LaunchOptions) -> std::process::ExitCode {
+fn start_desktop() -> std::process::ExitCode {
     #[cfg(feature = "gui")]
     {
         configure_environment();
-        match futureos_lib::run_with(options) {
+        match futureos_lib::run() {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("FutureOS: {error}");
@@ -91,7 +55,6 @@ fn start_desktop(options: launch::LaunchOptions) -> std::process::ExitCode {
     }
     #[cfg(not(feature = "gui"))]
     {
-        let _ = options;
         eprintln!("This build has no graphical interface. Run futureos-headless instead.");
         std::process::ExitCode::FAILURE
     }
