@@ -501,7 +501,11 @@ describe("control", () => {
         ...(control === "standby" ? { holder: { name: "Hui's phone" } } : {}),
       }),
     ]);
-    return { set: (next: "active" | "standby") => { control = next; } };
+    return {
+      set: (next: "active" | "standby") => {
+        control = next;
+      },
+    };
   }
 
   it("re-reads as soon as the host says another device took it", async () => {
