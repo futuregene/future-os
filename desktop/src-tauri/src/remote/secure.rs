@@ -18,7 +18,7 @@ impl HandshakeHost for DesktopHandshakeHost {
 }
 #[derive(Clone, Default)]
 pub(super) struct Transport {
-    inner: future_remote_server::secure::Transport,
+    pub(super) inner: future_remote_server::secure::Transport,
 }
 impl Transport {
     pub fn new(creds: &PairingCreds) -> Self {

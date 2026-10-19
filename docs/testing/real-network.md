@@ -1,5 +1,10 @@
 # Real-network runs of the remote lane (2026-10-17)
 
+> Remote extraction (2026-10-19): source paths and results below are historical.
+> Current test ownership is tracked in the [Remote migration inventory](../architecture/remote-test-migration.json).
+> Measurement scripts now target migrated Server cases where applicable. Final branch acceptance is pending.
+
+
 This record answers one question the rest of `docs/testing/` cannot: does the
 remote stack work when the broker, the peer and the Agent are **real processes**
 on a real TCP network? It belongs to todo `todo_f5453bf671b4` (REAL-NET); the

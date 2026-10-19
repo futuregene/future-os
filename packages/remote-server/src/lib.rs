@@ -1,9 +1,16 @@
 //! Application-independent Remote controlled endpoint.
-//! Security endpoint extraction is implemented; role supervision is migrating.
+//! Security, transport loops and wire policy are implemented; role supervision is migrating.
 mod credentials;
+pub mod diagnostics;
 mod error;
+pub mod events;
+pub mod lean;
+pub mod lifecycle;
+pub mod reply;
 pub mod secure;
 pub mod services;
+pub mod transfer;
 pub mod types;
+pub mod wire_limits;
 pub use credentials::PairingCreds;
 pub use error::Error;

@@ -124,6 +124,7 @@ pub(super) fn is_authorization_violation(error: &str) -> bool {
     error.trim().eq_ignore_ascii_case("authorization violation")
 }
 
+#[cfg(not(test))]
 pub(super) fn unix_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

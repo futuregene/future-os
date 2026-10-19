@@ -49,3 +49,35 @@ pub struct SessionsCatalog {
     /// what filters, against the values *it* last delivered.
     pub activity: Vec<(String, i64)>,
 }
+
+use crate::PairingCreds;
+type HostResult<T> = Result<T, crate::Error>;
+pub type Invitation = (PairingCreds, String, Option<i64>);
+pub trait PairingHost: Send + Sync {
+    /// The device in control, else the first one paired.
+    fn load(&self) -> Option<PairingCreds>;
+    /// Every device this machine has paired, in pairing order.
+    fn load_slots(&self) -> Vec<PairingCreds>;
+    /// Which device drives this machine as persisted; `None` if none does.
+    fn active_slot(&self) -> Option<String>;
+    fn set_active(&self, pair_id: &str) -> HostResult<()>;
+    /// Forget one device, leaving the rest paired.
+    fn remove_slot(&self, pair_id: &str) -> HostResult<()>;
+    fn save(&self, creds: &PairingCreds) -> HostResult<()>;
+    fn clear(&self) -> HostResult<()>;
+    /// `keep_existing` decides whether the platform adds a device beside the
+    /// existing ones or replaces them all; this side only forwards it.
+    fn invite(&self, keep_existing: bool) -> BoxFuture<'_, HostResult<Invitation>>;
+    fn refresh(&self, creds: PairingCreds) -> BoxFuture<'_, HostResult<PairingCreds>>;
+    fn queue_revoke(&self, creds: &PairingCreds) -> HostResult<()>;
+    fn retry_revokes(&self) -> BoxFuture<'_, HostResult<()>>;
+}
+pub trait FileHost: Send + Sync {
+    fn upload_chunk(&self, transfer: &str, index: u64, bytes: &[u8]) -> Result<Value, String>;
+    fn download_chunk(&self, transfer: &str, index: u64) -> HostResult<Vec<u8>>;
+    fn prune_transfers(&self);
+    fn clear_transfers(&self);
+    fn clear_preview_cache(&self);
+}
+pub trait RemoteHost: BusinessHost + PairingHost + StateHost + FileHost {}
+impl<T: BusinessHost + PairingHost + StateHost + FileHost> RemoteHost for T {}

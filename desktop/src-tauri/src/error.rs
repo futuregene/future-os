@@ -68,9 +68,50 @@ pub enum AppError {
 
 impl From<future_remote_server::Error> for AppError {
     fn from(error: future_remote_server::Error) -> Self {
+        use future_remote_server::Error as ServerError;
         match error {
-            future_remote_server::Error::Message(message) => Self::Message(message),
-            future_remote_server::Error::RemoteTransport(message) => Self::RemoteTransport(message),
+            ServerError::Host(error) | ServerError::AccountAuthorization(error) => {
+                match error.downcast::<AppError>() {
+                    Ok(error) => *error,
+                    Err(error) => Self::Message(error.to_string()),
+                }
+            }
+            ServerError::Io(error) => Self::Io(error),
+            ServerError::Json(error) => Self::Json(error),
+            ServerError::Remote {
+                status,
+                code,
+                message,
+            } => Self::Remote {
+                status,
+                code,
+                message,
+            },
+            ServerError::RemoteTransport(message) => Self::RemoteTransport(message),
+            ServerError::RemoteAuthorization(message) => Self::RemoteAuthorization(message),
+            ServerError::Message(message) => Self::Message(message),
+        }
+    }
+}
+impl From<AppError> for future_remote_server::Error {
+    fn from(error: AppError) -> Self {
+        match error {
+            AppError::Io(error) => Self::Io(error),
+            AppError::Json(error) => Self::Json(error),
+            AppError::Remote {
+                status,
+                code,
+                message,
+            } => Self::Remote {
+                status,
+                code,
+                message,
+            },
+            AppError::RemoteTransport(message) => Self::RemoteTransport(message),
+            AppError::RemoteAuthorization(message) => Self::RemoteAuthorization(message),
+            AppError::NotSignedIn => Self::AccountAuthorization(Box::new(AppError::NotSignedIn)),
+            AppError::Message(message) => Self::Message(message),
+            error => Self::Host(Box::new(error)),
         }
     }
 }
@@ -147,6 +188,53 @@ impl serde::Serialize for AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_boundary_preserves_recovery_categories_and_original_host_errors() {
+        use future_remote_server::Error as ServerError;
+        let platform = AppError::Remote {
+            status: 403,
+            code: Some("invalid_remote_credential".into()),
+            message: "revoked fixture".into(),
+        };
+        let server: ServerError = platform.into();
+        assert!(
+            matches!(&server, ServerError::Remote { status: 403, code: Some(code), .. } if code == "invalid_remote_credential")
+        );
+        let platform: AppError = server.into();
+        assert!(
+            matches!(&platform, AppError::Remote { status: 403, code: Some(code), .. } if code == "invalid_remote_credential")
+        );
+        assert_eq!(platform.to_string(), "revoked fixture");
+        let account: ServerError = AppError::NotSignedIn.into();
+        assert!(matches!(&account, ServerError::AccountAuthorization(_)));
+        assert!(matches!(AppError::from(account), AppError::NotSignedIn));
+        let transport: ServerError = AppError::RemoteTransport("offline fixture".into()).into();
+        assert!(matches!(&transport, ServerError::RemoteTransport(_)));
+        assert!(matches!(
+            AppError::from(transport),
+            AppError::RemoteTransport(_)
+        ));
+        let authorization: ServerError =
+            AppError::RemoteAuthorization("grant fixture".into()).into();
+        assert!(matches!(
+            &authorization,
+            ServerError::RemoteAuthorization(_)
+        ));
+        assert!(matches!(
+            AppError::from(authorization),
+            AppError::RemoteAuthorization(_)
+        ));
+        let business: ServerError = AppError::AgentCommand {
+            code: "fixture_code".into(),
+            message: "fixture message".into(),
+        }
+        .into();
+        assert!(matches!(&business, ServerError::Host(_)));
+        assert!(
+            matches!(AppError::from(business), AppError::AgentCommand { code, message } if code == "fixture_code" && message == "fixture message")
+        );
+    }
 
     #[test]
     fn controller_error_conversion_preserves_retry_categories_and_wire_codes() {

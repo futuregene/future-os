@@ -1,7 +1,7 @@
 {
   "version": 1,
   "sourceCommit": "4a64b65e",
-  "note": "Inventory only, not evidence of execution. Targets are filled as tests migrate; mixed files are split without dropping source cases.",
+  "note": "Inventory only, not evidence of execution. Targets are filled as tests migrate; mixed files can still retain pending core cases in their original application source. A non-null target alone does not prove completion or execution.",
   "tests": [
     {
       "source": "packages/remote-crypto/src/lib.rs",
@@ -132,7 +132,46 @@
         "recording_without_a_runtime_does_nothing",
         "an_unknown_kind_is_kept_verbatim"
       ],
-      "target": null
+      "target": {
+        "server-wire-budget": {
+          "path": "packages/remote-server/src/wire_limits.rs",
+          "cases": [
+            "paginate_small_list_is_one_page",
+            "paginate_respects_limit_and_cursors",
+            "paginate_bounds_by_byte_budget",
+            "backward_history_budget_defers_complete_oldest_exchanges",
+            "paginate_caps_and_includes_oversized_message",
+            "paginate_caps_structured_tool_arguments_and_metadata",
+            "chunked_history_preserves_oversized_entries",
+            "chunked_backward_history_is_bounded_without_truncating_content",
+            "chunked_backward_history_keeps_one_oversized_exchange",
+            "truncate_caps_string_content",
+            "truncate_caps_text_blocks_and_keeps_others",
+            "truncate_leaves_small_messages_alone",
+            "truncate_skips_messages_without_a_content_field",
+            "truncate_skips_non_text_blocks_and_fits_small_ones",
+            "truncate_ignores_non_string_non_array_content",
+            "truncate_skips_text_blocks_without_a_string_text",
+            "byte_cut_is_char_boundary_safe",
+            "paginate_events_pages_a_large_tail",
+            "paginate_events_carries_projection_on_first_page",
+            "paginate_events_carries_truncated_flag",
+            "paginate_events_truncates_a_single_oversized_event_data",
+            "paginate_events_keeps_oversized_tool_outcomes_matchable",
+            "truncated_tool_data_preserves_errors_and_large_input_targets",
+            "truncated_tool_data_bounds_json_escaping_and_error_aliases",
+            "truncate_swaps_oversized_event_data_but_keeps_small"
+          ]
+        },
+        "server-reply-codec": {
+          "path": "packages/remote-server/src/reply.rs",
+          "cases": [
+            "oversized_reply_is_an_explicit_bounded_error_even_with_gzip",
+            "remote_json_gzip_is_automatic_thresholded_and_standard"
+          ]
+        },
+        "pending-server-runtime-and-application": "desktop/src-tauri/src/remote/commands.rs"
+      }
     },
     {
       "source": "desktop/src-tauri/src/remote/control.rs",
@@ -160,7 +199,7 @@
         "stop_invalidates_late_install_even_after_another_start",
         "cancelled_candidate_aborts_its_subscription_tasks"
       ],
-      "target": null
+      "target": "packages/remote-server/src/lifecycle.rs"
     },
     {
       "source": "desktop/src-tauri/src/remote/publisher/coalesce.rs",
@@ -189,7 +228,7 @@
         "the_measurement_environment_is_restored_the_way_it_was",
         "a_panicking_measurement_restores_its_environment"
       ],
-      "target": null
+      "target": "packages/remote-server/src/events/coalesce.rs"
     },
     {
       "source": "desktop/src-tauri/src/remote/real_network.rs",
@@ -423,7 +462,25 @@
         "a_start_whose_transport_cannot_be_built_reports_the_failure",
         "a_refresh_whose_transport_cannot_be_rebuilt_keeps_the_running_bridge"
       ],
-      "target": null
+      "target": {
+        "server-diagnostics": {
+          "path": "packages/remote-server/src/diagnostics.rs",
+          "cases": [
+            "failure_episode_same_category_non_power_of_two_attempt_is_silent",
+            "failure_episode_category_switch_after_quota_exhaustion_reports_nothing",
+            "support_codes_cover_every_category",
+            "failure_logs_are_bounded_across_alternating_episodes"
+          ]
+        },
+        "server-events": {
+          "path": "packages/remote-server/src/events.rs",
+          "cases": [
+            "nats_v2_event_keeps_every_v1_field_unchanged",
+            "nats_session_event_has_independent_cursor"
+          ]
+        },
+        "remaining-runtime-and-application": "desktop/src-tauri/src/remote/tests.rs"
+      }
     },
     {
       "source": "desktop/src-tauri/src/remote/transport.rs",
@@ -932,7 +989,7 @@
         "measure_phone_page",
         "the_phone_page_measurement_holds_its_invariants_on_a_fixture_page"
       ],
-      "target": null
+      "target": "packages/remote-server/src/wire_limits.rs"
     },
     {
       "source": "desktop/src-tauri/src/remote_host/catalog.rs",
@@ -1026,7 +1083,7 @@
         "lean_live_and_history_keep_structured_attempts",
         "unparsable_or_missing_bodies_are_forwarded_untouched"
       ],
-      "target": null
+      "target": "packages/remote-server/src/lean.rs"
     },
     {
       "source": "desktop/src-tauri/src/remote_host/pairing.rs",

@@ -1,5 +1,10 @@
 # Disabled-test audit
 
+> Remote extraction (2026-10-19): source paths and results below are historical.
+> Current test ownership is tracked in the [Remote migration inventory](../architecture/remote-test-migration.json).
+> Measurement scripts now target migrated Server cases where applicable. Final branch acceptance is pending.
+
+
 **Acceptance contract: `disabled-test-audit`.** Declared gate:
 `python .future/cov100/verify.py skipped` → **PASS (exit 0)**. Sibling artifact:
 `weak-test-audit` (gate `python .future/cov100/verify.py weak`).

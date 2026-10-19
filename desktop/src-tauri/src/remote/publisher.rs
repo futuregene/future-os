@@ -1,8 +1,6 @@
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-mod coalesce;
-
 /// Capability a client declares on `secure_ready` to receive the coalesced
 /// event lane. Named so an older desktop ignores it and an older client never
 /// asks for it.
@@ -42,24 +40,9 @@ fn catalog_activity_subject(pair_id: &str) -> String {
 /// rejected by the broker — silently leaving a permanent gap in the client's
 /// event stream. Over-limit events keep their type/runId/idx (so ordering and
 /// dedup still work) but ship a truncated `data` marker instead.
-pub(super) const MAX_EVENT_BYTES: usize = 900 * 1024;
-
-/// One agent event queued for publishing, in agent-emission order.
-pub(super) struct EventPublish {
-    pub(super) subject: String,
-    pub(super) payload: Vec<u8>,
-    pub(super) status_subject: Option<String>,
-}
-
-impl Clone for EventPublish {
-    fn clone(&self) -> Self {
-        Self {
-            subject: self.subject.clone(),
-            payload: self.payload.clone(),
-            status_subject: self.status_subject.clone(),
-        }
-    }
-}
+pub(super) use future_remote_server::events::EventPublish;
+#[cfg(test)]
+pub(super) use future_remote_server::events::MAX_EVENT_BYTES;
 
 pub(super) fn is_catalog_event(event_type: &str) -> bool {
     matches!(
@@ -208,34 +191,7 @@ pub fn publish_event(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn build_event_body(
-    session_id: &str,
-    event_type: &str,
-    data: &str,
-    run_id: &str,
-    idx: i64,
-    epoch: i64,
-    event_id: &str,
-    timestamp: &str,
-    session_idx: i64,
-    run_sequence: i64,
-) -> serde_json::Value {
-    let data = cap_event_data(data);
-    json!({
-        "schemaVersion": 2,
-        "sessionId": session_id,
-        "type": event_type,
-        "data": data,
-        "runId": run_id,
-        "idx": idx,
-        "epoch": epoch,
-        "eventId": event_id,
-        "timestamp": timestamp,
-        "sessionIdx": session_idx,
-        "runSequence": run_sequence,
-    })
-}
+pub(super) use future_remote_server::events::build_event_body;
 
 /// Mirror a run's projection snapshot as a wholesale-replacement signal. The
 /// snapshot's folded events cannot be applied incrementally — a coalesced
@@ -281,12 +237,8 @@ pub fn publish_snapshot(
 /// the full content lives (the persisted run history via `get_messages`). The
 /// placeholder retains tool identity, outcome and a bounded output tail so a
 /// completed call cannot get stuck running when its result exceeds the cap.
-pub(super) fn cap_event_data(data: &str) -> std::borrow::Cow<'_, str> {
-    if data.len() <= MAX_EVENT_BYTES {
-        return std::borrow::Cow::Borrowed(data);
-    }
-    std::borrow::Cow::Owned(crate::remote_host::business::truncated_event_data(data))
-}
+#[cfg(test)]
+pub(super) use future_remote_server::events::cap_event_data;
 
 /// Serially publishes queued events on one connection, preserving agent
 /// emission order. Exits when every sender is dropped (stop, or a credential
@@ -318,88 +270,16 @@ pub(super) fn spawn_event_publisher(
 /// capability takes the pass-through path unchanged.
 pub(super) fn spawn_secure_event_publisher(
     client: async_nats::Client,
-    mut rx: tokio::sync::mpsc::Receiver<EventPublish>,
+    rx: tokio::sync::mpsc::Receiver<EventPublish>,
     security: secure::Transport,
     coalesce: Arc<AtomicBool>,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut coalescer = coalesce::Coalescer::default();
-        let mut out: Vec<EventPublish> = Vec::new();
-        loop {
-            let coalescing = coalesce.load(Ordering::Relaxed);
-            let received = if coalescing {
-                // The window is what makes merging possible at all: an
-                // unmerged fragment is published alone, so a slow stream keeps
-                // its latency and only bursts are merged.
-                tokio::time::timeout(coalesce::COALESCE_WINDOW, rx.recv())
-                    .await
-                    .ok()
-            } else {
-                // Leaving the lane must not strand a buffered group.
-                coalescer.flush(&mut out);
-                Some(rx.recv().await)
-            };
-            match received {
-                None => coalescer.flush(&mut out),
-                Some(None) => {
-                    coalescer.flush(&mut out);
-                    if publish_batch(&client, &security, &mut out).await.is_err() {
-                        return;
-                    }
-                    return;
-                }
-                Some(Some(event)) => {
-                    if coalescing {
-                        coalescer.offer(event, std::time::Instant::now(), &mut out);
-                    } else {
-                        out.push(event);
-                    }
-                }
-            }
-            if publish_batch(&client, &security, &mut out).await.is_err() {
-                return;
-            }
-        }
-    })
-}
-
-/// Publish one batch in order, stopping at the first transport failure. The
-/// caller ends the drain then, exactly as the per-event loop did.
-async fn publish_batch(
-    client: &async_nats::Client,
-    security: &secure::Transport,
-    batch: &mut Vec<EventPublish>,
-) -> Result<(), crate::AppError> {
-    if batch.is_empty() {
-        return Ok(());
-    }
-    for event in std::mem::take(batch) {
-        let sent = async {
-            if let Some(subject) = event.status_subject {
-                secure::publish(client, security, subject, event.payload.clone()).await?;
-            }
-            secure::publish(client, security, event.subject, event.payload).await
-        }
-        .await;
-        match sent {
-            // `Ok(false)` is a payload the secure channel could not seal yet
-            // (pre-handshake, or just after a credential refresh). The event lane
-            // keeps its existing contract: the client recovers the gap through
-            // `get_events_since` backfill.
-            Ok(_) => {
-                if let Some(line) = EVENT_PUBLISH_EPISODE.recovered() {
-                    eprintln!("{line}");
-                }
-            }
-            Err(error) => {
-                if let Some(line) = EVENT_PUBLISH_EPISODE.record("event_publish", error) {
-                    eprintln!("{line}");
-                }
-                return Err(crate::AppError::Message("event publish failed".into()));
-            }
-        }
-    }
-    Ok(())
+    tokio::spawn(future_remote_server::events::run_event_publisher(
+        client,
+        rx,
+        security.inner,
+        coalesce,
+    ))
 }
 
 /// Heartbeat cadence for the liveness packet (`p.{pair}.presence`).

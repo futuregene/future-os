@@ -15,32 +15,35 @@ pub fn active_slot() -> Option<String> {
     super::host().active_slot()
 }
 pub fn set_active(pair_id: &str) -> Result<(), crate::AppError> {
-    super::host().set_active(pair_id)
+    super::host().set_active(pair_id).map_err(Into::into)
 }
 pub fn remove_slot(pair_id: &str) -> Result<(), crate::AppError> {
-    super::host().remove_slot(pair_id)
+    super::host().remove_slot(pair_id).map_err(Into::into)
 }
 pub fn save_creds(c: &PairingCreds) -> Result<(), crate::AppError> {
-    super::host().save(c)
+    super::host().save(c).map_err(Into::into)
 }
 pub fn clear_creds() -> Result<(), crate::AppError> {
-    super::host().clear()
+    super::host().clear().map_err(Into::into)
 }
 /// Publish an invitation. `keep_existing` adds a device beside the paired ones
 /// instead of replacing them; the field means the same thing on the platform.
 pub async fn create_pairing(
     keep_existing: bool,
 ) -> Result<super::services::Invitation, crate::AppError> {
-    super::host().invite(keep_existing).await
+    super::host()
+        .invite(keep_existing)
+        .await
+        .map_err(Into::into)
 }
 pub async fn refresh_bridge_jwt(c: PairingCreds) -> Result<PairingCreds, crate::AppError> {
-    super::host().refresh(c).await
+    super::host().refresh(c).await.map_err(Into::into)
 }
 pub(crate) fn queue_revoke(c: &PairingCreds) -> Result<(), crate::AppError> {
-    super::host().queue_revoke(c)
+    super::host().queue_revoke(c).map_err(Into::into)
 }
 pub(crate) async fn retry_pending_revokes() -> Result<(), crate::AppError> {
-    super::host().retry_revokes().await
+    super::host().retry_revokes().await.map_err(Into::into)
 }
 
 pub fn public_key(creds: &PairingCreds) -> Result<String, crate::AppError> {

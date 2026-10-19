@@ -1186,7 +1186,7 @@ mod tests {
 
     /// The same measurement for the lean lane, over the same real journal and
     /// through the same shipping code: every event is first rewritten by
-    /// [`crate::remote_host::lean::lean_event_data`], exactly as
+    /// [`crate::lean::lean_event_data`], exactly as
     /// `remote::publisher::publish_event` rewrites it, and then coalesced.
     ///
     /// Run it through `scripts/measure/measure-live-lane.py`, which supplies the three
@@ -1200,7 +1200,7 @@ mod tests {
     #[test]
     #[ignore = "measurement: needs SYNC_MEASURE_JOURNAL/SESSION/RUN"]
     fn measure_real_journal_lean() {
-        use crate::remote_host::lean::lean_event_data;
+        use crate::lean::lean_event_data;
         let path = std::env::var("SYNC_MEASURE_JOURNAL").expect("SYNC_MEASURE_JOURNAL");
         let session = std::env::var("SYNC_MEASURE_SESSION").expect("SYNC_MEASURE_SESSION");
         let run = std::env::var("SYNC_MEASURE_RUN").expect("SYNC_MEASURE_RUN");
@@ -1269,7 +1269,7 @@ mod tests {
             // the two separately.
             lean_data_bytes += serde_json::to_vec(&payload).expect("body serializes").len();
             // Then the envelope, exactly as `publish_event` trims it.
-            crate::remote_host::lean::lean_event_body(&mut payload);
+            crate::lean::lean_event_body(&mut payload);
             let lean_body = serde_json::to_vec(&payload).expect("body serializes");
             *lean_by_type.entry(event_type.to_string()).or_default() += lean_body.len();
             lean_bytes += lean_body.len();
@@ -1380,9 +1380,8 @@ mod tests {
             MAX_MERGED_FRAGMENTS as i64 + 3,
         );
 
-        let path = std::env::temp_dir().join(crate::remote::test_support::unique(
-            "coalesce-journal.jsonl",
-        ));
+        let directory = tempfile::tempdir().expect("measurement fixture directory");
+        let path = directory.path().join("coalesce-journal.jsonl");
         std::fs::write(&path, &journal).unwrap();
         // Restored on drop, so the new lane claims failing here cannot leak
         // `SYNC_MEASURE_*` into the rest of the suite (`FLAKES.md` item 27:

@@ -40,97 +40,6 @@ mod contract_tests {
     }
 
     #[test]
-    fn nats_v2_event_keeps_every_v1_field_unchanged() {
-        let body = build_event_body(
-            "session-1",
-            "text_chunk",
-            r#"{"text":"hi"}"#,
-            "run-1",
-            7,
-            2,
-            "evt-1",
-            "2026-08-02T00:00:00Z",
-            -1,
-            11,
-        );
-        assert_eq!(body["type"], "text_chunk");
-        assert_eq!(body["data"], r#"{"text":"hi"}"#);
-        assert_eq!(body["runId"], "run-1");
-        assert_eq!(body["idx"], 7);
-        assert_eq!(body["schemaVersion"], 2);
-        assert_eq!(body["sessionId"], "session-1");
-        assert_eq!(body["epoch"], 2);
-        assert_eq!(body["eventId"], "evt-1");
-        assert_eq!(body["runSequence"], 11);
-    }
-
-    #[test]
-    fn nats_session_event_has_independent_cursor() {
-        let body = build_event_body(
-            "session-1",
-            "model_changed",
-            "{}",
-            "",
-            -1,
-            0,
-            "session-1:session:4",
-            "2026-08-02T00:00:00Z",
-            4,
-            -1,
-        );
-        assert_eq!(body["runId"], "");
-        assert_eq!(body["sessionIdx"], 4);
-        assert_eq!(body["runSequence"], -1);
-    }
-
-    #[test]
-    fn failure_episode_same_category_non_power_of_two_attempt_is_silent() {
-        let category = "test_episode_silent";
-        let episode = FailureEpisode(Mutex::new(FailureEpisodeState::default()));
-        // Attempt 1 (fresh category) and attempt 2 (power of two) both report;
-        // attempt 3 is not a power of two, so it falls through to the silent None.
-        assert!(episode.record(category, "first").is_some());
-        assert!(episode.record(category, "second").is_some());
-        assert!(episode.record(category, "third").is_none());
-    }
-
-    #[test]
-    fn failure_episode_category_switch_after_quota_exhaustion_reports_nothing() {
-        // Exhaust the process-wide log quota for a fresh category, then start a
-        // new episode with that category: the first `record` resets the episode
-        // state but `permit_failure_log` refuses the line, so it returns None.
-        let category = "test_episode_switch_quota";
-        for _ in 0..MAX_FAILURE_LOGS_PER_CATEGORY {
-            assert!(permit_failure_log(category));
-        }
-        assert!(!permit_failure_log(category));
-
-        let episode = FailureEpisode(Mutex::new(FailureEpisodeState::default()));
-        assert!(episode.record(category, "boom").is_none());
-    }
-
-    #[test]
-    fn support_codes_cover_every_category() {
-        assert_eq!(support_code_for_category("network"), "NW001");
-        assert_eq!(support_code_for_category("credential_network"), "NW001");
-        assert_eq!(support_code_for_category("remote_server"), "SV001");
-        assert_eq!(support_code_for_category("service_authorization"), "AU001");
-        assert_eq!(support_code_for_category("account_authorization"), "AU003");
-        assert_eq!(support_code_for_category("credential_expired"), "AU002");
-        assert_eq!(support_code_for_category("credential_connect"), "AU002");
-        assert_eq!(support_code_for_category("slow_consumer"), "RT002");
-        assert_eq!(support_code_for_category("command_subscription"), "RT003");
-        assert_eq!(support_code_for_category("transfer_subscription"), "RT004");
-        assert_eq!(support_code_for_category("event_publish"), "RT005");
-        assert_eq!(support_code_for_category("heartbeat_publish"), "RT006");
-        assert_eq!(support_code_for_category("state_publish"), "RT006");
-        assert_eq!(support_code_for_category("web_bind"), "LC002");
-        assert_eq!(support_code_for_category("revoked"), "PA001");
-        assert_eq!(support_code_for_category("local"), "LC001");
-        assert_eq!(support_code_for_category("mystery"), "LC999");
-    }
-
-    #[test]
     fn nats_health_handles_remaining_event_variants() {
         let health = NatsHealth::default();
 
@@ -412,18 +321,6 @@ mod runtime_tests {
                 }
             );
         }
-    }
-
-    #[test]
-    fn failure_logs_are_bounded_across_alternating_episodes() {
-        // The per-episode counter alone is insufficient: alternating category
-        // names used to restart it indefinitely. This unique test category
-        // exercises the process-level, 24-hour quota.
-        let category = "test_alternating_failure_quota";
-        for _ in 0..MAX_FAILURE_LOGS_PER_CATEGORY {
-            assert!(permit_failure_log(category));
-        }
-        assert!(!permit_failure_log(category));
     }
 
     /// Wait until WEB_PORT is bindable again (stop() aborts the web task

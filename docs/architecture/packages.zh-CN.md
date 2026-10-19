@@ -7,7 +7,7 @@
 - `remote-crypto`：Rust/TypeScript Noise 安全通道；共用握手、记录与拒绝条件素材。
 - `remote-client`：Rust 主控连接、凭据 DTO、多远端实例、任务生命周期与文件编排；TS Client 仍在迁移。
 - `remote-protocol`：Rust/TypeScript 线上契约、命令 schema/生成类型、握手封装、邀请及 JSON/gzip 编解码。
-- `remote-server`：Rust 被控安全端点、凭据/状态 DTO 及业务/状态契约；连接监督和命令路由仍在迁移。
+- `remote-server`：Rust 被控安全端点、宿主契约、文件帧、有序事件/合并及 wire 策略；连接监督和命令路由仍在迁移。
 - `markdown`：共享 TypeScript markdown 解析器与类型。
 - `thread-projection`：共享 TypeScript 线程投影逻辑。
 - `json-preview`：共享 TypeScript JSON 预览/渲染逻辑。
