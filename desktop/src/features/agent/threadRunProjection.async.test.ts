@@ -7,6 +7,7 @@ import {
   applyRecoveredEvents,
   applyRunMetadata,
   buildStreamingPreview,
+  deriveRenderFields,
   loadCurrentRun,
   mergeStreamingPreview,
   recoverAbortedTurns,
@@ -301,6 +302,31 @@ describe("file-tree invalidation follows new tool events, not historical activit
 });
 
 describe("updatePendingMessageFromRunEvents", () => {
+  it.each(["tool_end", "tool_result"])("keeps a recovered %s before later answer text on every live push", async (eventType) => {
+    const runId = `recovered-order-${eventType}`;
+    const events = runEvents(runId, [
+      ["text_chunk", { text: "Checking files." }],
+      [eventType, { tool_id: "read-1", tool_name: "read", tool_args: { path: "a.md" } }],
+      ["text_chunk", { text: "Review complete." }],
+      [eventType, { tool_id: "shell-1", tool_name: "shell" }],
+      ["text_chunk", { text: "All done." }],
+    ]);
+    const { setMessages, state } = collect([message("pending", { runId, status: "streaming" })]);
+
+    for (const [index, event] of events.entries()) {
+      listRunEventsSince.mockResolvedValue([event]);
+      await updatePendingMessageFromRunEvents(runId, "pending", setMessages);
+      expect(listRunEventsSince).toHaveBeenLastCalledWith(runId, index - 1);
+      expect(state()[0]!.segments?.map(segment => segment.kind)).toEqual(
+        ["text", "activity", "text", "activity", "text"].slice(0, index + 1),
+      );
+    }
+
+    expect(state()[0]!.segments?.filter(segment => segment.kind === "text").map(segment => segment.text))
+      .toEqual(["Checking files.", "Review complete.", "All done."]);
+    expect(deriveRenderFields(events, "").segments).toEqual(state()[0]!.segments);
+  });
+
   it("returns early when the send is stale", async () => {
     listRunEventsSince.mockResolvedValue(textEvents("r-p1", "text"));
     const { setMessages } = collect([]);
