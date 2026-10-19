@@ -409,7 +409,7 @@ Rust 用例与 TS 驱动读取同一份素材，分别核对实际回复、宿�
 
 ### 2026-10-19：共用 Client 请求策略与可控时间驱动
 
-新增 [`fixtures/requests.json`](../../packages/remote-client/fixtures/requests.json) 和[素材说明](../../packages/remote-client/fixtures/README.md)，作为 17 个双语言请求策略场景的唯一输入/预期来源。场景覆盖首发成功、读/列表/上传完成的丢回复重试、不可重试写入、业务/授权拒绝、三次预算耗尽、实际默认请求超时、协商回执后的 prompt、旧能力 prompt/continue、固定命令 ID/bridge/body，以及关闭发生在退避或请求进行中。版本、suite、kind、未知字段、重复 ID、结果类型及未说明的语言差异均显式拒绝，不静默跳过。
+新增 [`fixtures/requests.json`](../../packages/remote-client/fixtures/requests.json) 和[素材说明](../testing/remote-client-fixtures.md)，作为 17 个双语言请求策略场景的唯一输入/预期来源。场景覆盖首发成功、读/列表/上传完成的丢回复重试、不可重试写入、业务/授权拒绝、三次预算耗尽、实际默认请求超时、协商回执后的 prompt、旧能力 prompt/continue、固定命令 ID/bridge/body，以及关闭发生在退避或请求进行中。版本、suite、kind、未知字段、重复 ID、结果类型及未说明的语言差异均显式拒绝，不静默跳过。
 
 Rust 将原有重试循环提取为内部函数，`PeerSession` 生产请求继续调用它；命令序列化/bridge 填充也成为同一内部实现。没有新增公开宿主抽象或改变重试判定、次数、间隔及错误类别。源码 token 核对确认循环仅将绑定的 exchange 换成参数，循环逻辑保持；原运行时归属测试源码完整保留。新驱动复用生产序列化、白名单、重试循环和 `Client::while_running` 停止入口，替换的仅是底层 exchange 结果。Tokio `test-util` 只作为 Client 的开发依赖提供可控时间，不在应用中复制策略。
 
@@ -431,7 +431,7 @@ Rust 驱动调用真实 `needs_refresh`、`renew_credentials`、尝试代次/断
 
 TS 驱动调用真实 expiry helper、刷新入口、取消/后台退役和 shutdown；后续 `open` 仅作为连接继续入口观察，不执行新握手。宿主 Promise 故意忽略取消：关闭或代次退役应立即使信号失效，但实例必须继续持有实际工作直至结果返回。迟到结果不能更新持久化回调或角色内存凭据，也不能继续连接。两个实例分别拥有宿主、状态和清理；停止一个不能吞掉另一个的刷新，已在停止前提交的有效 grant 也不能回滚。
 
-共同字段 `continuations` 在 Rust 表示向外层连接器成功返回新 grant，在 TS 表示请求 `open` 继续入口；它不是网络已建立的证据。多实例样例不替代同一 Rust runtime 内多个真实远端的隔离、实际恢复链路或应用 SecureStore 原子提交测试。源级边界和[素材说明](../../packages/remote-client/fixtures/README.md)均已写明，未以测试替身代替真实互通/应用验收。
+共同字段 `continuations` 在 Rust 表示向外层连接器成功返回新 grant，在 TS 表示请求 `open` 继续入口；它不是网络已建立的证据。多实例样例不替代同一 Rust runtime 内多个真实远端的隔离、实际恢复链路或应用 SecureStore 原子提交测试。源级边界和[素材说明](../testing/remote-client-fixtures.md)均已写明，未以测试替身代替真实互通/应用验收。
 
 本批只增加测试素材、驱动与测试宿主观察，不改产品逻辑。新增一个 Rust 驱动声明和一个 Jest `.each` 声明，各报告同一组 18 个 ID。Client 默认/测试辅助特性的 Clippy `--all-targets`、fmt、TS typecheck/lint、协议生成与相关双语文档检查通过；Babel/Jest 仅静态编译 57 个包内文件，未运行测试或编译产物。最终 CI 尚未执行。
 

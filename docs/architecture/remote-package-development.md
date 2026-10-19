@@ -151,7 +151,7 @@ Each Client driver simulates transport and advances controlled time, for example
 
 Rust/TS Crypto, Protocol and Client, plus Rust Server, each own test source, entry points, commands and dependency declarations. Core tests move out of `desktop/` and `mobile/` into their packages. Selecting one package runs its tests without building futureos, loading Tauri, starting Expo or importing application modules.
 
-TS packages provide independent test scripts/configuration, without borrowing Desktop's Vitest configuration, Mobile's Jest/Expo preset or React Native mock environment. Root workspace tooling may manage dependencies centrally, but package entry points and dependencies must be explicit. Rust tests are selected through Cargo packages without application crate dependencies. Thin application wrappers must not rerun the entire core corpus.
+TS packages provide independent test scripts and configuration, without borrowing Desktop's Vitest configuration, Mobile's Jest/Expo preset or React Native mock environment. Root workspace tooling may manage dependencies centrally, but package entry points and dependencies must be explicit. Rust tests are selected through Cargo packages without application crate dependencies. Thin application wrappers must not rerun the entire core corpus.
 
 Root workspaces may install dependencies centrally, reuse artifacts and batch execution; independence does not require separate node_modules, target directories or runners per package. CI reports package names, results, counts and duration separately so failures can be reproduced and rerun independently.
 
@@ -409,7 +409,7 @@ No `nats-server` exists locally and no local unit/interoperability tests ran. Th
 
 ### 2026-10-19: Shared Client request policy and controlled-time drivers
 
-Added [`fixtures/requests.json`](../../packages/remote-client/fixtures/requests.json) and [fixture guidance](../../packages/remote-client/fixtures/README.md) as the sole input/expectation source for 17 dual-language request scenarios. They cover first success; lost replies for reads/lists/upload completion; non-retried writes; business/auth refusal; three-attempt exhaustion; actual default request timeouts; receipt-negotiated and legacy prompt/continue; fixed command ID/bridge/body; and closure during backoff/in-flight requests. Drivers explicitly reject unsupported versions/suites/kinds, unknown fields, duplicate IDs, outcomes and undocumented language differences.
+Added [`fixtures/requests.json`](../../packages/remote-client/fixtures/requests.json) and [fixture guidance](../testing/remote-client-fixtures.md) as the sole input/expectation source for 17 dual-language request scenarios. They cover first success; lost replies for reads/lists/upload completion; non-retried writes; business/auth refusal; three-attempt exhaustion; actual default request timeouts; receipt-negotiated and legacy prompt/continue; fixed command ID/bridge/body; and closure during backoff/in-flight requests. Drivers explicitly reject unsupported versions/suites/kinds, unknown fields, duplicate IDs, outcomes and undocumented language differences.
 
 Rust's original retry loop is now an internal function still called by production `PeerSession`; command serialization/bridge insertion also has one internal implementation. No public host abstraction or retry policy/count/delay/error-category change was introduced. Source-token comparison confirms only the bound exchange call changed; original ownership-test source remains intact. The driver uses production serialization, whitelist, retry loop and `Client::while_running` stop admission with scripted exchange outcomes. Tokio `test-util` is a Client development dependency, without an application copy of the policy.
 
@@ -431,7 +431,7 @@ The Rust driver calls actual `needs_refresh`, `renew_credentials`, attempt epoch
 
 The TS driver calls actual expiry policy, refresh admission, cancellation/background retirement and shutdown. Its `open` continuation is observed without performing another handshake. A deliberately uncooperative host promise ignores cancellation: signals must invalidate promptly while actual work remains owned until settlement. Late results cannot update persistent callbacks, in-memory credentials or continue connecting. Each instance owns its services/state/cleanup; stopping one cannot suppress another's renewal or roll back a grant validly committed before closure.
 
-Shared `continuations` means a fresh Rust grant returned to the outer connector, or TS requesting its `open` continuation, not proof of network establishment. These instance samples do not replace multiple real endpoints inside one Rust runtime, live recovery or application SecureStore atomic commits. The source boundaries and [fixture guidance](../../packages/remote-client/fixtures/README.md) explicitly retain those acceptance gates.
+Shared `continuations` means a fresh Rust grant returned to the outer connector, or TS requesting its `open` continuation, not proof of network establishment. These instance samples do not replace multiple real endpoints inside one Rust runtime, live recovery or application SecureStore atomic commits. The source boundaries and [fixture guidance](../testing/remote-client-fixtures.md) explicitly retain those acceptance gates.
 
 This batch changes only fixture data, drivers and test-host observation, with no product logic change. One Rust driver declaration and one Jest `.each` declaration each report the same 18 IDs. Client default/test-support Clippy `--all-targets`, fmt, TS typecheck/lint, protocol generation and scoped bilingual documentation passed. Babel/Jest statically transformed 57 package files without running tests or output. Final CI has not run.
 
@@ -561,7 +561,7 @@ CI. Rust checks locked/offline Cargo metadata for core/interoperability workspac
 dependency direction, ordinary library targets, transitive default features and
 explicit network-tests requirements on interop executables. Dev-dependencies
 cannot reintroduce applications or fixture transports become default. TS checks
-manifest dependency kinds, scripts/configuration and import/export/type/dynamic/
+manifest dependency kinds, scripts and configuration and import/export/type/dynamic/
 mock AST nodes. TypeScript resolution and realpath prevent application imports
 through aliases. Protocol shares only history wire types with thread-projection,
 not its runtime. Rust-only and TS-only jobs run the corresponding audits without

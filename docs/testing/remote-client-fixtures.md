@@ -1,16 +1,16 @@
 # Shared Client fixtures
 
-The files here are authoritative inputs and expectations shared by Rust and
+The files under `packages/remote-client/fixtures/` are authoritative inputs and expectations shared by Rust and
 TypeScript. They are not copied into Desktop or Mobile.
 
 | File | Purpose | Drivers |
 |---|---|---|
-| [client.json](client.json) | Real role interoperability: requests/deduplication, pairing, events, file bytes, reconnect and shutdown report IDs | [Independent interoperability project](../../../tests/remote-interop/README.md) |
-| [isolation.json](isolation.json) | Two real endpoints: request/deduplication, catalog/event ownership, stop and reconnect independence | Independent Rust and TS interoperability drivers |
-| [credentials.json](credentials.json) | Expiry boundaries, late renewal fencing, continuation and instance isolation | Rust `shared_credentials_tests.rs`; Node/Jest `sharedCredentials.test.ts` |
-| [transfer.json](transfer.json) | Stop before a held real Server download read returns; no byte delivery or replacement connection | Independent Rust and TS interoperability drivers |
-| [recovery.json](recovery.json) | Actual bounded retry loop, shutdown before/after retries and no late restart | Rust `shared_recovery_tests.rs`; Node/Jest `sharedRecovery.test.ts` |
-| [requests.json](requests.json) | Controlled request-policy scenarios: send times, outcomes, retry identity, timeout budgets, recovery/probe counts and cancellation | Rust `shared_request_tests.rs`; Node/Jest `sharedRequests.test.ts` |
+| [client.json](../../packages/remote-client/fixtures/client.json) | Real role interoperability: requests/deduplication, pairing, events, file bytes, reconnect and shutdown report IDs | [Independent interoperability project](remote-interop.md) |
+| [isolation.json](../../packages/remote-client/fixtures/isolation.json) | Two real endpoints: request/deduplication, catalog/event ownership, stop and reconnect independence | Independent Rust and TS interoperability drivers |
+| [credentials.json](../../packages/remote-client/fixtures/credentials.json) | Expiry boundaries, late renewal fencing, continuation and instance isolation | Rust `shared_credentials_tests.rs`; Node/Jest `sharedCredentials.test.ts` |
+| [transfer.json](../../packages/remote-client/fixtures/transfer.json) | Stop before a held real Server download read returns; no byte delivery or replacement connection | Independent Rust and TS interoperability drivers |
+| [recovery.json](../../packages/remote-client/fixtures/recovery.json) | Actual bounded retry loop, shutdown before/after retries and no late restart | Rust `shared_recovery_tests.rs`; Node/Jest `sharedRecovery.test.ts` |
+| [requests.json](../../packages/remote-client/fixtures/requests.json) | Controlled request-policy scenarios: send times, outcomes, retry identity, timeout budgets, recovery/probe counts and cancellation | Rust `shared_request_tests.rs`; Node/Jest `sharedRequests.test.ts` |
 
 Each format has an explicit version and suite/kind checks. Unknown fields,
 unsupported cases and duplicate IDs fail. Every driver executes and reports all
