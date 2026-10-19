@@ -1,0 +1,20 @@
+[package]
+name = "future-remote-server"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+test-support = []
+
+[dependencies]
+future-remote-protocol = { path = "../remote-protocol" }
+future-remote-crypto = { path = "../remote-crypto" }
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["rt", "sync", "macros"] }
+async-nats = "0.49"
+futures = { workspace = true }
+rand = "0.8"
+thiserror = "2"

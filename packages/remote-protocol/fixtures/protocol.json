@@ -309,6 +309,95 @@
         ],
         "message": "hello"
       }
+    },
+    {
+      "id": "protocol.handshake.open-defaults",
+      "kind": "handshake-request",
+      "input": {
+        "type": "secure_open",
+        "message": "AAAA"
+      },
+      "expected": {
+        "type": "secure_open",
+        "message": "AAAA",
+        "id": "",
+        "pairing": false
+      }
+    },
+    {
+      "id": "protocol.handshake.finish",
+      "kind": "handshake-request",
+      "input": {
+        "type": "secure_finish",
+        "message": "AAAA",
+        "id": "challenge_fixture"
+      },
+      "expected": {
+        "type": "secure_finish",
+        "message": "AAAA",
+        "id": "challenge_fixture",
+        "pairing": false
+      }
+    },
+    {
+      "id": "protocol.handshake.additive-fields",
+      "kind": "handshake-request",
+      "input": {
+        "type": "secure_open",
+        "message": "AAAA",
+        "pairing": true,
+        "futureField": "preserved by producer"
+      },
+      "expected": {
+        "type": "secure_open",
+        "message": "AAAA",
+        "id": "",
+        "pairing": true
+      }
+    },
+    {
+      "id": "protocol.handshake.confirmation",
+      "kind": "handshake-confirmation",
+      "input": {
+        "pairId": "pair_fixture",
+        "bridgeInstanceId": "bridge_fixture",
+        "presence": {
+          "online": true,
+          "bridgeInstanceId": "bridge_fixture",
+          "futurePresenceField": 42
+        }
+      },
+      "expected": {
+        "confirmed": true,
+        "pairId": "pair_fixture",
+        "bridgeInstanceId": "bridge_fixture",
+        "features": [
+          "e2ee_v2",
+          "file_transfer_v1",
+          "file_download_v2",
+          "approval_tier_v1",
+          "auto_approval_v1",
+          "continue_run_v1",
+          "prompt_receipt_v1",
+          "session_files_v1",
+          "skills_v1",
+          "selective_events_v1",
+          "workspace_pinning_v1",
+          "workspace_create_v1",
+          "desktop_settings_v1",
+          "skill_management_v1",
+          "compaction_v1",
+          "provider_management_v1",
+          "fork_v1",
+          "tasks_v1",
+          "task_deps_v1"
+        ],
+        "presence": {
+          "online": true,
+          "bridgeInstanceId": "bridge_fixture",
+          "futurePresenceField": 42
+        }
+      }
     }
   ]
 }

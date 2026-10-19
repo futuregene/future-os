@@ -1,3 +1,4 @@
+import type { HandshakeConfirmation } from "@future-os/remote-protocol";
 import { ConnectionGeneration } from "./connectionGeneration";
 import type { Msg, NatsConnection, Subscription } from "@nats-io/nats-core";
 import { wsconnect, jwtAuthenticator } from "@nats-io/nats-core";
@@ -29,16 +30,6 @@ const MAX_FAILURE_LOGS_PER_CATEGORY = 16;
 export type RecoveryReason =
   "foreground" | "network-restored" | "network-changed" | "request-failure" | "presence-stale";
 
-interface HandshakeConfirmation {
-  confirmed: boolean;
-  pairId: string;
-  desktopId: string;
-  bridgeInstanceId: string;
-  deviceId: string;
-  desktopNonce: string;
-  presence: Presence;
-  features?: string[];
-}
 
 export interface RemoteClientCallbacks {
   onCredentials(credentials: RemoteCredentials): Promise<void>;

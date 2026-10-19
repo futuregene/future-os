@@ -60,6 +60,30 @@ fn shared_protocol_fixtures() {
                     assert_eq!(&normalized[name], value, "{id}: {name}");
                 }
             }
+            "handshake-request" => {
+                let request: future_remote_protocol::handshake::HandshakeRequest =
+                    serde_json::from_value(case["input"].clone()).unwrap();
+                assert_eq!(
+                    serde_json::json!({
+                        "type": request.kind, "message": request.message,
+                        "id": request.id, "pairing": request.pairing,
+                    }),
+                    case["expected"],
+                    "{id}"
+                );
+            }
+            "handshake-confirmation" => {
+                let input = &case["input"];
+                assert_eq!(
+                    future_remote_protocol::handshake::confirmation(
+                        input["pairId"].as_str().unwrap(),
+                        input["bridgeInstanceId"].as_str().unwrap(),
+                        input["presence"].clone(),
+                    ),
+                    case["expected"],
+                    "{id}"
+                );
+            }
             other => panic!("Unsupported shared case {id}: {other}"),
         }
     }

@@ -3,7 +3,7 @@
 > [中文](remote-package-development.zh-CN.md)
 >
 > Design date: 2026-10-19. Source baseline: `4a64b65e`.
-> Status: in progress; phases 1/2 are being migrated. Section 8 records implemented boundaries, checks and remaining work. Phases 0–5 are not complete.
+> Status: in progress; phases 1–3 are being migrated. Section 8 records implemented boundaries, checks and remaining work. Phases 0–5 are not complete.
 
 Separate Remote into protocol, controller and controlled-endpoint packages, retaining the independent secure-channel foundation. Rust and TypeScript follow the same responsibility model with separate implementations, validated against a common contract, vectors and interoperability tests. Desktop, Mobile, CLI and TUI provide UI, environment and local business adapters; Remote libraries do not depend on a particular application entry point.
 
@@ -219,7 +219,8 @@ Implementation branch: `refactor/remote-packages`. Scope remains phases 0–5; p
 | 0 | Source/test inventory and historical CI reference captured; performance comparison awaits final CI | The [test migration inventory](remote-test-migration.json) records baseline files, Rust case names and destinations; `target: null` means unresolved ownership. The [historical CI reference](remote-ci-baseline.json) records the original commit, jobs, runner, steps and Windows compile/test log timings. It is not a same-condition performance result for this branch. |
 | 1 | In progress, existing consumers reconnected | TS Crypto and both Protocol packages exist. Mobile consumes package Crypto/wire DTOs; Desktop consumes shared commands, invitations and JSON decoding. Handshake envelopes, capability/chunk constants and remaining role-owned wire DTOs still need extraction during subsequent migration. Automated results await final CI. |
 | 2 | In progress, connection core reconnected to Desktop | Rust Client connections, credential DTOs, multi-host instances, task lifecycle and upload/download orchestration are connected. Shared HTTP/JWT utilities are assigned to their owners. Independent network interoperability, shared Client scenarios and final acceptance remain. |
-| 3–5 | Pending | Rust Server, TS Client, standalone interoperability, affected CI scheduling and final acceptance remain unfinished. |
+| 3 | In progress, security endpoint and some host contracts connected | Server owns credential values, secure handshake/candidate channels, business/state services and status DTOs. Supervision, routing, events and owned shutdown still need migration. |
+| 4–5 | Pending | TS Client, standalone interoperability, affected CI scheduling and final acceptance remain unfinished. |
 
 Implemented package entry points and validation:
 
@@ -268,3 +269,15 @@ Scoped chunk registrations synchronously remove their waiter when a caller futur
 Two original retry cases and eight pure transfer cases move to Client; Desktop retains cache/filesystem and real Host/Agent file integration. New regressions cover the receive buffer bound and two waiter cleanup races. The original JWT parsing case moves to Protocol. Shared HTTP calls, TLS initialization and application error adaptation live in Desktop's `remote_platform`; controllers and relay no longer borrow those helpers from the controlled-host adapter. Failure logs contain only action/status to avoid reflecting credentials from platform responses; returned error categories/codes/messages remain unchanged.
 
 This batch passed default/test-support Client, Protocol and Desktop GUI/headless Clippy `--all-targets`, fmt, generated-file freshness and scoped documentation checks. Source audits accounted for original transfer/pairing test names and confirmed unchanged Desktop cache/atomic-write implementation. No local unit tests executed. Phase 2 still requires network-coverage migration, shared scenarios and final acceptance.
+
+### 2026-10-19: Rust Server security endpoint and host contracts
+
+`future-remote-server` is now an independent ordinary library. Its first extraction owns secure handshakes, pending/candidate/active channels, identity binding, encrypted replies/publishing, controlled-endpoint credential values, status DTOs and business/state contracts. Desktop's `remote_host` still implements real Store/Agent business; credential files, platform calls and file operations remain host-owned. Server obtains binding persistence and presence through an explicit `HandshakeHost`. Desktop's temporary `secure` facade only adapts the single package implementation.
+
+Existing limits and security rules remain: sixteen pending/candidate channels in total, thirty-second candidate lifetime, single-use/expiry checks, IK peer-key binding, authenticated readiness commit and candidate invalidation on clear. Binding must persist before confirmation/candidate installation; an uncommitted channel cannot execute business. Default production features offer no plaintext fixture; application tests opt into non-default `test-support`.
+
+Thirteen original pure security cases move to Server without HOME/Store initialization. Two real persistence/restart/stale-refresh/save-failure integration cases remain in Desktop and drive the actual package. New regressions cover endpoint isolation, refusing candidate installation after a failed save, credential serialization and Debug redaction. Each of the fifteen baseline security names has exactly one destination. Source comparisons confirm unchanged credential fields/serde defaults and all nineteen advertised capabilities in their original order.
+
+Protocol now owns the v2 handshake request envelope, refusal prefix, confirmation body and capability list; Mobile's confirmation DTO moves there too. Shared fixtures add IDs for request defaults, finish, additive fields and confirmation. Drivers verify server decoding/encoding and client production/consumption respectively. Command-schema generation remains unchanged; handshake DTOs are currently handwritten wire types in Protocol. Both npm package test entries use the verbose reporter so passing shared case IDs also appear in final CI output.
+
+This batch passed default/test-support Server and Protocol Clippy `--all-targets`, Desktop GUI/headless Clippy `--all-targets`, Protocol/Mobile typecheck/lint, fmt, generated freshness and scoped bilingual documentation checks. No local unit tests or final CI ran. Phase 3 is incomplete: connection supervision, pairing/file host interfaces, command routing, event publication, instance isolation and total-deadline shutdown still require migration. A reusable security endpoint does not establish an independent controlled-role runtime.

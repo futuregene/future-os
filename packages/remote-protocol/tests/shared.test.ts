@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { decodeRemoteJson, parsePairingInvitation } from "../src/index";
-import type { RemoteCommand } from "../src/index";
+import type { HandshakeConfirmation, HandshakeRequest, RemoteCommand } from "../src/index";
 import fixture from "../fixtures/protocol.json";
 
 describe("shared Remote protocol fixtures", () => {
@@ -30,6 +30,14 @@ describe("shared Remote protocol fixtures", () => {
       // decoder supplies its historical defaults. No JS server is introduced.
       const command = c.input as RemoteCommand;
       expect(decodeRemoteJson(new TextEncoder().encode(JSON.stringify(command)))).toEqual(c.input);
+    } else if (c.kind === "handshake-request") {
+      const request = c.input as HandshakeRequest;
+      expect(decodeRemoteJson(new TextEncoder().encode(JSON.stringify(request)))).toEqual(c.input);
+    } else if (c.kind === "handshake-confirmation") {
+      const confirmation = decodeRemoteJson<HandshakeConfirmation>(new TextEncoder().encode(JSON.stringify(c.expected)));
+      expect(confirmation).toEqual(c.expected);
+      expect(confirmation.confirmed).toBe(true);
+      expect(confirmation.presence.bridgeInstanceId).toBe(confirmation.bridgeInstanceId);
     } else {
       throw new Error(`Unsupported shared case ${c.id}`);
     }

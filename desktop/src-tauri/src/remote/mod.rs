@@ -52,7 +52,6 @@ use self::types::*;
 pub use self::types::*;
 use self::web_server::*;
 
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},

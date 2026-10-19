@@ -420,3 +420,14 @@ export interface PromptAck {
   threadId: string;
   runId: string;
 }
+
+export interface HandshakeConfirmation {
+  confirmed: boolean;
+  pairId: string;
+  desktopId: string;
+  bridgeInstanceId: string;
+  deviceId: string;
+  desktopNonce: string;
+  presence: Presence;
+  features?: string[];
+}

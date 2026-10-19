@@ -2,6 +2,7 @@
 
 mod command_generated;
 pub mod files;
+pub mod handshake;
 pub mod invitation;
 pub mod json;
 pub mod jwt;

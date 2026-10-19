@@ -240,7 +240,33 @@
         "a_handshake_that_carries_application_bytes_is_refused",
         "a_stale_challenge_cannot_bind_a_second_key"
       ],
-      "target": null
+      "target": {
+        "server-core": {
+          "path": "packages/remote-server/src/secure.rs",
+          "cases": [
+            "a_refused_handshake_names_the_reason",
+            "malformed_and_incomplete_credentials_are_refused_by_name",
+            "a_consumed_expired_or_undecryptable_challenge_is_refused_by_name",
+            "a_transport_without_a_server_refuses_to_open_or_seal",
+            "readiness_is_an_authenticated_commit_and_stop_invalidates_candidates",
+            "a_pairing_identity_never_debugs_its_key_material",
+            "handshake_fields_are_bounded_before_decoding",
+            "a_transport_without_a_server_seals_nothing_and_is_never_active",
+            "activating_the_current_channel_twice_is_idempotent",
+            "an_opening_without_a_known_type_is_refused_by_name",
+            "an_opening_flood_is_refused_once_the_challenge_table_is_full",
+            "a_handshake_that_carries_application_bytes_is_refused",
+            "a_stale_challenge_cannot_bind_a_second_key"
+          ]
+        },
+        "application-persistence": {
+          "path": "desktop/src-tauri/src/remote/secure.rs",
+          "cases": [
+            "pairing_pins_identity_rejects_reuse_and_recovers_after_restart",
+            "wrong_secret_expiry_and_persistence_failure_never_activate"
+          ]
+        }
+      }
     },
     {
       "source": "desktop/src-tauri/src/remote/supervisor/re_pair.rs",

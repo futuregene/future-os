@@ -66,6 +66,15 @@ pub enum AppError {
     Message(String),
 }
 
+impl From<future_remote_server::Error> for AppError {
+    fn from(error: future_remote_server::Error) -> Self {
+        match error {
+            future_remote_server::Error::Message(message) => Self::Message(message),
+            future_remote_server::Error::RemoteTransport(message) => Self::RemoteTransport(message),
+        }
+    }
+}
+
 impl From<future_remote_client::Error> for AppError {
     fn from(error: future_remote_client::Error) -> Self {
         match error {

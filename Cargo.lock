@@ -2022,6 +2022,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "future-remote-server"
+version = "0.1.0"
+dependencies = [
+ "async-nats",
+ "base64 0.22.1",
+ "future-remote-crypto",
+ "future-remote-protocol",
+ "futures",
+ "rand 0.8.7",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
 name = "future-rpc"
 version = "0.0.0"
 dependencies = [
@@ -2104,6 +2120,7 @@ dependencies = [
  "future-remote-client",
  "future-remote-crypto",
  "future-remote-protocol",
+ "future-remote-server",
  "future-rpc",
  "future-tasks",
  "futures",
