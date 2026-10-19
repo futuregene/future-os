@@ -517,6 +517,7 @@ mod tests {
 
     /// The probe reply a compatible CLI prints: a display version plus the
     /// capability set this Desktop expects.
+    #[cfg(unix)]
     fn reply(commands: &[&str]) -> String {
         let capabilities = future_rpc::cli_capabilities::CliCapabilities {
             commands: commands.iter().map(|c| c.to_string()).collect(),
@@ -525,11 +526,13 @@ mod tests {
         serde_json::json!({ "version": "1.2.3", "desktopCapabilities": capabilities }).to_string()
     }
 
+    #[cfg(unix)]
     fn print_reply(commands: &[&str]) -> String {
         format!("printf '%s' '{}'", reply(commands))
     }
 
     /// Serialize the tests that replace process-global `PATH`.
+    #[cfg(unix)]
     fn path_lock() -> std::sync::MutexGuard<'static, ()> {
         crate::TEST_HOME_LOCK
             .lock()

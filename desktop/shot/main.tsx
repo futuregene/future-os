@@ -13,7 +13,7 @@
  *   ?streaming=id,id       report these threads as running (rail's ring)
  *   ?unread=id,id          mark these threads' finished runs unread (rail's dot)
  *   ?remoteSlowRead=1      hold a host's reads back, so the state a reader is in
- *                          *while* one is in flight reaches a capture (the model
+ *                          while one is in flight reaches a capture (the model
  *                          control before the host answers)
  *
  * `window.__shot` carries the states a query parameter cannot express, because
