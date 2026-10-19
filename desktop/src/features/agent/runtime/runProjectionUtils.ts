@@ -27,6 +27,13 @@ export function patchMessage(
 export function deriveRenderFields(
   events: StoredRunEvent[],
   fallbackContent: string,
+  /**
+   * What the bubble already renders — the live lane's own accumulation, which
+   * is the only copy left when the run's log comes back empty (see the final
+   * return below). Optional: a caller reading a run it never watched has
+   * nothing to preserve.
+   */
+  previous?: Pick<AgentMessage, "segments" | "outputTokens">,
 ): { content: string; segments?: MessageSegment[]; outputTokens: number } {
   const projection = buildAssistantRunProjection(events);
   if (projection.content.trim()) {
@@ -45,7 +52,21 @@ export function deriveRenderFields(
       outputTokens: projection.outputTokens,
     };
   }
-  return { content: fallbackContent, outputTokens: projection.outputTokens };
+  // An empty projection is an absence of evidence, not evidence of an empty
+  // reply. A settled run's raw events are retired into a projection snapshot
+  // the moment it completes, so re-reading its log (and a build that cannot
+  // expand the snapshot) legitimately returns nothing — even though the bubble
+  // streamed a full timeline for minutes. Downgrading to `content` alone drops
+  // `segments`, and with them the chronological order the renderer uses: the
+  // reply comes back as prose followed by its tool rows, and its token count
+  // resets to zero. Keep what the live lane already had.
+  return {
+    content: fallbackContent,
+    ...(previous?.segments?.length ? { segments: previous.segments } : {}),
+    // A usage-only projection still carries the run's real count; only fall
+    // back to what the bubble had when the log itself was empty.
+    outputTokens: projection.outputTokens || previous?.outputTokens || 0,
+  };
 }
 
 export async function safeListRunEvents(runId: string): Promise<StoredRunEvent[]> {

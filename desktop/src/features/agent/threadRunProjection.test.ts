@@ -751,6 +751,33 @@ describe("deriveRenderFields", () => {
     expect(result.content).toBe("stored reply");
     expect(result.segments).toBeUndefined();
   });
+
+  // A settled run's raw rows are retired into a projection snapshot, so this
+  // re-read can legitimately come back empty (a build that cannot expand the
+  // snapshot). The reply must not lose the timeline it streamed as: without
+  // `segments` the renderer falls back to prose + a flat activity list, which
+  // moves every tool row below the answer that came after it.
+  it("keeps the streamed timeline when the settled run's log comes back empty", () => {
+    const streamed = [
+      { id: "s1", kind: "activity" as const, item: { id: "c1", kind: "shell" as const, status: "completed" as const, target: "ls" } },
+      { id: "s2", kind: "text" as const, text: "Answer" },
+    ];
+    const result = deriveRenderFields(events([]), "Answer", {
+      segments: streamed,
+      outputTokens: 42,
+    });
+    expect(result.content).toBe("Answer");
+    expect(result.segments?.map(segment => segment.kind)).toEqual(["activity", "text"]);
+    expect(result.outputTokens).toBe(42);
+  });
+
+  it("prefers a usage-only projection's own token count over the bubble's", () => {
+    const result = deriveRenderFields(events([["usage", { output_tokens: 7 }]]), "", {
+      outputTokens: 42,
+    });
+    expect(result.outputTokens).toBe(7);
+    expect(result.segments).toBeUndefined();
+  });
 });
 
 describe("streamingBubbleBase", () => {
