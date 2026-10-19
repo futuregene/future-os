@@ -21,7 +21,13 @@ const WEB_PORT: u16 = 8022;
 /// Wait until the test web port is bindable again. Every test here starts a
 /// bridge, so without this they collide on the shared port.
 pub(crate) async fn wait_for_web_port_free() {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    // 30 s, not 5. The listener this waits for is released when the PREVIOUS test's
+    // bridge unwinds, and in a whole-crate run (2300+ tests, `--test-threads=1`) that
+    // unwind competes with every other test's teardown. Measured: at 5 s five
+    // `commands::remote_peer::tests` cases failed with 'the test web port never freed'
+    // while the same tests pass alone. The assertion below is unchanged - the port must
+    // still be free before the next bridge starts; only the patience for a slow host is.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         if let Ok(listener) = std::net::TcpListener::bind(("0.0.0.0", WEB_PORT)) {
             drop(listener);
