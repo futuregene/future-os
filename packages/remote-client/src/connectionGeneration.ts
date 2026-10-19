@@ -1,6 +1,9 @@
 /** A candidate owns its subscriptions before it becomes the serving connection.
  * Buffer only until the readiness barrier; retiring it never touches its peer. */
 export class ConnectionGeneration {
+  private readonly controller = new AbortController();
+  get signal(): AbortSignal { return this.controller.signal; }
+
   private phase: "candidate" | "serving" | "retired" = "candidate";
   private buffered: { deliver(): void; bytes: number }[] = [];
   private bufferedBytes = 0;
@@ -69,6 +72,7 @@ export class ConnectionGeneration {
 
   retire(): void {
     this.phase = "retired";
+    this.controller.abort();
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     this.draining = false;

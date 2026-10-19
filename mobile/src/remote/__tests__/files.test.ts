@@ -245,6 +245,7 @@ function fsFile(
 }
 
 function mockClient(): {
+  runTransfer<T>(operation: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T>;
   captureTransfer(): import("@future-os/remote-client/transfer").TransferConnection;
   request: jest.Mock;
   requestRetry: jest.Mock;
@@ -253,6 +254,8 @@ function mockClient(): {
   downloadChunk: jest.Mock;
 } {
   const client = {
+    runTransfer: <T>(operation: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal) =>
+      operation(signal ?? new AbortController().signal),
     captureTransfer: () => ({ ...client, check: () => {} }),
     request: jest.fn(),
     requestRetry: jest.fn(),

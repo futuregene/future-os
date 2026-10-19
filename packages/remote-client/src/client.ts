@@ -1,9 +1,11 @@
 import type { HandshakeConfirmation } from "@future-os/remote-protocol";
 import { ConnectionGeneration } from "./connectionGeneration";
-import type { Msg, NatsConnection, Subscription } from "@nats-io/nats-core";
+import type { Msg, NatsConnection, Subscription, Status } from "@nats-io/nats-core";
 import { jwtAuthenticator } from "@nats-io/nats-core";
 import { classifyNatsError } from "./natsErrors";
 import { SecureChannel, SecureHandshake, replyContext, type SecureIdentity } from "@future-os/remote-crypto";
+import { TaskScope, cancellableDelay, type TaskWaitResult } from "./taskScope";
+export type { TaskWaitResult as ShutdownResult } from "./taskScope";
 import { TransferConnectionChangedError, type TransferConnection } from "./transfer";
 import type { ClientHost } from "./host";
 import { ensureFreshCredentials } from "./pairing";
@@ -64,17 +66,22 @@ function failureSupportCode(category: string, detail = ""): string {
   return "LC999";
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, signal: AbortSignal): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let onAbort: (() => void) | undefined;
   try {
     return await Promise.race([
       promise,
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error("network_probe_timeout")), timeoutMs);
+        onAbort = () => reject(new Error("client_closed"));
+        signal.addEventListener("abort", onAbort, { once: true });
+        if (signal.aborted) onAbort();
       }),
     ]);
   } finally {
     if (timer) clearTimeout(timer);
+    if (onAbort) signal.removeEventListener("abort", onAbort);
   }
 }
 
@@ -86,6 +93,61 @@ interface DownloadWaiter {
 }
 
 export class RemoteClient {
+  private readonly tasks = new TaskScope();
+  private readonly closed = new AbortController();
+  private readonly closingConnections = new WeakMap<NatsConnection, Promise<void>>();
+  private readonly subscriptions = new Map<NatsConnection, Set<Subscription>>();
+  private readonly statusIterators = new Map<NatsConnection, Set<AsyncIterator<Status>>>();
+
+  private withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+    const work = this.tasks.run("probe-or-setup", () => promise);
+    return withTimeout(work, timeoutMs, this.closed.signal);
+  }
+
+  /** Cancelled SDK/native operations remain owned until their promises settle. */
+  runTransfer<T>(operation: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    return this.tasks.run("file-transfer", async () => {
+      if (this.stopped) throw new Error("client_closed");
+      const controller = new AbortController();
+      const abort = () => controller.abort();
+      const generationSignal = this.activeGeneration?.signal;
+      generationSignal?.addEventListener("abort", abort, { once: true });
+      this.closed.signal.addEventListener("abort", abort, { once: true });
+      signal?.addEventListener("abort", abort, { once: true });
+      if (this.closed.signal.aborted || signal?.aborted || generationSignal?.aborted) controller.abort();
+      try { return await operation(controller.signal); }
+      finally {
+        generationSignal?.removeEventListener("abort", abort);
+        this.closed.signal.removeEventListener("abort", abort);
+        signal?.removeEventListener("abort", abort);
+      }
+    });
+  }
+
+  private closeConnection(connection: NatsConnection): Promise<void> {
+    const existing = this.closingConnections.get(connection);
+    if (existing) return existing;
+    this.eventSubscriptions.delete(connection);
+    this.secureChannels.get(connection)?.destroy();
+    this.secureChannels.delete(connection);
+    // Start closing before iterator-return waits: SDK iterators can be blocked
+    // in next() until the socket closes. Both real completions stay registered.
+    let resolve!: (value: void | PromiseLike<void>) => void;
+    let reject!: (error: unknown) => void;
+    const completion = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+    const closing = this.tasks.run("connection-close", () => completion);
+    this.closingConnections.set(connection, closing);
+    try { resolve(connection.close()); }
+    catch (error) { reject(error); }
+    for (const subscription of this.subscriptions.get(connection) ?? []) {
+      try { subscription.unsubscribe(); } catch { /* socket close remains owned */ }
+    }
+    for (const iterator of this.statusIterators.get(connection) ?? []) {
+      if (iterator.return) void this.tasks.run("status-return", () => iterator.return!());
+    }
+    return closing;
+  }
+
   private visibleSessionId = "";
   private eventSubscriptions = new Map<NatsConnection, { generation: number; selective: boolean; revision: number; subscription?: Subscription }>();
 
@@ -305,8 +367,9 @@ export class RemoteClient {
   open(): Promise<void> {
     if (this.stopped || this.isTerminal() || !this.beginDeadline()) return Promise.resolve();
     if (this.openPromise) return this.openPromise;
-    const pending = this.openAttempt().finally(() => {
-      if (this.openPromise === pending) this.openPromise = null;
+    const pending = this.tasks.run("open", async () => {
+      try { await this.openAttempt(); }
+      finally { if (this.openPromise === pending) this.openPromise = null; }
     });
     this.openPromise = pending;
     return pending;
@@ -316,13 +379,14 @@ export class RemoteClient {
     if (this.stopped || this.isTerminal()) return;
     if (!this.appActive) return;
     this.signal({ type: "open_started" });
+    if (this.stopped || this.isTerminal() || !this.appActive) return;
     const generation = ++this.generation;
     const controller = new AbortController();
     this.attemptController = controller;
     const current = () =>
       !controller.signal.aborted && !this.stopped && generation === this.generation;
     try {
-      await withTimeout((async () => {
+      await this.withTimeout((async () => {
         const previous = this.credentials;
         const fresh = await ensureFreshCredentials(previous, controller.signal, (credentials, signal) => this.host.refreshCredentials(credentials, signal));
         if (!current()) return;
@@ -369,7 +433,9 @@ export class RemoteClient {
       this.receivePresence(presence);
       if (this.stopped || this.isTerminal()) return false;
       this.signal({ type: "ready" });
+      if (this.stopped || this.connection !== connection) return false;
       this.scheduleRefresh();
+      if (this.stopped || this.connection !== connection) return false;
       this.finishFailureEpisode("recovered");
       this.callbacks.onReconnected();
       return true;
@@ -391,7 +457,7 @@ export class RemoteClient {
     if (candidate) {
       this.secureChannels.get(candidate)?.destroy();
       this.secureChannels.delete(candidate);
-      void candidate.close().catch(() => undefined);
+      void this.closeConnection(candidate);
     }
   }
 
@@ -405,8 +471,25 @@ export class RemoteClient {
 
   /** Full teardown — never arms a retry, never broadcasts a phase. Idempotent. */
   async close(reason: "UserInitiated" | "Unpair" = "UserInitiated"): Promise<void> {
+    this.stop(reason);
+  }
+
+  async shutdown(totalBudgetMs: number, reason: "UserInitiated" | "Unpair" = "UserInitiated"): Promise<TaskWaitResult> {
+    if (!Number.isFinite(totalBudgetMs) || totalBudgetMs < 0) throw new Error("invalid_shutdown_budget");
+    const started = Date.now();
+    this.stop(reason);
+    return this.tasks.wait(Math.max(0, totalBudgetMs - (Date.now() - started)));
+  }
+
+  /** Retry an observation after a timeout; unfinished work was never removed. */
+  waitTasks(totalBudgetMs?: number): Promise<TaskWaitResult> {
+    return this.tasks.wait(totalBudgetMs);
+  }
+
+  private stop(reason: "UserInitiated" | "Unpair"): void {
     if (this.stopped) return;
     this.stopped = true;
+    this.closed.abort();
     this.clearDeadline();
     if (this.presenceTimer) clearTimeout(this.presenceTimer);
     this.cancelAttempt();
@@ -449,8 +532,9 @@ export class RemoteClient {
     if (this.recoveryDeadline && !this.beginDeadline()) return Promise.resolve();
     if (!this.appActive) return Promise.resolve();
     if (this.recoveryPromise) return this.recoveryPromise;
-    const recovery = this.runRecovery(reason).finally(() => {
-      if (this.recoveryPromise === recovery) this.recoveryPromise = null;
+    const recovery = this.tasks.run("recovery", async () => {
+      try { await this.runRecovery(reason); }
+      finally { if (this.recoveryPromise === recovery) this.recoveryPromise = null; }
     });
     this.recoveryPromise = recovery;
     return recovery;
@@ -472,7 +556,7 @@ export class RemoteClient {
         // Probe briefly: keep a healthy socket (the stable command id will
         // retrieve the singleflight result), but rebuild a half-open one before
         // the only prepare retry is spent on the same dead path.
-        await withTimeout(
+        await this.withTimeout(
           connection.flush(),
           reason === "request-failure" ? 1_000 : FOREGROUND_PROBE_TIMEOUT_MS,
         );
@@ -504,7 +588,11 @@ export class RemoteClient {
   }
 
   /** Rotate the JWT in place and resume the connection (M1's refreshable class). */
-  private async refreshToken(): Promise<void> {
+  private refreshToken(): Promise<void> {
+    return this.tasks.run("credential-refresh", () => this.runRefreshToken());
+  }
+
+  private async runRefreshToken(): Promise<void> {
     if (
       this.stopped ||
       this.refreshInFlight ||
@@ -519,6 +607,7 @@ export class RemoteClient {
     this.attemptController = controller;
     try {
       this.signal({ type: "auth_failed" }); // moves to refreshing
+      if (this.stopped || controller.signal.aborted) return;
       const fresh = await this.host.refreshCredentials(this.credentials, controller.signal);
       if (this.stopped || controller.signal.aborted) return;
       this.credentials = fresh;
@@ -568,7 +657,7 @@ export class RemoteClient {
       );
     }
     if (this.stopped || generation !== this.generation) {
-      await connection.close();
+      await this.closeConnection(connection);
       return;
     }
     const candidate = new ConnectionGeneration(generation);
@@ -582,7 +671,7 @@ export class RemoteClient {
         throw errorWithContext("desktop_handshake_failed", error);
       }
       if (this.stopped || generation !== this.generation) {
-        await connection.close();
+        await this.closeConnection(connection);
         return;
       }
       // Install every critical subscription and flush their SUB frames before
@@ -592,11 +681,11 @@ export class RemoteClient {
       this.subscribeLiveness(connection, generation);
       this.subscribeState(connection, generation);
       this.subscribeTransfers(connection, generation);
-      await withTimeout(connection.flush(), 10_000);
+      await this.withTimeout(connection.flush(), 10_000);
       await this.activateSecureChannel(connection);
       candidate.check();
       if (this.stopped || this.isTerminal() || generation !== this.generation) {
-        await connection.close().catch(() => undefined);
+        await this.closeConnection(connection).catch(() => undefined);
         return;
       }
       // Dispose any prior connection ONLY after the new one is proven — M10's
@@ -619,15 +708,19 @@ export class RemoteClient {
         this.eventSubscriptions.delete(previous);
         this.secureChannels.get(previous)?.destroy();
         this.secureChannels.delete(previous);
-        void previous.close().catch(() => undefined);
+        void this.closeConnection(previous);
       }
       this.callbacks.onCatalogEpoch?.(confirmation.presence.catalogEpoch);
+      if (!this.isLiveGeneration(generation) || this.connection !== connection) return;
       this.receivePresence(confirmation.presence);
+      if (!this.isLiveGeneration(generation) || this.connection !== connection) return;
       this.negotiatedFeatures = new Set(confirmation.features ?? []);
       this.callbacks.onFeatures(confirmation.features ?? []);
+      if (!this.isLiveGeneration(generation) || this.connection !== connection) return;
       candidate.activate();
       if (this.stopped || this.connection !== connection) return;
       this.signal({ type: "ready" });
+      if (!this.isLiveGeneration(generation) || this.connection !== connection) return;
       this.finishFailureEpisode("recovered");
       if (this.healthyTimer) clearTimeout(this.healthyTimer);
       this.healthyTimer = setTimeout(() => {
@@ -651,7 +744,7 @@ export class RemoteClient {
       }
       this.secureChannels.get(connection)?.destroy();
       this.secureChannels.delete(connection);
-      await connection.close().catch(() => undefined);
+      await this.closeConnection(connection).catch(() => undefined);
       throw error;
     }
   }
@@ -733,7 +826,7 @@ export class RemoteClient {
   private failGeneration(error: unknown, generation: number): void {
     if (this.candidateGeneration?.id === generation) {
       this.candidateGeneration.fail(error);
-      void this.candidateConnection?.close().catch(() => undefined);
+      if (this.candidateConnection) void this.closeConnection(this.candidateConnection);
       return;
     }
     if (!this.isLiveGeneration(generation) || this.failedGeneration === generation) {
@@ -847,7 +940,7 @@ export class RemoteClient {
       this.eventSubscriptions.delete(connection);
       this.secureChannels.get(connection)?.destroy();
       this.secureChannels.delete(connection);
-      void connection.close().catch(() => undefined);
+      void this.closeConnection(connection);
     }
   }
 
@@ -865,7 +958,10 @@ export class RemoteClient {
         : this.activeGeneration;
     if (!owner) throw new Error("missing_connection_generation");
     const subscription = connection.subscribe(subject);
-    void (async () => {
+    let owned = this.subscriptions.get(connection);
+    if (!owned) this.subscriptions.set(connection, owned = new Set());
+    owned.add(subscription);
+    void this.tasks.run(`subscription:${category}`, async () => {
       try {
         let batchBytes = 0;
         let batchCount = 0;
@@ -876,7 +972,7 @@ export class RemoteClient {
           // Buffered NATS iteration advances via microtasks. Yield before the
           // next decrypt/decode burst so input can run, not just projection.
           if (batchCount >= 64 || batchBytes >= 256 * 1024 || Date.now() >= deadline) {
-            await new Promise<void>(resolve => setTimeout(resolve, 0));
+            await cancellableDelay(0, this.closed.signal);
             if (!this.isLiveGeneration(generation)) return;
             batchBytes = 0; batchCount = 0; deadline = Date.now() + 8;
           }
@@ -884,7 +980,7 @@ export class RemoteClient {
           batchBytes += message.data.length;
           owner.deliver(() => {
             if (!this.isLiveGeneration(generation) || !isCurrent()) return;
-            void Promise.resolve()
+            void this.tasks.run(`delivery:${category}`, () => Promise.resolve()
               .then(() => {
                 if (!this.isLiveGeneration(generation) || !isCurrent()) return;
                 const channel = this.secureChannels.get(connection);
@@ -897,7 +993,7 @@ export class RemoteClient {
                 // throw after successful decryption, triggering reconnects.
                 return consume({ subject: message.subject, data });
               })
-              .catch((error) => this.failGeneration(error, generation));
+              .catch((error) => this.failGeneration(error, generation)));
           }, message.data.length);
           // An empty SDK queue already yields to network I/O. Do not introduce
           // a new wakeup for each slowly arriving token.
@@ -906,8 +1002,11 @@ export class RemoteClient {
         if (isCurrent()) this.failGeneration(new Error(`remote_${category}_subscription_ended`), generation);
       } catch (error) {
         if (isCurrent()) this.failGeneration(error, generation);
+      } finally {
+        owned.delete(subscription);
+        if (owned.size === 0 && this.subscriptions.get(connection) === owned) this.subscriptions.delete(connection);
       }
-    })();
+    });
     return subscription;
   }
 
@@ -978,11 +1077,14 @@ export class RemoteClient {
           if (!this.isLiveGeneration(generation) || connection !== this.connection) return;
           this.confirmedBridgeInstanceId = confirmation.bridgeInstanceId;
           this.callbacks.onCatalogEpoch?.(confirmation.presence.catalogEpoch);
+          if (!this.isLiveGeneration(generation) || this.connection !== connection) return;
           this.receivePresence(confirmation.presence);
+          if (!this.isLiveGeneration(generation) || this.connection !== connection) return;
           this.negotiatedFeatures = new Set(confirmation.features ?? []);
           const selective = this.negotiatedFeatures.has("selective_events_v1");
           if (this.eventSubscriptions.get(connection)?.selective !== selective) this.subscribeEvents(connection, generation, selective);
           this.callbacks.onFeatures(confirmation.features ?? []);
+          if (!this.isLiveGeneration(generation) || this.connection !== connection) return;
           this.callbacks.onReconnected();
         } else this.receivePresence(presence);
       },
@@ -1027,10 +1129,16 @@ export class RemoteClient {
    * backoff and the three-minute recovery deadline.
    */
   private watchStatus(connection: NatsConnection, generation: number): void {
-    void (async () => {
+    void this.tasks.run("connection-status", async () => {
       let exitedNaturally = true;
+      let iterator: AsyncIterator<Status> | undefined;
+      let owned: Set<AsyncIterator<Status>> | undefined;
       try {
-        for await (const status of connection.status()) {
+        iterator = connection.status()[Symbol.asyncIterator]();
+        owned = this.statusIterators.get(connection);
+        if (!owned) this.statusIterators.set(connection, owned = new Set());
+        owned.add(iterator);
+        for await (const status of { [Symbol.asyncIterator]: () => iterator! }) {
           if (!this.isLiveGeneration(generation)) {
             exitedNaturally = false;
             break;
@@ -1049,14 +1157,18 @@ export class RemoteClient {
                 break;
               }
               this.confirmedBridgeInstanceId = confirmation.bridgeInstanceId;
-              await withTimeout(connection.flush(), 10_000);
+              await this.withTimeout(connection.flush(), 10_000);
               await this.activateSecureChannel(connection);
               if (!this.isLiveGeneration(generation) || this.connection !== connection) return;
               this.callbacks.onCatalogEpoch?.(confirmation.presence.catalogEpoch);
+              if (!this.isLiveGeneration(generation) || this.connection !== connection) return;
               this.receivePresence(confirmation.presence);
+              if (!this.isLiveGeneration(generation) || this.connection !== connection) return;
               this.negotiatedFeatures = new Set(confirmation.features ?? []);
               this.callbacks.onFeatures(confirmation.features ?? []);
+              if (!this.isLiveGeneration(generation) || this.connection !== connection) return;
               this.signal({ type: "ready" });
+              if (!this.isLiveGeneration(generation) || this.connection !== connection) return;
               this.callbacks.onReconnected();
             } catch (error) {
               this.failGeneration(error, generation);
@@ -1082,6 +1194,11 @@ export class RemoteClient {
         }
       } catch (error) {
         if (!this.stopped) this.callbacks.onError(asError(error));
+      } finally {
+        if (iterator && owned) {
+          owned.delete(iterator);
+          if (owned.size === 0 && this.statusIterators.get(connection) === owned) this.statusIterators.delete(connection);
+        }
       }
       // The status iterator ended (or threw) while this is still the live
       // generation: NATS's internal reconnect budget was spent and the
@@ -1092,11 +1209,11 @@ export class RemoteClient {
       if (exitedNaturally && this.isLiveGeneration(generation)) {
         this.failGeneration(new Error("nats_connection_exhausted"), generation);
       }
-    })();
+    });
   }
 
   private scheduleRefresh(): void {
-    if (this.isTerminal()) return;
+    if (this.stopped || this.isTerminal()) return;
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     const expiry = jwtExpiry(this.credentials.userJwt);
     if (expiry === null) {
@@ -1131,7 +1248,7 @@ export class RemoteClient {
         throw new TransferConnectionChangedError();
       this.assertBusinessReady();
     };
-    const guarded = async <T>(operation: () => Promise<T>): Promise<T> => {
+    const guarded = <T>(operation: () => Promise<T>): Promise<T> => this.tasks.run("transfer-request", async () => {
       check();
       try {
         const result = await operation();
@@ -1141,7 +1258,7 @@ export class RemoteClient {
         check();
         throw error;
       }
-    };
+    });
     const request = <T>(command: RemoteCommand, sessionId?: string, timeoutMs?: number) =>
       guarded(() => this.requestWithConnection<T>(connection, { ...command, bridgeInstanceId }, sessionId, timeoutMs));
     const recover = (error: unknown) => guarded(() => this.recoverAfterTransientRequest(error));
@@ -1192,7 +1309,16 @@ export class RemoteClient {
       error => this.recoverAfterTransientRequest(error));
   }
 
-  private async requestRetryUsing<T>(
+  private requestRetryUsing<T>(
+    command: RemoteCommand,
+    sessionId: string,
+    send: (command: RemoteCommand, sessionId: string) => Promise<RpcResponse<T>>,
+    recover: (error: unknown) => Promise<boolean>,
+  ): Promise<RpcResponse<T>> {
+    return this.tasks.run("request-retry", () => this.runRequestRetry<T>(command, sessionId, send, recover));
+  }
+
+  private async runRequestRetry<T>(
     command: RemoteCommand,
     sessionId: string,
     send: (command: RemoteCommand, sessionId: string) => Promise<RpcResponse<T>>,
@@ -1222,7 +1348,7 @@ export class RemoteClient {
           // timeout. Validate/rebuild the transport first; the stable command
           // id keeps a reply lost during the swap idempotent on the desktop.
           await recover(error);
-          await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+          await cancellableDelay(250 * 2 ** attempt, this.closed.signal);
         }
       }
     }
@@ -1236,7 +1362,13 @@ export class RemoteClient {
     return this.uploadChunkWithConnection(connection, transferId, index, bytes);
   }
 
-  private async uploadChunkWithConnection(
+  private uploadChunkWithConnection(
+    connection: NatsConnection, transferId: string, index: number, bytes: Uint8Array,
+  ): Promise<void> {
+    return this.tasks.run("upload-chunk", () => this.runUploadChunk(connection, transferId, index, bytes));
+  }
+
+  private async runUploadChunk(
     connection: NatsConnection, transferId: string, index: number, bytes: Uint8Array,
   ): Promise<void> {
     const message = await this.secureRequest(connection,
@@ -1252,7 +1384,13 @@ export class RemoteClient {
     return this.downloadChunkWithConnection(connection, transferId, index);
   }
 
-  private async downloadChunkWithConnection(
+  private downloadChunkWithConnection(
+    connection: NatsConnection, transferId: string, index: number,
+  ): Promise<Uint8Array> {
+    return this.tasks.run("download-chunk", () => this.runDownloadChunk(connection, transferId, index));
+  }
+
+  private async runDownloadChunk(
     connection: NatsConnection, transferId: string, index: number,
   ): Promise<Uint8Array> {
     const key = `${transferId}:${index}`;
@@ -1290,7 +1428,16 @@ export class RemoteClient {
     }
   }
 
-  private async requestWithConnection<T>(
+  private requestWithConnection<T>(
+    connection: NatsConnection,
+    command: RemoteCommand,
+    sessionId = command.sessionId ?? "list",
+    timeoutMs = 10_000,
+  ): Promise<RpcResponse<T>> {
+    return this.tasks.run("command-request", () => this.runRequestWithConnection<T>(connection, command, sessionId, timeoutMs));
+  }
+
+  private async runRequestWithConnection<T>(
     connection: NatsConnection,
     command: RemoteCommand,
     sessionId = command.sessionId ?? "list",
@@ -1386,7 +1533,11 @@ export class RemoteClient {
     return this.declaredFeatures().includes("lean_events_v1");
   }
 
-  private async secureRequest(connection: NatsConnection, subject: string, plaintext: Uint8Array, timeout: number): Promise<Pick<Msg, "data">> {
+  private secureRequest(connection: NatsConnection, subject: string, plaintext: Uint8Array, timeout: number): Promise<Pick<Msg, "data">> {
+    return this.tasks.run("secure-request", () => this.runSecureRequest(connection, subject, plaintext, timeout));
+  }
+
+  private async runSecureRequest(connection: NatsConnection, subject: string, plaintext: Uint8Array, timeout: number): Promise<Pick<Msg, "data">> {
     const channel = this.secureChannels.get(connection);
     if (!channel) throw new Error("pairing_handshake_required");
     const wire = channel.seal(subject, plaintext);
@@ -1394,7 +1545,11 @@ export class RemoteClient {
     return { data: channel.open(replyContext(subject, wire), response.data) };
   }
 
-  private async performHandshake(connection: NatsConnection): Promise<HandshakeConfirmation> {
+  private performHandshake(connection: NatsConnection): Promise<HandshakeConfirmation> {
+    return this.tasks.run("secure-handshake", () => this.runHandshake(connection));
+  }
+
+  private async runHandshake(connection: NatsConnection): Promise<HandshakeConfirmation> {
     if (!this.credentials.secureBundle) throw new Error("pairing_identity_mismatch");
     const bundle = JSON.parse(this.credentials.secureBundle) as { identity: SecureIdentity; desktopKey: string; secret?: string };
     const exchange = async (body: Record<string, unknown>) => {

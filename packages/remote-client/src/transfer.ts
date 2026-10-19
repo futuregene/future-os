@@ -18,6 +18,7 @@ export interface TransferConnection {
 }
 
 export interface TransferClient {
+  runTransfer<T>(operation: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T>;
   captureTransfer(): TransferConnection;
 }
 
@@ -173,19 +174,32 @@ async function withTransferRetry<T>(
   throw lastError;
 }
 
-export async function uploadAttachments<Attachment extends UploadAttachment>(
+export function uploadAttachments<Attachment extends UploadAttachment>(
   client: TransferClient,
   attachments: Attachment[],
   host: UploadHost<Attachment>,
   onProgress?: (completedBytes: number, totalBytes: number) => void,
 ): Promise<Array<Attachment & UploadComplete>> {
+  if (attachments.length === 0) return Promise.resolve([]);
+  return client.runTransfer(signal => runUploadAttachments(client, attachments, host, signal, onProgress));
+}
+
+async function runUploadAttachments<Attachment extends UploadAttachment>(
+  client: TransferClient,
+  attachments: Attachment[],
+  host: UploadHost<Attachment>,
+  signal: AbortSignal,
+  onProgress?: (completedBytes: number, totalBytes: number) => void,
+): Promise<Array<Attachment & UploadComplete>> {
   if (attachments.length === 0) return [];
+  throwIfCancelled(signal);
   const connection = client.captureTransfer();
   const totalBytes = attachments.reduce((sum, item) => sum + item.transferSize, 0);
   let completedBytes = 0;
   const uploaded: Array<Attachment & UploadComplete> = [];
   for (const attachment of attachments) {
-    const init = await connection.request<UploadInit>(
+    throwIfCancelled(signal);
+    const init = await abortable(connection.request<UploadInit>(
       {
         type: "upload_init",
         name: attachment.name,
@@ -196,7 +210,7 @@ export async function uploadAttachments<Attachment extends UploadAttachment>(
         transferSize: attachment.transferSize,
       },
       "transfer",
-    );
+    ), signal);
     let handle: UploadReader | undefined;
     try {
       handle = host.openUpload(attachment);
@@ -204,13 +218,14 @@ export async function uploadAttachments<Attachment extends UploadAttachment>(
         throw new Error("invalid_upload_chunk_size");
       let index = 0;
       while ((handle.offset ?? 0) < attachment.transferSize) {
+        throwIfCancelled(signal);
         const remaining = attachment.transferSize - (handle.offset ?? 0);
         const bytes = handle.readBytes(Math.min(init.data.chunkBytes, remaining));
         if (bytes.byteLength === 0)
           throw new Error("attachment_read_stalled");
         await withTransferRetry(
           () => connection.uploadChunk(init.data.uploadId, index, bytes),
-          undefined,
+          signal,
           undefined,
           [250, 500],
         );
@@ -221,10 +236,11 @@ export async function uploadAttachments<Attachment extends UploadAttachment>(
       const completedHandle = handle;
       handle = undefined;
       completedHandle.close();
-      const complete = await connection.requestRetry<UploadComplete>(
+      throwIfCancelled(signal);
+      const complete = await abortable(connection.requestRetry<UploadComplete>(
         { type: "upload_complete", transferId: init.data.uploadId },
         "transfer",
-      );
+      ), signal);
       uploaded.push({
         ...attachment,
         uploadId: complete.data.uploadId,
@@ -242,7 +258,19 @@ export async function uploadAttachments<Attachment extends UploadAttachment>(
   return uploaded;
 }
 
-export async function prepareDownload<File>(
+export function prepareDownload<File>(
+  client: TransferClient,
+  sessionId: string,
+  attachment: HistoryAttachment,
+  host: Pick<DownloadHost<File>, "verifiedCached">,
+  variant: "preview" | "original" = "preview",
+  signal?: AbortSignal,
+  onWaiting?: () => void,
+): Promise<DownloadInfo> {
+  return client.runTransfer(signal => runPrepareDownload(client, sessionId, attachment, host, variant, signal, onWaiting), signal);
+}
+
+async function runPrepareDownload<File>(
   client: TransferClient,
   sessionId: string,
   attachment: HistoryAttachment,
@@ -273,9 +301,14 @@ export async function prepareDownload<File>(
       const request = connection.request<DownloadInfo>(command, sessionId, timeoutMs);
       // Cancellation releases the UI immediately, but the desktop may finish
       // preparing later. Observe that reply and release its transfer as well.
-      void request.then(result => {
-        if (signal?.aborted) cancelDownload(connection, result.data.transferId);
-      }, () => undefined);
+      // This observer is owned separately: cancellation may finish the caller
+      // before the SDK reply, whose late cleanup must still be awaited.
+      void client.runTransfer(async () => {
+        try {
+          const result = await request;
+          if (signal?.aborted) cancelDownload(connection, result.data.transferId);
+        } catch { /* request failure is reported by the caller */ }
+      });
       response = await abortable(request, signal);
       break;
     } catch (error) {
@@ -308,7 +341,18 @@ export async function prepareDownload<File>(
   return info;
 }
 
-export async function downloadPrepared<File>(
+export function downloadPrepared<File>(
+  client: TransferClient,
+  info: DownloadInfo,
+  host: DownloadHost<File>,
+  onProgress?: (completedBytes: number, totalBytes: number) => void,
+  signal?: AbortSignal,
+  onWaiting?: () => void,
+): Promise<File> {
+  return client.runTransfer(signal => runDownloadPrepared(client, info, host, onProgress, signal, onWaiting), signal);
+}
+
+async function runDownloadPrepared<File>(
   client: TransferClient,
   info: DownloadInfo,
   host: DownloadHost<File>,

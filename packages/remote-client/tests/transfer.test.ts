@@ -36,7 +36,11 @@ function fixture() {
     uploadChunk: async (...args) => { check(); return uploadChunk(...args); },
     downloadChunk: async (...args) => { check(); return downloadChunk(...args); },
   };
-  const client = { captureTransfer: jest.fn(() => connection) };
+  const client = {
+    runTransfer: <T>(operation: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal) =>
+      operation(signal ?? new AbortController().signal),
+    captureTransfer: jest.fn(() => connection),
+  };
   const reader = {
     offset: 0,
     readBytes: jest.fn((count: number): Uint8Array => {
