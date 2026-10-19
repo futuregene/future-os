@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from "./composerDraft";
+import { clearComposerDraft, clearComposerDraftIfMatches, loadComposerDraft, saveComposerDraft } from "./composerDraft";
 
 // Minimal in-memory sessionStorage: the default vitest env is "node", which has
 // no Web Storage, so the module under test needs one supplied.
@@ -83,5 +83,30 @@ describe("composerDraft", () => {
     clearComposerDraft("absent");
     saveComposerDraft("absent", {} as never);
     expect(loadComposerDraft("absent")).toBeNull();
+  });
+
+  describe("clearComposerDraftIfMatches", () => {
+    it("drops a restored rejected message once it has been accepted again", () => {
+      saveComposerDraft("t", { text: "hello", attachments: [{ name: "a.png", path: "/a.png" }] });
+      clearComposerDraftIfMatches("t", "hello", [{ name: "a.png", path: "/a.png" }]);
+      expect(loadComposerDraft("t")).toBeNull();
+    });
+
+    it("keeps a draft the user has edited since the rejection", () => {
+      saveComposerDraft("t", { text: "hello, edited", attachments: [] });
+      clearComposerDraftIfMatches("t", "hello", []);
+      expect(loadComposerDraft("t")?.text).toBe("hello, edited");
+    });
+
+    it("keeps a draft carrying different attachments", () => {
+      saveComposerDraft("t", { text: "hello", attachments: [{ name: "b.png", path: "/b.png" }] });
+      clearComposerDraftIfMatches("t", "hello", []);
+      expect(loadComposerDraft("t")?.attachments).toHaveLength(1);
+    });
+
+    it("ignores a missing draft key and a missing draft", () => {
+      expect(() => clearComposerDraftIfMatches(undefined, "hello")).not.toThrow();
+      expect(() => clearComposerDraftIfMatches("missing", "hello")).not.toThrow();
+    });
   });
 });

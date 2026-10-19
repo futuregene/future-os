@@ -30,6 +30,7 @@ import {
   previousUserForRun,
 } from "./buildContinuePrompt";
 import { Composer } from "./Composer";
+import { clearComposerDraftIfMatches } from "./composerDraft";
 import { MessageList } from "./MessageList";
 import { QuestionNavControl } from "./QuestionNavControl";
 import { useThreadCompaction } from "./runtime/useThreadCompaction";
@@ -242,12 +243,22 @@ export function AgentThread({
 
   const handleRetryMessage = useCallback(
     (_message: AgentMessage, source: AgentMessage) => {
-      void handleSend({
-        attachments: source.attachments ?? [],
-        content: source.content,
+      void handleSend(
+        {
+          attachments: source.attachments ?? [],
+          content: source.content,
+        },
+        // A rejected first send is restored to this conversation's composer
+        // draft (see useAgentThreadState). Retrying from the failed bubble
+        // delivers that message again, so drop the now-sent copy from the
+        // draft at acceptance — otherwise the next visit finds it prefilled.
+        () => clearComposerDraftIfMatches(thread?.id, source.content, source.attachments ?? []),
+      ).catch(() => {
+        // The failure is already surfaced as a toast and a failed bubble;
+        // passing `onAccepted` makes handleSend rethrow it here.
       });
     },
-    [handleSend],
+    [handleSend, thread?.id],
   );
 
   const handleContinueMessage = useCallback(

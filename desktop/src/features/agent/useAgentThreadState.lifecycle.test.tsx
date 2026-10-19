@@ -3,6 +3,7 @@ import type { StoredRun, StoredThread } from "../../integrations/storage/threadS
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook } from "../../test/renderHook";
+import { loadComposerDraft, saveComposerDraft } from "./composerDraft";
 import { clearThreadMessageSnapshots } from "./threadMessageCache";
 import { useAgentThreadState } from "./useAgentThreadState";
 
@@ -48,6 +49,7 @@ let hook: ReturnType<typeof renderHook<ReturnType<typeof useAgentThreadState>>> 
 beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
+  sessionStorage.clear();
   clearThreadMessageSnapshots();
   latest = null;
   sessionId = "session-a";
@@ -149,22 +151,23 @@ describe("local send lifecycle", () => {
     await act(async () => reply.resolve(success));
   });
 
-  it("keeps a rejected first prompt available for retry on a later visit", async () => {
+  it("returns a pre-send rejected first prompt to the conversation draft instead of resending it", async () => {
     agent.prepare.mockRejectedValueOnce(new Error("unreadable attachment"));
     const options = {
       pendingPrompt: { id: "rejected-prompt", content: "question", targetThreadId: "lifecycle-thread" },
       onPromptConsumed: vi.fn(),
     };
     const first = await mount(options);
-    expect(options.onPromptConsumed).not.toHaveBeenCalled();
-    expect(storage.createRun).not.toHaveBeenCalled();
-    first.unmount();
-    await mount(options);
-    expect(agent.send).toHaveBeenCalledTimes(1);
-    await act(async () => agent.send.mock.calls[0]![0].onAccepted());
+    // The rejection latches the prompt: the text moves to the conversation's
+    // composer draft, so a later visit offers it for an explicit resend.
     expect(options.onPromptConsumed).toHaveBeenCalledExactlyOnceWith("rejected-prompt");
-    latest = { ...running, status: "completed" };
-    await act(async () => reply.resolve(success));
+    expect(storage.createRun).not.toHaveBeenCalled();
+    expect(loadComposerDraft("lifecycle-thread")?.text).toBe("question");
+    first.unmount();
+    // The real consumer clears `pendingPrompt` on consumption; a later visit
+    // therefore arrives without it, and nothing is sent.
+    await mount({ pendingPrompt: null, onPromptConsumed: options.onPromptConsumed });
+    expect(agent.send).not.toHaveBeenCalled();
   });
 
   it("does not automatically resend a rejected first prompt on run and view updates", async () => {
@@ -180,7 +183,7 @@ describe("local send lifecycle", () => {
     const view = await mount(options);
     expect(agent.send).toHaveBeenCalledTimes(1);
     expect(storage.createRun).toHaveBeenCalledTimes(1);
-    expect(options.onPromptConsumed).not.toHaveBeenCalled();
+    expect(options.onPromptConsumed).toHaveBeenCalledExactlyOnceWith("failed-source-prompt");
 
     await act(async () => {
       view.rerender();
@@ -190,11 +193,23 @@ describe("local send lifecycle", () => {
     expect(agent.send).toHaveBeenCalledTimes(1);
     expect(storage.createRun).toHaveBeenCalledTimes(1);
 
-    // A later visit may retry the preserved first prompt once.
+    // A later visit neither resends it nor produces another failed run: the
+    // message waits in the composer draft for the user's explicit send.
     view.unmount();
-    await mount(options);
-    expect(agent.send).toHaveBeenCalledTimes(2);
-    expect(storage.createRun).toHaveBeenCalledTimes(2);
+    await mount({ pendingPrompt: null, onPromptConsumed: options.onPromptConsumed });
+    expect(agent.send).toHaveBeenCalledTimes(1);
+    expect(storage.createRun).toHaveBeenCalledTimes(1);
+    expect(loadComposerDraft("lifecycle-thread")?.text).toBe("hello");
+  });
+
+  it("does not overwrite a newer composer draft with the rejected first prompt", async () => {
+    saveComposerDraft("lifecycle-thread", { text: "something the user typed later", attachments: [] });
+    agent.prepare.mockRejectedValueOnce(new Error("unreadable attachment"));
+    await mount({
+      pendingPrompt: { id: "rejected-draft", content: "first question", targetThreadId: "lifecycle-thread" },
+      onPromptConsumed: vi.fn(),
+    });
+    expect(loadComposerDraft("lifecycle-thread")?.text).toBe("something the user typed later");
   });
 
   it("does not release a preparing send using the previous run's terminal status", async () => {
