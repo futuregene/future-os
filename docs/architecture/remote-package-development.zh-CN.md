@@ -506,3 +506,13 @@ Rust 驱动运行真实 supervisor → resume → connect 流程，只在显式�
 事件投影边界经源码核对：Rust Client 输出带远端身份的事件、目录与恢复信号；Desktop 的会话投影/补齐通过 remoteRunStreams/remoteRunReplay 使用既有 thread-projection，TS Client 的 projection/syncEngine 复用同一基础投影器。此次不新增第二套 Rust UI 投影器，也不能把原始事件转发当作已做语义去重。独立角色互通、共享安全/请求/凭据/恢复/隔离/传输素材和应用投影回归分别承担相应层的证据，最终都仍待统一 CI。
 
 包边界审计、Desktop GUI/headless Clippy `--all-targets`、fmt、协议生成和相关文档静态检查通过；未执行本地测试、CI 或测试产物。整体目标仍等待剩余应用测试归属核对、统一自动化、同条件性能与人工确认。
+
+### 2026-10-19：同步主干 7eb94d52 的 Remote 行为
+
+在隔离分支合并远程 `origin/main` 的 `7eb94d52`，未修改用户主工作区。合并包含 #1224/#1228/#1230/#1232 等已有产品改动；不是本轮新增 CLI/TUI 宿主。拆分前路径上的逻辑逐项移植到包内，而不是把旧全局实现放回应用：Server 续期按自身 pair 读取槽，解决前文记录的 standby 退出刷新问题；GUI enable 可保持空机器 Enabled 而不生成邀请，headless start 仍保留原邀请入口；add/re-pair 使用相应的保留/替换语义；浏览器监听器的 warning/retry 由真正拥有它的槽承担，stop 同步清除归属。
+
+Client 接回主干的 control/holder 状态，握手 presence 初始化，后续 presence/control 包更新同一实例句柄，列表和事件共享该读数；旧主机不声明 control 时仍保持未知而非误判 standby。两个新策略测试迁到独立 Client，6 个解析/更新方法与两个测试函数体和主干逐一核对一致。应用新增 standby 续期、监听器归属、Enabled/邀请和控制权通知等回归继续保留，只有 task/handshake fixture 改为当前显式宿主与受管句柄。[迁移清单](remote-test-migration.json)新增该主干的 9 个 Remote Rust 测试声明及目标位置。另补一个 Server 独立用例，检查空实例 enable/stop/enable 与最终 shutdown 后不可重启；尚未执行。
+
+移植继续遵守本分支的代次约束：invite 策略与 web owner 写入受 access commit 保护；没有借主干同步恢复全局 Core 单例。Mobile 的控制权即时确认与现有 shutdown/原生接线自动合并后通过静态检查，Desktop 原有投影基础库修复也一并保留。
+
+合并后的 Client/Server 默认及 test-support、互通 network-tests、Desktop GUI/headless、CLI 的 Clippy `--all-targets`，相关 fmt，以及 Desktop/Mobile typecheck/ESLint、Protocol/Client/interop 类型检查、包边界审计、生成与相关文档检查通过。未运行本地测试、互通或最终 CI。源码基线仍记为 4a64b65e 以追踪最初迁移，当前另明确集成的主干提交；此前历史 CI 时间不因此成为新候选的同条件收益证据。整体目标继续进行。

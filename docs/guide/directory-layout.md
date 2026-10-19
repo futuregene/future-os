@@ -49,7 +49,9 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 ├── relay.json               # self-hosted relay choice (URL + optional extra CA); absent = official
 ├── approval_rule.json         # user-level path approval rules
 ├── windows-capabilities.json  # Windows sandbox ACL cleanup metadata
-├── run/agent.sock             # Unix IPC endpoint (not used by Windows)
+├── run/
+│   ├── agent.sock             # Unix IPC endpoint (not used by Windows)
+│   └── remote-control/        # transient device-pairing requests (`future remote devices add`)
 └── bin/                       # CLI / agent links: `future`, `future-agent` (see below)
 ```
 
@@ -230,6 +232,20 @@ the `pair_id` currently in control. An installation paired before multi-device
 kept a single credential in `~/.future/remote_pairing.json`; that file is read
 as a one-slot book and left in place, so a downgraded build still finds a
 pairing instead of minting a new invitation. An explicit unpair removes both.
+
+## `~/.future/run/` — transient runtime state
+
+Nothing here is data: it is how a running process and a terminal find each other.
+
+- `agent.sock` — the agent's Unix IPC endpoint (Windows uses a named pipe; and
+  with `--grpc-addr`, TCP). See the endpoint section above.
+- `remote-control/` — the request/reply files `future remote devices add` uses to
+  ask the running Desktop for a pairing invitation. A request names a reply path
+  the asking process created for itself in the OS temp directory, so the
+  directory holds no secrets beyond invitations that are about to be printed, and
+  it is never part of a backup: a restored request would name a file whose reader
+  is long gone. Requests older than two minutes are deleted by the Desktop rather
+  than answered. See [desktop-headless.md](desktop-headless.md) §3.1.
 
 ## `~/.future/workspaces/chat/` — chat workspaces
 

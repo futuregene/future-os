@@ -2343,5 +2343,38 @@
       "rustCases": [],
       "target": null
     }
-  ]
+  ],
+  "integratedMain": {
+    "commit": "7eb94d52db36b288a295ae33cb4f654ea1994044",
+    "note": "New Remote Rust regression declarations since the original baseline; source presence only, not execution. Control policy tests moved into Client, application cases retain real host/persistence adapters.",
+    "tests": [
+      {
+        "source": "desktop/src-tauri/src/remote/tests.rs",
+        "target": "desktop/src-tauri/src/remote/tests.rs",
+        "cases": [
+          "a_standby_slot_keeps_renewing_its_own_credential",
+          "taking_over_does_not_report_the_other_devices_listener_as_dead",
+          "the_listener_owner_still_reports_its_own_failure",
+          "the_switch_leaves_an_empty_machine_empty_and_on",
+          "a_plain_start_still_offers_an_invitation_on_an_empty_machine",
+          "an_added_device_is_listed_as_standby_with_its_invitation"
+        ]
+      },
+      {
+        "source": "desktop/src-tauri/src/remote_peer/runtime_tests.rs",
+        "target": "desktop/src-tauri/src/remote_peer/runtime_tests.rs",
+        "cases": [
+          "control_arrives_from_presence_and_from_the_control_packet"
+        ]
+      },
+      {
+        "source": "desktop/src-tauri/src/remote_peer/session.rs",
+        "target": "packages/remote-client/src/session.rs",
+        "cases": [
+          "control_is_read_from_presence_and_silence_is_not_a_state",
+          "a_control_packet_clears_the_holder_it_cannot_name"
+        ]
+      }
+    ]
+  }
 }

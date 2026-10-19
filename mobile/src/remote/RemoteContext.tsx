@@ -558,6 +558,11 @@ function machineSurface(
       if (!client) throw new Error("not_connected");
       const response = await client.request<{ control?: string }>({ type: "takeover" }, "list");
       if (response.success === false) throw new Error(response.error ?? "takeover_failed");
+      // The answer is the machine handing control over; presence only repeats
+      // it on its next tick. Record it now so the button that asked does not
+      // reappear while the page still reads the previous heartbeat.
+      if (response.data?.control === "active" && runtime?.connection.clientRef.current === client)
+        runtime.connection.noteControlActive();
     },
   };
 }
@@ -844,10 +849,29 @@ export function RemoteProvider({ children }: PropsWithChildren) {
        * the wrong desktop to hand over.
        */
       takeControlFor: async (desktopId: string): Promise<void> => {
-        const client = registryRef.current.get(desktopId)?.connection.clientRef.current;
-        if (!client) throw new Error("not_connected");
+        const entry = registryRef.current.get(desktopId);
+        const client = entry?.connection.clientRef.current;
+        if (!entry || !client) throw new Error("not_connected");
+        const pairId = entry.connection.credentials?.pairId;
         const response = await client.request<{ control?: string }>({ type: "takeover" }, "list");
         if (response.success === false) throw new Error(response.error ?? "takeover_failed");
+        // Controlled here rather than through presence: the machine answered
+        // after it moved control, and the row that offered the action stops
+        // being a standby row as soon as it is taken. Waiting for the next
+        // heartbeat brought the button back for a tick, which reads as the
+        // takeover failing and then working.
+        //
+        // Read the runtime back out of the registry: runtimes publish a new
+        // entry object on every render, so the one captured above may be gone
+        // by now. What must still be true is that this is the same pairing on
+        // the same connection that sent the command.
+        const latest = registryRef.current.get(desktopId);
+        if (
+          response.data?.control === "active"
+          && latest
+          && latest.connection.credentials?.pairId === pairId
+          && latest.connection.clientRef.current === client
+        ) latest.connection.noteControlActive();
       },
       commandsFor: (desktopId: string): DesktopCommands | null => {
         const entry = registryRef.current.get(desktopId);

@@ -145,7 +145,7 @@ impl Supervisor {
             // is the only record of why, and it is deliberately process-lifetime.
             drop(guard);
             return StatusProjection {
-                status: self.stopped_status(prefer),
+                status: self.stopped_status(prefer, true),
                 retry_web: None,
             };
         }
@@ -189,7 +189,7 @@ impl Supervisor {
             Some(focus) => focus.clone(),
             None => {
                 return StatusProjection {
-                    status: self.stopped_status(prefer),
+                    status: self.stopped_status(prefer, false),
                     retry_web: None,
                 }
             }
@@ -245,7 +245,7 @@ impl Supervisor {
             web_url: runtime.and_then(|state| state.web_url.clone()),
             web_lan_url: runtime.and_then(|state| state.web_lan_url.clone()),
             agent_available: self.host.agent_available(),
-            warning_code: self.web_warning(runtime, web_enabled, &mut retry_web),
+            warning_code: self.web_warning(&guard, web_enabled, &mut retry_web),
         };
         StatusProjection { status, retry_web }
     }
@@ -254,14 +254,15 @@ impl Supervisor {
     /// one slot; a dead one is reported there and nowhere else.
     fn web_warning(
         &self,
-        runtime: Option<&RemoteState>,
+        states: &HashMap<String, RemoteState>,
         web_enabled: bool,
         retry_web: &mut Option<String>,
     ) -> Option<String> {
-        let runtime = runtime?;
         if !web_enabled {
             return None;
         }
+        let owner = self.web_owner.lock().unwrap().clone()?;
+        let runtime = states.get(&owner)?;
         let dead = runtime
             .web_task
             .as_ref()
@@ -285,7 +286,7 @@ impl Supervisor {
     /// `prefer` means the same thing as in [`Supervisor::project_status`]: the caller asked
     /// about one device (one it just created), and even with nothing running the
     /// answer must be about that device rather than the persisted controller.
-    fn stopped_status(&self, prefer: Option<&str>) -> RemoteStatus {
+    fn stopped_status(&self, prefer: Option<&str>, no_runtime: bool) -> RemoteStatus {
         let error_code = self.last_error_code.lock().unwrap().clone();
         // Startup retries run before a bridge instance exists, so this state cannot
         // be inferred from the runtime map. Expose it explicitly so the UI shows an
@@ -298,7 +299,15 @@ impl Supervisor {
             && self.resume_recovery_running.load(Ordering::Acquire)
             && matches!(error_code.as_deref(), Some("system_sleep"));
         let reconnecting = retrying_start || resuming_from_sleep;
-        let (phase, reason) = if reconnecting {
+        let enabled_and_empty = !self.invite_when_empty.load(Ordering::Acquire)
+            && self.start_requested.load(Ordering::Acquire)
+            && !reconnecting
+            && error_code.is_none()
+            && self.host.load_slots().is_empty()
+            && no_runtime;
+        let (phase, reason) = if enabled_and_empty {
+            (RemotePhase::Enabled, None)
+        } else if reconnecting {
             (
                 RemotePhase::Reconnecting,
                 Some(match error_code.as_deref() {

@@ -51,6 +51,7 @@ const {
   setRemoteConversationThinkingLevel,
   setRemotePeerLabel,
   setRemoteWorkspacePinned,
+  takeoverRemotePeer,
   uninstallRemoteSkill,
   unpairRemotePeer,
   uploadRemoteFile,
@@ -1029,6 +1030,32 @@ describe("the peer list", () => {
     invokeMock.mockResolvedValue([{ desktopId: "desktop_a", stopped: undefined }]);
     await expect(listRemotePeers()).resolves.toEqual([{ desktopId: "desktop_a", stopped: false }]);
   });
+
+  /**
+   * Who may drive the host rides on the same list, and its two arms are read
+   * very differently: `standby` is what makes the machine's rows absent, and a
+   * word this client does not know is not a state to act on. Keeping an unknown
+   * word would let a newer host's vocabulary decide what this window draws.
+   */
+  it("keeps a control state it knows and drops one it does not", async () => {
+    invokeMock.mockResolvedValue([
+      { desktopId: "desktop_a", control: "standby", holder: { name: "Phone" } },
+      { desktopId: "desktop_b", control: "active" },
+      { desktopId: "desktop_c", control: "handover" },
+      { desktopId: "desktop_d", holder: "a string, not a holder" },
+    ]);
+    const peers = await listRemotePeers();
+
+    expect(peers[0]).toEqual({
+      desktopId: "desktop_a",
+      stopped: false,
+      control: "standby",
+      holder: { name: "Phone" },
+    });
+    expect(peers[1]!.control).toBe("active");
+    expect(peers[2]).not.toHaveProperty("control");
+    expect(peers[3]).not.toHaveProperty("holder");
+  });
 });
 
 describe("the connect-all pass", () => {
@@ -1074,6 +1101,20 @@ describe("remote machine commands", () => {
 
     await disconnectRemotePeer("desktop_a");
     expect(lastCall()).toEqual({ args: { desktopId: "desktop_a" }, command: "remote_peer_disconnect" });
+  });
+
+  /**
+   * Taking a machine back is a pairing-level command, not a conversation one:
+   * it names no session, so it rides the `list` lane. The host moves its control
+   * pointer and answers; the caller re-reads the machine rather than assuming.
+   */
+  it("takes a machine over on the pairing's own lane", async () => {
+    await takeoverRemotePeer("desktop_a");
+
+    expect(lastCall()).toEqual({
+      args: { desktopId: "desktop_a", command: { type: "takeover" }, lane: "list" },
+      command: "remote_peer_request",
+    });
   });
 
   it("unpairs by desktop id and reports the host's own answer", async () => {

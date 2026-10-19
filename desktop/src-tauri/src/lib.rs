@@ -1402,7 +1402,7 @@ mod gui {
         }
 
         crate::runtime::spawn(async {
-            match remote::start(remote::RemoteStartInput {}).await {
+            match remote::enable().await {
                 Ok(status) if matches!(status.phase, remote::RemotePhase::Ready) => {
                     eprintln!("FutureOS remote auto-connect: connected")
                 }

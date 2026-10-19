@@ -35,22 +35,59 @@ export interface RemotePeer {
   features: string[];
   /** The host's own report that its agent is reachable (`LC003` if not). */
   agentAvailable: boolean;
+  /**
+   * Whether this device may drive the host, as the host last reported it.
+   *
+   * Absent on a host that predates the field — the client then assumes what it
+   * always did: the machine is its own. Present as `standby` when another paired
+   * device holds it, which is a different fact from `connected`: the link is
+   * healthy and taking it back needs no reconnection, but nothing on that host
+   * can be read or prompted until this device takes over.
+   */
+  control?: RemotePeerControl;
+  /** Who holds the host while this device stands by. */
+  holder?: RemotePeerHolder | null;
 }
 
-/** One decrypted push from a host, as the backend forwards it. */
+/** `active`: this desktop drives the host. `standby`: another paired device does. */
+export type RemotePeerControl = "active" | "standby";
+
+/**
+ * The controlling device's self-declared identity, as the host repeats it.
+ *
+ * Every field is optional — a controller that never declared a name leaves the
+ * pair id — and the wording falls back to "another device" rather than
+ * inventing one.
+ */
+export interface RemotePeerHolder {
+  pairId?: string;
+  name?: string;
+  kind?: string;
+}
+
+/**
+ * One decrypted push from a host, as the backend forwards it.
+ */
 export interface RemotePeerEvent {
   desktopId: string;
   /**
-   * `event` for a session event, `presence` for a liveness tick, `resumed` for
-   * a link that came back after a drop, `catalog` for a sessions or workspaces
+   * `event` for a session event, `presence` for a liveness tick, `control` for
+   * a packet that says the right to drive the host moved, `resumed` for a link
+   * that came back after a drop, `catalog` for a sessions or workspaces
    * snapshot.
+   *
+   * `control` is separate from `presence` because it answers a different
+   * question: a tick says the host is alive and mentions, in passing, who may
+   * drive it, while this packet exists to say that *that* moved. Waiting for the
+   * next tick leaves the machine drawn as usable for up to a second after it
+   * stopped being so — long enough for the list to look current when it is not.
    *
    * `resumed` is separate because neither of the others can express it: a
    * presence tick arrives on a healthy link as well, and a session event says
    * nothing about the link. It is the only signal that what the host sent while
    * the link was down is *missing* rather than merely absent.
    */
-  kind: "event" | "presence" | "resumed" | "catalog";
+  kind: "event" | "presence" | "control" | "resumed" | "catalog";
   payload: unknown;
 }
 
@@ -93,11 +130,31 @@ export async function listRemotePeers(): Promise<RemotePeer[]> {
   const raw = await invokeCommand<RemotePeer[] | null>("remote_peer_list");
   if (!Array.isArray(raw))
     return [];
-  // `stopped` is the one field whose *absence* carries a meaning the caller
-  // acts on: a backend from before the mark existed means "not stopped", so it
-  // is spelled out here rather than left to a truthiness test at each site that
-  // decides whether to reconnect something.
-  return raw.map(peer => ({ ...peer, stopped: peer.stopped === true }));
+  return raw.map(normalizePeer);
+}
+
+/**
+ * One peer as the rest of the app may assume it.
+ *
+ * Applied to the *lists* — `list` and `connect_all` — because those are what the
+ * app builds its state from (the merged conversations, the dot, the picker).
+ * The single-host answers (`pair`, `connect`) are passed through as they come:
+ * every caller of them re-reads the list rather than using the row it got back.
+ *
+ * Two fields whose *absence* carries a meaning the caller acts on are spelled
+ * out here rather than left to a truthiness test at each site: `stopped` (a
+ * backend from before the mark existed means "not stopped") and `control` (a
+ * host that predates it says nothing, and every client assumed the machine was
+ * its own). A word this client does not know is dropped rather than kept: an
+ * unknown state is not one to act on.
+ */
+function normalizePeer(peer: RemotePeer): RemotePeer {
+  const normalized: RemotePeer = { ...peer, stopped: peer.stopped === true };
+  if (normalized.control !== "active" && normalized.control !== "standby")
+    delete normalized.control;
+  if (typeof normalized.holder !== "object" || normalized.holder === null)
+    delete normalized.holder;
+  return normalized;
 }
 
 /**
@@ -110,10 +167,10 @@ export async function listRemotePeers(): Promise<RemotePeer[]> {
  */
 export async function connectAllRemotePeers(): Promise<RemotePeer[]> {
   const raw = await invokeCommand<RemotePeer[] | null>("remote_peer_connect_all");
-  return (Array.isArray(raw) ? raw : []).map(peer => ({ ...peer, stopped: peer.stopped === true }));
+  return (Array.isArray(raw) ? raw : []).map(normalizePeer);
 }
 
-export function pairRemotePeer(invitation: string): Promise<RemotePeer> {
+export async function pairRemotePeer(invitation: string): Promise<RemotePeer> {
   return invokeCommand<RemotePeer>("remote_peer_pair", { invitation });
 }
 
@@ -123,6 +180,24 @@ export function connectRemotePeer(desktopId: string): Promise<RemotePeer> {
 
 export function disconnectRemotePeer(desktopId: string): Promise<void> {
   return invokeCommand<void>("remote_peer_disconnect", { desktopId });
+}
+
+/**
+ * Ask `desktopId` to let this desktop drive it.
+ *
+ * The client-role twin of `takeoverRemote` (the host page's "let this device
+ * control"): the same `takeover` command a phone sends, from this side of the
+ * pairing. It is the only way control comes back without a reconnection, which
+ * is why it belongs where the machine's state is explained rather than hidden
+ * in a menu.
+ *
+ * Sent on the `list` lane because it is a pairing-level command — it names no
+ * conversation. A refusal (the host went away, or another device moved first) is
+ * an ordinary rejection; the caller re-reads the machine rather than assuming
+ * the pointer moved.
+ */
+export async function takeoverRemotePeer(desktopId: string): Promise<void> {
+  await requestRemotePeer(desktopId, { type: "takeover" }, "list");
 }
 
 /**

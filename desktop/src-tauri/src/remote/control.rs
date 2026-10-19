@@ -12,7 +12,7 @@
 //! it moved here: it works for a headless Desktop too (which has no plugin), and
 //! it adds one device instead of revoking every device and restarting.
 //!
-//! The files are a request/reply pair in `~/.future/app/remote-control/`:
+//! The files are a request/reply pair in `~/.future/run/remote-control/`:
 //!
 //! * `*.request.json` — `{"op": "add-device", "reply": "<absolute path>"}`;
 //! * the reply goes to the path the *asker* named, which it created for itself as
@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-/// Where requests wait (`~/.future/app/remote-control`).
+/// Where requests wait (`~/.future/run/remote-control`).
 const DIRECTORY: &str = "remote-control";
 /// How often the host looks for a new request. Short enough that a terminal feels
 /// answered immediately; the whole round trip is one platform request anyway.
@@ -134,11 +134,15 @@ impl Reply {
     }
 }
 
-/// `~/.future/app/remote-control`.
+/// `~/.future/run/remote-control`.
+///
+/// Transient by design, beside the agent's own socket: a request names a reply
+/// path its asker created for itself, so one that survives a restart is stale in
+/// a way a data file would not be — which is why this lives under `run/` and is
+/// never part of the data directory a backup restores.
 pub(crate) fn directory() -> Result<PathBuf, crate::AppError> {
-    Ok(future_app_settings::app_dir()
-        .map_err(|error| crate::AppError::Message(error.to_string()))?
-        .join(DIRECTORY))
+    let root = crate::store::future_dir()?;
+    Ok(root.join("run").join(DIRECTORY))
 }
 
 /// Serve requests for this process's lifetime.
@@ -349,7 +353,7 @@ mod tests {
         }
 
         fn control(&self) -> PathBuf {
-            let path = self.dir.path().join("app").join(DIRECTORY);
+            let path = self.dir.path().join("run").join(DIRECTORY);
             std::fs::create_dir_all(&path).unwrap();
             path
         }
@@ -616,9 +620,14 @@ mod tests {
     /// Both entry points call the same `spawn_host`, so this is the only place the
     /// directory is derived from the data root.
     #[test]
-    fn the_channel_lives_under_the_desktop_app_directory() {
+    fn the_channel_lives_under_the_transient_run_directory() {
         let _guard = crate::auth_store::test_support::HomeGuard::new("remote-control-dir");
-        let app = future_app_settings::app_dir().unwrap();
-        assert_eq!(directory().unwrap(), app.join(DIRECTORY));
+        let root = crate::store::future_dir().unwrap();
+        assert_eq!(directory().unwrap(), root.join("run").join(DIRECTORY));
+        // Not in the data directory a backup restores.
+        assert_ne!(
+            directory().unwrap().parent(),
+            Some(root.join("app").as_path())
+        );
     }
 }

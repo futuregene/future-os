@@ -592,3 +592,38 @@ Boundary audit, Desktop GUI/headless Clippy --all-targets, fmt, generation and
 related documentation static checks pass. No local tests, CI or generated test
 outputs ran. Remaining application test ownership review, unified automation,
 matched performance and manual confirmation keep the overall goal incomplete.
+
+### 2026-10-19: Integrating Remote behavior from main 7eb94d52
+
+Merged remote origin/main at 7eb94d52 inside the isolated branch without changing
+the user's main checkout. Existing product changes include #1224/#1228/#1230/
+#1232; they are not new CLI/TUI hosts from this extraction. Logic on old paths
+moves into packages rather than restoring global core implementations: Server
+renewal selects its own pair's slot, resolving the previously recorded standby
+limitation; GUI enable may remain Enabled/empty without minting an invitation,
+while headless start retains invitation behavior; add/re-pair preserve the new
+keep/replace policy; browser warning/retry belongs to the actual listener owner,
+which stop clears.
+
+Client preserves upstream control/holder state, initialization from handshake
+presence, shared updates from presence/control packets, and unknown control for
+legacy hosts. Six decoder/update methods and two new policy test bodies match
+upstream. The latter tests belong to Client. Application standby renewal,
+listener ownership, Enabled/invitation and control notification regressions remain
+in place, with only fixture construction adapted to explicit hosts/tracked tasks.
+The inventory records nine additional upstream Remote Rust declarations and
+targets. One new independent Server declaration checks empty enable/stop/enable
+and nonrestartability after final shutdown; none were executed.
+
+Invite policy and web-owner writes retain this branch's access-commit fences.
+Core state remains explicitly owned. Mobile's immediate control confirmation
+merges with native/shutdown adapters, and the upstream shared projection fix is
+retained.
+
+Merged Client/Server default/test-support, interop network-tests, Desktop GUI/
+headless and CLI Clippy --all-targets pass, along with relevant fmt, Desktop/
+Mobile typecheck/ESLint, Protocol/Client/interop typechecks, boundary audit,
+generation and related documentation static checks. No local tests, interop or
+final CI ran. The initial migration baseline stays 4a64b65e and integrated main
+is separately identified; historical CI timings do not become matched candidate
+performance evidence. The overall goal remains active.

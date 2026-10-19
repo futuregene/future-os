@@ -56,6 +56,8 @@ pub struct PeerSummary {
     /// reachable. A reachable bridge with an unavailable agent is the case the
     /// support table calls `LC003`: the link is up and every command fails.
     pub agent_available: bool,
+    pub control: Option<session::ControlState>,
+    pub holder: Option<session::Holder>,
 }
 
 /// Where pushed events go. Injected rather than hard-coded to Tauri so the
@@ -71,6 +73,9 @@ pub struct PeerEvent {
     /// while the lane is narrowed to one conversation — `presence` for a
     /// liveness tick, `resumed` for a link that came back, `catalog` for a
     /// sessions or workspaces snapshot.
+    ///
+    /// `control` announces a change of controller immediately; presence also
+    /// restates control and its holder on each heartbeat.
     ///
     /// `resumed` exists because the other kinds cannot express it: a presence tick
     /// arrives on a healthy link as well, and a session event says nothing about
@@ -205,6 +210,7 @@ struct StreamParts {
     channel: std::sync::Arc<std::sync::Mutex<future_remote_crypto::Channel>>,
     subscriptions: super::session::Subscriptions,
     emitter: Emitter,
+    control: std::sync::Arc<std::sync::Mutex<session::Control>>,
 }
 
 /// Subscribe to a host's pushes, or say why not.
@@ -225,6 +231,7 @@ async fn attach_stream(
             channel: peer_session.channel_for_stream(),
             subscriptions,
             emitter,
+            control: peer_session.control_for_stream(),
         }),
         Err(error) => {
             eprintln!("remote_peer: could not subscribe for {desktop_id}: {error}");
@@ -268,6 +275,7 @@ const EVENT_LANE: &str = "event";
 const PRESENCE_LANE: &str = "presence";
 const STATE_LANE: &str = "state";
 const CATALOG_LANE: &str = "catalog";
+const CONTROL_LANE: &str = "control";
 const TRANSFER_LANE: &str = "chunk";
 
 /// One push taken off a subscription, before anything has been made of it.
@@ -512,6 +520,7 @@ enum StateEventKind {
     /// that moved, so a reader must not treat the rest as absent.
     Activity,
     Workspaces,
+    Control,
     Other,
 }
 
@@ -524,6 +533,8 @@ fn state_event_kind(subject: &str, pair_id: &str) -> StateEventKind {
         StateEventKind::Activity
     } else if subject == format!("p.{pair_id}.state.workspaces") {
         StateEventKind::Workspaces
+    } else if subject == format!("p.{pair_id}.state.control") {
+        StateEventKind::Control
     } else {
         StateEventKind::Other
     }
@@ -798,6 +809,7 @@ impl Client {
                 channel: session.channel_for_stream(),
                 subscriptions,
                 emitter,
+                control: session.control_for_stream(),
             },
             capacity,
         );
@@ -1257,6 +1269,8 @@ impl Client {
             // rather than `true` keeps "unknown" on the safe side of the UI's
             // "everything is fine" check.
             agent_available: false,
+            control: None,
+            holder: None,
         })
     }
     /// Every paired host, whether or not it is currently connected.
@@ -1268,6 +1282,7 @@ impl Client {
             .iter()
             .map(|peer| {
                 let session = live.live.get(&peer.creds.desktop_id);
+                let control = session.map(|session| session.control()).unwrap_or_default();
                 PeerSummary {
                     desktop_id: peer.creds.desktop_id.clone(),
                     pair_id: peer.creds.pair_id.clone(),
@@ -1282,6 +1297,8 @@ impl Client {
                         .map(|session| session.features().to_vec())
                         .unwrap_or_default(),
                     agent_available: session.is_some_and(|session| session.agent_available()),
+                    control: control.state,
+                    holder: control.holder,
                 }
             })
             .collect())
@@ -1665,6 +1682,7 @@ impl Client {
                     mut transfers,
                 },
             emitter,
+            control,
         } = parts;
         let client = self.clone();
         self.spawn(async move {
@@ -1718,10 +1736,12 @@ impl Client {
             /// silently: it is either a forgery (a relay can inject one at will) or
             /// a shape this version does not know, and neither is the connection's
             /// fault, so there is nothing to report and nothing to retry.
+            #[allow(clippy::too_many_arguments)]
             async fn handle_push(
                 client: &Client,
                 push: Push,
                 channel: &std::sync::Mutex<future_remote_crypto::Channel>,
+                control: &std::sync::Mutex<session::Control>,
                 desktop_id: &str,
                 pair_id: &str,
                 narrow: bool,
@@ -1770,6 +1790,7 @@ impl Client {
                         StateEventKind::Sessions => (CATALOG_LANE, Some("sessions")),
                         StateEventKind::Activity => (CATALOG_LANE, Some("sessions_activity")),
                         StateEventKind::Workspaces => (CATALOG_LANE, Some("workspaces")),
+                        StateEventKind::Control => (CONTROL_LANE, None),
                         _ => return,
                     }
                 } else {
@@ -1779,6 +1800,16 @@ impl Client {
                     // Unparsable or unauthenticated; same reasoning as above.
                     return;
                 };
+                if kind == PRESENCE_LANE || kind == CONTROL_LANE {
+                    let mut held = control
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if kind == PRESENCE_LANE {
+                        held.apply_presence(&payload);
+                    } else {
+                        held.apply_control(&payload);
+                    }
+                }
                 // Each push's conversation is recovered from the subject it arrived
                 // on when the payload does not carry one, because a lean host trims
                 // `sessionId` out of the event envelope. `state.events` is the one
@@ -1860,6 +1891,7 @@ impl Client {
                         &client,
                         push,
                         &channel,
+                        &control,
                         &desktop_id,
                         &pair_id,
                         installed.narrow,
@@ -2626,11 +2658,16 @@ mod tests {
             state_event_kind("p.pair_1.state.activity", "pair_1"),
             StateEventKind::Activity
         ));
+        assert!(matches!(
+            state_event_kind("p.pair_1.state.control", "pair_1"),
+            StateEventKind::Control
+        ));
         for subject in [
             "p.pair_1.state.version",
             // Another pairing's host-wide lane.
             "p.pair_10.state.events",
             "p.pair_10.state.activity",
+            "p.pair_10.state.control",
             // The events lane proper, which is read through its own subscription.
             "p.pair_1.evt.sess_a",
             "",

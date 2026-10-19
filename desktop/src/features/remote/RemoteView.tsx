@@ -3,6 +3,7 @@ import { ChevronRight } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { ConfirmDeleteDialog } from "../../components/layout/EntityDialogs";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
@@ -14,6 +15,7 @@ import {
   remoteConnectionPresentation,
   startRemote,
   stopRemote,
+  unpairRemoteDevice,
 } from "./remoteClient";
 import {
   deviceLabel,
@@ -26,17 +28,23 @@ import {
 /**
  * "Let other devices connect here" — the host half of the Remote page.
  *
- * The section is **one switch plus the list it enables**. The switch is the
- * only start/stop control; while it is off nothing below it is shown (no list,
- * no add button, no preference), because an "off" section that still lists
- * clients reads as a service that is up.
+ * The section is **one switch plus the connections it carries**. The switch is
+ * the only start/stop control; while it is off nothing below it is shown (no
+ * list, no add button, no preference), because an "off" section that still lists
+ * connections reads as a service that is up.
  *
- * While it is on, the section is a **list only**: one row per paired client,
- * each a door to that client's own page (its identity, disconnect, delete) —
- * the same "list here, details after clicking in" shape the other direction of
- * the page uses. The one exception is adding a client: it opens a floating
- * window that carries the QR code *and* the pairing code, so the invitation is
- * visible without navigating away from the list.
+ * Turning the switch on is not turning a connection on. Every connection is
+ * created one at a time, by "add a device", and a machine with none is simply
+ * on and empty. So the two are siblings: the switch decides whether this
+ * machine serves its connections at all, and the list is what it serves.
+ *
+ * While it is on, the section is a **list plus one action**: each row is a door
+ * to that connection's own page, the device that is driving this machine can be
+ * unpaired from its row (it is the one the machine is serving), and "add a
+ * device" sits below the list. Adding opens a floating window that carries the
+ * QR code *and* the pairing code, so the invitation is visible without
+ * navigating away — and closing it throws the invitation away rather than
+ * leaving a half-made connection behind.
  */
 export interface RemoteHostSectionProps {
   /**
@@ -61,21 +69,18 @@ export function RemoteHostSection({
   const { t } = useTranslation("remote");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** The floating add-client window (QR + pairing code). */
+  /** The floating add-device window (QR + pairing code). */
   const [addOpen, setAddOpen] = useState(false);
+  /** The connection this window created, while it is still unclaimed. */
+  const [pendingPairId, setPendingPairId] = useState<string | null>(null);
+  /** The device whose unpair is being confirmed, if any. */
+  const [confirmUnpair, setConfirmUnpair] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   // --- derived from the shared app-level status (same source as the sidebar indicator) ---
   const phase = remoteStatus?.phase ?? "stopped";
   const running = phase !== "stopped" && phase !== "failed" && phase !== "revoked";
   const presentation = remoteConnectionPresentation(remoteStatus);
-  const connected = presentation?.level === "connected";
-  const connecting = presentation?.level === "connecting";
-  const connectionStatusKey = connected
-    ? "statusConnected"
-    : connecting
-      ? "statusConnecting"
-      : "statusDisconnected";
   const terminal = phase === "failed" || phase === "revoked";
   const failure = terminal && presentation?.messageKey && presentation.messageKey !== "connection" && presentation.messageKey !== "devicePreparing"
     ? { messageKey: presentation.messageKey, supportCode: presentation.supportCode }
@@ -85,7 +90,8 @@ export function RemoteHostSection({
     : error;
   const showError = Boolean(failure || error);
 
-  const devices = useMemo(() => {
+  /** Every connection this machine knows about, invited-but-unclaimed included. */
+  const allDevices = useMemo(() => {
     const listed = remoteStatus?.devices ?? [];
     if (listed.length > 0)
       return listed;
@@ -105,24 +111,39 @@ export function RemoteHostSection({
       desktopId: remoteStatus.desktopId,
     }];
   }, [remoteStatus]);
-  // The invitation belongs to whichever device has not been claimed yet; the
-  // top-level field is the controller's projection and is only a fallback.
-  const pendingDevice = devices.find(device => device.pairingCode != null) ?? null;
-  const pairingCode = pendingDevice?.pairingCode ?? remoteStatus?.pairingCode ?? null;
+  // An invitation nobody has scanned is not a connection yet: it belongs to the
+  // window that is showing it, not to the list. A list that shows it anyway
+  // reads as "a device is waiting", which is exactly what the user did not ask
+  // for when they turned the switch on.
+  const devices = useMemo(
+    () => allDevices.filter(device => device.pairingCode == null),
+    [allDevices],
+  );
+  // The one whose invitation this window is showing: the device it created, if
+  // it is still unclaimed, else whichever invitation is live.
+  const pendingDevice = useMemo(() => {
+    const unclaimed = allDevices.filter(device => device.pairingCode != null);
+    return unclaimed.find(device => device.pairId === pendingPairId)
+      ?? unclaimed[0]
+      ?? null;
+  }, [allDevices, pendingPairId]);
+  const pairingCode = pendingDevice?.pairingCode ?? null;
   const [now, setNow] = useState(() => Date.now());
   usePolling(() => setNow(Date.now()), 1000, { enabled: pairingCode != null });
   const remainingSeconds = useMemo(() => {
-    const expiresAt = pendingDevice
-      ? pendingDevice.pairingCodeExpiresAt
-      : remoteStatus?.pairingCodeExpiresAt;
+    const expiresAt = pendingDevice?.pairingCodeExpiresAt;
     if (!pairingCode || expiresAt == null)
       return null;
     return Math.max(0, expiresAt - Math.floor(now / 1000));
-  }, [pairingCode, pendingDevice, remoteStatus?.pairingCodeExpiresAt, now]);
+  }, [pairingCode, pendingDevice?.pairingCodeExpiresAt, now]);
   const pairingQrValue = useMemo(
     () =>
       pairingCode?.startsWith("futureos://remote/pair?") ? pairingCode : null,
     [pairingCode],
+  );
+  const confirmUnpairDevice = useMemo(
+    () => devices.find(device => device.pairId === confirmUnpair) ?? null,
+    [confirmUnpair, devices],
   );
 
   async function handleStart() {
@@ -157,6 +178,7 @@ export function RemoteHostSection({
     finally {
       setBusy(false);
       setAddOpen(false);
+      setPendingPairId(null);
       await onRefreshRemote();
     }
   }
@@ -182,14 +204,66 @@ export function RemoteHostSection({
     setBusy(true);
     setError(null);
     try {
-      await addRemoteDevice();
-      // The invitation exists from here on: the window shows it as soon as the
-      // refreshed status carries the code.
+      const status = await addRemoteDevice();
+      // The returned status is *about* the connection just created; that is the
+      // one the window speaks for, even if the list later shows others.
+      setPendingPairId(status.pairId || null);
       setAddOpen(true);
     }
     catch (err) {
       console.error("remote add device failed:", err);
       setError(isLimitError(err) ? t("error.limitReached") : t("error.generic"));
+    }
+    finally {
+      setBusy(false);
+      await onRefreshRemote();
+    }
+  }
+
+  /**
+   * Close the add window and drop the connection it was offering.
+   *
+   * Closing is a decision about *this* connection only: the remote desktop
+   * stays on, and the connections that already exist keep running. An
+   * invitation that was never scanned has no device behind it, so discarding it
+   * leaves nothing half-made in the list.
+   */
+  async function closeAdd() {
+    setAddOpen(false);
+    const discarded = pendingPairId;
+    setPendingPairId(null);
+    if (!discarded)
+      return;
+    // Only while it is still unclaimed: a device that scanned the code in the
+    // meantime is a real connection, and closing the window is not "unpair it".
+    const unclaimed = allDevices.some(
+      device => device.pairId === discarded && device.pairingCode != null,
+    );
+    if (!unclaimed)
+      return;
+    setBusy(true);
+    try {
+      await unpairRemoteDevice(discarded);
+    }
+    catch (err) {
+      console.error("remote discard invitation failed:", err);
+      setError(t("error.generic"));
+    }
+    finally {
+      setBusy(false);
+      await onRefreshRemote();
+    }
+  }
+
+  async function handleUnpairDevice(pairId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await unpairRemoteDevice(pairId);
+    }
+    catch (err) {
+      console.error("remote unpair device failed:", err);
+      setError(t("error.generic"));
     }
     finally {
       setBusy(false);
@@ -228,11 +302,25 @@ export function RemoteHostSection({
 
         {/* Feedback about the switch itself — why it could not come on, or why
             the bridge failed — stays visible while it is off. It is not a
-            setting, and hiding it left an off switch with no explanation. */}
+            setting, and hiding it left an off switch with no explanation. The
+            sign-in action rides here because a refused start is exactly what
+            this banner describes. */}
         {showError
           ? (
               <div className="flex items-center gap-3 rounded-md border border-danger-line bg-danger-soft px-3 py-2 text-sm text-danger">
                 <span className="min-w-0 flex-1">{errorText}</span>
+                {presentation?.action === "loginAgain"
+                  ? (
+                      <Button
+                        disabled={busy}
+                        onClick={() => emitFutureEvent("show-onboarding", undefined)}
+                        size="sm"
+                        variant="secondary"
+                      >
+                        {t("loginAgain")}
+                      </Button>
+                    )
+                  : null}
               </div>
             )
           : null}
@@ -252,45 +340,15 @@ export function RemoteHostSection({
           ? <p aria-live="polite" className="text-sm text-ink-muted">{t("preparingPairingHint")}</p>
           : null}
 
-        {/* Everything below is the list the switch enables. */}
+        {/* Everything below is what the switch serves. */}
         {running
           ? (
               <>
-                {!connected && connecting
-                  ? (
-                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-line-soft bg-surface-subtle px-4 py-2">
-                        <Badge tone={connecting ? "warning" : "danger"}>
-                          {t(connectionStatusKey)}
-                        </Badge>
-                        <span className="min-w-0 flex-1 truncate text-xs text-ink-muted">
-                          {t("connectionHint")}
-                        </span>
-                        {presentation?.action === "loginAgain"
-                          ? (
-                              <Button
-                                disabled={busy}
-                                onClick={() => emitFutureEvent("show-onboarding", undefined)}
-                                size="sm"
-                                variant="secondary"
-                              >
-                                {t("loginAgain")}
-                              </Button>
-                            )
-                          : null}
-                      </div>
-                    )
-                  : null}
-
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-sm font-medium text-ink">{t("clientsTitle")}</span>
-                  <div className="flex items-center gap-1">
-                    <Button onClick={onOpenSettings} size="sm" variant="ghost">
-                      {t("hostSettings")}
-                    </Button>
-                    <Button disabled={busy} onClick={() => void handleAddDevice()} size="sm" variant="secondary">
-                      {t("addClient")}
-                    </Button>
-                  </div>
+                  <Button onClick={onOpenSettings} size="sm" variant="ghost">
+                    {t("hostSettings")}
+                  </Button>
                 </div>
 
                 <div className="rounded-lg border border-line-soft bg-surface-subtle">
@@ -303,13 +361,19 @@ export function RemoteHostSection({
                           {devices.map((device) => {
                             const state = deviceState(device, t);
                             return (
-                              <li key={device.pairId}>
+                              <li
+                                className="flex items-center gap-2 pr-2"
+                                key={device.pairId}
+                              >
                                 {/* A row is a door, not a control panel: the list
-                                    says who is paired and what state they are
-                                    in; disconnect/delete live on that client's
-                                    own page. */}
+                                    says which connections exist and what state
+                                    they are in; disconnect/delete live on that
+                                    client's own page. The one action that rides
+                                    in the row is "unpair" for the device that is
+                                    driving this machine — that is the connection
+                                    this machine is actually serving. */}
                                 <button
-                                  className="flex w-full items-center gap-2 px-4 py-2 text-left hover:bg-surface"
+                                  className="flex min-w-0 flex-1 items-center gap-2 px-4 py-2 text-left hover:bg-surface"
                                   onClick={() => onOpenDevice(device.pairId)}
                                   type="button"
                                 >
@@ -320,29 +384,58 @@ export function RemoteHostSection({
                                   <Badge tone={state.tone}>{state.label}</Badge>
                                   <ChevronRight className="size-4 shrink-0 text-ink-muted" />
                                 </button>
+                                {device.control === "active"
+                                  ? (
+                                      <Button
+                                        disabled={busy}
+                                        onClick={() => setConfirmUnpair(device.pairId)}
+                                        size="sm"
+                                        variant="secondary"
+                                      >
+                                        {t("unpair")}
+                                      </Button>
+                                    )
+                                  : null}
                               </li>
                             );
                           })}
                         </ul>
                       )}
                 </div>
+
+                {/* Adding a connection is its own step below the list, because
+                    turning the switch on does not create one. */}
+                <div className="flex items-center justify-between gap-3">
+                  <span className="min-w-0 flex-1 text-xs leading-5 text-ink-muted">
+                    {t("addDeviceHint")}
+                  </span>
+                  <Button
+                    disabled={busy}
+                    onClick={() => void handleAddDevice()}
+                    size="sm"
+                    variant="secondary"
+                  >
+                    {t("addDevice")}
+                  </Button>
+                </div>
               </>
             )
           : null}
       </div>
 
-      {/* The add-client window: QR code *and* pairing code, side by side, so the
-          invitation can be shown without leaving the list. */}
+      {/* The add-device window: QR code *and* pairing code, side by side, so the
+          invitation can be shown without leaving the list. Closing it cancels
+          that one connection — never the remote desktop. */}
       <Dialog
-        description={t("addClientDescription")}
+        description={t("addDeviceDescription")}
         footer={(
-          <Button onClick={() => setAddOpen(false)} variant="secondary">
-            {t("done")}
+          <Button onClick={() => void closeAdd()} variant="secondary">
+            {t("cancel")}
           </Button>
         )}
-        onClose={() => setAddOpen(false)}
+        onClose={() => void closeAdd()}
         open={addOpen}
-        title={t("addClientTitle")}
+        title={t("addDeviceTitle")}
       >
         <div className="flex flex-col items-center gap-3">
           {pairingQrValue
@@ -392,6 +485,30 @@ export function RemoteHostSection({
           <p className="text-center text-xs text-ink-muted">{t("pairingCodeHint")}</p>
         </div>
       </Dialog>
+
+      {/* Unpairing the device that drives this machine, from its row. The
+          confirm lives here rather than on the row so an accidental click in a
+          list cannot cut off the phone the user is holding. */}
+      <ConfirmDeleteDialog
+        description={t("unpairDeviceConfirmDesc", {
+          name: confirmUnpairDevice ? deviceLabel(confirmUnpairDevice, t) : "",
+        })}
+        error={null}
+        onClose={() => setConfirmUnpair(null)}
+        onConfirm={() => {
+          const pairId = confirmUnpair;
+          setConfirmUnpair(null);
+          if (pairId)
+            void handleUnpairDevice(pairId);
+        }}
+        open={confirmUnpair != null}
+        submitting={busy}
+        title={t("unpairDeviceConfirmTitle")}
+      >
+        <p className="text-sm text-ink-soft">
+          {formatPairId(confirmUnpairDevice?.pairId ?? confirmUnpair)}
+        </p>
+      </ConfirmDeleteDialog>
     </>
   );
 }

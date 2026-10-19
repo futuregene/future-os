@@ -124,11 +124,13 @@ export function ConnectionBadge({
   // "Connected" alone is not green: a machine that answers while another paired
   // device holds it cannot be read from or commanded, and painting that green
   // told the user everything was fine while every action failed. Green means
-  // connected *and* ours to drive; yellow covers both a partly-connected set and
-  // a fully-connected one that nobody here may drive.
+  // every machine is connected *and* ours to drive; one that is held makes the
+  // whole set yellow, exactly as one that is offline does. "Somewhere to work"
+  // is the rows' answer, not the header's: the dot answers for the set, and a
+  // machine in standby is one this phone cannot use.
   const state: DotState = summary && machines!.length > 0
     ? summary.all
-      ? (summary.drivable > 0 ? "up" : "partial")
+      ? (summary.drivable === summary.total ? "up" : "partial")
       : summary.any
         ? "partial"
         : "down"
@@ -159,18 +161,24 @@ export function ConnectionBadge({
     : presentation.customerState === "waitingDesktop"
       ? "waitingDesktop"
       : presentation.level;
-  // Every machine answers, and none of them is ours to drive: the set is up but
-  // held by another paired device. Distinct from `partial` (some machines are
-  // down): here the block has to say *why* nothing can be done, and name who is
-  // holding it when there is one machine and it said who it is.
-  const standbyOnly = summary !== null
-    && summary.any
-    && summary.drivable === 0
-    && !partial;
-  const holderName = machines?.length === 1 ? holder?.name?.trim() ?? null : null;
+  // The machine the phone is reading answers every heartbeat and still cannot be
+  // used: another paired device holds it. The dot is yellow for the whole set,
+  // but the block's own words are the open machine's — that is where the reason
+  // belongs, with the holder's name when it gave one. `partial` (some machines
+  // are down) outranks it: that is the more urgent fact.
+  // The machine the screen is about, by its own flag rather than by position:
+  // the list is built active-first today, but this reading must not depend on it.
+  const activeMachine = machines?.find(entry => entry.active) ?? machines?.[0] ?? null;
+  const activeHeld = activeMachine
+    ? activeMachine.status === "connected" && activeMachine.control === "standby"
+    : standby && presentation.level === "connected";
+  const standbyHere = activeHeld && !partial;
+  // The holder belongs to the open machine (`remote.presence`), so it names the
+  // device this phone would displace even when peers are paired too.
+  const holderName = standbyHere ? holder?.name?.trim() ?? null : null;
   const label = partial
     ? t("connection.machinesPartial")
-    : standbyOnly
+    : standbyHere
       ? t("connection.connectedStandby")
       : t(statusKey);
   const reason = partial
@@ -178,7 +186,7 @@ export function ConnectionBadge({
       connected: summary!.connected,
       total: summary!.total,
     })
-    : standbyOnly
+    : standbyHere
       ? (holderName
           ? t("connection.controlHeldBy", { name: holderName })
           : t("connection.controlHeldByUnknown"))
@@ -187,7 +195,7 @@ export function ConnectionBadge({
         : t(`connection.statusDetails.${detailState}.reason`);
   const solution = partial
     ? t("connection.machinesPartialHint")
-    : standbyOnly
+    : standbyHere
       ? (holderName
           ? t("connection.takeControlHint", { name: holderName })
           : t("connection.takeControlHintUnknown"))
@@ -317,7 +325,7 @@ export function ConnectionBadge({
               <Text accessibilityLiveRegion="polite" style={[styles.title, { color: titleColor }]}>{label}</Text>
               <Text style={styles.hint}>{reasonWithCode}</Text>
               {solution && <Text style={styles.hint}>{solution}</Text>}
-              {!severalMachines && standby && onTakeControl && machines?.[0] ? (
+              {!severalMachines && standbyHere && onTakeControl && machines?.[0] ? (
                 <Button
                   compact
                   variant="secondary"

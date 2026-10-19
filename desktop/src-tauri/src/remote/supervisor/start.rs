@@ -3,6 +3,9 @@ use super::*;
 pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppError> {
     SUPERVISOR.start().await.map_err(Into::into)
 }
+pub async fn enable() -> Result<RemoteStatus, crate::AppError> {
+    SUPERVISOR.enable().await.map_err(Into::into)
+}
 pub async fn add_device() -> Result<RemoteStatus, crate::AppError> {
     SUPERVISOR.add_device().await.map_err(Into::into)
 }

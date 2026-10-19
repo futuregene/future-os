@@ -144,16 +144,17 @@ impl AppState {
         );
         new_sess.switch_session_metadata(session_id)?;
         // Cold history is reconciled on hydration as well as during a live
-        // provider-config commit. A removed persisted model must not survive
-        // merely because this session was not resident when the catalog
-        // changed. `set_model` appends the authoritative session_info without
-        // rewriting any historical messages.
-        let model_needs_replacement = new_sess.model.is_empty()
-            || !self
-                .model_registry
-                .read()
-                .is_model_available(&new_sess.model);
-        if model_needs_replacement {
+        // provider-config commit. Only a genuinely stale reference (model gone
+        // from a healthy catalog, or provider removed) may be replaced here:
+        // a transient gap — an environment switch that drops the provider's
+        // key until the next login, or a catalog that is still cold on startup
+        // — must keep the conversation's own model. `set_model` appends the
+        // authoritative session_info without rewriting any historical messages.
+        let stale_reference = {
+            let registry = self.model_registry.read();
+            registry.reference_is_stale(&new_sess.model)
+        };
+        if stale_reference {
             let default_model = self
                 .model_registry
                 .read()
@@ -308,20 +309,19 @@ impl AppState {
     /// credentials, base URLs, protocol settings, modalities, context windows,
     /// or token limits; the LLM request path resolves all of those from the
     /// latest Registry snapshot. Consequently provider edits require no
-    /// per-session credential refresh. This pass exists only to replace an empty
-    /// or removed model reference and persist that new selection.
+    /// per-session credential refresh. This pass exists only to replace a
+    /// genuinely stale reference — see [`crate::models::Registry::reference_is_stale`];
+    /// a temporarily unusable provider keeps the reference it has.
     pub fn reconcile_provider_references(&self) {
         let sessions = self.sessions.read().values().cloned().collect::<Vec<_>>();
         for sess in &sessions {
-            let model_needs_reselection = {
+            let reference_needs_reselection = {
                 let session = sess.read();
-                session.model.is_empty()
-                    || !self
-                        .model_registry
-                        .read()
-                        .is_model_available(&session.model)
+                self.model_registry
+                    .read()
+                    .reference_is_stale(&session.model)
             };
-            if model_needs_reselection {
+            if reference_needs_reselection {
                 // Session created before login — resolve and apply default model.
                 // Re-check emptiness inside the write lock to avoid TOCTOU: another
                 // thread may have set a model between our read and write locks.
@@ -339,11 +339,10 @@ impl AppState {
                             }
                         }
                     }
-                    let still_needs_reselection = session.model.is_empty()
-                        || !self
-                            .model_registry
-                            .read()
-                            .is_model_available(&session.model);
+                    let still_needs_reselection = self
+                        .model_registry
+                        .read()
+                        .reference_is_stale(&session.model);
                     if still_needs_reselection {
                         let registry = self.model_registry.read();
                         let default_model = registry.replacement_model(&session.model);

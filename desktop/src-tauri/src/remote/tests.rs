@@ -325,13 +325,17 @@ mod runtime_tests {
         }
 
         // The optional Web listener retries silently, then becomes actionable
-        // only after its own reconnect budget is exhausted.
+        // only after its own reconnect budget is exhausted. The fixture's slot
+        // is the one that holds the process-wide listener, as a started slot
+        // records itself.
         {
             let mut guard = SUPERVISOR.state.lock().unwrap();
             let state = guard.as_mut().unwrap();
             state.web_task = None;
             state.cmd_task = SUPERVISOR.spawn_fixture_task(std::future::pending());
         }
+        let pair_id = SUPERVISOR.active_pair().expect("fixture controller");
+        *SUPERVISOR.web_owner.lock().unwrap() = Some(pair_id);
         assert_eq!(status().warning_code, None);
         SUPERVISOR
             .web_reconnect_attempts
@@ -3119,6 +3123,7 @@ use super::SingleSlotMap;
 mod multi_device_tests {
     use super::runtime_tests::test_creds_for_multi_device as test_creds;
     use super::*;
+    use crate::remote::test_support::FakeNats;
 
     /// Save two devices and make `first` the controller — the shape of a
     /// machine that was driven by one of them and then paired a second.
@@ -3133,6 +3138,145 @@ mod multi_device_tests {
         pairing::set_active(&a.pair_id).unwrap();
         SUPERVISOR.restore_active(Some(a.pair_id.clone()));
         (a, b)
+    }
+
+    /// A device in standby keeps renewing *its own* credential.
+    ///
+    /// The renewal runner belongs to one slot, but it used to read the book's
+    /// primary — the controlling device — so every standby slot's runner
+    /// returned at once. The generation watch reads a finished renewal task as
+    /// a dead critical task: it rebuilt that slot until the reconnect budget
+    /// was gone, and then reported the machine as broken (RT001, switch off)
+    /// the moment control moved to that device, while its bridge was in fact
+    /// serving commands.
+    #[tokio::test]
+    async fn a_standby_slot_keeps_renewing_its_own_credential() {
+        let _home = test_support::HomeGuard::new("remote-multi-standby-refresh");
+        let (controller, standby) = two_devices("pair_renew_ctrl", "pair_renew_standby");
+        assert!(
+            !SUPERVISOR.in_control(&standby.pair_id),
+            "the fixture must actually leave the second device in standby"
+        );
+
+        let nats = FakeNats::start().await;
+        let confirmed = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let mut state = test_support::fake_state(&nats, &standby.pair_id).await;
+        state.pairing_confirmed = confirmed.clone();
+        SUPERVISOR
+            .state
+            .lock()
+            .unwrap()
+            .insert(standby.pair_id.clone(), state);
+        let renewal = spawn_credential_refresh(
+            standby.pair_id.clone(),
+            commands::ReplySlots::default(),
+            confirmed,
+            commands::new_handshake_state(
+                standby.clone(),
+                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                "bridge_renew".to_string(),
+            ),
+        );
+
+        // Long enough for the runner's own tick to have come and gone.
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        let still_renewing = !renewal.is_finished();
+        let control_kept = SUPERVISOR.in_control(&controller.pair_id);
+        renewal.abort();
+        stop();
+        assert!(
+            still_renewing,
+            "the standby slot's renewal must keep running: it is what keeps that \
+             device's bridge alive, and what stops the generation watch from \
+             rebuilding a slot that is serving fine"
+        );
+        assert!(
+            control_kept,
+            "the standby device's renewal must not move control"
+        );
+    }
+
+    /// Taking control must not make the machine report the *other* device's
+    /// listener as broken.
+    ///
+    /// The browser listener is one per process and belongs to the slot that
+    /// bound it. Reading a slot with no `web_task` as "the listener died" made
+    /// the focused device — the one that just took over — spend the retry
+    /// budget rebinding a port its owner still held, and then show `LC002` for
+    /// a listener that was never down.
+    #[tokio::test]
+    async fn taking_over_does_not_report_the_other_devices_listener_as_dead() {
+        let _home = test_support::HomeGuard::new("remote-multi-web-owner");
+        let (controller, standby) = two_devices("pair_webowner_ctrl", "pair_webowner_standby");
+        let nats = FakeNats::start().await;
+        let mut owner = test_support::fake_state(&nats, &controller.pair_id).await;
+        // The controller is the slot that bound the process-wide listener.
+        owner.web_task = Some(SUPERVISOR.spawn_fixture_task(std::future::pending()));
+        let standby_state = test_support::fake_state(&nats, &standby.pair_id).await;
+        *SUPERVISOR.web_owner.lock().unwrap() = Some(controller.pair_id.clone());
+        {
+            let mut states = SUPERVISOR.state.lock().unwrap();
+            states.insert(controller.pair_id.clone(), owner);
+            states.insert(standby.pair_id.clone(), standby_state);
+        }
+
+        let moved = SUPERVISOR.claim_control(&standby.pair_id);
+        assert_eq!(moved.as_deref(), Some(controller.pair_id.as_str()));
+        let focused = status();
+        // Even with the whole retry budget spent: the listener is the owner's,
+        // its task is alive, and this device has nothing to report.
+        SUPERVISOR
+            .web_reconnect_attempts
+            .store(MAX_WEB_RECONNECT_ATTEMPTS, Ordering::Release);
+        let exhausted = status();
+        stop();
+        assert_eq!(
+            focused.pair_id, standby.pair_id,
+            "the takeover must be the focus"
+        );
+        assert_eq!(
+            focused.warning_code, None,
+            "a healthy listener must not be reported as missing"
+        );
+        assert_eq!(
+            exhausted.warning_code, None,
+            "a device that never held the listener must not take the blame for it"
+        );
+    }
+
+    /// The fix must not hide a listener that really is down: the device that
+    /// owns it is still the one that reports it.
+    #[tokio::test]
+    async fn the_listener_owner_still_reports_its_own_failure() {
+        let _home = test_support::HomeGuard::new("remote-multi-web-owner-failed");
+        let (controller, standby) = two_devices("pair_webfail_ctrl", "pair_webfail_standby");
+        let nats = FakeNats::start().await;
+        // Bound and then gone: the port is free and the process owed a listener.
+        let mut owner = test_support::fake_state(&nats, &controller.pair_id).await;
+        let dead = SUPERVISOR.spawn_fixture_task(std::future::pending::<()>());
+        dead.abort();
+        dead.clone().completed().await;
+        owner.web_task = Some(dead);
+        let standby_state = test_support::fake_state(&nats, &standby.pair_id).await;
+        *SUPERVISOR.web_owner.lock().unwrap() = Some(controller.pair_id.clone());
+        {
+            let mut states = SUPERVISOR.state.lock().unwrap();
+            states.insert(controller.pair_id.clone(), owner);
+            states.insert(standby.pair_id.clone(), standby_state);
+        }
+
+        SUPERVISOR.claim_control(&controller.pair_id);
+        SUPERVISOR
+            .web_reconnect_attempts
+            .store(MAX_WEB_RECONNECT_ATTEMPTS, Ordering::Release);
+        let current = status();
+        stop();
+        assert_eq!(current.pair_id, controller.pair_id);
+        assert_eq!(
+            current.warning_code.as_deref(),
+            Some("web_bind"),
+            "the device that owns the listener must still report it missing"
+        );
     }
 
     /// Taking control moves the pointer, and persists it: a restart must not
@@ -3264,6 +3408,74 @@ mod multi_device_tests {
 /// host-bridge fixture does exactly that) would otherwise be pointed at another
 /// device's pairing — a client that then talks to a subject the machine is not
 /// serving, times out, and leaves its own runtime behind for the next fixture.
+/// Turning the remote desktop on is not adding a connection.
+///
+/// The switch serves the devices the user paired; on a machine with none it is
+/// simply on and empty. The other entry points (`future remote start`, the CLI's
+/// device command, the headless desktop) still mint an invitation when nothing
+/// is paired, because there the invitation *is* what was asked for — so the
+/// difference has to live in the start, not in the caller's good intentions.
+mod switch_tests {
+    use super::*;
+    use crate::remote::test_support::{init_store, sign_in, HomeGuard, MockPlatform};
+
+    /// The switch on an empty machine: on, empty, and no invitation minted. The
+    /// platform is a mock that *would* answer a pairing request, so a request
+    /// reaching it is the failure the assertion names.
+    #[tokio::test]
+    async fn the_switch_leaves_an_empty_machine_empty_and_on() {
+        let _home = HomeGuard::new("remote-switch-empty");
+        init_store();
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+
+        let status = super::supervisor::enable()
+            .await
+            .expect("an empty machine still answers with a status");
+
+        assert!(
+            matches!(status.phase, RemotePhase::Enabled),
+            "the switch must read as on, not stopped or connecting: {status:?}"
+        );
+        assert!(status.reason.is_none(), "{status:?}");
+        assert!(status.pairing_code.is_none(), "no invitation was asked for");
+        assert!(
+            status.devices.is_empty(),
+            "and none was created: {status:?}"
+        );
+        assert!(
+            platform.requests().is_empty(),
+            "the switch must not touch the platform: {:?}",
+            platform.requests()
+        );
+        assert!(
+            pairing::load_slots().is_empty(),
+            "nothing may be written to the pairing book"
+        );
+    }
+
+    /// The same machine, asked for an invitation on purpose: the CLI and the
+    /// headless desktop rely on a plain start still producing a code.
+    #[tokio::test]
+    async fn a_plain_start_still_offers_an_invitation_on_an_empty_machine() {
+        let _home = HomeGuard::new("remote-start-empty");
+        init_store();
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+
+        // The platform refuses the invitation (no scripted answer), which is
+        // enough: reaching it is what this test measures, and a refused mint is
+        // reported as a status rather than panicking the start.
+        let status = super::supervisor::start(RemoteStartInput {})
+            .await
+            .expect("a refused invitation is still a status");
+        assert!(
+            !platform.requests().is_empty(),
+            "a plain start must ask for an invitation: {status:?}"
+        );
+    }
+}
+
 mod start_focus_tests {
     use super::runtime_tests::test_creds_for_multi_device as test_creds;
     use super::*;
@@ -3430,6 +3642,64 @@ mod slot_tests {
             "an added device must not replace the machine's existing ones: {}",
             add_request.2
         );
+
+        stop();
+    }
+
+    /// The device a request adds shows up in the machine's device list as a
+    /// **standby** row carrying its invitation, while the device in control keeps
+    /// the machine.
+    ///
+    /// This is the half of "add a device" a terminal cannot see for itself: the
+    /// invitation is not a credential until a phone claims it, so it is not in the
+    /// pairing book the CLI reads — it exists only in this process's device list,
+    /// which is what the window, the phone and the request's own answer read.
+    #[tokio::test]
+    async fn an_added_device_is_listed_as_standby_with_its_invitation() {
+        let _home = HomeGuard::new("remote-add-device-standby");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        // The machine already has a device, and it is the one in control.
+        let existing = test_creds("pair_control", nats.url(), 3600);
+        pairing::save_creds(&existing).unwrap();
+        platform.respond_refresh(nats.url());
+        let code = platform.respond_pair_code(nats.url());
+        SUPERVISOR.start_requested.store(false, Ordering::Release);
+        // The device that was already there is the one in control — the state
+        // adding a device must leave untouched.
+        SUPERVISOR.restore_active(Some(existing.pair_id.clone()));
+
+        let added = crate::remote::supervisor::add_device()
+            .await
+            .expect("add a device");
+        assert_ne!(
+            added.pair_id, existing.pair_id,
+            "a new device, not a re-pair"
+        );
+
+        let listed = crate::remote::status();
+        let row = listed
+            .devices
+            .iter()
+            .find(|device| device.pair_id == added.pair_id)
+            .unwrap_or_else(|| panic!("the added device must be listed: {listed:?}"));
+        assert_eq!(row.control, DeviceControl::Standby, "{listed:?}");
+        assert!(!row.connected, "an invitation is not a connection");
+        assert!(
+            row.pairing_code
+                .as_deref()
+                .is_some_and(|shown| shown.contains(&code)),
+            "the row carries the invitation that was minted: {listed:?}"
+        );
+        // The device that was already there keeps the machine.
+        let controlling = listed
+            .devices
+            .iter()
+            .find(|device| device.control == DeviceControl::Active)
+            .expect("one device is still in control");
+        assert_eq!(controlling.pair_id, existing.pair_id, "{listed:?}");
 
         stop();
     }

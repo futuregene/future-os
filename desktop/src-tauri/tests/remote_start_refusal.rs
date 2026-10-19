@@ -193,7 +193,7 @@ fn serve_platform(mut stream: TcpStream, state: Arc<Mutex<PlatformState>>) {
     } else if method == "POST" && path.ends_with("/client/v1/remote/auth/token") {
         token_response(&state)
     } else if method == "POST" && path.ends_with("/client/v1/remote/pair/code") {
-        pair_code_response(&state)
+        pair_code_response(&state, &body)
     } else if method == "POST" && path.ends_with("/client/v1/remote/pair/revoke") {
         (200, json!({}))
     } else {
@@ -240,13 +240,29 @@ fn token_response(state: &Arc<Mutex<PlatformState>>) -> (u16, Value) {
 /// The invitation the platform mints for the child's pairing request. `pairing_code` must be
 /// base64url JSON carrying `exp`: `create_pairing` derives the secure identity's expiry
 /// from it, and a code without one is refused before the identity exists.
-fn pair_code_response(state: &Arc<Mutex<PlatformState>>) -> (u16, Value) {
+///
+/// The pair id follows the platform's rule, which is the difference between adding
+/// a device and replacing one: `keep_existing: false` names the desktop's existing
+/// binding (a re-pair), `true` is a new device beside the others and gets its own
+/// id. A fixture that always answered `pair_fixture` made an `add` look like a
+/// replace, which is exactly the confusion the book's `slots` are supposed to
+/// resolve.
+fn pair_code_response(state: &Arc<Mutex<PlatformState>>, request_body: &[u8]) -> (u16, Value) {
     let url = state.lock().unwrap().pair_url.clone().unwrap_or_default();
     let code = B64.encode(json!({ "exp": unix_now() + 600 }).to_string());
+    let keep_existing = String::from_utf8_lossy(request_body)
+        .split_whitespace()
+        .collect::<String>()
+        .contains("\"keep_existing\":true");
+    let pair_id = if keep_existing {
+        "pair_added"
+    } else {
+        "pair_fixture"
+    };
     (
         200,
         json!({
-            "pair_id": "pair_fixture",
+            "pair_id": pair_id,
             "pairing_code": code,
             "user_jwt": fixture_jwt(3600),
             "nats_url": url,
@@ -877,7 +893,7 @@ fn a_device_request_is_answered_by_the_running_headless_desktop() {
     write_auth(&home, &platform.url);
     write_pairing(&home, &broker.url, true);
     let answer = home.join("answer.json");
-    let requests = home.join(".future/app/remote-control");
+    let requests = home.join(".future/run/remote-control");
     std::fs::create_dir_all(&requests).expect("create the control directory");
     std::fs::write(
         requests.join("0001.request.json"),
@@ -907,11 +923,32 @@ fn a_device_request_is_answered_by_the_running_headless_desktop() {
         .as_str()
         .unwrap_or_else(|| panic!("an invitation is the answer: {reply}"));
     assert!(link.starts_with("futureos://remote/pair?v=2"), "{reply}");
-    assert!(
-        reply["pairId"].as_str().is_some_and(|id| !id.is_empty()),
-        "the answer names the device it is for: {reply}"
-    );
+    let added = reply["pairId"]
+        .as_str()
+        .expect("the answer names the device it is for");
+    assert!(!added.is_empty(), "{reply}");
+    // The *new* device, not the one that was already paired and is in control:
+    // the answer is projected from the slot the request just created, so the code
+    // in the terminal is the one the phone can actually claim.
+    assert_ne!(added, "pair_fixture", "{reply}");
     assert!(reply.get("error").is_none(), "{reply}");
+
+    // The book still holds only the confirmed device: an invitation is not a
+    // credential until a phone claims it, so the newcomer lives in the running
+    // Desktop's device list (standby, with the code) and joins the book on
+    // confirmation. Control did not move either.
+    let book: Value = serde_json::from_slice(
+        &std::fs::read(home.join(".future/remote_pairings.json")).expect("the book is written"),
+    )
+    .expect("the book is JSON");
+    let slots = book["slots"].as_array().expect("slots");
+    assert_eq!(slots.len(), 1, "{book}");
+    assert_eq!(slots[0]["pairId"], "pair_fixture", "{book}");
+    assert_eq!(
+        book["active"], "pair_fixture",
+        "adding must not move control: {book}"
+    );
+
     // The request is consumed, not left for the next Desktop to act on again.
     assert!(
         !requests.join("0001.request.json").exists(),
@@ -1094,8 +1131,9 @@ fn a_healthy_generation_resets_the_budget_and_a_retryable_reconnect_arms_the_ret
 //    book loses the device while the generation is live. `start.rs:530-531, 507`.
 // 4. `a_reconnect_with_a_pre_v2_slot_forgets_it` — the book now holds a pre-v2 slot.
 //    `start.rs:534-535`.
-// 5. `a_reconnect_the_platform_revokes_is_forgotten` — the platform answers the
-//    reconnect's refresh with `invalid_remote_credential`. `start.rs:540-541`.
+// 5. `a_revoked_answer_is_forgotten_whichever_ask_receives_it` — the platform answers
+//    a refresh with `invalid_remote_credential`: `start.rs:540-541` when the rebuild
+//    asks, the device's own renewal worker's forget-and-stop arm otherwise.
 // 6. `a_reconnect_refreshes_the_credential_and_rebuilds_the_slot` — the refresh
 //    succeeds and the slot is rebuilt. `start.rs:538, 545-553`.
 // 7. `the_reconnect_budget_exhausts_into_a_terminal_watch` — three devices spend the
@@ -1258,9 +1296,25 @@ fn a_reconnect_for_a_device_the_book_no_longer_holds_stops_that_runtime() {
     write_pairing(&home, &broker.url, true);
 
     let mut child = ChildRun::spawn(home.clone());
+    // "Live before the book changes" is a fact about the bridge, not about a status line:
+    // the generation has connected to its broker and the child has saved the book. Poll
+    // both instead of the interval-paced `Remote: Ready` printout, which a credential
+    // renewal can pre-empt on a loaded runner.
+    let deadline = Instant::now() + READY_BUDGET;
+    while Instant::now() < deadline
+        && (broker.connects.load(Ordering::Acquire) == 0
+            || !home.join(".future/remote_pairings.json").exists())
+    {
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert!(
-        child.wait_for("Remote: Ready", READY_BUDGET),
+        broker.connects.load(Ordering::Acquire) >= 1,
         "the generation must be live before the book changes; transcript:\n{}",
+        child.text()
+    );
+    assert!(
+        home.join(".future/remote_pairings.json").exists(),
+        "the child must have saved the book before it is removed; transcript:\n{}",
         child.text()
     );
     // The book is authoritative once the child's own start has saved it.
@@ -1359,26 +1413,27 @@ fn a_reconnect_with_a_pre_v2_slot_forgets_it() {
     child.interrupt();
 }
 
-/// 5. `restart_slot` when the platform now reports the device revoked.
+/// 5. A revoked answer is forgotten, whichever ask receives it.
 ///
-/// The target device's live link is refused with an already-expired credential, so the
-/// health records a *transient* failure and the watcher rebuilds instead of returning.
-/// The rebuild's refresh is answered `401 invalid_remote_credential`, which takes the
-/// forget-and-stop arm (`start.rs:542-543`) instead of the retryable `start_failure`
-/// below it.
+/// The target device's live link is refused, so the health records a *transient*
+/// failure and the generation watch rebuilds. That rebuild's refresh — or, in the
+/// other order, the target's own renewal worker — is answered
+/// `401 invalid_remote_credential`, and the device must be forgotten and stopped
+/// instead of retried (the rebuild's arm is `start.rs:542-543`, the worker's is its
+/// own forget-and-stop arm).
 ///
-/// **The second device is part of the mechanism, not decoration.** The first start
-/// spawns a credential-refresh worker per device, and an expired bridge JWT makes that
-/// worker due immediately — so with one device it competes with the reconnect for the
-/// next scripted answer, and the order in which the two queue on `start_lock` decides
-/// whether the reconnect is answered with the revocation at all. The worker resolves its
-/// credential with `pairing::load_creds()`, which returns the *controlling* slot: this
-/// book makes the healthy second device the controller, so the target's worker filters
-/// itself out and returns before it asks. The revocation is then the reconnect's answer
-/// on every run, and the controlling device keeps the entry alive while the target is
-/// forgotten.
+/// **Two askers can resolve this, and the fixture does not choose between them.**
+/// Every device has its own renewal worker, and the target's bridge JWT is expired
+/// here, so its worker is due at once. It reads *that device's* credential
+/// (`pairing::load_slot`) — a standby slot renewing its own bridge is what keeps it
+/// alive — so it races the generation watch's rebuild for the platform's answer. Both
+/// are correct askers, and both must end the same way: the revocation is forgotten,
+/// never retried and never left on disk. So the script answers every post-establish
+/// ask with the revocation and the assertions below are that outcome, not which of
+/// the two got there first (`start.rs:542-543` when the rebuild asks; the worker's own
+/// forget-and-stop arm otherwise).
 #[test]
-fn a_reconnect_the_platform_revokes_is_forgotten() {
+fn a_revoked_answer_is_forgotten_whichever_ask_receives_it() {
     let broker = Broker::start(BrokerMode::Live {
         error_after: Duration::from_millis(600),
     });
@@ -1396,8 +1451,8 @@ fn a_reconnect_the_platform_revokes_is_forgotten() {
                 nats_url: broker.url.clone(),
                 exp_offset: -60,
             },
-            // The target's reconnect. The controller's book entry is due for renewal
-            // only after `REFRESH_LEAD` (4 min), so nothing else consumes this answer.
+            // Whatever asks next — the target's renewal worker or the rebuild — is
+            // told the device is revoked (the last reply repeats for later asks).
             TokenReply::Revoked,
         ],
         None,
@@ -1419,16 +1474,12 @@ fn a_reconnect_the_platform_revokes_is_forgotten() {
         "the controlling device must come up; transcript:\n{}",
         child.text()
     );
-    assert!(
-        child.wait_for("rebuilding generation (1/3)", Duration::from_secs(40)),
-        "the live refusal must reach the reconnect worker; transcript:\n{}",
-        child.text()
-    );
-    let revoked = child.wait_for("invalid_remote_credential", Duration::from_secs(30));
+    let revoked = child.wait_for("invalid_remote_credential", Duration::from_secs(40));
     let transcript = child.text();
     assert!(
         revoked && transcript.contains("HTTP 401"),
-        "the reconnect's refresh must be the revoked answer; transcript:\n{transcript}"
+        "a revoked credential must be recognised as a refusal, not retried; \
+         transcript:\n{transcript}"
     );
     // The arm's own effect: the dead device is gone from the book, the healthy one stays.
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -1467,8 +1518,9 @@ fn a_reconnect_the_platform_revokes_is_forgotten() {
 /// is built and the slot restarted (`start.rs:540, 547-554`); the rebuilt generation
 /// connects there, which is the effect: a slot installed on the *new* endpoint, not a
 /// worker that merely ran. The wrapper then takes its non-retryable `Ok(_)` arm
-/// (`start.rs:509`). The controlling second device keeps the target's refresh worker out
-/// of the script (see test 5 for why that matters).
+/// (`start.rs:509`). The target's own renewal worker also asks at startup (its
+/// credential is expired), so the script answers it with a retryable server error and
+/// leaves the rebuild's credential for the reconnect.
 #[test]
 fn a_reconnect_refreshes_the_credential_and_rebuilds_the_slot() {
     let first = Broker::start(BrokerMode::Live {
@@ -1490,6 +1542,9 @@ fn a_reconnect_refreshes_the_credential_and_rebuilds_the_slot() {
                 nats_url: first.url.clone(),
                 exp_offset: -60,
             },
+            // The target's own renewal worker asks first; a retryable answer keeps it
+            // out of the reconnect's way (the expired-credential retry delay is 3s).
+            TokenReply::ServerError,
             // The target's reconnect: this is the credential to rebuild with.
             TokenReply::Credential {
                 nats_url: rebuilt.url.clone(),
@@ -1622,8 +1677,9 @@ fn the_reconnect_budget_exhausts_into_a_terminal_watch() {
 /// records a retryable `network` and keeps retrying instead of printing the worker's
 /// bare-error line. A dead endpoint is used rather than a refused credential because an
 /// authorization answer would make the *refresh worker's* generation terminal, while an
-/// unreachable one only makes it back off. As in tests 5 and 6, the controlling second
-/// device keeps that worker out of the script.
+/// unreachable one only makes it back off. The target's own renewal worker also asks at
+/// startup (its credential is expired); it takes the same dead endpoint, so whichever of
+/// the two asks last still gets one.
 #[test]
 fn a_reconnect_whose_rebuild_cannot_connect_is_retryable() {
     let first = Broker::start(BrokerMode::Live {

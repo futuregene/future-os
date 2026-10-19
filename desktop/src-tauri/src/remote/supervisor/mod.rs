@@ -15,7 +15,7 @@ pub use self::shutdown::{
 #[cfg(test)]
 pub(super) use self::shutdown::{notify_mobile_unpair, stop_slot};
 #[allow(unused_imports)]
-pub use self::start::{add_device, pair_new_device, start};
+pub use self::start::{add_device, enable, pair_new_device, start};
 #[cfg(test)]
 pub(super) use self::start::{spawn_runtime_reconnect, start_failure, start_once};
 pub(super) use self::state::SUPERVISOR;

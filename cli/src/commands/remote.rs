@@ -586,10 +586,17 @@ const REPLY_POLL: Duration = Duration::from_millis(100);
 #[cfg(test)]
 const REPLY_POLL: Duration = Duration::from_millis(5);
 
-/// The directory the running Desktop watches (`~/.future/app/remote-control`).
+/// The directory the running Desktop watches (`~/.future/run/remote-control`).
+///
+/// Under `run/` on purpose: this is transient runtime state, like the agent's own
+/// socket beside it, and nothing here should ever be backed up or restored with
+/// the data directory — a restored request would be answered by a Desktop whose
+/// asking terminal is long gone.
 const CONTROL_DIRECTORY: &str = "remote-control";
 /// Suffix that marks a request, matching the Desktop's own rule.
 const REQUEST_SUFFIX: &str = ".request.json";
+/// Serializes `add` across terminals (`exclusive_add_slot`).
+const ADD_LOCK_FILE: &str = "add.lock";
 
 /// `future remote devices add` — mint an invitation for a device that is not
 /// paired yet.
@@ -617,6 +624,13 @@ async fn add(args: &[String], out: &Output) -> Result<(), String> {
             future_dir()?.display()
         ));
     }
+    // One invitation at a time. Two `add`s in flight would each mint a device —
+    // both plausible, but the second is almost always a double-tap or a shell
+    // retry, and on a platform that caps the number of devices it can cost the
+    // slot the user meant for something else. Refusing is also the only honest
+    // answer: the terminal that loses would otherwise wait out its budget for a
+    // code nobody is looking at.
+    let _one_at_a_time = exclusive_add_slot()?;
     let reply = request_invitation().await?;
     if let Some(error) = reply.get("error").and_then(Value::as_str) {
         return Err(format!("The Desktop did not issue an invitation: {error}"));
@@ -664,6 +678,65 @@ async fn add(args: &[String], out: &Output) -> Result<(), String> {
     Ok(())
 }
 
+/// Hold the "one `add` at a time" lock for as long as this lives.
+///
+/// An advisory file lock, so a process that dies releases it: a stale lock would
+/// otherwise refuse every later `add` until someone deleted a file by hand.
+fn exclusive_add_slot() -> Result<std::fs::File, String> {
+    let directory = control_directory()?;
+    let path = directory.join(ADD_LOCK_FILE);
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|error| format!("Cannot open {}: {error}", path.display()))?;
+    match fs2::FileExt::try_lock_exclusive(&file) {
+        Ok(()) => Ok(file),
+        Err(_) => Err(
+            "Another `future remote devices add` is already waiting for an invitation. Finish \
+             that one — it prints the code — or let it time out, then run this again."
+                .to_string(),
+        ),
+    }
+}
+
+/// `~/.future/run/remote-control`, created if needed.
+fn control_directory() -> Result<PathBuf, String> {
+    let directory = future_dir()?.join("run").join(CONTROL_DIRECTORY);
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("Cannot create {}: {error}", directory.display()))?;
+    Ok(directory)
+}
+
+/// What a timed-out request means, told apart by whether anything picked it up.
+///
+/// The two silences are different faults with different fixes, and a single
+/// "did not answer" sends the user to the wrong one. A request still sitting in
+/// the directory was never claimed: no process is watching it, which in practice
+/// means the Desktop running for this data directory predates device requests —
+/// it was started before the update and keeps serving from its old code until it
+/// is restarted. A request that disappeared was claimed by a Desktop that then
+/// failed or was killed mid-request.
+fn timeout_message(timeout: Duration, request_still_there: &dyn Fn() -> bool) -> String {
+    if request_still_there() {
+        format!(
+            "No Desktop picked the request up within {}s — the one running for {} is probably an \
+             older build that predates device requests (it was started before the update). \
+             Restart it with the current version and try again; nothing was paired.",
+            timeout.as_secs(),
+            "this data directory",
+        )
+    } else {
+        format!(
+            "A Desktop took the request but did not answer within {}s. It may have failed or been \
+             stopped while pairing; check its own output, then try again.",
+            timeout.as_secs()
+        )
+    }
+}
+
 /// Ask the running Desktop for an invitation and return its answer.
 ///
 /// The reply path is a temporary file this process created for itself, so two
@@ -671,9 +744,7 @@ async fn add(args: &[String], out: &Output) -> Result<(), String> {
 /// request was answered or not, both files are gone when this returns: a request
 /// left behind would be served by the *next* Desktop into a file nobody reads.
 async fn request_invitation() -> Result<Value, String> {
-    let directory = future_dir()?.join("app").join(CONTROL_DIRECTORY);
-    std::fs::create_dir_all(&directory)
-        .map_err(|error| format!("Cannot create {}: {error}", directory.display()))?;
+    let directory = control_directory()?;
     let started = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis())
@@ -692,13 +763,24 @@ async fn request_invitation() -> Result<Value, String> {
         &request,
         &json!({ "op": "add-device", "reply": answer.display().to_string() }),
     )?;
-    let outcome = wait_for_answer(&answer).await;
+    let outcome = wait_for_answer(&answer, &|| request.exists(), &desktop_running).await;
     let _ = std::fs::remove_file(&answer);
     let _ = std::fs::remove_file(&request);
     outcome
 }
 
-async fn wait_for_answer(answer: &Path) -> Result<Value, String> {
+/// Wait for the Desktop's answer, ending early if the Desktop stops.
+///
+/// `still_running` is injected so both outcomes are reachable without a real
+/// Desktop or a real wait. A Desktop that exits mid-request is the one case the
+/// timeout would otherwise *mislabel*: it would report "did not answer within
+/// 60s" for a process that is gone, sending the user to look for a busy Desktop
+/// that no longer exists.
+async fn wait_for_answer(
+    answer: &Path,
+    request_still_there: &dyn Fn() -> bool,
+    still_running: &dyn Fn() -> bool,
+) -> Result<Value, String> {
     let deadline = Instant::now() + REPLY_TIMEOUT;
     loop {
         // A poll that lands before the writer has finished is "not yet", not a
@@ -710,11 +792,14 @@ async fn wait_for_answer(answer: &Path) -> Result<Value, String> {
             return Ok(value);
         }
         if Instant::now() >= deadline {
-            return Err(format!(
-                "The Desktop did not answer within {}s. It may be busy pairing another device; \
-                 try again, or check its own output.",
-                REPLY_TIMEOUT.as_secs()
-            ));
+            return Err(timeout_message(REPLY_TIMEOUT, request_still_there));
+        }
+        if !still_running() {
+            return Err(
+                "The Desktop stopped before it answered. Start it again (the window, or \
+                 futureos-headless) and re-run this; nothing was paired."
+                    .to_string(),
+            );
         }
         tokio::time::sleep(REPLY_POLL).await;
     }
@@ -1778,7 +1863,7 @@ mod tests {
     /// Answer the next request the way the Desktop's control host does, and give
     /// back the request that was posed so a test can judge it.
     fn answer_requests(home: &Home, answer: Value) -> std::sync::Arc<std::sync::Mutex<Vec<Value>>> {
-        let directory = home.future().join("app").join(CONTROL_DIRECTORY);
+        let directory = home.future().join("run").join(CONTROL_DIRECTORY);
         std::fs::create_dir_all(&directory).unwrap();
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let recorded = seen.clone();
@@ -1842,7 +1927,7 @@ mod tests {
             .as_str()
             .is_some_and(|path| path.ends_with(".json")));
         assert!(
-            !std::fs::read_dir(home.future().join("app").join(CONTROL_DIRECTORY))
+            !std::fs::read_dir(home.future().join("run").join(CONTROL_DIRECTORY))
                 .unwrap()
                 .filter_map(Result::ok)
                 .any(|entry| entry
@@ -1887,6 +1972,128 @@ mod tests {
         assert!(stderr.contains("did not issue an invitation"), "{stderr}");
     }
 
+    /// The platform's own code reaches the user verbatim. The device cap is the
+    /// case that matters: `pairing_limit_reached` is the only thing that tells
+    /// them to unpair a device, and a generic "the action could not be completed"
+    /// would leave them with no next step.
+    #[tokio::test]
+    async fn the_platforms_device_cap_is_passed_through_word_for_word() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let _desktop = RunningDesktop::claim(&home);
+        let _answer = answer_requests(&home, json!({ "error": "pairing_limit_reached" }));
+
+        let (code, _, stderr) = run(&["remote", "devices", "add"]).await;
+        assert_eq!(code, 1);
+        // Printed as the Desktop reported it, and nothing generic in front of it.
+        assert_eq!(
+            stderr.trim(),
+            "The Desktop did not issue an invitation: pairing_limit_reached"
+        );
+    }
+
+    /// Two `add`s must not both mint a device: the second is refused at once, with
+    /// what to do about it, rather than queueing behind a code it never sees.
+    #[tokio::test]
+    async fn a_second_add_is_refused_while_one_is_waiting() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let _desktop = RunningDesktop::claim(&home);
+        // Hold the same lock the first `add` takes — exactly the state a second
+        // terminal finds while the first is waiting.
+        let first = exclusive_add_slot().expect("the first add takes the slot");
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "add"]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        assert!(
+            stderr.contains("already waiting for an invitation"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("prints the code"), "{stderr}");
+        // Refused before anything was written for the Desktop to act on.
+        let requests = std::fs::read_dir(home.future().join("run").join(CONTROL_DIRECTORY))
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .ends_with(REQUEST_SUFFIX)
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        assert_eq!(requests, 0, "the refused add must not pose a request");
+
+        // The slot is released with the process that held it, so the next add
+        // proceeds instead of being refused forever.
+        drop(first);
+        assert!(exclusive_add_slot().is_ok());
+    }
+
+    /// A Desktop that exits while the request is pending is reported as that, not
+    /// as a timeout — which would send the user looking for a process that is
+    /// already gone, after a minute of waiting for nothing.
+    #[tokio::test]
+    async fn add_reports_a_desktop_that_exits_mid_request() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let _desktop = RunningDesktop::claim(&home);
+        let answer = home.dir.path().join("never-written.json");
+        let directory = home.future().join("run").join(CONTROL_DIRECTORY);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join(format!("0001{REQUEST_SUFFIX}")),
+            json!({ "op": "add-device", "reply": answer.display().to_string() }).to_string(),
+        )
+        .unwrap();
+
+        // The Desktop's lock is released on drop; the probe is the same
+        // `desktop_running` the command uses, injected so the wait can be cut short.
+        drop(_desktop);
+        let error = wait_for_answer(&answer, &|| true, &|| false)
+            .await
+            .expect_err("a Desktop that stopped must not look like a slow one");
+        assert!(error.contains("stopped before it answered"), "{error}");
+        assert!(!error.contains("did not answer within"), "{error}");
+    }
+
+    /// The two silences are different faults, and the message says which one this
+    /// was. An unclaimed request means no process is watching the directory — in
+    /// practice a Desktop started before the update, still serving from its old
+    /// code — and the fix is to restart it; a claimed one means the Desktop took
+    /// the request and then failed.
+    #[tokio::test]
+    async fn a_timeout_says_whether_anything_picked_the_request_up() {
+        let home = tempfile::tempdir().unwrap();
+        let answer = home.path().join("never-written.json");
+
+        let unclaimed = wait_for_answer(&answer, &|| true, &|| true)
+            .await
+            .expect_err("an unclaimed request times out");
+        assert!(
+            unclaimed.contains("No Desktop picked the request up"),
+            "{unclaimed}"
+        );
+        assert!(unclaimed.contains("older build"), "{unclaimed}");
+        assert!(unclaimed.contains("Restart it"), "{unclaimed}");
+        assert!(unclaimed.contains("nothing was paired"), "{unclaimed}");
+        // Not the old, now-untrue advice: adds are serialized, so "busy pairing
+        // another device" cannot be the explanation for this one.
+        assert!(!unclaimed.contains("busy pairing"), "{unclaimed}");
+
+        let claimed = wait_for_answer(&answer, &|| false, &|| true)
+            .await
+            .expect_err("a claimed request that never answers times out");
+        assert!(
+            claimed.contains("took the request but did not answer"),
+            "{claimed}"
+        );
+        assert!(!claimed.contains("older build"), "{claimed}");
+    }
+
     #[tokio::test]
     async fn add_without_a_desktop_says_what_to_start() {
         let _guard = crate::test_env::lock_env().await;
@@ -1897,7 +2104,7 @@ mod tests {
         assert!(stderr.contains("No Desktop is running"), "{stderr}");
         assert!(stderr.contains("futureos-headless"), "{stderr}");
         // Nothing was written for a Desktop that is not there.
-        assert!(!home.future().join("app").join(CONTROL_DIRECTORY).exists());
+        assert!(!home.future().join("run").join(CONTROL_DIRECTORY).exists());
     }
 
     /// A Desktop that holds the lock but never answers is a timeout, not a hang.
@@ -1908,10 +2115,26 @@ mod tests {
         let _desktop = RunningDesktop::claim(&home);
         let (code, _, stderr) = run(&["remote", "devices", "add"]).await;
         assert_eq!(code, 1);
-        assert!(stderr.contains("did not answer within"), "{stderr}");
-        // The unanswered request does not stay behind for the next Desktop.
-        let left = std::fs::read_dir(home.future().join("app").join(CONTROL_DIRECTORY))
-            .map(|entries| entries.filter_map(Result::ok).count())
+        // Nothing claims the request in this fixture, which is the "an older
+        // build is running" silence rather than "took it and gave up".
+        assert!(
+            stderr.contains("No Desktop picked the request up"),
+            "{stderr}"
+        );
+        // The unanswered request does not stay behind for the next Desktop. The
+        // add lock beside it is expected: it is held and released, never consumed.
+        let left = std::fs::read_dir(home.future().join("run").join(CONTROL_DIRECTORY))
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .ends_with(REQUEST_SUFFIX)
+                    })
+                    .count()
+            })
             .unwrap_or(0);
         assert_eq!(left, 0, "the request must be withdrawn on timeout");
     }

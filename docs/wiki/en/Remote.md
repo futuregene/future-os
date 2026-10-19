@@ -55,10 +55,25 @@ remote tasks to access sensitive files.
 
 ## Disconnect and revoke access
 
+The remote desktop switch and a connection are two separate things: while the
+switch is off this computer accepts no remote connection, but the paired devices
+are kept and reconnect once it is on again. Each connection itself is created one
+at a time with **Add a device**.
+
 **Disconnect** stops the current remote connection; it is not equivalent to
 revoking a device. Use **Unpair** for a phone that should no longer control the
-computer. Reusing that phone afterward requires a new code. Revoke access if the
-phone is lost or shared, and protect the desktop account too.
+computer — the device driving it can be unpaired straight from its row. Reusing
+that phone afterward requires a new code. Revoke access if the phone is lost or
+shared, and protect the desktop account too.
+
+The same list is manageable from a terminal: `future remote devices` shows the
+paired devices and which one is in control, `add` pairs a new one (printing its QR
+code and link), `remove` drops one, `remove --all` drops every device, and `use`
+chooses the one in control. `list`/`remove`/`use` read and write the pairing book
+directly and need no running Desktop; `add` is the exception — an invitation can
+only be minted by the process serving that pairing, so it needs a live Desktop
+(the window or `futureos-headless`) and fails with a non-zero exit if there is
+none.
 
 ## Privacy and transport
 

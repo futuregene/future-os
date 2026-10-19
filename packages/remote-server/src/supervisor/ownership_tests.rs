@@ -35,6 +35,26 @@ impl Drop for Dropped {
 }
 
 #[tokio::test]
+async fn enabling_an_empty_instance_does_not_request_an_invitation() {
+    let host = Arc::new(MemoryHost::default());
+    let supervisor = Supervisor::new(host.clone(), Arc::new(TokioExecutor));
+    assert_eq!(
+        supervisor.enable().await.unwrap().phase,
+        RemotePhase::Enabled
+    );
+    assert!(host.slots.lock().unwrap().is_empty());
+    assert!(supervisor.state.lock().unwrap().is_empty());
+    assert!(!supervisor.invite_when_empty.load(Ordering::Acquire));
+    assert_eq!(supervisor.stop().phase, RemotePhase::Stopped);
+    assert_eq!(
+        supervisor.enable().await.unwrap().phase,
+        RemotePhase::Enabled
+    );
+    supervisor.shutdown(Duration::from_secs(1)).await.unwrap();
+    assert!(supervisor.enable().await.is_err());
+}
+
+#[tokio::test]
 async fn supervisor_instances_keep_control_recovery_and_presence_separate() {
     let first_host = Arc::new(MemoryHost::default());
     let second_host = Arc::new(MemoryHost::default());

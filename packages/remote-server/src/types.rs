@@ -5,6 +5,8 @@ use serde::Serialize;
 #[serde(rename_all = "camelCase")]
 pub enum RemotePhase {
     Stopped,
+    /// Enabled without pairing a new device or starting an empty bridge.
+    Enabled,
     Connecting,
     Ready,
     Reconnecting,
@@ -184,6 +186,7 @@ mod tests {
         }
         for phase in [
             RemotePhase::Stopped,
+            RemotePhase::Enabled,
             RemotePhase::Failed,
             RemotePhase::Revoked,
         ] {

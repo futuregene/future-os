@@ -155,7 +155,11 @@ impl Supervisor {
                     while !pairing_confirmed.load(Ordering::Acquire) {
                         tokio::time::sleep(server.executor.options().publisher.presence).await;
                     }
-                    let Some(creds) = server.host.load().filter(|creds| creds.pair_id == pair_id)
+                    let Some(creds) = server
+                        .host
+                        .load_slots()
+                        .into_iter()
+                        .find(|creds| creds.pair_id == pair_id)
                     else {
                         return;
                     };

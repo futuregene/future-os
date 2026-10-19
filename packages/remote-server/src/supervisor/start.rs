@@ -9,6 +9,16 @@ pub struct SlotPlan {
 }
 impl Supervisor {
     pub async fn start(self: &Arc<Self>) -> Result<RemoteStatus, crate::Error> {
+        self.start_with(true).await
+    }
+    /// GUI switch: serve existing pairings without minting an invitation.
+    pub async fn enable(self: &Arc<Self>) -> Result<RemoteStatus, crate::Error> {
+        self.start_with(false).await
+    }
+    async fn start_with(
+        self: &Arc<Self>,
+        invite_when_empty: bool,
+    ) -> Result<RemoteStatus, crate::Error> {
         if self.closed.load(Ordering::Acquire) {
             return Err(crate::Error::Message("remote_server_stopped".into()));
         }
@@ -27,6 +37,8 @@ impl Supervisor {
             self.start_retry_attempts.store(0, Ordering::Release);
             self.start_retry_since.store(0, Ordering::Release);
             self.start_retry_next_at.store(0, Ordering::Release);
+            self.invite_when_empty
+                .store(invite_when_empty, Ordering::Release);
             self.start_requested.store(true, Ordering::Release);
             true
         });
@@ -88,6 +100,13 @@ impl Supervisor {
         };
         if !self.start_requested.load(Ordering::Acquire) {
             return Ok(self.empty());
+        }
+
+        if plans.is_empty() {
+            self.access.commit(epoch, || {
+                *self.last_error_code.lock().unwrap() = None;
+            });
+            return Ok(self.status());
         }
 
         // One device needs no arbitration: it is the machine's controller by
@@ -179,7 +198,8 @@ impl Supervisor {
         epoch: u64,
     ) -> Result<RemoteStatus, crate::Error> {
         self.spawn_revoke_cleanup();
-        let (creds, code, expires_at) = self.host.invite(true).await?;
+        let keep_existing = !self.host.load_slots().is_empty();
+        let (creds, code, expires_at) = self.host.invite(keep_existing).await?;
         let plan = SlotPlan {
             creds,
             pairing_code: Some(code),
@@ -235,7 +255,7 @@ impl Supervisor {
                 Err(error) => return Err(error),
             }
         }
-        if plans.is_empty() {
+        if plans.is_empty() && self.invite_when_empty.load(Ordering::Acquire) {
             // Nothing left to serve: mint one invitation, exactly as a
             // single-device install always did. Replacing is right here because
             // there is nothing to keep.
@@ -358,6 +378,15 @@ impl Supervisor {
         // the unauthenticated local HTTP listener in production or custom envs.
         let web_enabled = self.executor.validation_enabled() && owns_local_web;
         let (web_task, web_url, web_lan_url) = if web_enabled {
+            if self
+                .access
+                .commit(epoch, || {
+                    *self.web_owner.lock().unwrap() = Some(pair_id.clone());
+                })
+                .is_none()
+            {
+                return Ok(());
+            }
             match self.executor.bind_validation().await {
                 Ok(surface) => (
                     Some(self.spawn_generation_for(epoch, surface.task)),
@@ -601,6 +630,7 @@ impl Supervisor {
                             let Some(state) = guard.get_mut(&pair_id) else {
                                 return false;
                             };
+                            *server.web_owner.lock().unwrap() = Some(pair_id.clone());
                             if let Some(previous) = state.web_task.replace(web_task) {
                                 previous.abort();
                             }

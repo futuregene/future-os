@@ -356,6 +356,7 @@ impl Supervisor {
         }
         self.cancel_generations();
         *self.active.lock().unwrap() = None;
+        *self.web_owner.lock().unwrap() = None;
         self.empty()
     }
 
@@ -364,6 +365,10 @@ impl Supervisor {
         if let Some(state) = state {
             self.announce_slot_offline(&state);
             abort_generation(state);
+        }
+        let mut owner = self.web_owner.lock().unwrap();
+        if owner.as_deref() == Some(pair_id) {
+            *owner = None;
         }
     }
 
@@ -402,7 +407,10 @@ impl Supervisor {
         if let Err(error) = self.host.retry_revokes().await {
             eprintln!("remote: re-pair could not settle the saved pairing's revoke: {error}");
         }
-        self.start().await
+        match self.add_device().await {
+            Ok(status) => Ok(status),
+            Err(error) => self.start_failure(error),
+        }
     }
     pub fn stop_with<T>(self: &Arc<Self>, cleanup: impl FnOnce() -> T) -> T {
         self.access.invalidate(|| {

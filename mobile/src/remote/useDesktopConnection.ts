@@ -130,6 +130,18 @@ export interface DesktopConnection {
    * that may be gone.
    */
   notifyUnpair(): Promise<void>;
+  /**
+   * Record that this device now drives the desktop, without waiting for a
+   * heartbeat to say so.
+   *
+   * The machine moves control synchronously and says `control: "active"` in the
+   * `takeover` answer itself; presence repeats the fact only on its next tick.
+   * A control that is read back from presence alone therefore keeps telling the
+   * page the machine is still held for up to a heartbeat after the takeover
+   * succeeded — and the button that was pressed comes back for that whole
+   * window. Only called with the machine's own affirmative answer.
+   */
+  noteControlActive(): void;
 }
 
 export function useDesktopConnection({
@@ -529,6 +541,17 @@ export function useDesktopConnection({
     clientRef.current?.setVisibleSession?.(sessionId);
   }, [clientRef]);
 
+  const noteControlActive = useCallback(() => {
+    const current = latestPresenceRef.current;
+    // Nothing to amend before the handshake has described this pairing: the
+    // connection's own presence will be the first word on control.
+    if (!current || !connectionReadyRef.current) return;
+    if (current.control === "active" && current.holder == null) return;
+    const next = { ...current, control: "active" as const, holder: null };
+    latestPresenceRef.current = next;
+    setPresence(next);
+  }, []);
+
   const notifyUnpair = useCallback(async () => {
     const client = clientRef.current;
     if (!client) return;
@@ -588,5 +611,6 @@ export function useDesktopConnection({
     setAppActive,
     setVisibleSession,
     notifyUnpair,
+    noteControlActive,
   };
 }
