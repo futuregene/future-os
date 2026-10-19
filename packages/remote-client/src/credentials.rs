@@ -80,6 +80,42 @@ impl std::fmt::Debug for PeerCreds {
     }
 }
 
+/// One paired host: its credentials plus the purely-local presentation the user
+/// picked. `name`/`icon` never reach the platform or the host desktop.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerLabel {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// A short glyph from the fixed picker (`desktopIcons.ts`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerRecord {
+    #[serde(flatten)]
+    pub creds: PeerCreds,
+    #[serde(flatten)]
+    pub label: PeerLabel,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerBook {
+    #[serde(default)]
+    pub peers: Vec<PeerRecord>,
+}
+
+impl PeerBook {
+    pub fn find(&self, desktop_id: &str) -> Option<&PeerRecord> {
+        self.peers
+            .iter()
+            .find(|peer| peer.creds.desktop_id == desktop_id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

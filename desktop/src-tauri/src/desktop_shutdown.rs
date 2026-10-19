@@ -216,6 +216,7 @@ fn perform_stop(
     let mut errors = Vec::new();
     ADMISSION.lock().unwrap().closed = true;
     crate::tasks::stop_admission();
+    crate::remote_peer::runtime::stop_admission();
     crate::runtime::freeze_tasks();
     #[cfg(all(feature = "gui", not(test)))]
     if let Some(manager) = crate::terminal::server::manager() {
@@ -256,6 +257,12 @@ fn perform_stop(
             {
                 errors.push("Remote shutdown deadline exceeded".into());
                 crate::remote::stop();
+            }
+            if let Err(error) =
+                crate::remote_peer::runtime::shutdown(operation.remaining(Duration::from_secs(2)))
+                    .await
+            {
+                errors.push(format!("Remote controller cleanup failed: {error}"));
             }
             if !crate::agent_host::host().owns_agent() {
                 operation.stage("external_runs");
@@ -323,6 +330,7 @@ pub(crate) fn reset_for_test() {
     *STOP_FAILURE.lock().unwrap() = None;
     OWNED.lock().unwrap().clear();
     crate::tasks::reset_for_test();
+    crate::remote_peer::runtime::reset_after_shutdown_for_test();
 }
 
 /// Test-only RAII guard that closes admission for as long as it lives and hands the

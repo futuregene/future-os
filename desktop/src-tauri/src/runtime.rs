@@ -30,23 +30,6 @@ pub(crate) type TaskHandle = tauri::async_runtime::JoinHandle<()>;
 #[cfg(not(feature = "gui"))]
 pub(crate) type TaskHandle = JoinHandle<()>;
 
-/// Whether a task spawned through [`spawn`] has finished.
-///
-/// The one thing the two handle types spell differently, so it lives here with
-/// the type alias rather than at each call site. Test-only, because nothing in
-/// production asks a task whether it is done.
-#[cfg(test)]
-pub(crate) fn task_finished(handle: &TaskHandle) -> bool {
-    #[cfg(feature = "gui")]
-    {
-        handle.inner().is_finished()
-    }
-    #[cfg(not(feature = "gui"))]
-    {
-        handle.is_finished()
-    }
-}
-
 fn spawn_untracked<F>(future: F) -> TaskHandle
 where
     F: std::future::Future<Output = ()> + Send + 'static,

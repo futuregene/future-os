@@ -15,46 +15,13 @@
 //! Sort order is the book's own (insertion order); the session list's ordering
 //! is a UI concern and comes from `lastMessageAt`, never from this file.
 
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-pub(crate) use future_remote_client::credentials::{PeerCreds, PeerIdentity};
+pub(crate) use future_remote_client::credentials::PeerCreds;
+#[cfg(test)]
+pub(crate) use future_remote_client::credentials::PeerIdentity;
 
-/// One paired host: its credentials plus the purely-local presentation the user
-/// picked. `name`/`icon` never reach the platform or the host desktop.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PeerLabel {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    /// A short glyph from the fixed picker (`desktopIcons.ts`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub icon: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PeerRecord {
-    #[serde(flatten)]
-    pub creds: PeerCreds,
-    #[serde(flatten)]
-    pub label: PeerLabel,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PeerBook {
-    #[serde(default)]
-    pub peers: Vec<PeerRecord>,
-}
-
-impl PeerBook {
-    pub(crate) fn find(&self, desktop_id: &str) -> Option<&PeerRecord> {
-        self.peers
-            .iter()
-            .find(|peer| peer.creds.desktop_id == desktop_id)
-    }
-}
+pub(crate) use future_remote_client::credentials::{PeerBook, PeerLabel, PeerRecord};
 
 fn book_path() -> Result<PathBuf, crate::AppError> {
     Ok(crate::store::future_dir()?.join("remote_peers.json"))
@@ -132,6 +99,7 @@ pub(crate) fn set_label(
 
 /// Forget one pairing locally. Server-side revocation is the caller's job and
 /// is best-effort (see [`super::platform::revoke`]).
+#[cfg(test)]
 pub(crate) fn remove(desktop_id: &str) -> Result<(), crate::AppError> {
     let path = book_path()?;
     crate::config_io::with_config_lock(&path, || {
@@ -146,6 +114,7 @@ pub(crate) fn remove(desktop_id: &str) -> Result<(), crate::AppError> {
 
 /// Persist a refreshed JWT/endpoint set for one pairing, leaving the label and
 /// the pinned identity alone.
+#[cfg(test)]
 pub(crate) fn update_credentials(
     desktop_id: &str,
     user_jwt: String,
@@ -178,6 +147,7 @@ pub(crate) fn update_credentials(
 /// Called only after the host has both proved possession of the PSK and bound
 /// this identity. From here the pair uses `Noise_IK` with the pinned peer key,
 /// which is what makes the (now useless) invitation a dead bearer token.
+#[cfg(test)]
 pub(crate) fn clear_secret(desktop_id: &str) -> Result<(), crate::AppError> {
     let path = book_path()?;
     crate::config_io::with_config_lock(&path, || {
@@ -195,6 +165,55 @@ pub(crate) fn clear_secret(desktop_id: &str) -> Result<(), crate::AppError> {
         let value = serde_json::to_value(&book)
             .map_err(|error| crate::AppError::Message(format!("encode peer book: {error}")))?;
         crate::config_io::write_json_atomic(&path, &value, true)
+    })
+}
+
+/// Compare and write while holding the original per-file lock. A late refresh
+/// or handshake may never overwrite a newly paired identity for the same host.
+fn edit_if_current(
+    expected: &PeerCreds,
+    edit: impl FnOnce(&mut PeerBook, usize),
+) -> Result<bool, crate::AppError> {
+    let path = book_path()?;
+    crate::config_io::with_config_lock(&path, || {
+        let mut book = load()?;
+        let Some(index) = book.peers.iter().position(|record| {
+            record.creds.desktop_id == expected.desktop_id
+                && record.creds.pair_id == expected.pair_id
+                && record.creds.nkey_seed == expected.nkey_seed
+                && record.creds.refresh_token == expected.refresh_token
+        }) else {
+            return Ok(false);
+        };
+        edit(&mut book, index);
+        let value = serde_json::to_value(&book)
+            .map_err(|error| crate::AppError::Message(format!("encode peer book: {error}")))?;
+        crate::config_io::write_json_atomic(&path, &value, true)?;
+        Ok(true)
+    })
+}
+pub(crate) fn update_credentials_if_current(
+    expected: &PeerCreds,
+    fresh: &future_remote_client::host::Refreshed,
+) -> Result<bool, crate::AppError> {
+    edit_if_current(expected, |book, index| {
+        let creds = &mut book.peers[index].creds;
+        creds.user_jwt = fresh.user_jwt.clone();
+        creds.nats_url = fresh.nats_url.clone();
+        creds.nats_ws_url = fresh.nats_ws_url.clone();
+        creds.jwt_expires_at = fresh.jwt_expires_at;
+    })
+}
+pub(crate) fn clear_secret_if_current(expected: &PeerCreds) -> Result<bool, crate::AppError> {
+    edit_if_current(expected, |book, index| {
+        if let Some(identity) = book.peers[index].creds.secure.as_mut() {
+            identity.secret = None;
+        }
+    })
+}
+pub(crate) fn remove_if_current(expected: &PeerCreds) -> Result<bool, crate::AppError> {
+    edit_if_current(expected, |book, index| {
+        book.peers.remove(index);
     })
 }
 
@@ -225,6 +244,28 @@ mod tests {
 
     fn home(name: &str) -> crate::remote::test_support::HomeGuard {
         crate::remote::test_support::HomeGuard::new(name)
+    }
+
+    #[test]
+    fn late_grants_and_handshakes_cannot_mutate_a_repaired_host() {
+        let _home = home("peer-cas-repaired");
+        let original = creds("desktop_a", "pair_old");
+        upsert(original.clone()).unwrap();
+        let replacement = creds("desktop_a", "pair_new");
+        upsert(replacement.clone()).unwrap();
+        let fresh = future_remote_client::host::Refreshed {
+            user_jwt: "late-token-fixture".into(),
+            nats_url: "nats://127.0.0.1:1".into(),
+            nats_ws_url: "wss://example.invalid".into(),
+            jwt_expires_at: 2_000,
+        };
+        assert!(!update_credentials_if_current(&original, &fresh).unwrap());
+        assert!(!clear_secret_if_current(&original).unwrap());
+        assert!(!remove_if_current(&original).unwrap());
+        assert_eq!(
+            load().unwrap().find("desktop_a").unwrap().creds,
+            replacement
+        );
     }
 
     #[test]

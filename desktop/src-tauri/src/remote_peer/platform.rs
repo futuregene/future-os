@@ -25,35 +25,7 @@ use super::link::Invitation;
 use serde::Deserialize;
 use serde_json::json;
 
-/// What a successful claim produced, before it is split into this installation's
-/// identity (generated locally, never sent) and the server's grant.
-pub(crate) struct Claimed {
-    pub pair_id: String,
-    pub user_jwt: String,
-    pub refresh_token: String,
-    /// **Absent on the real claim response.** The platform's `Pair/claim`
-    /// returns only `nats_ws_url`; the caller resolves the TCP endpoint with
-    /// one `refresh` (see the module docs).
-    pub nats_url: Option<String>,
-    pub nats_ws_url: String,
-    pub jwt_expires_at: i64,
-}
-
-/// Debug without the secrets: this value ends up in `expect`/`assert` output on
-/// failure, and a panic message is one of the easiest places for a bearer token
-/// to leak into a log or a bug report.
-impl std::fmt::Debug for Claimed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Claimed")
-            .field("pair_id", &self.pair_id)
-            .field("user_jwt", &"<redacted>")
-            .field("refresh_token", &"<redacted>")
-            .field("nats_url", &self.nats_url)
-            .field("nats_ws_url", &self.nats_ws_url)
-            .field("jwt_expires_at", &self.jwt_expires_at)
-            .finish()
-    }
-}
+pub(crate) use future_remote_client::host::{Claimed, Refreshed};
 
 #[derive(Debug, Deserialize)]
 struct ClaimResponse {
@@ -69,15 +41,6 @@ struct RefreshResponse {
     user_jwt: String,
     nats_url: Option<String>,
     nats_ws_url: Option<String>,
-}
-
-/// A refreshed grant, ready to be written back onto the stored credentials.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Refreshed {
-    pub user_jwt: String,
-    pub nats_url: String,
-    pub nats_ws_url: String,
-    pub jwt_expires_at: i64,
 }
 
 /// Take an invitation. One-shot by contract: the platform consumes the nonce,

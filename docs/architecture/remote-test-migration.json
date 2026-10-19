@@ -567,7 +567,27 @@
         "a_full_backlog_drops_the_newest_and_counts_it",
         "a_zero_capacity_backlog_still_holds_one"
       ],
-      "target": null
+      "target": {
+        "client-core": {
+          "path": "packages/remote-client/src/runtime.rs",
+          "cases": [
+            "the_reconnect_schedule_grows_and_is_capped",
+            "reconnect_delays_are_jittered_not_constant",
+            "the_attempt_budget_is_bounded",
+            "an_event_subject_names_its_session",
+            "a_subject_that_is_not_an_event_is_refused",
+            "only_the_state_events_mirror_is_read_from_the_host_wide_lane",
+            "the_batch_ceilings_are_the_mobile_clients",
+            "a_batch_yields_at_the_count_ceiling",
+            "a_batch_yields_at_the_byte_ceiling",
+            "a_batch_yields_at_the_deadline",
+            "resetting_starts_the_next_batch_empty",
+            "a_full_backlog_drops_the_newest_and_counts_it",
+            "a_zero_capacity_backlog_still_holds_one"
+          ]
+        },
+        "application-integration": "desktop/src-tauri/src/remote_peer/runtime.rs"
+      }
     },
     {
       "source": "desktop/src-tauri/src/remote_peer/runtime_tests.rs",

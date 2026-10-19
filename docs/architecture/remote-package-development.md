@@ -3,7 +3,7 @@
 > [中文](remote-package-development.zh-CN.md)
 >
 > Design date: 2026-10-19. Source baseline: `4a64b65e`.
-> Status: in progress; phase 1 has started. Section 8 records implemented boundaries, checks and remaining work. Phases 0–5 are not complete.
+> Status: in progress; phases 1/2 are being migrated. Section 8 records implemented boundaries, checks and remaining work. Phases 0–5 are not complete.
 
 Separate Remote into protocol, controller and controlled-endpoint packages, retaining the independent secure-channel foundation. Rust and TypeScript follow the same responsibility model with separate implementations, validated against a common contract, vectors and interoperability tests. Desktop, Mobile, CLI and TUI provide UI, environment and local business adapters; Remote libraries do not depend on a particular application entry point.
 
@@ -218,7 +218,7 @@ Implementation branch: `refactor/remote-packages`. Scope remains phases 0–5; p
 |---|---|---|
 | 0 | Source/test inventory and historical CI reference captured; performance comparison awaits final CI | The [test migration inventory](remote-test-migration.json) records baseline files, Rust case names and destinations; `target: null` means unresolved ownership. The [historical CI reference](remote-ci-baseline.json) records the original commit, jobs, runner, steps and Windows compile/test log timings. It is not a same-condition performance result for this branch. |
 | 1 | In progress, existing consumers reconnected | TS Crypto and both Protocol packages exist. Mobile consumes package Crypto/wire DTOs; Desktop consumes shared commands, invitations and JSON decoding. Handshake envelopes, capability/chunk constants and remaining role-owned wire DTOs still need extraction during subsequent migration. Automated results await final CI. |
-| 2 | In progress, connection core reconnected to Desktop | Rust Client single connections and credential DTOs are extracted. Multi-host runtime instances, host services, transfers and lifecycle still require migration. |
+| 2 | In progress, connection core reconnected to Desktop | Rust Client connections, credential DTOs, multi-host instances and task lifecycle are connected. Transfer/file extraction, host HTTP utility placement and interoperability cases remain. |
 | 3–5 | Pending | Rust Server, TS Client, standalone interoperability, affected CI scheduling and final acceptance remain unfinished. |
 
 Implemented package entry points and validation:
@@ -244,3 +244,17 @@ Desktop's session module currently adapts environment and errors; the connection
 Eleven original session unit cases and two credential timing/revoke URL cases move to Client. New regressions protect credential Debug redaction and application error conversion. Real pairing, file, Store and application shutdown integration cases remain in the application and will be assigned through the [migration inventory](remote-test-migration.json). Test sources have compiled but have not executed.
 
 Static checks passed on pinned Rust 1.97.0: independent Client library compilation with default features, default and `test-support` Clippy `--all-targets`, and Desktop GUI/headless Clippy `--all-targets`. Multi-host runtime instances, event supervision/recovery, credential/platform service interfaces, file transfer and owned stop/join semantics still require migration. A reusable connection core does not establish completion of phase 2 or the overall refactor.
+
+### 2026-10-19: Rust Client multi-host instances and owned tasks
+
+The multi-host controller runtime now lives in `future-remote-client::Client`, connected to Desktop through `DesktopClientHost`. Each instance owns its connections, stop intent, event/reconnect tasks, visible sessions, page assembly and chunk waiters. The library has no process-global runtime singleton and imports no Desktop Store, device identity or application error implementation. `ClientHost` explicitly supplies pairing/refresh/revoke calls, credential storage, trust/device information, command IDs and registered task execution.
+
+Client wraps role tasks with cancellation and observable completion before asking the host to register them. Desktop's existing registration/freeze/cancel chain remains in place. `stop_admission()` synchronously closes admission and cancels role tasks; `shutdown(total_budget)` waits for actual future destruction and clears connections/subscriptions/chunk waiters within one total deadline. Rejected, unpolled tasks also signal completion, and panics remain observable. The shared Desktop GUI/headless shutdown path calls both entries. Test reset replaces an instance rather than restarting a stopped one.
+
+Per-endpoint attempt generations prevent old handshakes from installing a connection after disconnect/new connect/stop. A failed old request cannot remove a newer connection. Pending claims, refreshes and handshakes receive shutdown cancellation. Desktop compares pairing identity under its original configuration lock before refreshing, clearing a PSK or removing a credential: only the same pair, NKey and refresh token can be modified. A late response cannot overwrite a newly paired endpoint sharing the desktop ID. Paths, serialized fields and atomic-write format are unchanged.
+
+Thirteen original pure runtime parsing/queue/scheduling cases moved to Client; real application/platform/Agent wiring cases still drive the actual Client through the adapter. New independent cases cover instance isolation, task destruction on stop, rejected unpolled tasks, claim cancellation and refusing a late refresh after disconnect. An application regression protects re-paired credential writes. Ownership is recorded in the [migration inventory](remote-test-migration.json). No tests have executed locally; validation remains compilation and static checks only.
+
+Phase 2 remains incomplete: client upload/download orchestration and file adapters still require extraction, shared host HTTP/JWT utilities must leave the controlled-host path, and some real-network core cases will move into the independent interoperability project. Server, TS Client, interoperability/affected CI and final acceptance in phases 3–5 retain their full scope. Establishing Client instances does not complete the overall objective.
+
+This batch passed Client default/test-support Clippy `--all-targets`, Desktop GUI/headless Clippy `--all-targets`, fmt, generated-file freshness and scoped bilingual documentation checks on the pinned Rust toolchain. No local unit tests executed.

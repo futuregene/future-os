@@ -23,11 +23,12 @@
 //! Nothing about the protocol is desktop-specific, so a desktop pairs with any
 //! host the phone can pair with.
 
-pub(crate) use future_remote_protocol::json as codec;
 pub(crate) mod creds;
+mod host;
 pub(crate) use future_remote_protocol::invitation as link;
 pub(crate) mod platform;
 pub(crate) mod runtime;
+#[cfg(test)]
 pub(crate) mod session;
 pub(crate) mod transfer;
 
@@ -35,7 +36,7 @@ pub(crate) mod transfer;
 // feature) has no caller, and an unconditional re-export there is an unused
 // import — which CI's `--no-default-features` clippy pass turns into an error.
 #[cfg(feature = "gui")]
-pub use self::runtime::{PeerEvent, PeerSummary};
+pub use future_remote_client::{PeerEvent, PeerSummary};
 
 #[cfg(test)]
 mod multi_host_tests;

@@ -69,6 +69,10 @@ pub enum AppError {
 impl From<future_remote_client::Error> for AppError {
     fn from(error: future_remote_client::Error) -> Self {
         match error {
+            future_remote_client::Error::Host(error) => match error.downcast::<AppError>() {
+                Ok(error) => *error,
+                Err(error) => Self::Message(error.to_string()),
+            },
             future_remote_client::Error::Io(error) => Self::Io(error),
             future_remote_client::Error::Json(error) => Self::Json(error),
             future_remote_client::Error::Remote {

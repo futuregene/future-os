@@ -18,3 +18,5 @@ async-nats = "0.49"
 nkeys = "0.4"
 thiserror = "2"
 url = "2"
+futures = { workspace = true }
+rand = "0.8"
