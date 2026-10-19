@@ -179,7 +179,7 @@ bridge for its pairing is connected, so the process that owns the data directory
 has to mint it.
 
 That request travels as a file. `future remote devices add` writes
-`{"op":"add-device","reply":"<path>"}` into `~/.future/app/remote-control/`, then
+`{"op":"add-device","reply":"<path>"}` into `~/.future/run/remote-control/`, then
 polls the reply path for its answer; the running Desktop — window or headless, both
 start `remote::control::spawn_host` — claims the request by renaming it, performs
 the operation and writes `{pairId, link, expiresAt}` or `{error}` back. The reply

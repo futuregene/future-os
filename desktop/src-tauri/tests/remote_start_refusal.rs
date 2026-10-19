@@ -193,7 +193,7 @@ fn serve_platform(mut stream: TcpStream, state: Arc<Mutex<PlatformState>>) {
     } else if method == "POST" && path.ends_with("/client/v1/remote/auth/token") {
         token_response(&state)
     } else if method == "POST" && path.ends_with("/client/v1/remote/pair/code") {
-        pair_code_response(&state)
+        pair_code_response(&state, &body)
     } else if method == "POST" && path.ends_with("/client/v1/remote/pair/revoke") {
         (200, json!({}))
     } else {
@@ -240,13 +240,29 @@ fn token_response(state: &Arc<Mutex<PlatformState>>) -> (u16, Value) {
 /// The invitation the platform mints for the child's pairing request. `pairing_code` must be
 /// base64url JSON carrying `exp`: `create_pairing` derives the secure identity's expiry
 /// from it, and a code without one is refused before the identity exists.
-fn pair_code_response(state: &Arc<Mutex<PlatformState>>) -> (u16, Value) {
+///
+/// The pair id follows the platform's rule, which is the difference between adding
+/// a device and replacing one: `keep_existing: false` names the desktop's existing
+/// binding (a re-pair), `true` is a new device beside the others and gets its own
+/// id. A fixture that always answered `pair_fixture` made an `add` look like a
+/// replace, which is exactly the confusion the book's `slots` are supposed to
+/// resolve.
+fn pair_code_response(state: &Arc<Mutex<PlatformState>>, request_body: &[u8]) -> (u16, Value) {
     let url = state.lock().unwrap().pair_url.clone().unwrap_or_default();
     let code = B64.encode(json!({ "exp": unix_now() + 600 }).to_string());
+    let keep_existing = String::from_utf8_lossy(request_body)
+        .split_whitespace()
+        .collect::<String>()
+        .contains("\"keep_existing\":true");
+    let pair_id = if keep_existing {
+        "pair_added"
+    } else {
+        "pair_fixture"
+    };
     (
         200,
         json!({
-            "pair_id": "pair_fixture",
+            "pair_id": pair_id,
             "pairing_code": code,
             "user_jwt": fixture_jwt(3600),
             "nats_url": url,
@@ -877,7 +893,7 @@ fn a_device_request_is_answered_by_the_running_headless_desktop() {
     write_auth(&home, &platform.url);
     write_pairing(&home, &broker.url, true);
     let answer = home.join("answer.json");
-    let requests = home.join(".future/app/remote-control");
+    let requests = home.join(".future/run/remote-control");
     std::fs::create_dir_all(&requests).expect("create the control directory");
     std::fs::write(
         requests.join("0001.request.json"),
@@ -907,11 +923,32 @@ fn a_device_request_is_answered_by_the_running_headless_desktop() {
         .as_str()
         .unwrap_or_else(|| panic!("an invitation is the answer: {reply}"));
     assert!(link.starts_with("futureos://remote/pair?v=2"), "{reply}");
-    assert!(
-        reply["pairId"].as_str().is_some_and(|id| !id.is_empty()),
-        "the answer names the device it is for: {reply}"
-    );
+    let added = reply["pairId"]
+        .as_str()
+        .expect("the answer names the device it is for");
+    assert!(!added.is_empty(), "{reply}");
+    // The *new* device, not the one that was already paired and is in control:
+    // the answer is projected from the slot the request just created, so the code
+    // in the terminal is the one the phone can actually claim.
+    assert_ne!(added, "pair_fixture", "{reply}");
     assert!(reply.get("error").is_none(), "{reply}");
+
+    // The book still holds only the confirmed device: an invitation is not a
+    // credential until a phone claims it, so the newcomer lives in the running
+    // Desktop's device list (standby, with the code) and joins the book on
+    // confirmation. Control did not move either.
+    let book: Value = serde_json::from_slice(
+        &std::fs::read(home.join(".future/remote_pairings.json")).expect("the book is written"),
+    )
+    .expect("the book is JSON");
+    let slots = book["slots"].as_array().expect("slots");
+    assert_eq!(slots.len(), 1, "{book}");
+    assert_eq!(slots[0]["pairId"], "pair_fixture", "{book}");
+    assert_eq!(
+        book["active"], "pair_fixture",
+        "adding must not move control: {book}"
+    );
+
     // The request is consumed, not left for the next Desktop to act on again.
     assert!(
         !requests.join("0001.request.json").exists(),

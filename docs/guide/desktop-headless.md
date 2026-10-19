@@ -290,6 +290,7 @@ hang.
 | Interactive terminal required | Complete initial login/pairing in a real terminal, without pipes, redirection or non-interactive service startup |
 | Platform authorization denied or expired | Restart and sign in as instructed; the login code is not the app pairing code |
 | Pairing invitation expired | Run `future remote devices add` for a new one (or restart with no device paired); completed pairings do not require this |
+| `future remote devices add` times out | The running Desktop is asked, and it answers from *its own* build. If the message says nothing picked the request up, that process predates device requests — restart it with the current version (`futureos` or `futureos-headless`) and try again |
 | Another Desktop owns the directory | Exit its GUI or headless process; do not delete the lock file to bypass mutual exclusion |
 | The process disappears, or a node operator reports it was killed | A host OOM killer or a login node's per-user CPU/memory budget sends SIGKILL, which no process can report itself. Read `<root>/app/logs/desktop.log`: the last startup phase it recorded shows where it stopped; then check the host (`dmesg -T`, `journalctl -k`, or the node's own quota/job logs). If the legacy import is what trips the budget, move the data root off shared storage with `FUTURE_HOME` |
 | Phone cannot claim an invitation | Check matching production/test environments and that the invitation is unused and unexpired |
