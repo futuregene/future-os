@@ -87,7 +87,7 @@ performance/manual acceptance remain part of the development plan.
 
 ## Migrated Client transport fault cases
 
-`tests/support/scripted_requests.rs` is compiled under the same explicit
+[`scripted_requests.rs`](../../tests/remote-interop/tests/support/scripted_requests.rs) is compiled under the same explicit
 `network-tests` target. It retains the three original Desktop Client cases for
 one lost reply, three exhausted attempts and an unretried write. It uses the
 owned real broker and actual PeerSession request/record/reply-context handling;

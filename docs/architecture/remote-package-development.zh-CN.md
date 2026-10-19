@@ -395,7 +395,7 @@ Mobile 的连接替换、明确离线/撤销和卸载路径使用 2 秒预算。
 
 ### 2026-10-19：独立 Rust/TS 真实互通工程与首批共用 Client 素材
 
-建立 [`tests/remote-interop`](../../tests/remote-interop/README.md)，同时具有独立 Cargo/npm 入口、依赖与静态检查配置。它通过公开 `Supervisor`、Rust `Client` 和 TS `RemoteClient` 组合角色，不导入 Desktop、Tauri、Agent、Mobile、Expo 或应用测试配置。测试宿主只提供内存业务、配对存储、账户适配与文件 IO；实际 NATS 连接、订阅、Noise XXpsk0/IK、FRE2 记录、命令准入/去重、事件发布和分块收发继续走包实现。
+建立 [`tests/remote-interop`](../testing/remote-interop.md)，同时具有独立 Cargo/npm 入口、依赖与静态检查配置。它通过公开 `Supervisor`、Rust `Client` 和 TS `RemoteClient` 组合角色，不导入 Desktop、Tauri、Agent、Mobile、Expo 或应用测试配置。测试宿主只提供内存业务、配对存储、账户适配与文件 IO；实际 NATS 连接、订阅、Noise XXpsk0/IK、FRE2 记录、命令准入/去重、事件发布和分块收发继续走包实现。
 
 [`packages/remote-client/fixtures/client.json`](../../packages/remote-client/fixtures/client.json) 是这批双语言共用输入与预期的唯一来源：版本 1、6 组请求案例、文件字节、事件元数据及 5 个流程报告 ID。首批请求覆盖读/写回复、业务拒绝、重复读/写请求只执行一次，以及相同命令 ID 改变内容被拒绝。两语言驱动均拒绝未知版本/种类/字段、重复 ID 和有歧义的预期；共享数值限制在 JS 安全整数范围，Rust 预期解码区分缺字段与显式 null。流程 ID 覆盖首次配对并清除邀请 secret、加密事件、二进制上传/下载、去除 secret 后的 IK 重连和最终清理。声明/报告 ID 不等于实际运行次数。
 
