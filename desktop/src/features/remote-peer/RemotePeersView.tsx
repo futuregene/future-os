@@ -9,12 +9,19 @@ import { TextInput } from "../../components/ui/TextInput";
 import { cn } from "../../lib/cn";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
-import { peersConnected, peerStatus, peerStatusKey, peerStatusTone } from "./peerStatus";
+import {
+  peerHeld,
+  peerHolderName,
+  peerLabelKey,
+  peerLabelTone,
+  peersConnected,
+} from "./peerStatus";
 import {
   connectRemotePeer,
   disconnectRemotePeer,
   listRemotePeers,
   pairRemotePeer,
+  takeoverRemotePeer,
   unpairRemotePeer,
 } from "./remotePeerClient";
 import { remotePeerErrorText } from "./remotePeerError";
@@ -175,6 +182,10 @@ export function RemoteClientSection({
     }
   }
 
+  // Machines another paired device drives: connected, and not contributing a
+  // single conversation to the list above.
+  const heldCount = peers.filter(peerHeld).length;
+
   return (
     <>
       <div className="space-y-4">
@@ -243,15 +254,26 @@ export function RemoteClientSection({
             "why is a machine's conversation missing": a list that is short of
             one machine is the state the reader has to be able to see, and the
             app now holds every pairing open, so "some of them are not up" is a
-            fact about this machine, not about their settings. */}
+            fact about this machine, not about their settings.
+
+            A machine another paired device drives is *connected* and still
+            missing from the list, so a count that stopped at "N of M connected"
+            would call that state complete. The held machines are counted in the
+            same sentence for the same reason. */}
         {peers.length > 1
           ? (
               <div className="flex items-center justify-between gap-3">
                 <p className="text-xs text-ink-muted" data-testid="peers-summary">
-                  {t("peersSummary", {
-                    connected: peersConnected(peers).connected,
-                    total: peers.length,
-                  })}
+                  {heldCount > 0
+                    ? t("peersSummaryHeld", {
+                        connected: peersConnected(peers).connected,
+                        held: heldCount,
+                        total: peers.length,
+                      })
+                    : t("peersSummary", {
+                        connected: peersConnected(peers).connected,
+                        total: peers.length,
+                      })}
                 </p>
                 <Button
                   disabled={busy !== null}
@@ -279,6 +301,7 @@ export function RemoteClientSection({
                     onDisconnect={() => void run(peer.desktopId, () => disconnectRemotePeer(peer.desktopId))}
                     onEdit={() => onOpenSettings(peer)}
                     onReconnect={() => void run(peer.desktopId, () => connectRemotePeer(peer.desktopId))}
+                    onTakeOver={() => void run(peer.desktopId, () => takeoverRemotePeer(peer.desktopId))}
                     onUnpair={() => setUnpairTarget(peer)}
                     peer={peer}
                   />
@@ -325,8 +348,10 @@ export function RemoteClientSection({
 }
 
 function peerBadge(peer: RemotePeer, t: (key: string) => string): { tone: "neutral" | "accent" | "warning" | "danger"; label: string } {
-  const status = peerStatus(peer);
-  return { tone: peerStatusTone(status), label: t(peerStatusKey(status)) };
+  // Not `peerStatus` alone: a machine answering while another paired device
+  // drives it is connected on the transport and unusable in fact, and the word
+  // here is what explains its conversations missing from the list.
+  return { tone: peerLabelTone(peer), label: t(peerLabelKey(peer)) };
 }
 
 function PeerRow({
@@ -334,6 +359,7 @@ function PeerRow({
   onDisconnect,
   onEdit,
   onReconnect,
+  onTakeOver,
   onUnpair,
   peer,
 }: {
@@ -341,6 +367,8 @@ function PeerRow({
   onDisconnect: () => void;
   onEdit: () => void;
   onReconnect: () => void;
+  /** Ask this machine to let this desktop drive it (it is in standby). */
+  onTakeOver: () => void;
   onUnpair: () => void;
   peer: RemotePeer;
 }) {
@@ -349,6 +377,9 @@ function PeerRow({
   // A machine the user turned off offers the way back; so does one that could
   // not be reached. Only a live connection offers to stop.
   const showDisconnect = peer.connected && !peer.stopped;
+  const held = peerHeld(peer);
+  // Named when the controller declared a name; the generic sentence otherwise.
+  const holderName = peerHolderName(peer);
 
   return (
     <div className="flex items-center gap-3 rounded-lg border border-line-soft p-4" data-testid="peer-row">
@@ -361,6 +392,16 @@ function PeerRow({
           <Badge tone={status.tone}>{status.label}</Badge>
         </div>
         <div className="mt-0.5 truncate text-xs text-ink-muted">{peer.desktopId}</div>
+        {/* Why this machine's conversations are not in the list. Said here, on
+            the machine's own row, because that is where the reader is when they
+            ask it — the same sentence the phone's sheet shows. */}
+        {held
+          ? (
+              <div className="mt-1 text-xs text-warning" data-testid="peer-held">
+                {holderName ? t("heldBy", { name: holderName }) : t("heldByUnknown")}
+              </div>
+            )
+          : null}
         {/* A stopped machine's last failure is stale by definition: the socket
             went away because the user closed it. Saying both would read as a
             fault that is not there. For a machine that is up on paper but not
@@ -371,6 +412,17 @@ function PeerRow({
           : null}
       </div>
       <div className="flex shrink-0 items-center gap-2">
+        {/* Control comes back without a reconnection, and a machine in standby
+            is the one thing this page exists for: its conversations are missing
+            from the list until someone takes it. Offered before Disconnect
+            because it is the action the reader came for. */}
+        {held
+          ? (
+              <Button disabled={busy} onClick={onTakeOver} size="sm" variant="primary">
+                {t("takeOver")}
+              </Button>
+            )
+          : null}
         {showDisconnect
           ? <Button disabled={busy} onClick={onDisconnect} size="sm">{t("disconnect")}</Button>
           : <Button disabled={busy} onClick={onReconnect} size="sm" variant="primary">{t("connect")}</Button>}

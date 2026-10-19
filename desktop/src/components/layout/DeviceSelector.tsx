@@ -4,7 +4,7 @@ import { Check, ChevronDown, Monitor, MonitorSmartphone } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { iconGlyph, peerBadgeText } from "../../features/remote-peer/peerIcons";
-import { peerStatus, peerStatusKey } from "../../features/remote-peer/peerStatus";
+import { peerHeld, peerHolderName, peerStatus, peerStatusKey } from "../../features/remote-peer/peerStatus";
 import { cn } from "../../lib/cn";
 import { useKeyboardOwner } from "../../lib/keyboardOwners";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
@@ -100,8 +100,10 @@ export function DeviceSelector({
                   // that it is merely offline rather than removed. The note says
                   // *which* kind of not-there it is — being reached, unreachable,
                   // or switched off by the user, whose own row offers the way
-                  // back.
-                  note={peer.connected ? undefined : t(peerStatusKey(peerStatus(peer)))}
+                  // back. A connected machine that another paired device drives
+                  // gets the same treatment for the same reason: it is here,
+                  // answering, and its rows are missing.
+                  note={peerNote(peer, t)}
                   onClick={() => choose({ kind: "device", desktopId: peer.desktopId })}
                 >
                   {filterIcon({ kind: "device", desktopId: peer.desktopId }, peers)}
@@ -139,6 +141,26 @@ function filterIcon(filter: DeviceFilter, peers: RemotePeer[]): React.ReactNode 
   if (filter.desktopId === null)
     return <Monitor className="size-3.5" />;
   return <span aria-hidden>{iconGlyph(peers.find(peer => peer.desktopId === filter.desktopId)?.icon)}</span>;
+}
+
+/**
+ * What an entry says under its name when the machine is not simply usable.
+ *
+ * Three answers, and they are three different situations: the machine is not
+ * there (offline / being reached / switched off), it answers while another
+ * paired device drives it, or nothing is wrong and it says nothing. The held
+ * case names the holder when it declared a name — the same sentence the phone's
+ * sheet uses, because it is the same fact — and stays neutral when it did not.
+ */
+function peerNote(
+  peer: RemotePeer,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string | undefined {
+  if (peerHeld(peer)) {
+    const name = peerHolderName(peer);
+    return name ? t("heldBy", { name }) : t("heldByUnknown");
+  }
+  return peer.connected ? undefined : t(peerStatusKey(peerStatus(peer)));
 }
 function SelectorOption({
   active,

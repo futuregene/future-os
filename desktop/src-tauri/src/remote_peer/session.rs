@@ -23,6 +23,7 @@
 
 use super::creds::PeerCreds;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -302,11 +303,35 @@ pub(crate) struct PeerSession {
     bridge_instance_id: String,
     features: Vec<String>,
     presence: Value,
+    /// Whether this device may drive the host, as the host last stated it.
+    ///
+    /// Shared with the event stream task, which is where the host's presence
+    /// ticks and its `state.control` packets are unpacked: the stream is the
+    /// only reader that sees them, and this is the only copy anything else
+    /// reads (the machine list, and the sentence that explains a refused read).
+    control: std::sync::Arc<std::sync::Mutex<Control>>,
 }
 
 impl PeerSession {
     pub(crate) fn pair_id(&self) -> &str {
         &self.pair_id
+    }
+
+    /// Whether this device may drive the host, and who holds it if not.
+    ///
+    /// `control.state` is `None` on a host that predates the field, which reads
+    /// as "assume ours" — the same assumption every client made before the host
+    /// had anything to say about it.
+    pub(crate) fn control(&self) -> Control {
+        self.control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The live handle the event stream updates when the host's control moves.
+    pub(crate) fn control_for_stream(&self) -> std::sync::Arc<std::sync::Mutex<Control>> {
+        self.control.clone()
     }
     pub(crate) fn bridge_instance_id(&self) -> &str {
         &self.bridge_instance_id
@@ -402,6 +427,7 @@ impl PeerSession {
             bridge_instance_id: bridge_instance_id.to_string(),
             features: Vec::new(),
             presence: Value::Null,
+            control: std::sync::Arc::new(std::sync::Mutex::new(Control::default())),
         }
     }
 
@@ -717,6 +743,122 @@ pub(crate) fn agent_available(presence: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether this device may drive the host, as the host last stated it.
+///
+/// The host states it in two places, and this type is what they both land in:
+/// its presence packet (`control`, plus `holder` when somebody else has it) and
+/// a `p.{pair}.state.control` packet published on a transition, which names the
+/// state and not the holder. Everything else reads this copy — the machine list
+/// shows it, and a command refused for `superseded` is explained by it.
+///
+/// `state: None` is a host that predates the field. It means "assume ours",
+/// which is what every client did before the host could say otherwise; reading
+/// silence as standby would make every older host look unusable.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Control {
+    pub(crate) state: Option<ControlState>,
+    pub(crate) holder: Option<Holder>,
+}
+
+impl Control {
+    /// The state a handshake's presence declared.
+    pub(crate) fn from_presence(presence: &Value) -> Self {
+        let mut control = Self::default();
+        control.apply_presence(presence);
+        control
+    }
+
+    /// Take a full statement of control: the handshake presence, or a tick.
+    ///
+    /// A presence payload without `control` is an older host and changes
+    /// nothing — its silence is not a state.
+    pub(crate) fn apply_presence(&mut self, presence: &Value) {
+        let Some(state) = ControlState::parse(presence.get("control")) else {
+            return;
+        };
+        self.state = Some(state);
+        self.holder = match state {
+            ControlState::Active => None,
+            ControlState::Standby => presence.get("holder").and_then(Holder::read),
+        };
+    }
+
+    /// Take a `state.control` packet, which names the state and not the holder.
+    ///
+    /// The holder is cleared rather than kept: on a move to standby, what is
+    /// held here still names the device that was just displaced. The next
+    /// presence (≤ one tick away) names the new one, and until then the client
+    /// says "another device" instead of the wrong name.
+    pub(crate) fn apply_control(&mut self, packet: &Value) {
+        let Some(state) = ControlState::parse(packet.get("control")) else {
+            return;
+        };
+        self.state = Some(state);
+        self.holder = None;
+    }
+}
+
+/// `active` (this device drives the host) or `standby` (another one does).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ControlState {
+    Active,
+    Standby,
+}
+
+impl ControlState {
+    fn parse(value: Option<&Value>) -> Option<Self> {
+        match value?.as_str()? {
+            "active" => Some(Self::Active),
+            "standby" => Some(Self::Standby),
+            // A word this client does not know is not a state to act on: the
+            // machine stays as it was, rather than being declared unusable.
+            _ => None,
+        }
+    }
+}
+
+/// Who holds the host while this device is in standby.
+///
+/// The controller's self-declared identity, from its `secure_ready`: it is what
+/// lets the window say "taken over by «name»" instead of refusing without saying
+/// why. Every field is optional — a controller that never declared anything
+/// leaves the pair id, or nothing at all, and the client falls back to neutral
+/// wording rather than inventing an identity.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Holder {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pair_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+impl Holder {
+    fn read(value: &Value) -> Option<Self> {
+        let object = value.as_object()?;
+        let field = |key: &str| {
+            object
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .map(str::to_string)
+        };
+        let holder = Self {
+            pair_id: field("pairId"),
+            name: field("name"),
+            kind: field("kind"),
+        };
+        (!holder.is_empty()).then_some(holder)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pair_id.is_none() && self.name.is_none() && self.kind.is_none()
+    }
+}
+
 /// A completed connection, plus what the handshake learned about the pairing.
 pub(crate) struct Connected {
     pub session: PeerSession,
@@ -957,6 +1099,11 @@ async fn handshake(
         .map_err(|_| crate::AppError::Message("remote_secure_channel_invalid".into()))?;
     let confirmed = Confirmed::from_confirmation(&confirmation, &creds.pair_id)?;
 
+    // What the handshake's presence says about who drives the host. Read before
+    // the presence value is moved into the session.
+    let control = std::sync::Arc::new(std::sync::Mutex::new(Control::from_presence(
+        &confirmed.presence,
+    )));
     let session = PeerSession {
         pair_id: creds.pair_id.clone(),
         client: client.clone(),
@@ -964,6 +1111,7 @@ async fn handshake(
         bridge_instance_id: confirmed.bridge_instance_id,
         features: confirmed.features,
         presence: confirmed.presence,
+        control,
     };
     // What this client can consume. `secure_ready` is what commits the host's
     // candidate channel, so it must still be sent; the declared set now asks
@@ -1200,6 +1348,80 @@ mod tests {
         assert!(!agent_available(&json!({})));
         assert!(!agent_available(&json!({ "agentAvailable": "yes" })));
         assert!(!agent_available(&Value::Null));
+    }
+
+    /// The state and who holds it come from the presence packet, and silence is
+    /// not a state.
+    ///
+    /// A host that predates `control` says nothing about it; the client must
+    /// keep assuming the machine is its own, exactly as it did before the field
+    /// existed. Reading "no word" as standby would make every older host look
+    /// unusable the moment this client learned to ask.
+    #[test]
+    fn control_is_read_from_presence_and_silence_is_not_a_state() {
+        let mut control = Control::from_presence(&json!({ "agentAvailable": true }));
+        assert_eq!(control, Control::default(), "an older host says nothing");
+        assert!(control.state.is_none() && control.holder.is_none());
+
+        control.apply_presence(&json!({
+            "control": "standby",
+            "holder": { "pairId": "pair_phone", "name": "Phone", "kind": "mobile" },
+        }));
+        assert_eq!(control.state, Some(ControlState::Standby));
+        let holder = control.holder.clone().expect("the holder is named");
+        assert_eq!(holder.pair_id.as_deref(), Some("pair_phone"));
+        assert_eq!(holder.name.as_deref(), Some("Phone"));
+        assert_eq!(holder.kind.as_deref(), Some("mobile"));
+
+        // The controller's own packet has no holder; a stale one must not
+        // survive the move back.
+        control.apply_presence(&json!({ "control": "active" }));
+        assert_eq!(control.state, Some(ControlState::Active));
+        assert_eq!(control.holder, None);
+
+        // A word this client does not know, and a state that is not a string,
+        // change nothing: the machine stays as it was rather than being
+        // declared unusable by a newer host's vocabulary.
+        control.apply_presence(&json!({ "control": "handover" }));
+        assert_eq!(control.state, Some(ControlState::Active));
+        control.apply_presence(&json!({ "control": 1 }));
+        assert_eq!(control.state, Some(ControlState::Active));
+    }
+
+    /// A `state.control` packet names the state and not the holder.
+    ///
+    /// It arrives the moment control moves, which is *before* the presence tick
+    /// that names the device that now has it. Keeping the previous holder would
+    /// name the device that was just displaced — so the holder is cleared and
+    /// the client says "another device" until the next tick says which.
+    #[test]
+    fn a_control_packet_clears_the_holder_it_cannot_name() {
+        let mut control = Control::default();
+        control.apply_presence(&json!({
+            "control": "standby",
+            "holder": { "name": "Old phone" },
+        }));
+        assert_eq!(
+            control
+                .holder
+                .as_ref()
+                .and_then(|holder| holder.name.clone()),
+            Some("Old phone".to_string())
+        );
+
+        control.apply_control(&json!({ "control": "standby", "pairId": "pair_1" }));
+        assert_eq!(control.state, Some(ControlState::Standby));
+        assert_eq!(
+            control.holder, None,
+            "the displaced device is not the holder"
+        );
+
+        control.apply_control(&json!({ "control": "active" }));
+        assert_eq!(control.state, Some(ControlState::Active));
+
+        // A packet without a known state leaves the reading alone.
+        control.apply_control(&json!({ "pairId": "pair_1" }));
+        assert_eq!(control.state, Some(ControlState::Active));
     }
 
     fn confirmation(overrides: Value) -> Value {

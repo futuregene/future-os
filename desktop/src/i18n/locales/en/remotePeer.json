@@ -23,7 +23,12 @@
   "statusConnecting": "Connecting…",
   "statusOffline": "Offline",
   "statusAgentUnavailable": "Agent unavailable",
+  "statusTakenOver": "Taken over",
+  "heldBy": "In use by {{name}}",
+  "heldByUnknown": "In use by another device",
+  "takeOver": "Take over",
   "peersSummary": "{{connected}} of {{total}} connected",
+  "peersSummaryHeld": "{{connected}} of {{total}} connected · {{held}} taken over",
   "reconnectAll": "Reconnect all",
   "statusUnread": "Unread",
   "selector": {

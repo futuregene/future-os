@@ -16,6 +16,7 @@ use super::runtime::{
     should_retry_connect, spawn_supervisor, stream_count, supervisor_count, unpair, workspaces,
     Emitter, PeerEvent, PeerSummary, INJECT_CONNECTION_LOST,
 };
+use super::session::ControlState;
 use super::session::EventsSubscription;
 use super::testing::{fixture, teardown, Fixture};
 use crate::remote::test_support::{HomeGuard, MockPlatform};
@@ -1993,6 +1994,86 @@ async fn a_connection_that_vanishes_between_connect_and_request_is_reported() {
 }
 
 // ── the event-stream loop's own seams ───────────────────────────────────────
+
+/// Control arrives twice and lands in one place: a presence tick that restates
+/// it, and a `state.control` packet that announces the move.
+///
+/// The machine list answers "may this device drive that host" from the peer
+/// summary, and the summary reads this. Without it, a device that had just been
+/// displaced went on looking connected *and* usable — and its conversation list
+/// went on drawing the host's last-known rows — until some command happened to
+/// come back `superseded`, minutes later.
+///
+/// The packet is asserted separately from the tick because it is the faster of
+/// the two and the one that carries no `holder`: the name of the device that now
+/// has the machine only arrives with the next tick, and until then the client
+/// must say "another device" rather than the device that was just displaced.
+#[tokio::test]
+async fn control_arrives_from_presence_and_from_the_control_packet() {
+    let _home = HomeGuard::new("peer-rt-control");
+    let pair_id = "pair_cov_control";
+    let (client_channel, host_channel) = cov_harness::noise_pair(pair_id);
+    let (nats, client) = cov_harness::broker_and_client().await;
+    let session = cov_harness::session_for(pair_id, client, client_channel);
+    let host = std::sync::Mutex::new(host_channel);
+    let (emitter, seen) = recording_emitter();
+    let (_stream, _visible) =
+        cov_harness::spawn_stream(&session, "desktop_cov_control", emitter).await;
+
+    // The subscription must exist before the first push is injected, or the
+    // broker has nothing to deliver to and this passes without reading anything.
+    nats.wait_for_sub(
+        &format!("p.{pair_id}.state.>"),
+        std::time::Duration::from_secs(10),
+    )
+    .await;
+
+    cov_harness::inject_sealed(
+        &nats,
+        &host,
+        &format!("p.{pair_id}.presence"),
+        &json!({
+            "online": true,
+            "control": "standby",
+            "holder": { "pairId": "pair_phone", "name": "Phone" },
+        }),
+    );
+    wait_for("the standby tick never reached the session", || {
+        session.control().state == Some(ControlState::Standby)
+    })
+    .await;
+    assert_eq!(
+        session.control().holder.and_then(|holder| holder.name),
+        Some("Phone".to_string()),
+        "the holder is what lets the window name who took it"
+    );
+
+    // The move back, announced ahead of any tick.
+    cov_harness::inject_sealed(
+        &nats,
+        &host,
+        &format!("p.{pair_id}.state.control"),
+        &json!({ "control": "active", "pairId": pair_id }),
+    );
+    wait_for("the control packet never reached the session", || {
+        session.control().state == Some(ControlState::Active)
+    })
+    .await;
+    assert_eq!(
+        session.control().holder,
+        None,
+        "a packet names no holder, so the displaced one must not survive it"
+    );
+    // And the window is told: a `control` push is what makes it re-read the
+    // host's conversations the moment they become readable again.
+    wait_for("the control packet was not forwarded to the UI", || {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == "control")
+    })
+    .await;
+}
 
 /// A push whose body does not name its conversation still has to be filed under
 /// the one in the subject it arrived on.

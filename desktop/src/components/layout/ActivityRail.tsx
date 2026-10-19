@@ -203,12 +203,14 @@ export function ActivityRail({
   // Connection indicator overlaid on the Remote nav icon.
   //
   // It answers for the *paired* machines when there are any (the phone's own
-  // rule): blue only when every one of them is up, amber when some are, red when
-  // none are — because the merged conversation list is short of exactly the ones
-  // that are not, and that is the fact the reader has to be able to see without
-  // opening the page. With nothing paired it keeps its other meaning: this
-  // machine's own host bridge (blue while devices can connect in, amber while it
-  // is being established, red when it is down, nothing before pairing).
+  // rule): blue only when every one of them is up **and** drivable, amber when
+  // some are — a machine held by another paired device answers and still cannot
+  // contribute a row — and red when none are. Because the merged conversation
+  // list is short of exactly the machines it cannot read, and that is the fact
+  // the reader has to be able to see without opening the page. With nothing
+  // paired it keeps its other meaning: this machine's own host bridge (blue while
+  // devices can connect in, amber while it is being established, red when it is
+  // down, nothing before pairing).
   const peersDot = peersDotState(remotePeers);
   const dotState: "up" | "partial" | "down" | null = peersDot
     ?? (remoteIndicator === "connected"
