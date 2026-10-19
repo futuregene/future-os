@@ -77,3 +77,28 @@ export function clearComposerDraft(draftKey: string): void {
     // Ignore — storage unavailable.
   }
 }
+
+/**
+ * Drop a conversation's draft when it still holds exactly the message that was
+ * just accepted again. A rejected first send is restored to the draft so it can
+ * be retried explicitly; once that retry (or the draft's own send) succeeds the
+ * already-delivered text must not be offered as an unsent message on the next
+ * visit. A draft the user has edited since — or one carrying different
+ * attachments — is newer intent and stays.
+ */
+export function clearComposerDraftIfMatches(
+  draftKey: string | undefined,
+  text: string,
+  attachments: readonly MessageAttachment[] = [],
+): void {
+  if (!draftKey)
+    return;
+  const draft = loadComposerDraft(draftKey);
+  if (!draft || (draft.text ?? "") !== text)
+    return;
+  const stored = draft.attachments ?? [];
+  const sameAttachments = stored.length === attachments.length
+    && stored.every((item, index) => item.path === attachments[index]?.path);
+  if (sameAttachments)
+    clearComposerDraft(draftKey);
+}

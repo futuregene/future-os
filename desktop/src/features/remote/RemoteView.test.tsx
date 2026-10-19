@@ -147,6 +147,11 @@ beforeEach(() => {
   stopRemote.mockResolvedValue(undefined);
   addRemoteDevice.mockResolvedValue(undefined);
   openExternalUrl.mockResolvedValue(undefined);
+  // The invitation is minted for "two minutes from now", so its expiry has to
+  // be anchored to the test run, not to module import: a slow full-suite load
+  // can put more than a second between the two, and the countdown then starts
+  // at 1:59 instead of 2:00.
+  invited.pairingCodeExpiresAt = Math.floor(Date.now() / 1000) + 120;
   refresh = vi.fn<() => Promise<void>>(async () => {});
   container = document.createElement("div");
   document.body.append(container);
