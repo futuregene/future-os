@@ -17,6 +17,7 @@ import {
   pairRemotePeer,
   unpairRemotePeer,
 } from "./remotePeerClient";
+import { remotePeerErrorText } from "./remotePeerError";
 
 /**
  * "Connect to another computer" — the client half of the Remote page.
@@ -228,7 +229,15 @@ export function RemoteClientSection({
             : null}
         </div>
 
-        {error ? <p className="text-xs text-danger">{error}</p> : null}
+        {error
+          ? (
+              // The backend's own words are diagnostics ("Remote handshake
+              // failed: no responders: no responders"); the sentence is the
+              // UI's. The raw text stays as the tooltip so support can still
+              // see what actually failed.
+              <p className="text-xs text-danger" title={error}>{remotePeerErrorText(error, t)}</p>
+            )
+          : null}
 
         {/* The count is what the rows below add up to, and it is the answer to
             "why is a machine's conversation missing": a list that is short of
@@ -354,8 +363,12 @@ function PeerRow({
         <div className="mt-0.5 truncate text-xs text-ink-muted">{peer.desktopId}</div>
         {/* A stopped machine's last failure is stale by definition: the socket
             went away because the user closed it. Saying both would read as a
-            fault that is not there. */}
-        {peer.error && !peer.stopped ? <div className="mt-1 text-xs text-danger">{peer.error}</div> : null}
+            fault that is not there. For a machine that is up on paper but not
+            answering, the sentence is still the UI's: `peer.error` is the
+            runtime's diagnostic text. */}
+        {peer.error && !peer.stopped
+          ? <div className="mt-1 text-xs text-danger" title={peer.error}>{remotePeerErrorText(peer.error, t)}</div>
+          : null}
       </div>
       <div className="flex shrink-0 items-center gap-2">
         {showDisconnect
