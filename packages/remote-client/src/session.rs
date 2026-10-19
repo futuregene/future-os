@@ -1436,3 +1436,50 @@ mod tests {
         assert_eq!(connect_budget(), NATS_CONNECT_TIMEOUT);
     }
 }
+
+#[cfg(test)]
+mod retry_policy_tests {
+    use super as session;
+    use serde_json::json;
+
+    /// Which commands the retry may touch, without a connection: the whitelist is a
+    /// property of the command, and these two lists are the whole contract. Both
+    /// halves matter — a read left out is a self-healing path that never heals, and
+    /// a write let in is a duplicated side effect.
+    #[test]
+    fn only_reads_and_the_two_conversation_commands_are_retryable() {
+        for kind in [
+            "list_sessions",
+            "list_workspaces",
+            "get_state",
+            "get_read_chunk",
+            "upload_complete",
+            "prompt",
+            "continue_run",
+        ] {
+            assert!(
+                session::retryable_command(&json!({ "type": kind })),
+                "{kind} must be retryable"
+            );
+        }
+        for kind in [
+            "create_workspace",
+            "set_task_enabled",
+            "upload_init",
+            "upload_cancel",
+            "download_prepare",
+            "abort",
+            "approval_decision",
+            "secure_ready",
+        ] {
+            assert!(
+                !session::retryable_command(&json!({ "type": kind })),
+                "{kind} must not be retried"
+            );
+        }
+        assert!(
+            !session::retryable_command(&json!({})),
+            "a body with no command type is not a command"
+        );
+    }
+}

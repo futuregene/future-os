@@ -460,3 +460,29 @@ The TS flow uses two Client instances and two owned host/broker processes with t
 Test host control now starts at its own pair ID and catalog content names its public endpoint identity. Product behavior is unchanged. Original Desktop multi-host application tests retain real Store/installation identity/headless process coverage; the [migration inventory](remote-test-migration.json) records why they remain. The affected selector and its regression source include the new interop fixture.
 
 Default/network-feature interoperability Clippy `--all-targets`, fmt, TS typecheck/lint and Node bundle compilation pass; generated bundles are not run. Related documentation/generated-file static checks pass. Each language adds five report IDs to the base eleven, planning sixteen flow/case reports, not sixteen framework declarations. Runtime acceptance remains pending final CI. Remaining shared recovery/event/transfer behavior, real network faults, application migration audit, matched performance and same-candidate manual confirmation are still required.
+
+### 2026-10-19: Original Client retry tests moved out of Desktop
+
+Moved three Client-only record/retry cases from `remote_peer/tests.rs` into
+[`support/scripted_requests.rs`](../../tests/remote-interop/tests/support/scripted_requests.rs): one lost reply preserves command identity, repeated loss stops at three attempts, and a nonwhitelisted write is sent once. The owned real broker replaces Desktop FakeNats; PeerSession request, Noise channel, authenticated records and reply context remain real. The responder is explicitly scripted, not a Server-role interoperability claim. Cases run under the existing explicit `network-tests` Rust target.
+
+The original retry-whitelist test moved into Client. All four names and original
+function statements/assertions remain; network cases only add Client drain and
+responder abort/await cleanup. A source comparison normalized whitespace and
+excluded those cleanup statements to confirm equivalence. Desktop removes these
+core duplicates while retaining actual application pairing, platform/store and
+event integrations. The interop manifest directly declares the already-locked
+async-nats dependency without changing dependency versions.
+
+The Rust inventory audit also found a false `that` entry captured from the
+baseline verify_e2e comment "blocking fn that builds its own runtime". The entry
+is corrected with its reason recorded. All other 729 baseline names occur in
+current source: 202 in independent core/interop and 527 in applications. Name
+presence alone proves neither equivalent behavior nor active cfg/runtime
+coverage; mixed application files still require responsibility review.
+
+Client default/test-support, interop network-feature and Desktop GUI/headless
+Clippy `--all-targets` pass, alongside relevant fmt, generation and documentation
+static checks. No unit/network tests, CI or compiled test output were executed.
+Final automated, matched performance and same-candidate manual acceptance remain
+pending.

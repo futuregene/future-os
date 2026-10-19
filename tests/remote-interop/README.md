@@ -84,3 +84,19 @@ and interoperability extensions are not yet runtime evidence: no final CI run
 has been dispatched during development. Further real network faults, shared
 recovery/event/transfer behaviors, application migration audit and matched
 performance/manual acceptance remain part of the development plan.
+
+## Migrated Client transport fault cases
+
+`tests/support/scripted_requests.rs` is compiled under the same explicit
+`network-tests` target. It retains the three original Desktop Client cases for
+one lost reply, three exhausted attempts and an unretried write. It uses the
+owned real broker and actual PeerSession request/record/reply-context handling;
+a scripted encrypted responder deliberately withholds replies. Noise channels
+are established in the fixture, not through Server pairing. These cases are
+Client transport coverage, distinct from the actual Client/Server flows above.
+Each successful case drains the Client and aborts/awaits its responder before
+reaping the broker; panic cleanup still aborts the responder and reaps its owned
+process. The original retry-whitelist test now belongs to the Client unit suite.
+These core cases are removed from Desktop rather than executed again with both
+GUI and headless. Their names and all original assertions remain; execution is
+pending final CI.

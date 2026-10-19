@@ -23,6 +23,7 @@ base64 = { workspace = true }
 nkeys = "0.4"
 sha2 = "0.10"
 url = "2"
+async-nats = "0.49"
 
 [[bin]]
 name = "remote-interop-host"

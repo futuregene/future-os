@@ -575,7 +575,6 @@
         "a_long_replay_drains_the_bounded_queue_while_it_publishes",
         "the_real_traffic_lane_holds_its_invariants_on_fixture_inputs",
         "the_catalog_measurement_publishes_activity_only_to_a_declared_client",
-        "that",
         "the_ignored_measurement_drivers_run_their_own_bodies",
         "the_ignored_fixture_driver_runs_its_own_body",
         "the_ignored_catalog_driver_runs_its_own_body",
@@ -587,7 +586,8 @@
         "a_second_device_is_told_who_holds_the_machine_and_only_takes_it_when_asked",
         "two_simultaneous_reconnects_leave_control_where_it_was"
       ],
-      "target": null
+      "target": null,
+      "inventoryCorrection": "Removed false test name that: the baseline comment at line 2200 says \"blocking fn that builds its own runtime\". It is not a function declaration or deleted test."
     },
     {
       "source": "desktop/src-tauri/src/remote_peer/codec.rs",
@@ -831,7 +831,24 @@
         "a_write_command_is_not_retried",
         "only_reads_and_the_two_conversation_commands_are_retryable"
       ],
-      "target": null
+      "target": {
+        "client-retry-policy": {
+          "path": "packages/remote-client/src/session.rs",
+          "cases": [
+            "only_reads_and_the_two_conversation_commands_are_retryable"
+          ]
+        },
+        "independent-client-network-faults": {
+          "path": "tests/remote-interop/tests/support/scripted_requests.rs",
+          "cases": [
+            "a_lost_reply_is_retried_under_the_same_command_identity",
+            "a_command_that_keeps_losing_its_reply_is_abandoned_after_three_attempts",
+            "a_write_command_is_not_retried"
+          ]
+        },
+        "application-integration": "desktop/src-tauri/src/remote_peer/tests.rs"
+      },
+      "note": "The four listed core test bodies/assertions are retained; network cases add explicit drain/task cleanup and use the independent real broker instead of Desktop FakeNats. The scripted responder is not the Server role. Remaining cases retain actual application pairing, store/platform and event integration. Execution remains pending final CI."
     },
     {
       "source": "desktop/src-tauri/src/remote_peer/transfer.rs",

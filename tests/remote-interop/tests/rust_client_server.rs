@@ -203,3 +203,6 @@ async fn one_rust_client_keeps_two_real_servers_separate() -> anyhow::Result<()>
     second_cleanup?;
     Ok(())
 }
+
+#[path = "support/scripted_requests.rs"]
+mod scripted_requests;
