@@ -159,18 +159,10 @@ fn opening_repairs_fork_session_creation_time_from_the_operation_boundary() {
 fn v2_database_upgrades_to_current_schema_with_the_skills_table() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("agent.db");
-    // A v2 database from the previous release: recognized application_id,
-    // current v2 layout, no skills table yet.
+    // Actual schema from the first SQLite release, before skills/snapshots.
     let connection = Connection::open(&path).unwrap();
     connection
-        .execute_batch(include_str!("schema.sql"))
-        .unwrap();
-    connection
-        .execute_batch(
-            "DROP TABLE session_tombstones;
-        DROP TABLE queued_run_receipts; DROP TABLE history_index_state;
-        PRAGMA user_version=2;",
-        )
+        .execute_batch(include_str!("../../../tests/fixtures/database/v2.sql"))
         .unwrap();
     drop(connection);
 
