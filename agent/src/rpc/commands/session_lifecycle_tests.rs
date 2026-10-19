@@ -751,6 +751,7 @@ fn new_session_generates_id_and_registers() {
 fn new_session_is_present_and_reloadable_before_its_first_prompt() {
     let state = make_app_state();
     let mut command = make_cmd_for("new_session", "first-hello");
+    command.cwd = state.welcome_cwd.clone();
     command.created_by = "desktop".into();
     command.creator_id = "desktop-device".into();
     command.level = "low".into();
