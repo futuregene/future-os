@@ -2914,5 +2914,176 @@ mod gui {
             // Leave the barrier and the operation clear for the tests after this one.
             crate::desktop_shutdown::reset_for_test();
         }
+
+        /// `Ready` after a quit has already begun: the launch path is spawned, but
+        /// the closing admission must stop it before it starts the window's work.
+        /// This is the `return` guarded by `is_stopping()` in `dispatch_run_event`.
+        ///
+        /// The only production input is a stop that lands between readiness and the
+        /// check — a race — so the fixture closes the same process-global flag
+        /// through the test-only guard in `desktop_shutdown` (nothing in production
+        /// may call it) and drops the guard once the window has passed.
+        ///
+        /// The assertion is the *absence* of the work, so it has to outlast the
+        /// work's own startup latency: the background path's first Agent query is
+        /// the post-readiness reconciliation, which sleeps three seconds in
+        /// `start_backend_background`. Waiting past that window is what turns
+        /// "nothing happened yet" into evidence;
+        /// `the_ready_event_starts_the_window_work_and_serves_the_terminal` is the
+        /// positive control for the same request in the same fixture shape.
+        #[test]
+        fn quit_admission_closed_before_the_ready_event_withholds_the_window_work() {
+            let _home = crate::auth_store::test_support::HomeGuard::new("run-event-ready-stopping");
+            let mock = crate::agent_bridge::test_support::mock_agent();
+            crate::store::initialize_app_store().expect("init store");
+            // Open the process-global task registry: a sibling shutdown fixture may
+            // have frozen it, and `spawn_native` would then be a no-op instead of
+            // running the arm under test.
+            crate::runtime::cancel_test_tasks();
+            let app = tauri::test::mock_app();
+            let before = mock.requests_of("list_session_ids").len();
+            let closed = crate::desktop_shutdown::close_admission_guard_for_test();
+            assert!(
+                crate::desktop_shutdown::is_stopping(),
+                "the fixture closes admission"
+            );
+            dispatch_run_event(
+                app.handle(),
+                tauri::RunEvent::Ready,
+                crate::launch::LaunchOptions::default(),
+            );
+            // The spawned job runs on its own thread; this window is longer than the
+            // three-second reconciliation it would start if it fell through.
+            std::thread::sleep(std::time::Duration::from_millis(4_500));
+            let started = mock.requests_of("list_session_ids").len();
+            drop(closed);
+            // Drain whatever the positive-control path would have started, so this
+            // fixture cannot leave a loop behind for the next HOME.
+            crate::runtime::cancel_test_tasks();
+            assert_eq!(
+                started, before,
+                "a closed admission must stop the Ready arm before it starts the window's work"
+            );
+        }
+
+        /// `ExitRequested` while the Agent is still `Starting` answers
+        /// `QuitDecision::Confirm { open_dialog: true }`, so the arm that vetoes the
+        /// exit and asks the user runs — including `confirm_quit`, which arms the
+        /// dialog flag and builds the native dialog.
+        ///
+        /// The arm cannot be driven from a lib test: `ExitRequestApi` has private
+        /// fields and only Tauri's event loop constructs it, and the process-global
+        /// Agent host has no test setter for `Starting`. A fresh process supplies
+        /// both: it holds a TCP peer that accepts and never answers, so the startup
+        /// probe stays in flight and the host publishes `Starting`, then lets the
+        /// mock runtime's own loop deliver `ExitRequested` (the window destroy
+        /// pattern `an_exit_requested_from_the_mock_loop_takes_the_guarded_quit_arm`
+        /// already uses).
+        ///
+        /// **The dialog is contained, not answered.** `confirm_quit` builds the
+        /// message and hands `show` to `run_on_main_thread`; on the mock runtime that
+        /// is a queue the loop would drain on its next iteration, and the probe
+        /// panics out of the callback before it can. Nothing reaches `rfd`, so a host
+        /// with no window server cannot hang here — this fixture never opens a real
+        /// dialog.
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn quit_admission_exit_requested_while_the_agent_is_starting_confirms_the_quit() {
+            const CHILD: &str = "FUTUREOS_QUIT_CONFIRM_CHILD";
+            const ARM: &str = "QUIT-CONFIRM-ARM";
+            let name = "gui::startup_paths_tests::quit_admission_exit_requested_while_the_agent_is_starting_confirms_the_quit";
+            if std::env::var_os(CHILD).is_none() {
+                let output = std::process::Command::new(
+                    std::env::current_exe().expect("the test binary's own path"),
+                )
+                .args(["--exact", name, "--nocapture", "--test-threads=1"])
+                .env(CHILD, "1")
+                .output()
+                .expect("re-run this test in a fresh process");
+                let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+                assert!(output.status.success(), "the child run failed: {stderr}");
+                // The marker proves the child reached the arm; a child that returned
+                // before it would otherwise look like a pass (F.113).
+                assert!(
+                    stderr.contains(ARM),
+                    "the child never reached the arm: {stderr}"
+                );
+                return;
+            }
+
+            let _home = crate::auth_store::test_support::HomeGuard::new("quit-confirm-arm");
+            crate::desktop_shutdown::reset_for_test();
+            // A peer that accepts and never answers keeps the startup probe in
+            // flight, which is exactly the `Phase::Starting` window the arm needs.
+            let endpoint = std::net::TcpListener::bind("127.0.0.1:0").expect("probe endpoint");
+            endpoint.set_nonblocking(true).expect("nonblocking probe");
+            let address = endpoint.local_addr().expect("probe address");
+            std::thread::spawn(move || {
+                // The listener stays alive and unanswered until this process exits.
+                let _hold = endpoint;
+                let _ = crate::agent_host::host().start(format!("http://{address}"));
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while crate::agent_host::host().phase() != crate::agent_host::Phase::Starting {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the host never published `Starting`"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+
+            // The real registration, so `app.dialog()` finds the plugin's state.
+            // The identifier is load-bearing: the single-instance plugin derives its
+            // socket from it, and the mock context's empty one is shared by every
+            // process on the host (`the_desktop_registration_builds_for_any_runtime`
+            // records the silent-exit failure that causes).
+            let builder =
+                gui_builder::<tauri::test::MockRuntime>().enable_macos_default_menu(false);
+            let mut context = tauri::test::mock_context(tauri::test::noop_assets());
+            context.config_mut().identifier =
+                format!("com.futureos.quitconfirm.p{}", std::process::id());
+            context.config_mut().plugins.0.insert(
+                "updater".to_string(),
+                serde_json::json!({ "pubkey": "fixture", "endpoints": [] }),
+            );
+            let app = builder.build(context).expect("build the mock app");
+            let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+                .build()
+                .expect("a mock window");
+            let destroyer = window.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                let _ = destroyer.destroy();
+            });
+
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                app.run(move |handle, event| {
+                    if let tauri::RunEvent::ExitRequested { .. } = &event {
+                        dispatch_run_event(handle, event, crate::launch::LaunchOptions::default());
+                        // A literal payload: this value is downcast as `&str` below,
+                        // and a formatted panic would arrive as a `String`.
+                        panic!("QUIT-CONFIRM-ARM: the Confirm arm ran");
+                    }
+                });
+            }));
+            let error = outcome.expect_err("the probe panics out of the mock loop");
+            let message = error.downcast_ref::<&str>().copied().unwrap_or_default();
+            assert!(
+                message.contains("QUIT-CONFIRM-ARM"),
+                "the loop must have delivered ExitRequested to the handler: {message}"
+            );
+
+            // The arm's own effect, read through the public decision: `confirm_quit`
+            // sets the dialog flag before building the dialog, and a second question
+            // therefore answers "confirm, already asking" instead of queueing a
+            // second dialog.
+            match crate::agent_supervisor::on_close_requested() {
+                crate::agent_supervisor::QuitDecision::Confirm { open_dialog } => {
+                    assert!(!open_dialog, "confirm_quit must have armed the dialog flag")
+                }
+                decision => panic!("the Confirm arm must have run: {decision:?}"),
+            }
+            eprintln!("{ARM}: the stopping-process confirm path executed");
+        }
     }
 }
