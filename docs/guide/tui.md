@@ -36,8 +36,10 @@ distinction: `/skills` installs and removes skills by spawning the unified
   the agent's session policy from here (see
   [Sandbox and tool permissions](#sandbox-and-tool-permissions)); nothing is
   changed behind your back at startup, apart from applying the TUI's own
-  persisted `defaultPermissionLevel` (below).
-- Fresh sessions default to permission `all`. The CLI's
+  persisted `defaultPermissionLevel` / `defaultApprovalMode` (below).
+- Fresh sessions default to permission `all`. A protected approval mode (see
+  [Sandbox and tool permissions](#sandbox-and-tool-permissions)) raises that to
+  `workspace`, because `all` skips the approval gate entirely. The CLI's
   `future run --permission none` disables all tool calls, not just writes. See
   the [sandbox guide](../wiki/en/Sandbox.md) for the distinction.
 
@@ -80,7 +82,8 @@ model as an ordinary prompt.
 | `/skill-recommend [on\|off]` | Offer a fitting skill before sending a message (on by default) |
 | `/tools [none\|all]` | Multi-select the built-in tools; `none` disables all of them |
 | `/permission [all\|workspace\|none]` | Set the tool permission level (and remember it); no arg opens the sandbox panel |
-| `/sandbox` | Sandbox tier, backend availability and the permission picker |
+| `/mode [manual\|sandbox\|auto\|off]` | Show the approval mode, or apply one directly (it persists) |
+| `/sandbox` | Approval mode, backend availability and the permission picker |
 | `/theme [id]` | Pick a theme, or set one directly by id |
 | `/sessions` | Browse and switch sessions |
 | `/new` | Start a new session |
@@ -317,29 +320,40 @@ a failure, a timeout or a rejected id reports the outcome and re-reads nothing.
 ## Sandbox and tool permissions
 
 `/sandbox` opens the sandbox panel. The same panel is what `/permission` opens
-when you give it no argument, because the tier and the permission level belong
+when you give it no argument, because the mode and the permission level belong
 together.
 
 | Key | Action |
 |---|---|
-| `↑↓` / `k` `j` | Move over the six rows (three tiers, then three permission levels) |
+| `↑↓` / `k` `j` | Move over the seven rows (four approval modes, then three permission levels) |
 | `enter` / `space` | Apply the highlighted row |
-| `r` | Re-probe the sandbox backend |
+| `r` | Re-check the sandbox backend and the FutureOS account |
 | `esc` | Close |
 
-The tier rows are the desktop's three approval modes:
+The mode rows are the desktop's four approval modes:
 
-| Tier | Meaning |
+| Mode | Meaning |
 |---|---|
 | `Manual` | File access follows approval rules; allowlisted read-only commands run automatically, other commands ask. No OS sandbox. |
 | `Sandboxed` | Commands run in the OS sandbox and ask for approval when needed. |
-| `Unrestricted` (`off`) | No prompts, no sandbox — everything runs. |
+| `Automatic review` (`auto`) | A second model reviews each bounded request the sandbox lets through; needs an available backend and a signed-in FutureOS account. |
+| `Full access` (`off`) | Bypasses approval prompts and the OS sandbox — every command runs with full access to this machine. |
+
+The approval mode is only enforced while the tool-permission level gates tool
+calls. The agent's legacy `all` level returns *before* the approval rules are
+consulted, so picking `Manual`, `Sandboxed` or `Automatic review` in the TUI
+also raises `all` → `Workspace` (and remembers it, so a restart keeps gating;
+`none` is left alone). Conversely, `/permission all` is the explicit “stop
+gating” switch: it moves the approval mode to `Full access` and says so, so the
+footer never advertises a policy nothing enforces.
 
 The OS sandbox is native only to macOS (Seatbelt); on Linux the agent runs it
 through the system Bubblewrap, and on Windows there is no sandbox tier at all
 (commands run under FutureOS write protection instead). A panel opened on a
 non-macOS host therefore says so, and the `Sandboxed` row is **disabled while the
 backend is unavailable** — the highlight skips it and selecting it does nothing.
+`Automatic review` is disabled the same way, and additionally while the
+FutureOS account check has not resolved or came back signed out (`(sign in)`).
 
 Availability has three states, and the panel never conflates them:
 
@@ -351,11 +365,12 @@ Availability has three states, and the panel never conflates them:
   the sandbox is missing, and the panel reports the error.
 
 The agent downgrades rather than lying: asking for `sandbox` on a host whose
-probe found no backend comes back as `manual`, and the panel prints the
-fallback banner (`Sandbox requested but unavailable — fell back to Manual: …`)
-instead of reporting success. The tier shown before you apply one here is this
-platform's default and the panel labels it as such, unless a policy answer or a
-`sandbox_policy_changed` event told it the session's real tier.
+probe found no backend comes back as `manual`, and asking for `auto` without an
+account comes back as `sandboxed`; the panel prints the fallback banner
+(`Sandbox requested but unavailable — fell back to Manual: …`) instead of
+reporting success. The mode shown before you apply one here is this platform's
+default and the panel labels it as such, unless a policy answer or a
+`sandbox_policy_changed` event told it the session's real mode.
 
 The permission rows are the agent's three levels for tool calls:
 

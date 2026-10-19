@@ -99,7 +99,7 @@ Only pair devices and use relay deployments you trust.
 - **Reconnect/pairing error:** follow the displayed reason/code; expired or revoked
   pairing requires a new pairing, while a temporary network failure can reconnect.
 - **Approval pending:** inspect the requested scope and approve or reject explicitly;
-  do not switch to Unrestricted merely to dismiss a security prompt.
+  do not switch to Full access merely to dismiss a security prompt.
 
 See [[Installation]], [[Using FutureOS|Using-FutureOS]] and [[Sandbox]]. Mobile
 source-build and TestFlight maintainer instructions live in the repository's

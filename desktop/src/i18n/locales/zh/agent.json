@@ -203,7 +203,7 @@
     "approvalTier": {
       "manual": "手动审批",
       "sandbox": "沙箱保护",
-      "off": "完全放开",
+      "off": "完全访问",
       "auto": "自动审批"
     },
     "approvalTierDesc": {

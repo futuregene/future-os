@@ -50,7 +50,7 @@ You never have to invoke a skill by hand. Once it's installed:
 1. Just **describe your task** in the conversation as usual.
 2. The agent picks up the relevant skill on its own when it fits.
 
-Skills use the session's permissions, not a separate safety boundary. Approval depends on the selected mode/rules; the desktop defaults to Unrestricted. See [[Sandbox]] and [[Using FutureOS|Using-FutureOS]].
+Skills use the session's permissions, not a separate safety boundary. Approval depends on the selected mode/rules; the desktop defaults to Full access. See [[Sandbox]] and [[Using FutureOS|Using-FutureOS]].
 
 ---
 

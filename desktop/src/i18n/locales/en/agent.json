@@ -202,7 +202,7 @@
     "approvalTier": {
       "manual": "Manual",
       "sandbox": "Sandboxed",
-      "off": "Unrestricted",
+      "off": "Full access",
       "auto": "Automatic review"
     },
     "approvalTierDesc": {
