@@ -84,7 +84,9 @@ pub async fn reconcile_delete_outbox() {
                 .results
                 .into_iter()
                 .map(|result| {
-                    let error = if result.deleted {
+                    let error = if result.deleted
+                        || client::is_session_not_found_error(&result.error_code, &result.error)
+                    {
                         None
                     } else {
                         Some(if result.error.is_empty() {

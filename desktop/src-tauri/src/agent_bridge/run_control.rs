@@ -9,6 +9,14 @@ use super::client::{
 use super::replica::AGENT_REPLICAS;
 use crate::store;
 
+/// A missing session is already stopped; an accepted abort still needs idle
+/// confirmation before a conversation can be deleted.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum AbortSessionOutcome {
+    SessionMissing,
+    AbortRequested,
+}
+
 /// What the Agent knows about a session when asked for its live run.
 enum SessionProbe {
     /// The Agent has no such session. Definitive, not transient: the prompt
@@ -66,7 +74,7 @@ async fn abort_run_on_agent(
     context: &str,
     session_id: &str,
     canonical_run_id: Option<String>,
-) -> Result<(), crate::AppError> {
+) -> Result<AbortSessionOutcome, crate::AppError> {
     let response = client
         .execute_command(run_control_command(
             "abort",
@@ -79,8 +87,11 @@ async fn abort_run_on_agent(
         // channel was established.
         .map_err(|status| map_rpc_error(context, status))?
         .into_inner();
-    if response.success || is_session_not_found(&response) {
-        return Ok(());
+    if is_session_not_found(&response) {
+        return Ok(AbortSessionOutcome::SessionMissing);
+    }
+    if response.success {
+        return Ok(AbortSessionOutcome::AbortRequested);
     }
     if let Some(run_id) =
         canonical_run_id.filter(|_| response.error.contains("is no longer active"))
@@ -94,7 +105,7 @@ async fn abort_run_on_agent(
             .map_err(|status| map_rpc_error(context, status))?
             .into_inner();
         if is_session_not_found(&probe) {
-            return Ok(());
+            return Ok(AbortSessionOutcome::SessionMissing);
         }
         if probe.success {
             let state = future_rpc::decode::response_data(&probe);
@@ -111,9 +122,12 @@ async fn abort_run_on_agent(
                     .await
                     .map_err(|status| map_rpc_error(context, status))?
                     .into_inner();
+                if is_session_not_found(&cancelled) {
+                    return Ok(AbortSessionOutcome::SessionMissing);
+                }
                 return cancelled
                     .ok_or_rpc_error("Unable to cancel queued Future Agent run")
-                    .map(|_| ());
+                    .map(|_| AbortSessionOutcome::AbortRequested);
             }
             if state
                 .pointer("/activeRun/runId")
@@ -122,7 +136,7 @@ async fn abort_run_on_agent(
             {
                 // This exact run has already ended. Do not let a stale local
                 // row block termination or abort a newer client's live run.
-                return Ok(());
+                return Ok(AbortSessionOutcome::AbortRequested);
             }
         }
     }
@@ -165,6 +179,7 @@ pub(super) async fn abort_agent_thread(
         canonical_run_id,
     )
     .await
+    .map(|_| ())
 }
 
 /// Abort an in-flight run for an already-resolved agent session id. Unlike
@@ -180,11 +195,13 @@ pub(super) async fn abort_agent_thread(
 /// session it names (a prompt that never reached the Agent, or an agent-side
 /// delete). Reporting "nothing to abort" for it lets the caller that only wants
 /// the session stopped — deleting the conversation — go on with its work.
-pub(crate) async fn abort_session(session_id: &str) -> Result<(), crate::AppError> {
+pub(crate) async fn abort_session(
+    session_id: &str,
+) -> Result<AbortSessionOutcome, crate::AppError> {
     let mut client = connect_agent().await?;
     super::verify_session_database(&mut client, session_id).await?;
     let canonical_run_id = match probe_session(&mut client, session_id).await? {
-        SessionProbe::Unknown => return Ok(()),
+        SessionProbe::Unknown => return Ok(AbortSessionOutcome::SessionMissing),
         SessionProbe::ActiveRun(run_id) => run_id,
     };
     abort_run_on_agent(
@@ -605,7 +622,10 @@ mod tests {
                 "session not found — pass a valid session_id (new_session creates one)".to_string(),
             ),
         );
-        abort_session("thread-1").await.expect("nothing to abort");
+        assert_eq!(
+            abort_session("thread-1").await.unwrap(),
+            AbortSessionOutcome::SessionMissing
+        );
         assert!(
             mock.requests_of("abort").is_empty(),
             "no abort is sent for a session that does not exist"
@@ -613,7 +633,10 @@ mod tests {
 
         // An older agent reports it in the message only: same outcome.
         mock.push_state_for_session("thread-2", Reply::Reject("session not found".to_string()));
-        abort_session("thread-2").await.expect("nothing to abort");
+        assert_eq!(
+            abort_session("thread-2").await.unwrap(),
+            AbortSessionOutcome::SessionMissing
+        );
         assert!(mock.requests_of("abort").is_empty());
 
         // The agent can also lose the session between the probe and the abort.
@@ -628,7 +651,10 @@ mod tests {
                 "session not found — pass a valid session_id (new_session creates one)".to_string(),
             ),
         );
-        abort_session("thread-3").await.expect("gone mid-abort");
+        assert_eq!(
+            abort_session("thread-3").await.unwrap(),
+            AbortSessionOutcome::SessionMissing
+        );
         assert_eq!(mock.requests_of("abort").len(), 1);
     }
 

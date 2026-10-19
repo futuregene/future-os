@@ -292,9 +292,13 @@ impl RpcResponseExt for RpcResponse {
 /// stable error code is matched first, with the pre-code wording as a fallback
 /// so an older Agent is still understood.
 pub fn is_session_not_found(response: &RpcResponse) -> bool {
-    !response.success
-        && (response.error_code == future_rpc::session_errors::SESSION_NOT_FOUND_CODE
-            || future_rpc::session_errors::legacy_session_not_found_message(&response.error))
+    !response.success && is_session_not_found_error(&response.error_code, &response.error)
+}
+
+pub(super) fn is_session_not_found_error(code: &str, message: &str) -> bool {
+    code == future_rpc::session_errors::SESSION_NOT_FOUND_CODE
+        || (code.is_empty()
+            && future_rpc::session_errors::legacy_session_not_found_message(message))
 }
 
 pub fn get_state_command(session_id: String) -> RpcCommand {
@@ -798,6 +802,12 @@ mod tests {
         assert!(!is_session_not_found(&failed(
             "session_busy",
             "session context compaction is in progress"
+        )));
+        // Structured storage failures remain errors even when their detail
+        // quotes the legacy missing-session wording.
+        assert!(!is_session_not_found(&failed(
+            "session_storage_unavailable",
+            "unable to load session: session not found in recovery archive"
         )));
         // A successful response is never the failure answer, even if a handler
         // echoes the phrasing back.

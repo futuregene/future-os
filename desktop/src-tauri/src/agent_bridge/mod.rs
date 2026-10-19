@@ -79,7 +79,7 @@ pub use self::reconciliation::{
     spawn_active_run_watchdog,
 };
 pub use self::run_control::{abort_run, compact_agent_session, compact_thread_context};
-pub(crate) use self::run_control::{abort_session, wait_for_agent_idle};
+pub(crate) use self::run_control::{abort_session, wait_for_agent_idle, AbortSessionOutcome};
 pub use self::session::fork_agent_session;
 pub(crate) use self::session::set_agent_sandbox_policy_tier;
 pub use self::session_events::spawn_session_events_observer;
