@@ -436,3 +436,15 @@ TS 驱动调用真实 expiry helper、刷新入口、取消/后台退役和 shut
 本批只增加测试素材、驱动与测试宿主观察，不改产品逻辑。新增一个 Rust 驱动声明和一个 Jest `.each` 声明，各报告同一组 18 个 ID。Client 默认/测试辅助特性的 Clippy `--all-targets`、fmt、TS typecheck/lint、协议生成与相关双语文档检查通过；Babel/Jest 仅静态编译 57 个包内文件，未运行测试或编译产物。最终 CI 尚未执行。
 
 阶段 4/5 仍需共用实际恢复预算/连接更换、事件去重/补齐与目录投影、同实例多远端和传输取消等场景、更多真实互通故障及应用核心测试迁移收尾。affected CI、同条件性能证据和同候选版本人工确认仍未完成，整体目标继续进行。
+
+### 2026-10-19：Remote affected 调度与分支 CI 验收入口
+
+新增 [`remote-affected.mjs`](../../scripts/ci/remote-affected.mjs)，按实际依赖分别选择四个 Rust 包、三个 TS 包及独立互通项目。Rust 源码沿 Crypto → Protocol → Client/Server 选择消费者，并触发 Desktop GUI/headless 编译及生命周期检查；TS 源码沿 Crypto → Protocol → Client 触发 Mobile，Desktop TS 没有导入 Remote npm 包，仍按自己的依赖选择。`thread-projection` 的产品输入影响 TS Protocol/Client。根 Cargo/npm 清单和锁分别扩展对应语言，schema、生成器和未归类的包构建输入保守选择消费者。
+
+包内测试、共享向量和行为素材只选择实际拥有驱动的包，避免因修改测试输入重新编译 GUI；`client.json` 另外选择真实互通。包的 TS 配置选择所属包，依赖清单变化选择消费者。Remote 检查从原 channels/rpc/goal 分组移出，统一在一个 Linux runner 中批量执行，共用 Cargo target 和 npm install。没有增加缓存预热或发布触发。原应用测试继续保留。Remote 失败也汇入既有 `Rust tests (Linux)` 必需检查，不能因新增任务尚未配置为分支保护项而漏过失败。
+
+[`ci.yml`](../../.github/workflows/ci.yml) 增加手动 `remote` scope，可在工作分支 dispatch，不需要 PR；最终完整验收仍使用 `all`，包含既有应用和平台矩阵。新增 [`remote-checks.mjs`](../../scripts/ci/remote-checks.mjs) 分包执行 fmt、Clippy `--all-targets`、必要的 test-support 特性检查、单元测试和两种真实互通驱动；缺少 broker 必须失败。该脚本要求 CI 环境，开发期间不执行。报告分别记录各包测试编译和测试命令耗时；Cargo 测试命令仍包含 freshness 开销，不能据此宣称纯执行耗时或冷编译收益，安装、缓存与排队仍需从 Actions 元数据分别取得。
+
+新增 12 个调度回归测试声明，覆盖语言隔离、依赖传播、共享素材、schema/生成器、配置/锁、真实互通输入、无关文档和手动全量选择。当前只完成 JavaScript 语法和 workflow YAML/接线静态核对，未本地执行这些测试或 Remote 验收；CI 尚未触发，调度效果及性能收益仍待运行证明。阶段 4/5 的其余行为素材、真实故障、应用迁移收尾和人工确认继续保留为待办。
+
+凭据审计另外确认：Server 刷新循环只对 `load()` 返回的当前槽匹配 pair，非当前槽可能结束刷新任务；源码基线 `4a64b65e` 已有相同选择逻辑。本轮未修改其产品行为，不能把本次刷新归属素材解读为已证明所有 standby 槽都自动续期。后续真实多槽场景需明确报告这一既有边界。
