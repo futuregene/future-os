@@ -19,8 +19,8 @@ pub(super) use self::shutdown::{
 };
 #[allow(unused_imports)]
 pub use self::shutdown::{
-    handle_system_resume, handle_system_suspend, notify_mobile_disconnect, stop, stop_gracefully,
-    unpair, unpair_slot,
+    disconnect_device, handle_system_resume, handle_system_suspend, notify_mobile_disconnect, stop,
+    stop_gracefully, unpair, unpair_slot,
 };
 #[allow(unused_imports)]
 pub use self::start::add_device;

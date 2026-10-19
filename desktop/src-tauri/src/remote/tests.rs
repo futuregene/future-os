@@ -4123,6 +4123,85 @@ mod slot_tests {
         );
     }
 
+    /// Disconnecting one device stops serving *that* device and keeps its
+    /// pairing: the row stays in the list, and the credential on disk is
+    /// untouched. This is what separates "断开" from "删除" in the client list.
+    #[tokio::test]
+    async fn disconnecting_one_device_keeps_it_paired_and_notifies_it() {
+        let _home = test_support::HomeGuard::new("remote-disconnect-slot");
+        init_store();
+        let nats = FakeNats::start().await;
+        let creds = test_creds("pair_disconnect_slot", nats.url(), 3600);
+        pairing::save_creds(&creds).unwrap();
+        pairing::set_active(&creds.pair_id).unwrap();
+        let _slot = Slot::install(&nats, &creds.pair_id).await;
+        SUPERVISOR.restore_active(Some(creds.pair_id.clone()));
+        SUPERVISOR.start_requested.store(true, Ordering::Release);
+        let mut tap = nats.tap();
+
+        let after = super::disconnect_device(&creds.pair_id)
+            .await
+            .expect("disconnect device");
+
+        // The pairing survives: the credential is still on disk and the device
+        // is still listed.
+        assert!(
+            pairing::load_slots()
+                .iter()
+                .any(|slot| slot.pair_id == creds.pair_id),
+            "disconnect must not unpair the device"
+        );
+        let listed = after
+            .devices
+            .iter()
+            .find(|device| device.pair_id == creds.pair_id);
+        assert!(listed.is_some(), "the device stays in the list");
+        assert!(
+            !listed.unwrap().connected,
+            "a disconnected device is not reported as connected"
+        );
+        // The runtime is gone, so nothing is being served for it any more.
+        assert!(
+            !SUPERVISOR
+                .state
+                .lock()
+                .unwrap()
+                .contains_key(&creds.pair_id),
+            "the device's bridge is stopped"
+        );
+        assert!(
+            !SUPERVISOR.in_control(&creds.pair_id),
+            "control is released rather than silently kept"
+        );
+
+        let notice = test_support::await_publish_matching(
+            &mut tap,
+            &format!("p.{}.presence", creds.pair_id),
+            Duration::from_secs(5),
+            |published| published.json()["disconnected"] == json!(true),
+        )
+        .await;
+        assert_eq!(notice.json()["reason"], json!("disconnected"));
+        assert_eq!(
+            notice.json()["unpaired"],
+            json!(false),
+            "the device is told it is disconnected, not unpaired"
+        );
+    }
+
+    /// A device with no live bridge has nothing to disconnect; saying so beats a
+    /// silent success that would hide a wrong id.
+    #[tokio::test]
+    async fn disconnecting_a_device_that_is_not_running_is_refused() {
+        let _home = test_support::HomeGuard::new("remote-disconnect-offline");
+        init_store();
+        let refused = super::disconnect_device("pair_never_started").await;
+        assert!(
+            matches!(refused, Err(crate::AppError::Message(ref message)) if message == "device_offline"),
+            "an offline device must be refused, not reported as disconnected"
+        );
+    }
+
     /// `stop_gracefully` outside a process shutdown delivers the notice on the
     /// process runtime, and `notify_mobile_disconnect` delivers it in place:
     /// both are ordinary paths that must not depend on the exit freeze.

@@ -11,7 +11,9 @@ import { setRemotePeerLabel } from "../remote-peer/remotePeerClient";
 import { RemotePeerSettings } from "../remote-peer/RemotePeerSettings";
 import { RemoteClientSection } from "../remote-peer/RemotePeersView";
 import { RemoteTasksView } from "../remote-peer/RemoteTasksView";
-import { RemoteHostSection } from "../remote/RemoteView";
+import { RemoteHostClientPage } from "./RemoteHostClientPage";
+import { RemoteHostSettingsPage } from "./RemoteHostSettingsPage";
+import { RemoteHostSection } from "./RemoteView";
 
 /**
  * The Remote page: one entry in the rail, both directions of remote on it.
@@ -73,6 +75,16 @@ export function RemoteHubView({
   /** The machine whose tasks are open, if any. They need the whole column. */
   const [tasksFor, setTasksFor] = useState<RemotePeer | null>(null);
   /**
+   * A page of *this* machine's remote direction: one paired client's own page,
+   * or the settings of the direction itself.
+   *
+   * They replace this page, like a remote machine's settings do, because the
+   * hub is a list: which client is which, and what it may do, is detail.
+   */
+  const [hostPage, setHostPage] = useState<
+    { kind: "client"; pairId: string } | { kind: "settings" } | null
+  >(null);
+  /**
    * Bumped whenever something outside the machine list changed it — a rename on
    * a machine's settings page — so the list re-reads when the user comes back
    * instead of showing what it read when the page was first opened.
@@ -82,6 +94,27 @@ export function RemoteHubView({
   /** A rename that could not be stored locally: said out loud, not swallowed. */
   function reportLabelFailure(error: unknown) {
     emitFutureEvent("toast", { message: errorMessage(error), tone: "error" });
+  }
+
+  if (hostPage?.kind === "settings") {
+    return (
+      <RemoteHostSettingsPage
+        autoConnect={autoConnect}
+        onBack={() => setHostPage(null)}
+        onToggleAutoConnect={onToggleAutoConnect}
+      />
+    );
+  }
+
+  if (hostPage?.kind === "client") {
+    return (
+      <RemoteHostClientPage
+        onBack={() => setHostPage(null)}
+        onRefreshRemote={onRefreshRemote}
+        pairId={hostPage.pairId}
+        remoteStatus={remoteStatus}
+      />
+    );
   }
 
   if (tasksFor) {
@@ -131,9 +164,9 @@ export function RemoteHubView({
           title={t("hostTitle")}
         >
           <RemoteHostSection
-            autoConnect={autoConnect}
+            onOpenDevice={pairId => setHostPage({ kind: "client", pairId })}
+            onOpenSettings={() => setHostPage({ kind: "settings" })}
             onRefreshRemote={onRefreshRemote}
-            onToggleAutoConnect={onToggleAutoConnect}
             remoteStatus={remoteStatus}
           />
         </Direction>

@@ -10,19 +10,13 @@ import { RemoteHostSection } from "./RemoteView";
 
 const startRemote = vi.fn<() => Promise<unknown>>();
 const stopRemote = vi.fn<() => Promise<unknown>>();
-const unpairRemote = vi.fn<() => Promise<unknown>>();
 const addRemoteDevice = vi.fn<() => Promise<unknown>>();
-const unpairRemoteDevice = vi.fn<(pairId: string) => Promise<unknown>>();
-const takeoverRemote = vi.fn<(pairId: string) => Promise<unknown>>();
 
 vi.mock("./remoteClient", async importOriginal => ({
   ...await importOriginal<typeof import("./remoteClient")>(),
   startRemote: () => startRemote(),
   stopRemote: () => stopRemote(),
-  unpairRemote: () => unpairRemote(),
   addRemoteDevice: () => addRemoteDevice(),
-  unpairRemoteDevice: (pairId: string) => unpairRemoteDevice(pairId),
-  takeoverRemote: (pairId: string) => takeoverRemote(pairId),
 }));
 
 const openExternalUrl = vi.fn<(url: string) => Promise<void>>();
@@ -33,12 +27,6 @@ vi.mock("../../integrations/storage/files", () => ({
 const startWindowDrag = vi.fn();
 vi.mock("../../lib/windowDrag", () => ({
   startWindowDrag: () => startWindowDrag(),
-}));
-
-// The titlebar toggle asks the native window for its fullscreen state; the
-// Remote view's own behaviour does not depend on it.
-vi.mock("../../lib/useIsFullscreen", () => ({
-  useIsFullscreen: () => false,
 }));
 
 function status(overrides: Partial<RemoteStatus> = {}): RemoteStatus {
@@ -61,22 +49,53 @@ function status(overrides: Partial<RemoteStatus> = {}): RemoteStatus {
   };
 }
 
+const control = {
+  pairId: "pair_alpha",
+  phase: "ready" as const,
+  control: "active" as const,
+  connected: true,
+  client: { kind: "mobile", name: "Pixel 9" },
+  pairingCode: null,
+  pairingCodeExpiresAt: null,
+  desktopId: "desk_1",
+};
+const standby = {
+  pairId: "pair_beta",
+  phase: "ready" as const,
+  control: "standby" as const,
+  connected: true,
+  client: { kind: "desktop", name: "studio-imac" },
+  pairingCode: null,
+  pairingCodeExpiresAt: null,
+  desktopId: "desk_1",
+};
+const invited = {
+  pairId: "pair_gamma",
+  phase: "ready" as const,
+  control: "standby" as const,
+  connected: false,
+  client: null,
+  pairingCode: "futureos://remote/pair?code=xyz",
+  pairingCodeExpiresAt: Math.floor(Date.now() / 1000) + 120,
+  desktopId: "desk_1",
+};
+
 let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 let refresh: Mock<() => Promise<void>>;
 
 interface Props {
-  autoConnect?: boolean;
+  onOpenDevice?: (pairId: string) => void;
+  onOpenSettings?: () => void;
   onRefreshRemote?: () => Promise<void>;
-  onToggleAutoConnect?: (value: boolean) => void;
   remoteStatus?: RemoteStatus | null;
 }
 
 async function mount(overrides: Props = {}) {
   const props = {
-    autoConnect: false,
+    onOpenDevice: vi.fn<(pairId: string) => void>(),
+    onOpenSettings: vi.fn<() => void>(),
     onRefreshRemote: refresh,
-    onToggleAutoConnect: vi.fn<(value: boolean) => void>(),
     remoteStatus: status(),
     ...overrides,
   };
@@ -95,21 +114,22 @@ async function flush(times = 3) {
 }
 
 function buttonByText(text: string): HTMLButtonElement | undefined {
+  // Dialog buttons live under the overlay; `querySelectorAll` on the container
+  // still finds them because React renders in place, not in a portal.
   return [...container.querySelectorAll<HTMLButtonElement>("button")]
     .find(button => (button.textContent ?? "").trim() === text);
 }
 
-/** The on/off switch of the host section: the first `role=switch` on the page. */
+/** The on/off switch: the only `role=switch` this section owns. */
 function hostSwitch(): HTMLButtonElement {
   return container.querySelectorAll<HTMLButtonElement>("button[role='switch']")[0]!;
 }
 
-/** The auto-connect preference, which exists only while the host is on. */
-function autoConnectSwitch(): HTMLButtonElement | undefined {
-  return container.querySelectorAll<HTMLButtonElement>("button[role='switch']")[1];
+/** The floating add-client window, if it is open. */
+function addDialog(): HTMLElement | null {
+  return container.querySelector("[role='dialog']");
 }
 
-/** Turn the remote desktop on (or off) the way a user does: through the switch. */
 async function toggleHost(): Promise<void> {
   await act(async () => {
     hostSwitch().click();
@@ -120,21 +140,14 @@ async function toggleHost(): Promise<void> {
 beforeEach(() => {
   startRemote.mockReset();
   stopRemote.mockReset();
-  unpairRemote.mockReset();
   addRemoteDevice.mockReset();
-  unpairRemoteDevice.mockReset();
-  takeoverRemote.mockReset();
   openExternalUrl.mockReset();
   startWindowDrag.mockReset();
   startRemote.mockResolvedValue(undefined);
   stopRemote.mockResolvedValue(undefined);
-  unpairRemote.mockResolvedValue(undefined);
   addRemoteDevice.mockResolvedValue(undefined);
-  unpairRemoteDevice.mockResolvedValue(undefined);
-  takeoverRemote.mockResolvedValue(undefined);
   openExternalUrl.mockResolvedValue(undefined);
   refresh = vi.fn<() => Promise<void>>(async () => {});
-  (document as unknown as { execCommand: () => boolean }).execCommand = () => true;
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -146,8 +159,24 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("remoteView pairing lifecycle", () => {
-  it("offers pairing when nothing is paired, and reports the preparation state", async () => {
+describe("the switch", () => {
+  it("starts a stopped but paired machine and stops a running one", async () => {
+    await mount({ remoteStatus: status({ pairId: "pair_abcd", phase: "stopped" }) });
+    expect(hostSwitch().getAttribute("aria-checked")).toBe("false");
+
+    await toggleHost();
+    expect(startRemote).toHaveBeenCalledTimes(1);
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    await mount({ remoteStatus: status({ pairId: "pair_abcd", phase: "ready" }) });
+    expect(hostSwitch().getAttribute("aria-checked")).toBe("true");
+
+    await toggleHost();
+    expect(stopRemote).toHaveBeenCalledTimes(1);
+  });
+
+  it("says the bridge is starting, and does not claim to be on before it is", async () => {
     let release!: () => void;
     startRemote.mockImplementation(() => new Promise<void>((resolve) => {
       release = resolve;
@@ -159,25 +188,19 @@ describe("remoteView pairing lifecycle", () => {
     });
     expect(startRemote).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain("Establishing a secure connection. The QR code will appear when it is ready.");
-    // The switch cannot claim to be on until the bridge actually reports it.
     expect(hostSwitch().getAttribute("aria-checked")).toBe("false");
 
-    await act(async () => {
-      release();
-    });
+    await act(async () => release());
     await flush();
-    // The status refresh always runs, even when start succeeded.
     expect(refresh).toHaveBeenCalled();
   });
 
-  it("keeps the internal detail in the console and shows a stable message on failure", async () => {
+  it("keeps internal detail out of the UI when starting fails", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     startRemote.mockRejectedValue(new Error("SPAWN_FAILED: nats missing"));
     try {
       await mount();
-      await act(async () => {
-        hostSwitch().click();
-      });
+      await act(async () => hostSwitch().click());
       await flush();
       expect(container.textContent).toContain("The action could not be completed. Try again later. (LC999)");
       expect(container.textContent).not.toContain("SPAWN_FAILED");
@@ -189,145 +212,21 @@ describe("remoteView pairing lifecycle", () => {
     }
   });
 
-  it("shows the pairing code with its countdown and can copy it", async () => {
-    vi.useFakeTimers();
-    const code = "futureos://remote/pair?code=abc";
-    await mount({
-      remoteStatus: status({
-        pairId: "pair_7f3a",
-        pairingCode: code,
-        pairingCodeExpiresAt: Math.floor(Date.now() / 1000) + 90,
-        phase: "ready",
-      }),
-    });
-    expect(container.textContent).toContain("Pairing code");
-    expect(container.textContent).toContain("expires in 1:30");
-    expect(container.querySelector("[role='img']")).not.toBeNull();
-
-    // The countdown ticks with the polled clock.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1000);
-    });
-    expect(container.textContent).toContain("expires in 1:29");
-
-    const clipboardWrite = vi.fn(async () => {});
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: clipboardWrite } });
-    await act(async () => {
-      buttonByText("Copy")?.click();
-    });
-    await flush();
-    expect(clipboardWrite).toHaveBeenCalledWith(code);
-    expect(buttonByText("Copied")).toBeTruthy();
+  it("reports a failing stop", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    stopRemote.mockRejectedValue(new Error("stop failed"));
+    try {
+      await mount({ remoteStatus: status({ pairId: "pair_1", phase: "ready" }) });
+      await toggleHost();
+      expect(container.textContent).toContain("The action could not be completed.");
+      expect(consoleError).toHaveBeenCalledWith("remote stop failed:", expect.any(Error));
+    }
+    finally {
+      consoleError.mockRestore();
+    }
   });
 
-  it("clamps the countdown at zero once the code has expired", async () => {
-    await mount({
-      remoteStatus: status({
-        pairId: "pair_1",
-        pairingCode: "abc",
-        pairingCodeExpiresAt: Math.floor(Date.now() / 1000) - 30,
-        phase: "ready",
-      }),
-    });
-    expect(container.textContent).toContain("expires in 0:00");
-  });
-
-  it("reports a failed clipboard write and keeps the code on screen", async () => {
-    const code = "futureos://remote/pair?code=abc";
-    await mount({
-      remoteStatus: status({
-        pairId: "pair_1",
-        pairingCode: code,
-        pairingCodeExpiresAt: Math.floor(Date.now() / 1000) + 60,
-        phase: "ready",
-      }),
-    });
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText: vi.fn(async () => Promise.reject(new Error("denied"))) },
-    });
-    await act(async () => {
-      buttonByText("Copy")?.click();
-    });
-    await flush();
-    expect(container.textContent).toContain("Copy failed");
-    expect(buttonByText("Copy")).toBeTruthy();
-  });
-
-  it("cancels pairing from the code card", async () => {
-    await mount({
-      remoteStatus: status({
-        pairId: "pair_1",
-        pairingCode: "abc",
-        pairingCodeExpiresAt: Math.floor(Date.now() / 1000) + 60,
-        phase: "ready",
-      }),
-    });
-    await act(async () => {
-      buttonByText("Cancel")?.click();
-    });
-    await flush();
-    expect(stopRemote).toHaveBeenCalledTimes(1);
-    expect(refresh).toHaveBeenCalled();
-  });
-
-  it("omits the QR code and the copy action when the code is not a deep link", async () => {
-    await mount({
-      remoteStatus: status({ pairId: "pair_1", pairingCode: "123456", pairingCodeExpiresAt: null, phase: "ready" }),
-    });
-    // Still shows the code card and the scan hint, just no QR payload.
-    expect(container.textContent).toContain("Scan with FutureOS Mobile");
-    expect(container.querySelector("[role='img']")).toBeNull();
-    expect(container.textContent).not.toContain("expires in");
-
-    const clipboardWrite = vi.fn(async () => {});
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: clipboardWrite } });
-    await act(async () => {
-      buttonByText("Copy")?.click();
-    });
-    await flush();
-    // Nothing to copy: the button is inert rather than copying a half payload.
-    expect(clipboardWrite).not.toHaveBeenCalled();
-    expect(buttonByText("Copy")).toBeTruthy();
-  });
-});
-
-describe("remoteView connection actions", () => {
-  it("starts a stopped but paired machine and stops a running one, through the switch", async () => {
-    await mount({ remoteStatus: status({ pairId: "pair_abcd", phase: "stopped" }) });
-    // Off: the identity is not shown, and nothing about the bridge is claimed.
-    expect(hostSwitch().getAttribute("aria-checked")).toBe("false");
-    expect(container.textContent).not.toContain("ABCD");
-
-    await toggleHost();
-    expect(startRemote).toHaveBeenCalledTimes(1);
-
-    act(() => root.unmount());
-    root = createRoot(container);
-    await mount({ remoteStatus: status({ pairId: "pair_abcd", phase: "ready" }) });
-    expect(hostSwitch().getAttribute("aria-checked")).toBe("true");
-    await toggleHost();
-    expect(stopRemote).toHaveBeenCalledTimes(1);
-  });
-
-  it("reports a revoked credential and leaves the switch off", async () => {
-    await mount({ remoteStatus: status({ pairId: "pair_1", phase: "revoked" }) });
-    expect(hostSwitch().getAttribute("aria-checked")).toBe("false");
-    // The reason stays visible: an off switch with no explanation would leave
-    // the user guessing whether their own action turned it off.
-    expect(container.textContent).toContain("Pairing expired");
-
-    act(() => root.unmount());
-    root = createRoot(container);
-    await mount({
-      remoteStatus: status({ pairId: "pair_1", phase: "reconnecting", reason: "network", recovery: { attempt: 1, maxAttempts: 3, nextRetryAt: null, since: 0 } }),
-    });
-    // A non-terminal state is on: the badge says what is happening.
-    expect(container.textContent).toContain("Connecting");
-    expect(hostSwitch().getAttribute("aria-checked")).toBe("true");
-  });
-
-  it("sends the user back to sign-in when the account needs authorization", async () => {
+  it("sends the user to sign-in instead of starting a bridge the platform will refuse", async () => {
     const events: string[] = [];
     const listener = () => events.push("show-onboarding");
     window.addEventListener("futureos:show-onboarding", listener);
@@ -335,8 +234,6 @@ describe("remoteView connection actions", () => {
       await mount({ remoteStatus: status({ pairId: "pair_1", phase: "failed", reason: "account_authorization" }) });
       expect(container.textContent).toContain("Your FutureOS sign-in has expired. Sign in again.");
 
-      // Turning the switch on must not start a bridge the platform will refuse:
-      // it sends the user to the step that can succeed.
       await toggleHost();
       expect(events).toEqual(["show-onboarding"]);
       expect(startRemote).not.toHaveBeenCalled();
@@ -346,26 +243,7 @@ describe("remoteView connection actions", () => {
     }
   });
 
-  it("offers sign-in, not pairing, when an unpaired device has no account", async () => {
-    const events: string[] = [];
-    const listener = () => events.push("show-onboarding");
-    window.addEventListener("futureos:show-onboarding", listener);
-    try {
-      // Unpaired, and the failure is the account's: the platform issues pairing
-      // codes, so starting here could only fail again.
-      await mount({ remoteStatus: status({ phase: "failed", reason: "account_authorization" }) });
-      expect(container.textContent).toContain("Your FutureOS sign-in has expired. Sign in again.");
-
-      await toggleHost();
-      expect(events).toEqual(["show-onboarding"]);
-      expect(startRemote).not.toHaveBeenCalled();
-    }
-    finally {
-      window.removeEventListener("futureos:show-onboarding", listener);
-    }
-  });
-
-  it("names each terminal failure with its support code", async () => {
+  it("names each terminal failure with its support code, and stays off", async () => {
     const cases: Array<[RemoteStatus["reason"], string]> = [
       ["network", "Network unavailable. Check your connection and try again later. (NW001)"],
       ["credential_revoked", "Pairing expired. Pair this device again. (PA001)"],
@@ -380,276 +258,112 @@ describe("remoteView connection actions", () => {
     for (const [reason, message] of cases) {
       await mount({ remoteStatus: status({ pairId: "pair_1", phase: "failed", reason }) });
       expect(container.textContent, String(reason)).toContain(message);
-      // A failed bridge is off, and the switch is how the user tries again.
       expect(hostSwitch().getAttribute("aria-checked"), String(reason)).toBe("false");
       act(() => root.unmount());
       root = createRoot(container);
     }
   });
 
-  it("keeps the connecting badge while the desktop is still preparing", async () => {
-    await mount({ remoteStatus: status({ agentAvailable: false, pairId: "pair_1", phase: "ready" }) });
-    // The device-preparing state is a connecting state for this surface.
-    expect(container.textContent).toContain("Connecting");
-    expect(hostSwitch().getAttribute("aria-checked")).toBe("true");
-    expect(buttonByText("Disconnect")).toBeUndefined();
-  });
-
-  it("reports a failing disconnect", async () => {
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-    stopRemote.mockRejectedValue(new Error("stop failed"));
-    try {
-      await mount({ remoteStatus: status({ pairId: "pair_1", phase: "ready" }) });
-      await toggleHost();
-      expect(container.textContent).toContain("The action could not be completed.");
-      expect(consoleError).toHaveBeenCalledWith("remote stop failed:", expect.any(Error));
-    }
-    finally {
-      consoleError.mockRestore();
-    }
-  });
-});
-
-describe("remoteView unpair", () => {
-  it("confirms before unpairing, and reports a failure", async () => {
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      await mount({ remoteStatus: status({ pairId: "pair_bee", phase: "ready" }) });
-      await act(async () => {
-        buttonByText("Unpair")?.click();
-      });
-      expect(container.textContent).toContain("Unpair this device?");
-      expect(container.textContent).toContain("Paired as BEE");
-
-      // Cancelling leaves the pairing alone.
-      const cancel = [...container.querySelectorAll<HTMLButtonElement>("button")]
-        .find(button => (button.textContent ?? "").trim() === "Cancel");
-      await act(async () => {
-        cancel?.click();
-      });
-      expect(container.textContent).not.toContain("Unpair this device?");
-      expect(unpairRemote).not.toHaveBeenCalled();
-
-      await act(async () => {
-        buttonByText("Unpair")?.click();
-      });
-      expect(container.textContent).toContain("Unpair this device?");
-
-      unpairRemote.mockRejectedValue(new Error("unpair failed"));
-      const confirm = [...container.querySelectorAll<HTMLButtonElement>("button")]
-        .find(button => (button.textContent ?? "").trim() === "Delete");
-      await act(async () => {
-        confirm?.click();
-      });
-      await flush();
-      expect(unpairRemote).toHaveBeenCalledTimes(1);
-      expect(consoleError).toHaveBeenCalledWith("remote unpair failed:", expect.any(Error));
-      // The dialog closes and the generic message takes over.
-      expect(container.textContent).not.toContain("Unpair this device?");
-    }
-    finally {
-      consoleError.mockRestore();
-    }
-  });
-
-  it("leaves an unnamed pair id as it is", async () => {
-    await mount({ remoteStatus: status({ pairId: "custom-id", phase: "ready" }) });
-    expect(container.textContent).toContain("CUSTOM-ID");
-  });
-});
-
-describe("remoteHostSection", () => {
-  it("links to the mobile app beside the note", async () => {
-    await mount({ remoteStatus: status({ pairId: "pair_1", phase: "ready" }) });
-    await act(async () => {
-      buttonByText("Download mobile app")?.click();
-    });
-    await flush();
-    expect(openExternalUrl).toHaveBeenCalledWith("https://future-os.cn/#download-mobile");
-  });
-
-  /**
-   * The auto-connect preference lives here rather than in Settings: it belongs
-   * to *this* direction of remote, and two places for one value is two places to
-   * look when it is wrong.
-   */
-  it("carries the auto-connect preference and reports changes", async () => {
-    const props = await mount({ autoConnect: true, remoteStatus: status({ pairId: "pair_1", phase: "ready" }) });
-    const toggle = autoConnectSwitch()!;
-    expect(toggle.getAttribute("aria-checked")).toBe("true");
-
-    await act(async () => toggle.click());
-    expect(props.onToggleAutoConnect).toHaveBeenCalledWith(false);
-  });
-
-  /**
-   * The host says what is connected, in the device's own words.
-   *
-   * This is the wording the entry used to get wrong — it was labelled "phone"
-   * when a computer could connect just as well. The kind decides the phrasing,
-   * so a computer reads as one.
-   */
-  it("names the connected client, and what kind of thing it is", async () => {
-    await mount({
-      remoteStatus: status({
-        client: { kind: "desktop", name: "FutureOS Desktop (studio-imac)" },
-        pairId: "pair_1",
-        phase: "ready",
-      }),
-    });
-
-    expect(container.textContent).toContain("FutureOS Desktop (studio-imac) (a computer)");
-  });
-
-  it("names a phone as a phone, and an unknown kind without a noun", async () => {
-    await mount({
-      remoteStatus: status({ client: { kind: "mobile", name: "Pixel 8" }, pairId: "pair_1", phase: "ready" }),
-    });
-    expect(container.textContent).toContain("Pixel 8 (a phone)");
-    act(() => root.unmount());
-    root = createRoot(container);
-
-    // A kind this build has never heard of is still named: dropping the name
-    // because the noun is unfamiliar would be worse than an honest "a device".
-    await mount({
-      remoteStatus: status({ client: { kind: "wearable", name: "Watch" }, pairId: "pair_1", phase: "ready" }),
-    });
-    expect(container.textContent).toContain("Watch");
-    expect(container.textContent).not.toContain("(a computer)");
-  });
-
-  /** A client that never said so is described as unnamed, not mislabelled. */
-  it("does not invent a device for a client that said nothing", async () => {
-    await mount({ remoteStatus: status({ client: null, pairId: "pair_1", phase: "ready" }) });
-
-    expect(container.textContent).toContain("A connected device");
-  });
-
-  /** And nothing is claimed while the link is down, however the client described itself. */
-  it("does not describe a client while it is not connected", async () => {
-    await mount({
-      remoteStatus: status({
-        client: { kind: "desktop", name: "FutureOS Desktop (studio-imac)" },
-        pairId: "pair_1",
-        phase: "stopped",
-      }),
-    });
-
-    expect(container.textContent).not.toContain("studio-imac");
-  });
-
   it("warns about a failed web listener without claiming the link is down", async () => {
     await mount({ remoteStatus: status({ pairId: "pair_1", phase: "ready", warningCode: "web_bind" }) });
     expect(container.textContent).toContain("Some features are temporarily unavailable. Try again later. (LC002)");
   });
+});
 
-  it("renders nothing pairing-specific for a null status", async () => {
+describe("off hides everything the switch enables", () => {
+  it("renders no list, no add button and no settings for a null status", async () => {
     await mount({ remoteStatus: null });
     expect(hostSwitch().getAttribute("aria-checked")).toBe("false");
-    expect(buttonByText("Unpair")).toBeUndefined();
-    expect(autoConnectSwitch()).toBeUndefined();
+    expect(buttonByText("Add")).toBeUndefined();
+    expect(buttonByText("Settings")).toBeUndefined();
+    expect(container.textContent).not.toContain("Paired clients");
   });
 
-  it("hides every setting while the switch is off", async () => {
+  it("hides the client list, adding and settings while off", async () => {
     await mount({
-      autoConnect: true,
       remoteStatus: status({
         pairId: "pair_alpha",
         phase: "stopped",
-        devices: [{ pairId: "pair_alpha", phase: "ready", control: "active", connected: false, client: { kind: "mobile", name: "Pixel 9" }, pairingCode: null, pairingCodeExpiresAt: null, desktopId: "desk_1" }],
+        devices: [control],
       }),
     });
 
-    // The switch is the whole off state: no client list, no invitation, no
-    // preference, no footnote explaining what a closed switch would do anyway.
+    // The switch is the whole off state: no client list, no add control, no
+    // settings control, no footnote explaining what a closed switch would do.
     expect(hostSwitch().getAttribute("aria-checked")).toBe("false");
     expect(container.textContent).not.toContain("Pixel 9");
-    expect(container.textContent).not.toContain("Add a device");
-    expect(container.textContent).not.toContain("Auto-connect on launch");
+    expect(container.textContent).not.toContain("Paired clients");
+    expect(buttonByText("Add")).toBeUndefined();
+    expect(buttonByText("Settings")).toBeUndefined();
     expect(container.textContent).not.toContain("Download mobile app");
-    expect(autoConnectSwitch()).toBeUndefined();
-    expect(buttonByText("Unpair")).toBeUndefined();
-  });
-
-  it("shows the paired clients and their actions once the switch is on", async () => {
-    await mount({
-      remoteStatus: status({
-        pairId: "pair_alpha",
-        phase: "ready",
-        devices: [{ pairId: "pair_alpha", phase: "ready", control: "active", connected: true, client: { kind: "mobile", name: "Pixel 9" }, pairingCode: null, pairingCodeExpiresAt: null, desktopId: "desk_1" }],
-      }),
-    });
-
-    expect(hostSwitch().getAttribute("aria-checked")).toBe("true");
-    expect(container.textContent).toContain("Pixel 9 (a phone)");
-    expect(container.textContent).toContain("Add a device");
-    expect(buttonByText("Unpair")).toBeTruthy();
-    // The switch is the only start/stop control; no second "Disconnect" button.
-    expect(buttonByText("Disconnect")).toBeUndefined();
-    expect(buttonByText("Connect")).toBeUndefined();
+    expect(addDialog()).toBeNull();
   });
 });
 
-describe("remoteView device list", () => {
-  const control = {
-    pairId: "pair_alpha",
-    phase: "ready" as const,
-    control: "active" as const,
-    connected: true,
-    client: { kind: "mobile", name: "Pixel 9" },
-    pairingCode: null,
-    pairingCodeExpiresAt: null,
-    desktopId: "desk_1",
-  };
-  const standby = {
-    pairId: "pair_beta",
-    phase: "ready" as const,
-    control: "standby" as const,
-    connected: true,
-    client: { kind: "desktop", name: "studio-imac" },
-    pairingCode: null,
-    pairingCodeExpiresAt: null,
-    desktopId: "desk_1",
-  };
-  const invited = {
-    pairId: "pair_gamma",
-    phase: "ready" as const,
-    control: "standby" as const,
-    connected: false,
-    client: null,
-    pairingCode: "futureos://remote/pair?code=xyz",
-    pairingCodeExpiresAt: Math.floor(Date.now() / 1000) + 120,
-    desktopId: "desk_1",
-  };
-
-  it("lists every device and says which one is in control", async () => {
+describe("the list", () => {
+  it("lists the paired clients and nothing else", async () => {
     await mount({
       remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, standby] }),
     });
 
+    expect(hostSwitch().getAttribute("aria-checked")).toBe("true");
+    expect(container.textContent).toContain("Paired clients");
     expect(container.textContent).toContain("Pixel 9 (a phone)");
     expect(container.textContent).toContain("studio-imac (a computer)");
     expect(container.textContent).toContain("In control");
     expect(container.textContent).toContain("Standby");
-    // The single-device card is replaced, not duplicated.
-    expect(container.textContent).not.toContain("Paired as");
+
+    // A list, not a control panel: disconnect/delete live on a client's page.
+    expect(buttonByText("Disconnect")).toBeUndefined();
+    expect(buttonByText("Remove")).toBeUndefined();
+    expect(buttonByText("Unpair")).toBeUndefined();
+    // The list is the whole body; the settings live behind their own control.
+    expect(container.textContent).not.toContain("Auto-connect on launch");
   });
 
-  it("does not offer a device the machine when it is not connected", async () => {
-    // An offline device has no bridge to receive commands: handing it control
-    // would tell the connected one to stand by for nobody.
-    const offline = { ...standby, pairId: "pair_delta", connected: false, client: { kind: "mobile", name: "old-phone" } };
-    await mount({
-      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, offline] }),
+  it("opens a client's page when its row is clicked", async () => {
+    const props = await mount({
+      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, standby] }),
     });
 
-    const takeovers = [...container.querySelectorAll("button")]
-      .filter(button => (button.textContent ?? "").trim() === "Let this control");
-    expect(takeovers).toHaveLength(0);
-    expect(container.textContent).toContain("Offline");
+    const row = [...container.querySelectorAll<HTMLButtonElement>("li button")]
+      .find(button => (button.textContent ?? "").includes("studio-imac"))!;
+    await act(async () => row.click());
+
+    expect(props.onOpenDevice).toHaveBeenCalledWith("pair_beta");
   });
 
-  it("says the connection is down above the device list", async () => {
+  it("opens this direction's settings from its own control", async () => {
+    const props = await mount({
+      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control] }),
+    });
+
+    await act(async () => buttonByText("Settings")!.click());
+    expect(props.onOpenSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("says so when nothing is paired yet", async () => {
+    await mount({ remoteStatus: status({ phase: "ready" }) });
+    expect(container.textContent).toContain("No clients are paired yet.");
+    expect(buttonByText("Add")).toBeTruthy();
+  });
+
+  it("still lists the one paired client an older backend describes", async () => {
+    // The per-device rows arrived later; the top-level fields still describe the
+    // one device, and showing an empty list would claim it was unpaired.
+    await mount({
+      remoteStatus: status({
+        pairId: "custom-id",
+        phase: "ready",
+        client: { kind: "mobile", name: "Pixel 8" },
+      }),
+    });
+    expect(container.textContent).toContain("Pixel 8 (a phone)");
+    expect(container.textContent).toContain("CUSTOM-ID");
+    expect(container.textContent).not.toContain("No clients are paired yet.");
+  });
+
+  it("keeps the connection hint above the list while reconnecting", async () => {
     await mount({
       remoteStatus: status({
         pairId: "pair_alpha",
@@ -662,80 +376,75 @@ describe("remoteView device list", () => {
       }),
     });
 
-    // The list alone would read as normal: every row is merely standing by.
     expect(container.textContent).toContain("Connecting");
     expect(container.textContent).toContain("Offline");
-    // The bridge is not up, so no device is presented as driving.
     expect(container.textContent).not.toContain("In control");
-    // The list is still there because the bridge is running (reconnecting).
-    expect(container.textContent).toContain("Add a device");
+    expect(buttonByText("Add")).toBeTruthy();
   });
+});
 
-  it("offers a takeover only for the device that is not in control", async () => {
-    await mount({
-      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, standby] }),
-    });
-    const takeovers = [...container.querySelectorAll("button")]
-      .filter(button => (button.textContent ?? "").trim() === "Let this control");
-    expect(takeovers).toHaveLength(1);
-
-    await act(async () => {
-      takeovers[0]?.click();
-    });
-    await flush();
-    expect(takeoverRemote).toHaveBeenCalledWith("pair_beta");
-    expect(refresh).toHaveBeenCalled();
-  });
-
-  it("unpairs one device without touching the others", async () => {
-    await mount({
-      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, standby] }),
-    });
-    const unpairs = [...container.querySelectorAll("button")]
-      .filter(button => (button.textContent ?? "").trim() === "Unpair");
-    expect(unpairs).toHaveLength(2);
-
-    await act(async () => {
-      unpairs[1]?.click();
-    });
-    await flush();
-    expect(container.textContent).toContain("Unpair this device?");
-    expect(container.textContent).toContain("studio-imac (a computer) will no longer connect to this computer. The other devices stay paired.");
-
-    // The shared confirm dialog's destructive button is "Delete".
-    await act(async () => {
-      buttonByText("Delete")?.click();
-    });
-    await flush();
-    expect(unpairRemoteDevice).toHaveBeenCalledWith("pair_beta");
-    expect(unpairRemote).not.toHaveBeenCalled();
-  });
-
-  it("adds a device and shows the invitation for the slot that is waiting", async () => {
+describe("adding a client", () => {
+  it("opens a floating window with the QR code and the pairing code", async () => {
     await mount({
       remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control] }),
     });
-    expect(container.textContent).not.toContain("Pairing code");
+    expect(addDialog()).toBeNull();
 
-    addRemoteDevice.mockResolvedValue(status({
-      pairId: "pair_alpha",
-      phase: "ready",
-      devices: [control, invited],
-    }));
-    await act(async () => {
-      buttonByText("Add a device")?.click();
-    });
+    // The invitation only exists after the backend mints it; the refresh the
+    // section performs is what brings it into the status, so mount with it.
+    await act(async () => buttonByText("Add")!.click());
     await flush();
     expect(addRemoteDevice).toHaveBeenCalledTimes(1);
 
     await mount({
       remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, invited] }),
     });
+    await act(async () => buttonByText("Add")!.click());
+    await flush();
+
+    const dialog = addDialog()!;
+    expect(dialog).not.toBeNull();
+    expect(dialog.querySelector("[role='img']")).not.toBeNull();
+    // The code itself, not only the QR: the other computer needs to type it.
+    expect(dialog.textContent).toContain("futureos://remote/pair?code=xyz");
+    expect(dialog.textContent).toContain("Pairing code");
+    expect(dialog.textContent).toContain("expires in 2:00");
+  });
+
+  it("counts the invitation down and can copy the code", async () => {
+    vi.useFakeTimers();
+    await mount({
+      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, invited] }),
+    });
+    await act(async () => buttonByText("Add")!.click());
+    await flush();
+
+    expect(addDialog()!.textContent).toContain("expires in 2:00");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(addDialog()!.textContent).toContain("expires in 1:59");
+
+    const clipboardWrite = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: clipboardWrite } });
+    await act(async () => buttonByText("Copy")!.click());
+    await flush();
+    expect(clipboardWrite).toHaveBeenCalledWith(invited.pairingCode);
+    expect(addDialog()!.textContent).toContain("Copied");
+  });
+
+  it("closes the window but keeps the waiting client in the list", async () => {
+    await mount({
+      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, invited] }),
+    });
+    await act(async () => buttonByText("Add")!.click());
+    await flush();
+    expect(addDialog()).not.toBeNull();
+
+    await act(async () => buttonByText("Done")!.click());
+    expect(addDialog()).toBeNull();
+    // The unclaimed invitation is still a row: it can be reopened or removed.
     expect(container.textContent).toContain("Waiting to pair");
-    expect(container.textContent).toContain("Pairing code");
-    expect(container.querySelector("[role='img']")).not.toBeNull();
-    // A device waiting to be claimed cannot take control yet.
-    expect(buttonByText("Let this control")).toBeUndefined();
   });
 
   it("says the cap is reached instead of a generic failure", async () => {
@@ -745,11 +454,10 @@ describe("remoteView device list", () => {
         remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control] }),
       });
       addRemoteDevice.mockRejectedValue(new Error("Remote { code: Some(\"pairing_limit_reached\") }"));
-      await act(async () => {
-        buttonByText("Add a device")?.click();
-      });
+      await act(async () => buttonByText("Add")!.click());
       await flush();
       expect(container.textContent).toContain("This computer already has the maximum number of devices. Unpair one first.");
+      expect(addDialog()).toBeNull();
     }
     finally {
       consoleError.mockRestore();
