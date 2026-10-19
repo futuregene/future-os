@@ -1361,22 +1361,19 @@ fn a_reconnect_with_a_pre_v2_slot_forgets_it() {
 
 /// 5. `restart_slot` when the platform now reports the device revoked.
 ///
-/// The target device's live link is refused with an already-expired credential, so the
-/// health records a *transient* failure and the watcher rebuilds instead of returning.
-/// The rebuild's refresh is answered `401 invalid_remote_credential`, which takes the
+/// The target device's live link is refused by the broker, so the health records a
+/// *transient* failure and the watcher rebuilds instead of returning. The rebuild's
+/// refresh is answered `401 invalid_remote_credential`, which takes the
 /// forget-and-stop arm (`start.rs:542-543`) instead of the retryable `start_failure`
 /// below it.
 ///
-/// **The second device is part of the mechanism, not decoration.** The first start
-/// spawns a credential-refresh worker per device, and an expired bridge JWT makes that
-/// worker due immediately — so with one device it competes with the reconnect for the
-/// next scripted answer, and the order in which the two queue on `start_lock` decides
-/// whether the reconnect is answered with the revocation at all. The worker resolves its
-/// credential with `pairing::load_creds()`, which returns the *controlling* slot: this
-/// book makes the healthy second device the controller, so the target's worker filters
-/// itself out and returns before it asks. The revocation is then the reconnect's answer
-/// on every run, and the controlling device keeps the entry alive while the target is
-/// forgotten.
+/// **Every device has its own renewal worker, and it asks too.** The target's bridge
+/// JWT is expired here, so its worker is due at once — it reads *that device's*
+/// credential (`pairing::load_slot`), not the controlling slot's — and would otherwise
+/// take the scripted revocation before the watcher ever fires. So the script answers
+/// the worker with a retryable server error (it then backs off for the expired-credential
+/// retry delay), and the revocation is left for the rebuild. The controlling device's
+/// entry is due for renewal only after `REFRESH_LEAD` (4 min), so it asks nothing.
 #[test]
 fn a_reconnect_the_platform_revokes_is_forgotten() {
     let broker = Broker::start(BrokerMode::Live {
@@ -1396,8 +1393,11 @@ fn a_reconnect_the_platform_revokes_is_forgotten() {
                 nats_url: broker.url.clone(),
                 exp_offset: -60,
             },
-            // The target's reconnect. The controller's book entry is due for renewal
-            // only after `REFRESH_LEAD` (4 min), so nothing else consumes this answer.
+            // The target's own renewal worker asks first (its credential is already
+            // expired). A retryable answer keeps it out of the way for the reconnect
+            // below, which is the ask this scenario is about.
+            TokenReply::ServerError,
+            // The target's reconnect: the revoked answer that forgets the device.
             TokenReply::Revoked,
         ],
         None,
@@ -1467,8 +1467,9 @@ fn a_reconnect_the_platform_revokes_is_forgotten() {
 /// is built and the slot restarted (`start.rs:540, 547-554`); the rebuilt generation
 /// connects there, which is the effect: a slot installed on the *new* endpoint, not a
 /// worker that merely ran. The wrapper then takes its non-retryable `Ok(_)` arm
-/// (`start.rs:509`). The controlling second device keeps the target's refresh worker out
-/// of the script (see test 5 for why that matters).
+/// (`start.rs:509`). The target's own renewal worker also asks at startup (its
+/// credential is expired), so the script answers it with a retryable server error and
+/// leaves the rebuild's credential for the reconnect.
 #[test]
 fn a_reconnect_refreshes_the_credential_and_rebuilds_the_slot() {
     let first = Broker::start(BrokerMode::Live {
@@ -1490,6 +1491,9 @@ fn a_reconnect_refreshes_the_credential_and_rebuilds_the_slot() {
                 nats_url: first.url.clone(),
                 exp_offset: -60,
             },
+            // The target's own renewal worker asks first; a retryable answer keeps it
+            // out of the reconnect's way (the expired-credential retry delay is 3s).
+            TokenReply::ServerError,
             // The target's reconnect: this is the credential to rebuild with.
             TokenReply::Credential {
                 nats_url: rebuilt.url.clone(),
@@ -1622,8 +1626,9 @@ fn the_reconnect_budget_exhausts_into_a_terminal_watch() {
 /// records a retryable `network` and keeps retrying instead of printing the worker's
 /// bare-error line. A dead endpoint is used rather than a refused credential because an
 /// authorization answer would make the *refresh worker's* generation terminal, while an
-/// unreachable one only makes it back off. As in tests 5 and 6, the controlling second
-/// device keeps that worker out of the script.
+/// unreachable one only makes it back off. The target's own renewal worker also asks at
+/// startup (its credential is expired); it takes the same dead endpoint, so whichever of
+/// the two asks last still gets one.
 #[test]
 fn a_reconnect_whose_rebuild_cannot_connect_is_retryable() {
     let first = Broker::start(BrokerMode::Live {
