@@ -398,6 +398,23 @@
           "futurePresenceField": 42
         }
       }
+    },
+    {
+      "id": "protocol.handshake.legacy-transcript",
+      "kind": "handshake-transcript",
+      "input": {
+        "protocolVersion": 1,
+        "pairId": "pair_1",
+        "desktopId": "desktop_1",
+        "desktopPublicKey": "UDESKTOP",
+        "bridgeInstanceId": "bridge_1",
+        "deviceId": "dev_1",
+        "clientPublicKey": "UCLIENT",
+        "clientNonce": "client_nonce",
+        "desktopNonce": "desktop_nonce",
+        "desktopSignature": ""
+      },
+      "expected": "futureos-remote-handshake-v1\npair_1\ndesktop_1\nUDESKTOP\nbridge_1\ndev_1\nUCLIENT\nclient_nonce\ndesktop_nonce"
     }
   ]
 }

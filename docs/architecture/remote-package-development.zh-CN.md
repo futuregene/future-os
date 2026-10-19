@@ -219,7 +219,7 @@ CI 根据真实依赖选择改动包及受影响消费者，并记录共享 sche
 | 0 | 已固定源码/测试清单和历史 CI 参考；性能对照待最终 CI | [原测试迁移清单](remote-test-migration.json)记录基线文件、Rust 用例名和迁移目标；`target: null` 表示尚未归位。[历史 CI 参考](remote-ci-baseline.json)记录原提交、作业、runner、步骤及 Windows 编译/测试日志时间。该运行不是本分支的同条件性能结果。 |
 | 1 | 实施中，已接回现有消费者 | TS Crypto 与两语言 Protocol 包已建立；Mobile 使用包内 Crypto/线上 DTO，Desktop 使用公共命令、邀请解析和 JSON 解码。其余握手封装、能力/分块常量及角色中散落的线协议 DTO 随后续迁移继续归位，自动化结果待最终 CI。 |
 | 2 | 实施中，连接核心已接回 Desktop | Rust Client 连接、凭据 DTO、多远端实例、任务生命周期与上传/下载编排已接回；HTTP/JWT 共用工具已归位。独立网络互通、共享 Client 场景和最终验收仍待完成。 |
-| 3 | 实施中，安全端点与部分宿主契约已接回 | Server 拥有安全端点、四组宿主契约、文件帧订阅、有序事件消费、合并与 wire 大小策略；连接监督、目录发布、命令路由和停机实例仍待迁移。 |
+| 3 | 实施中，安全端点与部分宿主契约已接回 | Server 拥有安全端点、四组宿主契约、文件帧订阅、有序事件消费/合并、wire 策略与命令接入/去重；监督器、控制权状态、目录发布及实例停止/等待仍待迁移。 |
 | 4～5 | 待实施 | TS Client、独立互通工程、CI affected 调度和最终验收仍未完成。 |
 
 已落地的包入口与检查约定：
@@ -295,3 +295,17 @@ Protocol 开始拥有 v2 握手请求封装、拒绝前缀、确认消息和能�
 测量和截图素材生成脚本改为选择 `future_remote_server-*` 测试二进制及新用例路径，夹具生成命令选择 `future-remote-server`；原 ignored 状态保持。历史网络/覆盖率记录不作为迁移后的验收证据。归属清单对剩余 runtime/应用混合文件显式标记待迁移，非空 target 本身不能证明完成。
 
 本批通过 Server 默认及 `test-support` 的 Clippy `--all-targets`、Desktop GUI/headless Clippy `--all-targets`、fmt、生成文件与双语文档检查；修改的 Python/JS 脚本仅做语法检查。源码审计确认涉及六个基线文件的每个测试名恰有一个去向，生产 wire-budget 实现保持一致。没有执行本地单元测试、测量驱动或最终 CI，尚无性能收益结论。下一步继续连接监督、命令路由、实例状态与总截止时间停止/等待清理；阶段 3～5 未完成。
+
+### 2026-10-19：Rust Server 命令入口与显式上下文
+
+命令订阅、加密请求/回复、readiness 提交、请求 ID 单次执行/回复缓存、控制命令分派和本地业务调用已移入 `future-remote-server::commands`。原 Desktop 命令模块保留上下文适配和真实应用测试。核心通过 `CommandServices` 显式取得业务宿主、运行上下文及回复缓存期限，不读取 Desktop 全局、HOME 或进程环境；operator gzip 设置由应用提供，并限定于服务该请求的上下文。
+
+原控制权与 access epoch 决策目前仍由 Desktop 监督器实现，通过迁移用的 `CommandRuntime` 适配进入核心；这不是阶段 3 已完成的标记。后续必须将监督器和这些状态移入 Server 实例，再收回临时上下文接口。目录/presence 生成、控制变更和单设备 unpair 仍沿原实现执行，本轮没有将审批、Store、Agent 或沙箱改成 mock 业务。
+
+去重缓存改为不透明共享值，凭据刷新继续保留同一份缓存，重新邀请继续隔离缓存；原有指针同一性断言改为测试辅助方法，断言含义不变。生产十分钟、应用测试 500 毫秒的缓存期限由宿主显式传入。命令任务与过期清理任务通过宿主登记执行；角色自身的任务归属、停止与总截止时间等待仍要随监督器迁移完成。移除旧安全端点包装类型，连接、命令、传输和事件路径现在持有同一个包内端点类型。
+
+两项旧握手 transcript/签名用例进入 Rust Protocol，三项纯客户端身份规范化用例进入 Server。Mobile 的旧握手签名验证及四个既有测试进入独立 TS Protocol；NKey 验证使用显式 `legacy-signature` 子路径，普通协议编解码导入不加载验证器。共享素材新增 `protocol.handshake.legacy-transcript`，两语言验证同一份输入与逐字节 transcript；这些兼容助手不启用生产明文 v1 通道。三项协商能力标识也归入 Protocol。
+
+新增独立上下文隔离与 operator gzip 作用域用例，不使用应用配置、Store 或网络。原真实业务/网络边界测试继续通过窄的 `test-support` 接口调用实际命令核心；默认生产特性不提供这些夹具入口。源码核对确认基线命令文件的 106 个测试名均恰有一个去向，TS 四个原用例保持，Rust transcript 与 TS 签名验证函数体保持。
+
+本批通过 Server 默认/测试辅助特性、Protocol 和 Desktop GUI/headless Clippy `--all-targets`，Protocol/Mobile 类型与 lint、fmt、生成一致性及相关文档检查。没有在本地执行单元测试或发起最终 CI。下一步继续监督器、控制权/目录状态、角色任务归属与停机清理；阶段 0～5 仍未整体完成。

@@ -1,5 +1,6 @@
 //! Application-independent Remote controlled endpoint.
 //! Security, transport loops and wire policy are implemented; role supervision is migrating.
+pub mod commands;
 mod credentials;
 pub mod diagnostics;
 mod error;

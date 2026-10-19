@@ -1654,10 +1654,9 @@ mod runtime_tests {
         let creds = test_creds("pair_shared", "nats://127.0.0.1:4222", 3600);
         let first = shared_runtime(&creds, true, false);
         let same_credential_epoch = shared_runtime(&creds, true, false);
-        assert!(Arc::ptr_eq(
-            &first.reply_slots,
-            &same_credential_epoch.reply_slots
-        ));
+        assert!(first
+            .reply_slots
+            .shares_cache(&same_credential_epoch.reply_slots));
         assert!(Arc::ptr_eq(
             &first.pairing_confirmed,
             &same_credential_epoch.pairing_confirmed
@@ -1668,7 +1667,7 @@ mod runtime_tests {
         );
 
         let rebuilt = shared_runtime(&creds, true, true);
-        assert!(Arc::ptr_eq(&first.reply_slots, &rebuilt.reply_slots));
+        assert!(first.reply_slots.shares_cache(&rebuilt.reply_slots));
         assert!(Arc::ptr_eq(
             &first.pairing_confirmed,
             &rebuilt.pairing_confirmed
@@ -1683,7 +1682,7 @@ mod runtime_tests {
             false,
             false,
         );
-        assert!(!Arc::ptr_eq(&first.reply_slots, &reissued.reply_slots));
+        assert!(!first.reply_slots.shares_cache(&reissued.reply_slots));
         assert!(!Arc::ptr_eq(
             &first.pairing_confirmed,
             &reissued.pairing_confirmed
@@ -1733,7 +1732,7 @@ mod runtime_tests {
         let state = fake_state(&nats, "pair_swap").await;
         let confirmed = state.pairing_confirmed.clone();
         install_state(state);
-        let handshake = commands::HandshakeState::new(
+        let handshake = commands::new_handshake_state(
             creds.clone(),
             confirmed.clone(),
             "bridge_swap".to_string(),
@@ -1793,7 +1792,7 @@ mod runtime_tests {
         let state = fake_state(&nats, "pair_savefail").await;
         let confirmed = state.pairing_confirmed.clone();
         install_state(state);
-        let handshake = commands::HandshakeState::new(
+        let handshake = commands::new_handshake_state(
             creds.clone(),
             confirmed.clone(),
             "bridge_savefail".to_string(),
@@ -1830,7 +1829,7 @@ mod runtime_tests {
         let confirmed = state.pairing_confirmed.clone();
         install_state(state);
         let handshake =
-            commands::HandshakeState::new(creds, confirmed.clone(), "bridge_rev".into());
+            commands::new_handshake_state(creds, confirmed.clone(), "bridge_rev".into());
         let handle = spawn_credential_refresh(
             "pair_rev".to_string(),
             commands::new_reply_slots(),
@@ -1871,7 +1870,7 @@ mod runtime_tests {
         let confirmed = state.pairing_confirmed.clone();
         install_state(state);
         let handshake =
-            commands::HandshakeState::new(creds, confirmed.clone(), "bridge_account".into());
+            commands::new_handshake_state(creds, confirmed.clone(), "bridge_account".into());
         let task = spawn_credential_refresh(
             "pair_account".into(),
             commands::new_reply_slots(),
@@ -1983,7 +1982,7 @@ mod runtime_tests {
         let health = state.nats_health.clone();
         install_state(state);
         let handshake =
-            commands::HandshakeState::new(creds, confirmed.clone(), "bridge_auth_reject".into());
+            commands::new_handshake_state(creds, confirmed.clone(), "bridge_auth_reject".into());
         let task = spawn_credential_refresh(
             "pair_auth_reject".into(),
             commands::new_reply_slots(),
@@ -2034,7 +2033,7 @@ mod runtime_tests {
         let confirmed = state.pairing_confirmed.clone();
         install_state(state);
         let handshake =
-            commands::HandshakeState::new(creds, confirmed.clone(), "bridge_retry".into());
+            commands::new_handshake_state(creds, confirmed.clone(), "bridge_retry".into());
         let handle = spawn_credential_refresh(
             "pair_retry".to_string(),
             commands::new_reply_slots(),
@@ -2063,7 +2062,7 @@ mod runtime_tests {
 
         // No persisted credential → immediate return.
         let creds = test_creds("pair_none", nats.url(), 3600);
-        let handshake = commands::HandshakeState::new(
+        let handshake = commands::new_handshake_state(
             creds.clone(),
             Arc::new(AtomicBool::new(true)),
             "bridge_none".into(),
@@ -2082,7 +2081,7 @@ mod runtime_tests {
         // A persisted credential for a DIFFERENT pairing → return.
         let other = test_creds("pair_other", nats.url(), 3600);
         pairing::save_creds(&other).unwrap();
-        let handshake = commands::HandshakeState::new(
+        let handshake = commands::new_handshake_state(
             creds.clone(),
             Arc::new(AtomicBool::new(true)),
             "bridge_other".into(),
@@ -2114,7 +2113,7 @@ mod runtime_tests {
         // generation → the old refresh worker must not overwrite it.
         let state = fake_state(&nats, "pair_gen").await;
         install_state(state);
-        let handshake = commands::HandshakeState::new(
+        let handshake = commands::new_handshake_state(
             creds,
             Arc::new(AtomicBool::new(true)),
             "bridge_gen".into(),
@@ -2147,7 +2146,7 @@ mod runtime_tests {
         let confirmed = state.pairing_confirmed.clone();
         install_state(state);
         let handshake =
-            commands::HandshakeState::new(creds, confirmed.clone(), "bridge_sick".into());
+            commands::new_handshake_state(creds, confirmed.clone(), "bridge_sick".into());
         let handle = spawn_credential_refresh(
             "pair_sick".to_string(),
             commands::new_reply_slots(),
@@ -3271,7 +3270,7 @@ mod runtime_tests {
                 .store(true, Ordering::Release);
         }
         let handshake =
-            commands::HandshakeState::new(creds, confirmed.clone(), "bridge_terminal".into());
+            commands::new_handshake_state(creds, confirmed.clone(), "bridge_terminal".into());
         let handle = spawn_credential_refresh(
             "pair_terminal".to_string(),
             commands::new_reply_slots(),
@@ -3305,7 +3304,7 @@ mod runtime_tests {
         let confirmed = state.pairing_confirmed.clone();
         install_state(state);
         let handshake =
-            commands::HandshakeState::new(creds, confirmed.clone(), "bridge_ready".into());
+            commands::new_handshake_state(creds, confirmed.clone(), "bridge_ready".into());
         let handle = spawn_credential_refresh(
             pair.clone(),
             commands::new_reply_slots(),
@@ -4163,7 +4162,7 @@ mod slot_tests {
         let creds = test_creds("pair_inert_notice", nats.url(), 3600);
         let mut state = fake_state(&nats, &creds.pair_id).await;
         // A v2 identity with no channel yet: `seal` answers `None`.
-        state.security = secure::Transport::new(&creds);
+        state.security = secure::new_transport(&creds);
         assert!(state.security.seal("p.presence", b"x").unwrap().is_none());
         let slot = Slot::install_state(state);
         let mut tap = nats.tap();
@@ -4330,7 +4329,7 @@ mod slot_tests {
         let pairing_confirmed = state.pairing_confirmed.clone();
         let generation = state.generation_id;
         let slot = Slot::install_state(state);
-        let handshake = crate::remote::commands::HandshakeState::new(
+        let handshake = crate::remote::commands::new_handshake_state(
             creds.clone(),
             pairing_confirmed.clone(),
             format!("bridge_{}", crate::remote::test_support::unique("refresh")),

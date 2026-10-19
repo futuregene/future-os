@@ -170,7 +170,22 @@
             "remote_json_gzip_is_automatic_thresholded_and_standard"
           ]
         },
-        "pending-server-runtime-and-application": "desktop/src-tauri/src/remote/commands.rs"
+        "pending-server-runtime-and-application": "desktop/src-tauri/src/remote/commands.rs",
+        "protocol-transcript": {
+          "path": "packages/remote-protocol/src/handshake.rs",
+          "cases": [
+            "handshake_transcript_binds_both_device_identities_and_nonces",
+            "handshake_signature_rejects_tampered_transcript"
+          ]
+        },
+        "server-client-identity": {
+          "path": "packages/remote-server/src/commands.rs",
+          "cases": [
+            "a_declared_client_is_normalised",
+            "a_blank_name_means_did_not_say",
+            "an_unknown_kind_is_kept_verbatim"
+          ]
+        }
       }
     },
     {
@@ -1297,7 +1312,7 @@
       "source": "mobile/src/remote/__tests__/handshake.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-protocol/tests/handshake.test.ts"
     },
     {
       "source": "mobile/src/remote/__tests__/http.test.ts",

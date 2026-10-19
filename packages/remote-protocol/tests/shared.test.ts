@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { decodeRemoteJson, parsePairingInvitation } from "../src/index";
-import type { HandshakeConfirmation, HandshakeRequest, RemoteCommand } from "../src/index";
+import { decodeRemoteJson, handshakeTranscript, parsePairingInvitation } from "../src/index";
+import type { HandshakeChallenge, HandshakeConfirmation, HandshakeRequest, RemoteCommand } from "../src/index";
 import fixture from "../fixtures/protocol.json";
 
 describe("shared Remote protocol fixtures", () => {
@@ -38,6 +38,8 @@ describe("shared Remote protocol fixtures", () => {
       expect(confirmation).toEqual(c.expected);
       expect(confirmation.confirmed).toBe(true);
       expect(confirmation.presence.bridgeInstanceId).toBe(confirmation.bridgeInstanceId);
+    } else if (c.kind === "handshake-transcript") {
+      expect(handshakeTranscript(c.input as HandshakeChallenge)).toEqual(c.expected);
     } else {
       throw new Error(`Unsupported shared case ${c.id}`);
     }

@@ -35,7 +35,7 @@ pub(super) fn spawn_transfer_loop_with_ready(
 ) -> tokio::task::JoinHandle<()> {
     let endpoint = future_remote_server::transfer::TransferLoop::new(
         crate::remote_host::owned_host(),
-        security.inner,
+        security,
         active,
         cleanup_tick(),
     );

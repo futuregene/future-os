@@ -49,3 +49,89 @@ pub fn confirmation(
         "features": SERVER_FEATURES, "presence": presence,
     })
 }
+
+pub const HANDSHAKE_PROTOCOL_VERSION: u32 = 1;
+
+/// Inputs bound into the pairing handshake transcript. Every field is an
+/// `&str`, so a positional call could silently transpose two of them and sign
+/// a different transcript — named fields make that a compile error instead.
+pub struct HandshakeTranscript<'a> {
+    pub pair_id: &'a str,
+    pub desktop_id: &'a str,
+    pub desktop_public_key: &'a str,
+    pub bridge_instance_id: &'a str,
+    pub device_id: &'a str,
+    pub client_public_key: &'a str,
+    pub client_nonce: &'a str,
+    pub desktop_nonce: &'a str,
+}
+
+pub fn handshake_transcript(parts: &HandshakeTranscript<'_>) -> String {
+    [
+        "futureos-remote-handshake-v1",
+        parts.pair_id,
+        parts.desktop_id,
+        parts.desktop_public_key,
+        parts.bridge_instance_id,
+        parts.device_id,
+        parts.client_public_key,
+        parts.client_nonce,
+        parts.desktop_nonce,
+    ]
+    .join("\n")
+}
+
+#[cfg(test)]
+mod legacy_tests {
+    use super::*;
+    #[test]
+    fn handshake_transcript_binds_both_device_identities_and_nonces() {
+        let transcript = handshake_transcript(&HandshakeTranscript {
+            pair_id: "pair_1",
+            desktop_id: "desktop_1",
+            desktop_public_key: "UDESKTOP",
+            bridge_instance_id: "bridge_1",
+            device_id: "dev_1",
+            client_public_key: "UCLIENT",
+            client_nonce: "client_nonce",
+            desktop_nonce: "desktop_nonce",
+        });
+        assert_eq!(
+            transcript,
+            "futureos-remote-handshake-v1\npair_1\ndesktop_1\nUDESKTOP\nbridge_1\ndev_1\nUCLIENT\nclient_nonce\ndesktop_nonce"
+        );
+        assert_ne!(
+            transcript,
+            handshake_transcript(&HandshakeTranscript {
+                pair_id: "pair_1",
+                desktop_id: "desktop_other",
+                desktop_public_key: "UDESKTOP",
+                bridge_instance_id: "bridge_1",
+                device_id: "dev_1",
+                client_public_key: "UCLIENT",
+                client_nonce: "client_nonce",
+                desktop_nonce: "desktop_nonce",
+            })
+        );
+    }
+    #[test]
+    fn handshake_signature_rejects_tampered_transcript() {
+        let desktop = nkeys::KeyPair::new_user();
+        let transcript = handshake_transcript(&HandshakeTranscript {
+            pair_id: "pair_1",
+            desktop_id: "desktop_1",
+            desktop_public_key: &desktop.public_key(),
+            bridge_instance_id: "bridge_1",
+            device_id: "dev_1",
+            client_public_key: "UCLIENT",
+            client_nonce: "client_nonce",
+            desktop_nonce: "desktop_nonce",
+        });
+        let signature = desktop.sign(transcript.as_bytes()).unwrap();
+        let verifier = nkeys::KeyPair::from_public_key(&desktop.public_key()).unwrap();
+        assert!(verifier.verify(transcript.as_bytes(), &signature).is_ok());
+        assert!(verifier
+            .verify(format!("{transcript}_tampered").as_bytes(), &signature)
+            .is_err());
+    }
+}

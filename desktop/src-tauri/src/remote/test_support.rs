@@ -92,7 +92,7 @@ pub(crate) fn declare_features(
     pair_id: &str,
     features: &[&str],
 ) {
-    let handshake = crate::remote::commands::HandshakeState::new(
+    let handshake = crate::remote::commands::new_handshake_state(
         creds.clone(),
         Arc::new(std::sync::atomic::AtomicBool::new(true)),
         unique("bridge"),

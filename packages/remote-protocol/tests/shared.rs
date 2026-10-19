@@ -84,6 +84,27 @@ fn shared_protocol_fixtures() {
                     "{id}"
                 );
             }
+            "handshake-transcript" => {
+                use future_remote_protocol::handshake::{
+                    handshake_transcript, HandshakeTranscript,
+                };
+                let input = &case["input"];
+                let transcript = HandshakeTranscript {
+                    pair_id: input["pairId"].as_str().unwrap(),
+                    desktop_id: input["desktopId"].as_str().unwrap(),
+                    desktop_public_key: input["desktopPublicKey"].as_str().unwrap(),
+                    bridge_instance_id: input["bridgeInstanceId"].as_str().unwrap(),
+                    device_id: input["deviceId"].as_str().unwrap(),
+                    client_public_key: input["clientPublicKey"].as_str().unwrap(),
+                    client_nonce: input["clientNonce"].as_str().unwrap(),
+                    desktop_nonce: input["desktopNonce"].as_str().unwrap(),
+                };
+                assert_eq!(
+                    handshake_transcript(&transcript),
+                    case["expected"].as_str().unwrap(),
+                    "{id}"
+                );
+            }
             other => panic!("Unsupported shared case {id}: {other}"),
         }
     }

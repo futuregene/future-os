@@ -12,3 +12,6 @@ base64 = { workspace = true }
 url = "2"
 flate2 = "1"
 thiserror = "2"
+
+[dev-dependencies]
+nkeys = "0.4"

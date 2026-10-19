@@ -1,12 +1,19 @@
 //! Desktop services for the shared controlled-endpoint handshake.
+#[cfg(test)]
 use super::protocol::PairingCreds;
+#[cfg(test)]
 use future_remote_server::secure::HandshakeHost;
 pub use future_remote_server::secure::PairingIdentity;
-pub(super) use future_remote_server::secure::{Reply, REPLY};
+#[cfg(test)]
+pub(super) use future_remote_server::secure::Reply;
+#[cfg(test)]
 use serde_json::Value;
+#[cfg(test)]
 use std::sync::Arc;
 
+#[cfg(test)]
 struct DesktopHandshakeHost;
+#[cfg(test)]
 impl HandshakeHost for DesktopHandshakeHost {
     fn save_binding(&self, creds: &PairingCreds) -> Result<(), future_remote_server::Error> {
         super::pairing::save_creds(creds)
@@ -16,46 +23,10 @@ impl HandshakeHost for DesktopHandshakeHost {
         super::build_presence_payload(pair, bridge)
     }
 }
-#[derive(Clone, Default)]
-pub(super) struct Transport {
-    pub(super) inner: future_remote_server::secure::Transport,
-}
-impl Transport {
-    pub fn new(creds: &PairingCreds) -> Self {
-        Self {
-            inner: future_remote_server::secure::Transport::new(
-                creds,
-                Arc::new(DesktopHandshakeHost),
-            ),
-        }
-    }
-    #[cfg(test)]
-    pub fn legacy_fixture() -> Self {
-        Self {
-            inner: future_remote_server::secure::Transport::legacy_fixture(),
-        }
-    }
-    pub fn enabled(&self) -> bool {
-        self.inner.enabled()
-    }
-    pub fn clear(&self) {
-        self.inner.clear()
-    }
-    pub fn seal(&self, context: &str, bytes: &[u8]) -> Result<Option<Vec<u8>>, crate::AppError> {
-        self.inner.seal(context, bytes).map_err(Into::into)
-    }
-    pub fn open(&self, subject: &str, bytes: &[u8]) -> Result<(Vec<u8>, Reply), crate::AppError> {
-        self.inner.open(subject, bytes).map_err(Into::into)
-    }
-    pub fn is_active(&self, reply: &Reply) -> bool {
-        self.inner.is_active(reply)
-    }
-    pub fn activate(&self, reply: &Reply) -> Result<(), crate::AppError> {
-        self.inner.activate(reply).map_err(Into::into)
-    }
-    pub fn handshake(&self, bytes: &[u8], bridge: &str) -> Result<Value, crate::AppError> {
-        self.inner.handshake(bytes, bridge).map_err(Into::into)
-    }
+pub(super) use future_remote_server::secure::Transport;
+#[cfg(test)]
+pub(super) fn new_transport(creds: &PairingCreds) -> Transport {
+    Transport::new(creds, Arc::new(DesktopHandshakeHost))
 }
 pub(super) async fn publish(
     client: &async_nats::Client,
@@ -63,7 +34,7 @@ pub(super) async fn publish(
     subject: String,
     bytes: Vec<u8>,
 ) -> Result<bool, crate::AppError> {
-    future_remote_server::secure::publish(client, &transport.inner, subject, bytes)
+    future_remote_server::secure::publish(client, transport, subject, bytes)
         .await
         .map_err(Into::into)
 }
@@ -172,7 +143,7 @@ mod tests {
         let _home = HomeGuard::new("secure-pair");
         init_store();
         let creds = creds();
-        let transport = Transport::new(&creds);
+        let transport = new_transport(&creds);
         assert!(transport.seal("presence", b"private").unwrap().is_none());
         assert!(transport.open("command", b"plaintext").is_err());
         let (private, public) = future_remote_crypto::generate_identity().unwrap();
@@ -215,7 +186,7 @@ mod tests {
                 .unwrap(),
             b"approved"
         );
-        let restarted = Transport::new(&stored);
+        let restarted = new_transport(&stored);
         let mut fresh = connect(&restarted, &stored, &private, false).unwrap();
         assert!(restarted.open("command", &wire).is_err());
         let new = fresh.seal("command", b"private").unwrap();
@@ -235,7 +206,7 @@ mod tests {
         let _home = HomeGuard::new("secure-reject");
         init_store();
         let creds = creds();
-        let transport = Transport::new(&creds);
+        let transport = new_transport(&creds);
         let (private, _) = future_remote_crypto::generate_identity().unwrap();
         let mut wrong = creds.clone();
         wrong.secure.as_mut().unwrap().secret = Some(URL_SAFE_NO_PAD.encode([0; 32]));
@@ -247,7 +218,7 @@ mod tests {
         assert!(transport.seal("presence", b"private").unwrap().is_none());
         let mut expired = creds.clone();
         expired.secure.as_mut().unwrap().expires_at = now_secs() - 1;
-        assert!(connect(&Transport::new(&expired), &expired, &private, true).is_err());
+        assert!(connect(&new_transport(&expired), &expired, &private, true).is_err());
         assert!(transport
             .handshake(br#"{"type":"approval_decision","message":""}"#, "bridge")
             .is_err());

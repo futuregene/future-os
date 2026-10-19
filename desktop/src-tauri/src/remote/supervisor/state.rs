@@ -624,7 +624,7 @@ mod tests {
 
         let second = shared_runtime(&creds, true, true);
         assert!(
-            std::sync::Arc::ptr_eq(&first.reply_slots, &second.reply_slots),
+            first.reply_slots.shares_cache(&second.reply_slots),
             "a refresh serving the same invitation keeps the reply slots"
         );
         assert!(
@@ -651,7 +651,7 @@ mod tests {
         let first = shared_runtime(&unreadable, false, false);
         let second = shared_runtime(&unreadable, false, false);
         assert!(
-            !std::sync::Arc::ptr_eq(&first.reply_slots, &second.reply_slots),
+            !first.reply_slots.shares_cache(&second.reply_slots),
             "no provable invitation means a fresh runtime every time"
         );
         assert!(

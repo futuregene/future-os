@@ -1,6 +1,8 @@
+import { describe, expect, it } from "vitest";
 import { createUser } from "nkeys.js";
-import { handshakeTranscript, type HandshakeChallenge, verifyDesktopChallenge } from "../handshake";
-import { decodeBase64Url, encodeBase64Url } from "../codec";
+import { handshakeTranscript, type HandshakeChallenge } from "../src/handshake";
+import { verifyDesktopChallenge } from "../src/legacySignature";
+import { decodeBase64Url, encodeBase64Url } from "@future-os/remote-crypto/base64";
 
 function signedChallenge(): HandshakeChallenge {
   const desktop = createUser();

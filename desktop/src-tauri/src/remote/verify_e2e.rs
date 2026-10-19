@@ -49,7 +49,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use serde_json::{json, Value};
 
-use super::commands::{new_reply_slots, HandshakeState};
+use super::commands::new_reply_slots;
 use super::protocol::PairingCreds;
 use super::publisher::{CATALOG_ACTIVITY_FEATURE, EVENT_COALESCING_FEATURE, MAX_EVENT_BYTES};
 use super::test_support::{
@@ -411,7 +411,7 @@ pub(super) async fn install_slot(
     let bridge_client = connect(broker.url(), &format!("realnet-host-{pair_id}")).await;
     let bridge_instance_id = format!("bridge_{}", unique("realnet-host"));
     let confirmed_flag = Arc::new(AtomicBool::new(confirmed));
-    let handshake = HandshakeState::new(
+    let handshake = crate::remote::commands::new_handshake_state(
         creds.clone(),
         confirmed_flag.clone(),
         bridge_instance_id.clone(),
@@ -513,7 +513,7 @@ impl E2e {
         let _shared = super::supervisor::shared_runtime(&creds, true, false);
         let bridge_client = connect(broker.url(), &format!("verify-bridge-{pair_id}")).await;
         let bridge_instance_id = format!("bridge_{}", unique("e2e"));
-        let handshake = HandshakeState::new(
+        let handshake = crate::remote::commands::new_handshake_state(
             creds.clone(),
             Arc::new(AtomicBool::new(true)),
             bridge_instance_id.clone(),

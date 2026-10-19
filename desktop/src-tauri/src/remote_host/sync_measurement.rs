@@ -146,7 +146,7 @@ async fn handle(
             }
             (
                 "application/octet-stream",
-                crate::remote::commands::encode_reply_payload_with_gzip(&response, gzip),
+                future_remote_server::reply::encode_reply_payload_with_gzip(&response, gzip),
             )
         }
         _ => ("text/plain", b"not found".to_vec()),

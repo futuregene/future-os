@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Capability a client declares on `secure_ready` to receive the coalesced
 /// event lane. Named so an older desktop ignores it and an older client never
 /// asks for it.
-pub(super) const EVENT_COALESCING_FEATURE: &str = "event_coalescing_v1";
+#[cfg(test)]
+pub(super) use future_remote_protocol::EVENT_COALESCING_FEATURE;
 
 /// Capability a client declares on `secure_ready` to be told a catalog row's
 /// new recency in a few dozen bytes instead of being sent the whole session
@@ -21,7 +22,8 @@ pub(super) const EVENT_COALESCING_FEATURE: &str = "event_coalescing_v1";
 /// the old condition (`scripts/measure/measure-catalog-activity.py` measures
 /// both — 0.36–0.55 MB per run for one that does, −99.6%), so an older client is
 /// never silently given a list it cannot keep current.
-pub(super) const CATALOG_ACTIVITY_FEATURE: &str = "catalog_activity_v1";
+#[cfg(test)]
+pub(super) use future_remote_protocol::CATALOG_ACTIVITY_FEATURE;
 
 /// Where a recency packet goes.
 ///
@@ -275,10 +277,7 @@ pub(super) fn spawn_secure_event_publisher(
     coalesce: Arc<AtomicBool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(future_remote_server::events::run_event_publisher(
-        client,
-        rx,
-        security.inner,
-        coalesce,
+        client, rx, security, coalesce,
     ))
 }
 

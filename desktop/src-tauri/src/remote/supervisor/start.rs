@@ -330,7 +330,7 @@ pub(in crate::remote) async fn start_slot(
         .lock()
         .unwrap()
         .get_or_insert_with(|| {
-            commands::HandshakeState::new(
+            commands::new_handshake_state(
                 creds.clone(),
                 pairing_confirmed.clone(),
                 bridge_instance_id.clone(),

@@ -1,34 +1,9 @@
+// Legacy challenge verification is an explicit subpath, keeping NKey loading
+// out of the ordinary protocol codecs and v2 handshake type exports.
 import { fromPublic } from "nkeys.js";
-import { decodeBase64Url } from "./codec";
-
+import { decodeBase64Url } from "@future-os/remote-crypto/base64";
+import { handshakeTranscript, type HandshakeChallenge } from "./handshake";
 const encoder = new TextEncoder();
-
-export interface HandshakeChallenge {
-  protocolVersion: number;
-  pairId: string;
-  desktopId: string;
-  desktopPublicKey: string;
-  bridgeInstanceId: string;
-  deviceId: string;
-  clientPublicKey: string;
-  clientNonce: string;
-  desktopNonce: string;
-  desktopSignature: string;
-}
-
-export function handshakeTranscript(challenge: HandshakeChallenge): string {
-  return [
-    "futureos-remote-handshake-v1",
-    challenge.pairId,
-    challenge.desktopId,
-    challenge.desktopPublicKey,
-    challenge.bridgeInstanceId,
-    challenge.deviceId,
-    challenge.clientPublicKey,
-    challenge.clientNonce,
-    challenge.desktopNonce,
-  ].join("\n");
-}
 
 export function verifyDesktopChallenge(
   challenge: HandshakeChallenge,
