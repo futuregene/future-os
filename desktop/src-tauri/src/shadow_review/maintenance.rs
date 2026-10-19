@@ -368,7 +368,9 @@ mod tests {
             &Limits::default(),
         )
         .unwrap();
-        std::fs::write(s.dir.join("a.txt"), "v2\n").unwrap();
+        // Exercise recovery with an unambiguous stat change; an immediate
+        // same-size rewrite can retain the cached timestamp on CI filesystems.
+        std::fs::write(s.dir.join("a.txt"), "v2 changed\n").unwrap();
         super::super::snapshot::capture(
             &s.repo,
             &s.thread_id,

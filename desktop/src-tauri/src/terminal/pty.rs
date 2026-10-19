@@ -216,13 +216,16 @@ pub fn kill_tree(pgid: Option<i32>, pid: i32, grace: Duration) {
 
     #[cfg(windows)]
     {
+        use crate::proc::NoWindow;
         let _ = (pgid, grace);
         // ConPTY children are not a process group; `taskkill /T` walks the tree
         // by parent links, which is the closest portable equivalent. (A Job
         // Object would be strictly better and is tracked in the design doc as
         // future work.)
         let _ = std::process::Command::new("taskkill")
+            .no_window()
             .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();

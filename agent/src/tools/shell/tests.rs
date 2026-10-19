@@ -14,6 +14,47 @@ async fn captured(args: serde_json::Value) -> ShellResult {
     facts
 }
 
+#[tokio::test]
+async fn shell_input_is_closed_instead_of_inherited() {
+    const CHILD: &str = "FUTURE_TEST_SHELL_STDIN_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        #[cfg(windows)]
+        let command =
+            "if ([Console]::In.ReadToEnd().Length -ne 0) { exit 9 }; Write-Output stdin-closed";
+        #[cfg(not(windows))]
+        let command = "test -z \"$(cat)\" || exit 9; echo stdin-closed";
+        let facts = captured(json!({"command": command})).await;
+        assert_eq!(facts.exit_code, Some(0), "{facts:?}");
+        assert!(facts.attempts[0].output.contains("stdin-closed"));
+        return;
+    }
+
+    // Give a separate test process real, readable stdin. Shell tools must see
+    // EOF even when their host has input; never mutate this test runner's handles.
+    use std::io::Write;
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "tools::shell::tests::shell_input_is_closed_instead_of_inherited",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"host input")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+}
+
 #[test]
 fn validates_single_command_before_approval() {
     for args in [
