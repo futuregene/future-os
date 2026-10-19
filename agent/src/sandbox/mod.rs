@@ -821,6 +821,7 @@ fn on_path_in(path: Option<std::ffi::OsString>, name: &str) -> bool {
 /// when absent, so intentional launcher overrides are never clobbered.
 /// Delimiter the login shell prints around its env dump, so whatever the user's
 /// rc files print before/after it is ignored.
+#[cfg(not(target_os = "windows"))]
 const ENV_DUMP_MARKER: &str = "__future_env_boundary_9c4f__";
 
 /// No-op on Windows, where GUI processes already inherit the full registry PATH.
