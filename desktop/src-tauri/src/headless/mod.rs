@@ -8,11 +8,18 @@ use std::time::Duration;
 
 use crate::{future_login, remote, AppError};
 
-pub const HELP: &str = "Usage: futureos-headless [--no-qr] [--re-pair]
+pub const HELP: &str =
+    "Usage: futureos-headless [--relay URL [--relay-ca PEM]] [--no-qr] [--re-pair]
 
 Run Desktop's mobile remote entry in this terminal; Ctrl+C stops it.
 Guide platform login and phone pairing when needed; reuse an existing pairing.
+With --relay, no Future account is needed at all.
 
+  --relay URL Print an invitation that points at a self-hosted relay
+              (future-relay) instead of the Future platform. The address is
+              remembered for later launches; pass an empty value to go back.
+  --relay-ca  PEM file with the relay's CA, when its certificate is not issued
+              by a public CA.
   --no-qr     Print authorization/pairing links instead of terminal QR codes.
   --re-pair   Explicitly revoke the saved phone pairing and create a new invitation.
   --help      Show this help without starting Desktop or Agent.
@@ -30,19 +37,41 @@ pub enum Launch {
 pub struct Options {
     pub no_qr: bool,
     pub re_pair: bool,
+    pub relay: Option<String>,
+    pub relay_ca: Option<String>,
 }
 
 impl Options {
     pub fn parse(args: &[String]) -> Result<Launch, String> {
         let mut help = false;
         let mut options = Self::default();
-        for arg in args {
-            match arg.as_str() {
+        let mut index = 0;
+        while index < args.len() {
+            let arg = args[index].as_str();
+            match arg {
                 "--help" | "-h" => help = true,
                 "--no-qr" => options.no_qr = true,
                 "--re-pair" => options.re_pair = true,
+                "--relay" | "--relay-ca" => {
+                    index += 1;
+                    let value = args
+                        .get(index)
+                        .ok_or_else(|| format!("{arg} needs a value"))?;
+                    if arg == "--relay" {
+                        options.relay = Some(value.clone());
+                    } else {
+                        options.relay_ca = Some(value.clone());
+                    }
+                }
+                value if value.starts_with("--relay=") => {
+                    options.relay = Some(value["--relay=".len()..].to_string());
+                }
+                value if value.starts_with("--relay-ca=") => {
+                    options.relay_ca = Some(value["--relay-ca=".len()..].to_string());
+                }
                 _ => return Err(format!("Unknown option: {arg}")),
             }
+            index += 1;
         }
         if help {
             Ok(Launch::Help)
@@ -58,6 +87,9 @@ pub fn run(options: Options) -> Result<(), String> {
     // Hydration may supply FUTURE_HOME; freeze it before selecting the lock.
     crate::host_environment::initialize().map_err(|e| e.to_string())?;
     let _guard = crate::instance::InstanceGuard::acquire().map_err(|e| e.to_string())?;
+    // Applied before anything reads the pairing store: a `--relay` on this
+    // launch decides which relay the invitation it prints will point at.
+    crate::launch::apply_relay_settings(options.relay.as_deref(), options.relay_ca.as_deref())?;
     crate::host_environment::start_logging().map_err(|e| e.to_string())?;
     // Say where diagnostics land before any Agent work starts — after the data
     // root is final, because hydration above can still change it. The Agent logs
@@ -120,23 +152,40 @@ async fn session(options: &Options, agent: &mut agent::Agent) -> Result<(), AppE
     // Fail on corrupt credentials rather than silently replacing the account.
     crate::auth_store::read()?;
     let paired = crate::remote_host::pairing::load_creds_checked()?.is_some();
-    if !paired || options.re_pair || future_login::future_api_key().is_err() {
+    // A self-hosted relay is the whole answer to "which account": it has none.
+    // The login gate exists because the Future platform mints the invitation,
+    // and with `--relay` it no longer does.
+    let relay = crate::remote::relay::endpoint();
+    if relay.is_none() && (!paired || options.re_pair || future_login::future_api_key().is_err()) {
+        require_terminal()?;
+    }
+    if relay.is_some() {
         require_terminal()?;
     }
     crate::store::initialize_app_store()?;
     ensure_agent_running(agent).await?;
-    ensure_login(options).await?;
-    let account_key = future_login::future_api_key()?;
-    let platform = crate::future_platform::current_platform_url();
-    eprintln!("Platform login authorized ({platform}).");
-    // Fresh servers have no WebView to trigger the usual initial model sync.
-    // Through the scheduler so the automatic loop shares this run's clock, the
-    // same way the window's `sync_future_models` command does.
-    if let Err(error) = crate::scheduler::refresh_future_models_now().await {
+    let account_key = if let Some(url) = relay.as_deref() {
         eprintln!(
-            "Model catalog refresh failed; existing configured models remain available: {error}"
+            "Self-hosted relay ({url}). No Future account is used for phone pairing; \
+             existing pairings keep using the relay that issued them."
         );
-    }
+        None
+    } else {
+        ensure_login(options).await?;
+        let key = future_login::future_api_key()?;
+        let platform = crate::future_platform::current_platform_url();
+        eprintln!("Platform login authorized ({platform}).");
+        // Fresh servers have no WebView to trigger the usual initial model sync.
+        // Through the scheduler so the automatic loop shares this run's clock, the
+        // same way the window's `sync_future_models` command does.
+        if let Err(error) = crate::scheduler::refresh_future_models_now().await {
+            eprintln!(
+                "Model catalog refresh failed; existing configured models remain available: {error}"
+            );
+        }
+        Some(key)
+    };
+    let platform = crate::future_platform::current_platform_url();
     // The window's fixed-interval maintenance (app updates and the balance
     // event need a WebView; see `scheduler::start_headless`).
     crate::scheduler::start_headless();
@@ -175,11 +224,15 @@ async fn session(options: &Options, agent: &mut agent::Agent) -> Result<(), AppE
     loop {
         agent.check_running()?;
         // Logout/account/environment changes never leave an old account's
-        // remote ingress open until its JWT eventually expires.
-        if future_login::future_api_key().ok().as_deref() != Some(account_key.as_str())
-            || crate::future_platform::current_platform_url() != platform
-        {
-            return Err("Platform login changed or was removed. Remote access is closing; restart to authorize again.".into());
+        // remote ingress open until its JWT eventually expires. There is no
+        // account to watch in relay mode: the pairing's own credential and the
+        // room registration are the whole authorization.
+        if let Some(account_key) = account_key.as_deref() {
+            if future_login::future_api_key().ok().as_deref() != Some(account_key)
+                || crate::future_platform::current_platform_url() != platform
+            {
+                return Err("Platform login changed or was removed. Remote access is closing; restart to authorize again.".into());
+            }
         }
         let state = format!(
             "{:?} (Agent {})",
@@ -541,12 +594,15 @@ pub fn invitation_link(status: &remote::RemoteStatus) -> Option<String> {
     // Desktop owns the complete v2 invitation, including the local-only PSK.
     // Do not wrap it in another `code` parameter or reconstruct a v1 invite.
     let url = reqwest::Url::parse(code).ok()?;
+    // v3 is the same invitation, minted by a self-hosted relay instead of the
+    // platform: the QR still carries the Noise static key and the one-time
+    // secret, and the phone still verifies them. Only the claim endpoint moved.
     if url.scheme() != "futureos"
         || url.host_str() != Some("remote")
         || url.path() != "/pair"
         || !url
             .query_pairs()
-            .any(|(key, value)| key == "v" && value == "2")
+            .any(|(key, value)| key == "v" && matches!(&*value, "2" | "3"))
     {
         return None;
     }
@@ -624,14 +680,16 @@ mod tests {
             parse(&["--re-pair", "--no-qr"]).unwrap(),
             Launch::Headless(Options {
                 no_qr: true,
-                re_pair: true
+                re_pair: true,
+                ..Options::default()
             })
         );
         assert_eq!(
             parse(&["--re-pair"]).unwrap(),
             Launch::Headless(Options {
                 no_qr: false,
-                re_pair: true
+                re_pair: true,
+                ..Options::default()
             })
         );
         for flag in ["--headless", "--headles", "--gui", "-psn_123"] {
@@ -1312,6 +1370,8 @@ mod tests {
         let options = Options {
             no_qr: true,
             re_pair: false,
+            relay: None,
+            relay_ca: None,
         };
         print_invitation(
             "PLATFORM LOGIN",
@@ -1322,6 +1382,8 @@ mod tests {
         let options = Options {
             no_qr: false,
             re_pair: false,
+            relay: None,
+            relay_ca: None,
         };
         print_invitation(
             "PLATFORM LOGIN",

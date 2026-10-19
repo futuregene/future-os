@@ -173,6 +173,10 @@ agent 解析 `auth.json` 时会先读 `~/.future/agent/auth.json`，只有该文
 - `review/` — 评审功能使用的影子 git 仓库，每个 workspace 的 run 共享一个
   `<workspace_id>` 子目录。
 - `run_events/` — 每个 run 的事件日志（JSONL），派生自 agent 的 JSONL 会话。
+- `relay.json` —— 本机的自建中继选择（`url`，可选的 `ca` PEM 路径）。不存在表示
+  新邀请由 Future 平台签发。该值只对**之后**创建的邀请生效；每个配对会把签发它的
+  中继记进 `remote_pairings.json` 的 `controlUrl`，因此官方配对与自建配对可以共存。
+  见 [self-hosted-relay.zh-CN.md](self-hosted-relay.zh-CN.md)。
 - `relay-root-certs.pem` — 平台信任根的 PEM 快照，仅作为远程桥连接中转的 TLS 信任库。
   每次连接都会重写，可以安全删除：下次连接会重建。见
   [桌面 NATS 内部说明](../internals/desktop-nats.zh-CN.md)。

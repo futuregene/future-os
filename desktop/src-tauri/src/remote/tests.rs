@@ -302,6 +302,7 @@ mod runtime_tests {
             nats_url: nats_url.to_string(),
             nats_ws_url: nats_url.replace("nats://", "ws://"),
             jwt_expires_at: now_secs() + expires_in,
+            control_url: None,
         }
     }
 

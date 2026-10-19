@@ -38,6 +38,7 @@ fn run_from_args(args: &[String]) -> ExitCode {
             "tui" => return run_tui(&args[1..]),
             "channel" | "channels" => return run_channel(&args[1..]),
             "goal" => return run_goal(&args[1..]),
+            "relay" => return run_relay(&args[1..]),
             _ => {}
         }
     }
@@ -85,6 +86,19 @@ fn run_goal(args: &[String]) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("Error: {err}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// `future relay <args>` — the self-hosted, account-free relay. It serves its
+/// own HTTP API (and therefore its own tokio runtime), so like the other
+/// embedded components it is dispatched before the CLI runtime exists.
+fn run_relay(args: &[String]) -> ExitCode {
+    match future_cli::relay::cli::run(args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("Error: {err:#}");
             ExitCode::from(1)
         }
     }

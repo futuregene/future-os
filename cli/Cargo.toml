@@ -56,6 +56,16 @@ sha2 = "0.10"
 anyhow = "1"
 fs2 = "0.4"
 fd-lock = "4"
+# `future relay`: an account-free NATS relay served from this binary. Its HTTP
+# surface is small (four routes, no middleware stack), so axum's default features
+# are enough; `nkeys` signs the NATS user JWTs it issues.
+axum = "0.7"
+nkeys = "0.4"
+rand = "0.8"
 
 [dev-dependencies]
 tokio-stream = { workspace = true, features = ["net"] }
+# The relay's broker-level test drives a real `nats-server`; see
+# `cli/tests/relay_nats_auth.rs`.
+async-nats = "0.49"
+futures-util.workspace = true

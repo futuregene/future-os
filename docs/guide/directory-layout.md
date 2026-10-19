@@ -46,6 +46,7 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 ├── remote_pairings.json       # remote bridge credential book: one slot per paired device
 ├── remote_pairing.json        # legacy single-device bridge identity (read as a one-slot book, then left in place)
 ├── remote_pending_revokes.json # desktop revoke compensation (pair IDs + platform, no tokens)
+├── relay.json               # self-hosted relay choice (URL + optional extra CA); absent = official
 ├── approval_rule.json         # user-level path approval rules
 ├── windows-capabilities.json  # Windows sandbox ACL cleanup metadata
 ├── run/agent.sock             # Unix IPC endpoint (not used by Windows)
@@ -211,6 +212,12 @@ Owned by the Tauri desktop app (see `desktop/`):
   `<workspace_id>` subdir per workspace's runs.
 - `run_events/` — per-run event logs (JSONL), derived from the agent's JSONL
   sessions.
+- `relay.json` — the machine's self-hosted relay choice (`url`, optional `ca`
+  PEM path). Absent means new invitations are minted by the Future platform.
+  The value applies to invitations created *after* it was set; each pairing
+  records the relay that issued it in `remote_pairings.json` (`controlUrl`), so
+  official and self-hosted pairings coexist. See
+  [self-hosted-relay.md](self-hosted-relay.md).
 - `relay-root-certs.pem` — PEM snapshot of the platform trust anchors, used
   only as the trust store for the remote bridge's TLS connection to the relay.
   Rewritten on every connect, and safe to delete: the next connect rebuilds it.

@@ -18,6 +18,13 @@ export interface PairingCode {
   nonce: string;
   claim_url: string;
   exp: number;
+  /**
+   * Present when the invitation was minted by a self-hosted relay instead of
+   * the Future platform: the origin the claim endpoint belongs to. The payload
+   * keeps `v: 2` because its *shape* did not change; the invitation URL says
+   * `v=3`, which is what a v2-only client refuses.
+   */
+  relay?: string;
 }
 
 /**

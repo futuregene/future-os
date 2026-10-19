@@ -9,6 +9,7 @@ pub mod commands;
 pub mod constants;
 pub mod help;
 pub mod output;
+pub mod relay;
 pub mod rpc;
 #[cfg(test)]
 pub mod test_cdp;

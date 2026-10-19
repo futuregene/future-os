@@ -169,7 +169,7 @@ pub(super) fn presence_heartbeat_payload(
     payload
 }
 
-pub(super) fn unix_timestamp() -> u64 {
+pub(crate) fn unix_timestamp() -> u64 {
     // `unwrap_or_default`: a pre-epoch clock is not a reachable failure mode
     // worth an arm — treat it as 0.
     std::time::SystemTime::now()

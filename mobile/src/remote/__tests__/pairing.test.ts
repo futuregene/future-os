@@ -31,12 +31,12 @@ function base64Url(value: unknown): string {
     .replace(/=+$/, "");
 }
 
-function pairingCode(exp = 1_800_000_000, claimUrl = CLAIM_URL): string {
-  return base64Url({ v: 2, nonce: "nonce_1", claim_url: claimUrl, exp });
+function pairingCode(exp = 1_800_000_000, claimUrl = CLAIM_URL, relay?: string): string {
+  return base64Url({ v: 2, nonce: "nonce_1", claim_url: claimUrl, exp, ...(relay ? { relay } : {}) });
 }
 
-function invitation(claimUrl = CLAIM_URL): string {
-  return `futureos://remote/pair?v=2&code=${pairingCode(undefined, claimUrl)}&desktopId=desktop_1&desktopKey=UABC&secureKey=${"A".repeat(43)}&secret=${"A".repeat(43)}`;
+function invitation(claimUrl = CLAIM_URL, relay?: string, version = "2"): string {
+  return `futureos://remote/pair?v=${version}&code=${pairingCode(undefined, claimUrl, relay)}&desktopId=desktop_1&desktopKey=UABC&secureKey=${"A".repeat(43)}&secret=${"A".repeat(43)}`;
 }
 
 function jwt(exp = 1_800_000_000): string {
@@ -173,6 +173,29 @@ describe("claimPairingCode", () => {
       .rejects.toThrow("unexpected_pairing_host");
     expect(globalThis.fetch).not.toHaveBeenCalled();
     expect(mockedSaveDeviceId).not.toHaveBeenCalled();
+  });
+
+  // A v3 invitation from a self-hosted relay is a different case: the relay
+  /// declared in the code is the one the phone may talk to — and that is the
+  /// *only* other host it may talk to.
+  test("claims a self-hosted relay's invitation at the origin it declares", async () => {
+    const relay = "https://relay.example";
+    const relayClaim = `${relay}/client/v1/remote/pair/claim`;
+    const credentials = await claimPairingCode(invitation(relayClaim, relay, "3"));
+    expect(globalThis.fetch).toHaveBeenLastCalledWith(relayClaim, expect.anything());
+    expect(credentials.natsWsUrl).toBe("wss://nats.example");
+    // The claim carries the invitation's join token unchanged: the relay, not
+    // this client, decides what it means.
+    expect(lastFetchBody()).toMatchObject({ nonce: "nonce_1" });
+
+    // Declaring relay A while claiming at relay B is refused before any request.
+    (globalThis.fetch as jest.Mock).mockClear();
+    await expect(
+      claimPairingCode(
+        invitation(`${relay}/client/v1/remote/pair/claim`, "https://other.example", "3"),
+      ),
+    ).rejects.toThrow("unexpected_pairing_host");
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   test("rejects a non-wss NATS endpoint", async () => {
