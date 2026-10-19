@@ -84,9 +84,10 @@ export function activeMachineStatus(
  *
  * `drivable` is the second axis. A machine that answers but is held by another
  * device is connected and *not usable*: the phone can read nothing from it and
- * send nothing to it. Every one of them being in that state is not "connected"
- * in any sense the user cares about, which is why the dot goes yellow for it
- * rather than green.
+ * send nothing to it. One such machine is already not a green set: the dot
+ * answers for every paired machine, so a held machine turns it yellow exactly as
+ * an offline one does. That the others are still usable is the rows' answer, not
+ * the dot's — "somewhere in the list works" is not what a green dot promises.
  */
 export interface MachinesConnected {
   all: boolean;

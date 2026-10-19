@@ -523,6 +523,40 @@ describe("tool activity", () => {
     expect(projection.segments[0]).toMatchObject({ item: { id: "t9" } });
   });
 
+  it.each(["tool_end", "tool_result"])("keeps later prose after a recovered %s across live batches", (eventType) => {
+    const projector = createRunProjector();
+    const before = event("text_chunk", { text: "Checking files." });
+    const result = event(eventType, { tool_args: { path: "a.md" }, tool_id: "t9", tool_name: "read" });
+    const after = event("text_chunk", { text: "Review complete." });
+    const nextResult = event(eventType, { tool_id: "t10", tool_name: "shell" });
+    const final = event("text_chunk", { text: "All done." });
+
+    projector.ingest([before]);
+    projector.ingest([result]);
+    expect(shape(projector.ingest([after]))).toEqual([
+      "text(Checking files.)", "activity(read,completed)", "text(Review complete.)",
+    ]);
+    const events = [before, result, after, nextResult, final];
+    const expected = [
+      "text(Checking files.)", "activity(read,completed)", "text(Review complete.)",
+      "activity(shell,completed)", "text(All done.)",
+    ];
+    expect(shape(projector.ingest([nextResult, final]))).toEqual(expected);
+    expect(shape(buildAssistantRunProjection(events))).toEqual(expected);
+  });
+
+  it("keeps reasoning after a recovered tool in a new slot", () => {
+    const projection = buildAssistantRunProjection([
+      event("thinking_delta", { text: "Before" }),
+      event("tool_end", { tool_id: "t9", tool_name: "read" }),
+      event("thinking_delta", { text: "After" }),
+      event("text_chunk", { text: "Done" }),
+    ]);
+    expect(shape(projection)).toEqual([
+      "thinking(Before)", "activity(read,completed)", "thinking(After)", "text(Done)",
+    ]);
+  });
+
   it("marks a tool failed from an error field, a structured exit code or an output footer", () => {
     const failedFromError = buildAssistantRunProjection([
       event("tool_start", { tool_name: "shell", tool_id: "t1" }),
