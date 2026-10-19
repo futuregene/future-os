@@ -710,6 +710,33 @@ fn control_directory() -> Result<PathBuf, String> {
     Ok(directory)
 }
 
+/// What a timed-out request means, told apart by whether anything picked it up.
+///
+/// The two silences are different faults with different fixes, and a single
+/// "did not answer" sends the user to the wrong one. A request still sitting in
+/// the directory was never claimed: no process is watching it, which in practice
+/// means the Desktop running for this data directory predates device requests —
+/// it was started before the update and keeps serving from its old code until it
+/// is restarted. A request that disappeared was claimed by a Desktop that then
+/// failed or was killed mid-request.
+fn timeout_message(timeout: Duration, request_still_there: &dyn Fn() -> bool) -> String {
+    if request_still_there() {
+        format!(
+            "No Desktop picked the request up within {}s — the one running for {} is probably an \
+             older build that predates device requests (it was started before the update). \
+             Restart it with the current version and try again; nothing was paired.",
+            timeout.as_secs(),
+            "this data directory",
+        )
+    } else {
+        format!(
+            "A Desktop took the request but did not answer within {}s. It may have failed or been \
+             stopped while pairing; check its own output, then try again.",
+            timeout.as_secs()
+        )
+    }
+}
+
 /// Ask the running Desktop for an invitation and return its answer.
 ///
 /// The reply path is a temporary file this process created for itself, so two
@@ -736,7 +763,7 @@ async fn request_invitation() -> Result<Value, String> {
         &request,
         &json!({ "op": "add-device", "reply": answer.display().to_string() }),
     )?;
-    let outcome = wait_for_answer(&answer, &desktop_running).await;
+    let outcome = wait_for_answer(&answer, &|| request.exists(), &desktop_running).await;
     let _ = std::fs::remove_file(&answer);
     let _ = std::fs::remove_file(&request);
     outcome
@@ -749,7 +776,11 @@ async fn request_invitation() -> Result<Value, String> {
 /// timeout would otherwise *mislabel*: it would report "did not answer within
 /// 60s" for a process that is gone, sending the user to look for a busy Desktop
 /// that no longer exists.
-async fn wait_for_answer(answer: &Path, still_running: &dyn Fn() -> bool) -> Result<Value, String> {
+async fn wait_for_answer(
+    answer: &Path,
+    request_still_there: &dyn Fn() -> bool,
+    still_running: &dyn Fn() -> bool,
+) -> Result<Value, String> {
     let deadline = Instant::now() + REPLY_TIMEOUT;
     loop {
         // A poll that lands before the writer has finished is "not yet", not a
@@ -761,11 +792,7 @@ async fn wait_for_answer(answer: &Path, still_running: &dyn Fn() -> bool) -> Res
             return Ok(value);
         }
         if Instant::now() >= deadline {
-            return Err(format!(
-                "The Desktop did not answer within {}s. It may be busy pairing another device; \
-                 try again, or check its own output.",
-                REPLY_TIMEOUT.as_secs()
-            ));
+            return Err(timeout_message(REPLY_TIMEOUT, request_still_there));
         }
         if !still_running() {
             return Err(
@@ -2026,11 +2053,45 @@ mod tests {
         // The Desktop's lock is released on drop; the probe is the same
         // `desktop_running` the command uses, injected so the wait can be cut short.
         drop(_desktop);
-        let error = wait_for_answer(&answer, &|| false)
+        let error = wait_for_answer(&answer, &|| true, &|| false)
             .await
             .expect_err("a Desktop that stopped must not look like a slow one");
         assert!(error.contains("stopped before it answered"), "{error}");
         assert!(!error.contains("did not answer within"), "{error}");
+    }
+
+    /// The two silences are different faults, and the message says which one this
+    /// was. An unclaimed request means no process is watching the directory — in
+    /// practice a Desktop started before the update, still serving from its old
+    /// code — and the fix is to restart it; a claimed one means the Desktop took
+    /// the request and then failed.
+    #[tokio::test]
+    async fn a_timeout_says_whether_anything_picked_the_request_up() {
+        let home = tempfile::tempdir().unwrap();
+        let answer = home.path().join("never-written.json");
+
+        let unclaimed = wait_for_answer(&answer, &|| true, &|| true)
+            .await
+            .expect_err("an unclaimed request times out");
+        assert!(
+            unclaimed.contains("No Desktop picked the request up"),
+            "{unclaimed}"
+        );
+        assert!(unclaimed.contains("older build"), "{unclaimed}");
+        assert!(unclaimed.contains("Restart it"), "{unclaimed}");
+        assert!(unclaimed.contains("nothing was paired"), "{unclaimed}");
+        // Not the old, now-untrue advice: adds are serialized, so "busy pairing
+        // another device" cannot be the explanation for this one.
+        assert!(!unclaimed.contains("busy pairing"), "{unclaimed}");
+
+        let claimed = wait_for_answer(&answer, &|| false, &|| true)
+            .await
+            .expect_err("a claimed request that never answers times out");
+        assert!(
+            claimed.contains("took the request but did not answer"),
+            "{claimed}"
+        );
+        assert!(!claimed.contains("older build"), "{claimed}");
     }
 
     #[tokio::test]
@@ -2054,7 +2115,12 @@ mod tests {
         let _desktop = RunningDesktop::claim(&home);
         let (code, _, stderr) = run(&["remote", "devices", "add"]).await;
         assert_eq!(code, 1);
-        assert!(stderr.contains("did not answer within"), "{stderr}");
+        // Nothing claims the request in this fixture, which is the "an older
+        // build is running" silence rather than "took it and gave up".
+        assert!(
+            stderr.contains("No Desktop picked the request up"),
+            "{stderr}"
+        );
         // The unanswered request does not stay behind for the next Desktop. The
         // add lock beside it is expected: it is held and released, never consumed.
         let left = std::fs::read_dir(home.future().join("run").join(CONTROL_DIRECTORY))
