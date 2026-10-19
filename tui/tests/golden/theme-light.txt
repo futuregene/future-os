@@ -1,8 +1,4 @@
-
-
-[48;5;194m [1m[38;5;30medit[0m[48;5;194m [38;5;25msrc/greeting.rs[39m [38;5;28m+2[39m [38;5;160m-1[39m
-
-[49m Hello from the mock agent!
+ Hello from the mock agent!
 
  This is a [1mdeterministic[0m reply with [38;5;30mcode[39m and a [4m[38;5;25m]8;;https://example.com\link[0m]8;;\.
 
@@ -14,6 +10,7 @@
  [38;5;245mCWD: /mock[39m
  [38;5;245mThinking: off[39m
  [38;5;245mPermission: all[39m
+ [38;5;245mApproval mode: (not set)[39m
  [38;5;245mQueries: 42[39m
  [38;5;245mAuto compaction: off[39m
  [38;5;245mStreaming: no[39m
@@ -27,10 +24,13 @@
 [39m [38;5;245m  tokens total: 824000[39m
  [38;5;245m  cost: 8.42[39m
 
+ [38;5;245mApproval mode: Manual — File access follows approval rules; allowlisted[39m
+ [38;5;245mread-only commands run automatically, other commands ask. No OS sandbox.[39m
+
  [38;5;245mTool permission level: Workspace. Tool calls ask for approval before they[39m
  [38;5;245mrun; the grant is scoped to this workspace.[39m
 
  [38;5;245mTheme set to light[39m
 
 > [7m [0m
-[38;5;245m/mock  [38;5;236mMock Model[38;5;245m                      Σ[38;5;28m↑812k ↓12k R780k W12k[38;5;245m  [38;5;28m¥8.420[38;5;245m  [38;5;28m48k[38;5;245m/128k[39m
+[38;5;245m/mock  [38;5;236mMock Model[38;5;245m  [38;5;236m[manual][38;5;245m            Σ[38;5;28m↑812k ↓12k R780k W12k[38;5;245m  [38;5;28m¥8.420[38;5;245m  [38;5;28m48k[38;5;245m/128k[39m

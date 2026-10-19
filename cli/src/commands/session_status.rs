@@ -175,13 +175,15 @@ fn format_status(state: &Value, metrics: Option<&Value>) -> String {
         text(state, "permissionLevel")
     ));
     // `sandboxTier` is absent until a policy is set, which is not the same as
-    // an explicit "off" — say which one this is.
+    // an explicit "off" — say which one this is. Since the mode-aware agent it
+    // carries the full approval mode, so `auto` is a value here too (an
+    // `auto` policy is the sandbox tier plus the model reviewer).
     let sandbox = state
         .get("sandboxTier")
         .and_then(Value::as_str)
         .filter(|tier| !tier.is_empty());
     out.push_str(&format!(
-        "  Sandbox:       {}\n",
+        "  Approval mode: {}\n",
         sandbox.unwrap_or("(default)")
     ));
     out.push_str(&format!(
@@ -501,7 +503,7 @@ mod tests {
         let rendered = format_status(&state_payload(), None);
         assert!(rendered.contains("Permission:    workspace"), "{rendered}");
         // No policy set reads as the default, not as "off".
-        assert!(rendered.contains("Sandbox:       (default)"), "{rendered}");
+        assert!(rendered.contains("Approval mode: (default)"), "{rendered}");
         // Context is the live window, not the lifetime total.
         assert!(
             rendered.contains("Context:       253K / 1.0M tokens (25.3%)"),
@@ -678,21 +680,21 @@ mod tests {
     }
 
     #[test]
-    fn a_chosen_sandbox_tier_is_reported_as_chosen() {
-        for tier in ["off", "manual", "sandbox"] {
+    fn a_chosen_approval_mode_is_reported_as_chosen() {
+        for mode in ["off", "manual", "sandbox", "auto"] {
             let mut state = state_payload();
-            state["sandboxTier"] = serde_json::json!(tier);
+            state["sandboxTier"] = serde_json::json!(mode);
             let rendered = format_status(&state, None);
             assert!(
-                rendered.contains(&format!("Sandbox:       {tier}")),
+                rendered.contains(&format!("Approval mode: {mode}")),
                 "{rendered}"
             );
             assert!(!rendered.contains("(default)"), "{rendered}");
         }
-        // An empty string is absent, not a tier called "".
+        // An empty string is absent, not a mode called "".
         let mut state = state_payload();
         state["sandboxTier"] = serde_json::json!("");
-        assert!(format_status(&state, None).contains("Sandbox:       (default)"));
+        assert!(format_status(&state, None).contains("Approval mode: (default)"));
     }
 
     /// Compaction is a state a reader must be able to see: the session looks

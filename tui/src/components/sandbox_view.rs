@@ -1,39 +1,44 @@
-//! Sandbox tier and tool-permission settings for the TUI.
+//! Sandbox approval modes and tool-permission settings for the TUI.
 //!
 //! Port of the desktop's approval-mode surface: the tier `<Select>` in
-//! `desktop/src/features/settings/GeneralPage.tsx`, the availability probe in
-//! `integrations/agent/useSandboxAvailability.ts` and the stable diagnostic
-//! codes in `features/settings/linuxSandboxStatus.ts`.
+//! `desktop/src/features/settings/GeneralPage.tsx` (and the composer dropdown
+//! in `ComposerControls.tsx`, which adds the `auto` row), the availability
+//! probe in `integrations/agent/useSandboxAvailability.ts` and the stable
+//! diagnostic codes in `features/settings/linuxSandboxStatus.ts`.
 //!
-//! The agent owns both halves of the state — the policy
-//! (`set_sandbox_policy`, tier `off` | `manual` | `sandbox`) and the probe
-//! (`probe_sandbox`) — so this module is deliberately I/O-free: it holds the
-//! last status the app learned, renders it, and reports *intent*
-//! ([`SandboxAction`]) for the caller to turn into an RPC. Same contract as
-//! [`crate::components::menu`]: `Moved` means "redraw", value-carrying actions
-//! mean "act (then feed the result back through [`SandboxView::set_status`])".
+//! Four product modes share one picker (desktop `ApprovalTier`):
+//! `manual`, `sandbox`, `auto` (the sandbox tier plus the model reviewer, so a
+//! second model classifies each Ask request and approves the bounded ones) and
+//! `off`. On the wire `auto` is not a tier: [`ApprovalMode::to_wire`] sends
+//! `tier = sandbox, reviewer = model`.
+//!
+//! The agent owns all halves of the state — the policy
+//! (`set_sandbox_policy`), the probe (`probe_sandbox`) and the account gate
+//! (`list_providers`'s `future` key presence) — so this module is deliberately
+//! I/O-free: it holds the last status the app learned, renders it, and reports
+//! *intent* ([`SandboxAction`]) for the caller to turn into an RPC. Same
+//! contract as [`crate::components::menu`]: `Moved` means "redraw",
+//! value-carrying actions mean "act (then feed the result back through
+//! [`SandboxView::set_status`])".
 //!
 //! Design notes:
 //!
-//! * **The sandbox tier needs an available backend.** `sandbox` is disabled
-//!   while the probe has not reported one and navigation skips the row; the
-//!   other two tiers are always selectable. The gate is *availability*, not
-//!   [`supports_sandbox`]: a Linux host with a working Bubblewrap reports
-//!   `available` and may run sandboxed (that is why
-//!   `approvalTier.description.sandboxLinux` exists), whereas
-//!   [`supports_sandbox`] answers the narrower question "does this OS have a
-//!   native sandbox at all".
+//! * **The protected modes need their prerequisites.** `sandbox` is disabled
+//!   while the probe has not reported a backend; `auto` additionally needs the
+//!   Future account (`AccountState::SignedIn`). Navigation skips disabled
+//!   rows. The gates are *availability*, not [`supports_sandbox`]: a Linux host
+//!   with a working Bubblewrap reports `available` and may run sandboxed.
 //! * **Checking is not unavailable.** An unresolved probe (`resolved == false`)
 //!   renders "checking the system sandbox…"; a resolved-but-unavailable probe
 //!   renders the diagnostic [reason](reason_text) together with its code. The
-//!   desktop distinguishes the two the same way (`sandboxChecking` vs
-//!   `sandboxUnavailable`).
+//!   `auto` row does the same for the account signal ("(sign in)").
 //! * **A downgrade is never hidden.** The agent answers
 //!   `set_sandbox_policy { tier: "sandbox" }` with `requestedTier: "sandbox",
-//!   tier: "manual"` when the probe says the sandbox is unavailable.
-//!   [`SandboxStatus::fallback_notice`] turns that pair into an explicit
-//!   "fell back to Manual" banner which [`SandboxView::render`] prints:
-//!   reporting the request as applied would lie to the user.
+//!   tier: "manual"` when the probe says the sandbox is unavailable, and
+//!   `configuredMode: "auto", effectiveMode: "sandbox"` when the account is
+//!   missing. [`SandboxStatus::fallback_notice`] turns those pairs into an
+//!   explicit banner which [`SandboxView::render`] prints: reporting the
+//!   request as applied would lie to the user.
 //! * **Rendering is width-total.** Every row measures exactly `width` visible
 //!   columns ([`crate::utils::visible_width`]) for any `width` including `0`
 //!   and `1`, the row count never exceeds `height`, and no input panics.
@@ -56,8 +61,12 @@ const TIER_HEADING: &str = "Approval mode";
 const PERMISSION_HEADING: &str = "Tool permissions";
 /// Key legend rendered as the last row.
 const KEY_LEGEND: &str = "↑/↓ move · enter applies · r re-checks · esc closes";
-/// `off` description (desktop `approvalTier.description.off`).
-const DESC_OFF: &str = "No prompts, no sandbox — everything runs.";
+/// `off` description (desktop `approvalTier.description.off`). Names the
+/// bypass explicitly: the label (`Full access`, after Codex's capability
+/// ladder) is friendlier than Claude Code's `Bypass permissions`, so the copy
+/// has to carry the warning.
+const DESC_OFF: &str =
+    "No prompts, no sandbox — every command runs with full access to this machine.";
 /// `manual` description (desktop `approvalTier.description.manual`).
 const DESC_MANUAL: &str = "File access follows approval rules; allowlisted read-only commands run automatically, other commands ask. No OS sandbox.";
 /// `sandbox` description on macOS.
@@ -72,6 +81,8 @@ const DESC_SANDBOX_WINDOWS: &str =
 /// `sandbox` description where no backend exists at all.
 const DESC_SANDBOX_UNSUPPORTED: &str =
     "This platform has no sandbox backend, so the sandbox tier cannot be selected here.";
+/// `auto` description (desktop `approvalTier.description.auto`).
+const DESC_AUTO: &str = "Automatically reviews actions with sandbox protection.";
 /// The agent is still probing the host.
 const AVAILABILITY_CHECKING: &str = "Sandbox: checking the system sandbox…";
 /// Generic unavailability text used when the code is missing or unknown.
@@ -84,6 +95,130 @@ const REASON_PLATFORM_UNSUPPORTED: &str =
 const REASON_AVAILABLE: &str = "The system sandbox is available.";
 /// Stand-in diagnostic when the agent reported none (desktop does the same).
 const CODE_FALLBACK: &str = "probe_failed";
+
+// ─── Approval mode ─────────────────────────────────────────────────────────
+
+/// The product approval mode a session runs under — the four values the
+/// desktop's `ApprovalTier` and the CLI's `--sandbox` share. `Auto` is not a
+/// fourth tier on the wire: it is `tier = sandbox` plus `reviewer = model`
+/// (the agent's `SandboxPolicy::mode()` spelling).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ApprovalMode {
+    /// `"manual"` — approval rules on, no OS sandbox, the human approves.
+    Manual,
+    /// `"sandbox"` — approval rules on, shell inside the OS sandbox, the human
+    /// approves what the sandbox lets through.
+    Sandbox,
+    /// `"auto"` — the sandbox tier plus the model reviewer: a second model
+    /// classifies each Ask request and approves the bounded ones. Needs an
+    /// available sandbox backend *and* a signed-in Future account.
+    Auto,
+    /// `"off"` — no approval, no sandbox, everything runs. Shown as
+    /// `Full access` (the top of Codex's capability ladder; Claude Code calls
+    /// the same thing `Bypass permissions`).
+    Off,
+}
+
+impl ApprovalMode {
+    /// Display order of the picker, matching the desktop composer dropdown:
+    /// Manual, Sandboxed, Automatic review, Full access.
+    pub const ALL: [ApprovalMode; 4] = [
+        ApprovalMode::Manual,
+        ApprovalMode::Sandbox,
+        ApprovalMode::Auto,
+        ApprovalMode::Off,
+    ];
+
+    /// The canonical mode name — the wire value the agent stores and the
+    /// spelling persisted in settings (`manual` | `sandbox` | `auto` | `off`).
+    /// Deliberately separate from [`ApprovalMode::badge`] and
+    /// [`ApprovalMode::label`]: the product label can be reworded without
+    /// breaking a saved default, and `off` stays the contract.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ApprovalMode::Manual => "manual",
+            ApprovalMode::Sandbox => "sandbox",
+            ApprovalMode::Auto => "auto",
+            ApprovalMode::Off => "off",
+        }
+    }
+
+    /// The `(tier, reviewer)` pair the agent's `set_sandbox_policy` carries.
+    pub fn to_wire(self) -> (&'static str, &'static str) {
+        match self {
+            ApprovalMode::Manual => ("manual", "user"),
+            ApprovalMode::Sandbox => ("sandbox", "user"),
+            ApprovalMode::Auto => ("sandbox", "model"),
+            ApprovalMode::Off => ("off", "user"),
+        }
+    }
+
+    /// The mode string the agent round-trips (`SandboxPolicy::mode()`): the
+    /// `effectiveMode` of a `set_sandbox_policy` answer, the `mode` of a
+    /// `sandbox_policy_changed` event and — since the mode-aware read-back —
+    /// `get_state.sandboxTier`.
+    pub fn from_wire(raw: &str) -> Option<ApprovalMode> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "manual" => Some(ApprovalMode::Manual),
+            "sandbox" => Some(ApprovalMode::Sandbox),
+            "auto" => Some(ApprovalMode::Auto),
+            "off" => Some(ApprovalMode::Off),
+            _ => None,
+        }
+    }
+
+    /// Parse a user-typed mode for `/mode`: the canonical names plus the
+    /// display alias of the `Full access` label, so a user who reads the
+    /// panel can type what they saw. Agent payloads use
+    /// [`ApprovalMode::from_wire`] instead — a display alias is not a value
+    /// the agent ever sends.
+    pub fn from_user_input(raw: &str) -> Option<ApprovalMode> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "full" | "full access" | "full-access" | "full_access" | "unrestricted" => {
+                Some(ApprovalMode::Off)
+            }
+            _ => ApprovalMode::from_wire(raw),
+        }
+    }
+
+    /// The label shown in the mode picker (desktop `approvalTier.*`).
+    pub fn label(self) -> &'static str {
+        match self {
+            ApprovalMode::Manual => "Manual",
+            ApprovalMode::Sandbox => "Sandboxed",
+            ApprovalMode::Auto => "Automatic review",
+            ApprovalMode::Off => "Full access",
+        }
+    }
+
+    /// The short footer badge (`[manual]` / `[sandbox]` / `[auto]` / `[full]`).
+    /// A display spelling only — never persist it; use
+    /// [`ApprovalMode::as_str`] for that.
+    pub fn badge(self) -> &'static str {
+        match self {
+            ApprovalMode::Manual => "manual",
+            ApprovalMode::Sandbox => "sandbox",
+            ApprovalMode::Auto => "auto",
+            ApprovalMode::Off => "full",
+        }
+    }
+
+    /// The long description (desktop `approvalTier.description.*`); the
+    /// `sandbox` copy is per-platform.
+    pub fn description(self, platform: SandboxPlatform) -> &'static str {
+        match self {
+            ApprovalMode::Manual => DESC_MANUAL,
+            ApprovalMode::Sandbox => match platform {
+                SandboxPlatform::Macos => DESC_SANDBOX_MACOS,
+                SandboxPlatform::Linux => DESC_SANDBOX_LINUX,
+                SandboxPlatform::Windows => DESC_SANDBOX_WINDOWS,
+                SandboxPlatform::Other => DESC_SANDBOX_UNSUPPORTED,
+            },
+            ApprovalMode::Auto => DESC_AUTO,
+            ApprovalMode::Off => DESC_OFF,
+        }
+    }
+}
 
 // ─── Tier ──────────────────────────────────────────────────────────────────
 
@@ -99,10 +234,6 @@ pub enum SandboxTier {
 }
 
 impl SandboxTier {
-    /// Display order of the picker, matching the desktop's `<Select>`:
-    /// Manual, Sandboxed, Unrestricted.
-    pub const ALL: [SandboxTier; 3] = [SandboxTier::Manual, SandboxTier::Sandbox, SandboxTier::Off];
-
     /// The wire string the agent stores (`"off"` | `"manual"` | `"sandbox"`).
     pub fn to_wire(self) -> &'static str {
         match self {
@@ -124,30 +255,6 @@ impl SandboxTier {
             "sandbox" => Some(SandboxTier::Sandbox),
             _ => None,
         }
-    }
-}
-
-/// The label shown in the tier picker (desktop `approvalTier.*`).
-pub fn tier_label(tier: SandboxTier) -> &'static str {
-    match tier {
-        SandboxTier::Off => "Unrestricted",
-        SandboxTier::Manual => "Manual",
-        SandboxTier::Sandbox => "Sandboxed",
-    }
-}
-
-/// The long description of `tier` on `platform` (desktop
-/// `approvalTier.description.*`, including the per-platform `sandbox` copies).
-pub fn tier_description(tier: SandboxTier, platform: SandboxPlatform) -> &'static str {
-    match tier {
-        SandboxTier::Off => DESC_OFF,
-        SandboxTier::Manual => DESC_MANUAL,
-        SandboxTier::Sandbox => match platform {
-            SandboxPlatform::Macos => DESC_SANDBOX_MACOS,
-            SandboxPlatform::Linux => DESC_SANDBOX_LINUX,
-            SandboxPlatform::Windows => DESC_SANDBOX_WINDOWS,
-            SandboxPlatform::Other => DESC_SANDBOX_UNSUPPORTED,
-        },
     }
 }
 
@@ -181,7 +288,7 @@ impl SandboxPlatform {
 
 /// `true` only for a platform with its own OS sandbox (macOS Seatbelt).
 ///
-/// Deliberately *not* the gate for [`SandboxView::tier_options`]: Linux reaches
+/// Deliberately *not* the gate for [`SandboxView::mode_options`]: Linux reaches
 /// the sandbox tier through Bubblewrap (see the module note).
 pub fn supports_sandbox(platform: SandboxPlatform) -> bool {
     matches!(platform, SandboxPlatform::Macos)
@@ -201,7 +308,7 @@ pub fn platform_default_tier(platform: SandboxPlatform) -> SandboxTier {
     }
 }
 
-/// The platform-specific caveat shown under the tier list, or `None` when the
+/// The platform-specific caveat shown under the mode list, or `None` when the
 /// platform has nothing extra to say (macOS).
 pub fn platform_note(platform: SandboxPlatform) -> Option<&'static str> {
     match platform {
@@ -388,17 +495,49 @@ impl SandboxProbe {
 
 // ─── Status ────────────────────────────────────────────────────────────────
 
+/// Whether the Future account credential the automatic reviewer needs is
+/// present. The TUI's answer comes from `list_providers` (the `future`
+/// provider's stored key); the agent's own `system_one::resolve` reads the
+/// same `auth.json` entry, so the two agree unless one side is stale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AccountState {
+    /// Not asked yet — the `auto` row renders as "checking".
+    #[default]
+    Checking,
+    /// A `future` key is configured.
+    SignedIn,
+    /// No `future` key.
+    SignedOut,
+}
+
+impl AccountState {
+    /// Parse the `hasApiKey` of the `future` provider entry.
+    pub fn from_has_key(has_key: bool) -> Self {
+        if has_key {
+            AccountState::SignedIn
+        } else {
+            AccountState::SignedOut
+        }
+    }
+}
+
 /// Everything the settings screen knows about the sandbox.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxStatus {
-    /// The tier the session is actually running under.
-    pub tier: SandboxTier,
-    /// The tier the last `set_sandbox_policy` asked for, when the app has seen
-    /// its answer. `Some(Sandbox)` together with `tier == Manual` is the agent's
-    /// silent downgrade.
-    pub requested_tier: Option<SandboxTier>,
+    /// The mode the session is actually running under, when one is known —
+    /// set by this client's own `set_sandbox_policy` answer, a
+    /// `sandbox_policy_changed` event or (mode-aware agents) `get_state`.
+    /// `None` means the session never chose a policy, which the agent treats
+    /// as fully open — not the same thing as `Off`.
+    pub mode: Option<ApprovalMode>,
+    /// The mode the last `set_sandbox_policy` asked for, when the app has seen
+    /// its answer. [`SandboxStatus::is_known_downgrade`] decides whether the
+    /// difference from `mode` is one of the agent's silent downgrades.
+    pub requested_mode: Option<ApprovalMode>,
     /// Last known probe result.
     pub probe: SandboxProbe,
+    /// Whether the Future account the automatic reviewer needs is signed in.
+    pub account: AccountState,
     /// Host platform, for the platform-specific copy.
     pub platform: SandboxPlatform,
 }
@@ -410,31 +549,49 @@ impl SandboxStatus {
     /// have to ask the agent (so they render as "checking").
     pub fn new(platform: SandboxPlatform) -> Self {
         SandboxStatus {
-            tier: platform_default_tier(platform),
-            requested_tier: None,
+            mode: None,
+            requested_mode: None,
             probe: initial_probe(platform),
+            account: AccountState::Checking,
             platform,
         }
     }
 
     /// Parse the `set_sandbox_policy` answer, which is where the downgrade is
-    /// visible (`tier` + `requestedTier` + `sandboxAvailable`).
+    /// visible (`effectiveMode` + `configuredMode` + `sandboxAvailable` +
+    /// `fallback`).
     ///
     /// Tolerant: a payload that is not an object yields [`SandboxStatus::new`],
-    /// an unrecognised `tier` falls back to the platform default (the agent's
-    /// own `parse` does the same), and an answer without `sandboxAvailable`
-    /// leaves the probe unresolved instead of claiming unavailability.
+    /// an unrecognised `effectiveMode`/`tier` leaves the mode unknown (the
+    /// panel then shows the platform default together with its caveat), and an
+    /// answer without `sandboxAvailable` leaves the probe unresolved instead of
+    /// claiming unavailability.
     pub fn from_policy_response(platform: SandboxPlatform, value: &Value) -> Self {
         match value.as_object() {
             None => SandboxStatus::new(platform),
             Some(map) => {
-                let tier_raw = field_text(map, &["tier"]);
-                let tier = tier_raw
-                    .as_deref()
-                    .and_then(SandboxTier::from_wire)
-                    .unwrap_or(platform_default_tier(platform));
-                let requested_raw = field_text(map, &["requestedTier", "requested_tier"]);
-                let requested_tier = requested_raw.as_deref().and_then(SandboxTier::from_wire);
+                // Prefer the explicit mode spelling; fall back to tier+reviewer
+                // (pre-mode agents never said "auto" in `tier`, but they did
+                // say `reviewer: "model"` on the sandbox tier). The two are
+                // siblings, not a chain: a legacy answer always carries `tier`,
+                // so folding it into the same `and_then` would shadow the
+                // reviewer and silently report `auto` as `sandbox`.
+                let mode = field_text(map, &["effectiveMode", "effective_mode"])
+                    .and_then(|raw| ApprovalMode::from_wire(&raw))
+                    .or_else(|| {
+                        let tier = field_text(map, &["tier"])
+                            .as_deref()
+                            .and_then(SandboxTier::from_wire)?;
+                        if tier == SandboxTier::Sandbox
+                            && field_text(map, &["reviewer"]).as_deref() == Some("model")
+                        {
+                            return Some(ApprovalMode::Auto);
+                        }
+                        ApprovalMode::from_wire(tier.to_wire())
+                    });
+                let requested_mode = field_text(map, &["configuredMode", "configured_mode"])
+                    .or_else(|| field_text(map, &["requestedTier", "requested_tier"]))
+                    .and_then(|raw| ApprovalMode::from_wire(&raw));
                 let probe = match field_bool(map, &["sandboxAvailable", "sandbox_available"]) {
                     Some(available) => SandboxProbe {
                         available,
@@ -447,10 +604,26 @@ impl SandboxStatus {
                     },
                     None => SandboxProbe::checking(),
                 };
+                // The agent only reports `reviewer` after it applied the
+                // account policy, so a model reviewer that survived means the
+                // account was usable. `reviewer: "user"` says nothing on its
+                // own — every non-auto policy answers that — so only an `auto`
+                // request that came back downgraded proves the account is
+                // missing. Anything else stays unresolved, which keeps a
+                // `manual`/`sandbox` pick from overwriting the account answer
+                // the panel already has.
+                let account = match field_text(map, &["reviewer"]).as_deref() {
+                    Some("model") => AccountState::SignedIn,
+                    Some("user") if requested_mode == Some(ApprovalMode::Auto) => {
+                        AccountState::SignedOut
+                    }
+                    _ => AccountState::Checking,
+                };
                 SandboxStatus {
-                    tier,
-                    requested_tier,
+                    mode,
+                    requested_mode,
                     probe,
+                    account,
                     platform,
                 }
             }
@@ -462,22 +635,65 @@ impl SandboxStatus {
         self.probe.state()
     }
 
-    /// `true` when the session asked for `sandbox` and did not get it. The agent
-    /// downgrades silently to `manual`, so this is the only signal that the
-    /// request was not honoured.
+    /// The mode the session runs under when one is known, else the tier this
+    /// platform would default to (rendered with the caveat that it is a
+    /// guess — see [`crate::app::sandbox_mode_caveat`]).
+    pub fn effective_mode(&self) -> ApprovalMode {
+        self.mode.unwrap_or_else(|| {
+            ApprovalMode::from_wire(platform_default_tier(self.platform).to_wire())
+                .unwrap_or(ApprovalMode::Manual)
+        })
+    }
+
+    /// The agent's silent downgrades as `(requested, effective)` pairs:
+    /// `auto` → `sandbox` when the account is missing, `auto`/`sandbox` →
+    /// `manual` when the backend is unavailable. Nothing else counts — in
+    /// particular a protected mode that was applied is not a downgrade just
+    /// because a pre-mode answer spelled the request differently.
+    pub fn is_known_downgrade(
+        requested: Option<ApprovalMode>,
+        effective: Option<ApprovalMode>,
+    ) -> bool {
+        matches!(
+            (requested, effective),
+            (Some(ApprovalMode::Auto), Some(ApprovalMode::Sandbox))
+                | (Some(ApprovalMode::Auto), Some(ApprovalMode::Manual))
+                | (Some(ApprovalMode::Sandbox), Some(ApprovalMode::Manual))
+        )
+    }
+
+    /// `true` when the session asked for a protected mode and did not get it.
+    /// The agent downgrades silently (`auto` → `sandbox` without an account,
+    /// `sandbox`/`auto` → `manual` without a backend), so this is the only
+    /// signal that the request was not honoured.
     pub fn is_fallback(&self) -> bool {
-        self.requested_tier == Some(SandboxTier::Sandbox) && self.tier != SandboxTier::Sandbox
+        SandboxStatus::is_known_downgrade(self.requested_mode, self.mode)
     }
 
     /// The banner explaining [`SandboxStatus::is_fallback`], or `None` when the
-    /// requested tier was applied.
+    /// requested mode was applied.
     pub fn fallback_notice(&self) -> Option<String> {
         if !self.is_fallback() {
             return None;
         }
+        let requested = self.requested_mode?;
+        if requested == ApprovalMode::Auto {
+            // The agent's two auto downgrades: no account → sandbox (manual
+            // approval), no backend → manual (allowlist only).
+            return Some(match self.mode {
+                Some(ApprovalMode::Sandbox) =>
+                    "Automatic review needs a FutureOS account — running sandboxed with manual approval instead."
+                        .to_string(),
+                _ => format!(
+                    "Automatic review requested but unavailable — fell back to {}: approved or allowlisted commands run without an OS sandbox (diagnostic: {}).",
+                    self.effective_mode().label(),
+                    self.probe.diagnostic_code()
+                ),
+            });
+        }
         Some(format!(
             "Sandbox requested but unavailable — fell back to {}: approved or allowlisted commands run without an OS sandbox (diagnostic: {}).",
-            tier_label(self.tier),
+            self.effective_mode().label(),
             self.probe.diagnostic_code()
         ))
     }
@@ -554,7 +770,7 @@ impl PermissionKind {
     }
 }
 
-/// The three-level permission picker, rendered under the tier list.
+/// The three-level permission picker, rendered under the mode list.
 ///
 /// It owns its own highlight and is *focused* only while the enclosing
 /// [`SandboxView`] has moved the selection into it, so the highlight bar is
@@ -690,21 +906,21 @@ impl PermissionView {
 /// Which section of [`SandboxView`] owns the keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Section {
-    Tiers,
+    Modes,
     Permissions,
 }
 
 /// The sandbox settings screen.
 ///
-/// A flat list of six rows — three tiers followed by three permission levels —
-/// with exactly one highlight, so `↑`/`↓` walk the whole screen and `enter`
-/// applies whatever is highlighted.
+/// A flat list of seven rows — four approval modes followed by three
+/// permission levels — with exactly one highlight, so `↑`/`↓` walk the whole
+/// screen and `enter` applies whatever is highlighted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxView {
     status: SandboxStatus,
     theme: Theme,
     section: Section,
-    tier_index: usize,
+    mode_index: usize,
     permission: PermissionView,
 }
 
@@ -713,12 +929,12 @@ impl SandboxView {
     /// has been sent yet) and the permission picker on the agent's default.
     pub fn new(platform: SandboxPlatform) -> Self {
         let status = SandboxStatus::new(platform);
-        let tier_index = SandboxView::index_of(status.tier);
+        let mode_index = SandboxView::index_of(status.effective_mode());
         SandboxView {
             status,
             theme: DARK_THEME,
-            section: Section::Tiers,
-            tier_index,
+            section: Section::Modes,
+            mode_index,
             permission: PermissionView::new(PermissionKind::All),
         }
     }
@@ -731,10 +947,10 @@ impl SandboxView {
 
     /// Replace the status (a `set_sandbox_policy` answer, a probe, or a
     /// `get_state` reload). A highlight left on a row the new status disables
-    /// moves to the nearest selectable tier.
+    /// moves to the nearest selectable mode.
     pub fn set_status(&mut self, status: SandboxStatus) {
         self.status = status;
-        self.clamp_tier_index();
+        self.clamp_mode_index();
     }
 
     /// The current status.
@@ -758,40 +974,40 @@ impl SandboxView {
         self.permission.set_level(level);
     }
 
-    /// The picker rows with their selectability. `sandbox` is enabled only when
-    /// the probe reports a usable backend.
-    pub fn tier_options(&self) -> Vec<(SandboxTier, bool)> {
-        SandboxTier::ALL
+    /// The picker rows with their selectability. `sandbox` needs an available
+    /// backend; `auto` additionally needs a signed-in Future account.
+    pub fn mode_options(&self) -> Vec<(ApprovalMode, bool)> {
+        ApprovalMode::ALL
             .iter()
-            .map(|tier| (*tier, self.tier_enabled(*tier)))
+            .map(|mode| (*mode, self.mode_enabled(*mode)))
             .collect()
     }
 
-    /// The highlighted tier. Never a disabled one: navigation skips those and
+    /// The highlighted mode. Never a disabled one: navigation skips those and
     /// [`SandboxView::set_status`] moves a stale highlight off them.
-    pub fn highlighted_tier(&self) -> SandboxTier {
-        SandboxTier::ALL
-            .get(self.tier_index)
+    pub fn highlighted_mode(&self) -> ApprovalMode {
+        ApprovalMode::ALL
+            .get(self.mode_index)
             .copied()
-            .unwrap_or(SandboxTier::Manual)
+            .unwrap_or(ApprovalMode::Manual)
     }
 
-    /// Ask the caller to apply `tier`.
+    /// Ask the caller to apply `mode`.
     ///
-    /// A disabled tier — `sandbox` without an available backend — answers
-    /// [`SandboxAction::None`] and leaves the highlight alone: the request is
-    /// not queued, so the caller cannot mistake it for a pending mutation. (The
-    /// keyboard cannot reach that row at all; this is the programmatic entry
-    /// point.)
-    pub fn select_tier(&mut self, tier: SandboxTier) -> SandboxAction {
-        if !self.tier_enabled(tier) {
+    /// A disabled mode — `sandbox`/`auto` without an available backend, `auto`
+    /// without a signed-in account — answers [`SandboxAction::None`] and leaves
+    /// the highlight alone: the request is not queued, so the caller cannot
+    /// mistake it for a pending mutation. (The keyboard cannot reach that row
+    /// at all; this is the programmatic entry point.)
+    pub fn select_mode(&mut self, mode: ApprovalMode) -> SandboxAction {
+        if !self.mode_enabled(mode) {
             return SandboxAction::None;
         }
-        self.tier_index = SandboxView::index_of(tier);
-        SandboxAction::TierSelected(tier)
+        self.mode_index = SandboxView::index_of(mode);
+        SandboxAction::ModeSelected(mode)
     }
 
-    /// `up`/`k`, `down`/`j` walk the six rows, `enter`/`space` applies the
+    /// `up`/`k`, `down`/`j` walk the seven rows, `enter`/`space` applies the
     /// highlighted one, `r` asks for a fresh probe and `esc` closes.
     pub fn handle_key(&mut self, key: &str) -> SandboxAction {
         match key {
@@ -815,12 +1031,12 @@ impl SandboxView {
             String::new(),
             self.heading_row(
                 TIER_HEADING,
-                &format!("current: {}", tier_label(self.status.tier)),
+                &format!("current: {}", self.status.effective_mode().label()),
             ),
         ];
-        rows.extend(self.tier_rows(width));
+        rows.extend(self.mode_rows(width));
         rows.extend(wrapped_rows(
-            tier_description(self.highlighted_tier(), self.status.platform),
+            self.highlighted_mode().description(self.status.platform),
             width,
             DESCRIPTION_INDENT,
         ));
@@ -842,9 +1058,9 @@ impl SandboxView {
 
     fn move_up(&mut self) -> SandboxAction {
         match self.section {
-            Section::Tiers => match self.step(false) {
+            Section::Modes => match self.step(false) {
                 Some(index) => {
-                    self.tier_index = index;
+                    self.mode_index = index;
                     SandboxAction::Moved
                 }
                 None => SandboxAction::None,
@@ -854,7 +1070,7 @@ impl SandboxView {
     }
 
     /// `up` inside the permission section: walk its rows, and leave the section
-    /// (back into the tier list) from its first row.
+    /// (back into the mode list) from its first row.
     fn move_up_in_permissions(&mut self) -> SandboxAction {
         if self.permission.handle_key("up") == SandboxAction::Moved {
             return SandboxAction::Moved;
@@ -865,9 +1081,9 @@ impl SandboxView {
 
     fn move_down(&mut self) -> SandboxAction {
         match self.section {
-            Section::Tiers => match self.step(true) {
+            Section::Modes => match self.step(true) {
                 Some(index) => {
-                    self.tier_index = index;
+                    self.mode_index = index;
                     SandboxAction::Moved
                 }
                 None => {
@@ -881,7 +1097,7 @@ impl SandboxView {
 
     fn activate(&mut self) -> SandboxAction {
         match self.section {
-            Section::Tiers => self.select_tier(self.highlighted_tier()),
+            Section::Modes => self.select_mode(self.highlighted_mode()),
             Section::Permissions => self.permission.handle_key("enter"),
         }
     }
@@ -893,12 +1109,12 @@ impl SandboxView {
         self.permission.set_focused(true);
     }
 
-    /// Move the selection back up into the tier section, landing on its last
+    /// Move the selection back up into the mode section, landing on its last
     /// selectable row so `↓` returns to where it left.
     fn leave_permissions(&mut self) {
-        self.section = Section::Tiers;
+        self.section = Section::Modes;
         self.permission.set_focused(false);
-        self.tier_index = self.last_enabled_tier();
+        self.mode_index = self.last_enabled_mode();
     }
 
     // ── rows ──
@@ -911,24 +1127,24 @@ impl SandboxView {
         )
     }
 
-    fn tier_rows(&self, width: usize) -> Vec<String> {
-        self.tier_options()
+    fn mode_rows(&self, width: usize) -> Vec<String> {
+        self.mode_options()
             .into_iter()
             .enumerate()
-            .map(|(index, (tier, enabled))| self.tier_row(index, tier, enabled, width))
+            .map(|(index, (mode, enabled))| self.mode_row(index, mode, enabled, width))
             .collect()
     }
 
-    fn tier_row(&self, index: usize, tier: SandboxTier, enabled: bool, width: usize) -> String {
-        let focused = self.section == Section::Tiers && index == self.tier_index;
+    fn mode_row(&self, index: usize, mode: ApprovalMode, enabled: bool, width: usize) -> String {
+        let focused = self.section == Section::Modes && index == self.mode_index;
         let marker = if focused { "›" } else { " " };
-        let mut row = format!("{marker} {}", tier_label(tier));
-        let suffix = self.tier_suffix(tier);
+        let mut row = format!("{marker} {}", mode.label());
+        let suffix = self.mode_suffix(mode);
         if !suffix.is_empty() {
             row.push(' ');
             row.push_str(&suffix);
         }
-        if tier == self.status.tier {
+        if Some(mode) == self.status.mode {
             row.push_str("  ");
             row.push_str(&fg(self.theme.dim as u8, "· current"));
         }
@@ -941,16 +1157,28 @@ impl SandboxView {
         fg(self.theme.fg as u8, &row)
     }
 
-    /// The `(checking)` / `(unavailable)` tag on the `sandbox` row, empty while
-    /// the backend is usable (the desktop prints a plain "Sandboxed" then).
-    fn tier_suffix(&self, tier: SandboxTier) -> String {
-        match tier {
-            SandboxTier::Sandbox => match self.status.probe_state() {
+    /// The `(checking)` / `(unavailable)` / `(sign in)` tag on the protected
+    /// rows, empty while they are usable (the desktop prints a plain
+    /// "Sandboxed" / "Automatic review" then).
+    fn mode_suffix(&self, mode: ApprovalMode) -> String {
+        match mode {
+            ApprovalMode::Sandbox => match self.status.probe_state() {
                 ProbeState::Available => String::new(),
                 ProbeState::Checking => fg(self.theme.dim as u8, "(checking)"),
                 ProbeState::Unavailable => fg(self.theme.error as u8, "(unavailable)"),
             },
-            SandboxTier::Off | SandboxTier::Manual => String::new(),
+            ApprovalMode::Auto => match (self.status.probe_state(), self.status.account) {
+                (ProbeState::Checking, _) => fg(self.theme.dim as u8, "(checking)"),
+                (ProbeState::Unavailable, _) => fg(self.theme.error as u8, "(unavailable)"),
+                (ProbeState::Available, AccountState::Checking) => {
+                    fg(self.theme.dim as u8, "(checking)")
+                }
+                (ProbeState::Available, AccountState::SignedIn) => String::new(),
+                (ProbeState::Available, AccountState::SignedOut) => {
+                    fg(self.theme.error as u8, "(sign in)")
+                }
+            },
+            ApprovalMode::Off | ApprovalMode::Manual => String::new(),
         }
     }
 
@@ -1002,32 +1230,35 @@ impl SandboxView {
         }
     }
 
-    // ── tier selection ──
+    // ── mode selection ──
 
-    /// `sandbox` needs an available backend; the other two tiers are always
-    /// selectable.
-    fn tier_enabled(&self, tier: SandboxTier) -> bool {
-        match tier {
-            SandboxTier::Sandbox => self.status.probe.available,
-            SandboxTier::Off | SandboxTier::Manual => true,
+    /// `sandbox` needs an available backend; `auto` additionally needs a
+    /// signed-in Future account; the other two modes are always selectable.
+    fn mode_enabled(&self, mode: ApprovalMode) -> bool {
+        match mode {
+            ApprovalMode::Sandbox => self.status.probe.available,
+            ApprovalMode::Auto => {
+                self.status.probe.available && self.status.account == AccountState::SignedIn
+            }
+            ApprovalMode::Off | ApprovalMode::Manual => true,
         }
     }
 
-    /// Index of `tier` in the picker order.
-    fn index_of(tier: SandboxTier) -> usize {
-        SandboxTier::ALL
+    /// Index of `mode` in the picker order.
+    fn index_of(mode: ApprovalMode) -> usize {
+        ApprovalMode::ALL
             .iter()
-            .position(|candidate| *candidate == tier)
+            .position(|candidate| *candidate == mode)
             .unwrap_or(0)
     }
 
-    /// The nearest selectable row in `direction`, skipping disabled tiers.
+    /// The nearest selectable row in `direction`, skipping disabled modes.
     fn step(&self, forward: bool) -> Option<usize> {
-        let options = self.tier_options();
+        let options = self.mode_options();
         let candidates: Vec<usize> = if forward {
-            (self.tier_index + 1..options.len()).collect()
+            (self.mode_index + 1..options.len()).collect()
         } else {
-            (0..self.tier_index).rev().collect()
+            (0..self.mode_index).rev().collect()
         };
         candidates.into_iter().find(|index| {
             options
@@ -1039,24 +1270,24 @@ impl SandboxView {
 
     /// Index of the last selectable row (where `↑` lands when the selection
     /// comes back from the permission section).
-    fn last_enabled_tier(&self) -> usize {
-        self.tier_options()
+    fn last_enabled_mode(&self) -> usize {
+        self.mode_options()
             .iter()
             .rposition(|(_, enabled)| *enabled)
             .unwrap_or(0)
     }
 
     /// Keep the highlight on a selectable row after the status changed.
-    fn clamp_tier_index(&mut self) {
-        let options = self.tier_options();
+    fn clamp_mode_index(&mut self) {
+        let options = self.mode_options();
         let valid = options
-            .get(self.tier_index)
+            .get(self.mode_index)
             .map(|(_, enabled)| *enabled)
             .unwrap_or(false);
         if valid {
             return;
         }
-        self.tier_index = options
+        self.mode_index = options
             .iter()
             .position(|(_, enabled)| *enabled)
             .unwrap_or(0);
@@ -1072,8 +1303,8 @@ pub enum SandboxAction {
     None,
     /// The highlight moved — redraw.
     Moved,
-    /// Apply this approval tier (`set_sandbox_policy`).
-    TierSelected(SandboxTier),
+    /// Apply this approval mode (`set_sandbox_policy`).
+    ModeSelected(ApprovalMode),
     /// Apply this permission level (`set_permission_level`).
     PermissionSelected(PermissionKind),
     /// Close the screen.
@@ -1202,14 +1433,93 @@ mod tests {
         view
     }
 
-    // ── tier ──
+    // ── mode ──
+
+    #[test]
+    fn mode_wire_round_trips_and_rejects_unknown_values() {
+        for mode in ApprovalMode::ALL {
+            assert_eq!(ApprovalMode::from_wire(mode.as_str()), Some(mode));
+        }
+        assert_eq!(ApprovalMode::from_wire("AUTO"), Some(ApprovalMode::Auto));
+        assert_eq!(ApprovalMode::from_wire(" auto "), Some(ApprovalMode::Auto));
+        assert_eq!(ApprovalMode::from_wire("auto-review"), None);
+        assert_eq!(ApprovalMode::from_wire(""), None);
+        // The display spelling is not the stored contract: `full` is a badge,
+        // `off` is what is persisted and what the agent round-trips.
+        assert_eq!(ApprovalMode::Off.as_str(), "off");
+        assert_eq!(ApprovalMode::Off.badge(), "full");
+        assert_eq!(ApprovalMode::from_wire("full"), None);
+        // The user-facing spelling follows the label; the old label keeps
+        // working so a muscle-memory `/mode unrestricted` is not a usage error.
+        assert_eq!(
+            ApprovalMode::from_user_input("full"),
+            Some(ApprovalMode::Off)
+        );
+        assert_eq!(
+            ApprovalMode::from_user_input("Full Access"),
+            Some(ApprovalMode::Off)
+        );
+        assert_eq!(
+            ApprovalMode::from_user_input("unrestricted"),
+            Some(ApprovalMode::Off)
+        );
+        assert_eq!(
+            ApprovalMode::from_user_input("auto"),
+            Some(ApprovalMode::Auto)
+        );
+        assert_eq!(ApprovalMode::Auto.to_wire(), ("sandbox", "model"));
+        assert_eq!(ApprovalMode::Sandbox.to_wire(), ("sandbox", "user"));
+    }
+
+    #[test]
+    fn mode_labels_and_order_match_the_desktop_picker() {
+        assert_eq!(
+            ApprovalMode::ALL,
+            [
+                ApprovalMode::Manual,
+                ApprovalMode::Sandbox,
+                ApprovalMode::Auto,
+                ApprovalMode::Off
+            ]
+        );
+        assert_eq!(ApprovalMode::Manual.label(), "Manual");
+        assert_eq!(ApprovalMode::Sandbox.label(), "Sandboxed");
+        assert_eq!(ApprovalMode::Auto.label(), "Automatic review");
+        assert_eq!(ApprovalMode::Off.label(), "Full access");
+    }
+
+    #[test]
+    fn mode_descriptions_cover_every_mode_and_platform() {
+        assert!(ApprovalMode::Off
+            .description(SandboxPlatform::Macos)
+            .contains("No prompts"));
+        assert!(ApprovalMode::Manual
+            .description(SandboxPlatform::Macos)
+            .contains("approval rules"));
+        assert!(ApprovalMode::Auto
+            .description(SandboxPlatform::Macos)
+            .contains("sandbox"));
+        let macos = ApprovalMode::Sandbox.description(SandboxPlatform::Macos);
+        let linux = ApprovalMode::Sandbox.description(SandboxPlatform::Linux);
+        let windows = ApprovalMode::Sandbox.description(SandboxPlatform::Windows);
+        let other = ApprovalMode::Sandbox.description(SandboxPlatform::Other);
+        assert!(macos.contains("macOS sandbox"));
+        assert!(linux.contains("Linux sandbox"));
+        assert!(windows.contains("Windows write protection"));
+        assert!(other.contains("no sandbox backend"));
+        assert_ne!(macos, linux);
+        assert_ne!(linux, windows);
+        assert_ne!(windows, other);
+    }
+
+    // ── tier (legacy wire values) ──
 
     #[test]
     fn tier_wire_round_trips_and_rejects_unknown_values() {
         assert_eq!(SandboxTier::Off.to_wire(), "off");
         assert_eq!(SandboxTier::Manual.to_wire(), "manual");
         assert_eq!(SandboxTier::Sandbox.to_wire(), "sandbox");
-        for tier in SandboxTier::ALL {
+        for tier in [SandboxTier::Off, SandboxTier::Manual, SandboxTier::Sandbox] {
             assert_eq!(SandboxTier::from_wire(tier.to_wire()), Some(tier));
         }
         assert_eq!(SandboxTier::from_wire("SAND-BOX"), None);
@@ -1219,37 +1529,6 @@ mod tests {
             Some(SandboxTier::Sandbox)
         );
         assert_eq!(SandboxTier::from_wire("MANUAL"), Some(SandboxTier::Manual));
-    }
-
-    #[test]
-    fn tier_labels_and_order_match_the_desktop_picker() {
-        assert_eq!(
-            SandboxTier::ALL,
-            [SandboxTier::Manual, SandboxTier::Sandbox, SandboxTier::Off]
-        );
-        assert_eq!(tier_label(SandboxTier::Manual), "Manual");
-        assert_eq!(tier_label(SandboxTier::Sandbox), "Sandboxed");
-        assert_eq!(tier_label(SandboxTier::Off), "Unrestricted");
-    }
-
-    #[test]
-    fn tier_descriptions_cover_every_tier_and_platform() {
-        assert!(tier_description(SandboxTier::Off, SandboxPlatform::Macos).contains("No prompts"));
-        assert!(
-            tier_description(SandboxTier::Manual, SandboxPlatform::Macos)
-                .contains("approval rules")
-        );
-        let macos = tier_description(SandboxTier::Sandbox, SandboxPlatform::Macos);
-        let linux = tier_description(SandboxTier::Sandbox, SandboxPlatform::Linux);
-        let windows = tier_description(SandboxTier::Sandbox, SandboxPlatform::Windows);
-        let other = tier_description(SandboxTier::Sandbox, SandboxPlatform::Other);
-        assert!(macos.contains("macOS sandbox"));
-        assert!(linux.contains("Linux sandbox"));
-        assert!(windows.contains("Windows write protection"));
-        assert!(other.contains("no sandbox backend"));
-        assert_ne!(macos, linux);
-        assert_ne!(linux, windows);
-        assert_ne!(windows, other);
     }
 
     // ── platform ──
@@ -1433,17 +1712,17 @@ mod tests {
     #[test]
     fn a_fresh_status_mirrors_the_desktop_initial_state() {
         let macos = SandboxStatus::new(SandboxPlatform::Macos);
-        assert_eq!(macos.tier, SandboxTier::Sandbox);
+        assert_eq!(macos.effective_mode(), ApprovalMode::Sandbox);
         assert_eq!(macos.probe_state(), ProbeState::Available);
         assert_eq!(macos.probe.backend.as_deref(), Some("macos_seatbelt"));
         assert_eq!(macos.probe.code.as_deref(), Some("available"));
         assert!(macos.probe.definitive);
-        assert_eq!(macos.requested_tier, None);
+        assert_eq!(macos.mode, None);
         assert!(!macos.is_fallback());
         assert_eq!(macos.fallback_notice(), None);
 
         let linux = SandboxStatus::new(SandboxPlatform::Linux);
-        assert_eq!(linux.tier, SandboxTier::Manual);
+        assert_eq!(linux.effective_mode(), ApprovalMode::Manual);
         assert_eq!(linux.probe_state(), ProbeState::Checking);
         assert_eq!(
             SandboxStatus::new(SandboxPlatform::Windows).probe_state(),
@@ -1451,7 +1730,7 @@ mod tests {
         );
 
         let other = SandboxStatus::new(SandboxPlatform::Other);
-        assert_eq!(other.tier, SandboxTier::Manual);
+        assert_eq!(other.effective_mode(), ApprovalMode::Manual);
         assert_eq!(other.probe_state(), ProbeState::Unavailable);
         assert_eq!(other.probe.diagnostic_code(), "platform_unsupported");
         assert_eq!(other.probe.backend.as_deref(), Some("none"));
@@ -1461,8 +1740,8 @@ mod tests {
     #[test]
     fn the_agent_downgrade_is_reported_as_a_fallback() {
         let status = SandboxStatus::from_policy_response(SandboxPlatform::Linux, &downgrade());
-        assert_eq!(status.tier, SandboxTier::Manual);
-        assert_eq!(status.requested_tier, Some(SandboxTier::Sandbox));
+        assert_eq!(status.mode, Some(ApprovalMode::Manual));
+        assert_eq!(status.requested_mode, Some(ApprovalMode::Sandbox));
         assert_eq!(status.probe_state(), ProbeState::Unavailable);
         assert_eq!(status.probe.diagnostic_code(), "binary_missing");
         assert!(status.is_fallback());
@@ -1470,6 +1749,93 @@ mod tests {
         assert!(notice.contains("Sandbox requested but unavailable"));
         assert!(notice.contains("fell back to Manual"));
         assert!(notice.contains("binary_missing"));
+    }
+
+    #[test]
+    fn an_auto_downgrade_without_an_account_names_the_reason() {
+        let status = SandboxStatus::from_policy_response(
+            SandboxPlatform::Macos,
+            &json!({
+                "tier": "sandbox",
+                "effectiveMode": "sandbox",
+                "configuredMode": "auto",
+                "reviewer": "user",
+                "requestedTier": "sandbox",
+                "sandboxAvailable": true,
+                "sandboxBackend": "macos_seatbelt"
+            }),
+        );
+        assert_eq!(status.mode, Some(ApprovalMode::Sandbox));
+        assert_eq!(status.requested_mode, Some(ApprovalMode::Auto));
+        assert!(status.is_fallback());
+        // The downgrade itself is the proof: the reviewer was dropped for a
+        // lack of account.
+        assert_eq!(status.account, AccountState::SignedOut);
+        let notice = status
+            .fallback_notice()
+            .expect("the auto downgrade has a notice");
+        assert!(notice.contains("needs a FutureOS account"), "{notice}");
+        assert!(notice.contains("manual approval"), "{notice}");
+    }
+
+    #[test]
+    fn an_auto_answer_with_a_model_reviewer_is_applied_auto() {
+        let status = SandboxStatus::from_policy_response(
+            SandboxPlatform::Macos,
+            &json!({
+                "tier": "sandbox",
+                "effectiveMode": "auto",
+                "configuredMode": "auto",
+                "reviewer": "model",
+                "sandboxAvailable": true,
+                "sandboxBackend": "macos_seatbelt"
+            }),
+        );
+        assert_eq!(status.mode, Some(ApprovalMode::Auto));
+        assert_eq!(status.requested_mode, Some(ApprovalMode::Auto));
+        assert!(!status.is_fallback());
+        assert_eq!(status.fallback_notice(), None);
+        assert_eq!(status.account, AccountState::SignedIn);
+    }
+
+    #[test]
+    fn a_legacy_answer_reports_auto_from_tier_and_reviewer() {
+        // Pre-mode agents never spelled `auto` in `tier`; the reviewer is the
+        // only signal, so it must not be shadowed by the tier parsing.
+        let status = SandboxStatus::from_policy_response(
+            SandboxPlatform::Macos,
+            &json!({
+                "tier": "sandbox",
+                "requestedTier": "sandbox",
+                "reviewer": "model",
+                "sandboxAvailable": true,
+                "sandboxBackend": "macos_seatbelt"
+            }),
+        );
+        assert_eq!(status.mode, Some(ApprovalMode::Auto));
+        assert_eq!(status.account, AccountState::SignedIn);
+        assert_eq!(status.fallback_notice(), None);
+    }
+
+    #[test]
+    fn a_non_auto_answer_leaves_the_account_signal_alone() {
+        // Every non-auto policy answers `reviewer: "user"`; that is not a
+        // statement about the account, so the panel keeps whatever
+        // `list_providers` (or an earlier auto answer) taught it.
+        for tier in ["manual", "sandbox", "off"] {
+            let status = SandboxStatus::from_policy_response(
+                SandboxPlatform::Macos,
+                &json!({
+                    "tier": tier,
+                    "effectiveMode": tier,
+                    "configuredMode": tier,
+                    "reviewer": "user",
+                    "sandboxAvailable": true,
+                    "sandboxBackend": "macos_seatbelt"
+                }),
+            );
+            assert_eq!(status.account, AccountState::Checking, "{tier}");
+        }
     }
 
     #[test]
@@ -1484,7 +1850,7 @@ mod tests {
                 "sandboxBackend": "macos_seatbelt"
             }),
         );
-        assert_eq!(status.tier, SandboxTier::Sandbox);
+        assert_eq!(status.mode, Some(ApprovalMode::Sandbox));
         assert!(!status.is_fallback());
         assert_eq!(status.fallback_notice(), None);
         assert_eq!(status.probe_state(), ProbeState::Available);
@@ -1508,13 +1874,16 @@ mod tests {
             SandboxStatus::from_policy_response(SandboxPlatform::Linux, &json!([1, 2])),
             fallback
         );
-        // An unknown tier falls back to the platform default, like the agent.
+        // An unknown mode leaves the guess (the platform default) in place,
+        // like the agent's own tier parse.
         let bogus =
             SandboxStatus::from_policy_response(SandboxPlatform::Linux, &json!({ "tier": "??" }));
-        assert_eq!(bogus.tier, SandboxTier::Manual);
+        assert_eq!(bogus.mode, None);
+        assert_eq!(bogus.effective_mode(), ApprovalMode::Manual);
         let bogus_macos =
             SandboxStatus::from_policy_response(SandboxPlatform::Macos, &json!({ "tier": "??" }));
-        assert_eq!(bogus_macos.tier, SandboxTier::Sandbox);
+        assert_eq!(bogus_macos.mode, None);
+        assert_eq!(bogus_macos.effective_mode(), ApprovalMode::Sandbox);
         // snake_case keys and blank strings are tolerated.
         let snake = SandboxStatus::from_policy_response(
             SandboxPlatform::Linux,
@@ -1526,7 +1895,7 @@ mod tests {
                 "sandbox_backend": "none"
             }),
         );
-        assert_eq!(snake.requested_tier, Some(SandboxTier::Sandbox));
+        assert_eq!(snake.requested_mode, Some(ApprovalMode::Sandbox));
         assert_eq!(snake.probe_state(), ProbeState::Unavailable);
         assert_eq!(snake.probe.code, None);
         let notice = snake.fallback_notice().expect("a downgrade has a notice");
@@ -1663,85 +2032,123 @@ mod tests {
     #[test]
     fn a_fresh_view_starts_on_the_platform_default() {
         let macos = SandboxView::new(SandboxPlatform::Macos);
-        assert_eq!(macos.highlighted_tier(), SandboxTier::Sandbox);
-        assert_eq!(macos.status().tier, SandboxTier::Sandbox);
+        assert_eq!(macos.highlighted_mode(), ApprovalMode::Sandbox);
+        assert_eq!(macos.status().effective_mode(), ApprovalMode::Sandbox);
         assert_eq!(macos.permission_level(), PermissionKind::All);
 
         let linux = SandboxView::new(SandboxPlatform::Linux);
-        assert_eq!(linux.highlighted_tier(), SandboxTier::Manual);
-        assert_eq!(linux.tier_options()[1], (SandboxTier::Sandbox, false));
+        assert_eq!(linux.highlighted_mode(), ApprovalMode::Manual);
+        assert_eq!(linux.mode_options()[1], (ApprovalMode::Sandbox, false));
+        assert_eq!(linux.mode_options()[2], (ApprovalMode::Auto, false));
     }
 
     #[test]
     fn the_sandbox_row_needs_an_available_backend() {
         let macos = SandboxView::new(SandboxPlatform::Macos);
         assert_eq!(
-            macos.tier_options(),
+            macos.mode_options(),
             vec![
-                (SandboxTier::Manual, true),
-                (SandboxTier::Sandbox, true),
-                (SandboxTier::Off, true)
+                (ApprovalMode::Manual, true),
+                (ApprovalMode::Sandbox, true),
+                (ApprovalMode::Auto, false),
+                (ApprovalMode::Off, true)
             ]
         );
 
         let mut linux = SandboxView::new(SandboxPlatform::Linux);
         assert_eq!(
-            linux.tier_options(),
+            linux.mode_options(),
             vec![
-                (SandboxTier::Manual, true),
-                (SandboxTier::Sandbox, false),
-                (SandboxTier::Off, true)
+                (ApprovalMode::Manual, true),
+                (ApprovalMode::Sandbox, false),
+                (ApprovalMode::Auto, false),
+                (ApprovalMode::Off, true)
             ]
         );
 
         // The gate is availability, not the platform: a working Bubblewrap
-        // makes the tier selectable on Linux too.
+        // makes the sandbox tier selectable on Linux too — and a signed-in
+        // account then unlocks auto on top of it.
         linux.set_status(SandboxStatus {
-            tier: SandboxTier::Manual,
-            requested_tier: None,
+            mode: Some(ApprovalMode::Manual),
+            requested_mode: None,
             probe: SandboxProbe::available("bubblewrap"),
+            account: AccountState::SignedOut,
             platform: SandboxPlatform::Linux,
         });
-        assert_eq!(linux.tier_options()[1], (SandboxTier::Sandbox, true));
+        assert_eq!(linux.mode_options()[1], (ApprovalMode::Sandbox, true));
+        assert_eq!(linux.mode_options()[2], (ApprovalMode::Auto, false));
+        linux.set_status(SandboxStatus {
+            mode: Some(ApprovalMode::Manual),
+            requested_mode: None,
+            probe: SandboxProbe::available("bubblewrap"),
+            account: AccountState::SignedIn,
+            platform: SandboxPlatform::Linux,
+        });
+        assert_eq!(linux.mode_options()[2], (ApprovalMode::Auto, true));
         assert_eq!(
             linux.handle_key("enter"),
-            SandboxAction::TierSelected(SandboxTier::Manual)
+            SandboxAction::ModeSelected(ApprovalMode::Manual)
         );
     }
 
     #[test]
-    fn navigation_skips_the_disabled_sandbox_row() {
+    fn navigation_skips_the_disabled_protected_rows() {
         let mut view = SandboxView::new(SandboxPlatform::Linux);
         assert_eq!(view.handle_key("down"), SandboxAction::Moved);
-        assert_eq!(view.highlighted_tier(), SandboxTier::Off);
-        assert_eq!(view.tier_options()[1], (SandboxTier::Sandbox, false));
+        assert_eq!(view.highlighted_mode(), ApprovalMode::Off);
+        assert_eq!(view.mode_options()[1], (ApprovalMode::Sandbox, false));
+        assert_eq!(view.mode_options()[2], (ApprovalMode::Auto, false));
         assert_eq!(view.handle_key("up"), SandboxAction::Moved);
-        assert_eq!(view.highlighted_tier(), SandboxTier::Manual);
+        assert_eq!(view.highlighted_mode(), ApprovalMode::Manual);
         assert_eq!(view.handle_key("up"), SandboxAction::None);
-        assert_eq!(view.highlighted_tier(), SandboxTier::Manual);
+        assert_eq!(view.highlighted_mode(), ApprovalMode::Manual);
         assert_eq!(view.handle_key("j"), SandboxAction::Moved);
-        assert_eq!(view.highlighted_tier(), SandboxTier::Off);
+        assert_eq!(view.highlighted_mode(), ApprovalMode::Off);
         assert_eq!(view.handle_key("k"), SandboxAction::Moved);
-        assert_eq!(view.highlighted_tier(), SandboxTier::Manual);
+        assert_eq!(view.highlighted_mode(), ApprovalMode::Manual);
     }
 
     #[test]
-    fn selecting_a_disabled_tier_does_nothing() {
-        let mut view = SandboxView::new(SandboxPlatform::Linux);
-        assert_eq!(view.select_tier(SandboxTier::Sandbox), SandboxAction::None);
-        assert_eq!(view.highlighted_tier(), SandboxTier::Manual);
+    fn navigation_walks_through_auto_when_it_is_enabled() {
+        let mut view = SandboxView::new(SandboxPlatform::Macos);
+        // Auto stays disabled while the account is unresolved…
+        assert_eq!(view.mode_options()[2], (ApprovalMode::Auto, false));
+        assert_eq!(view.handle_key("down"), SandboxAction::Moved);
+        assert_eq!(view.highlighted_mode(), ApprovalMode::Off);
+        // …and takes its place in the order once it is.
+        view.set_status(SandboxStatus {
+            mode: Some(ApprovalMode::Sandbox),
+            requested_mode: None,
+            probe: SandboxProbe::available("macos_seatbelt"),
+            account: AccountState::SignedIn,
+            platform: SandboxPlatform::Macos,
+        });
+        assert_eq!(view.handle_key("up"), SandboxAction::Moved);
+        assert_eq!(view.highlighted_mode(), ApprovalMode::Auto);
         assert_eq!(
-            view.select_tier(SandboxTier::Off),
-            SandboxAction::TierSelected(SandboxTier::Off)
+            view.handle_key("enter"),
+            SandboxAction::ModeSelected(ApprovalMode::Auto)
         );
-        assert_eq!(view.highlighted_tier(), SandboxTier::Off);
+    }
+
+    #[test]
+    fn selecting_a_disabled_mode_does_nothing() {
+        let mut view = SandboxView::new(SandboxPlatform::Linux);
+        assert_eq!(view.select_mode(ApprovalMode::Sandbox), SandboxAction::None);
+        assert_eq!(view.highlighted_mode(), ApprovalMode::Manual);
+        assert_eq!(
+            view.select_mode(ApprovalMode::Off),
+            SandboxAction::ModeSelected(ApprovalMode::Off)
+        );
+        assert_eq!(view.highlighted_mode(), ApprovalMode::Off);
 
         let mut macos = SandboxView::new(SandboxPlatform::Macos);
         assert_eq!(
-            macos.select_tier(SandboxTier::Sandbox),
-            SandboxAction::TierSelected(SandboxTier::Sandbox)
+            macos.select_mode(ApprovalMode::Sandbox),
+            SandboxAction::ModeSelected(ApprovalMode::Sandbox)
         );
-        assert_eq!(macos.highlighted_tier(), SandboxTier::Sandbox);
+        assert_eq!(macos.highlighted_mode(), ApprovalMode::Sandbox);
     }
 
     #[test]
@@ -1749,12 +2156,12 @@ mod tests {
         let mut view = SandboxView::new(SandboxPlatform::Linux);
         assert_eq!(
             view.handle_key("enter"),
-            SandboxAction::TierSelected(SandboxTier::Manual)
+            SandboxAction::ModeSelected(ApprovalMode::Manual)
         );
         assert_eq!(view.handle_key("down"), SandboxAction::Moved);
         assert_eq!(
             view.handle_key(" "),
-            SandboxAction::TierSelected(SandboxTier::Off)
+            SandboxAction::ModeSelected(ApprovalMode::Off)
         );
     }
 
@@ -1775,9 +2182,9 @@ mod tests {
     fn the_selection_walks_into_and_out_of_the_permission_section() {
         let mut view = SandboxView::new(SandboxPlatform::Macos);
         assert_eq!(view.handle_key("down"), SandboxAction::Moved); // Off
-        assert_eq!(view.highlighted_tier(), SandboxTier::Off);
+        assert_eq!(view.highlighted_mode(), ApprovalMode::Off);
         assert_eq!(view.handle_key("down"), SandboxAction::Moved); // into the permissions
-        assert_eq!(view.highlighted_tier(), SandboxTier::Off);
+        assert_eq!(view.highlighted_mode(), ApprovalMode::Off);
         assert_eq!(
             view.handle_key("enter"),
             SandboxAction::PermissionSelected(PermissionKind::All)
@@ -1795,12 +2202,12 @@ mod tests {
         );
         assert_eq!(view.handle_key("k"), SandboxAction::Moved);
         assert_eq!(view.handle_key("k"), SandboxAction::Moved);
-        assert_eq!(view.handle_key("k"), SandboxAction::Moved); // back to the tiers
-        assert_eq!(view.highlighted_tier(), SandboxTier::Off);
+        assert_eq!(view.handle_key("k"), SandboxAction::Moved); // back to the modes
+        assert_eq!(view.highlighted_mode(), ApprovalMode::Off);
         assert_eq!(view.handle_key("k"), SandboxAction::Moved);
-        assert_eq!(view.highlighted_tier(), SandboxTier::Sandbox);
+        assert_eq!(view.highlighted_mode(), ApprovalMode::Sandbox);
         assert_eq!(view.handle_key("k"), SandboxAction::Moved);
-        assert_eq!(view.highlighted_tier(), SandboxTier::Manual);
+        assert_eq!(view.highlighted_mode(), ApprovalMode::Manual);
         assert_eq!(view.handle_key("k"), SandboxAction::None);
     }
 
@@ -1835,19 +2242,19 @@ mod tests {
     #[test]
     fn a_stale_highlight_moves_off_a_row_the_new_status_disables() {
         let mut view = SandboxView::new(SandboxPlatform::Macos);
-        assert_eq!(view.highlighted_tier(), SandboxTier::Sandbox);
+        assert_eq!(view.highlighted_mode(), ApprovalMode::Sandbox);
         view.set_status(SandboxStatus::new(SandboxPlatform::Linux));
-        assert_eq!(view.highlighted_tier(), SandboxTier::Manual);
+        assert_eq!(view.highlighted_mode(), ApprovalMode::Manual);
         assert_eq!(view.status().platform, SandboxPlatform::Linux);
         // A still-valid highlight is left alone.
         view.handle_key("down");
-        assert_eq!(view.highlighted_tier(), SandboxTier::Off);
+        assert_eq!(view.highlighted_mode(), ApprovalMode::Off);
         view.set_status(SandboxStatus::new(SandboxPlatform::Linux));
-        assert_eq!(view.highlighted_tier(), SandboxTier::Off);
+        assert_eq!(view.highlighted_mode(), ApprovalMode::Off);
         // The selection can sit in the permission section while the status
         // changes underneath it.
         view.set_status(SandboxStatus::new(SandboxPlatform::Macos));
-        assert_eq!(view.highlighted_tier(), SandboxTier::Off);
+        assert_eq!(view.highlighted_mode(), ApprovalMode::Off);
     }
 
     #[test]
@@ -1865,30 +2272,31 @@ mod tests {
     fn the_panel_renders_its_chrome_in_order() {
         let mut view = SandboxView::new(SandboxPlatform::Macos);
         let rows = lines(&mut view, 200);
-        assert_eq!(rows.len(), 14);
+        assert_eq!(rows.len(), 15);
         assert_eq!(rows[0], TITLE);
         assert_eq!(rows[1], "");
         assert_eq!(rows[2], "Approval mode  current: Sandboxed");
         assert_eq!(rows[3], "  Manual");
-        assert_eq!(rows[4], "› Sandboxed  · current");
-        assert_eq!(rows[5], "  Unrestricted");
+        assert_eq!(rows[4], "› Sandboxed");
+        assert_eq!(rows[5], "  Automatic review (checking)");
+        assert_eq!(rows[6], "  Full access");
         assert_eq!(
-            rows[6],
+            rows[7],
             "  Commands run in the macOS sandbox and ask for approval when needed."
         );
-        assert_eq!(rows[7], "  Sandbox: available — backend macos_seatbelt");
-        assert_eq!(rows[8], "");
-        assert_eq!(rows[9], "Tool permissions  current: All");
+        assert_eq!(rows[8], "  Sandbox: available — backend macos_seatbelt");
+        assert_eq!(rows[9], "");
+        assert_eq!(rows[10], "Tool permissions  current: All");
         assert_eq!(
-            rows[10],
+            rows[11],
             "  All  Every tool call runs without asking.  · current"
         );
-        assert!(rows[11].starts_with("  Workspace  Tool calls ask for approval"));
+        assert!(rows[12].starts_with("  Workspace  Tool calls ask for approval"));
         assert_eq!(
-            rows[12],
+            rows[13],
             "  None  Every tool call is denied before it runs."
         );
-        assert_eq!(rows[13], KEY_LEGEND);
+        assert_eq!(rows[14], KEY_LEGEND);
     }
 
     /// The key legend is a hint row like the menus': on a pane too narrow for
@@ -1918,9 +2326,10 @@ mod tests {
         assert!(!waiting.contains("unavailable"));
 
         view.set_status(SandboxStatus {
-            tier: SandboxTier::Manual,
-            requested_tier: None,
+            mode: Some(ApprovalMode::Manual),
+            requested_mode: None,
             probe: SandboxProbe::unavailable("user_namespace_disabled", "bubblewrap"),
+            account: AccountState::Checking,
             platform: SandboxPlatform::Linux,
         });
         let failed = text(&mut view, 200);
@@ -1936,8 +2345,8 @@ mod tests {
     fn an_available_probe_reports_its_backend_details() {
         let mut view = SandboxView::new(SandboxPlatform::Linux);
         view.set_status(SandboxStatus {
-            tier: SandboxTier::Manual,
-            requested_tier: None,
+            mode: Some(ApprovalMode::Manual),
+            requested_mode: None,
             probe: SandboxProbe {
                 available: true,
                 resolved: true,
@@ -1946,6 +2355,7 @@ mod tests {
                 version: Some("0.9.0".to_string()),
                 ..SandboxProbe::available("bubblewrap")
             },
+            account: AccountState::Checking,
             platform: SandboxPlatform::Linux,
         });
         let rows = lines(&mut view, 200);
@@ -1955,19 +2365,26 @@ mod tests {
                     == "  Sandbox: available — backend bubblewrap · /usr/bin/bwrap · 0.9.0")
         );
         assert!(rows.iter().any(|row| row == "  Sandboxed"));
-        assert!(!rows.iter().any(|row| row.contains("(checking)")));
+        // The sandbox row has no qualifier; the auto row still says
+        // "(checking)" until the account signal resolves — a different
+        // prerequisite, not the same probe.
+        assert!(!rows.iter().any(|row| row.starts_with("  Sandboxed (")));
+        assert!(rows
+            .iter()
+            .any(|row| row.starts_with("  Automatic review (")));
 
         // No details at all still reads as available.
         let mut bare = SandboxView::new(SandboxPlatform::Linux);
         bare.set_status(SandboxStatus {
-            tier: SandboxTier::Manual,
-            requested_tier: None,
+            mode: Some(ApprovalMode::Manual),
+            requested_mode: None,
             probe: SandboxProbe {
                 available: true,
                 resolved: true,
                 definitive: true,
                 ..SandboxProbe::checking()
             },
+            account: AccountState::Checking,
             platform: SandboxPlatform::Linux,
         });
         let rows = text(&mut bare, 200);
@@ -1985,7 +2402,7 @@ mod tests {
 
         // A macOS view that gets the same answer moves its highlight too.
         let mut macos = downgraded_view(SandboxPlatform::Macos);
-        assert_eq!(macos.highlighted_tier(), SandboxTier::Manual);
+        assert_eq!(macos.highlighted_mode(), ApprovalMode::Manual);
         assert!(text(&mut macos, 200).contains("Sandbox requested but unavailable"));
     }
 

@@ -667,13 +667,17 @@ close_overlay
 expect_pane_lacks skills-closed "Skills (" "the second escape closed the panel"
 step skills-closed
 
-# ── Sandbox / permissions: the panel, then a tier applied ──
+# ── Sandbox / permissions: the panel, then a mode applied ──
 submit_cmd "/sandbox"
 step_when sandbox-overlay "Sandbox & permissions"
 
 tmux send-keys -t "$RUST_PANE" Up
 tmux send-keys -t "$RUST_PANE" Enter
-step_when sandbox-tier "current: Manual"
+# A mode pick closes the card (select ⇒ apply ⇒ dismiss), so the applied mode
+# is reported in the transcript, not in a panel that no longer exists. The
+# message, not the panel's `current:` row, is what this screen pins.
+step_when sandbox-tier "Approval mode: Manual"
+expect_pane_lacks sandbox-tier "Sandbox & permissions" "a mode pick closes the card"
 
 close_overlay
 

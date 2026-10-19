@@ -1299,7 +1299,35 @@ async fn set_session_command(args: &[String], out: &Output) -> Result<(), String
     }
     if let Some(tier) = &parsed.sandbox {
         match client.set_sandbox_policy(tier, &target_id).await {
-            Ok(_) => applied.push(("sandboxTier", tier.clone())),
+            Ok(_) => {
+                applied.push(("sandboxTier", tier.clone()));
+                // `manual`/`sandbox`/`auto` only ask while the approval gate is
+                // armed: at the legacy `all` level the agent returns from
+                // `before_tool_call` before any approval rule is consulted, so
+                // reporting the mode alone would promise prompts that never
+                // come. The permission block above already ran, so a
+                // `--permission` value is the post-state.
+                if matches!(tier.as_str(), "manual" | "sandbox" | "auto") {
+                    let level = match &parsed.permission {
+                        Some(level) => Some(level.clone()),
+                        None => client
+                            .get_state(Some(&target_id))
+                            .await
+                            .ok()
+                            .and_then(|state| {
+                                state
+                                    .get("permissionLevel")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string)
+                            }),
+                    };
+                    if level.as_deref().is_none_or(|level| level == "all") {
+                        notes.push(format!(
+                            "approval mode `{tier}` cannot ask while the tool permission is `all` — add `--permission workspace`"
+                        ));
+                    }
+                }
+            }
             Err(err) => failures.push(("sandboxTier", missing_session_error(err, &target_id))),
         }
     }
@@ -1383,7 +1411,7 @@ fn option_label(key: &str) -> String {
         "systemPrompt" => "SystemPro",
         "appendSystemPrompt" => "AppendSys",
         "permissionLevel" => "Permission",
-        "sandboxTier" => "Sandbox",
+        "sandboxTier" => "Approval",
         "contextFiles" => "CtxFiles",
         "autoCompaction" => "AutoCompact",
         "autoRetry" => "AutoRetry",
@@ -2788,6 +2816,63 @@ mod tests {
                 "{options:?} should mention {expected:?}, got {stderr:?}"
             );
         }
+    }
+
+    /// A protected approval mode only asks while the tool permission level is
+    /// `workspace`; at the legacy `all` the agent never consults the approval
+    /// rules. The CLI says so instead of reporting a mode that will not prompt.
+    #[tokio::test]
+    async fn set_warns_that_a_protected_mode_needs_the_workspace_level() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = crate::test_server::MockAgent::default();
+        agent
+            .responses
+            .insert("get_state".into(), r#"{"permissionLevel":"all"}"#.into());
+        let (_agent, _env) = mock_env(agent).await;
+
+        let (out, cap) = Output::memory();
+        session(
+            Some("set"),
+            &[
+                "sess-1".into(),
+                "--sandbox".into(),
+                "manual".into(),
+                "--json".into(),
+            ],
+            &out,
+        )
+        .await
+        .expect("set");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(parsed["updated"]["sandboxTier"], "manual");
+        let notes = parsed["notes"].as_array().expect("a note");
+        assert!(
+            notes.iter().any(|note| note
+                .as_str()
+                .is_some_and(|note| note.contains("--permission workspace"))),
+            "{notes:?}"
+        );
+
+        // The explicit level is the post-state: no note once it gates.
+        let (out, cap) = Output::memory();
+        session(
+            Some("set"),
+            &[
+                "sess-1".into(),
+                "--sandbox".into(),
+                "manual".into(),
+                "--permission".into(),
+                "workspace".into(),
+                "--json".into(),
+            ],
+            &out,
+        )
+        .await
+        .expect("set");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert!(parsed.get("notes").is_none(), "{parsed}");
     }
 
     #[tokio::test]

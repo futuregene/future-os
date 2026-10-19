@@ -95,7 +95,7 @@ const GUTTER: usize = 2;
 /// [`SHORTCUTS`] above is deliberately *not* sorted: it is grouped by what the
 /// keys act on (interrupt first, then the cycling keys, then paging), which is
 /// how a key table is read.
-const COMMANDS: [HelpEntry; 43] = [
+const COMMANDS: [HelpEntry; 44] = [
     HelpEntry {
         key: "/agent",
         desc: "agent version and instance info",
@@ -169,6 +169,10 @@ const COMMANDS: [HelpEntry; 43] = [
         desc: "runtime metrics of this session",
     },
     HelpEntry {
+        key: "/mode [manual|sandbox|auto|off]",
+        desc: "show or set the approval mode",
+    },
+    HelpEntry {
         key: "/model [name]",
         desc: "select model",
     },
@@ -206,7 +210,7 @@ const COMMANDS: [HelpEntry; 43] = [
     },
     HelpEntry {
         key: "/sandbox",
-        desc: "approval tier + tool permissions (one card)",
+        desc: "approval mode + tool permissions (one card)",
     },
     HelpEntry {
         key: "/scoped-models",
@@ -444,7 +448,7 @@ mod tests {
     /// The commands the card must list, as a set the test maintains by hand so
     /// it cannot silently follow a change to `COMMANDS` itself. Membership
     /// only — the order is `command_card_is_sorted_by_command_name`'s business.
-    const EXPECTED_COMMANDS: [&str; 43] = [
+    const EXPECTED_COMMANDS: [&str; 44] = [
         "/model [name]",
         "/new",
         "/sessions",
@@ -480,6 +484,7 @@ mod tests {
         "/autoretry [on|off]",
         "/tool-output [call-id]",
         "/sandbox",
+        "/mode [manual|sandbox|auto|off]",
         "/permission [level]",
         "/shell <cmd>",
         "/title [zh|en]",

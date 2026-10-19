@@ -156,6 +156,11 @@ pub struct RpcSessionState {
     pub cwd: Option<String>,
     #[serde(default)]
     pub permission_level: Option<String>,
+    /// The session's approval mode — the agent's `SandboxPolicy::mode()`
+    /// ("manual" | "sandbox" | "auto" | "off"), absent when the session never
+    /// set a policy (fully open, distinct from an explicit "off").
+    #[serde(default)]
+    pub sandbox_tier: Option<String>,
     #[serde(default, deserialize_with = "de_null_default")]
     pub skills: Vec<String>,
     #[serde(default, deserialize_with = "de_null_default")]
