@@ -100,3 +100,26 @@ process. The original retry-whitelist test now belongs to the Client unit suite.
 These core cases are removed from Desktop rather than executed again with both
 GUI and headless. Their names and all original assertions remain; execution is
 pending final CI.
+
+## Held-read transfer shutdown
+
+[`transfer.json`](../../packages/remote-client/fixtures/transfer.json) supplies a
+common stop-before-first-chunk case. Both actual Client implementations download
+through the actual Server role while its memory FileHost holds the first read.
+The role must stop and its download caller must finish before the host read is
+released. Afterwards, neither bytes nor a new logical connection may appear.
+TS also verifies the local output handle closes, the partial output is removed,
+and hashing never runs. Its already-issued concurrent wave differs from Rust's
+sequential pulls; no expectation assumes the same number of broker messages.
+
+The fixture host and this Rust test explicitly use two Tokio workers so a
+synchronous uncooperative FileHost cannot prevent the control path from releasing
+it. The gate holds no credential/store/download-map mutex, is released on Fixture
+drop and shutdown, and fails after twenty seconds. Error paths release the gate,
+abort/await a pending Rust caller and shut down every owned role/process. These
+are memory hosts, not proof of native filesystem/Store/Agent integration. Server
+transfer records are checked/cleared on explicit Server shutdown, not by assuming
+an already-closed Client can send cancellation. Report output remains IDs and
+outcomes; private JSON-lines credentials are never forwarded.
+
+These extensions are statically compiled only until final branch CI acceptance.

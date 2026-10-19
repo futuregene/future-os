@@ -13,6 +13,7 @@ use std::sync::{
 pub struct MemoryClientHost {
     book: Mutex<PeerBook>,
     sequence: AtomicU64,
+    connects: AtomicU64,
 }
 impl MemoryClientHost {
     pub fn new(creds: PeerCreds) -> Self {
@@ -24,7 +25,11 @@ impl MemoryClientHost {
                 }],
             }),
             sequence: AtomicU64::new(0),
+            connects: AtomicU64::new(0),
         }
+    }
+    pub fn connection_attempts(&self) -> u64 {
+        self.connects.load(Ordering::SeqCst)
     }
 }
 impl ClientHost for MemoryClientHost {
@@ -32,6 +37,7 @@ impl ClientHost for MemoryClientHost {
         Ok("interop_client".into())
     }
     fn connection_options(&self) -> ConnectionOptions {
+        self.connects.fetch_add(1, Ordering::SeqCst);
         ConnectionOptions::new("Standalone Rust", "test").for_loopback_fixture()
     }
     fn command_id(&self) -> String {

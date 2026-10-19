@@ -484,3 +484,13 @@ Server 默认及 test-support、Desktop GUI/headless 的 Clippy `--all-targets` 
 Rust 驱动运行真实 supervisor → resume → connect 流程，只在显式宿主 load 边界返回 transport 错误，因此不会创建网络连接。使用既有测试构建的毫秒退避单位与 Tokio 暂停时钟，观察真正的任务结束；自然耗尽不把整个 Client 改成 terminal。TS 驱动提供“角色曾就绪”的明确前置状态，通过公开 open/shutdown 运行实际 deadline、退避、失败与停止，宿主连接工厂明确拒绝；不替换恢复调度。TS 在预算到期应进入 failed，后续 open 也不能复活该实例。两端再推进十分钟，仍不能出现额外尝试。真实握手、重连和事件补齐由独立互通及原有应用/同步回归承担，不能用这批模拟失败替代。
 
 只增加共享素材、测试驱动和测试宿主 load 失败计数，产品逻辑未变，原 7 个 Rust 运行时归属测试函数体逐一确认未改变。新增一个 Rust 驱动声明与一个 Jest `.each` 声明，各覆盖同一组 4 个 ID。Client 默认/测试辅助特性的 Clippy `--all-targets`、fmt、TS typecheck/lint、协议生成及文档静态检查通过；Babel/Jest 仅静态编译 58 个文件，未执行产物或本地测试。运行结果仍待最终 CI，整体目标未完成。
+
+### 2026-10-19：真实传输中的停止与迟到读取
+
+新增 [`transfer.json`](../../packages/remote-client/fixtures/transfer.json) 及两端独立互通驱动，共同报告 `client.transfer-stop.pending-download`。实际 Client/Server 通过真实 broker、Noise 和记录通道开始下载；测试内存 FileHost 用闸门停住第一块读取。Client shutdown 与下载调用方必须在读取释放前完成取消，之后释放真实 Server 的迟到读取，仍不能交付文件字节或创建新逻辑连接。Rust 检查调用结果确实失败而不是返回空文件，TS 累计每次写入，另检查输出 handle 关闭、未完成输出删除和零次 hash；不能用清空缓冲区掩盖迟到写入。
+
+闸门只存在于测试宿主，不改产品同步文件接口。宿主进程及该 Rust 场景显式使用两个 Tokio worker，等待期间不持有凭据/目录/下载表锁；Fixture drop/shutdown 均释放闸门，20 秒上限作为失败后备。错误路径同样停止/等待 Rust 调用方并清理角色与自有 broker；测试不会接触实际 Agent、应用数据或用户文件。TS 可能已发出并发 pull wave，Rust 逐块读取，不强求消息数量相同。关闭 Client 后不假定还能发 cancel，Server transfer 记录由显式 Server shutdown 清理；原真实应用文件集成仍保留。
+
+新增素材通过版本、suite、类型、未知字段、重复 ID、预期范围和差异说明校验。互通专用的 `client.json`、`isolation.json`、`transfer.json` 现只触发实际读取它们的互通工程；请求/凭据/恢复单元素材仍选择两语言 Client，调度回归源码补充这一边界。互通默认/网络特性的 Clippy `--all-targets`、fmt、TS typecheck/lint、Node bundle 编译、协议生成、相关文档及 CI 脚本语法检查通过；静态 bundle 审计未发现应用导入。两语言各增加一个报告 ID，计划各报告 17 个真实互通流程/场景，未本地执行测试或产物。
+
+这一批补足停止期间真实角色传输的驱动，运行结论仍待最终 CI。其余应用迁移与事件/投影边界核对、统一自动化、同条件性能证据和同候选版本人工确认仍待完成，整体目标继续进行。

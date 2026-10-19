@@ -142,7 +142,13 @@ impl Fixture {
         self.host.metrics()
     }
     pub async fn shutdown(&self) -> anyhow::Result<()> {
+        self.host.release_chunks();
         self.server.shutdown(Duration::from_secs(5)).await?;
         Ok(())
+    }
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        self.host.release_chunks();
     }
 }

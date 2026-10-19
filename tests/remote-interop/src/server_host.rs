@@ -12,7 +12,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Mutex,
+        Condvar, Mutex,
     },
     time::Duration,
 };
@@ -20,6 +20,50 @@ use std::{
 struct Upload {
     size: u64,
     parts: BTreeMap<u64, Vec<u8>>,
+}
+#[derive(Default)]
+struct ChunkGateState {
+    armed: bool,
+    released: bool,
+    waiting: bool,
+    reads: u64,
+    finished: u64,
+}
+#[derive(Default)]
+struct ChunkGate {
+    state: Mutex<ChunkGateState>,
+    changed: Condvar,
+}
+struct ChunkRead<'a>(&'a ChunkGate);
+impl Drop for ChunkRead<'_> {
+    fn drop(&mut self) {
+        self.0.state.lock().unwrap().finished += 1;
+    }
+}
+impl ChunkGate {
+    fn enter(&self) -> Result<ChunkRead<'_>, Error> {
+        let mut state = self.state.lock().unwrap();
+        state.reads += 1;
+        if state.armed {
+            state.waiting = true;
+            // Model a synchronous host read that ignores Client cancellation.
+            // The fixture uses two workers and always releases on owner drop.
+            let (mut next, timeout) = self
+                .changed
+                .wait_timeout_while(state, Duration::from_secs(20), |state| !state.released)
+                .unwrap();
+            next.waiting = false;
+            next.armed = false;
+            if timeout.timed_out() && !next.released {
+                return Err(Error::Message("fixture chunk gate timed out".into()));
+            }
+        }
+        Ok(ChunkRead(self))
+    }
+    fn release(&self) {
+        self.state.lock().unwrap().released = true;
+        self.changed.notify_all();
+    }
 }
 pub struct MemoryServerHost {
     creds: Mutex<Option<PairingCreds>>,
@@ -30,6 +74,7 @@ pub struct MemoryServerHost {
     sequence: AtomicU64,
     file_bytes: Vec<u8>,
     catalog_label: String,
+    chunk_gate: ChunkGate,
 }
 impl MemoryServerHost {
     pub fn new(creds: PairingCreds, file_bytes: Vec<u8>) -> Self {
@@ -44,11 +89,26 @@ impl MemoryServerHost {
             sequence: AtomicU64::new(1),
             file_bytes,
             catalog_label,
+            chunk_gate: ChunkGate::default(),
         }
     }
     pub fn metrics(&self) -> Value {
+        let gate = self.chunk_gate.state.lock().unwrap();
         json!({ "executions": self.counts.lock().unwrap().clone(), "uploads": self.uploads.lock().unwrap().len(), "downloads": self.downloads.lock().unwrap().len(),
+            "chunkWaiting": gate.waiting, "chunkReads": gate.reads, "chunkFinished": gate.finished,
             "identityBound": self.creds.lock().unwrap().as_ref().and_then(|creds| creds.secure.as_ref()).is_some_and(|secure| secure.peer_public_key.is_some() && secure.secret.is_none()) })
+    }
+    pub fn hold_next_chunk(&self) {
+        let mut state = self.chunk_gate.state.lock().unwrap();
+        assert!(
+            !state.waiting && !state.armed,
+            "fixture chunk gate already active"
+        );
+        state.armed = true;
+        state.released = false;
+    }
+    pub fn release_chunks(&self) {
+        self.chunk_gate.release();
     }
     fn execute_command(&self, command: &IncomingCmd) -> Result<Value, String> {
         *self
@@ -217,6 +277,7 @@ impl FileHost for MemoryServerHost {
         Ok(json!({}))
     }
     fn download_chunk(&self, id: &str, index: u64) -> Result<Vec<u8>, Error> {
+        let _read = self.chunk_gate.enter()?;
         let downloads = self.downloads.lock().unwrap();
         let bytes = downloads
             .get(id)

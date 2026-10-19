@@ -206,3 +206,86 @@ async fn one_rust_client_keeps_two_real_servers_separate() -> anyhow::Result<()>
 
 #[path = "support/scripted_requests.rs"]
 mod scripted_requests;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopping_a_client_finishes_download_before_a_late_host_read() -> anyhow::Result<()> {
+    let suite = contract::transfer()?;
+    for case in suite.cases {
+        let broker = Broker::start().await?;
+        let fixture = Fixture::start(&broker.nats_url, &broker.websocket_url).await?;
+        let host = Arc::new(MemoryClientHost::new(fixture.client_credentials.clone()));
+        let client = Client::new(host.clone());
+        let mut operation = None;
+        let result: anyhow::Result<()> = async {
+            client
+                .connect_with_emitter(DESKTOP, Some(Arc::new(|_| {})))
+                .await?;
+            fixture.host.hold_next_chunk();
+            let role = client.clone();
+            let session = contract::suite()?.event.session_id;
+            operation = Some(tokio::spawn(async move {
+                role.download(
+                    DESKTOP,
+                    &session,
+                    "fixture.bin",
+                    Some("fixture.bin"),
+                    "original",
+                )
+                .await
+            }));
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while fixture.metrics()["chunkWaiting"] != true {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await?;
+            let attempts = host.connection_attempts();
+            client.shutdown(Duration::from_secs(1)).await?;
+            let stopped =
+                tokio::time::timeout(Duration::from_secs(1), operation.as_mut().unwrap()).await??;
+            operation.take();
+            assert!(stopped.is_err());
+            let delivered = match stopped {
+                Ok(file) => file.bytes.len(),
+                Err(_) => 0,
+            };
+            assert_eq!(delivered, case.expected_delivered_bytes);
+            assert!(client.is_stopped());
+            // The actual Server read has not returned when Client cancellation
+            // finishes. No inference based solely on a fast/empty transfer.
+            assert_eq!(fixture.metrics()["chunkWaiting"], true);
+            fixture.host.release_chunks();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while fixture.metrics()["chunkFinished"].as_u64().unwrap() == 0 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await?;
+            fixture.shutdown().await?;
+            assert_eq!(
+                host.connection_attempts() - attempts,
+                case.expected_restarts
+            );
+            assert_eq!(fixture.metrics()["downloads"], 0);
+            assert!(client.connect(DESKTOP).await.is_err());
+            assert_eq!(
+                host.connection_attempts() - attempts,
+                case.expected_restarts
+            );
+            println!("remote-interop rust {} PASS", case.id);
+            Ok(())
+        }
+        .await;
+        fixture.host.release_chunks();
+        if let Some(task) = operation.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        let (client_cleanup, server_cleanup) =
+            tokio::join!(client.shutdown(Duration::from_secs(5)), fixture.shutdown());
+        result?;
+        client_cleanup?;
+        server_cleanup?;
+    }
+    Ok(())
+}

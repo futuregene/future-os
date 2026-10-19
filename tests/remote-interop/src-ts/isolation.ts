@@ -5,7 +5,7 @@ import type { RemoteCredentials, StreamEvent } from "@future-os/remote-client/ty
 import { isolation, suite } from "./contract";
 import { bounded, deferred, Harness, type Ready, until } from "./harness";
 
-function controller(ready: Ready) {
+export function controller(ready: Ready) {
   const peer = ready.credentials;
   let stored: RemoteCredentials = {
     pairId: peer.pairId, deviceId: peer.deviceId, seed: peer.nkeySeed, userJwt: peer.userJwt,
@@ -15,6 +15,7 @@ function controller(ready: Ready) {
   };
   const events: StreamEvent[] = [], errors: Error[] = [];
   let sequence = 0;
+  let connections = 0;
   function create() {
     const connected = deferred<void>();
     const callbacks: RemoteClientCallbacks = {
@@ -28,6 +29,7 @@ function controller(ready: Ready) {
       deviceName: () => "Isolation TypeScript", deviceKind: () => "test", randomId: prefix => `${prefix}_${++sequence}`,
       refreshCredentials: async grant => grant,
       connect: options => {
+        connections++;
         if (typeof options.servers !== "string") throw new Error("fixture requires one explicit endpoint");
         const endpoint = new URL(options.servers);
         if (endpoint.protocol !== "ws:" || endpoint.hostname !== "127.0.0.1") throw new Error("fixture endpoint must be loopback WebSocket");
@@ -37,7 +39,7 @@ function controller(ready: Ready) {
     client.setVisibleSession(suite.event.sessionId);
     return { client, connected: connected.promise };
   }
-  return { create, events, errors, stored: () => stored };
+  return { create, events, errors, stored: () => stored, connectionAttempts: () => connections };
 }
 function report(id: string) { console.log(`remote-interop typescript ${id} PASS`); }
 

@@ -1,5 +1,6 @@
 import input from "../../../packages/remote-client/fixtures/client.json";
 import isolationInput from "../../../packages/remote-client/fixtures/isolation.json";
+import transferInput from "../../../packages/remote-client/fixtures/transfer.json";
 import type { RemoteCommand } from "@future-os/remote-client/types";
 
 export interface Step { command: RemoteCommand & { id: string }; data?: unknown; error?: string }
@@ -61,3 +62,14 @@ for (const id of Object.values(isolationInput.flowIds)) {
   isolationIds.add(id);
 }
 export const isolation = isolationInput;
+
+record(transferInput, ["version", "suite", "cases"], ["version", "suite", "cases"]);
+if (transferInput.version !== 1 || transferInput.suite !== "client.transfer-stop" || !Array.isArray(transferInput.cases) || !transferInput.cases.length) throw new Error("unsupported transfer suite");
+const transferIds = new Set<string>();
+for (const item of transferInput.cases) {
+  record(item, ["id", "kind", "expectedDeliveredBytes", "expectedRestarts", "difference"], ["id", "kind", "expectedDeliveredBytes", "expectedRestarts", "difference"]);
+  if (typeof item.id !== "string" || !item.id.startsWith("client.transfer-stop.") || transferIds.has(item.id) || item.kind !== "shutdown_pending_download") throw new Error("unsupported/duplicate transfer case");
+  transferIds.add(item.id);
+  if (!Number.isSafeInteger(item.expectedDeliveredBytes) || item.expectedDeliveredBytes < 0 || !Number.isSafeInteger(item.expectedRestarts) || item.expectedRestarts < 0 || typeof item.difference !== "string" || !item.difference.trim()) throw new Error("invalid transfer expectation/difference");
+}
+export const transfer = transferInput;

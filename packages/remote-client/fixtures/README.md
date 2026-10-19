@@ -8,6 +8,7 @@ TypeScript. They are not copied into Desktop or Mobile.
 | [client.json](client.json) | Real role interoperability: requests/deduplication, pairing, events, file bytes, reconnect and shutdown report IDs | [Independent interoperability project](../../../tests/remote-interop/README.md) |
 | [isolation.json](isolation.json) | Two real endpoints: request/deduplication, catalog/event ownership, stop and reconnect independence | Independent Rust and TS interoperability drivers |
 | [credentials.json](credentials.json) | Expiry boundaries, late renewal fencing, continuation and instance isolation | Rust `shared_credentials_tests.rs`; Node/Jest `sharedCredentials.test.ts` |
+| [transfer.json](transfer.json) | Stop before a held real Server download read returns; no byte delivery or replacement connection | Independent Rust and TS interoperability drivers |
 | [recovery.json](recovery.json) | Actual bounded retry loop, shutdown before/after retries and no late restart | Rust `shared_recovery_tests.rs`; Node/Jest `sharedRecovery.test.ts` |
 | [requests.json](requests.json) | Controlled request-policy scenarios: send times, outcomes, retry identity, timeout budgets, recovery/probe counts and cancellation | Rust `shared_request_tests.rs`; Node/Jest `sharedRequests.test.ts` |
 
@@ -99,3 +100,18 @@ recorded in the shared material instead of changing either product policy.
 Both clocks are controlled, and both drivers observe a further ten minutes
 without new attempts after exhaustion/stop. This is loop ownership/budget
 coverage, not evidence of successful pairing, live reconnection or event replay.
+
+`transfer.json` stops a real role while the first Server `FileHost` download read
+is held. The test-only memory host models an uncooperative synchronous read,
+using two runtime workers and a bounded condition-variable gate. No application
+filesystem or Agent is involved. Both Client callers must finish cancellation
+before release, then observe the late read without byte delivery or a replacement
+connection. Rust observes bytes returned to its caller; TS additionally records
+every write to its fake local sink, close/removal and hash calls. A TS concurrent
+pull wave may already be queued; it is not counted as a post-stop retry.
+Server records are released by explicit Server shutdown, not assumed to be
+cancelled over a closed connection. Owner drop/shutdown always releases the gate,
+and the gate has a failure timeout; no test should leave a blocked worker behind.
+The interop-only `client.json`, `isolation.json` and `transfer.json` inputs now
+select only their actual interop consumers in affected CI. Unit-driver materials
+continue selecting both owning language packages.

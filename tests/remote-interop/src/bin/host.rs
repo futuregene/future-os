@@ -10,7 +10,7 @@ async fn send(value: Value) -> anyhow::Result<()> {
     tokio::io::stdout().flush().await?;
     Ok(())
 }
-#[tokio::main]
+#[tokio::main(worker_threads = 2)]
 async fn main() -> anyhow::Result<()> {
     let broker = Broker::start().await?;
     let fixture = match std::env::args().nth(1) {
@@ -35,6 +35,14 @@ async fn main() -> anyhow::Result<()> {
             }
             Some("metrics") => {
                 send(json!({"id": id, "metrics": fixture.metrics()})).await?;
+            }
+            Some("hold_chunk") => {
+                fixture.host.hold_next_chunk();
+                send(json!({"id": id, "ok": true})).await?;
+            }
+            Some("release_chunks") => {
+                fixture.host.release_chunks();
+                send(json!({"id": id, "ok": true})).await?;
             }
             Some("shutdown") => {
                 fixture.shutdown().await?;

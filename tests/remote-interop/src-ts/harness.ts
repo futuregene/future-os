@@ -69,7 +69,7 @@ export class Harness {
     try { return { harness, ready: await bounded(harness.readiness.promise, 30_000) }; }
     catch (error) { await harness.close(); throw error; }
   }
-  async command(type: "metrics" | "emit" | "shutdown", data?: string): Promise<Record<string, unknown>> {
+  async command(type: "metrics" | "emit" | "shutdown" | "hold_chunk" | "release_chunks", data?: string): Promise<Record<string, unknown>> {
     const id = ++this.sequence;
     const pending = deferred<Record<string, unknown>>();
     this.pending.set(id, pending);

@@ -518,3 +518,38 @@ one Jest `.each` declaration each cover four IDs. Client default/test-support
 Clippy `--all-targets`, fmt, TS typecheck/lint, generation and documentation static
 checks pass. Babel/Jest statically transforms 58 files without executing output.
 No local tests or final CI ran; the overall objective remains incomplete.
+
+### 2026-10-19: Stop during real transfer and late host reads
+
+Added [`transfer.json`](../../packages/remote-client/fixtures/transfer.json) and
+both independent drivers reporting `client.transfer-stop.pending-download`.
+Actual Client/Server roles start a download over real broker/Noise/records while
+the memory FileHost holds the first chunk read. Client shutdown and its download
+caller must finish cancellation before that read is released. Afterwards no file
+bytes or replacement logical connection may appear. Rust requires an actual
+failed result, not a successful empty file. TS counts every output write and
+also checks handle close, partial-output removal and zero hashing, so clearing a
+buffer cannot conceal a late write.
+
+Only the test host has this gate; no production file interface changes. The host
+and Rust scenario use two Tokio workers so synchronous IO cannot block control.
+The wait holds no credential/catalog/download-map mutex, is released on Fixture
+drop/shutdown and has a twenty-second failure timeout. Error paths release it,
+abort/await a pending Rust caller and clean up roles/owned processes. No actual
+Agent, application data or user files are accessed. TS may have already queued a
+concurrent pull wave while Rust pulls sequentially; message counts need not
+match. Server records are cleared on explicit Server shutdown, not by assuming a
+closed Client can send cancel. Native application file integrations remain.
+
+Both parsers check version/suite/kind/fields/IDs/expectation bounds and differences.
+Interop-only client/isolation/transfer materials now select only their actual
+interop consumers; request/credential/recovery unit materials still select both
+Client language packages. Scheduling regression source checks this distinction.
+Interop default/network-feature Clippy `--all-targets`, fmt, TS typecheck/lint,
+Node bundle compilation, generation, documentation and CI script syntax checks
+pass; static bundle inspection finds no application imports. Each language plans
+seventeen real interop flow/case reports. No tests or generated output ran locally.
+
+Runtime conclusions await final CI. Application migration and event/projection
+boundary review, unified automation, matched performance and same-candidate
+manual confirmation remain pending; the overall goal stays active.

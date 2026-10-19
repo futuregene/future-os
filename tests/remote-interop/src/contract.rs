@@ -128,6 +128,51 @@ pub fn isolation() -> anyhow::Result<IsolationSuite> {
     Ok(suite)
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransferSuite {
+    pub version: u32,
+    pub suite: String,
+    pub cases: Vec<TransferCase>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TransferCase {
+    pub id: String,
+    pub kind: String,
+    pub expected_delivered_bytes: usize,
+    pub expected_restarts: u64,
+    pub difference: String,
+}
+pub fn transfer() -> anyhow::Result<TransferSuite> {
+    let suite: TransferSuite = serde_json::from_str(include_str!(
+        "../../../packages/remote-client/fixtures/transfer.json"
+    ))?;
+    anyhow::ensure!(
+        suite.version == 1 && suite.suite == "client.transfer-stop",
+        "unsupported transfer suite"
+    );
+    anyhow::ensure!(!suite.cases.is_empty(), "empty transfer suite");
+    let mut ids = BTreeSet::new();
+    for case in &suite.cases {
+        anyhow::ensure!(
+            case.id.starts_with("client.transfer-stop.") && ids.insert(&case.id),
+            "invalid/duplicate transfer ID"
+        );
+        anyhow::ensure!(
+            case.kind == "shutdown_pending_download",
+            "unsupported transfer kind"
+        );
+        anyhow::ensure!(
+            case.expected_delivered_bytes <= 9_007_199_254_740_991
+                && case.expected_restarts <= 9_007_199_254_740_991
+                && !case.difference.trim().is_empty(),
+            "invalid transfer expectation/difference"
+        );
+    }
+    Ok(suite)
+}
+
 pub fn suite() -> anyhow::Result<Suite> {
     let suite: Suite = serde_json::from_str(include_str!(
         "../../../packages/remote-client/fixtures/client.json"
