@@ -245,19 +245,22 @@ function fsFile(
 }
 
 function mockClient(): {
+  captureTransfer(): import("@future-os/remote-client/transfer").TransferConnection;
   request: jest.Mock;
   requestRetry: jest.Mock;
   recoverAfterTransientRequest: jest.Mock;
   uploadChunk: jest.Mock;
   downloadChunk: jest.Mock;
 } {
-  return {
+  const client = {
+    captureTransfer: () => ({ ...client, check: () => {} }),
     request: jest.fn(),
     requestRetry: jest.fn(),
     recoverAfterTransientRequest: jest.fn().mockResolvedValue(true),
     uploadChunk: jest.fn(),
     downloadChunk: jest.fn(),
   };
+  return client;
 }
 
 function attachment(overrides: Partial<MobileAttachment> = {}): MobileAttachment {
@@ -1512,7 +1515,7 @@ describe("uploadAttachments", () => {
 });
 
 describe("download & preview cache", () => {
-  const info: DownloadInfo = {
+  const baseInfo: DownloadInfo = {
     transferId: "t1",
     name: "result.jpg",
     mimeType: "image/jpeg",
@@ -1522,6 +1525,11 @@ describe("download & preview cache", () => {
     variant: "preview",
     chunkBytes: 4,
   };
+
+  // Real RPC decoding creates a distinct descriptor for every prepare reply.
+  // Keep that identity isolated between tests as transfer ownership is pinned.
+  let info: DownloadInfo;
+  beforeEach(() => { info = { ...baseInfo }; });
 
   const cacheClient = mockClient() as unknown as RemoteClient;
 

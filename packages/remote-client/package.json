@@ -89,6 +89,10 @@
     "./pairing": {
       "types": "./src/pairing.ts",
       "default": "./src/pairing.ts"
+    },
+    "./transfer": {
+      "types": "./src/transfer.ts",
+      "default": "./src/transfer.ts"
     }
   },
   "scripts": {

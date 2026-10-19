@@ -1,4 +1,5 @@
 import Noise from "noise-handshake";
+import { TimeoutError } from "@nats-io/nats-core";
 import type { Msg, NatsConnection } from "@nats-io/nats-core";
 import { MsgImpl, QueuedIteratorImpl } from "@nats-io/nats-core/internal";
 import { ConnectionGeneration } from "../src/connectionGeneration";
@@ -380,4 +381,115 @@ test("a pairing that closes while writing the rotated identity is not retried", 
   expect(jsonRequests(f)).toBe(2);
   expect(f.internal.secureChannels.get(f.connection)).toBeUndefined();
   await f.client.close();
+});
+
+test("captured transfer rejects every command and chunk after its serving generation retires", async () => {
+  const f = fixture();
+  try {
+    await f.pair();
+    const owner = new ConnectionGeneration(1);
+    owner.activate();
+    Object.assign(f.internal, { activeGeneration: owner, confirmedBridgeInstanceId: "bridge_1" });
+    const transfer = f.client.captureTransfer();
+    await expect(transfer.request({ type: "upload_init" }, "transfer")).resolves.toMatchObject({ success: true });
+    const sent = f.request.mock.calls.length;
+    owner.retire();
+    await expect(transfer.request({ type: "download_cancel", transferId: "file" }, "transfer")).rejects.toThrow("transfer_connection_changed");
+    await expect(transfer.uploadChunk("file", 0, new Uint8Array())).rejects.toThrow("transfer_connection_changed");
+    await expect(transfer.downloadChunk("file", 0)).rejects.toThrow("transfer_connection_changed");
+    expect(f.request).toHaveBeenCalledTimes(sent);
+  } finally { await f.client.close(); }
+});
+
+test("captured transfer rejects a changed bridge even when the SDK socket is reused", async () => {
+  const f = fixture();
+  try {
+    await f.pair();
+    const owner = new ConnectionGeneration(1);
+    owner.activate();
+    Object.assign(f.internal, { activeGeneration: owner, confirmedBridgeInstanceId: "bridge_1" });
+    const transfer = f.client.captureTransfer();
+    Object.assign(f.internal, { confirmedBridgeInstanceId: "bridge_2" });
+    const sent = f.request.mock.calls.length;
+    await expect(transfer.requestRetry({ type: "upload_complete", transferId: "file" }, "transfer")).rejects.toThrow("transfer_connection_changed");
+    expect(f.request).toHaveBeenCalledTimes(sent);
+  } finally { await f.client.close(); }
+});
+
+test("valid encrypted chunk ACK arriving after retirement cannot complete the old transfer", async () => {
+  const f = fixture();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  try {
+    await f.pair();
+    const owner = new ConnectionGeneration(1);
+    owner.activate();
+    Object.assign(f.internal, { activeGeneration: owner, confirmedBridgeInstanceId: "bridge_1" });
+    const transfer = f.client.captureTransfer();
+    const original = f.request.getMockImplementation()!;
+    f.request.mockImplementationOnce(async (subject, data) => {
+      const response = await original(subject, data);
+      await gate;
+      return response;
+    });
+    const upload = transfer.uploadChunk("file", 0, encoder.encode("content"));
+    await settle();
+    owner.retire();
+    release();
+    await expect(upload).rejects.toThrow("transfer_connection_changed");
+  } finally { release(); await f.client.close(); }
+});
+
+test("old download ACK failure cannot remove a new socket's same-index waiter", async () => {
+  const f = fixture();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  try {
+    await f.pair();
+    f.request.mockImplementationOnce(async () => { await gate; throw new Error("old ACK failed"); });
+    const oldDownload = f.client.downloadChunk("file", 0);
+    const oldResult = expect(oldDownload).rejects.toThrow("old ACK failed");
+    const replacement = { ...f.connection } as NatsConnection;
+    f.internal.secureChannels.set(replacement, f.internal.secureChannels.get(f.connection)!);
+    const owner = new ConnectionGeneration(2);
+    owner.activate();
+    Object.assign(f.internal, { connection: replacement, generation: 2, activeGeneration: owner });
+    f.internal.subscribeTransfers(replacement, 2);
+    const nextDownload = f.client.downloadChunk("file", 0);
+    const expected = encoder.encode("replacement bytes");
+    const nextResult = expect(nextDownload).resolves.toEqual(expected);
+    await settle();
+    release();
+    await oldResult;
+    const waiters = (f.client as unknown as { downloadWaiters: Map<string, { connection: NatsConnection }> }).downloadWaiters;
+    expect(waiters.get("file:0")?.connection).toBe(replacement);
+    const subject = "p.pair_1.xfer.down.file.chunk.0";
+    f.subscriptions.get("p.pair_1.xfer.down.>")!.push(natsMessage(subject, f.serverChannel().seal(subject, expected)));
+    await nextResult;
+    expect(waiters.has("file:0")).toBe(false);
+  } finally { release(); await f.client.close(); }
+});
+
+
+test("transfer retry stops if transport recovery installs another serving owner", async () => {
+  const f = fixture();
+  try {
+    await f.pair();
+    const owner = new ConnectionGeneration(1);
+    owner.activate();
+    Object.assign(f.internal, { activeGeneration: owner, confirmedBridgeInstanceId: "bridge_1" });
+    const transfer = f.client.captureTransfer();
+    const recover = jest.spyOn(f.client, "recoverAfterTransientRequest").mockImplementation(async () => {
+      owner.retire();
+      const replacement = new ConnectionGeneration(2);
+      replacement.activate();
+      Object.assign(f.internal, { activeGeneration: replacement });
+      return true;
+    });
+    const sent = f.request.mock.calls.length;
+    f.request.mockRejectedValueOnce(new TimeoutError());
+    await expect(transfer.requestRetry({ type: "upload_complete", transferId: "file" }, "transfer")).rejects.toThrow("transfer_connection_changed");
+    expect(recover).toHaveBeenCalledTimes(1);
+    expect(f.request).toHaveBeenCalledTimes(sent + 1);
+  } finally { await f.client.close(); }
 });

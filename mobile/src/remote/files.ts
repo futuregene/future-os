@@ -8,10 +8,19 @@ import * as Crypto from "expo-crypto";
 import { Image, Platform } from "react-native";
 import { withNativePresentation } from "./nativePresentation";
 import type { RemoteClient } from "./client";
-import type { DownloadInfo, HistoryAttachment, MobileAttachment, RpcResponse } from "./types";
+import type { DownloadInfo, HistoryAttachment, MobileAttachment } from "./types";
+import {
+  uploadAttachments as uploadRemoteAttachments,
+  prepareDownload as prepareRemoteDownload,
+  downloadPrepared as downloadRemotePrepared,
+  throwIfCancelled,
+  TransferCancelledError,
+} from "@future-os/remote-client/transfer";
 import { mobileFileType } from "./fileTypes";
 import { basename } from "./localPath";
 import { createAsyncOperationQueue } from "./asyncOperationQueue";
+
+export { TransferCancelledError } from "@future-os/remote-client/transfer";
 
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 export const MAX_MESSAGE_BYTES = 20 * 1024 * 1024;
@@ -638,186 +647,18 @@ export async function recoverPendingImagePickerAttachments(
   return prepareImagePickerAssets(existing, result.assets);
 }
 
-interface UploadInit {
-  uploadId: string;
-  chunkBytes: number;
-}
-
-interface UploadComplete {
-  uploadId: string;
-  contentHash: string;
-}
-
-function cancelDownload(client: RemoteClient, transferId: string): void {
-  // Cancellation is best-effort cleanup on the desktop. Never await it: when
-  // the network is down, waiting for this command's timeout would keep the
-  // phone's progress dialog and download lock stuck after the user cancelled.
-  void client.request({ type: "download_cancel", transferId }, "transfer").catch(() => {});
-}
-
-const TRANSFER_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000, 15_000, 15_000];
-// Metadata preparation has a different failure profile from byte chunks. One
-// retry with the same command id is enough to retrieve a desktop singleflight
-// result or recover a half-open socket; the second attempt gets extra time for
-// an uncached image pipeline without multiplying silence for minutes.
-const PREPARE_RPC_TIMEOUTS_MS = [10_000, 20_000] as const;
-const PREPARE_RETRY_DELAY_MS = 500;
-
-export class TransferCancelledError extends Error {
-  constructor() {
-    super("transfer_cancelled");
-    this.name = "TransferCancelledError";
-  }
-}
-
-function throwIfCancelled(signal?: AbortSignal): void {
-  if (signal?.aborted) throw new TransferCancelledError();
-}
-
-/** Race an in-flight NATS request with cancellation. NATS requests themselves
- * don't accept AbortSignal, so their transport timeout may finish later; this
- * wrapper releases the UI path immediately while still observing that late
- * result/rejection. */
-function abortable<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
-  throwIfCancelled(signal);
-  if (!signal) return operation;
-  return new Promise((resolve, reject) => {
-    const onAbort = () => {
-      cleanup();
-      reject(new TransferCancelledError());
-    };
-    const cleanup = () => signal.removeEventListener("abort", onAbort);
-    signal.addEventListener("abort", onAbort, { once: true });
-    operation.then(
-      value => {
-        cleanup();
-        resolve(value);
-      },
-      error => {
-        cleanup();
-        reject(error);
-      },
-    );
-  });
-}
-
-function isPermanentTransferError(error: unknown): boolean {
-  const message =
-    error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  return [
-    "expired or does not exist",
-    "outside the file",
-    "unsupported download variant",
-    "not an attachment",
-    "no longer available",
-    "larger than 10 mib",
-  ].some(fragment => message.includes(fragment));
-}
-
-function retryDelay(delayMs: number, signal?: AbortSignal): Promise<void> {
-  throwIfCancelled(signal);
-  return new Promise((resolve, reject) => {
-    const jittered = Math.round(delayMs * (0.85 + Math.random() * 0.3));
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(new TransferCancelledError());
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, jittered);
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
-async function withTransferRetry<T>(
-  operation: () => Promise<T>,
-  signal?: AbortSignal,
-  onWaiting?: () => void,
-  retryDelays = TRANSFER_RETRY_DELAYS_MS,
-): Promise<T> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
-    throwIfCancelled(signal);
-    try {
-      return await abortable(operation(), signal);
-    } catch (error) {
-      lastError = error;
-      if (error instanceof TransferCancelledError || isPermanentTransferError(error)) throw error;
-      const delay = retryDelays[attempt];
-      if (delay === undefined) break;
-      onWaiting?.();
-      await retryDelay(delay, signal);
-    }
-  }
-  throw lastError;
-}
-
 export async function uploadAttachments(
   client: RemoteClient,
   attachments: MobileAttachment[],
   onProgress?: (completedBytes: number, totalBytes: number) => void,
 ): Promise<MobileAttachment[]> {
   validateAttachmentBatch(attachments);
-  const totalBytes = attachments.reduce((sum, item) => sum + item.transferSize, 0);
-  let completedBytes = 0;
-  const uploaded: MobileAttachment[] = [];
-  for (const attachment of attachments) {
-    const init = await client.request<UploadInit>(
-      {
-        type: "upload_init",
-        name: attachment.name,
-        transferName: attachment.transferName ?? attachment.name,
-        mimeType: attachment.mimeType,
-        kind: attachment.kind,
-        originalSize: attachment.originalSize,
-        transferSize: attachment.transferSize,
-      },
-      "transfer",
-    );
-    const file = new File(attachment.localUri);
-    const handle = file.open(FileMode.ReadOnly);
-    try {
-      if (!Number.isSafeInteger(init.data.chunkBytes) || init.data.chunkBytes <= 0)
-        throw new Error("invalid_upload_chunk_size");
-      let index = 0;
-      while ((handle.offset ?? 0) < attachment.transferSize) {
-        const remaining = attachment.transferSize - (handle.offset ?? 0);
-        const bytes = handle.readBytes(Math.min(init.data.chunkBytes, remaining));
-        if (bytes.byteLength === 0)
-          throw new Error("attachment_read_stalled");
-        await withTransferRetry(
-          () => client.uploadChunk(init.data.uploadId, index, bytes),
-          undefined,
-          undefined,
-          [250, 500],
-        );
-        completedBytes += bytes.byteLength;
-        onProgress?.(completedBytes, totalBytes);
-        index += 1;
-      }
-    } catch (error) {
-      await client
-        .request({ type: "upload_cancel", transferId: init.data.uploadId }, "transfer")
-        .catch(() => {});
-      throw error;
-    } finally {
-      handle.close();
-    }
-    const complete = await client.requestRetry<UploadComplete>(
-      { type: "upload_complete", transferId: init.data.uploadId },
-      "transfer",
-    );
-    uploaded.push({
-      ...attachment,
-      uploadId: complete.data.uploadId,
-      contentHash: complete.data.contentHash,
-    });
-  }
-  return uploaded;
+  return uploadRemoteAttachments(client, attachments, {
+    openUpload: attachment => new File(attachment.localUri).open(FileMode.ReadOnly),
+  }, onProgress);
 }
 
-export async function prepareDownload(
+export function prepareDownload(
   client: RemoteClient,
   sessionId: string,
   attachment: HistoryAttachment,
@@ -825,59 +666,9 @@ export async function prepareDownload(
   signal?: AbortSignal,
   onWaiting?: () => void,
 ): Promise<DownloadInfo> {
-  throwIfCancelled(signal);
-  const command = {
-    id: `download_prepare_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`,
-    type: "download_prepare",
-    sessionId,
-    filePath: attachment.path,
-    mode: variant,
-    // The name this phone is already displaying (from the message metadata).
-    // Without it the desktop has to read the session's whole history to look
-    // the attachment up — megabytes of JSON per open, and once per inline
-    // image in a Markdown preview — to re-derive a string we are sending here.
-    name: attachment.name,
-  };
-  let attempt = 0;
-  let response: RpcResponse<DownloadInfo> | null = null;
-  for (const timeoutMs of PREPARE_RPC_TIMEOUTS_MS) {
-    attempt += 1;
-    try {
-      const request = client.request<DownloadInfo>(command, sessionId, timeoutMs);
-      // Cancellation releases the UI immediately, but the desktop may finish
-      // preparing later. Observe that reply and release its transfer as well.
-      void request.then(result => {
-        if (signal?.aborted) cancelDownload(client, result.data.transferId);
-      }, () => undefined);
-      response = await abortable(request, signal);
-      break;
-    } catch (error) {
-      if (error instanceof TransferCancelledError) throw error;
-      if (attempt >= PREPARE_RPC_TIMEOUTS_MS.length) throw error;
-      const retryable = await abortable(client.recoverAfterTransientRequest(error), signal);
-      if (!retryable) throw error;
-      onWaiting?.();
-      await retryDelay(PREPARE_RETRY_DELAY_MS, signal);
-    }
-  }
-  if (!response) throw new Error("download_prepare_failed");
-  // Older desktops do not return `variant`; their preview behavior remains
-  // compatible, so normalize the response to the variant we requested.
-  const info = response.data.variant ? response.data : { ...response.data, variant };
-  if (signal?.aborted) {
-    cancelDownload(client, info.transferId);
-    throw new TransferCancelledError();
-  }
-  try {
-    const cached = await verifiedCachedDownload(info, signal);
-    if (cached) {
-      cancelDownload(client, info.transferId);
-    }
-  } catch (error) {
-    cancelDownload(client, info.transferId);
-    throw error;
-  }
-  return info;
+  return prepareRemoteDownload(client, sessionId, attachment, {
+    verifiedCached: verifiedCachedDownload,
+  }, variant, signal, onWaiting);
 }
 
 function downloadSourceKey(sessionId: string, attachment: HistoryAttachment, variant: "preview" | "original"): string {
@@ -1044,87 +835,30 @@ export function cachedPreviewForAttachment(
   return file ? { info, file } : null;
 }
 
-export async function downloadPrepared(
+export function downloadPrepared(
   client: RemoteClient,
   info: DownloadInfo,
   onProgress?: (completedBytes: number, totalBytes: number) => void,
   signal?: AbortSignal,
   onWaiting?: () => void,
 ): Promise<File> {
-  let cached: File | null;
-  try {
-    throwIfCancelled(signal);
-    if (!Number.isSafeInteger(info.size) || info.size < 0 || info.size > MAX_FILE_BYTES ||
-        !Number.isSafeInteger(info.chunkBytes) || info.chunkBytes <= 0) {
-      throw new Error("invalid_download_size");
-    }
-    cached = await verifiedCachedDownload(info, signal);
-  } catch (error) {
-    cancelDownload(client, info.transferId);
-    throw error;
-  }
-  if (cached) {
-    cancelDownload(client, info.transferId);
-    return cached;
-  }
-  prunePreviewCache(info.size);
-  const file = cacheFile(info);
-  if (file.exists) file.delete();
-  file.create({ intermediates: true, overwrite: true });
-  const handle = file.open(FileMode.Truncate);
-  try {
-    const chunks = Math.ceil(info.size / info.chunkBytes);
-    let completed = 0;
-    // Immutable indexed chunks can be fetched independently. Bound both the
-    // request count and retained bytes; write in order only after a full wave
-    // settles, so failure/cancellation cannot race writes into a removed file.
-    const concurrency = Math.max(1, Math.min(4, Math.floor(2 * 1024 * 1024 / info.chunkBytes)));
-    for (let start = 0; start < chunks; start += concurrency) {
-      throwIfCancelled(signal);
-      const wave = await Promise.all(Array.from({ length: Math.min(concurrency, chunks - start) }, (_, offset) =>
-        withTransferRetry(() => client.downloadChunk(info.transferId, start + offset), signal, onWaiting)
-          .then(bytes => ({ bytes }), error => ({ error }))));
-      throwIfCancelled(signal);
-      for (const result of wave) {
-        if ("error" in result) throw result.error;
-        const bytes = result.bytes;
-        if (bytes.byteLength !== Math.min(info.chunkBytes, info.size - completed)) throw new Error("download_size_mismatch");
-        handle.writeBytes(bytes);
-        completed += bytes.byteLength;
-        onProgress?.(completed, info.size);
+  return downloadRemotePrepared(client, info, {
+    maxFileBytes: MAX_FILE_BYTES,
+    verifiedCached: verifiedCachedDownload,
+    createDownload: info => {
+      prunePreviewCache(info.size);
+      const file = cacheFile(info);
+      if (file.exists) file.delete();
+      file.create({ intermediates: true, overwrite: true });
+      try {
+        return { file, handle: file.open(FileMode.Truncate) };
+      } catch (error) {
+        if (file.exists) file.delete();
+        throw error;
       }
-    }
-  } catch (error) {
-    handle.close();
-    if (file.exists) file.delete();
-    cancelDownload(client, info.transferId);
-    throw error;
-  }
-  handle.close();
-  if (signal?.aborted) {
-    file.delete();
-    cancelDownload(client, info.transferId);
-    throw new TransferCancelledError();
-  }
-  if (file.size !== info.size) {
-    file.delete();
-    cancelDownload(client, info.transferId);
-    throw new Error("download_size_mismatch");
-  }
-  let hash: string;
-  try {
-    hash = await fileSha256(file, signal);
-    throwIfCancelled(signal);
-  } catch (error) {
-    file.delete();
-    cancelDownload(client, info.transferId);
-    throw error;
-  }
-  if (hash !== info.contentHash) {
-    file.delete();
-    cancelDownload(client, info.transferId);
-    throw new Error("download_hash_mismatch");
-  }
-  cancelDownload(client, info.transferId);
-  return file;
+    },
+    size: file => file.size,
+    remove: file => { if (file.exists) file.delete(); },
+    hash: fileSha256,
+  }, onProgress, signal, onWaiting);
 }

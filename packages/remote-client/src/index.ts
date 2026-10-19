@@ -11,3 +11,4 @@ export * from "./presence";
 export * from "./catalogVersion";
 export * from "./recoveryCoordinator";
 export * from "./pairing";
+export * from "./transfer";

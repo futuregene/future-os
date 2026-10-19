@@ -4,6 +4,7 @@ import type { Msg, NatsConnection, Subscription } from "@nats-io/nats-core";
 import { jwtAuthenticator } from "@nats-io/nats-core";
 import { classifyNatsError } from "./natsErrors";
 import { SecureChannel, SecureHandshake, replyContext, type SecureIdentity } from "@future-os/remote-crypto";
+import { TransferConnectionChangedError, type TransferConnection } from "./transfer";
 import type { ClientHost } from "./host";
 import { ensureFreshCredentials } from "./pairing";
 import { jwtExpiry, encodeBase64Url, decodeBase64Url } from "./codec";
@@ -75,6 +76,13 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+interface DownloadWaiter {
+  connection: NatsConnection;
+  resolve(data: Uint8Array): void;
+  reject(error: Error): void;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 export class RemoteClient {
@@ -196,21 +204,15 @@ export class RemoteClient {
     string,
     { windowStartedAt: number; emitted: number }
   >();
-  private downloadWaiters = new Map<
-    string,
-    {
-      resolve(data: Uint8Array): void;
-      reject(error: Error): void;
-      timer: ReturnType<typeof setTimeout>;
-    }
-  >();
+  private downloadWaiters = new Map<string, DownloadWaiter>();
 
-  private rejectDownloadWaiters(reason: string): void {
-    for (const waiter of this.downloadWaiters.values()) {
+  private rejectDownloadWaiters(reason: string, connection?: NatsConnection): void {
+    for (const [key, waiter] of this.downloadWaiters) {
+      if (connection && waiter.connection !== connection) continue;
       clearTimeout(waiter.timer);
+      this.downloadWaiters.delete(key);
       waiter.reject(new Error(reason));
     }
-    this.downloadWaiters.clear();
   }
 
   constructor(
@@ -613,6 +615,7 @@ export class RemoteClient {
       this.failedGeneration = null;
       this.watchStatus(connection, generation);
       if (previous && previous !== connection) {
+        this.rejectDownloadWaiters("transfer_connection_changed", previous);
         this.eventSubscriptions.delete(previous);
         this.secureChannels.get(previous)?.destroy();
         this.secureChannels.delete(previous);
@@ -915,7 +918,7 @@ export class RemoteClient {
       if (parts.length !== 3 || parts[1] !== "chunk") return;
       const key = `${parts[0]}:${parts[2]}`;
       const waiter = this.downloadWaiters.get(key);
-      if (!waiter) return;
+      if (!waiter || waiter.connection !== connection) return;
       clearTimeout(waiter.timer);
       this.downloadWaiters.delete(key);
       waiter.resolve(message.data);
@@ -1115,6 +1118,44 @@ export class RemoteClient {
     return this.confirmedBridgeInstanceId || undefined;
   }
 
+  /** Pin an entire file operation, including retries/cleanup, to its owner. */
+  captureTransfer(): TransferConnection {
+    this.assertBusinessReady();
+    const connection = this.connection;
+    const generation = this.activeGeneration;
+    const bridgeInstanceId = this.confirmedBridgeInstanceId;
+    if (!connection || !generation || !generation.live) throw new Error("not_connected");
+    const check = () => {
+      if (this.connection !== connection || this.activeGeneration !== generation ||
+          !generation.live || this.confirmedBridgeInstanceId !== bridgeInstanceId || this.stopped)
+        throw new TransferConnectionChangedError();
+      this.assertBusinessReady();
+    };
+    const guarded = async <T>(operation: () => Promise<T>): Promise<T> => {
+      check();
+      try {
+        const result = await operation();
+        check();
+        return result;
+      } catch (error) {
+        check();
+        throw error;
+      }
+    };
+    const request = <T>(command: RemoteCommand, sessionId?: string, timeoutMs?: number) =>
+      guarded(() => this.requestWithConnection<T>(connection, { ...command, bridgeInstanceId }, sessionId, timeoutMs));
+    const recover = (error: unknown) => guarded(() => this.recoverAfterTransientRequest(error));
+    return {
+      check,
+      request,
+      requestRetry: <T>(command: RemoteCommand, sessionId = command.sessionId ?? "list") =>
+        this.requestRetryUsing<T>(command, sessionId, request, recover),
+      recoverAfterTransientRequest: recover,
+      uploadChunk: (id, index, bytes) => guarded(() => this.uploadChunkWithConnection(connection, id, index, bytes)),
+      downloadChunk: (id, index) => guarded(() => this.downloadChunkWithConnection(connection, id, index)),
+    };
+  }
+
   async request<T>(
     command: RemoteCommand,
     sessionId = command.sessionId ?? "list",
@@ -1146,6 +1187,17 @@ export class RemoteClient {
     command: RemoteCommand,
     sessionId = command.sessionId ?? "list",
   ): Promise<RpcResponse<T>> {
+    return this.requestRetryUsing<T>(command, sessionId,
+      (command, sessionId) => this.request<T>(command, sessionId),
+      error => this.recoverAfterTransientRequest(error));
+  }
+
+  private async requestRetryUsing<T>(
+    command: RemoteCommand,
+    sessionId: string,
+    send: (command: RemoteCommand, sessionId: string) => Promise<RpcResponse<T>>,
+    recover: (error: unknown) => Promise<boolean>,
+  ): Promise<RpcResponse<T>> {
     const stableCommand = {
       bridgeInstanceId: this.confirmedBridgeInstanceId || undefined,
       ...command,
@@ -1161,7 +1213,7 @@ export class RemoteClient {
     const attempts = retryable ? 3 : 1;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
-        return await this.request<T>(stableCommand, sessionId);
+        return await send(stableCommand, sessionId);
       } catch (error) {
         lastError = error;
         if (!isTransientNatsRequestError(error)) throw error;
@@ -1169,7 +1221,7 @@ export class RemoteClient {
           // A retry on the same half-open generation only spends another
           // timeout. Validate/rebuild the transport first; the stable command
           // id keeps a reply lost during the swap idempotent on the desktop.
-          await this.recoverAfterTransientRequest(error);
+          await recover(error);
           await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
         }
       }
@@ -1181,6 +1233,12 @@ export class RemoteClient {
     this.assertBusinessReady();
     const connection = this.connection;
     if (!connection) throw new Error("not_connected");
+    return this.uploadChunkWithConnection(connection, transferId, index, bytes);
+  }
+
+  private async uploadChunkWithConnection(
+    connection: NatsConnection, transferId: string, index: number, bytes: Uint8Array,
+  ): Promise<void> {
     const message = await this.secureRequest(connection,
       `p.${this.credentials.pairId}.xfer.up.${transferId}.chunk.${index}`, bytes, 15_000);
     const response = decodeRemoteJson<RpcResponse>(message.data);
@@ -1191,13 +1249,29 @@ export class RemoteClient {
     this.assertBusinessReady();
     const connection = this.connection;
     if (!connection) throw new Error("not_connected");
+    return this.downloadChunkWithConnection(connection, transferId, index);
+  }
+
+  private async downloadChunkWithConnection(
+    connection: NatsConnection, transferId: string, index: number,
+  ): Promise<Uint8Array> {
     const key = `${transferId}:${index}`;
+    // A retry must not replace another live request for the same chunk. An
+    // old socket's timeout/ACK must never remove a new socket's waiter.
+    const existing = this.downloadWaiters.get(key);
+    if (existing) {
+      if (existing.connection === connection) throw new Error("download_chunk_in_flight");
+      clearTimeout(existing.timer);
+      existing.reject(new TransferConnectionChangedError());
+    }
+    let waiter: DownloadWaiter;
     const pending = new Promise<Uint8Array>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.downloadWaiters.delete(key);
+        if (this.downloadWaiters.get(key) === waiter) this.downloadWaiters.delete(key);
         reject(new Error("download_chunk_timeout"));
       }, 15_000);
-      this.downloadWaiters.set(key, { resolve, reject, timer });
+      waiter = { connection, resolve, reject, timer };
+      this.downloadWaiters.set(key, waiter);
     });
     // The binary chunk may time out before the pull ACK settles. Attach a
     // handler immediately so React Native never reports that early rejection
@@ -1210,9 +1284,8 @@ export class RemoteClient {
       if (!response.success) throw new Error(response.error ?? "download_chunk_failed");
       return await pending;
     } catch (error) {
-      const waiter = this.downloadWaiters.get(key);
-      if (waiter) clearTimeout(waiter.timer);
-      this.downloadWaiters.delete(key);
+      clearTimeout(waiter!.timer);
+      if (this.downloadWaiters.get(key) === waiter!) this.downloadWaiters.delete(key);
       throw error;
     }
   }
