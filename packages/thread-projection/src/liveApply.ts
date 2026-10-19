@@ -527,6 +527,10 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
       if (!slottedToolIds.has(toolId)) {
         slots.push({ type: "tool", id: toolId });
         slottedToolIds.add(toolId);
+        // A recovered result establishes the same timeline boundary as a
+        // start. Otherwise later text keeps growing the slot before this tool.
+        openText = null;
+        openThinking = null;
       }
       sawVisibleWork = true;
     }
