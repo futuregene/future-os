@@ -16,6 +16,36 @@ export function natsWsUrlScheme(url: string): "wss" | "ws" | "other" {
   return "other";
 }
 
+/**
+ * Whether a claim URL may receive this phone's pairing request.
+ *
+ * Two answers, both narrow: the Future platform (a fixed allowlist), or the
+ * origin a self-hosted relay declared inside the invitation. The second is not
+ * a relaxation — it is the point of a self-hosted relay — and it is still
+ * pinned to exactly one origin, https only, with the platform's own path. The
+ * Noise key in the same invitation is what actually authenticates the desktop;
+ * this check only decides where the *claim* goes.
+ */
+export function isAcceptableClaimUrl(url: string, relay?: string): boolean {
+  if (isExpectedClaimUrl(url)) return true;
+  if (!relay) return false;
+  try {
+    const parsed = new URL(url);
+    const declared = new URL(relay);
+    return (
+      parsed.origin === declared.origin &&
+      parsed.protocol === "https:" &&
+      parsed.username === "" &&
+      parsed.password === "" &&
+      parsed.pathname === "/client/v1/remote/pair/claim" &&
+      parsed.search === "" &&
+      parsed.hash === ""
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function isExpectedClaimUrl(url: string): boolean {
   try {
     const parsed = new URL(url);

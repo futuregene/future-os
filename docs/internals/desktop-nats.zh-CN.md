@@ -28,6 +28,17 @@ token 不是多租户安全边界。
 要把现有测试中继从旧的共享 token 配置切换过来，需要运维重建一次 NATS 容器，并同步
 匹配 `platform-service` 部署。这次测试切换无需保留旧的 JetStream 数据。
 
+## 自建替代方案
+
+`future relay`（本仓库）是同一个中继去掉平台部分：它签发同样的「按配对限定」
+NATS user JWT，走同样的 claim/token 端点，只是以 room 为单位而不是账号。桌面端
+用 `futureos --relay URL`（或 `futureos-headless --relay URL`）按安装选择它，且选择
+按配对记录，因此官方配对与自建配对可以在同一台机器上共存。运行手册、威胁模型与
+验证方法见 [../guide/self-hosted-relay.zh-CN.md](../guide/self-hosted-relay.zh-CN.md)。
+
+`future relay init` 生成的 broker 配置就是本文生产模板描述的那套，只是去掉了账号
+层：operator JWT、内存 resolver、不启用 JetStream。
+
 ## 遗留本地环境
 
 `desktop/nats/` 下的 `nats.conf` 与 `docker-compose.yml` 仅用于隔离测试较旧的共享

@@ -305,6 +305,12 @@ pub fn remove_slot(pair_id: &str) -> Result<(), crate::AppError> {
 pub async fn create_pairing(
     keep_existing: bool,
 ) -> Result<(PairingCreds, String, Option<i64>), crate::AppError> {
+    // A self-hosted relay replaces the platform in exactly one place: whatever
+    // mints the pair id, the invitation and the bridge credential. Everything
+    // the invitation carries about the endpoints is the relay's, not ours.
+    if let Some(base) = crate::remote::relay::endpoint() {
+        return create_pairing_via_relay(&base, keep_existing).await;
+    }
     let key_pair = nkeys::KeyPair::new_user();
     let nkey_seed = key_pair
         .seed()
@@ -350,6 +356,7 @@ pub async fn create_pairing(
         nats_url: response.nats_url,
         nats_ws_url: response.nats_ws_url,
         jwt_expires_at,
+        control_url: None,
     };
     let identity = creds.secure.as_ref().expect("new secure identity");
     let mut invitation = reqwest::Url::parse("futureos://remote/pair").expect("constant URL");
@@ -367,6 +374,95 @@ pub async fn create_pairing(
     Ok((creds, invitation.into(), code_expires_at))
 }
 
+/// Mint an invitation against a self-hosted relay.
+///
+/// `keep_existing` has no meaning here: the official platform owns a cap and a
+/// row per desktop, while a relay room *is* the pairing. Every invitation opens
+/// a new room, and the old ones keep serving until they are unpaired.
+async fn create_pairing_via_relay(
+    base: &str,
+    _keep_existing: bool,
+) -> Result<(PairingCreds, String, Option<i64>), crate::AppError> {
+    let key_pair = nkeys::KeyPair::new_user();
+    let nkey_seed = key_pair
+        .seed()
+        .map_err(|error| crate::AppError::Message(format!("generate desktop NKey: {error}")))?;
+    let desktop_id = crate::device_identity::device_id()?;
+    let pair_id = crate::remote::relay::new_pair_id();
+    let join = crate::remote::relay::new_join_token();
+    let grant = crate::remote::relay::register(
+        base,
+        &pair_id,
+        &desktop_id,
+        HOST_NAME,
+        &key_pair,
+        Some(&join),
+    )
+    .await?;
+    let expires_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or_default()
+        + crate::remote::relay::INVITATION_TTL_SECONDS;
+    let creds = PairingCreds {
+        handshake_version: 2,
+        secure: Some(crate::remote::secure::PairingIdentity::new(expires_at)?),
+        pair_id,
+        desktop_id,
+        nkey_seed,
+        user_jwt: grant.user_jwt,
+        nats_url: grant.nats_url,
+        nats_ws_url: grant.nats_ws_url,
+        jwt_expires_at: grant.jwt_expires_at,
+        control_url: Some(base.trim_end_matches('/').to_string()),
+    };
+    let identity = creds.secure.as_ref().expect("new secure identity");
+    // The payload keeps the official v2 *shape* (`nonce`, `claim_url`, `exp`)
+    // so the phone's claim path is unchanged; `relay` is the addition that
+    // tells the client this claim endpoint is not the Future platform. The URL
+    // version is `3` because a v2 reader must refuse to send its join token to
+    // a host its allowlist does not know.
+    let code = serde_json::to_vec(&json!({
+        "v": 2,
+        "nonce": join,
+        "claim_url": format!("{}/client/v1/remote/pair/claim", base.trim_end_matches('/')),
+        "exp": expires_at,
+        "relay": relay_origin(base)?,
+    }))
+    .map_err(|error| crate::AppError::Message(format!("encode relay invitation: {error}")))?;
+    let mut invitation = reqwest::Url::parse("futureos://remote/pair").expect("constant URL");
+    invitation
+        .query_pairs_mut()
+        .append_pair("v", "3")
+        .append_pair("code", &URL_SAFE_NO_PAD.encode(code))
+        .append_pair("desktopId", &creds.desktop_id)
+        .append_pair("desktopKey", &key_pair.public_key())
+        .append_pair("secureKey", &identity.public_key)
+        .append_pair(
+            "secret",
+            identity.secret.as_deref().expect("new invitation secret"),
+        );
+    Ok((creds, invitation.into(), Some(expires_at)))
+}
+
+/// The friend name every self-hosted invitation declares itself with. The
+/// platform's room label, not a security decision: the QR is the credential.
+const HOST_NAME: &str = "FutureOS";
+
+/// `scheme://host[:port]` — what a client compares its claim URL against when
+/// the invitation says "this is a relay, not the Future platform".
+fn relay_origin(base: &str) -> Result<String, crate::AppError> {
+    let url = reqwest::Url::parse(base)
+        .map_err(|error| crate::AppError::Message(format!("invalid relay URL: {error}")))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| crate::AppError::Message("relay URL has no host".into()))?;
+    Ok(match url.port() {
+        Some(port) => format!("{}://{host}:{port}", url.scheme()),
+        None => format!("{}://{host}", url.scheme()),
+    })
+}
+
 /// Decode a v2 pairing code's `exp` (unix seconds). Self-contained — the
 /// expiry travels inside the code payload the web client also validates, so
 /// there's a single source of truth. `None` if the code can't be decoded.
@@ -379,6 +475,9 @@ pub fn pairing_code_expiry(code: &str) -> Option<i64> {
 }
 
 pub async fn refresh_bridge_jwt(mut creds: PairingCreds) -> Result<PairingCreds, crate::AppError> {
+    if creds.control_url.is_some() {
+        return refresh_relay_jwt(creds).await;
+    }
     let key_pair = nkeys::KeyPair::from_seed(&creds.nkey_seed)
         .map_err(|error| crate::AppError::Message(format!("read desktop NKey: {error}")))?;
     let platform = crate::future_platform::current_platform_url();
@@ -403,8 +502,44 @@ pub async fn refresh_bridge_jwt(mut creds: PairingCreds) -> Result<PairingCreds,
     Ok(creds)
 }
 
+/// Rotate a credential at the relay that issued it.
+///
+/// A relay keeps its rooms in a file, so it usually remembers this pairing. A
+/// `404` still means "no such room" (a wiped registry, a replaced relay), and
+/// the right answer is not an error the user sees: the desktop owns the
+/// pairing, so it re-registers the same room from its own credentials and
+/// tries once. That is what makes the relay disposable.
+async fn refresh_relay_jwt(mut creds: PairingCreds) -> Result<PairingCreds, crate::AppError> {
+    let base = creds.control_url.clone().expect("checked by the caller");
+    let key_pair = nkeys::KeyPair::from_seed(&creds.nkey_seed)
+        .map_err(|error| crate::AppError::Message(format!("read desktop NKey: {error}")))?;
+    let grant = match crate::remote::relay::refresh(&creds).await {
+        Ok(grant) => grant,
+        Err(error) if crate::remote::relay::is_unknown_room(&error) => {
+            crate::remote::relay::register(
+                &base,
+                &creds.pair_id,
+                &creds.desktop_id,
+                HOST_NAME,
+                &key_pair,
+                None,
+            )
+            .await?
+        }
+        Err(error) => return Err(error),
+    };
+    creds.user_jwt = grant.user_jwt;
+    creds.jwt_expires_at = grant.jwt_expires_at;
+    creds.nats_url = grant.nats_url;
+    creds.nats_ws_url = grant.nats_ws_url;
+    Ok(creds)
+}
+
 #[cfg(test)]
 pub async fn revoke_pairing(creds: &PairingCreds) -> Result<(), crate::AppError> {
+    if creds.control_url.is_some() {
+        return crate::remote::relay::revoke(creds).await;
+    }
     revoke_pair_id(&creds.pair_id).await
 }
 
@@ -426,6 +561,20 @@ async fn revoke_pair_id(pair_id: &str) -> Result<(), crate::AppError> {
 /// Compensation contains no connection credential or account token. It can
 /// only use the signed-in account against the original platform environment.
 pub(crate) fn queue_revoke(creds: &PairingCreds) -> Result<(), crate::AppError> {
+    if creds.control_url.is_some() {
+        // There is no account to authenticate a queued retry with, so the room
+        // is deleted now with a signed request, detached so an unreachable
+        // relay cannot make "unpair" hang. A room that survives is a namespace
+        // with no bridge connected: useless without the desktop, and pruned
+        // when it expires.
+        let creds = creds.clone();
+        crate::runtime::spawn(async move {
+            if let Err(error) = crate::remote::relay::revoke(&creds).await {
+                eprintln!("remote: could not delete the relay room: {error}");
+            }
+        });
+        return Ok(());
+    }
     let path = pairing_path()?.with_file_name("remote_pending_revokes.json");
     crate::config_io::with_config_lock(&path, || {
         let mut pending = crate::config_io::read_json_object(&path)?;
@@ -561,7 +710,7 @@ pub(crate) async fn parse_response<T: serde::de::DeserializeOwned>(
     })
 }
 
-async fn response_error(response: reqwest::Response, action: &str) -> crate::AppError {
+pub(crate) async fn response_error(response: reqwest::Response, action: &str) -> crate::AppError {
     let status = response.status();
     let body = response.json::<Value>().await.ok();
     // The platform error body is `{error: <machine code>, message: <human text>}`.
@@ -727,6 +876,7 @@ mod http_tests {
             nats_url: "nats://127.0.0.1:1".to_string(),
             nats_ws_url: "ws://127.0.0.1:1".to_string(),
             jwt_expires_at: now_secs() + 3600,
+            control_url: None,
         }
     }
 

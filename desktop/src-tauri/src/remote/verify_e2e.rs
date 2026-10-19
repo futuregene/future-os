@@ -478,6 +478,7 @@ pub(super) fn v2_creds(broker: &Broker) -> PairingCreds {
         nats_url: broker.url().to_string(),
         nats_ws_url: broker.url().replace("nats://", "ws://"),
         jwt_expires_at: now_secs() + 3600,
+        control_url: None,
     }
 }
 

@@ -27,6 +27,16 @@ NATS `desktopKey`, the X25519 `secureKey`, and the local `secret`. Treat the who
 invitation as a short-lived bearer credential. No 6-digit-code mode is added.
 Do not log invitations, send them to analytics, or render QR codes with remote APIs.
 
+An invitation minted against a self-hosted relay is the same document with
+`v=3`: identical `desktopKey`/`secureKey`/`secret`, and a `code` payload that
+keeps the platform's `nonce`/`claim_url`/`exp` shape while adding `relay` (the
+origin the claim endpoint belongs to). A client that only knows v2 refuses it
+rather than downgrading, and a v3 client pins the declared origin: the claim may
+travel to the Future platform or to the relay named in the code, never anywhere
+else. The handshake, the record layer, the subjects and the reply binding are
+byte-identical, so a relay can be swapped without re-pairing. See
+[../../guide/self-hosted-relay.md](../../guide/self-hosted-relay.md).
+
 Mobile generates its own X25519 identity and stores the bundle in Expo SecureStore
 with `WHEN_UNLOCKED_THIS_DEVICE_ONLY`, using the existing two-slot credential
 commit. Desktop stores the pairing identity with its existing owner-restricted,

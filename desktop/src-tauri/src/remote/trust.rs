@@ -33,8 +33,67 @@ const BUNDLE_FILE: &str = "relay-root-certs.pem";
 /// A PEM bundle of the platform trust anchors for async-nats to load, or
 /// `None` when none can be produced — the caller then leaves async-nats to do
 /// its own platform load, i.e. today's behaviour.
+///
+/// A self-hosted relay may present a private CA (the common case for a
+/// homelab or an internal deployment). `FUTURE_RELAY_CA` / the relay settings
+/// name that CA, and the bundle then carries the platform store *plus* it.
+/// That is a deliberate, operator-supplied addition to the trust set, not a
+/// relaxation: the extra root is only ever used for the relay the operator
+/// configured, and nothing about verification changes for anyone else.
 pub(crate) fn root_bundle() -> Option<PathBuf> {
+    if let Some(ca) = crate::remote::relay::ca_path() {
+        return bundle_with_extra(&ca);
+    }
     bundle_at(&bundle_path()?, &load_platform_certs)
+}
+
+/// One process-wide bundle for the operator's extra CA.
+///
+/// The file lives in the OS temp directory rather than the app directory: it
+/// is derived from a file the operator named (which may itself be in a
+/// read-only location), it is public material, and nothing depends on it
+/// surviving the process.
+fn bundle_with_extra(ca: &std::path::Path) -> Option<PathBuf> {
+    static BUNDLE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    BUNDLE
+        .get_or_init(|| {
+            let extra = match std::fs::read_to_string(ca) {
+                Ok(text) if text.contains("-----BEGIN CERTIFICATE-----") => text,
+                Ok(_) => {
+                    eprintln!(
+                        "remote: the relay CA file holds no certificate: {}",
+                        ca.display()
+                    );
+                    return None;
+                }
+                Err(error) => {
+                    eprintln!(
+                        "remote: could not read the relay CA file {}: {error}",
+                        ca.display()
+                    );
+                    return None;
+                }
+            };
+            let path =
+                std::env::temp_dir().join(format!("future-relay-ca-{}.pem", std::process::id()));
+            let platform = load_platform_certs().unwrap_or_default();
+            let mut text = String::new();
+            for cert in platform {
+                push_pem(&mut text, &cert);
+            }
+            text.push_str(&extra);
+            if !text.ends_with('\n') {
+                text.push('\n');
+            }
+            match std::fs::write(&path, text) {
+                Ok(()) => Some(path),
+                Err(error) => {
+                    eprintln!("remote: could not write the relay trust bundle: {error}");
+                    None
+                }
+            }
+        })
+        .clone()
 }
 
 #[cfg(not(test))]
@@ -84,19 +143,23 @@ fn existing_bundle(path: &Path) -> Option<PathBuf> {
 fn write_bundle(path: &Path, certs: &[Vec<u8>]) -> std::io::Result<()> {
     let mut text = String::new();
     for cert in certs {
-        let body = STANDARD.encode(cert);
-        text.push_str("-----BEGIN CERTIFICATE-----\n");
-        for line in body.as_bytes().chunks(64) {
-            text.push_str(std::str::from_utf8(line).unwrap_or_default());
-            text.push('\n');
-        }
-        text.push_str("-----END CERTIFICATE-----\n");
+        push_pem(&mut text, cert);
     }
     // Write beside the target and rename onto it, so a concurrent connect never
     // reads a half-written bundle.
     let staging = path.with_extension("pem.tmp");
     std::fs::write(&staging, text)?;
     std::fs::rename(&staging, path)
+}
+
+fn push_pem(text: &mut String, cert: &[u8]) {
+    let body = STANDARD.encode(cert);
+    text.push_str("-----BEGIN CERTIFICATE-----\n");
+    for line in body.as_bytes().chunks(64) {
+        text.push_str(std::str::from_utf8(line).unwrap_or_default());
+        text.push('\n');
+    }
+    text.push_str("-----END CERTIFICATE-----\n");
 }
 
 fn load_platform_certs() -> Result<Vec<Vec<u8>>, String> {

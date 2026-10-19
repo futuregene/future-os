@@ -565,6 +565,7 @@ mod tests {
             nats_url: "nats://127.0.0.1:4222".to_string(),
             nats_ws_url: "ws://127.0.0.1:4222".to_string(),
             jwt_expires_at: 0,
+            control_url: None,
         }
     }
 

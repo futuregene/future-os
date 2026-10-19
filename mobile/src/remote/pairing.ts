@@ -3,7 +3,7 @@ import { createSecureIdentity, keyBytes } from "./secureChannel";
 import * as Device from "expo-device";
 import { Platform } from "react-native";
 import { createUser, fromSeed } from "nkeys.js";
-import { isExpectedClaimUrl, natsWsUrlScheme } from "../config/environment";
+import { isAcceptableClaimUrl, natsWsUrlScheme } from "../config/environment";
 import { decodePairingCode, jwtExpiry, parsePairingInvitation, randomId } from "./codec";
 import { RemoteApiError } from "./connectionState";
 import { loadDeviceId, saveDeviceId, type PendingRevoke } from "./storage";
@@ -82,7 +82,11 @@ export async function claimPairingCode(
   const secureIdentity = createSecureIdentity();
   const pairing = decodePairingCode(invitation.code);
   if (!pairing) throw new Error("invalid_pairing_code");
-  if (!isExpectedClaimUrl(pairing.claim_url)) throw new Error("unexpected_pairing_host");
+  // A v3 invitation carries the relay it was minted by; a v2 one can only ever
+  // name the Future platform.
+  if (!isAcceptableClaimUrl(pairing.claim_url, pairing.relay)) {
+    throw new Error("unexpected_pairing_host");
+  }
 
   const keyPair = createUser();
   const seed = new TextDecoder().decode(keyPair.getSeed());

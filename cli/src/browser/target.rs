@@ -292,7 +292,11 @@ mod tests {
     /// Off Linux/Android an abstract socket cannot be connected to at all, and
     /// the error says which platform can rather than reporting the browser as
     /// missing.
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    ///
+    /// `unix` is part of the gate because `SocketSpec::connect` only exists on
+    /// Unix: on Windows the method is absent, not merely failing, so this test
+    /// would not compile there.
+    #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
     #[tokio::test]
     async fn an_abstract_socket_says_which_platform_supports_it() {
         let spec = SocketSpec::Abstract("chrome_devtools_remote".to_string());

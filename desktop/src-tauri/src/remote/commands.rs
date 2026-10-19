@@ -1192,6 +1192,7 @@ mod tests {
                 nats_url: "nats://127.0.0.1:1".to_string(),
                 nats_ws_url: "ws://127.0.0.1:1".to_string(),
                 jwt_expires_at: now_secs() + 3600,
+                control_url: None,
             },
             Arc::new(AtomicBool::new(true)),
             "bridge_test".to_string(),
@@ -1234,6 +1235,7 @@ mod tests {
                 nats_url: "nats://127.0.0.1:1".to_string(),
                 nats_ws_url: "ws://127.0.0.1:1".to_string(),
                 jwt_expires_at: now_secs() + 3600,
+                control_url: None,
             },
             Arc::new(AtomicBool::new(true)),
             "bridge_test".to_string(),
@@ -1794,6 +1796,7 @@ mod bridge_tests {
             nats_url: "nats://127.0.0.1:1".to_string(),
             nats_ws_url: "ws://127.0.0.1:1".to_string(),
             jwt_expires_at: now_secs() + 3600,
+            control_url: None,
         }
     }
 
@@ -5270,6 +5273,7 @@ mod bridge_tests {
             nats_url: "nats://127.0.0.1:1".to_string(),
             nats_ws_url: "ws://127.0.0.1:1".to_string(),
             jwt_expires_at: 0,
+            control_url: None,
         })
         .expect("seed the other device");
         super::super::pairing::set_active(&other).expect("persist the other device's control");

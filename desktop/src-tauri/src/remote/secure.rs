@@ -474,6 +474,7 @@ mod tests {
             nats_url: "unused".into(),
             nats_ws_url: "unused".into(),
             jwt_expires_at: now_secs() + 300,
+            control_url: None,
         }
     }
     fn prepare_connection(
