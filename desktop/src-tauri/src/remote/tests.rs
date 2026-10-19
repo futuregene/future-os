@@ -3857,6 +3857,64 @@ mod slot_tests {
         stop();
     }
 
+    /// The device a request adds shows up in the machine's device list as a
+    /// **standby** row carrying its invitation, while the device in control keeps
+    /// the machine.
+    ///
+    /// This is the half of "add a device" a terminal cannot see for itself: the
+    /// invitation is not a credential until a phone claims it, so it is not in the
+    /// pairing book the CLI reads — it exists only in this process's device list,
+    /// which is what the window, the phone and the request's own answer read.
+    #[tokio::test]
+    async fn an_added_device_is_listed_as_standby_with_its_invitation() {
+        let _home = HomeGuard::new("remote-add-device-standby");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        // The machine already has a device, and it is the one in control.
+        let existing = test_creds("pair_control", nats.url(), 3600);
+        pairing::save_creds(&existing).unwrap();
+        platform.respond_refresh(nats.url());
+        let code = platform.respond_pair_code(nats.url());
+        SUPERVISOR.start_requested.store(false, Ordering::Release);
+        // The device that was already there is the one in control — the state
+        // adding a device must leave untouched.
+        SUPERVISOR.restore_active(Some(existing.pair_id.clone()));
+
+        let added = crate::remote::supervisor::add_device()
+            .await
+            .expect("add a device");
+        assert_ne!(
+            added.pair_id, existing.pair_id,
+            "a new device, not a re-pair"
+        );
+
+        let listed = crate::remote::status();
+        let row = listed
+            .devices
+            .iter()
+            .find(|device| device.pair_id == added.pair_id)
+            .unwrap_or_else(|| panic!("the added device must be listed: {listed:?}"));
+        assert_eq!(row.control, DeviceControl::Standby, "{listed:?}");
+        assert!(!row.connected, "an invitation is not a connection");
+        assert!(
+            row.pairing_code
+                .as_deref()
+                .is_some_and(|shown| shown.contains(&code)),
+            "the row carries the invitation that was minted: {listed:?}"
+        );
+        // The device that was already there keeps the machine.
+        let controlling = listed
+            .devices
+            .iter()
+            .find(|device| device.control == DeviceControl::Active)
+            .expect("one device is still in control");
+        assert_eq!(controlling.pair_id, existing.pair_id, "{listed:?}");
+
+        stop();
+    }
+
     /// A machine with exactly one saved device and no controller claims it at
     /// start. There is no arbitration to do, and *not* claiming would make the
     /// device ask its own user to take the machine from nobody.
