@@ -53,11 +53,13 @@ pub use self::types::*;
 use self::web_server::*;
 
 use serde_json::json;
+use std::sync::LazyLock;
+#[cfg(test)]
+use std::sync::Mutex;
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
-    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+    Arc,
 };
-use std::{collections::HashMap, sync::LazyLock};
 
 /// Record that this process has a credential for `pair_id`.
 ///

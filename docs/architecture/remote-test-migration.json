@@ -339,7 +339,7 @@
         "a_confirmed_pairing_latches_onto_the_reused_runtime",
         "an_unreadable_nkey_seed_never_reuses_a_cached_runtime"
       ],
-      "target": null
+      "target": "packages/remote-server/src/supervisor.rs"
     },
     {
       "source": "desktop/src-tauri/src/remote/test_support.rs",
@@ -494,7 +494,30 @@
             "nats_session_event_has_independent_cursor"
           ]
         },
-        "remaining-runtime-and-application": "desktop/src-tauri/src/remote/tests.rs"
+        "remaining-runtime-and-application": "desktop/src-tauri/src/remote/tests.rs",
+        "server-drop-counters": {
+          "path": "packages/remote-server/src/diagnostics.rs",
+          "cases": [
+            "drop_log_rate_limits_episodes",
+            "drop_log_reports_recovery_and_resets"
+          ]
+        },
+        "server-generation-health": {
+          "path": "packages/remote-server/src/health.rs",
+          "cases": [
+            "nats_health_handles_remaining_event_variants",
+            "nats_health_classifies_recoverable_and_terminal_events",
+            "expired_rotated_credential_is_refreshable_not_a_configuration_failure",
+            "desktop_reconnect_backoff_matches_the_shared_policy"
+          ]
+        },
+        "server-status-types": {
+          "path": "packages/remote-server/src/types.rs",
+          "cases": [
+            "runtime_active_classifies_every_phase",
+            "only_transient_remote_start_failures_arm_background_recovery"
+          ]
+        }
       }
     },
     {

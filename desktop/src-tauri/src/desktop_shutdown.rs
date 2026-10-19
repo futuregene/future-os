@@ -259,6 +259,11 @@ fn perform_stop(
                 crate::remote::stop();
             }
             if let Err(error) =
+                crate::remote::wait_for_tasks(operation.remaining(Duration::from_secs(2))).await
+            {
+                errors.push(format!("Remote server cleanup failed: {error}"));
+            }
+            if let Err(error) =
                 crate::remote_peer::runtime::shutdown(operation.remaining(Duration::from_secs(2)))
                     .await
             {

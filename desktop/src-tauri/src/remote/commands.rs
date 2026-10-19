@@ -4,9 +4,11 @@ use super::protocol::IncomingCmd;
 #[cfg(test)]
 use super::services::ReplySink;
 #[cfg(test)]
+pub(super) use future_remote_server::commands::new_reply_slots;
+#[cfg(test)]
 pub(super) use future_remote_server::commands::{apply_declared_features, REPLY_GZIP_FEATURE};
 pub(super) use future_remote_server::commands::{
-    command_loop_with_ready, new_reply_slots, HandshakeState, ReplySlots,
+    command_loop_with_ready, HandshakeState, ReplySlots,
 };
 use future_remote_server::commands::{CommandRuntime, CommandServices};
 #[cfg(test)]
@@ -51,8 +53,8 @@ impl CommandRuntime for DesktopCommandRuntime {
     fn held_by_another(&self, pair: &str) -> bool {
         super::SUPERVISOR.held_by_another(pair)
     }
-    fn claim_control_soon(&self, pair: &str) -> Option<String> {
-        super::SUPERVISOR.claim_control_soon(pair)
+    fn claim_control_soon(&self, pair: &str, epoch: Option<u64>) -> Option<String> {
+        super::SUPERVISOR.claim_control_for(pair, epoch)
     }
     fn light_presence(&self, pair: &str, bridge: &str) -> Value {
         super::light_presence_payload(pair, bridge)

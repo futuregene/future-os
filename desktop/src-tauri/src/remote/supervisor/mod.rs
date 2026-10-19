@@ -66,3 +66,8 @@ pub async fn takeover(pair_id: &str) -> Result<RemoteStatus, crate::AppError> {
     super::publish_control(pair_id, "active");
     Ok(status())
 }
+
+/// Await Server-owned recovery/native work inside the caller's remaining budget.
+pub async fn wait_for_tasks(budget: std::time::Duration) -> Result<(), crate::AppError> {
+    SUPERVISOR.wait_tasks(budget).await.map_err(Into::into)
+}

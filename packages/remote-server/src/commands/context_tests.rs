@@ -41,7 +41,7 @@ impl CommandRuntime for MemoryRuntime {
     fn held_by_another(&self, _: &str) -> bool {
         false
     }
-    fn claim_control_soon(&self, _: &str) -> Option<String> {
+    fn claim_control_soon(&self, _: &str, _: Option<u64>) -> Option<String> {
         None
     }
     fn light_presence(&self, pair: &str, bridge: &str) -> Value {

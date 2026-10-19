@@ -1,8 +1,9 @@
 //! Desktop start input and adapters around shared controlled-endpoint status.
+#[cfg(test)]
+pub use future_remote_server::types::DeviceControl;
 pub(super) use future_remote_server::types::{retryable_start_status, runtime_active};
 pub use future_remote_server::types::{
-    ClientIdentity, DeviceControl, RecoveryProgress, RemoteDevice, RemoteFailureReason,
-    RemotePhase, RemoteStatus,
+    ClientIdentity, RecoveryProgress, RemoteFailureReason, RemotePhase, RemoteStatus,
 };
 use serde::Deserialize;
 

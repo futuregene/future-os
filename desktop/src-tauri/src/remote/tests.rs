@@ -5,92 +5,6 @@ mod contract_tests {
     use super::*;
 
     #[test]
-    fn drop_log_rate_limits_episodes() {
-        let counters = DropCounters::new();
-
-        // Episode progress is reported only at power-of-two attempts.
-        for i in 1..=10 {
-            let line = counters.record_drop("queue full", "tool_delta", "s1", 1_000 + i);
-            assert_eq!(
-                line.is_some(),
-                i.is_power_of_two(),
-                "unexpected reporting decision for drop {i}"
-            );
-        }
-        assert_eq!(counters.reports.load(Ordering::Relaxed), 4);
-    }
-
-    #[test]
-    fn drop_log_reports_recovery_and_resets() {
-        let counters = DropCounters::new();
-
-        counters.record_drop("NATS not connected", "tool_delta", "s1", 1_000);
-        let line = counters
-            .report_recovery()
-            .expect("recovery after an active episode reports");
-        assert!(line.contains("dropped 1 events"), "got: {line}");
-
-        // No episode active: recovery is silent and counters stay zero.
-        assert!(counters.report_recovery().is_none());
-
-        // The next episode starts fresh: the first drop logs again.
-        assert!(counters
-            .record_drop("queue full", "tool_delta", "s1", 2_000)
-            .is_some());
-    }
-
-    #[test]
-    fn nats_health_handles_remaining_event_variants() {
-        let health = NatsHealth::default();
-
-        // A routine drop: self-healing reconnect, no failure episode.
-        health.handle_event(&async_nats::Event::Disconnected);
-        assert!(!health.needs_reconnect());
-
-        // Slow-consumer and generic server errors each open an episode.
-        health.handle_event(&async_nats::Event::SlowConsumer(7));
-        health.handle_event(&async_nats::Event::ServerError(
-            async_nats::ServerError::SlowConsumer(8),
-        ));
-        health.handle_event(&async_nats::Event::ServerError(
-            async_nats::ServerError::Other("permissions".to_string()),
-        ));
-
-        // Remaining event shapes fall through the wildcard arm harmlessly.
-        health.handle_event(&async_nats::Event::LameDuckMode);
-        health.handle_event(&async_nats::Event::Draining);
-    }
-
-    #[test]
-    fn runtime_active_classifies_every_phase() {
-        for phase in [
-            RemotePhase::Connecting,
-            RemotePhase::Ready,
-            RemotePhase::Reconnecting,
-            RemotePhase::Refreshing,
-        ] {
-            let status = RemoteStatus {
-                phase,
-                reason: None,
-                ..empty()
-            };
-            assert!(runtime_active(&status), "{phase:?} should be active");
-        }
-        for phase in [
-            RemotePhase::Stopped,
-            RemotePhase::Failed,
-            RemotePhase::Revoked,
-        ] {
-            let status = RemoteStatus {
-                phase,
-                reason: None,
-                ..empty()
-            };
-            assert!(!runtime_active(&status), "{phase:?} should be inactive");
-        }
-    }
-
-    #[test]
     fn classify_nats_connect_error_covers_server_parse() {
         assert!(matches!(
             classify_nats_connect_error(
@@ -228,69 +142,6 @@ mod runtime_tests {
         assert!(previous.is_none(), "previous test leaked SUPERVISOR.state");
         // The fixture is a machine with one device, so it is the controller.
         SUPERVISOR.restore_active(Some(pair_id));
-    }
-
-    #[test]
-    fn nats_health_classifies_recoverable_and_terminal_events() {
-        let _home = HomeGuard::new("remote-nats-health");
-        let health = NatsHealth::default();
-        health.handle_event(&async_nats::Event::ClientError(
-            async_nats::ClientError::MaxReconnects,
-        ));
-        assert!(health.needs_reconnect());
-        assert!(!health.is_terminal());
-
-        health.handle_event(&async_nats::Event::Connected);
-        assert!(!health.needs_reconnect());
-
-        // async-nats wraps reconnect-time authorization errors in the client
-        // event rather than forwarding the server event. This must trigger a
-        // generation refresh instead of leaving an apparently live bridge in
-        // an unbounded reconnect/log loop.
-        health.handle_event(&async_nats::Event::ClientError(
-            async_nats::ClientError::Other("authorization violation".to_string()),
-        ));
-        health.handle_event(&async_nats::Event::ClientError(
-            async_nats::ClientError::Other("authorization violation".to_string()),
-        ));
-        assert!(health.needs_reconnect());
-        assert!(!health.is_terminal());
-        assert!(health
-            .authorization_rejection_logged
-            .load(Ordering::Acquire));
-
-        health.handle_event(&async_nats::Event::Connected);
-        assert!(!health.needs_reconnect());
-        assert!(!health
-            .authorization_rejection_logged
-            .load(Ordering::Acquire));
-
-        health.handle_event(&async_nats::Event::ClientError(
-            async_nats::ClientError::Other("IO error".to_string()),
-        ));
-        health.handle_event(&async_nats::Event::ClientError(
-            async_nats::ClientError::Other("IO error".to_string()),
-        ));
-        assert!(!health.needs_reconnect());
-
-        health.handle_event(&async_nats::Event::Connected);
-
-        health
-            .credential_expires_at
-            .store(unix_timestamp() + 3600, Ordering::Release);
-        // The same rejection on the generation created by the reactive
-        // refresh is terminal service authorization.
-        health
-            .credential_was_refreshed
-            .store(true, Ordering::Release);
-        health.handle_event(&async_nats::Event::ServerError(
-            async_nats::ServerError::AuthorizationViolation,
-        ));
-        health.handle_event(&async_nats::Event::Connected);
-        assert!(
-            health.is_terminal(),
-            "reconnect must not hide an auth failure"
-        );
     }
 
     #[test]
@@ -852,9 +703,7 @@ mod runtime_tests {
         {
             let mut guard = SUPERVISOR.state.lock().unwrap();
             let state = guard.as_mut().unwrap();
-            state.drop_counters.dropping.store(false, Ordering::Relaxed);
-            state.drop_counters.dropped.store(0, Ordering::Relaxed);
-            state.drop_counters.reports.store(0, Ordering::Relaxed);
+            state.drop_counters.reset_for_test();
             let (tx, rx) = tokio::sync::mpsc::channel(1);
             drop(rx);
             state.event_tx = tx;
@@ -1067,20 +916,6 @@ mod runtime_tests {
         );
         stop();
         wait_for_web_port_free().await;
-    }
-
-    #[test]
-    fn expired_rotated_credential_is_refreshable_not_a_configuration_failure() {
-        let health = NatsHealth::default();
-        health
-            .credential_was_refreshed
-            .store(true, Ordering::Release);
-        health
-            .credential_expires_at
-            .store(unix_timestamp().saturating_sub(1), Ordering::Release);
-        health.mark_authorization_rejected();
-        assert!(health.needs_reconnect());
-        assert!(!health.is_terminal());
     }
 
     /// The platform hands out the SAME `pair_id` again when a desktop that is
@@ -1588,33 +1423,6 @@ mod runtime_tests {
     }
 
     #[test]
-    fn only_transient_remote_start_failures_arm_background_recovery() {
-        let network = RemoteStatus {
-            phase: RemotePhase::Reconnecting,
-            reason: Some(RemoteFailureReason::Network),
-            ..empty()
-        };
-        let server = RemoteStatus {
-            phase: RemotePhase::Reconnecting,
-            reason: Some(RemoteFailureReason::RemoteServer),
-            ..empty()
-        };
-        let revoked = RemoteStatus {
-            phase: RemotePhase::Revoked,
-            reason: Some(RemoteFailureReason::CredentialRevoked),
-            ..empty()
-        };
-        assert!(retryable_start_status(&network));
-        assert!(retryable_start_status(&server));
-        assert!(!retryable_start_status(&revoked));
-        assert!(!retryable_start_status(&RemoteStatus {
-            phase: RemotePhase::Ready,
-            reason: Some(RemoteFailureReason::Network),
-            ..empty()
-        }));
-    }
-
-    #[test]
     fn initial_nats_connect_errors_distinguish_authorization_from_network() {
         for kind in [
             async_nats::ConnectErrorKind::Authentication,
@@ -1635,16 +1443,6 @@ mod runtime_tests {
                 crate::AppError::RemoteTransport(_)
             ));
         }
-    }
-
-    #[test]
-    fn desktop_reconnect_backoff_matches_the_shared_policy() {
-        assert_eq!(reconnect_delay(0, 0.5), Duration::from_secs(1));
-        assert_eq!(reconnect_delay(1, 0.5), Duration::from_secs(2));
-        assert_eq!(reconnect_delay(2, 0.5), Duration::from_secs(4));
-        assert_eq!(reconnect_delay(4, 0.5), Duration::from_secs(16));
-        assert_eq!(reconnect_delay(5, 0.5), Duration::from_secs(30));
-        assert!(reconnect_delay(20, 1.0) <= Duration::from_secs(30));
     }
 
     #[test]

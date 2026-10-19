@@ -1,4 +1,5 @@
 //! Bounded failure episodes shared across Remote transport tasks.
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::{
     collections::HashMap,
     sync::{LazyLock, Mutex},
@@ -184,5 +185,127 @@ mod tests {
             assert!(permit_failure_log(category));
         }
         assert!(!permit_failure_log(category));
+    }
+}
+
+/// Rate-limited drop reporting for the remote event mirror: one line when a
+/// drop episode starts, one per 10s while it persists, one on recovery — instead
+/// of the per-event line that flooded the terminal the moment the queue
+/// saturated (e.g. NATS offline). A dropped event is never data loss; the
+/// client heals the gap via `get_events_since` backfill.
+pub struct DropCounters {
+    /// An episode (queue full / NATS offline) is active until a successful enqueue.
+    dropping: AtomicBool,
+    /// Cumulative drops since the episode started; reset on recovery.
+    dropped: AtomicU64,
+    /// Number of emitted lines in this episode. Capped so a prolonged outage
+    /// can never fill the console or a redirected log file.
+    reports: AtomicU8,
+}
+
+impl DropCounters {
+    pub const fn new() -> Self {
+        Self {
+            dropping: AtomicBool::new(false),
+            dropped: AtomicU64::new(0),
+            reports: AtomicU8::new(0),
+        }
+    }
+
+    /// Returns the line to print for a dropped event, or `None` when the episode
+    /// is already being reported at full cadence. Event-driven: called on the
+    /// hot path every event passes through, so it keeps reporting even while
+    /// the drain task is blocked on `publish().await` and can't reach its own
+    /// timer. `now` is injected so tests can advance time deterministically.
+    pub fn record_drop(
+        &self,
+        why: &str,
+        event_type: &str,
+        session_id: &str,
+        now: u64,
+    ) -> Option<String> {
+        let first = !self.dropping.swap(true, Ordering::Relaxed);
+        let total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+        let _ = now;
+        if first {
+            self.reports.store(1, Ordering::Relaxed);
+            Some(format!(
+                "remote: {why}; dropping {event_type} for {session_id} (backfill on reconnect heals the gap)"
+            ))
+        } else if total.is_power_of_two() && self.reports.load(Ordering::Relaxed) < 15 {
+            self.reports.fetch_add(1, Ordering::Relaxed);
+            Some(format!(
+                "remote: {why}; dropped {total} events so far for {session_id}"
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// One-shot recovery line when a drop episode ends (the first event that
+    /// enqueues successfully). Returns `None` when no episode was active, and
+    /// resets the episode counters so the next episode starts fresh.
+    pub fn report_recovery(&self) -> Option<String> {
+        if self.dropping.swap(false, Ordering::Relaxed) {
+            let dropped = self.dropped.swap(0, Ordering::Relaxed);
+            self.reports.store(0, Ordering::Relaxed);
+            Some(format!(
+                "remote: event publish recovered; dropped {dropped} events during the backlog"
+            ))
+        } else {
+            None
+        }
+    }
+}
+
+impl Default for DropCounters {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl DropCounters {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn reset_for_test(&self) {
+        self.dropping.store(false, Ordering::Relaxed);
+        self.dropped.store(0, Ordering::Relaxed);
+        self.reports.store(0, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod drop_tests {
+    use super::*;
+    #[test]
+    fn drop_log_rate_limits_episodes() {
+        let counters = DropCounters::new();
+
+        // Episode progress is reported only at power-of-two attempts.
+        for i in 1..=10 {
+            let line = counters.record_drop("queue full", "tool_delta", "s1", 1_000 + i);
+            assert_eq!(
+                line.is_some(),
+                i.is_power_of_two(),
+                "unexpected reporting decision for drop {i}"
+            );
+        }
+        assert_eq!(counters.reports.load(Ordering::Relaxed), 4);
+    }
+    #[test]
+    fn drop_log_reports_recovery_and_resets() {
+        let counters = DropCounters::new();
+
+        counters.record_drop("NATS not connected", "tool_delta", "s1", 1_000);
+        let line = counters
+            .report_recovery()
+            .expect("recovery after an active episode reports");
+        assert!(line.contains("dropped 1 events"), "got: {line}");
+
+        // No episode active: recovery is silent and counters stay zero.
+        assert!(counters.report_recovery().is_none());
+
+        // The next episode starts fresh: the first drop logs again.
+        assert!(counters
+            .record_drop("queue full", "tool_delta", "s1", 2_000)
+            .is_some());
     }
 }

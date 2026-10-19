@@ -378,12 +378,16 @@ pub async fn command_loop_with_ready(
                     // presence, and asks its user whether to displace the
                     // controller. The client decides that, not this machine.
                     if first_handshake
+                        && handshake.access_current()
                         && accepted
                         && !handshake.runtime.held_by_another(&handshake.creds.pair_id)
                     {
                         let moved = handshake
                             .runtime
-                            .claim_control_soon(&handshake.creds.pair_id);
+                            .claim_control_soon(&handshake.creds.pair_id, handshake.access_epoch);
+                        if !handshake.access_current() {
+                            return;
+                        }
                         if let Some(previous) = moved {
                             handshake.runtime.publish_control(&previous, "standby");
                         }
@@ -608,7 +612,10 @@ async fn handle_command_inner(
         "takeover" => {
             let moved = handshake
                 .runtime
-                .claim_control_soon(&handshake.creds.pair_id);
+                .claim_control_soon(&handshake.creds.pair_id, handshake.access_epoch);
+            if !handshake.access_current() {
+                return;
+            }
             reply(
                 client,
                 &msg,
@@ -917,8 +924,16 @@ async fn handle_pair_handshake_confirm(
     // After the answer, for the same reason as the secure handshake: a claim
     // writes to disk, and no reply may wait on that. And like the secure path,
     // only a machine nobody holds is claimed by connecting to it.
-    if first_confirmation && !state.runtime.held_by_another(&state.creds.pair_id) {
-        let moved = state.runtime.claim_control_soon(&state.creds.pair_id);
+    if first_confirmation
+        && state.access_current()
+        && !state.runtime.held_by_another(&state.creds.pair_id)
+    {
+        let moved = state
+            .runtime
+            .claim_control_soon(&state.creds.pair_id, state.access_epoch);
+        if !state.access_current() {
+            return;
+        }
         if let Some(previous) = moved {
             state.runtime.publish_control(&previous, "standby");
         }
@@ -1022,7 +1037,7 @@ pub trait CommandRuntime: crate::secure::HandshakeHost {
     fn lean_events(&self, pair: &str) -> Arc<AtomicBool>;
     fn in_control(&self, pair: &str) -> bool;
     fn held_by_another(&self, pair: &str) -> bool;
-    fn claim_control_soon(&self, pair: &str) -> Option<String>;
+    fn claim_control_soon(&self, pair: &str, epoch: Option<u64>) -> Option<String>;
     fn light_presence(&self, pair: &str, bridge: &str) -> Value;
     fn publish_control(&self, pair: &str, control: &str);
     fn unpair_slot<'a>(

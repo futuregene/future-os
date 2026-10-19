@@ -163,3 +163,62 @@ pub fn empty(agent_available: bool) -> RemoteStatus {
         warning_code: None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn runtime_active_classifies_every_phase() {
+        for phase in [
+            RemotePhase::Connecting,
+            RemotePhase::Ready,
+            RemotePhase::Reconnecting,
+            RemotePhase::Refreshing,
+        ] {
+            let status = RemoteStatus {
+                phase,
+                reason: None,
+                ..empty(false)
+            };
+            assert!(runtime_active(&status), "{phase:?} should be active");
+        }
+        for phase in [
+            RemotePhase::Stopped,
+            RemotePhase::Failed,
+            RemotePhase::Revoked,
+        ] {
+            let status = RemoteStatus {
+                phase,
+                reason: None,
+                ..empty(false)
+            };
+            assert!(!runtime_active(&status), "{phase:?} should be inactive");
+        }
+    }
+    #[test]
+    fn only_transient_remote_start_failures_arm_background_recovery() {
+        let network = RemoteStatus {
+            phase: RemotePhase::Reconnecting,
+            reason: Some(RemoteFailureReason::Network),
+            ..empty(false)
+        };
+        let server = RemoteStatus {
+            phase: RemotePhase::Reconnecting,
+            reason: Some(RemoteFailureReason::RemoteServer),
+            ..empty(false)
+        };
+        let revoked = RemoteStatus {
+            phase: RemotePhase::Revoked,
+            reason: Some(RemoteFailureReason::CredentialRevoked),
+            ..empty(false)
+        };
+        assert!(retryable_start_status(&network));
+        assert!(retryable_start_status(&server));
+        assert!(!retryable_start_status(&revoked));
+        assert!(!retryable_start_status(&RemoteStatus {
+            phase: RemotePhase::Ready,
+            reason: Some(RemoteFailureReason::Network),
+            ..empty(false)
+        }));
+    }
+}

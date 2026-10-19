@@ -1,0 +1,249 @@
+use crate::{diagnostics::FailureEpisode, supervisor::unix_timestamp};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+/// Generation-local health reported by async-nats. Keeping this beside the
+/// client prevents a late callback from an old credential generation from
+/// poisoning the currently active bridge.
+#[derive(Default)]
+pub struct NatsHealth {
+    pub reconnect_required: AtomicBool,
+    pub service_config_error: AtomicBool,
+    /// This belongs to one NATS generation, never the process. A late event
+    /// from an old socket must not decide whether a newer JWT is terminal.
+    pub credential_was_refreshed: AtomicBool,
+    pub credential_expires_at: AtomicU64,
+    pub authorization_rejection_logged: AtomicBool,
+    pub event_episode: FailureEpisode,
+}
+
+impl NatsHealth {
+    pub fn handle_event(&self, event: &async_nats::Event) {
+        use async_nats::{ClientError, Event, ServerError};
+        match event {
+            Event::Connected => {
+                self.reconnect_required.store(false, Ordering::Release);
+                self.authorization_rejection_logged
+                    .store(false, Ordering::Release);
+                if let Some(line) = self.event_episode.recovered() {
+                    eprintln!("{line}");
+                }
+            }
+            Event::Disconnected => {
+                // Routine and self-healing: async-nats reconnects automatically,
+                // so a drop is expected noise. A real outage still surfaces via
+                // the ClientError/ServerError events fired on each failed
+                // reconnect attempt, so don't open a failure episode here.
+            }
+            Event::ServerError(ServerError::AuthorizationViolation) => {
+                self.mark_authorization_rejected();
+            }
+            // async-nats reports an authorization rejection that occurs while
+            // reconnecting as `ClientError::Other`, not `ServerError`. Treat
+            // this transient-client shape as a failed generation: the runtime
+            // supervisor replaces it with a fresh short-lived bridge JWT.
+            Event::ClientError(ClientError::Other(error)) if is_authorization_violation(error) => {
+                self.mark_authorization_rejected();
+            }
+            Event::ClientError(ClientError::MaxReconnects) => {
+                self.reconnect_required.store(true, Ordering::Release);
+                if let Some(line) = self
+                    .event_episode
+                    .record("network", "NATS reconnect budget exhausted")
+                {
+                    eprintln!("{line}");
+                }
+            }
+            Event::Closed => {
+                self.reconnect_required.store(true, Ordering::Release);
+                // Routine: the socket closed (credential-refresh swap, app
+                // shutdown, or a terminal reconnect failure already surfaced via
+                // ClientError/ServerError). A real outage still logs, so this
+                // stays silent instead of opening a failure episode.
+            }
+            Event::SlowConsumer(subscription) => {
+                if let Some(line) = self.event_episode.record("slow_consumer", subscription) {
+                    eprintln!("{line}");
+                }
+            }
+            Event::ServerError(ServerError::SlowConsumer(subscription)) => {
+                if let Some(line) = self.event_episode.record("slow_consumer", subscription) {
+                    eprintln!("{line}");
+                }
+            }
+            Event::ServerError(error) => {
+                if let Some(line) = self.event_episode.record("remote_server", error) {
+                    eprintln!("{line}");
+                }
+            }
+            Event::ClientError(error) => {
+                if let Some(line) = self.event_episode.record("network", error) {
+                    eprintln!("{line}");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn needs_reconnect(&self) -> bool {
+        self.reconnect_required.load(Ordering::Acquire)
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        self.service_config_error.load(Ordering::Acquire)
+    }
+
+    pub fn mark_authorization_rejected(&self) {
+        // The reconnect loop can deliver the same error indefinitely. One
+        // state transition is enough to make the supervisor refresh the JWT;
+        // suppress the duplicate events so a sleeping laptop cannot flood its
+        // console while that handoff is in progress.
+        if self.credential_was_refreshed.load(Ordering::Acquire)
+            && self.credential_expires_at.load(Ordering::Acquire) > unix_timestamp()
+        {
+            self.service_config_error.store(true, Ordering::Release);
+            if !self
+                .authorization_rejection_logged
+                .swap(true, Ordering::AcqRel)
+            {
+                eprintln!(
+                    "remote: freshly refreshed NATS credential was rejected [AU001]; entering service_authorization"
+                );
+            }
+            return;
+        }
+        self.reconnect_required.store(true, Ordering::Release);
+        if !self
+            .authorization_rejection_logged
+            .swap(true, Ordering::AcqRel)
+        {
+            eprintln!("remote: NATS authorization rejected [AU002]; refreshing bridge credentials");
+        }
+    }
+}
+
+pub fn is_authorization_violation(error: &str) -> bool {
+    error.trim().eq_ignore_ascii_case("authorization violation")
+}
+
+pub fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+pub fn reconnect_delay(attempt: usize, random: f64) -> std::time::Duration {
+    let exponent = attempt.min(5) as u32;
+    let base_secs = (1u64 << exponent).min(30);
+    std::time::Duration::from_secs_f64((base_secs as f64 * (0.8 + random * 0.4)).min(30.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    #[test]
+    fn nats_health_handles_remaining_event_variants() {
+        let health = NatsHealth::default();
+
+        // A routine drop: self-healing reconnect, no failure episode.
+        health.handle_event(&async_nats::Event::Disconnected);
+        assert!(!health.needs_reconnect());
+
+        // Slow-consumer and generic server errors each open an episode.
+        health.handle_event(&async_nats::Event::SlowConsumer(7));
+        health.handle_event(&async_nats::Event::ServerError(
+            async_nats::ServerError::SlowConsumer(8),
+        ));
+        health.handle_event(&async_nats::Event::ServerError(
+            async_nats::ServerError::Other("permissions".to_string()),
+        ));
+
+        // Remaining event shapes fall through the wildcard arm harmlessly.
+        health.handle_event(&async_nats::Event::LameDuckMode);
+        health.handle_event(&async_nats::Event::Draining);
+    }
+    #[test]
+    fn nats_health_classifies_recoverable_and_terminal_events() {
+        let health = NatsHealth::default();
+        health.handle_event(&async_nats::Event::ClientError(
+            async_nats::ClientError::MaxReconnects,
+        ));
+        assert!(health.needs_reconnect());
+        assert!(!health.is_terminal());
+
+        health.handle_event(&async_nats::Event::Connected);
+        assert!(!health.needs_reconnect());
+
+        // async-nats wraps reconnect-time authorization errors in the client
+        // event rather than forwarding the server event. This must trigger a
+        // generation refresh instead of leaving an apparently live bridge in
+        // an unbounded reconnect/log loop.
+        health.handle_event(&async_nats::Event::ClientError(
+            async_nats::ClientError::Other("authorization violation".to_string()),
+        ));
+        health.handle_event(&async_nats::Event::ClientError(
+            async_nats::ClientError::Other("authorization violation".to_string()),
+        ));
+        assert!(health.needs_reconnect());
+        assert!(!health.is_terminal());
+        assert!(health
+            .authorization_rejection_logged
+            .load(Ordering::Acquire));
+
+        health.handle_event(&async_nats::Event::Connected);
+        assert!(!health.needs_reconnect());
+        assert!(!health
+            .authorization_rejection_logged
+            .load(Ordering::Acquire));
+
+        health.handle_event(&async_nats::Event::ClientError(
+            async_nats::ClientError::Other("IO error".to_string()),
+        ));
+        health.handle_event(&async_nats::Event::ClientError(
+            async_nats::ClientError::Other("IO error".to_string()),
+        ));
+        assert!(!health.needs_reconnect());
+
+        health.handle_event(&async_nats::Event::Connected);
+
+        health
+            .credential_expires_at
+            .store(unix_timestamp() + 3600, Ordering::Release);
+        // The same rejection on the generation created by the reactive
+        // refresh is terminal service authorization.
+        health
+            .credential_was_refreshed
+            .store(true, Ordering::Release);
+        health.handle_event(&async_nats::Event::ServerError(
+            async_nats::ServerError::AuthorizationViolation,
+        ));
+        health.handle_event(&async_nats::Event::Connected);
+        assert!(
+            health.is_terminal(),
+            "reconnect must not hide an auth failure"
+        );
+    }
+    #[test]
+    fn expired_rotated_credential_is_refreshable_not_a_configuration_failure() {
+        let health = NatsHealth::default();
+        health
+            .credential_was_refreshed
+            .store(true, Ordering::Release);
+        health
+            .credential_expires_at
+            .store(unix_timestamp().saturating_sub(1), Ordering::Release);
+        health.mark_authorization_rejected();
+        assert!(health.needs_reconnect());
+        assert!(!health.is_terminal());
+    }
+    #[test]
+    fn desktop_reconnect_backoff_matches_the_shared_policy() {
+        assert_eq!(reconnect_delay(0, 0.5), Duration::from_secs(1));
+        assert_eq!(reconnect_delay(1, 0.5), Duration::from_secs(2));
+        assert_eq!(reconnect_delay(2, 0.5), Duration::from_secs(4));
+        assert_eq!(reconnect_delay(4, 0.5), Duration::from_secs(16));
+        assert_eq!(reconnect_delay(5, 0.5), Duration::from_secs(30));
+        assert!(reconnect_delay(20, 1.0) <= Duration::from_secs(30));
+    }
+}

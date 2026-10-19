@@ -14,6 +14,7 @@ pub fn load_slots() -> Vec<PairingCreds> {
 pub fn active_slot() -> Option<String> {
     super::host().active_slot()
 }
+#[cfg(test)]
 pub fn set_active(pair_id: &str) -> Result<(), crate::AppError> {
     super::host().set_active(pair_id).map_err(Into::into)
 }
