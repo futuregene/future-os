@@ -22,16 +22,24 @@ interface RefreshResponse {
   nats_ws_url: string;
 }
 
-// NATS must be reached over TLS: iOS's ATS rejects plaintext `ws://` and the
-// server now hands out `wss://` everywhere. Refuse a non-`wss://` endpoint
-// rather than silently degrade to cleartext.
-function assertSecureNatsUrl(url: string): void {
-  if (natsWsUrlScheme(url) !== "wss") {
-    // Server address only (no secret) — surfaces what the platform handed
-    // out when a pairing is rejected, in Metro/Xcode consoles.
-    console.warn(`[remote] rejecting non-wss NATS endpoint: ${url}`);
-    throw new Error("nats_ws_not_tls");
-  }
+// The NATS endpoint's scheme has to agree with the relay that minted the
+// pairing, and nothing else is accepted. A relay served over plain HTTP hands
+// out `ws://` — see `isAcceptableClaimUrl` for why that exists — while every
+// other pairing (the Future platform, and any relay on HTTPS) must answer
+// `wss://`. Deriving the expectation from the pairing's own claim/token URL,
+// which the invitation pinned, is what keeps a platform pairing from being
+// downgraded by a tampered response.
+function isPlaintextOrigin(url: string): boolean {
+  return url.trim().toLowerCase().startsWith("http://");
+}
+
+function assertNatsEndpoint(url: string, plaintextRelay: boolean): void {
+  const scheme = natsWsUrlScheme(url);
+  if (scheme === "wss" || (plaintextRelay && scheme === "ws")) return;
+  // Server address only (no secret) — surfaces what the platform handed
+  // out when a pairing is rejected, in Metro/Xcode consoles.
+  console.warn(`[remote] rejecting NATS endpoint: ${url}`);
+  throw new Error("nats_ws_not_tls");
 }
 
 async function responseJson<T>(response: Response): Promise<T> {
@@ -107,7 +115,7 @@ export async function claimPairingCode(
     responseJson<ClaimResponse>,
     signal,
   );
-  assertSecureNatsUrl(body.nats_ws_url);
+  assertNatsEndpoint(body.nats_ws_url, isPlaintextOrigin(pairing.claim_url));
   assertValidJwt(body.user_jwt);
   const credentials: RemoteCredentials = {
     secureBundle: JSON.stringify({ identity: secureIdentity, desktopKey: invitation.secureKey, secret: invitation.secret }),
@@ -150,7 +158,7 @@ export async function refreshCredentials(
     userJwt: body.user_jwt,
     natsWsUrl: body.nats_ws_url,
   };
-  assertSecureNatsUrl(body.nats_ws_url);
+  assertNatsEndpoint(body.nats_ws_url, isPlaintextOrigin(credentials.tokenUrl));
   assertValidJwt(body.user_jwt);
   return refreshed;
 }

@@ -62,8 +62,12 @@ describe("isAcceptableClaimUrl", () => {
       .toBe(false);
   });
 
-  test("a relay claim must still be https, on the platform path, with no credentials", () => {
+  test("a relay claim may use the scheme the relay declared, and nothing else", () => {
+    expect(isAcceptableClaimUrl("http://relay.example/client/v1/remote/pair/claim", "http://relay.example"))
+      .toBe(true);
+
     for (const url of [
+      // Declaring https and claiming over http is the downgrade this rules out.
       "http://relay.example/client/v1/remote/pair/claim",
       "https://user:pass@relay.example/client/v1/remote/pair/claim",
       "https://relay.example/client/v1/remote/auth/token",
@@ -71,8 +75,29 @@ describe("isAcceptableClaimUrl", () => {
       "https://relay.example/client/v1/remote/pair/claim?x=1",
       "https://relay.example/client/v1/remote/pair/claim#x",
       "https://relay.example:8443/client/v1/remote/pair/claim",
+      "http://relay.example:8443/client/v1/remote/pair/claim",
     ]) {
       expect(isAcceptableClaimUrl(url, "https://relay.example")).toBe(false);
+    }
+  });
+
+  // A LAN relay is plain HTTP because neither platform trusts a certificate it
+  // cannot verify there; the invitation, not TLS, is what authenticates it.
+  test("a plain-HTTP relay is claimed at its own origin", () => {
+    expect(
+      isAcceptableClaimUrl(
+        "http://192.168.1.10:8099/client/v1/remote/pair/claim",
+        "http://192.168.1.10:8099",
+      ),
+    ).toBe(true);
+    // Still pinned: a different host, a different port, or a different scheme.
+    for (const [url, relay] of [
+      ["http://192.168.1.11:8099/client/v1/remote/pair/claim", "http://192.168.1.10:8099"],
+      ["http://192.168.1.10:8098/client/v1/remote/pair/claim", "http://192.168.1.10:8099"],
+      ["https://192.168.1.10:8099/client/v1/remote/pair/claim", "http://192.168.1.10:8099"],
+      ["http://192.168.1.10:8099/client/v1/remote/auth/token", "http://192.168.1.10:8099"],
+    ] as const) {
+      expect(isAcceptableClaimUrl(url, relay)).toBe(false);
     }
   });
 

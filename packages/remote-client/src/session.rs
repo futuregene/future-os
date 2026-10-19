@@ -27,8 +27,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::time::Duration;
 
-/// Environment supplied by the host for one connection attempt. TLS is always
-/// required in production; the host chooses the device labels and trust bundle.
+/// Environment supplied by the host for one connection attempt. Platform
+/// pairings require TLS; a declared plaintext relay retains its token-URL policy.
+/// The host chooses the device labels and trust bundle.
 #[derive(Clone, Debug)]
 pub struct ConnectionOptions {
     pub device_name: String,
@@ -979,8 +980,9 @@ pub async fn connect(
         Some(bundle) => options.add_root_certificates(bundle.clone()),
         None => options,
     };
-    // Unit tests use an in-process, plaintext fake broker. There is no runtime
-    // switch that permits a production TLS downgrade.
+    // The pairing's token URL records whether its self-hosted relay declared
+    // plaintext transport. Platform/HTTPS pairings continue to require TLS.
+    // Test-only plaintext fixtures still validate loopback before connecting.
     let options = if environment.insecure_loopback() {
         let endpoint = url::Url::parse(&creds.nats_url)
             .map_err(|_| crate::Error::Message("remote_test_endpoint_invalid".into()))?;
@@ -992,6 +994,8 @@ pub async fn connect(
                 "remote_test_endpoint_not_loopback".into(),
             ));
         }
+        options
+    } else if creds.token_url.starts_with("http://") {
         options
     } else {
         options.require_tls(true)

@@ -88,6 +88,12 @@ const config: ExpoConfig = {
           compileSdkVersion: 36,
           targetSdkVersion: 36,
           buildToolsVersion: "36.0.0",
+          // A self-hosted relay on a home LAN can only be reached over plain
+          // HTTP: Android ignores user-installed CAs for apps targeting API 24+,
+          // so a self-signed certificate has no trust anchor on the phone. The
+          // debug variants already permit cleartext; without this a release
+          // build refuses the pairing before the request leaves the app.
+          usesCleartextTraffic: true,
         },
         ios: {
           deploymentTarget: "16.4",
@@ -109,6 +115,13 @@ const config: ExpoConfig = {
     // follow a Chinese device/app language as well.
     infoPlist: {
       CFBundleLocalizations: ["en", "zh-Hans", "zh-Hant"],
+      // A self-hosted relay reached by LAN IP or `.local` name may be plain
+      // HTTP (see the Android note above). This exemption covers exactly those
+      // local destinations; ATS still applies to public hostnames, where a
+      // certificate is available and expected.
+      NSAppTransportSecurity: {
+        NSAllowsLocalNetworking: true,
+      },
       // Open In is independent of the optional Share Extension/App Group.
       // Import a private copy; never edit the source document in place.
       LSSupportsOpeningDocumentsInPlace: false,

@@ -1,5 +1,5 @@
-//! Server NATS connector. The host supplies trust material; production always
-//! requires verified TLS independently of the endpoint's URL scheme.
+//! Server NATS connector. The host supplies trust material; platform pairings
+//! require verified TLS, while a self-hosted relay may declare plaintext.
 use crate::{
     health::{reconnect_delay, NatsHealth},
     PairingCreds,
@@ -42,9 +42,8 @@ pub struct ConnectedNats {
     pub health: Arc<NatsHealth>,
 }
 
-/// NATS remains a direct TCP connection, but production requires verified TLS
-/// even when the endpoint uses the nats:// scheme. E2EE protects content from
-/// the broker; TLS independently protects credentials and transport metadata.
+/// A pairing issued by a self-hosted relay may use its declared plaintext
+/// endpoint. Platform pairings and TLS relay endpoints retain verified TLS.
 pub async fn connect_nats(
     creds: &PairingCreds,
     credential_was_refreshed: bool,
@@ -79,12 +78,19 @@ pub async fn connect_nats(
         Some(bundle) => options.add_root_certificates(bundle),
         None => options,
     };
-    let options = options.require_tls(environment.require_tls(&creds.nats_url)?);
+    let fixture_requires_tls = environment.require_tls(&creds.nats_url)?;
+    let options = options.require_tls(fixture_requires_tls && !plaintext_relay(creds));
     let client = options.connect(&creds.nats_url).await.map_err(|error| {
         let message = format!("Failed to connect to NATS: {error}");
         classify_nats_connect_error(error.kind(), message)
     })?;
     Ok(ConnectedNats { client, health })
+}
+
+/// Preserve the relay policy from the application before extraction: only a
+/// relay-issued pairing whose endpoint declares nats:// waives required TLS.
+fn plaintext_relay(creds: &PairingCreds) -> bool {
+    creds.control_url.is_some() && creds.nats_url.starts_with("nats://")
 }
 
 fn classify_nats_connect_error(
@@ -108,6 +114,37 @@ fn classify_nats_connect_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Only a self-hosted relay that actually declares a plaintext endpoint may
+    /// keep a plaintext NATS connection; the official platform and a relay that
+    /// kept TLS both keep the unconditional requirement.
+    #[test]
+    fn only_a_plaintext_self_hosted_relay_waives_the_tls_requirement() {
+        let mut creds = serde_json::from_value::<PairingCreds>(serde_json::json!({
+            "pairId":"pair_plain", "desktopId":"desktop", "nkeySeed":"fixture",
+            "userJwt":"fixture", "natsUrl":"nats://127.0.0.1:4222",
+            "natsWsUrl":"ws://127.0.0.1:8080", "jwtExpiresAt":0
+        }))
+        .unwrap();
+        // The fixture is a platform pairing (no relay) on a plaintext URL: that
+        // combination is exactly the downgrade the rule must refuse.
+        assert!(!plaintext_relay(&creds));
+
+        creds.control_url = Some("http://192.168.1.10:8099".into());
+        assert!(
+            plaintext_relay(&creds),
+            "a LAN relay serving nats:// is plaintext"
+        );
+
+        // Keeping TLS is the relay's own choice and stays enforced.
+        creds.nats_url = "tls://192.168.1.10:4222".into();
+        assert!(!plaintext_relay(&creds));
+
+        // A platform pairing names no relay, so a plaintext URL is not a waiver.
+        creds.nats_url = "nats://192.168.1.10:4222".into();
+        creds.control_url = None;
+        assert!(!plaintext_relay(&creds));
+    }
+
     #[test]
     fn classify_nats_connect_error_covers_server_parse() {
         assert!(matches!(
