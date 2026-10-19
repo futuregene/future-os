@@ -47,6 +47,18 @@ pub async fn remote_unpair_device(
     remote::unpair_slot(&pair_id).await
 }
 
+/// Disconnect one device but keep it paired.
+///
+/// Stops serving that device (and tells it it is offline) without touching its
+/// credential, so "断开" and "删除" stay distinct actions in the client list: the
+/// device can be reconnected by turning the remote desktop off and on again.
+#[tauri::command]
+pub async fn remote_disconnect_device(
+    pair_id: String,
+) -> Result<remote::RemoteStatus, crate::AppError> {
+    remote::disconnect_device(&pair_id).await
+}
+
 /// Add a device beside the ones already paired and return the invitation to
 /// display. The bridge for the new device is started immediately so the code
 /// works the moment it is shown.

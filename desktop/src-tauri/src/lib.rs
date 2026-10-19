@@ -1215,6 +1215,7 @@ mod gui {
                 remote_status,
                 remote_unpair,
                 remote_unpair_device,
+                remote_disconnect_device,
                 remote_add_device,
                 remote_takeover,
                 remote_pairing_status,

@@ -55,6 +55,43 @@ pub async fn unpair_slot(pair_id: &str) -> Result<RemoteStatus, crate::AppError>
     Ok(status())
 }
 
+/// Disconnect one device while keeping it paired.
+///
+/// The pairing is the credential on disk; the runtime is this process's live
+/// bridge for that device. Tearing the runtime down stops serving it and tells
+/// it it is offline, while the device stays in the list — reconnectable by
+/// turning the remote desktop off and on again, or removable by unpairing.
+///
+/// Control is released rather than handed on, for the same reason unpairing
+/// does: choosing the next controller is the user's decision.
+pub async fn disconnect_device(pair_id: &str) -> Result<RemoteStatus, crate::AppError> {
+    if !SUPERVISOR.state.lock().unwrap().contains_key(pair_id) {
+        // No runtime means the device is already not connected; saying so is
+        // more useful than a silent success that would hide a typo.
+        return Err(crate::AppError::Message("device_offline".to_string()));
+    }
+    let notice = mobile_disconnect_notice_for(pair_id, "disconnected");
+    let released = SUPERVISOR
+        .active
+        .lock()
+        .unwrap()
+        .as_deref()
+        .is_some_and(|active| active == pair_id);
+    if released {
+        SUPERVISOR.release_control(pair_id);
+    }
+    stop_slot(pair_id);
+    // Deliberately no `promote_a_lone_device` here, unlike unpairing: the
+    // device stays paired, and promoting it would report a device this machine
+    // is no longer serving as its controller. Control stays with nobody until a
+    // device connects and claims it (the persisted pointer is untouched, so the
+    // same device takes it back when it reconnects).
+    if let Some((client, subject, payload)) = notice {
+        crate::runtime::spawn(send_mobile_disconnect_notice(client, subject, payload));
+    }
+    Ok(status())
+}
+
 #[cfg(test)]
 pub(in crate::remote) async fn notify_mobile_unpair() {
     for (client, subject, payload) in mobile_unpair_notices() {

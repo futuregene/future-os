@@ -81,6 +81,43 @@ vi.mock("../remote-peer/remotePeerClient", () => ({
   setRemotePeerLabel: (...args: Parameters<typeof setRemotePeerLabel>) => setRemotePeerLabel(...args),
 }));
 
+/** The two pages *this machine's* direction owns, stubbed the same way. */
+const hostPages = vi.hoisted(() => ({
+  client: null as unknown,
+  settings: null as unknown,
+}));
+
+vi.mock("./RemoteHostClientPage", async () => {
+  const { createElement } = await import("react");
+  return {
+    RemoteHostClientPage: (props: { onBack: () => void; pairId: string }) => {
+      hostPages.client = props;
+      return createElement(
+        "div",
+        { "data-child": "host-client", "data-pair": props.pairId },
+        createElement("button", { "data-back": "1", "onClick": props.onBack }),
+      );
+    },
+  };
+});
+vi.mock("./RemoteHostSettingsPage", async () => {
+  const { createElement } = await import("react");
+  return {
+    RemoteHostSettingsPage: (props: { autoConnect: boolean; onBack: () => void; onToggleAutoConnect: (v: boolean) => void }) => {
+      hostPages.settings = props;
+      return createElement(
+        "div",
+        { "data-child": "host-settings", "data-auto": String(props.autoConnect) },
+        createElement("button", { "data-back": "1", "onClick": props.onBack }),
+        createElement("button", {
+          "data-toggle-auto": "1",
+          "onClick": () => props.onToggleAutoConnect(!props.autoConnect),
+        }),
+      );
+    },
+  };
+});
+
 const toasts = vi.hoisted(() => [] as Array<{ message: string; tone?: string }>);
 vi.mock("../../lib/futureEvents", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/futureEvents")>();
@@ -150,6 +187,8 @@ async function openSettings(desktopId = "desk_a") {
 
 beforeEach(() => {
   toasts.length = 0;
+  hostPages.client = null;
+  hostPages.settings = null;
   setRemotePeerLabel.mockReset().mockResolvedValue(undefined);
   sections.host = null;
   sections.client = null;
@@ -226,9 +265,12 @@ it("gives each direction what it needs, and nothing crossed over", async () => {
   const props = await mount({ autoConnect: true, remoteStatus: status({ pairId: "pair_1" }) });
 
   expect(sections.host).toMatchObject({
-    autoConnect: true,
     remoteStatus: { pairId: "pair_1" },
   });
+  // The host list opens a client's page and this direction's settings; the
+  // auto-connect preference moved behind that settings page.
+  expect(sections.host).toHaveProperty("onOpenDevice");
+  expect(sections.host).toHaveProperty("onOpenSettings");
   expect(sections.client).toMatchObject({ onReconnectAll: props.onReconnectRemoteAll });
   // The host half has no machines to reconnect, and the client half has no
   // pairing state: a prop on the wrong side would be invisible until it
@@ -335,4 +377,45 @@ it("re-reads the machines when the settings page reports a change", async () => 
   await act(async () => container.querySelector<HTMLButtonElement>("[data-back='1']")!.click());
 
   expect((sections.client as { refreshNonce?: number }).refreshNonce).not.toBe(before);
+});
+
+/**
+ * A paired client's own page is a page of this window too.
+ *
+ * The hub's list is a list: which client is which, what it may do, and whether
+ * it stays paired are details, and details are behind a row.
+ */
+it("opens a paired client's page in this window, and comes back to the list", async () => {
+  await mount({ remoteStatus: status({ pairId: "pair_1" }) });
+
+  await act(async () => (sections.host as { onOpenDevice: (pairId: string) => void })
+    .onOpenDevice("pair_beta"));
+
+  expect(container.querySelector("[data-child='host-client']")!.getAttribute("data-pair")).toBe("pair_beta");
+  // One page at a time: the hub's own content is gone, not behind it.
+  expect(container.querySelector("[data-testid='remote-hub-lead']")).toBeNull();
+  expect(container.querySelector("[data-child='host-section']")).toBeNull();
+
+  await act(async () => container.querySelector<HTMLButtonElement>("[data-back='1']")!.click());
+
+  expect(container.querySelector("[data-child='host-client']")).toBeNull();
+  expect(container.querySelector("[data-child='host-section']")).not.toBeNull();
+});
+
+/** The direction's own settings (auto-connect) are a page, not rows under the list. */
+it("opens this direction's settings in this window, and toggles the preference", async () => {
+  const props = await mount({ autoConnect: true, remoteStatus: status({ pairId: "pair_1" }) });
+
+  await act(async () => (sections.host as { onOpenSettings: () => void }).onOpenSettings());
+
+  const page = container.querySelector("[data-child='host-settings']")!;
+  expect(page.getAttribute("data-auto")).toBe("true");
+  expect(container.querySelector("[data-testid='remote-hub-lead']")).toBeNull();
+
+  await act(async () => container.querySelector<HTMLButtonElement>("[data-toggle-auto='1']")!.click());
+  expect(props.onToggleAutoConnect).toHaveBeenCalledWith(false);
+
+  await act(async () => container.querySelector<HTMLButtonElement>("[data-back='1']")!.click());
+  expect(container.querySelector("[data-child='host-settings']")).toBeNull();
+  expect(container.querySelector("[data-child='host-section']")).not.toBeNull();
 });
