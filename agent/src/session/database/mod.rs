@@ -154,6 +154,8 @@ pub(crate) use transactions::{begin_write_transaction, try_maintenance_transacti
 #[cfg(test)]
 mod connection_tests;
 #[cfg(test)]
+mod historical_upgrade_tests;
+#[cfg(test)]
 mod reclamation_arm_tests;
 #[cfg(test)]
 mod tests;
