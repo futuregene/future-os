@@ -268,4 +268,40 @@ mod tests {
         );
         assert!(crate::store::get_thread(&thread.id).unwrap().is_some());
     }
+
+    /// The fence keeps its teeth: an id the Agent database has NO row for is
+    /// still refused, and refuses before any source binding is recorded.
+    ///
+    /// This is the negative half of the fresh-conversation fix. Widening
+    /// presence to count the creation placeholder (`revision=-1`) must not turn
+    /// into "any id is fine" — a conversation from another database would then
+    /// be silently bound and its (empty) history would replace the real one.
+    #[cfg(feature = "gui")]
+    #[tokio::test]
+    async fn a_session_with_no_row_is_still_refused_as_unavailable() {
+        let home = TestHome::new("presence-missing");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "missing-source");
+        let thread = seed_thread(&workspace.id, Some("session"));
+        mock.push_data(
+            "get_session_presence",
+            json!({"databaseId":"some-database","restoreGeneration":"generation",
+            "sessions":[{"sessionId":"session","status":"missing"}]}),
+        );
+
+        let error = verify_thread_source(&thread.id, "session")
+            .await
+            .expect_err("a session with no row must not pass the source fence");
+        assert!(
+            error
+                .to_string()
+                .contains("Conversation source is unavailable"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            crate::store::thread_source(&thread.id).unwrap(),
+            None,
+            "a refused session must not be bound to this database"
+        );
+    }
 }

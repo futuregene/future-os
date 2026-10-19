@@ -2111,4 +2111,75 @@ mod tests {
             "the replacement is applied in memory even when persisting it fails"
         );
     }
+
+    // ─── presence: a fresh conversation belongs to this database ──────────
+
+    /// End-to-end through the RPC surface the Desktop calls: build a session
+    /// the way `new_session` does (its construction configures the event
+    /// journal, which writes the `revision=-1` placeholder row), then ask
+    /// `get_session_presence` about it.
+    ///
+    /// Regression: presence required `revision>=0`, so a brand-new conversation
+    /// answered `missing`. The Desktop's source fence reads `missing` as "this
+    /// id is not in your database" and refuses to prompt, so the first turn
+    /// could never land and the revision could never advance — the thread was
+    /// permanently unusable (measured: two new conversations, 386 failed runs,
+    /// zero entries).
+    #[test]
+    fn a_just_created_session_is_present_before_its_first_turn() {
+        let (_dir, state) = bare_app_state();
+        let session = crate::rpc::ServerSession::new_with_queue_budget(
+            "fresh-conversation".to_string(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
+                std::sync::Arc::new(crate::test_support::EmptyProvider),
+                "test-model",
+            ))),
+            state.session_manager.clone(),
+            "/tmp",
+            std::sync::Arc::new(SseBroadcaster::new()),
+            state.approval_gate.clone(),
+            state.model_registry.clone(),
+            state.queue_budget.clone(),
+        );
+        let id = state.create_session(session);
+
+        // Creation writes the placeholder, not a transcript: with no entry yet
+        // the session must stay OUT of `list_sessions` (`revision=-1`), while
+        // presence must still recognise the id as belonging to this database.
+        let listed = state.session_manager.list_all().unwrap_or_default();
+        assert!(
+            listed.iter().all(|summary| summary.id != id),
+            "an empty session must not be listed: {listed:?}"
+        );
+
+        let presence = |ids: Vec<String>| -> serde_json::Value {
+            let command: RpcCommand = serde_json::from_value(serde_json::json!({
+                "id": "presence",
+                "type": "get_session_presence",
+                "sessionIds": ids,
+            }))
+            .expect("presence command");
+            serde_json::from_str(&crate::rpc::commands::handle_command_internal(
+                &state, command,
+            ))
+            .expect("presence response is JSON")
+        };
+
+        let response = presence(vec![id.clone()]);
+        assert_eq!(
+            response["success"], true,
+            "presence must not fail: {response}"
+        );
+        assert_eq!(
+            response["data"]["sessions"][0]["status"], "present",
+            "a freshly created conversation belongs to this database: {response}"
+        );
+
+        // The placeholder is what makes it present — not a broadened answer.
+        let stranger = presence(vec!["never-created".to_string()]);
+        assert_eq!(
+            stranger["data"]["sessions"][0]["status"], "missing",
+            "an id with no row at all must still read missing: {stranger}"
+        );
+    }
 }
