@@ -1256,7 +1256,7 @@ mod runtime_tests {
         wait_for_web_port_free().await;
     }
 
-    /// `--re-pair` runs the Remote page's two buttons in the order that works: the
+    /// `re_pair` runs the Remote page's two buttons in the order that works: the
     /// stored pairing is revoked *before* the invitation is minted. The order is
     /// the whole content of the helper, and it is observable here — a start-first
     /// sequence would take the scripted refresh, show no code at all, and leave the
@@ -1292,8 +1292,8 @@ mod runtime_tests {
     }
 
     /// A desktop the platform already knows gets the same `pair_id` back for a new
-    /// invitation, so `--re-pair` must deliver the old binding's revoke *before* it
-    /// mints the replacement — a revoke queued behind the new invitation would
+    /// invitation, so replacing the pairing must deliver the old binding's revoke
+    /// *before* it mints the replacement — a revoke queued behind the new invitation would
     /// cancel the code the command prints. The invitation also retires that queued
     /// revoke, so the compensation loop cannot cancel it on its next tick.
     #[tokio::test]

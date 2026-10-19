@@ -170,67 +170,40 @@ the full `futureos://remote/pair` link for the app to scan or paste — not a
 short numeric code. The graphical `futureos` entrypoint no longer accepts
 `--headless`; the standalone binary is built without GUI dependencies.
 
-**The graphical entry point accepts `--re-pair`, plus `--no-qr` for it.**
-`futureos --re-pair` revokes the saved pairing and issues a fresh invitation,
-which is then printed to the terminal that asked — a QR code plus the complete
-link, drawn by the same renderer the headless entry point uses (`--no-qr`, with
-`--re-pair`, prints the link only). The code is never printed by the window,
-because a window has no terminal to print it to.
+**Pairing is managed from the terminal, through the running Desktop.** Neither
+entry point takes a pairing flag. `future remote devices` (the `future` CLI) is the
+terminal half of the Remote page: `list`, `use` and `remove` read and edit the
+pairing book directly, because those are changes to the book alone and must work
+with nothing running. `add` cannot be: an invitation is only usable while the
+bridge for its pairing is connected, so the process that owns the data directory
+has to mint it.
 
-That printing has to survive the process's own console handling. On Windows the
-graphical entry point deliberately detaches from the console it was started from
-(`FreeConsole` in `run_with`) so a launch from Explorer leaves no console window;
-that also drops the standard handles, and the invitation is printed later, from
-the event loop. The invitation therefore goes through
-`launch::print_to_terminal`, which reattaches to the launching terminal
-(`AttachConsole(ATTACH_PARENT_PROCESS)`), switches the console to UTF-8 and
-virtual-terminal processing for the QR block, and detaches again once the text is
-in that terminal's buffer — so a long-running Desktop is never tied to the
-lifetime of the shell that asked it one question. When there is no parent
-console at all it allocates one and leaves it open, because the invitation would
-totherwise disappear with it.
+That request travels as a file. `future remote devices add` writes
+`{"op":"add-device","reply":"<path>"}` into `~/.future/app/remote-control/`, then
+polls the reply path for its answer; the running Desktop — window or headless, both
+start `remote::control::spawn_host` — claims the request by renaming it, performs
+the operation and writes `{pairId, link, expiresAt}` or `{error}` back. The reply
+path is a temporary file the asking process created for itself, so two terminals
+asking at once cannot read each other's invitation, and a request older than two
+minutes is deleted rather than served: its asker has given up. The Desktop refuses
+with a sentence, not silence, when the remote switch is off (`RemotePhase::Stopped`)
+or when the request names an operation it does not know.
 
-The flag is refused without an interactive terminal: it cuts off the connected
-device the moment it runs (pairing replaces, see §2.2), and a script is where such
-a command would end up unattended. Where the invitation comes from depends on who
-owns the pairing:
-
-- **No Desktop owns the data directory.** This launch becomes the Desktop and
-  performs the re-pair itself, printing the invitation to its own terminal while
-  the window's Remote page shows the same code.
-- **Another Desktop owns it** (the GUI, or a headless instance). This process
-  cannot re-pair — the pairing, the credentials and the data-directory lock belong
-  to that instance. It stays in the foreground and waits, while a short-lived child
-  (the same executable with `--re-pair --re-pair-reply <path>`) delivers the request
-  on the one channel the running instance listens to: the `argv` the
-  single-instance plugin hands over. The running Desktop writes its answer — the
-  invitation, or why there was none — to that path, and the waiting process prints
-  it. The `--re-pair-reply` flag is internal to that pair of processes.
-
-Re-pair behaves the same whatever the previous state was — no pairing at all, a
-stale or server-revoked one, or a device currently connected: the saved credential
-is cleared first and the replacement invitation is minted afterwards. Two details
-make that order hold in practice. The terminal answer is the invitation itself,
-judged only by whether it can still be scanned; it does not wait for the Agent
-availability probe, which starts with the bridge and cannot have answered when a
-launch re-pairs, so a valid code is never withheld as "no invitation was issued".
-And because the platform gives a desktop it already knows the *same* `pair_id` for
-the replacement invitation, the old binding's revoke is delivered before the new
-code is minted (not left to the 30-second compensation loop), and a successful
-invitation retires any queued revoke for its own pair id — otherwise that loop
-would cancel the code the user had just been handed.
-
-The hand-off exists because the plugin's channel is one-way: the launching process
-is terminated as soon as its `argv` is delivered, so it cannot be the one that
-prints unless it waits for an explicit answer. A running *headless* instance does
-not listen for the request at all; the wait then fails fast with that explanation
-rather than sitting out its timeout.
+Two details make the answer scannable in practice. It is the invitation itself,
+judged only by whether it can still be scanned, so the Agent availability probe —
+which starts with the bridge and cannot have answered yet — never turns a valid
+code into "no invitation was issued". And because the platform gives a desktop it
+already knows the *same* `pair_id` for a replacement, a successful invitation
+retires any queued revoke for its own pair id (otherwise the compensation loop
+would cancel the code the user was just handed), and minting on a machine whose
+book was just emptied (`remove --all`) first stops the bridges that outlived their
+credentials.
 
 Valid login and pairing are reused; no proactive re-pairing on every launch or
-disconnect. `--no-qr` keeps only the text link, with automatic fallback on
-narrow terminals; `--re-pair` explicitly authorizes replacing the original
-pairing. First login/pairing requires an interactive terminal; the invitation
-is refused for redirected logs. GUI and headless modes are mutually exclusive
+disconnect. The invitation is printed as a QR code with its complete link, with
+automatic fallback to the link alone on narrow terminals — which is why no flag
+suppresses the code. First login/pairing requires an interactive terminal; the
+invitation is refused for redirected logs. GUI and headless modes are mutually exclusive
 over the same data directory, preventing double takeover.
 
 Ctrl+C cancels during login, startup, pairing, and running phases; Unix

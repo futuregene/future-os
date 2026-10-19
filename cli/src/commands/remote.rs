@@ -2,19 +2,25 @@
 //! desktop, from a terminal.
 //!
 //! The window's Remote page manages the same list through Tauri commands; a
-//! headless server has no window, and until now its only knob was
-//! `futureos-headless --re-pair`, which revokes *every* device and issues a
-//! replacement invitation. That answers "switch phones" and nothing else: a
+//! headless server has no window, and its only knob used to be
+//! `futureos-headless --re-pair`, which revoked *every* device and issued a
+//! replacement invitation. That answered "switch phones" and nothing else: a
 //! machine with several paired clients could not say who they were, could not
 //! drop one of them, and could not choose which one drives it.
 //!
 //! # What is authoritative
 //!
-//! The pairing book on disk (`~/.future/remote_pairings.json`, or the
-//! pre-multi-device `remote_pairing.json` read as a book with one slot) is what
-//! the Desktop itself reads at start and on every command path. That makes it
-//! the honest thing for this command to read and edit, and it means the command
-//! needs nothing running.
+//! For everything except `add`, the pairing book on disk
+//! (`~/.future/remote_pairings.json`, or the pre-multi-device
+//! `remote_pairing.json` read as a book with one slot) is authoritative: it is
+//! what the Desktop itself reads at start and on every command path. That makes
+//! it the honest thing for this command to read and edit, and it means those
+//! actions need nothing running.
+//!
+//! `add` cannot work that way. An invitation is only usable while the bridge for
+//! its pairing is connected, so it has to be minted by the process that serves
+//! the machine — the window, or `futureos-headless`. That request goes to the
+//! running Desktop as a file and comes back as one (see [`request_invitation`]).
 //!
 //! The document is parsed and rewritten as a [`serde_json::Value`] rather than a
 //! mirrored struct: the fields this command does not understand (the NKey seed,
@@ -32,6 +38,11 @@
 //! - **Use** is persisted for the next start. Control is an in-memory pointer in
 //!   the running process (a device taking over must move it too), so a running
 //!   Desktop keeps its current controller until it restarts.
+//! - **Add** is the Desktop's own action: it mints the invitation and starts the
+//!   bridge for it before answering, so the code works the moment it is printed.
+//!   Existing devices stay paired. When the book is empty (a `remove --all` just
+//!   ran, possibly while the old bridges were still connected), the Desktop takes
+//!   its replace path first, which stops them before minting.
 //!
 //! A revoke that cannot be delivered is queued where the Desktop already looks
 //! (`remote_pending_revokes.json`), so stopping here never loses it.
@@ -42,7 +53,7 @@ use crate::output::Output;
 use serde_json::{json, Value};
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The multi-device credential book (`~/.future/remote_pairings.json`).
 const BOOK_FILE: &str = "remote_pairings.json";
@@ -55,6 +66,9 @@ const PENDING_REVOKES_FILE: &str = "remote_pending_revokes.json";
 /// The lock the Desktop holds for the lifetime of the process; holding it is
 /// exactly "a Desktop owns this data directory" (`instance.rs`).
 const DESKTOP_LOCK_FILE: &str = "desktop.lock";
+/// The self-hosted relay this installation points at, and the CA it needs
+/// (`relay.rs`'s `SETTINGS_FILE`).
+const RELAY_SETTINGS_FILE: &str = "relay.json";
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -73,7 +87,7 @@ pub async fn remote(command: Option<&str>, rest: &[String], out: &Output) -> Res
     }
 }
 
-/// Everything below the group, and above the three actions.
+/// Everything below the group, and above the four actions.
 async fn devices(args: &[String], out: &Output) -> Result<(), String> {
     let (action, rest) = match args.first().map(String::as_str) {
         None => ("list", args),
@@ -81,7 +95,7 @@ async fn devices(args: &[String], out: &Output) -> Result<(), String> {
             out.log(help::REMOTE_HELP);
             return Ok(());
         }
-        Some("list" | "remove" | "use") => (args[0].as_str(), &args[1..]),
+        Some("list" | "add" | "remove" | "use") => (args[0].as_str(), &args[1..]),
         // A flag before any action belongs to the default one, so
         // `future remote devices --json` is a list (and `--bogus` is reported by
         // the action that would have taken it, not as an unknown command).
@@ -99,6 +113,7 @@ async fn devices(args: &[String], out: &Output) -> Result<(), String> {
     {
         out.log(match action {
             "list" => help::REMOTE_LIST_HELP,
+            "add" => help::REMOTE_ADD_HELP,
             "remove" => help::REMOTE_REMOVE_HELP,
             _ => help::REMOTE_USE_HELP,
         });
@@ -106,6 +121,7 @@ async fn devices(args: &[String], out: &Output) -> Result<(), String> {
     }
     match action {
         "list" => list(rest, out),
+        "add" => add(rest, out).await,
         "remove" => remove(rest, out).await,
         _ => take_control(rest, out),
     }
@@ -549,17 +565,222 @@ fn document(book: &Book, running: bool) -> Value {
     })
 }
 
+// ── add ─────────────────────────────────────────────────────────────────────
+
+/// How long a running Desktop gets to answer.
+///
+/// Sized for the slow path: minting the invitation is one platform round trip
+/// (20s request timeout), and the bridge for the new device is started before the
+/// answer, so a slow network can hold this for a while. A terminal that gives up
+/// first is no loss — the invitation expires on its own.
+#[cfg(not(test))]
+const REPLY_TIMEOUT: Duration = Duration::from_secs(60);
+/// Tests answer from an in-process fake, so the wait only has to be long enough
+/// for two tasks on the same runtime to take turns.
+#[cfg(test)]
+const REPLY_TIMEOUT: Duration = Duration::from_millis(400);
+
+/// Between two reads of the answer file.
+#[cfg(not(test))]
+const REPLY_POLL: Duration = Duration::from_millis(100);
+#[cfg(test)]
+const REPLY_POLL: Duration = Duration::from_millis(5);
+
+/// The directory the running Desktop watches (`~/.future/app/remote-control`).
+const CONTROL_DIRECTORY: &str = "remote-control";
+/// Suffix that marks a request, matching the Desktop's own rule.
+const REQUEST_SUFFIX: &str = ".request.json";
+
+/// `future remote devices add` — mint an invitation for a device that is not
+/// paired yet.
+///
+/// The request goes to the running Desktop rather than being performed here: an
+/// invitation is only usable while a bridge for its pairing is connected, and
+/// that bridge lives in the Desktop process that owns this data directory. So
+/// this needs a Desktop running — the window, or `futureos-headless` — and on a
+/// machine that has never paired, starting it already prints an invitation.
+async fn add(args: &[String], out: &Output) -> Result<(), String> {
+    let values = positional(args, &["--json"], help::REMOTE_USAGE)?;
+    let json_flag = args.iter().any(|argument| argument == "--json");
+    if let Some(extra) = values.first() {
+        return Err(format!(
+            "`add` takes no argument: it issues an invitation, and the device joins by \
+             scanning it (drop `{extra}`).\n\n{}",
+            help::REMOTE_USAGE
+        ));
+    }
+    if !desktop_running() {
+        return Err(format!(
+            "No Desktop is running for {} — a new device can only be paired by the process \
+             that serves it. Start the Desktop (the window, or futureos-headless) and run this \
+             again. A machine with no device at all prints an invitation as it starts.",
+            future_dir()?.display()
+        ));
+    }
+    let reply = request_invitation().await?;
+    if let Some(error) = reply.get("error").and_then(Value::as_str) {
+        return Err(format!("The Desktop did not issue an invitation: {error}"));
+    }
+    let link = reply
+        .get("link")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "The Desktop answered without an invitation.".to_string())?;
+    let pair_id = reply.get("pairId").and_then(Value::as_str).unwrap_or("");
+    let expires_at = reply.get("expiresAt").and_then(Value::as_i64);
+    if json_flag {
+        out.log(
+            serde_json::to_string_pretty(&json!({
+                "pairId": pair_id,
+                "link": link,
+                "expiresAt": expires_at,
+            }))
+            .map_err(|error| error.to_string())?
+            .as_str(),
+        );
+        return Ok(());
+    }
+    out.write_out(&invitation_text(
+        &format!(
+            "PAIRING INVITATION{} - open the FutureOS app and scan or paste this complete link",
+            if pair_id.is_empty() {
+                String::new()
+            } else {
+                format!(" for {}", display_pair_id(pair_id))
+            }
+        ),
+        link,
+        terminal_columns(),
+    ));
+    out.log("");
+    match expires_at {
+        Some(expiry) => out.log(&format!(
+            "Single-use. It expires at Unix time {expiry}; the Desktop keeps serving the new \
+             device as soon as a phone scans it."
+        )),
+        None => out.log(
+            "Single-use. The Desktop keeps serving the new device as soon as a phone scans it.",
+        ),
+    }
+    Ok(())
+}
+
+/// Ask the running Desktop for an invitation and return its answer.
+///
+/// The reply path is a temporary file this process created for itself, so two
+/// terminals asking at once cannot read each other's invitation. Whether the
+/// request was answered or not, both files are gone when this returns: a request
+/// left behind would be served by the *next* Desktop into a file nobody reads.
+async fn request_invitation() -> Result<Value, String> {
+    let directory = future_dir()?.join("app").join(CONTROL_DIRECTORY);
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("Cannot create {}: {error}", directory.display()))?;
+    let started = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or_default();
+    let answer = std::env::temp_dir().join(format!(
+        "future-remote-add-{started}-{}.json",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&answer);
+    // The name sorts by time, so the Desktop serves the oldest request first.
+    let request = directory.join(format!(
+        "{started:013}-{}{REQUEST_SUFFIX}",
+        std::process::id()
+    ));
+    write_json(
+        &request,
+        &json!({ "op": "add-device", "reply": answer.display().to_string() }),
+    )?;
+    let outcome = wait_for_answer(&answer).await;
+    let _ = std::fs::remove_file(&answer);
+    let _ = std::fs::remove_file(&request);
+    outcome
+}
+
+async fn wait_for_answer(answer: &Path) -> Result<Value, String> {
+    let deadline = Instant::now() + REPLY_TIMEOUT;
+    loop {
+        // A poll that lands before the writer has finished is "not yet", not a
+        // failure: the answer is written atomically, so a parsed one is whole.
+        if let Some(value) = std::fs::read_to_string(answer)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        {
+            return Ok(value);
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "The Desktop did not answer within {}s. It may be busy pairing another device; \
+                 try again, or check its own output.",
+                REPLY_TIMEOUT.as_secs()
+            ));
+        }
+        tokio::time::sleep(REPLY_POLL).await;
+    }
+}
+
+/// Width of the terminal doing the printing, when it can be measured.
+fn terminal_columns() -> Option<usize> {
+    terminal_size::terminal_size().map(|(width, _)| usize::from(width.0))
+}
+
+/// The invitation block: a label, the complete link, and the same link as a QR
+/// code when the terminal is wide enough to hold it.
+///
+/// The twin of the desktop entry point's renderer (`headless::invitation_text`):
+/// it cannot be shared, because the CLI must not depend on the Desktop binary,
+/// and the two must look and degrade the same way — a narrow terminal keeps the
+/// link and says why the code is missing.
+fn invitation_text(label: &str, link: &str, columns: Option<usize>) -> String {
+    let mut output = format!("\n{label}\n{link}\n");
+    match qrcode::QrCode::new(link.as_bytes()) {
+        Ok(code) if columns.is_none_or(|width| code.width() + 8 <= width) => {
+            use qrcode::render::unicode::Dense1x2;
+            let image = code.render::<Dense1x2>().build();
+            // Explicit black-on-white contrast on both light and dark terminal
+            // themes. Reset every line so a log keeps its own colours.
+            for line in image.lines() {
+                output.push_str(&format!("\x1b[30;47m{line}\x1b[0m\n"));
+            }
+        }
+        Ok(_) => output.push_str(
+            "Terminal too narrow for this QR code; widen it and run this again, or use the link \
+             above.\n",
+        ),
+        Err(_) => output.push_str("Cannot render a QR code; use the link above.\n"),
+    }
+    output
+}
+
 // ── remove ──────────────────────────────────────────────────────────────────
 
 async fn remove(args: &[String], out: &Output) -> Result<(), String> {
-    let values = positional(args, &["--json", "--yes"], help::REMOTE_USAGE)?;
+    let values = positional(args, &["--json", "--yes", "--all"], help::REMOTE_USAGE)?;
     let json_flag = args.iter().any(|argument| argument == "--json");
     let yes = args.iter().any(|argument| argument == "--yes");
-    let selector = one_device(values, help::REMOTE_USAGE)?;
+    let all = args.iter().any(|argument| argument == "--all");
+    // Shape first, state second: a malformed command is a usage error whether or
+    // not this machine has a device.
+    let selector = if all {
+        if let Some(extra) = values.first() {
+            return Err(format!(
+                "--all unpairs every device, so `{extra}` cannot also name one. Give one or \
+                 the other.\n\n{}",
+                help::REMOTE_USAGE
+            ));
+        }
+        None
+    } else {
+        Some(one_device(values, help::REMOTE_USAGE)?)
+    };
     let mut book = Book::load()?;
     if book.devices.is_empty() {
         return Err("No devices are paired to this machine.".to_string());
     }
+    let Some(selector) = selector else {
+        return remove_all(json_flag, yes, book, out).await;
+    };
     let index = book.position(&selector)?;
     let device = book.devices[index].clone();
     if !yes && !confirmed(&device, book.devices.len() - 1)? {
@@ -601,6 +822,66 @@ async fn remove(args: &[String], out: &Output) -> Result<(), String> {
     Ok(())
 }
 
+/// `future remote devices remove --all` — unpair everything.
+///
+/// The "replace this machine's pairing" flow, split into what it actually is:
+/// dropping every device is revoking them (which works with no Desktop running),
+/// and the fresh invitation is `future remote devices add` (which needs one). The
+/// running Desktop stops serving the removed devices at their next credential
+/// refresh; if one of them is still around by the next `add`, that command's own
+/// cleanup stops the stale bridge before minting the replacement.
+async fn remove_all(
+    json_flag: bool,
+    yes: bool,
+    mut book: Book,
+    out: &Output,
+) -> Result<(), String> {
+    let count = book.devices.len();
+    let devices = book.devices.clone();
+    if !yes
+        && !ask(&format!(
+            "Unpair all {count} {}? Each one loses remote access to this machine.",
+            if count == 1 { "device" } else { "devices" }
+        ))?
+    {
+        out.log_err("Cancelled. Nothing was changed.");
+        return Ok(());
+    }
+    let mut warnings = Vec::new();
+    for device in &devices {
+        if let Some(warning) = revoke(device).await {
+            warnings.push(warning);
+        }
+    }
+    // The book goes entirely: no slots, no pointer, and no credential file left
+    // answering "this machine has a pairing" for a machine that has none.
+    while !book.devices.is_empty() {
+        book.remove(0);
+    }
+    book.save()?;
+    for warning in &warnings {
+        out.log_err(warning);
+    }
+    let running = desktop_running();
+    if json_flag {
+        out.log(
+            serde_json::to_string_pretty(&document(&book, running))
+                .map_err(|error| error.to_string())?
+                .as_str(),
+        );
+        return Ok(());
+    }
+    out.log(&format!(
+        "Unpaired all {count} {}. No devices remain paired to this machine.",
+        if count == 1 { "device" } else { "devices" }
+    ));
+    out.log("Run `future remote devices add` to pair the first one back.");
+    if running {
+        out.log("A Desktop is running; it stops serving them at their next credential refresh.");
+    }
+    Ok(())
+}
+
 /// Tests run with cargo's inherited stdin, so a real prompt would block the
 /// suite. This seam makes the "no terminal" branch reachable without one; it is
 /// never set outside tests.
@@ -619,15 +900,8 @@ fn stdin_is_terminal() -> bool {
 /// Ask before a security-relevant removal. A redirected stdin is refused
 /// rather than read: the answer to a prompt nobody saw must not be "yes".
 fn confirmed(device: &Device, remaining: usize) -> Result<bool, String> {
-    if !stdin_is_terminal() {
-        return Err(format!(
-            "Refusing to unpair {} without confirmation from a terminal. Re-run with --yes \
-             if that is what you mean.",
-            display_pair_id(&device.pair_id)
-        ));
-    }
-    eprint!(
-        "Unpair {}? It loses remote access to this machine; {} {} paired. [y/N] ",
+    ask(&format!(
+        "Unpair {}? It loses remote access to this machine; {} {} paired.",
         display_pair_id(&device.pair_id),
         remaining,
         if remaining == 1 {
@@ -635,7 +909,18 @@ fn confirmed(device: &Device, remaining: usize) -> Result<bool, String> {
         } else {
             "devices stay"
         }
-    );
+    ))
+}
+
+/// The prompt itself, so the "all devices" question reads the same way.
+fn ask(question: &str) -> Result<bool, String> {
+    if !stdin_is_terminal() {
+        return Err(format!(
+            "Refusing to unpair without confirmation from a terminal: {question} Re-run with \
+             --yes if that is what you mean."
+        ));
+    }
+    eprint!("{question} [y/N] ");
     std::io::stderr().flush().ok();
     let mut answer = String::new();
     std::io::stdin()
@@ -751,7 +1036,7 @@ async fn revoke_relay(device: &Device) -> Result<(), String> {
     let path = format!("/v1/rooms/{}", device.pair_id);
     let (public_key, timestamp, signature) =
         crate::relay::sign::sign(&key, "DELETE", &path, crate::relay::now(), &[])?;
-    let response = client()?
+    let response = client_trusting(relay_ca_for(device).as_deref())?
         .delete(format!("{}{path}", base.trim_end_matches('/')))
         .header("x-future-public-key", public_key)
         .header("x-future-timestamp", timestamp)
@@ -782,10 +1067,111 @@ async fn response_error(response: reqwest::Response, action: &str) -> String {
 }
 
 fn client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
+    client_trusting(None)
+}
+
+/// An HTTP client that additionally trusts `ca`, a PEM bundle.
+///
+/// `None` is the platform client every other call uses. A self-hosted relay
+/// commonly serves a certificate from a private CA, and without its root the
+/// signed DELETE fails during the TLS handshake — the command would then report
+/// a removal it could not deliver, on a machine where the room is the only thing
+/// keeping the pairing alive.
+fn client_trusting(ca: Option<&Path>) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder().timeout(REQUEST_TIMEOUT);
+    if let Some(ca) = ca {
+        let pem = std::fs::read(ca)
+            .map_err(|error| format!("Cannot read the relay CA {}: {error}", ca.display()))?;
+        // `from_pem_bundle`, not `from_pem`: the single-certificate form only
+        // *stores* the bytes for the rustls backend and is checked when the
+        // client is built — or not at all — so a garbage file would be accepted
+        // here and fail much later as an opaque TLS error during the revoke.
+        let certificates = reqwest::Certificate::from_pem_bundle(&pem)
+            .map_err(|error| format!("{} is not a PEM certificate: {error}", ca.display()))?;
+        if certificates.is_empty() {
+            return Err(format!("{} holds no certificate.", ca.display()));
+        }
+        for certificate in certificates {
+            builder = builder.add_root_certificate(certificate);
+        }
+    }
+    builder
         .build()
         .map_err(|error| format!("Cannot create an HTTP client: {error}"))
+}
+
+/// The extra TLS root for this pairing's relay, if one is configured.
+///
+/// The Desktop applies the same two sources (`FUTURE_RELAY_CA`, then
+/// `relay.json`'s `ca`) to its own NATS client, and this command must agree with
+/// it or its requests never leave the machine on a private-CA relay.
+///
+/// The *environment* variable is an operator naming one CA for this invocation,
+/// so it applies to whatever relay the pairing names. The *persisted* CA belongs
+/// to the relay this installation currently points at, so it is used only for a
+/// pairing on that same origin — a device left over from a previous relay must
+/// not inherit that trust just because it is still in the book.
+fn relay_ca_for(device: &Device) -> Option<PathBuf> {
+    let base = device.control_url.as_deref()?;
+    if let Ok(from_env) = std::env::var("FUTURE_RELAY_CA") {
+        let path = from_env.trim();
+        if !path.is_empty() {
+            return Some(PathBuf::from(path));
+        }
+    }
+    let settings = relay_settings();
+    let ca = settings.ca?;
+    let configured = settings.url?;
+    (origin(&configured) == origin(base)).then(|| PathBuf::from(ca))
+}
+
+/// `~/.future/relay.json` as this command needs it: the relay now in use, and
+/// the CA that relay needs.
+#[derive(Debug, Default)]
+struct RelaySettings {
+    url: Option<String>,
+    ca: Option<String>,
+}
+
+fn relay_settings() -> RelaySettings {
+    // The environment wins over the file, exactly as the Desktop resolves it.
+    let from_env = std::env::var("FUTURE_RELAY_URL").ok();
+    let env_url = from_env
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(|url| url.trim_end_matches('/').to_string());
+    let document = future_dir()
+        .ok()
+        .map(|future| future.join(RELAY_SETTINGS_FILE))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .unwrap_or(Value::Null);
+    let field = |name: &str| {
+        document
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    RelaySettings {
+        url: env_url.or_else(|| field("url")),
+        ca: field("ca"),
+    }
+}
+
+/// `scheme://host[:port]` — what "the same relay" means. An unparsable URL is its
+/// own origin, so a typo can only ever match itself.
+fn origin(url: &str) -> String {
+    match reqwest::Url::parse(url) {
+        Ok(parsed) => match (parsed.host_str(), parsed.port()) {
+            (Some(host), Some(port)) => format!("{}://{host}:{port}", parsed.scheme()),
+            (Some(host), None) => format!("{}://{host}", parsed.scheme()),
+            (None, _) => url.trim_end_matches('/').to_string(),
+        },
+        Err(_) => url.trim_end_matches('/').to_string(),
+    }
 }
 
 // ── use ─────────────────────────────────────────────────────────────────────
@@ -1365,6 +1751,548 @@ mod tests {
         );
     }
 
+    // ── add ─────────────────────────────────────────────────────────────────
+
+    /// Hold the Desktop's own lock for as long as this lives, so `add` has a
+    /// Desktop to ask — the same file `instance::InstanceGuard` locks.
+    struct RunningDesktop {
+        _file: std::fs::File,
+    }
+
+    impl RunningDesktop {
+        fn claim(home: &Home) -> Self {
+            let app = home.future().join("app");
+            std::fs::create_dir_all(&app).unwrap();
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(app.join(DESKTOP_LOCK_FILE))
+                .unwrap();
+            fs2::FileExt::lock_exclusive(&file).unwrap();
+            RunningDesktop { _file: file }
+        }
+    }
+
+    /// Answer the next request the way the Desktop's control host does, and give
+    /// back the request that was posed so a test can judge it.
+    fn answer_requests(home: &Home, answer: Value) -> std::sync::Arc<std::sync::Mutex<Vec<Value>>> {
+        let directory = home.future().join("app").join(CONTROL_DIRECTORY);
+        std::fs::create_dir_all(&directory).unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let mut entries: Vec<_> = std::fs::read_dir(&directory)
+                    .map(|entries| entries.filter_map(Result::ok).collect())
+                    .unwrap_or_default();
+                entries.sort_by_key(|entry| entry.file_name());
+                if let Some(entry) = entries.into_iter().find(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .ends_with(REQUEST_SUFFIX)
+                }) {
+                    let request: Value =
+                        serde_json::from_str(&std::fs::read_to_string(entry.path()).unwrap())
+                            .unwrap();
+                    std::fs::write(
+                        request["reply"].as_str().expect("a reply path"),
+                        answer.to_string(),
+                    )
+                    .unwrap();
+                    recorded.lock().unwrap().push(request);
+                    let _ = std::fs::remove_file(entry.path());
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        });
+        seen
+    }
+
+    const LINK: &str =
+        "futureos://remote/pair?v=2&code=abc&desktopId=d&desktopKey=U&desktopSecret=S";
+
+    #[tokio::test]
+    async fn add_prints_the_invitation_the_desktop_answered_with() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let _desktop = RunningDesktop::claim(&home);
+        let seen = answer_requests(
+            &home,
+            json!({ "pairId": "pair_NEW", "link": LINK, "expiresAt": 1_800_000_000i64 }),
+        );
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "add"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stderr.is_empty(), "{stderr}");
+        assert!(stdout.contains(LINK), "{stdout}");
+        assert!(stdout.contains("for NEW"), "the device is named: {stdout}");
+        assert!(
+            stdout.contains("expires at Unix time 1800000000"),
+            "{stdout}"
+        );
+        // The request carried the operation and a reply path, and was cleaned up.
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "one request, one answer");
+        assert_eq!(seen[0]["op"], "add-device");
+        assert!(seen[0]["reply"]
+            .as_str()
+            .is_some_and(|path| path.ends_with(".json")));
+        assert!(
+            !std::fs::read_dir(home.future().join("app").join(CONTROL_DIRECTORY))
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(REQUEST_SUFFIX)),
+            "a request must not outlive the command"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_json_prints_what_a_script_needs() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let _desktop = RunningDesktop::claim(&home);
+        answer_requests(
+            &home,
+            json!({ "pairId": "pair_NEW", "link": LINK, "expiresAt": 1_800_000_000i64 }),
+        );
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "add", "--json"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        let value: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(value["pairId"], "pair_NEW");
+        assert_eq!(value["link"], LINK);
+        assert_eq!(value["expiresAt"], 1_800_000_000i64);
+    }
+
+    /// A refusal is the Desktop's answer, printed as such — not a timeout, and not
+    /// a success with no invitation in it.
+    #[tokio::test]
+    async fn add_reports_the_desktops_refusal() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let _desktop = RunningDesktop::claim(&home);
+        let _answer = answer_requests(&home, json!({ "error": "pairing_limit_reached" }));
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "add"]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        assert!(stderr.contains("pairing_limit_reached"), "{stderr}");
+        assert!(stderr.contains("did not issue an invitation"), "{stderr}");
+    }
+
+    #[tokio::test]
+    async fn add_without_a_desktop_says_what_to_start() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let (code, stdout, stderr) = run(&["remote", "devices", "add"]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        assert!(stderr.contains("No Desktop is running"), "{stderr}");
+        assert!(stderr.contains("futureos-headless"), "{stderr}");
+        // Nothing was written for a Desktop that is not there.
+        assert!(!home.future().join("app").join(CONTROL_DIRECTORY).exists());
+    }
+
+    /// A Desktop that holds the lock but never answers is a timeout, not a hang.
+    #[tokio::test]
+    async fn add_gives_up_when_the_desktop_never_answers() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let _desktop = RunningDesktop::claim(&home);
+        let (code, _, stderr) = run(&["remote", "devices", "add"]).await;
+        assert_eq!(code, 1);
+        assert!(stderr.contains("did not answer within"), "{stderr}");
+        // The unanswered request does not stay behind for the next Desktop.
+        let left = std::fs::read_dir(home.future().join("app").join(CONTROL_DIRECTORY))
+            .map(|entries| entries.filter_map(Result::ok).count())
+            .unwrap_or(0);
+        assert_eq!(left, 0, "the request must be withdrawn on timeout");
+    }
+
+    #[tokio::test]
+    async fn add_takes_no_device_argument() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let _desktop = RunningDesktop::claim(&home);
+        let (code, _, stderr) = run(&["remote", "devices", "add", "AAAA"]).await;
+        assert_eq!(code, 1);
+        assert!(stderr.contains("takes no argument"), "{stderr}");
+    }
+
+    // ── remove --all ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn remove_all_unpairs_every_device_and_leaves_no_credential_file() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "remove", "--all", "--yes"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains("Unpaired all 2 devices"),
+            "both are named: {stdout}"
+        );
+        assert!(stdout.contains("No devices remain paired"), "{stdout}");
+        assert!(stdout.contains("future remote devices add"), "{stdout}");
+        assert!(!home.exists(BOOK_FILE), "the book goes with the devices");
+        assert!(!home.exists(LEGACY_FILE));
+    }
+
+    #[tokio::test]
+    async fn remove_all_refuses_a_selector() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let before = home.read(BOOK_FILE);
+        let (code, _, stderr) =
+            run(&["remote", "devices", "remove", "--all", "AAAA", "--yes"]).await;
+        assert_eq!(code, 1);
+        assert!(stderr.contains("cannot also name one"), "{stderr}");
+        assert_eq!(home.read(BOOK_FILE), before);
+    }
+
+    #[tokio::test]
+    async fn remove_all_asks_before_dropping_everything() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let before = home.read(BOOK_FILE);
+        STDIN_IS_NOT_A_TERMINAL.store(true, std::sync::atomic::Ordering::SeqCst);
+        let (code, _, stderr) = run(&["remote", "devices", "remove", "--all"]).await;
+        STDIN_IS_NOT_A_TERMINAL.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(code, 1);
+        assert!(
+            stderr.contains("Unpair all 2 devices"),
+            "the question names the scope: {stderr}"
+        );
+        assert!(stderr.contains("--yes"), "{stderr}");
+        assert_eq!(home.read(BOOK_FILE), before);
+    }
+
+    /// The invitation block degrades the way the desktop's renderer does: the QR
+    /// when the terminal holds it, the link alone otherwise, and always the link.
+    #[test]
+    fn the_invitation_block_draws_the_qr_or_keeps_the_link() {
+        let wide = invitation_text("LABEL", LINK, Some(200));
+        assert!(wide.contains("LABEL"), "{wide}");
+        assert!(wide.contains(LINK), "{wide}");
+        assert!(
+            wide.contains('\u{2588}'),
+            "a wide terminal gets the QR blocks: {wide}"
+        );
+
+        let narrow = invitation_text("LABEL", LINK, Some(20));
+        assert!(narrow.contains(LINK), "{narrow}");
+        assert!(narrow.contains("Terminal too narrow"), "{narrow}");
+        assert!(!narrow.contains('\u{2588}'), "{narrow}");
+
+        // An unmeasurable terminal is not a narrow one: the code is still drawn.
+        let unknown = invitation_text("LABEL", LINK, None);
+        assert!(!unknown.contains("Terminal too narrow"), "{unknown}");
+        assert!(unknown.contains('\u{2588}'), "{unknown}");
+
+        // More than the largest QR version can carry: the link is still printed.
+        let huge = "x".repeat(4_000);
+        let unrenderable = invitation_text("LABEL", &huge, Some(400));
+        assert!(
+            unrenderable.contains("Cannot render a QR code"),
+            "{unrenderable}"
+        );
+        assert!(unrenderable.contains(&huge), "{unrenderable}");
+    }
+
+    #[tokio::test]
+    async fn remove_all_json_prints_the_emptied_document() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let (code, stdout, stderr) =
+            run(&["remote", "devices", "remove", "--all", "--yes", "--json"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        let value: Value = serde_json::from_str(&stdout).unwrap();
+        assert!(value["active"].is_null(), "{value}");
+        assert_eq!(
+            value["devices"].as_array().map(Vec::len),
+            Some(0),
+            "{value}"
+        );
+    }
+
+    // ── relay (self-hosted) support ─────────────────────────────────────────
+
+    fn relay_device(pair_id: &str, relay: &str) -> Device {
+        Device {
+            pair_id: pair_id.into(),
+            desktop_id: Some("desk-1".into()),
+            control_url: Some(relay.into()),
+            nkey_seed: Some("S".into()),
+        }
+    }
+
+    /// The persisted CA belongs to the relay this installation points at, so it
+    /// is used for a pairing on that origin and nowhere else.
+    #[tokio::test]
+    async fn the_persisted_relay_ca_applies_only_to_its_own_relay() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        std::fs::create_dir_all(home.future()).unwrap();
+        std::fs::write(
+            home.future().join(RELAY_SETTINGS_FILE),
+            json!({ "url": "https://relay.example.com", "ca": "/etc/relay-ca.pem" }).to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            relay_ca_for(&relay_device("pair_A", "https://relay.example.com")),
+            Some(PathBuf::from("/etc/relay-ca.pem"))
+        );
+        // Same relay, spelled with a trailing slash and an explicit port default.
+        assert_eq!(
+            relay_ca_for(&relay_device("pair_A", "https://relay.example.com/")),
+            Some(PathBuf::from("/etc/relay-ca.pem"))
+        );
+        // A device left over from another relay does not inherit that trust.
+        assert_eq!(
+            relay_ca_for(&relay_device("pair_B", "https://old.example.net")),
+            None
+        );
+        assert_eq!(
+            relay_ca_for(&relay_device("pair_C", "http://relay.example.com")),
+            None,
+            "a different scheme is a different origin"
+        );
+        assert_eq!(
+            relay_ca_for(&relay_device("pair_D", "https://relay.example.com:8443")),
+            None,
+            "a different port is a different origin"
+        );
+    }
+
+    /// The environment variable is the operator naming one CA for this
+    /// invocation, so it applies to whatever relay the pairing names.
+    #[tokio::test]
+    async fn the_environment_ca_applies_to_any_relay() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let _ca = EnvGuard::set(&[("FUTURE_RELAY_CA", std::ffi::OsString::from("/env/ca.pem"))]);
+        assert_eq!(
+            relay_ca_for(&relay_device("pair_A", "https://anywhere.example")),
+            Some(PathBuf::from("/env/ca.pem"))
+        );
+        // The environment also wins over the file, as it does in the Desktop.
+        assert_eq!(
+            relay_ca_for(&relay_device("pair_A", "https://relay.example.com")),
+            Some(PathBuf::from("/env/ca.pem"))
+        );
+    }
+
+    /// Nothing configured means the default trust store — not an error.
+    #[tokio::test]
+    async fn no_relay_ca_means_the_platform_trust_store() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        std::fs::create_dir_all(home.future()).unwrap();
+        std::fs::write(
+            home.future().join(RELAY_SETTINGS_FILE),
+            json!({ "url": "https://relay.example.com" }).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            relay_ca_for(&relay_device("pair_A", "https://relay.example.com")),
+            None
+        );
+        // A platform pairing has no relay at all.
+        let platform_device = Device {
+            pair_id: "pair_P".into(),
+            desktop_id: None,
+            control_url: None,
+            nkey_seed: None,
+        };
+        assert_eq!(relay_ca_for(&platform_device), None);
+    }
+
+    /// A configured CA that cannot be read, parsed, or even holds a certificate is
+    /// reported here — not left to fail later as an opaque TLS error during the
+    /// revoke, which is the one request that cannot be retried by hand.
+    #[test]
+    fn an_unusable_relay_ca_is_reported() {
+        let home = tempfile::tempdir().unwrap();
+
+        let missing = home.path().join("nope.pem");
+        let error = client_trusting(Some(&missing)).expect_err("a missing CA file is an error");
+        assert!(error.contains("Cannot read the relay CA"), "{error}");
+
+        let empty = home.path().join("empty.pem");
+        std::fs::write(&empty, b"").unwrap();
+        let error = client_trusting(Some(&empty)).expect_err("an empty CA file is an error");
+        assert!(error.contains("holds no certificate"), "{error}");
+
+        // The mistake an operator actually makes: naming a key, a config, or the
+        // wrong file. `from_pem` would have accepted it and failed at the TLS
+        // handshake much later.
+        let not_a_cert = home.path().join("not-a-cert.pem");
+        std::fs::write(&not_a_cert, b"not a certificate").unwrap();
+        let error = client_trusting(Some(&not_a_cert)).expect_err("a non-PEM file is an error");
+        assert!(error.contains("holds no certificate"), "{error}");
+
+        // A PEM block whose body is not DER: rejected as a certificate rather
+        // than handed to rustls.
+        let broken = home.path().join("broken.pem");
+        std::fs::write(
+            &broken,
+            b"-----BEGIN CERTIFICATE-----\nnot base64\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+        let error = client_trusting(Some(&broken)).expect_err("a broken PEM is an error");
+        assert!(error.contains("not a PEM certificate"), "{error}");
+    }
+
+    /// A real root certificate — the platform store this process already trusts —
+    /// must still build a client. Guards the validation above from becoming so
+    /// strict that every valid CA is refused; skipped where no bundle is readable.
+    #[test]
+    fn a_real_ca_bundle_builds_a_trusting_client() {
+        let candidates = [
+            "/etc/ssl/cert.pem",
+            "/etc/ssl/certs/ca-certificates.crt",
+            "/etc/pki/tls/certs/ca-bundle.crt",
+        ];
+        let Some(bundle) = candidates.iter().map(Path::new).find(|path| path.is_file()) else {
+            eprintln!("no platform CA bundle on this host; nothing to check");
+            return;
+        };
+        assert!(
+            client_trusting(Some(bundle)).is_ok(),
+            "{} must be accepted as a CA bundle",
+            bundle.display()
+        );
+    }
+
+    /// One machine can hold an official device and a self-hosted one at the same
+    /// time, and `remove --all` sends each to the issuer that knows it.
+    #[tokio::test]
+    async fn remove_all_revokes_each_device_at_its_own_issuer() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let platform_requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let platform = crate::test_server::spawn_http_recording(
+            vec![crate::test_server::HttpRoute::json(
+                "/client/v1/remote/pair/revoke",
+                200,
+                "{\"ok\":true}",
+            )],
+            Some(platform_requests.clone()),
+        )
+        .await;
+        let relay_requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let relay = crate::test_server::spawn_http_recording(
+            vec![crate::test_server::HttpRoute::json(
+                "/v1/rooms/pair_RELAY",
+                200,
+                "{\"ok\":true}",
+            )],
+            Some(relay_requests.clone()),
+        )
+        .await;
+        let auth = auth_file();
+        std::fs::create_dir_all(auth.parent().unwrap()).unwrap();
+        std::fs::write(
+            &auth,
+            json!({ "future": { "key": "sk-test", "base_url": format!("{platform}/api") } })
+                .to_string(),
+        )
+        .unwrap();
+        let key = nkeys::KeyPair::new_user();
+        home.write(
+            BOOK_FILE,
+            &json!({
+                "version": 2,
+                "active": null,
+                "slots": [
+                    { "pairId": "pair_PLATFORM", "nkeySeed": "S" },
+                    { "pairId": "pair_RELAY", "controlUrl": relay, "nkeySeed": key.seed().unwrap() }
+                ]
+            })
+            .to_string(),
+        );
+
+        let (code, _, stderr) = run(&["remote", "devices", "remove", "--all", "--yes"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stderr.is_empty(), "both issuers confirmed: {stderr}");
+        assert!(!home.exists(BOOK_FILE));
+
+        let platform_requests = platform_requests.lock().unwrap();
+        assert_eq!(
+            platform_requests.len(),
+            1,
+            "the official device goes to the platform"
+        );
+        assert!(
+            platform_requests[0].contains("pair_PLATFORM"),
+            "{}",
+            platform_requests[0]
+        );
+        let relay_requests = relay_requests.lock().unwrap();
+        assert_eq!(
+            relay_requests.len(),
+            1,
+            "the relay device goes to its relay"
+        );
+        assert!(
+            relay_requests[0].starts_with("DELETE /v1/rooms/pair_RELAY"),
+            "{}",
+            relay_requests[0]
+        );
+        assert!(
+            relay_requests[0].contains(&format!("x-future-public-key: {}", key.public_key())),
+            "{}",
+            relay_requests[0]
+        );
+        assert!(
+            !relay_requests[0].contains("authorization:"),
+            "the relay has no accounts, so no bearer token may be sent: {}",
+            relay_requests[0]
+        );
+    }
+
+    /// `add` asks the Desktop, so it needs no account of its own — which is what
+    /// makes it work in relay mode, where there is no Future login at all.
+    #[tokio::test]
+    async fn add_needs_no_account() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let _desktop = RunningDesktop::claim(&home);
+        let _answer = answer_requests(
+            &home,
+            json!({
+                "pairId": "pair_RELAY",
+                "link": "futureos://remote/pair?v=3&code=abc&desktopId=d&desktopKey=U&secureKey=K&secret=S",
+                "expiresAt": 1_800_000_000i64,
+            }),
+        );
+        // No auth.json anywhere: relay mode has no account to read.
+        assert!(!auth_file().exists());
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "add", "--json"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        let value: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(value["pairId"], "pair_RELAY");
+        assert!(
+            value["link"]
+                .as_str()
+                .is_some_and(|link| link.contains("v=3")),
+            "a relay invitation is v3 and is passed through as-is: {value}"
+        );
+    }
+
     #[test]
     fn the_platform_url_matches_the_desktops_resolution_order() {
         assert_eq!(
@@ -1405,6 +2333,7 @@ mod tests {
             vec!["remote", "--help"],
             vec!["remote", "devices", "--help"],
             vec!["remote", "devices", "list", "--help"],
+            vec!["remote", "devices", "add", "--help"],
             vec!["remote", "devices", "remove", "--help"],
             vec!["remote", "devices", "use", "--help"],
         ] {

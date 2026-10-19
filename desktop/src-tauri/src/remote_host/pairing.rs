@@ -335,7 +335,7 @@ pub async fn create_pairing(
     // queued from the unpair that preceded it is therefore obsolete: delivering it
     // later would delete the pairing just minted. Retiring it here — as soon as
     // the new pair id is known, and before returning the invitation — is what
-    // keeps the compensation loop from revoking the code a `--re-pair` prints.
+    // keeps the compensation loop from revoking the code just handed to the user.
     // The lock waits out any revoke already in flight for this binding.
     {
         let _delivery = REVOKE_DELIVERY.lock().await;
