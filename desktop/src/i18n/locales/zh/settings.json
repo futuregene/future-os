@@ -10,6 +10,14 @@
     "dark": "深色",
     "system": "跟随系统"
   },
+  "fontSize": {
+    "title": "字体大小",
+    "description": "调整界面文字大小，只改变文字，不改变布局",
+    "small": "小",
+    "medium": "中",
+    "large": "大",
+    "xlarge": "特大"
+  },
   "approvalTier": {
     "title": "审批模式",
     "manual": "手动审批",

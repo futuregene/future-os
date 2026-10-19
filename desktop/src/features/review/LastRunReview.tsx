@@ -207,7 +207,7 @@ function ChangesetFileChange({
         </>
       )}
       headerExtras={(
-        <span className="rounded bg-surface-subtle px-1.5 py-0.5 text-[11px] text-ink-muted">
+        <span className="rounded bg-surface-subtle px-1.5 py-0.5 text-2xs text-ink-muted">
           {changeTypeLabel(file, t)}
         </span>
       )}

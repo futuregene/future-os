@@ -167,7 +167,7 @@ function SelectorOption({
     >
       <span className="shrink-0">{children}</span>
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {note ? <span className="shrink-0 text-[10px] text-ink-muted" data-testid="option-note">{note}</span> : null}
+      {note ? <span className="shrink-0 text-3xs text-ink-muted" data-testid="option-note">{note}</span> : null}
       {active ? <Check className="size-3.5 shrink-0" /> : null}
     </button>
   );

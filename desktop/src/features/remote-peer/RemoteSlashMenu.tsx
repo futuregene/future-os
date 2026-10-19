@@ -36,11 +36,11 @@ export function RemoteSlashMenu({
       className="absolute bottom-full left-1 mb-2 max-h-72 w-72 overflow-y-auto rounded-lg border border-line bg-surface p-1 shadow-panel"
       role="listbox"
     >
-      <div className="px-2 py-1 text-[11px] font-medium text-ink-muted">{title}</div>
+      <div className="px-2 py-1 text-2xs font-medium text-ink-muted">{title}</div>
       {items.map((item, index) => (
         <div key={item.kind === "command" ? `command:${item.command.id}` : `skill:${item.skill.name}`}>
           {index > 0 && index === groups.commands.length
-            ? <div className="px-2 pb-1 pt-2 text-[11px] font-medium text-ink-muted">{t("slashSkills")}</div>
+            ? <div className="px-2 pb-1 pt-2 text-2xs font-medium text-ink-muted">{t("slashSkills")}</div>
             : null}
           <button
             aria-selected={index === activeIndex}
