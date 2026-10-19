@@ -1,5 +1,24 @@
 # Module: `desktop-tauri` shell — `desktop/src-tauri/src` entry points, process lifecycle, macOS integration
 
+> **FIGURE, TAU-D21c (2026-10-19): 81 uncovered, measured at `302a05be3`.** Report
+> `.future/cov100/pinned/union-d21c.info` (769 733 B, 178 `SF:` records, md5
+> `6066cf1b14b544580bc202dbee7a2d3c`; gui leg `rc=101` with one `remote_peer` failure outside the
+> twelve scopes, headless leg `rc=0`, clean between legs, unioned by `lcov-union.py`, leg identity
+> PASS). **113 → 81 is three changes, and only one is this ticket's work:**
+>
+> * **−6 the six OPEN rows.** `lib.rs:1300` and `lib.rs:1319-1323` read `DA:1` in this union, closed
+>   by two fixtures and one test-only guard (§S13.13).
+> * **−27 the `host-state-blocked` family.** The main-thread driver reached readiness in this run
+>   (`gui_main_thread_drive: driver completed with "embedded Agent ready"; listener_up=true`), so
+>   the `setup` hook ran and the arms it opens executed. These 27 are named individually in
+>   §S13.13.3 and are **not** claimed as this ticket's closure.
+> * **+1 an arm inside the new fixture** (`lib.rs:3084`, §S13.2k).
+>
+> The previous blockquote (111 at `16ea6f388`) and the 113-row reading it was superseded by are kept
+> below as those measurements' history. Class totals over the 81: `host-state-blocked` 0,
+> `unreachable-in-this-environment` 62, `attribution-artifact` 8, `unreachable-by-construction` 7,
+> `platform-unmeasured` 2, `oscillating` 2, **OPEN 0** — sum 81.
+
 > **FIGURE, POST-MERGE RE-MEASUREMENT (2026-10-18, TAU-D31): 111 uncovered, measured at
 > `16ea6f388`.** Report `.future/cov100/pinned/union-refresh4.info` (5 853 166 B, 178 `SF:`
 > records; gui leg `rc=0`, headless leg `rc=0`, clean between legs, unioned by `lcov-union.py`).
@@ -7285,3 +7304,275 @@ directions empty** (`claims 111 / resolved 111 / uncovered 111`). The heading st
 because the count did not change; what changed is which two lines those rows name, and the pairing
 in `.future/cov100/pairings.json` was re-pointed to this report and this heading in the same edit
 (the mismatch the ticket warns about is the one §S13.11 already paid for once).
+
+### S13.13 TAU-D21c: the two quit-admission seams close the last six OPEN rows (113 → 81)
+
+Ticket `todo_42c5de414a6d`. This segment re-measures; it changes only tests and one `#[cfg(test)]`
+guard. **The figure moves by 32 and this ticket owns 6 of it** — the decomposition is §S13.13.3 and
+it is the most important paragraph here.
+
+#### S13.13.1 What landed, and why each seam is test-only
+
+| file | change | measured lines |
+|---|---|---|
+| `desktop_shutdown.rs` | `AdmissionClosedForTest` + `close_admission_guard_for_test()` (`:357-379`) | the guard and its `Drop` |
+| `desktop_shutdown.rs` | `quit_admission_guard_closes_admission_and_restores_the_flag` (`:678-694`) | the headless leg's token test (below) |
+| `lib.rs` | `quit_admission_closed_before_the_ready_event_withholds_the_window_work` (`:2926-2967`) | `1300` |
+| `lib.rs` | `quit_admission_exit_requested_while_the_agent_is_starting_confirms_the_quit` (`:2969-3092`) | `1319-1323` |
+
+**`lib.rs:1300` — the `return` after `is_stopping()`.** The only production writer of
+`ADMISSION.closed` is `perform_stop`, i.e. a real shutdown; the arm is reachable only by a stop that
+lands between `Ready` and the check. TAU-D39 had already landed the setter
+(`close_admission_for_test`), and `reset_for_test` only *clears* the flag — so a fixture could close
+admission and had no way to hand it back. The guard records the value it found and restores exactly
+that bit in `Drop`; it deliberately does not call `reset_for_test`, which would also stop the task
+registry and clear a published stop that belongs to a neighbouring test. The fixture dispatches
+`RunEvent::Ready` with admission closed and reads the absence of the window's work: the fall-through
+path's first Agent query is the post-readiness reconciliation, which sleeps **three seconds** in
+`start_backend_background`, so the fixture waits **4.5 s** before asserting that the mock agent saw
+no `list_session_ids`. The window is what turns "nothing yet" into evidence; the positive control is
+`the_ready_event_starts_the_window_work_and_serves_the_terminal`, which drives the same request
+through the same fixture shape. Closing admission is the only difference between the two.
+
+**`lib.rs:1319-1323` — the `Confirm { open_dialog }` arm.** Three obstacles, and each is answered by
+the process, not by a production change:
+
+1. `tauri::ExitRequestApi` has private fields, so the event cannot be constructed. The mock
+   runtime's own loop constructs it; destroying the only window is what makes the loop request an
+   exit. This is the pattern `an_exit_requested_from_the_mock_loop_takes_the_guarded_quit_arm`
+   already uses.
+2. `on_close_requested()` must answer `Confirm`. That needs `active_work_count()` to fail or be
+   non-zero, and the process-global `agent_host` has no test setter for its phase. The child holds a
+   `TcpListener` that accepts and never answers, starts `agent_host::host()` against it (the
+   `block_fixtures` "timeout" recipe), and waits until the host publishes `Phase::Starting` — which
+   `active_work_count` reports as `Err("Agent is still starting")`, i.e.
+   `Confirm { open_dialog: true }`.
+3. The fresh process is also the isolation the `Proceed` sibling needed: `QUIT_CONFIRMED` and
+   `QUIT_DIALOG_OPEN` are process-globals with no reset, and this arm must start from both clear.
+
+The five lines execute in one synchronous pass: arm head, `api.prevent_exit()`, `if open_dialog`,
+`confirm_quit(...)`, and the closing brace. The callback then panics with a probe, which is caught
+outside `app.run` — the loop would otherwise keep running.
+
+#### S13.13.2 The dialog is contained by construction, and that was verified before writing the fixture
+
+`confirm_quit` is not a dialog *call*: it builds the message, then calls
+`app.dialog().message(..).show(callback)`. Two facts, read from the plugin source, decide the
+containment:
+
+* `DialogExt::dialog()` is `self.state::<Dialog<R>>()`, so the app **must** be built with the dialog
+  plugin registered — the child uses `gui_builder::<MockRuntime>()`, with the plugin-config and
+  unique-identifier work `the_desktop_registration_builds_for_any_runtime` records (the
+  single-instance socket derives from the identifier, and two processes sharing it silently
+  `exit(0)` one of them).
+* `show_message_dialog` hands the work to `handle.run_on_main_thread`, and on the mock runtime that
+  is `context.send_message(Message::Task(..))` — a queue the loop drains on its next iteration. The
+  probe panics out of the callback first, so **`rfd` is never reached and a host with no window
+  server cannot hang here.** This is the containment the previous unit asked for, and it is a
+  property of the runtime rather than a timeout.
+
+Evidence that the arm ran *and* that `confirm_quit` executed, rather than merely being on the stack:
+after the loop unwinds, the child asks `on_close_requested()` again and requires
+`Confirm { open_dialog: false }` — the answer that only the flag `confirm_quit` sets at its top can
+produce. The parent requires the child's stderr to carry the `QUIT-CONFIRM-ARM` marker, so a child
+that returned before the callback cannot pass (F.113).
+
+#### S13.13.3 The measurement, and the 113 → 81 decomposition
+
+```
+.future/cov100/pinned/union-d21c.info   769 733 B, 178 SF:, md5 6066cf1b14b544580bc202dbee7a2d3c
+measured at 302a05be3   gui leg rc=101 (2292 passed, 1 failed remote_peer, outside the scopes)
+                        headless leg rc=0 (1837 passed), clean between legs
+recipe: cargo llvm-cov --no-report --no-fail-fast -j 4 -- --test-threads=1   # all targets, both flavours
+leg-flavour-check.py: PASS
+```
+
+| scope | 113 (`union-merge-clean`) | 81 (`union-d21c`) | attribution |
+|---|---|---|---|
+| `src/lib.rs` | 69 | **37** | −6 this ticket, −27 driver readiness, +1 the new fixture's panic arm |
+| `src/desktop_shutdown.rs` | 15 | **15** | same rows, moved +53 (see below); the flipper still reads `DA:0` |
+| `src/desktop_shutdown/coordinator.rs` | 8 | **8** | unchanged |
+| `src/runtime.rs` | 4 | **4** | unchanged |
+| `src/future_login.rs` | 3 | **3** | unchanged |
+| `src/instance.rs` | 7 | **7** | unchanged |
+| `src/main.rs` | 2 | **2** | unchanged |
+| `src/menu.rs` | 2 | **2** | unchanged |
+| `src/launch.rs` | 2 | **2** | unchanged |
+| `src/bin/futureos-headless.rs` | 1 | **1** | unchanged |
+| `src/macos_power.rs`, `src/host_environment.rs` | 0 | **0** | unchanged |
+| **total** | **113** | **81** | |
+
+**The 27 lines this ticket did NOT close.** Diffing the two `DA:0` sets over the same scopes leaves
+exactly these, all `lib.rs`:
+
+```
+261-267  526-530  863  1002  1004  1005  1021  1022  1040  1042  1052  1055  1057  1058  1078  1079  1080
+```
+
+They are the family the previous ledger filed as `host-state-blocked` — S13.1 (21 rows, the `setup`
+geometry and dock-icon block) plus S13.2a `863`, S13.2d `1004`/`1021`/`1022`, S13.2i `1055` and
+S13.2j `1057`. Their mechanism is one event, not 27: **in this run the main-thread driver reached
+readiness and the `setup` hook ran.** The evidence is in the leg's own log
+(`gui_main_thread_drive: driver completed with "embedded Agent ready"; listener_up=true
+elapsed=2.6s`) and in `lib.rs:1040` (`APP_HANDLE.set`) reading `DA:1`; the previous pin's driver
+completed without that evidence, which is why the old ledger could say of the same lines "covered in
+the pinned healthy artifact" while the current report read them `DA:0`.
+
+口径 A is per-artifact, so they leave the ledger: they are covered in *this* artifact, and carrying
+them as rows would be the STALE defect in reverse. They are **not** claimed as a closure this
+ticket achieved, and the number this segment publishes for its own work is the six, not the 32.
+
+**The risk this creates, stated so the next reader is not surprised.** The 27 execute only when the
+driver reaches readiness. On a host where it does not — the state the previous pin captured — they
+return as `DA:0` and this ledger is 27 rows short until it is re-derived. That is the same
+host-state dependence the previous ledger named; the cheap check is to re-run the gui leg alone on
+an otherwise idle host and compare these 27 against `union-d21c`.
+
+#### S13.13.4 Class totals, and the flipper
+
+Over the 81: **`host-state-blocked` 0**, **`unreachable-in-this-environment` 62**,
+**`attribution-artifact` 8**, **`unreachable-by-construction` 7**, **`platform-unmeasured` 2**,
+**`oscillating` 2**, **OPEN 0** — sum 81. `host-state-blocked` is 0 because every row it held is
+covered in this artifact; the class keeps its definition and returns with the 27 if the driver
+regresses.
+
+`desktop_shutdown.rs:552-553` (was `499-500`) are the S2.8.4 oscillating pair. **They read `DA:0` in
+this union**, so they are
+claimed as rows under `S2.8.4-pair` and the reconcile is clean; in a full run where the spawned
+future is polled before teardown they read `DA:1`. The pairing records a
+`covered_justification` for that case, quoted from this paragraph, so a `COVERED 2` run passes the
+gate instead of looking like an unexplained disagreement. The deterministic fix — await a "started"
+signal sent at 552 before asserting — is still not landed and still not claimed.
+
+`lib.rs:3084` is the `decision => panic!` arm of the new fixture's second assertion: the negation of
+the assertion on the line above, so a passing run cannot reach it. It is `S13.2k`,
+`unreachable-by-construction`, the same shape as S13.2g (inside a test, the fixture's own design
+forbids the arm).
+
+#### S13.13.5 Reproduction and the two sentences
+
+```bash
+cargo test -p futureos --lib --no-default-features --features headless -- --test-threads=1 quit_admission
+# 1 passed: desktop_shutdown::tests::quit_admission_guard_closes_admission_and_restores_the_flag
+cargo test -p futureos --lib --no-default-features --features headless -- --list | grep quit_admission
+# 1 test, 0 filtered for the token — the machine check that fails when the test does not exist
+cargo test -p futureos --lib --no-default-features --features gui -- --test-threads=1 quit_admission
+# 3 passed: the guard, the Ready arm and the fresh-process Confirm fixture
+```
+
+(The gate's prose form `-- -- --list` prints `running 0 tests` and greps nothing; the recorded
+machine form is the single `--`.)
+
+`reconcile.py`, and the gate:
+
+```
+$ python3 .future/cov100/reconcile.py --report .future/cov100/pinned/union-d21c.info \
+    --doc docs/testing/module-tauri-shell.md --label tauri-shell-seg2 \
+    --section "Per-line index of this segment's residual (81 rows)" --scope <each of the twelve>
+  MISSING (uncovered, not mentioned): 0
+```
+
+**`COVERED` is 0, not 2.** The supervisor's sentence names the flipper as covered, which was true of
+the `32ba1e13e` pin; this union reads both flipper lines `DA:0`, so they are claims here and the tool
+prints no STALE block. What survives from that sentence is the requirement it encodes: the pair is
+named as flipping and the justification is recorded, so the next run that flips them is not a
+disagreement.
+
+### Per-line index of this segment's residual (81 rows)
+
+**Re-derived 2026-10-19 (TAU-D21c) against `.future/cov100/pinned/union-d21c.info`, measured at
+`302a05be3`.** One row per `DA:0` line over the twelve scopes, and nothing else: `lib.rs:1300` and
+`1319-1323` are gone (§S13.13.1), the 27 driver-readiness rows are gone (§S13.13.3), `lib.rs:3084`
+is new, and `desktop_shutdown.rs`'s four rows moved. **The four moved by +53, and the +53 is two
+edits, not one:** TAU-D39's `close_admission_for_test` setter and its doc comment added 21 lines to
+that file *after* the previous pin was rendered (so those four positions were already 21 lines
+behind their statements — the previous report was measured on the pre-D39 file), and this ticket's
+guard adds 32 more. The new test is appended after all four rows and moves nothing. Checked at the
+destination, not by arithmetic: `:513` is a block-end `}`, `:552` is `let _done = done;`,
+`:553` is `std::future::pending::<()>().await;` and `:554` is the closing `});` of the spawned
+future.
+
+| line | group |
+|---|---|
+| `src/bin/futureos-headless.rs:11` | S13.3m |
+| `src/desktop_shutdown.rs:221` | S13.3g |
+| `src/desktop_shutdown.rs:222` | S13.3g |
+| `src/desktop_shutdown.rs:223` | S13.3g |
+| `src/desktop_shutdown.rs:267` | S13.3g |
+| `src/desktop_shutdown.rs:268` | S13.3g |
+| `src/desktop_shutdown.rs:269` | S13.3g |
+| `src/desktop_shutdown.rs:270` | S13.3g |
+| `src/desktop_shutdown.rs:271` | S13.3g |
+| `src/desktop_shutdown.rs:272` | S13.3g |
+| `src/desktop_shutdown.rs:273` | S13.3g |
+| `src/desktop_shutdown.rs:274` | S13.3g |
+| `src/desktop_shutdown.rs:513` | S13.3h |
+| `src/desktop_shutdown.rs:552` | S2.8.4-pair |
+| `src/desktop_shutdown.rs:553` | S2.8.4-pair |
+| `src/desktop_shutdown.rs:554` | S13.3i |
+| `src/desktop_shutdown/coordinator.rs:50` | S13.3j |
+| `src/desktop_shutdown/coordinator.rs:165` | S13.3k |
+| `src/desktop_shutdown/coordinator.rs:166` | S13.3k |
+| `src/desktop_shutdown/coordinator.rs:183` | S13.3k |
+| `src/desktop_shutdown/coordinator.rs:184` | S13.3k |
+| `src/desktop_shutdown/coordinator.rs:185` | S13.3k |
+| `src/desktop_shutdown/coordinator.rs:186` | S13.3k |
+| `src/desktop_shutdown/coordinator.rs:187` | S13.3k |
+| `src/future_login.rs:354` | S13.3l |
+| `src/future_login.rs:355` | S13.3l |
+| `src/future_login.rs:482` | S13.3l |
+| `src/instance.rs:45` | S13.3e-join |
+| `src/instance.rs:72` | S13.3e-join |
+| `src/instance.rs:170` | S13.3e |
+| `src/instance.rs:171` | S13.3e |
+| `src/instance.rs:172` | S13.3e |
+| `src/instance.rs:173` | S13.3e |
+| `src/instance.rs:174` | S13.3e |
+| `src/launch.rs:486` | S13.3d |
+| `src/launch.rs:487` | S13.3d |
+| `src/lib.rs:213` | S13.1b |
+| `src/lib.rs:216` | S13.1b |
+| `src/lib.rs:245` | S13.1b |
+| `src/lib.rs:894` | S13.2a |
+| `src/lib.rs:940` | S13.2b |
+| `src/lib.rs:941` | S13.2b |
+| `src/lib.rs:942` | S13.2b |
+| `src/lib.rs:979` | S13.2c |
+| `src/lib.rs:980` | S13.2c |
+| `src/lib.rs:981` | S13.2c |
+| `src/lib.rs:982` | S13.2c |
+| `src/lib.rs:983` | S13.2c |
+| `src/lib.rs:984` | S13.2c |
+| `src/lib.rs:988` | S13.2c |
+| `src/lib.rs:989` | S13.2c |
+| `src/lib.rs:990` | S13.2c |
+| `src/lib.rs:992` | S13.2c |
+| `src/lib.rs:997` | S13.2c |
+| `src/lib.rs:1003` | S13.2d |
+| `src/lib.rs:1007` | S13.2d |
+| `src/lib.rs:1009` | S13.2d |
+| `src/lib.rs:1010` | S13.2d |
+| `src/lib.rs:1011` | S13.2d |
+| `src/lib.rs:1012` | S13.2d |
+| `src/lib.rs:1014` | S13.2d |
+| `src/lib.rs:1015` | S13.2d |
+| `src/lib.rs:1016` | S13.2d |
+| `src/lib.rs:1017` | S13.2d |
+| `src/lib.rs:1018` | S13.2d |
+| `src/lib.rs:1051` | S13.2h |
+| `src/lib.rs:1053` | S13.2h |
+| `src/lib.rs:1054` | S13.2i |
+| `src/lib.rs:1271` | S13.2e |
+| `src/lib.rs:1296` | S13.2e |
+| `src/lib.rs:1297` | S13.2e |
+| `src/lib.rs:1773` | S13.2g |
+| `src/lib.rs:3084` | S13.2k |
+| `src/main.rs:9` | S13.3a |
+| `src/main.rs:51` | S13.3b |
+| `src/menu.rs:41` | S13.3c |
+| `src/menu.rs:48` | S13.3c |
+| `src/runtime.rs:248` | S13.3f |
+| `src/runtime.rs:249` | S13.3f |
+| `src/runtime.rs:251` | S13.3f |
+| `src/runtime.rs:252` | S13.3f |
+<!-- 81 rows -->
