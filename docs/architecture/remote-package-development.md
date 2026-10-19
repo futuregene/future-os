@@ -627,3 +627,14 @@ generation and related documentation static checks. No local tests, interop or
 final CI ran. The initial migration baseline stays 4a64b65e and integrated main
 is separately identified; historical CI timings do not become matched candidate
 performance evidence. The overall goal remains active.
+
+### 2026-10-19: Invitation diagnostics before unified acceptance
+
+Invitation, RemoteStatus and nested RemoteDevice derived Debug could expose
+complete invitations/one-time secrets in failed assertions. Custom Debug retains
+identity/status/invitation-presence diagnostics and omits claim code/nonce/secret
+and potentially authenticated URLs. Serialize, field names, UI/CLI invitation
+display and credential formats are unchanged. One Protocol and one Server
+regression declaration check redaction, nesting/URLs and retained serialized
+values. Scoped Clippy --all-targets for the changed packages/consumers and Desktop
+GUI/headless, fmt, boundaries and generation pass; no local tests ran.

@@ -39,7 +39,7 @@ pub struct RecoveryProgress {
     pub next_retry_at: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteStatus {
     pub agent_available: bool,
@@ -86,6 +86,23 @@ pub struct RemoteStatus {
     pub devices: Vec<RemoteDevice>,
 }
 
+impl std::fmt::Debug for RemoteStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteStatus")
+            .field("phase", &self.phase)
+            .field("reason", &self.reason)
+            .field("recovery", &self.recovery)
+            .field("pair_id", &self.pair_id)
+            .field("desktop_id", &self.desktop_id)
+            .field("agent_available", &self.agent_available)
+            .field("has_pairing_code", &self.pairing_code.is_some())
+            .field("warning_code", &self.warning_code)
+            .field("client", &self.client)
+            .field("devices", &self.devices)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Whether a paired device is the one driving this desktop.
 ///
 /// `Standby` is a device that is still paired and may still be connected — it
@@ -100,7 +117,7 @@ pub enum DeviceControl {
 }
 
 /// One paired device, as the Remote page lists it.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteDevice {
     pub pair_id: String,
@@ -113,6 +130,20 @@ pub struct RemoteDevice {
     pub pairing_code: Option<String>,
     pub pairing_code_expires_at: Option<i64>,
     pub desktop_id: String,
+}
+
+impl std::fmt::Debug for RemoteDevice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteDevice")
+            .field("pair_id", &self.pair_id)
+            .field("desktop_id", &self.desktop_id)
+            .field("phase", &self.phase)
+            .field("control", &self.control)
+            .field("connected", &self.connected)
+            .field("client", &self.client)
+            .field("has_pairing_code", &self.pairing_code.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 /// A client's description of itself, sent on `secure_ready`.
@@ -169,6 +200,46 @@ pub fn empty(agent_available: bool) -> RemoteStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn nested_status_debug_hides_invitations_while_serialization_keeps_them() {
+        let mut status = empty(false);
+        status.pairing_code = Some("private_top_invitation_fixture".into());
+        status.nats_url = "tls://private_transport_fixture@fixture.invalid".into();
+        status.web_url = Some("http://fixture.invalid/private_web_fixture".into());
+        status.web_lan_url = Some("http://fixture.invalid/private_lan_fixture".into());
+        status.devices.push(RemoteDevice {
+            pair_id: "pair_fixture".into(),
+            desktop_id: "desktop_fixture".into(),
+            phase: RemotePhase::Ready,
+            control: DeviceControl::Active,
+            connected: true,
+            client: None,
+            pairing_code: Some("private_device_invitation_fixture".into()),
+            pairing_code_expires_at: Some(42),
+        });
+        let debug = format!("{status:?}");
+        for marker in [
+            "private_top_invitation_fixture",
+            "private_device_invitation_fixture",
+            "private_transport_fixture",
+            "private_web_fixture",
+            "private_lan_fixture",
+        ] {
+            assert!(!debug.contains(marker));
+        }
+        assert!(debug.contains("pair_fixture"));
+        let wire = serde_json::to_value(&status).unwrap();
+        assert_eq!(wire["pairingCode"], "private_top_invitation_fixture");
+        assert_eq!(
+            wire["devices"][0]["pairingCode"],
+            "private_device_invitation_fixture"
+        );
+        assert_eq!(wire["devices"][0]["pairingCodeExpiresAt"], 42);
+        assert_eq!(wire["natsUrl"], status.nats_url);
+        assert_eq!(wire["webUrl"], status.web_url.unwrap());
+        assert_eq!(wire["webLanUrl"], status.web_lan_url.unwrap());
+    }
+
     #[test]
     fn runtime_active_classifies_every_phase() {
         for phase in [

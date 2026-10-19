@@ -18,7 +18,7 @@ use serde_json::Value;
 /// A parsed, structurally valid v2 invitation. Field-level validity (lengths,
 /// key shapes) is checked here; *authority* is not — the platform claim and the
 /// Noise handshake are what actually decide whether it is still good.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Invitation {
     /// One-time platform claim code (base64url of a JSON payload).
     pub code: String,
@@ -38,6 +38,17 @@ pub struct Invitation {
     pub claim_url: String,
     /// One-time claim nonce, likewise from the code.
     pub nonce: String,
+}
+
+impl std::fmt::Debug for Invitation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Invitation")
+            .field("desktop_id", &self.desktop_id)
+            .field("desktop_key", &self.desktop_key)
+            .field("secure_key", &self.secure_key)
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Why an invitation could not be used. User-facing text is the UI's job; the
@@ -179,6 +190,32 @@ pub fn parse_invitation(value: &str, now: i64) -> Result<Invitation, LinkError> 
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn invitation_debug_omits_claim_authority_and_one_time_secrets() {
+        let invitation = Invitation {
+            code: "private_code_fixture".into(),
+            desktop_id: "desktop_fixture".into(),
+            desktop_key: "public_nkey_fixture".into(),
+            secure_key: "public_noise_fixture".into(),
+            secret: "private_psk_fixture".into(),
+            nonce: "private_nonce_fixture".into(),
+            claim_url: "https://fixture.invalid/private_claim_fixture".into(),
+            expires_at: Some(42),
+        };
+        let debug = format!("{invitation:?}");
+        for marker in [
+            "private_code_fixture",
+            "private_psk_fixture",
+            "private_nonce_fixture",
+            "private_claim_fixture",
+        ] {
+            assert!(!debug.contains(marker));
+        }
+        assert!(debug.contains("desktop_fixture"));
+        assert_eq!(invitation.code, "private_code_fixture");
+        assert_eq!(invitation.secret, "private_psk_fixture");
+    }
 
     fn invitation(overrides: &[(&str, &str)]) -> String {
         let code = URL_SAFE_NO_PAD.encode(

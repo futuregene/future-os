@@ -516,3 +516,7 @@ Client 接回主干的 control/holder 状态，握手 presence 初始化，后�
 移植继续遵守本分支的代次约束：invite 策略与 web owner 写入受 access commit 保护；没有借主干同步恢复全局 Core 单例。Mobile 的控制权即时确认与现有 shutdown/原生接线自动合并后通过静态检查，Desktop 原有投影基础库修复也一并保留。
 
 合并后的 Client/Server 默认及 test-support、互通 network-tests、Desktop GUI/headless、CLI 的 Clippy `--all-targets`，相关 fmt，以及 Desktop/Mobile typecheck/ESLint、Protocol/Client/interop 类型检查、包边界审计、生成与相关文档检查通过。未运行本地测试、互通或最终 CI。源码基线仍记为 4a64b65e 以追踪最初迁移，当前另明确集成的主干提交；此前历史 CI 时间不因此成为新候选的同条件收益证据。整体目标继续进行。
+
+### 2026-10-19：统一验收前的邀请调试输出收紧
+
+审查发现 Invitation、RemoteStatus 和嵌套 RemoteDevice 的自动 Debug 会输出完整邀请/一次性 secret，失败断言也可能触发。改为只显示身份、状态和“是否有邀请”等诊断字段，省略 claim code/nonce/secret 与可能带认证信息的 URL；Serialize、字段名、UI/CLI 邀请显示与凭据格式不变。增加 Protocol/Server 各一个回归声明，分别检查邀请敏感字段、嵌套状态/URL不进入 Debug，并保留序列化原值。Protocol/Server、Client/互通消费者和 Desktop GUI/headless Clippy `--all-targets`、fmt、包边界及生成静态检查通过；未在本地运行测试。
