@@ -1032,6 +1032,34 @@ mod bridge_tests {
     }
 
     #[tokio::test]
+    async fn delete_outbox_acknowledges_missing_sessions_but_keeps_storage_failures() {
+        let home = TestHome::new("bridge-outbox-missing");
+        let mock = mock_agent();
+        for session in ["coded-missing", "legacy-missing", "storage-failure"] {
+            enqueue_delete(&home, session);
+        }
+        mock.push_data(
+            "delete_sessions",
+            serde_json::json!({"results": [
+                {"sessionId":"coded-missing","deleted":false,"error":"absent",
+                 "errorCode":"session_not_found","errorData":null},
+                {"sessionId":"legacy-missing","deleted":false,"error":"No such session",
+                 "errorCode":"","errorData":null},
+                {"sessionId":"storage-failure","deleted":false,
+                 "error":"session not found in recovery archive",
+                 "errorCode":"session_storage_unavailable","errorData":{"retryable":true}}
+            ]}),
+        );
+
+        reconcile_delete_outbox().await;
+
+        assert_eq!(
+            crate::store::pending_agent_session_deletes().unwrap(),
+            vec!["storage-failure"]
+        );
+    }
+
+    #[tokio::test]
     async fn delete_outbox_retains_foreign_and_unverified_intent() {
         let home = TestHome::new("delete-source-fence");
         let mock = mock_agent();

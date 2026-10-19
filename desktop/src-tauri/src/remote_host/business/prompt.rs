@@ -45,7 +45,9 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
         "abort" => {
             reply_unit(
                 sink,
-                crate::agent_bridge::abort_session(&cmd.session_id).await,
+                crate::agent_bridge::abort_session(&cmd.session_id)
+                    .await
+                    .map(|_| ()),
             )
             .await
         }

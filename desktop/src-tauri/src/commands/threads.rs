@@ -1421,6 +1421,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn batch_delete_removes_running_threads_whose_sessions_are_missing() {
+        let _lock = mock_agent_lock();
+        let home = init("cmd_batch_delete_missing_sessions");
+        let unbound = make_thread(&home, None);
+        let bound = make_thread(&home, Some("missing-session"));
+        let runs = [
+            crate::agent_bridge::test_support::seed_run(&unbound.id),
+            crate::agent_bridge::test_support::seed_run(&bound.id),
+        ];
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            errors: HashMap::from([("get_state".into(), "session not found".into())]),
+            ..Default::default()
+        });
+
+        let result = batch_delete_threads(store::BatchDeleteThreadsInput {
+            thread_ids: vec![unbound.id.clone(), bound.id.clone()],
+            delete_files: false,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(result.deleted_count, 2);
+        assert!(result.failed.is_empty(), "{:?}", result.failed);
+        for thread in [unbound, bound] {
+            assert!(store::get_thread(&thread.id).unwrap().is_none());
+        }
+        for run in runs {
+            assert!(store::get_run(&run.id).unwrap().is_none());
+        }
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
     async fn batch_delete_threads_delegates() {
         let _lock = mock_agent_lock();
         let _home = init("cmd_batch_delete");
