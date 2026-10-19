@@ -1,6 +1,6 @@
 //! Desktop business adapter. No socket, subscription or Tauri AppHandle enters this API.
-use crate::remote::protocol::IncomingCmd;
-use crate::remote::services::ReplySink;
+use future_remote_protocol::IncomingCmd;
+use future_remote_server::services::ReplySink;
 use serde_json::{json, Value};
 
 mod catalog;

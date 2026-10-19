@@ -1,5 +1,5 @@
-use crate::remote::protocol::IncomingCmd;
-use crate::remote::services::ReplySink;
+use future_remote_protocol::IncomingCmd;
+use future_remote_server::services::ReplySink;
 use serde_json::{json, Value};
 
 use super::{missing_session, qualified_model_id, reply, reply_unit};
@@ -371,10 +371,10 @@ mod tests {
     /// toggle appears to flip itself back.
     #[tokio::test]
     async fn an_unreadable_store_is_reported_not_defaulted() {
-        use crate::remote::protocol::IncomingCmd;
         use crate::remote::test_support::{
             ensure_mock_agent, mock_agent_lock, HomeGuard, RecordingSink,
         };
+        use future_remote_protocol::IncomingCmd;
 
         // Order matters, and this is the order: `mock_agent_lock()` before the
         // HOME guard. Both locks are process-global, and the reverse order is a
@@ -414,10 +414,10 @@ mod tests {
     /// the user never touched.
     #[tokio::test]
     async fn a_catalogue_without_a_models_array_is_not_reported_as_all_hidden() {
-        use crate::remote::protocol::IncomingCmd;
         use crate::remote::test_support::{
             ensure_mock_agent, init_store, mock_agent_lock, HomeGuard, RecordingSink,
         };
+        use future_remote_protocol::IncomingCmd;
         // MOCK before HOME, as above and for the same reason.
         let _lock = mock_agent_lock();
         let _home = HomeGuard::new("business-settings-no-models");
@@ -450,7 +450,7 @@ mod tests {
     #[tokio::test]
     #[should_panic(expected = "handler received")]
     async fn a_command_from_another_family_is_not_answered() {
-        use crate::remote::protocol::IncomingCmd;
+        use future_remote_protocol::IncomingCmd;
         let sink = crate::remote::test_support::RecordingSink::default();
         let cmd = IncomingCmd {
             cmd_type: "get_messages".into(),

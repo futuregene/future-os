@@ -10,12 +10,12 @@ mod read_pages;
 mod session_files;
 #[cfg(test)]
 mod sync_measurement;
-use crate::remote::services::{BusinessHost, ReplySink};
+use future_remote_server::services::{BusinessHost, ReplySink};
 struct DesktopHost;
 impl BusinessHost for DesktopHost {
     fn execute<'a>(
         &'a self,
-        command: crate::remote::protocol::IncomingCmd,
+        command: future_remote_protocol::IncomingCmd,
         reply: &'a dyn ReplySink,
     ) -> futures::future::BoxFuture<'a, ()> {
         Box::pin(async move {
@@ -55,10 +55,10 @@ pub(crate) fn attach_events() {
         )
     });
 }
-use crate::remote::protocol::PairingCreds;
-use crate::remote::services::{
+use future_remote_server::services::{
     FileHost, Invitation, PairingHost, RemoteHost, SessionsCatalog, StateHost,
 };
+use future_remote_server::PairingCreds;
 use futures::future::BoxFuture;
 use serde_json::Value;
 impl PairingHost for DesktopHost {

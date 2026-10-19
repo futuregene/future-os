@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { remoteAffected } from '../ci/remote-affected.mjs';
+import { checkRemoteSpecifier } from '../ci/remote-boundaries.mjs';
 
 test('Rust client source selects its Rust consumers, without Mobile or unrelated crates', () => {
   assert.deepEqual(remoteAffected(['packages/remote-client/src/runtime.rs']), {
@@ -73,4 +74,18 @@ test('invalid path lists fail instead of silently running nothing', () => {
   assert.throws(() => remoteAffected({}));
   assert.throws(() => remoteAffected([42]));
   assert.throws(() => remoteAffected(['path\nwith-newline']));
+});
+
+test('Remote source and test configs cannot borrow application modules', () => {
+  for (const name of ['react', 'react-native', 'expo-device', 'jest-expo', '@tauri-apps/api', '@futureos/desktop', '@future-os/mobile', '../../../desktop/src/app']) {
+    assert.throws(() => checkRemoteSpecifier('client', name));
+    assert.throws(() => checkRemoteSpecifier('client', name, { production: false }));
+  }
+});
+test('Protocol can share wire types with projection without importing its runtime', () => {
+  assert.doesNotThrow(() => checkRemoteSpecifier('protocol', '@future-os/thread-projection', { typeOnly: true }));
+  assert.throws(() => checkRemoteSpecifier('protocol', '@future-os/thread-projection'));
+  assert.doesNotThrow(() => checkRemoteSpecifier('client', '@future-os/thread-projection'));
+  assert.throws(() => checkRemoteSpecifier('crypto', '@future-os/remote-client'));
+  assert.throws(() => checkRemoteSpecifier('projection', '@future-os/remote-protocol'));
 });

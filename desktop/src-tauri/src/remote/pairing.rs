@@ -1,7 +1,7 @@
 //! Pairing service facade; the protocol core owns no filesystem/account/API access.
-pub(crate) use super::protocol::PairingCreds;
 #[cfg(test)]
 pub(crate) use crate::remote_host::pairing::INJECT_SAVE_FAILURE;
+pub(crate) use future_remote_server::PairingCreds;
 pub fn load_creds() -> Option<PairingCreds> {
     super::host().load()
 }

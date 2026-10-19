@@ -3100,7 +3100,7 @@ mod runtime_tests {
         let sink = crate::remote::test_support::RecordingSink::default();
         host()
             .execute(
-                crate::remote::protocol::IncomingCmd {
+                future_remote_protocol::IncomingCmd {
                     cmd_type: "get_read_chunk".into(),
                     reply_id: unique("read"),
                     ..Default::default()

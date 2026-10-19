@@ -918,7 +918,7 @@ async fn an_uploaded_file_can_be_claimed_as_an_attachment() {
         .await
         .expect("upload");
 
-    let references = vec![crate::remote::protocol::UploadReference {
+    let references = vec![future_remote_protocol::UploadReference {
         upload_id: uploaded.upload_id.clone(),
     }];
     let claimed = crate::remote_host::files::claim_uploads(&references, "thread-from-client")

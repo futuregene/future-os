@@ -50,7 +50,6 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 
 use super::commands::new_reply_slots;
-use super::protocol::PairingCreds;
 use super::publisher::{CATALOG_ACTIVITY_FEATURE, EVENT_COALESCING_FEATURE, MAX_EVENT_BYTES};
 use super::test_support::{
     declare_features, ensure_mock_agent, init_store, jwt, mock_agent_lock, now_secs, pairing_creds,
@@ -60,6 +59,7 @@ use super::transport::build_transport;
 use super::{publish_event, secure, stop, DropCounters, NatsHealth, RemoteState, SUPERVISOR};
 use crate::remote_host::business::truncated_event_data;
 use crate::remote_host::lean;
+use future_remote_server::PairingCreds;
 
 /// The `before` cursor the mobile client opens a conversation with.
 /// The phone's history page size, in user exchanges: `HISTORY_PAGE_USER_EXCHANGES`

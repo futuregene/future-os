@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
-pub(crate) use crate::remote::protocol::PairingCreds;
+pub(crate) use future_remote_server::PairingCreds;
 
 #[derive(Debug, Deserialize)]
 struct CreatePairCodeResponse {

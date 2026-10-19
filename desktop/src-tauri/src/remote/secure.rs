@@ -1,11 +1,11 @@
 //! Desktop services for the shared controlled-endpoint handshake.
 #[cfg(test)]
-use super::protocol::PairingCreds;
-#[cfg(test)]
 use future_remote_server::secure::HandshakeHost;
 pub use future_remote_server::secure::PairingIdentity;
 #[cfg(test)]
 pub(super) use future_remote_server::secure::Reply;
+#[cfg(test)]
+use future_remote_server::PairingCreds;
 #[cfg(test)]
 use serde_json::Value;
 #[cfg(test)]
@@ -46,8 +46,8 @@ mod tests {
         decode(value)?.try_into().map_err(|_| error("key"))
     }
     use crate::remote::test_support::{init_store, now_secs, HomeGuard};
-    fn creds() -> super::super::protocol::PairingCreds {
-        super::super::protocol::PairingCreds {
+    fn creds() -> future_remote_server::PairingCreds {
+        future_remote_server::PairingCreds {
             handshake_version: 2,
             secure: Some(PairingIdentity::new(now_secs() + 300).unwrap()),
             pair_id: "pair_secure".into(),
@@ -62,7 +62,7 @@ mod tests {
     }
     fn prepare_connection(
         transport: &Transport,
-        creds: &super::super::protocol::PairingCreds,
+        creds: &future_remote_server::PairingCreds,
         private: &[u8],
         pairing: bool,
     ) -> Result<(Channel, Reply), crate::AppError> {
@@ -120,7 +120,7 @@ mod tests {
     }
     fn connect(
         transport: &Transport,
-        creds: &super::super::protocol::PairingCreds,
+        creds: &future_remote_server::PairingCreds,
         private: &[u8],
         pairing: bool,
     ) -> Result<Channel, crate::AppError> {

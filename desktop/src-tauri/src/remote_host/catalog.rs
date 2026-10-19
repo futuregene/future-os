@@ -84,7 +84,7 @@ pub(crate) fn sessions(pair_id: &str) -> Option<(Value, String)> {
 /// signature drops.
 const RECENCY_FIELD: &str = "lastMessageAt";
 
-pub(crate) use crate::remote::services::SessionsCatalog;
+pub(crate) use future_remote_server::services::SessionsCatalog;
 
 pub(crate) fn sessions_catalog(pair_id: &str) -> Option<SessionsCatalog> {
     let mut state = CATALOG.lock().unwrap();

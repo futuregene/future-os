@@ -196,7 +196,7 @@ that appear in no report at all:
 | `src/no_gui.rs` | `#[cfg(not(feature = "gui"))]` | feature-unmeasured — the measurement is default features (`gui`) |
 | `src/bin/futureos-headless.rs` | `required-features = ["headless"]` | feature-unmeasured |
 | `src/agent_bridge/tests.rs`, `src/agent_providers/tests.rs`, `src/remote/tests.rs` | test-only modules; the report contains no `tests.rs` file | not measured (test code) |
-| `src/agent_bridge/mod.rs`, `src/commands/mod.rs`, `src/terminal/mod.rs`, `src/remote/services.rs` | declarations/trait signatures only — no executable regions | `unreachable-by-construction` |
+| `src/agent_bridge/mod.rs`, `src/commands/mod.rs`, `src/terminal/mod.rs` | declarations/trait signatures only — no executable regions | `unreachable-by-construction` |
 | `src/store/schema.rs` (395 lines), `src/store/records.rs` (278 lines), `src/agent_proto.rs`, `src/shadow_review.rs` | SQL/macro/`include!` constants, 0 `fn` | `unreachable-by-construction` |
 | `build.rs` | build script, outside the crate's coverage mapping | `unreachable-by-construction` |
 

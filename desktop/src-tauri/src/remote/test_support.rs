@@ -47,9 +47,9 @@ pub(crate) fn init_store() {
 ///
 /// The per-pairing capability slots are keyed by `pair_id`, so this is what
 /// makes a `secure_ready` declaration land where the publisher reads it.
-pub(crate) fn pairing_creds(pair_id: &str) -> crate::remote::protocol::PairingCreds {
+pub(crate) fn pairing_creds(pair_id: &str) -> future_remote_server::PairingCreds {
     let expires_at = now_secs() + 3600;
-    crate::remote::protocol::PairingCreds {
+    future_remote_server::PairingCreds {
         handshake_version: 2,
         secure: Some(
             crate::remote::secure::PairingIdentity::new(now_secs() + 600)
@@ -88,7 +88,7 @@ pub(crate) fn set_pair_lean(pair_id: &str, enabled: bool) {
 }
 
 pub(crate) fn declare_features(
-    creds: &crate::remote::protocol::PairingCreds,
+    creds: &future_remote_server::PairingCreds,
     pair_id: &str,
     features: &[&str],
 ) {
@@ -375,7 +375,7 @@ impl RecordingSink {
     }
 }
 
-impl crate::remote::services::ReplySink for RecordingSink {
+impl future_remote_server::services::ReplySink for RecordingSink {
     fn send<'a>(
         &'a self,
         success: bool,

@@ -22,7 +22,7 @@
 | [Mobile remote context](../../mobile/src/remote/RemoteContext.tsx) | React 状态、连接编排、界面与设备生命周期适配 | 与通用客户端核心分离，应用 hooks 不进入核心包 |
 | [remote crypto](../../packages/remote-crypto/src/lib.rs) | 独立 Rust Noise 握手和加密记录层 | 保持独立；与 TS 实现共用的向量继续维护 |
 
-[RemoteHost 接口](../../desktop/src-tauri/src/remote/services.rs)已分出业务、配对、状态和文件四组能力，[DesktopHost](../../desktop/src-tauri/src/remote_host/mod.rs)已有实现。迁移复用这些边界，不另建通用插件框架。
+[RemoteHost 接口](../../packages/remote-server/src/services.rs)已分出业务、配对、状态和文件四组能力，[DesktopHost](../../desktop/src-tauri/src/remote_host/mod.rs)已有实现。迁移复用这些边界，不另建通用插件框架。
 
 当前 CLI 的 `future remote devices` 主要管理本机被控配对，并通过文件请求运行中的 Desktop 添加设备；它尚不是通用的远端主控客户端。当前 Mobile 只有主控产品能力。上述现状不能在改包名时被写成新能力已完成。
 
@@ -191,8 +191,8 @@ CI 根据真实依赖选择改动包及受影响消费者，并记录共享 sche
 
 ## 7 兼容性与完成清单
 
-- [ ] Rust 协议、主控、被控包与独立 Crypto 建立，依赖方向无环，无应用反向依赖。
-- [ ] TS Crypto、协议、主控包建立；React Native、Expo、React hooks 和 UI 留在 Mobile。
+- [x] Rust 协议、主控、被控包与独立 Crypto 建立，依赖方向无环，无应用反向依赖（manifest/源码静态核对；运行验收另列）。
+- [x] TS Crypto、协议、主控包建立；React Native、Expo、React hooks 和 UI 留在 Mobile（独立配置、依赖及源码静态核对；运行验收另列）。
 - [ ] Rust/TS 共用契约和安全/协议样例；既有 wire format、TLS/WSS、身份绑定及安全策略保持。
 - [ ] 安全、协议、主控共享素材只有一份；两语言报告共同用例 ID，平台差异显式记录且保留原有边界覆盖。
 - [ ] 各包有独立测试命令、配置和依赖，核心测试迁出应用目录，不借用 Desktop/Mobile 测试环境。
@@ -494,3 +494,15 @@ Rust 驱动运行真实 supervisor → resume → connect 流程，只在显式�
 新增素材通过版本、suite、类型、未知字段、重复 ID、预期范围和差异说明校验。互通专用的 `client.json`、`isolation.json`、`transfer.json` 现只触发实际读取它们的互通工程；请求/凭据/恢复单元素材仍选择两语言 Client，调度回归源码补充这一边界。互通默认/网络特性的 Clippy `--all-targets`、fmt、TS typecheck/lint、Node bundle 编译、协议生成、相关文档及 CI 脚本语法检查通过；静态 bundle 审计未发现应用导入。两语言各增加一个报告 ID，计划各报告 17 个真实互通流程/场景，未本地执行测试或产物。
 
 这一批补足停止期间真实角色传输的驱动，运行结论仍待最终 CI。其余应用迁移与事件/投影边界核对、统一自动化、同条件性能证据和同候选版本人工确认仍待完成，整体目标继续进行。
+
+### 2026-10-19：包边界静态门与临时转发收尾
+
+新增 [`remote-boundaries.mjs`](../../scripts/ci/remote-boundaries.mjs)，并接入 Remote CI。Rust 根据锁定/offline 的 Cargo metadata 检查四个核心库与互通工程的 workspace 依赖方向、普通 lib 目标、默认 feature 的传递展开，以及互通可执行目标必须显式选择 network-tests；不能经 dev-dependency 重新导入应用或让测试明文传输默认启用。TS 检查 manifest 各类依赖、独立脚本/配置及 AST 中的 import/export、类型导入、动态模块与测试 mock；通过 TypeScript 模块解析和 realpath 检查别名，防止绕过目录边界导入应用。Protocol 对 thread-projection 只共享线上历史结构类型，不能引入其运行时代码。纯 Rust/纯 TS CI 分别选择对应静态检查，不为 TS 独立改动安装 Rust，也不为 Rust 单元素材安装 npm。
+
+当前静态审计覆盖 5 个 Rust 包（含互通）和 120 个 TS/JS 源码、测试、配置文件；审计不加载应用、不执行测试。新增两个包边界回归测试声明，合计 14 个调度/边界声明，留待 CI 运行。该工具证明的是已检查的依赖和源码接线，不能代替协议、安全、退出和产品运行验证。
+
+删除 Desktop `remote/protocol.rs`、`remote/services.rs`、`remote/health.rs` 三个只转发导入的旧模块。应用与集成测试直接使用 Protocol DTO、Server 配对凭据/宿主契约和 health 类型；真实 Store、审批、沙箱、事件接线和 GUI/headless 宿主适配没有迁进核心。当前连接设计、包索引和覆盖说明已同步更新，不再把已迁入 Client 的 TS 文件编排/停止等待描述成尚未开始。
+
+事件投影边界经源码核对：Rust Client 输出带远端身份的事件、目录与恢复信号；Desktop 的会话投影/补齐通过 remoteRunStreams/remoteRunReplay 使用既有 thread-projection，TS Client 的 projection/syncEngine 复用同一基础投影器。此次不新增第二套 Rust UI 投影器，也不能把原始事件转发当作已做语义去重。独立角色互通、共享安全/请求/凭据/恢复/隔离/传输素材和应用投影回归分别承担相应层的证据，最终都仍待统一 CI。
+
+包边界审计、Desktop GUI/headless Clippy `--all-targets`、fmt、协议生成和相关文档静态检查通过；未执行本地测试、CI 或测试产物。整体目标仍等待剩余应用测试归属核对、统一自动化、同条件性能与人工确认。

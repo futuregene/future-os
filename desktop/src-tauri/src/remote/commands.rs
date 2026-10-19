@@ -1,14 +1,14 @@
 //! Desktop operator settings and real application command integration tests.
 #[cfg(test)]
-use super::protocol::IncomingCmd;
-#[cfg(test)]
-use super::services::ReplySink;
+use future_remote_protocol::IncomingCmd;
 #[cfg(test)]
 pub(super) use future_remote_server::commands::new_reply_slots;
 #[cfg(test)]
 pub(super) use future_remote_server::commands::{apply_declared_features, REPLY_GZIP_FEATURE};
 #[cfg(test)]
 pub(super) use future_remote_server::commands::{HandshakeState, ReplySlots};
+#[cfg(test)]
+use future_remote_server::services::ReplySink;
 #[cfg(test)]
 use serde_json::Value;
 #[cfg(test)]
@@ -54,13 +54,13 @@ fn record_client_identity(pair: &str, command: &IncomingCmd) {
     super::SUPERVISOR.record_client_identity(pair, command);
 }
 #[cfg(test)]
-struct BorrowedBusiness(&'static dyn super::services::BusinessHost);
+struct BorrowedBusiness(&'static dyn future_remote_server::services::BusinessHost);
 #[cfg(test)]
-impl super::services::BusinessHost for BorrowedBusiness {
+impl future_remote_server::services::BusinessHost for BorrowedBusiness {
     fn execute<'a>(
         &'a self,
         command: IncomingCmd,
-        reply: &'a dyn super::services::ReplySink,
+        reply: &'a dyn future_remote_server::services::ReplySink,
     ) -> futures::future::BoxFuture<'a, ()> {
         self.0.execute(command, reply)
     }
@@ -228,7 +228,9 @@ mod bridge_tests {
         async fn start() -> Self {
             Self::start_with(super::super::host(), None).await
         }
-        async fn start_with_host(host: &'static dyn super::super::services::BusinessHost) -> Self {
+        async fn start_with_host(
+            host: &'static dyn future_remote_server::services::BusinessHost,
+        ) -> Self {
             Self::start_with(host, None).await
         }
         /// A bridge whose connection was admitted under `access_epoch`. `None`
@@ -236,7 +238,7 @@ mod bridge_tests {
         /// a supervised generation is admitted under, so a stale one can be
         /// built by admitting under an epoch that has since moved on.
         async fn start_with(
-            host: &'static dyn super::super::services::BusinessHost,
+            host: &'static dyn future_remote_server::services::BusinessHost,
             access_epoch: Option<u64>,
         ) -> Self {
             Self::spawn_flavour(host, access_epoch, false).await.0
@@ -248,7 +250,7 @@ mod bridge_tests {
         }
 
         async fn spawn_flavour(
-            host: &'static dyn super::super::services::BusinessHost,
+            host: &'static dyn future_remote_server::services::BusinessHost,
             access_epoch: Option<u64>,
             secure: bool,
         ) -> (Self, String) {
@@ -343,7 +345,7 @@ mod bridge_tests {
     #[tokio::test]
     async fn declared_capability_reaches_the_running_command_loop() {
         struct Big;
-        impl super::super::services::BusinessHost for Big {
+        impl future_remote_server::services::BusinessHost for Big {
             fn execute<'a>(
                 &'a self,
                 _cmd: IncomingCmd,
@@ -416,7 +418,7 @@ mod bridge_tests {
     #[tokio::test]
     async fn protocol_routes_to_a_substitute_host_and_rejects_a_stale_access_identity() {
         struct Echo;
-        impl super::super::services::BusinessHost for Echo {
+        impl future_remote_server::services::BusinessHost for Echo {
             fn execute<'a>(
                 &'a self,
                 cmd: IncomingCmd,
@@ -4162,7 +4164,7 @@ mod bridge_tests {
     struct CountingHost;
     static COUNTING: CountingHost = CountingHost;
     static COUNTING_RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    impl super::super::services::BusinessHost for CountingHost {
+    impl future_remote_server::services::BusinessHost for CountingHost {
         fn execute<'a>(
             &'a self,
             cmd: IncomingCmd,

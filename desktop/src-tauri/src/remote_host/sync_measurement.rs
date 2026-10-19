@@ -113,7 +113,7 @@ async fn handle(
             {
                 return Err("same-origin probe header required".into());
             }
-            let command: crate::remote::protocol::IncomingCmd =
+            let command: future_remote_protocol::IncomingCmd =
                 serde_json::from_slice(&bytes[header_end..header_end + size])?;
             if !matches!(
                 command.cmd_type.as_str(),

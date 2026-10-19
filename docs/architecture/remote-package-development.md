@@ -22,7 +22,7 @@ Existing product behavior is specified in the [remote connection design](../inte
 | [Mobile remote context](../../mobile/src/remote/RemoteContext.tsx) | React state, connection orchestration, UI and device lifecycle adaptation | Separate from the reusable client; application hooks stay outside core packages |
 | [remote crypto](../../packages/remote-crypto/src/lib.rs) | Independent Rust Noise handshake and encrypted records | Keep independent and preserve vectors shared with the TS implementation |
 
-The existing [RemoteHost interfaces](../../desktop/src-tauri/src/remote/services.rs) separate business, pairing, state and file services, with implementations in [DesktopHost](../../desktop/src-tauri/src/remote_host/mod.rs). Reuse these boundaries rather than introducing a general plugin framework.
+The existing [RemoteHost interfaces](../../packages/remote-server/src/services.rs) separate business, pairing, state and file services, with implementations in [DesktopHost](../../desktop/src-tauri/src/remote_host/mod.rs). Reuse these boundaries rather than introducing a general plugin framework.
 
 Today's CLI `future remote devices` primarily manages local controlled-endpoint pairings and requests device addition from a running Desktop through files; it is not a general remote controller client. Mobile currently exposes controller capability only. Renaming packages must not present these future capabilities as completed.
 
@@ -191,8 +191,8 @@ Performance acceptance compares compilation, linking, test execution, cache rest
 
 ## 7 Compatibility and completion checklist
 
-- [ ] Rust Protocol, Client and Server packages and independent Crypto have acyclic dependencies without application imports.
-- [ ] TS Crypto, Protocol and Client packages exist; React Native, Expo, React hooks and UI remain in Mobile.
+- [x] Rust Protocol, Client and Server packages and independent Crypto have acyclic dependencies without application imports (manifest/source static audit; runtime acceptance is separate).
+- [x] TS Crypto, Protocol and Client packages exist; React Native, Expo, React hooks and UI remain in Mobile (configuration/dependency/source static audit; runtime acceptance is separate).
 - [ ] Rust/TS share contracts and security/protocol fixtures; wire formats, TLS/WSS, identity binding and security policy remain compatible.
 - [ ] Security, protocol and controller corpora have one source; both languages report shared case IDs, record platform differences and preserve existing boundary coverage.
 - [ ] Packages own test commands, configuration and dependencies; core tests leave application directories and do not borrow Desktop/Mobile test environments.
@@ -553,3 +553,42 @@ seventeen real interop flow/case reports. No tests or generated output ran local
 Runtime conclusions await final CI. Application migration and event/projection
 boundary review, unified automation, matched performance and same-candidate
 manual confirmation remain pending; the overall goal stays active.
+
+### 2026-10-19: Static package-boundary gate and forwarding cleanup
+
+Added [`remote-boundaries.mjs`](../../scripts/ci/remote-boundaries.mjs) to Remote
+CI. Rust checks locked/offline Cargo metadata for core/interoperability workspace
+dependency direction, ordinary library targets, transitive default features and
+explicit network-tests requirements on interop executables. Dev-dependencies
+cannot reintroduce applications or fixture transports become default. TS checks
+manifest dependency kinds, scripts/configuration and import/export/type/dynamic/
+mock AST nodes. TypeScript resolution and realpath prevent application imports
+through aliases. Protocol shares only history wire types with thread-projection,
+not its runtime. Rust-only and TS-only jobs run the corresponding audits without
+installing the unrelated language dependencies.
+
+The static audit covers five Rust packages including interop and 120 TS/JS source,
+test and config files without loading apps or executing tests. Two new boundary
+regression declarations bring scheduling/boundary declarations to fourteen;
+execution awaits CI. The audit proves inspected dependency/source wiring, not
+protocol/security/shutdown/product runtime behavior.
+
+Deleted the three import-only Desktop remote/protocol.rs, services.rs and
+health.rs forwarding modules. Application and integration code directly use
+Protocol DTOs and Server credentials/services/health. Real Store, approval,
+sandbox, event attachment and GUI/headless adapters remain application-owned.
+Connection docs, package indexes and coverage notes now match those paths and
+no longer call TS transfer/stop orchestration unimplemented.
+
+Source audit confirms Rust Client emits endpoint-stamped events/catalogs and
+recovery signals. Desktop remoteRunStreams/remoteRunReplay and TS Client
+projection/syncEngine reuse existing thread-projection primitives. No second Rust
+UI projector is introduced; raw transport forwarding is not semantic event
+deduplication. Role interoperability, common security/request/credential/recovery/
+isolation/transfer fixtures and application projection regressions provide their
+own evidence layers, all still awaiting unified CI.
+
+Boundary audit, Desktop GUI/headless Clippy --all-targets, fmt, generation and
+related documentation static checks pass. No local tests, CI or generated test
+outputs ran. Remaining application test ownership review, unified automation,
+matched performance and manual confirmation keep the overall goal incomplete.

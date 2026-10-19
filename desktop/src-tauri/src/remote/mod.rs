@@ -7,12 +7,9 @@
 pub(crate) mod commands;
 pub(crate) mod control;
 mod diagnostics;
-#[cfg(test)]
-mod health;
 pub(crate) mod pairing;
 #[cfg(test)]
 mod presence;
-pub(crate) mod protocol;
 mod publisher;
 #[cfg(test)]
 mod real_network;
@@ -20,7 +17,6 @@ pub(crate) mod relay;
 #[cfg(test)]
 mod relay_e2e;
 pub(crate) mod secure;
-pub(crate) mod services;
 mod supervisor;
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -37,8 +33,6 @@ mod web_server;
 
 use self::diagnostics::*;
 #[cfg(test)]
-use self::health::*;
-#[cfg(test)]
 use self::presence::*;
 use self::publisher::*;
 #[allow(unused_imports)]
@@ -52,6 +46,8 @@ use self::types::*;
 #[allow(unused_imports)]
 pub use self::types::*;
 use self::web_server::*;
+#[cfg(test)]
+use future_remote_server::health::*;
 
 pub(crate) use future_remote_server::supervisor::unix_timestamp;
 #[cfg(test)]
@@ -74,7 +70,7 @@ pub(crate) fn forget_known_device(pair_id: &str) {
     SUPERVISOR.forget_device(pair_id);
 }
 
-fn host() -> &'static dyn services::RemoteHost {
+fn host() -> &'static dyn future_remote_server::services::RemoteHost {
     crate::remote_host::host()
 }
 

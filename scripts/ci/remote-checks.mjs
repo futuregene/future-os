@@ -23,6 +23,8 @@ function run(label, command, args) {
 }
 if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, '\nRemote package checks (one Linux runner, shared target/install). Test invocation includes Cargo freshness checks; times are not a matched performance comparison.\n\n| Check | Seconds | Result |\n|---|---:|---|\n');
 run('affected graph regressions', 'node', ['--test', 'scripts/tests/remote-ci.test.mjs']);
+const boundaryFlags = [...(rust.length || interop ? ['--rust'] : []), ...(ts.length || interop ? ['--typescript'] : [])];
+if (boundaryFlags.length) run('Remote package boundaries', 'node', ['scripts/ci/remote-boundaries.mjs', ...boundaryFlags]);
 if (rust.includes('future-remote-protocol') || ts.includes('@future-os/remote-protocol') || interop) run('protocol generated files', 'python3', ['packages/remote-protocol/scripts/generate.py', '--check']);
 for (const name of rust) {
   run(`${name} fmt`, 'cargo', ['fmt', '-p', name, '--check']);

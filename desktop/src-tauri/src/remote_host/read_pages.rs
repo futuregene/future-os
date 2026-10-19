@@ -1,8 +1,9 @@
 //! Lossless transport pages for oversized history/replay results. Snapshots are
 //! immutable and scoped to the authenticated bridge/session/run, never refetched
 //! from a moving Agent projection while a phone is paging them.
-use crate::remote::{protocol::IncomingCmd, services::ReplySink};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use future_remote_protocol::IncomingCmd;
+use future_remote_server::services::ReplySink;
 use futures::future::BoxFuture;
 use serde_json::{json, Value};
 use std::{
