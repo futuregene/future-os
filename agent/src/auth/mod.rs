@@ -91,6 +91,20 @@ impl AuthStore {
         None
     }
 
+    /// Whether `provider` has an entry at all, even one whose key is empty.
+    ///
+    /// An environment switch rewrites the `future` block with a base URL and no
+    /// key until the user logs into the new host (`auth_store::set_future_base_url`
+    /// removes the key deliberately). The provider is still configured in that
+    /// state, so callers deciding whether a session's provider was *removed*
+    /// must use this rather than [`Self::get`], which reports "no credential".
+    pub fn has_entry(&self, provider: &str) -> bool {
+        let provider_lower = provider.to_lowercase();
+        self.entries
+            .keys()
+            .any(|name| name.to_lowercase() == provider_lower)
+    }
+
     /// Get the base URL for exactly one provider.
     pub fn base_url(&self, provider: &str) -> Option<String> {
         let provider_lower = provider.to_lowercase();

@@ -678,9 +678,14 @@ impl ServerSession {
     /// commit or cold-history hydration. Provider configuration itself is never
     /// copied here; request-time resolution also applies this replacement rule
     /// to close the commit/request race.
+    ///
+    /// Only a genuinely stale reference is replaced: one whose model is gone
+    /// from a catalogue that still serves its provider, or whose provider is no
+    /// longer configured at all. A provider that is merely unusable *right now*
+    /// — key dropped by an environment switch, catalogue still cold — keeps its
+    /// reference so logging back in restores the model the user chose.
     pub fn reconcile_model_reference(&mut self) -> Result<()> {
-        let needs_replacement =
-            self.model.is_empty() || !self.model_registry.read().is_model_available(&self.model);
+        let needs_replacement = self.model_registry.read().reference_is_stale(&self.model);
         if !needs_replacement {
             return Ok(());
         }
