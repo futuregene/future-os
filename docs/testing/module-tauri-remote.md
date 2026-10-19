@@ -1763,7 +1763,7 @@ the comment — is what §14.2 certifies.
 | `a_freshly_refreshed_credential_rejected_on_a_live_link_is_terminal` | `GenerationWatch`'s terminal-health return (`service_config_error` from a *valid* credential) | `606` |
 | `a_reconnect_for_a_device_the_book_no_longer_holds_stops_that_runtime` | `restart_slot`: the device is gone from the book | `532-533`, and the wrapper's `Ok(_)` arm `507` |
 | `a_reconnect_with_a_pre_v2_slot_forgets_it` | `restart_slot`: a pre-v2 slot (no signed identity) | `536-537` |
-| `a_reconnect_the_platform_revokes_is_forgotten` | `restart_slot`: refresh answered `invalid_remote_credential` | `542-543` |
+| `a_revoked_answer_is_forgotten_whichever_ask_receives_it` | a revoked refresh is forgotten: `restart_slot` when its rebuild asks, the device's own renewal worker otherwise | `542-543` when the rebuild asks (the worker absorbs the other ordering) |
 | `a_reconnect_refreshes_the_credential_and_rebuilds_the_slot` | `restart_slot`: refresh succeeds, plan built, slot restarted | `540`, `547-555` |
 | `the_reconnect_budget_exhausts_into_a_terminal_watch` | the crash-loop budget: three devices spend it, the fourth reads `>= MAX` and exits terminally | `632-634` |
 | `a_reconnect_whose_rebuild_cannot_connect_is_retryable` | `restart_slot`'s `start_slot` `Err` → classified and handed to the retry worker | `506` — the retryable arm, 9 runs across the reconnect children; this child is the only one whose *design* is that arm |
