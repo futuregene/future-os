@@ -146,6 +146,10 @@ function mockReplyFor(desktopId: string, command: { type: string }): Record<stri
       return { workspaces: [] };
     case "get_state":
       return {};
+    case "takeover":
+      // The machine moves control synchronously and says so in the answer; its
+      // next heartbeat is what repeats the fact later (presence tick).
+      return { control: "active", changed: true };
     default:
       return {};
   }
@@ -568,6 +572,53 @@ describe("RemoteProvider over several desktops", () => {
     expect(remote.catalogs.machines.map((machine) => machine.desktopId)).toEqual(["desktop_2"]);
     expect(remote.catalogs.machines[0]!.status).toBe("connected");
     expect(remote.catalogs.machines[0]!.label).toBe("Office");
+  });
+
+  test("a takeover answer moves the row out of standby without waiting for a heartbeat", async () => {
+    await mount();
+    await settle();
+    const office = clientFor("desktop_2");
+    act(() => {
+      clientFor("desktop_1").callbacks.onPresence?.(onlinePresence("desktop_1") as never);
+      office.callbacks.onPresence?.({
+        ...onlinePresence("desktop_2"),
+        control: "standby",
+        holder: { pairId: "pair-other", name: "Lab iPad" },
+      } as never);
+    });
+    await settle();
+    expect(remote.catalogs.machines[0]!.control).toBe("standby");
+    office.requests.length = 0;
+
+    await act(async () => {
+      await remote.catalogs.takeControlFor("desktop_2");
+    });
+
+    // The answer is the handover. Reading control back from presence alone
+    // leaves the row in standby until the next tick, which puts the button the
+    // user just pressed back on screen (the reported flicker).
+    expect(remote.catalogs.machines[0]!.control).toBe("active");
+    expect(office.requests.filter((record) => record.command.type === "takeover")).toHaveLength(1);
+  });
+
+  test("taking over the open machine updates its own presence immediately", async () => {
+    await mount();
+    await settle();
+    const studio = clientFor("desktop_1");
+    act(() => {
+      studio.callbacks.onPresence?.({
+        ...onlinePresence("desktop_1"),
+        control: "standby",
+        holder: { pairId: "pair-other", name: "Lab iPad" },
+      } as never);
+    });
+    await settle();
+    expect(remote.presence?.control).toBe("standby");
+
+    await act(async () => { await remote.takeControl(); });
+
+    expect(remote.presence?.control).toBe("active");
+    expect(remote.presence?.holder).toBeNull();
   });
 
   test("a machine whose heartbeat stops reads offline while the other stays connected", async () => {
