@@ -171,18 +171,31 @@ describe("claimPairingCode", () => {
   test("rejects a claim URL from an untrusted host before making a request", async () => {
     await expect(claimPairingCode(invitation("https://example.com/client/v1/remote/pair/claim")))
       .rejects.toThrow("unexpected_pairing_host");
-
-    // A v3 invitation from a self-hosted relay is a different case: the relay
-    // declared in the code is the one the phone may talk to, and nothing else.
-    const relay = "https://relay.example";
-    const relayClaim = `${relay}/client/v1/remote/pair/claim`;
-    const claimed = await claimPairingCode(invitation(relayClaim, relay, "3"));
-    expect(claimed.natsWsUrl).toBe("wss://nats.example");
-    await expect(
-      claimPairingCode(invitation(`${relay}/client/v1/remote/pair/claim`, "https://other.example", "3")),
-    ).rejects.toThrow("unexpected_pairing_host");
     expect(globalThis.fetch).not.toHaveBeenCalled();
     expect(mockedSaveDeviceId).not.toHaveBeenCalled();
+  });
+
+  // A v3 invitation from a self-hosted relay is a different case: the relay
+  /// declared in the code is the one the phone may talk to — and that is the
+  /// *only* other host it may talk to.
+  test("claims a self-hosted relay's invitation at the origin it declares", async () => {
+    const relay = "https://relay.example";
+    const relayClaim = `${relay}/client/v1/remote/pair/claim`;
+    const credentials = await claimPairingCode(invitation(relayClaim, relay, "3"));
+    expect(globalThis.fetch).toHaveBeenLastCalledWith(relayClaim, expect.anything());
+    expect(credentials.natsWsUrl).toBe("wss://nats.example");
+    // The claim carries the invitation's join token unchanged: the relay, not
+    // this client, decides what it means.
+    expect(lastFetchBody()).toMatchObject({ nonce: "nonce_1" });
+
+    // Declaring relay A while claiming at relay B is refused before any request.
+    (globalThis.fetch as jest.Mock).mockClear();
+    await expect(
+      claimPairingCode(
+        invitation(`${relay}/client/v1/remote/pair/claim`, "https://other.example", "3"),
+      ),
+    ).rejects.toThrow("unexpected_pairing_host");
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   test("rejects a non-wss NATS endpoint", async () => {

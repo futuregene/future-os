@@ -84,7 +84,11 @@ export function parsePairingInvitation(value: string): PairingInvitation | null 
     }
     const secureKey = url.searchParams.get("secureKey");
     const secret = url.searchParams.get("secret");
-    if (url.searchParams.get("v") === "2") {
+    // v3 is the same invitation minted by a self-hosted relay: the Noise
+    // material is unchanged, so it is parsed and validated identically. Only
+    // the claim endpoint differs, and that lives in the code payload.
+    const version = url.searchParams.get("v");
+    if (version === "2" || version === "3") {
       if (![secureKey, secret].every(key => key && /^[A-Za-z0-9_-]{43}$/.test(key) && decodeBase64Url(key)?.length === 32)) return null;
       return { code, desktopId, desktopPublicKey, secureKey: secureKey!, secret: secret! };
     }
