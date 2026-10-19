@@ -38,6 +38,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  macos-notarization:
+    name: macOS notarization recovery
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Test submission recovery and publication policy
+        run: node --test scripts/tests/notarize-macos-dmg.test.mjs
+
   # On PRs, run only affected suites. Manual default runs cover everything;
   # explicit scopes only select offline updates or Desktop Rust validation.
   changes:
