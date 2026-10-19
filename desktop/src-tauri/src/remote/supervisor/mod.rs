@@ -26,8 +26,8 @@ pub use self::shutdown::{
 pub use self::start::{add_device, pair_new_device};
 #[allow(unused_imports)]
 pub(super) use self::start::{
-    classify_nats_connect_error, connect_nats, establish_slots, forget_slot, promote_a_lone_device,
-    record_runtime_failure, spawn_revoke_cleanup, spawn_runtime_reconnect,
+    classify_nats_connect_error, connect_nats, establish_slots, forget_slot, plaintext_relay,
+    promote_a_lone_device, record_runtime_failure, spawn_revoke_cleanup, spawn_runtime_reconnect,
     spawn_runtime_supervisor, spawn_start_retry, spawn_web_reconnect, start_failure,
     start_generation, start_once,
 };

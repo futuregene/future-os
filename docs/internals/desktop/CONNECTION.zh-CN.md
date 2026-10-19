@@ -319,7 +319,7 @@ Remote 入口的圆点回答的是已配对的机器——只有全部在线、�
 
 NATS Core 是至多一次投递。已有实时事件必须由权威日志回放补洞，目录通知由快照校准；增加重连次数不能替代这两项。[NATS 官方语义](https://github.com/nats-io/nats.docs/blob/master/nats-concepts/what-is-nats/README.md)
 
-当前配对授权覆盖该 Desktop 的会话，不能误称为逐会话授权。Remote v2 在 NATS 之上使用 Noise 认证密钥协商和逐消息 AEAD，业务消息、文件及状态通知均端到端加密；中继不再承担内容真实性的信任。手机要求 WSS，Desktop 生产连接强制验证 TLS。扫码和粘贴完整邀请保持同一流程，邀请携带仅端侧可用的一次性秘密；原有配对须重新建立，不允许静默回退 v1 明文。中继仍可观察主题、流量元数据并拒绝服务。实现、测试边界和本地密钥存储限制见 [REMOTE_E2EE.zh-CN.md](REMOTE_E2EE.zh-CN.md)。
+当前配对授权覆盖该 Desktop 的会话，不能误称为逐会话授权。Remote v2 在 NATS 之上使用 Noise 认证密钥协商和逐消息 AEAD，业务消息、文件及状态通知均端到端加密；中继不再承担内容真实性的信任。官方平台要求 WSS，Desktop 生产连接强制验证 TLS；自建中继显式声明明文 origin 时是两侧唯一的例外（见 [self-hosted-relay.zh-CN.md](../../guide/self-hosted-relay.zh-CN.md)）。扫码和粘贴完整邀请保持同一流程，邀请携带仅端侧可用的一次性秘密；原有配对须重新建立，不允许静默回退 v1 明文。中继仍可观察主题、流量元数据并拒绝服务。实现、测试边界和本地密钥存储限制见 [REMOTE_E2EE.zh-CN.md](REMOTE_E2EE.zh-CN.md)。
 
 当前云端撤销先使刷新凭证失效，没有主动踢出 NATS 连接；旧 JWT 存在有效期窗口（默认签发配置为十五分钟，线上值待核对）。本轮保留这一服务端行为，不承诺从云端撤销后所有现存连接立即失效。Desktop 本地主动关闭入口不允许等待该窗口；手机本地解绑也应立即停止自身连接，但不能据此宣称 Desktop 已收到撤销。Desktop 收到明确的撤销结果后关闭对应入口。
 

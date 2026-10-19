@@ -181,6 +181,32 @@ mod contract_tests {
         }
     }
 
+    /// Only a self-hosted relay that actually declares a plaintext endpoint may
+    /// keep a plaintext NATS connection; the official platform and a relay that
+    /// kept TLS both keep the unconditional requirement.
+    #[test]
+    fn only_a_plaintext_self_hosted_relay_waives_the_tls_requirement() {
+        let mut creds = crate::remote::test_support::pairing_creds("pair_plain");
+        // The fixture is a platform pairing (no relay) on a plaintext URL: that
+        // combination is exactly the downgrade the rule must refuse.
+        assert!(!plaintext_relay(&creds));
+
+        creds.control_url = Some("http://192.168.1.10:8099".into());
+        assert!(
+            plaintext_relay(&creds),
+            "a LAN relay serving nats:// is plaintext"
+        );
+
+        // Keeping TLS is the relay's own choice and stays enforced.
+        creds.nats_url = "tls://192.168.1.10:4222".into();
+        assert!(!plaintext_relay(&creds));
+
+        // A platform pairing names no relay, so a plaintext URL is not a waiver.
+        creds.nats_url = "nats://192.168.1.10:4222".into();
+        creds.control_url = None;
+        assert!(!plaintext_relay(&creds));
+    }
+
     #[test]
     fn classify_nats_connect_error_covers_server_parse() {
         assert!(matches!(

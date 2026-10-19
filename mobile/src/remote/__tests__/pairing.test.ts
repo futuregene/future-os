@@ -203,6 +203,47 @@ describe("claimPairingCode", () => {
     await expect(claimPairingCode(invitation())).rejects.toThrow("nats_ws_not_tls");
   });
 
+  // A relay on a home LAN is reached over plain HTTP: neither platform trusts a
+  // certificate it cannot verify there (Android ignores user-installed CAs), so
+  // the invitation declares `http` and the broker it hands back is `ws`. The
+  // content stays sealed by the Noise channel, which is keyed from the QR code
+  // and does not depend on the transport; what crosses that hop in the clear is
+  // the join token, the refresh token and the NATS credential.
+  test("claims a plain-HTTP relay's invitation and accepts the ws endpoint it hands out", async () => {
+    const relay = "http://192.168.1.10:8099";
+    const relayClaim = `${relay}/client/v1/remote/pair/claim`;
+    globalThis.fetch = jest.fn().mockResolvedValue(
+      jsonResponse({
+        pair_id: "pair_1",
+        user_jwt: jwt(),
+        refresh_token: "refresh_1",
+        nats_ws_url: "ws://192.168.1.10:9090",
+      }),
+    );
+    const credentials = await claimPairingCode(invitation(relayClaim, relay, "3"));
+    expect(globalThis.fetch).toHaveBeenLastCalledWith(relayClaim, expect.anything());
+    expect(credentials.natsWsUrl).toBe("ws://192.168.1.10:9090");
+
+    // The refresh leg keeps the same rule, read from the token URL the pairing
+    // pinned, so a later response cannot quietly move it back to cleartext.
+    globalThis.fetch = jest.fn().mockResolvedValue(
+      jsonResponse({ user_jwt: jwt(), nats_ws_url: "ws://192.168.1.10:9090" }),
+    );
+    await expect(refreshCredentials(credentials)).resolves.toMatchObject({
+      natsWsUrl: "ws://192.168.1.10:9090",
+    });
+  });
+
+  // Plaintext is a property of the relay that was declared, not a permission:
+  // a relay served over HTTPS still has to answer with `wss://`.
+  test("an https relay's NATS endpoint must still be wss", async () => {
+    const relay = "https://relay.example";
+    globalThis.fetch = jest.fn().mockResolvedValue(jsonResponse({ nats_ws_url: "ws://nats.example" }));
+    await expect(
+      claimPairingCode(invitation(`${relay}/client/v1/remote/pair/claim`, relay, "3")),
+    ).rejects.toThrow("nats_ws_not_tls");
+  });
+
   test("rejects a JWT with no readable expiry", async () => {
     globalThis.fetch = jest.fn().mockResolvedValue(
       jsonResponse({

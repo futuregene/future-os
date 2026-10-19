@@ -82,17 +82,32 @@ impl LinkError {
 /// below exists so a non-HTTP scheme (a `data:` URL, or a typo like `htps:`) is
 /// refused rather than handed to `reqwest`, which would reject it later with a
 /// message that names no cause.
-fn is_acceptable_claim_url(url: &reqwest::Url) -> bool {
+fn is_acceptable_claim_url(url: &reqwest::Url, relay: Option<&reqwest::Url>) -> bool {
     match url.scheme() {
         "https" => true,
-        "http" => url.host_str().is_some_and(|host| {
-            matches!(
-                host.trim_start_matches('[').trim_end_matches(']'),
-                "127.0.0.1" | "::1" | "localhost"
-            )
-        }),
+        // A self-hosted relay on a local network has no certificate either side
+        // can verify, so a v3 invitation may declare a plain-HTTP origin — the
+        // mobile client makes exactly the same allowance, for the same reason.
+        // The claim then has to go to the origin the invitation declared,
+        // scheme included, so an `https` declaration is never downgraded; a
+        // bare loopback URL stays usable on its own for a local relay.
+        "http" => match relay {
+            Some(declared) => url.origin() == declared.origin(),
+            None => is_loopback_http(url),
+        },
         _ => false,
     }
+}
+
+/// A plaintext claim to this machine, which needs no relay declaration: the
+/// local test relay and the browser surface both live here.
+fn is_loopback_http(url: &reqwest::Url) -> bool {
+    url.host_str().is_some_and(|host| {
+        matches!(
+            host.trim_start_matches('[').trim_end_matches(']'),
+            "127.0.0.1" | "::1" | "localhost"
+        )
+    })
 }
 
 /// A pairing code is a JSON object in base64url. `exp` is unix seconds.
@@ -157,7 +172,14 @@ pub(crate) fn parse_invitation(value: &str, now: i64) -> Result<Invitation, Link
         .and_then(Value::as_str)
         .ok_or(LinkError::InvalidField)?;
     let claim = reqwest::Url::parse(claim_url).map_err(|_| LinkError::InvalidField)?;
-    if !is_acceptable_claim_url(&claim) {
+    // A v3 invitation also declares the relay it belongs to; that origin — and
+    // only that origin — is what lets a plaintext claim through. A payload
+    // with no declaration keeps the old rule.
+    let relay = payload
+        .get("relay")
+        .and_then(Value::as_str)
+        .and_then(|value| reqwest::Url::parse(value).ok());
+    if !is_acceptable_claim_url(&claim, relay.as_ref()) {
         return Err(LinkError::InvalidField);
     }
     let expires_at = payload.get("exp").and_then(Value::as_i64);
@@ -298,9 +320,10 @@ mod tests {
     }
 
     /// Plaintext is allowed *only* to loopback (the local platform harness, and
-    /// a same-machine self-hosted platform). Everything else must be HTTPS, so
-    /// a remote host cannot make a client hand its credentials to a plaintext
-    /// endpoint just by minting a link that says so.
+    /// a same-machine self-hosted platform), or to the plain-HTTP relay the
+    /// invitation itself declares. Everything else must be HTTPS, so a remote
+    /// host cannot make a client hand its credentials to a plaintext endpoint
+    /// just by minting a link that says so.
     #[test]
     fn plaintext_claims_are_allowed_only_to_loopback() {
         let with_claim = |claim: &str| {
@@ -327,6 +350,32 @@ mod tests {
                 "{refused} must not receive credentials in the clear"
             );
         }
+    }
+
+    /// A v3 invitation minted by a relay on the local network names that relay
+    /// inside the code, and that declaration is the *only* thing that makes its
+    /// plaintext claim endpoint usable.
+    #[test]
+    fn a_v3_invitation_may_name_its_plaintext_relay() {
+        let claim = "http://192.168.1.10:8099/client/v1/remote/pair/claim";
+        let code_for = |relay: &str| {
+            URL_SAFE_NO_PAD.encode(
+                json!({ "nonce": "n-1", "claim_url": claim, "relay": relay, "exp": 2_000 })
+                    .to_string(),
+            )
+        };
+
+        let code = code_for("http://192.168.1.10:8099");
+        let parsed = parse_invitation(&invitation(&[("v", "3"), ("code", &code)]), 1_000)
+            .expect("a LAN relay's invitation is usable");
+        assert_eq!(parsed.claim_url, claim);
+
+        // Declaring a different relay does not launder the same endpoint.
+        let elsewhere = code_for("http://192.168.1.99:8099");
+        assert_eq!(
+            parse_invitation(&invitation(&[("v", "3"), ("code", &elsewhere)]), 1_000),
+            Err(LinkError::InvalidField)
+        );
     }
 
     /// A non-HTTP scheme is refused as a bad *link* rather than handed to
@@ -358,17 +407,50 @@ mod tests {
     #[test]
     fn only_https_or_loopback_http_is_an_acceptable_claim_endpoint() {
         let url = |value: &str| reqwest::Url::parse(value).expect("test url");
-        assert!(is_acceptable_claim_url(&url("https://future-os.cn/x")));
-        assert!(is_acceptable_claim_url(&url("http://127.0.0.1:1/x")));
-        assert!(is_acceptable_claim_url(&url("http://localhost/x")));
-        assert!(is_acceptable_claim_url(&url("http://[::1]:1/x")));
-        assert!(!is_acceptable_claim_url(&url("http://example.com/x")));
-        assert!(!is_acceptable_claim_url(&url("ftp://example.com/x")));
-        assert!(!is_acceptable_claim_url(&url("data:text/plain,hi")));
+        assert!(is_acceptable_claim_url(
+            &url("https://future-os.cn/x"),
+            None
+        ));
+        assert!(is_acceptable_claim_url(&url("http://127.0.0.1:1/x"), None));
+        assert!(is_acceptable_claim_url(&url("http://localhost/x"), None));
+        assert!(is_acceptable_claim_url(&url("http://[::1]:1/x"), None));
+        assert!(!is_acceptable_claim_url(&url("http://example.com/x"), None));
+        assert!(!is_acceptable_claim_url(&url("ftp://example.com/x"), None));
+        assert!(!is_acceptable_claim_url(&url("data:text/plain,hi"), None));
         // A `file:` URL parses with no host at all, so the `http` arm's
         // `host_str()` is `None` there; the `https` guard is what keeps this
         // from being a file read.
-        assert!(!is_acceptable_claim_url(&url("file:///etc/passwd")));
+        assert!(!is_acceptable_claim_url(&url("file:///etc/passwd"), None));
+    }
+
+    /// A relay on a LAN is plain HTTP (neither side can verify a certificate
+    /// there), and the invitation is what authenticates it. The claim may go
+    /// to that declared origin and nowhere else.
+    #[test]
+    fn a_declared_plaintext_relay_is_claimed_at_its_own_origin_only() {
+        let url = |value: &str| reqwest::Url::parse(value).expect("test url");
+        let relay = url("http://192.168.1.10:8099");
+        assert!(is_acceptable_claim_url(
+            &url("http://192.168.1.10:8099/client/v1/remote/pair/claim"),
+            Some(&relay)
+        ));
+        for refused in [
+            // Another host, or another port.
+            "http://192.168.1.11:8099/client/v1/remote/pair/claim",
+            "http://192.168.1.10:8098/client/v1/remote/pair/claim",
+            "http://evil.example/client/v1/remote/pair/claim",
+        ] {
+            assert!(
+                !is_acceptable_claim_url(&url(refused), Some(&relay)),
+                "{refused} must not be claimed"
+            );
+        }
+        // Declaring an https relay does not buy a plaintext claim either.
+        let secure = url("https://relay.example");
+        assert!(!is_acceptable_claim_url(
+            &url("http://relay.example/client/v1/remote/pair/claim"),
+            Some(&secure)
+        ));
     }
 
     /// The public shape of a link failure: every variant carries the code and

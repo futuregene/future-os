@@ -52,11 +52,41 @@ That writes, into `--dir`:
 | `rooms.json` | created at the first pairing; the room registry |
 
 `--tls-cert`/`--tls-key` go together. Without them the generated config listens
-in plaintext, which **only** works for local testing: the desktop verifies the
-relay's TLS in a release build and the phone requires `wss://`.
+in plaintext: HTTP, `ws://` and `nats://`. That path is for a relay on a local
+network — see below.
 
 Both listeners take their port from `--nats-url`/`--nats-ws-url`, so the
 address the relay hands to clients is the address it actually listens on.
+
+### Plaintext or TLS
+
+TLS and Noise do not protect the same thing. The Noise static key and the
+invitation PSK in the QR code decide *which desktop* is on the other end, and
+that layer is independent of the transport. TLS protects **credentials and
+metadata**: the join token, the `refresh_token`, the NATS JWT, and the pair id,
+device names and traffic shape.
+
+So the trade is:
+
+| | with `--tls-cert/--tls-key` | without a certificate |
+| --- | --- | --- |
+| Is content encrypted | yes (Noise) | yes (Noise) |
+| Credentials and metadata | protected by TLS | **readable and replayable by anyone on that network** |
+| Whose certificate | a CA the client trusts | none needed |
+| Phone | must trust that certificate | works as-is |
+
+Plaintext exists because a self-signed certificate on a home LAN cannot be made
+trustworthy to the apps: Android ignores user-installed CAs for apps targeting
+API 24+, so a private CA either never reaches the trust chain or requires
+changing the whole app's network policy. The result of insisting on TLS there
+is not safety — it is a relay nobody can pair with. A self-hosted relay may
+therefore be plaintext: the phone (`http://` + `ws://`) and the desktop both
+follow the origin the invitation declared, and anything else is still refused.
+
+The allowance covers exactly the scheme the relay declared: a relay that
+declares `https://` must still answer `wss://`, and the Future platform always
+requires `https://` and `wss://`. A public deployment with a public CA is
+unaffected.
 
 ## 2. Run it
 
@@ -198,8 +228,10 @@ Residual risks you should decide about before exposing one publicly:
 * **One invitation is one device**, the same rule the official platform applies
   per pairing. "Add device" on the desktop creates another pairing (its own pair
   id, its own room) rather than a second phone in one room.
-* **TLS everywhere.** A release desktop refuses a relay it cannot verify and
-  the phone refuses `ws://`. Use a public CA, or `--relay-ca` with your own.
+* **TLS is a deployment decision.** A public relay takes a public CA (or
+  `--relay-ca` with your own); a plaintext relay on a local network is accepted
+  only on the origin it declared, and never loosens the official platform or an
+  `https://` relay.
 
 ## 7. Verifying a deployment
 
