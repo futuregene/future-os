@@ -1,0 +1,50 @@
+# Shared Client fixtures
+
+The files here are authoritative inputs and expectations shared by Rust and
+TypeScript. They are not copied into Desktop or Mobile.
+
+| File | Purpose | Drivers |
+|---|---|---|
+| [client.json](client.json) | Real role interoperability: requests/deduplication, pairing, events, file bytes, reconnect and shutdown report IDs | [Independent interoperability project](../../../tests/remote-interop/README.md) |
+| [requests.json](requests.json) | Controlled request-policy scenarios: send times, outcomes, retry identity, timeout budgets, recovery/probe counts and cancellation | Rust `shared_request_tests.rs`; Node/Jest `sharedRequests.test.ts` |
+
+Each format has an explicit version and suite/kind checks. Unknown fields,
+unsupported cases and duplicate IDs fail. Every driver executes and reports all
+IDs in its selected suite; selecting a different suite is not silently skipping
+an unsupported case. Expected JSON compares by value, not object-key ordering.
+
+`requests.json` is driven by the production Rust serialization/retry functions
+and runtime stop gate. Its exchange supplies only scripted transport outcomes.
+The TS driver calls actual `RemoteClient.requestRetry`, request encoding,
+response decoding, recovery and shutdown with a memory SDK connection and real
+record encryption. It directly installs an established channel; it does not
+claim to test Noise pairing. Pairing and actual broker transport belong to the
+interoperability project and existing package crypto/secure-client tests.
+
+Both drivers use virtual time. `timeout` completes after the implementation's
+actual ordinary request budget; the fixture separately asserts that budget.
+Rust permits at most 10 ms accumulated slack for Tokio's millisecond timer
+rounding; TS expects exact fake-clock times. Neither relies on real wall-clock
+sleeps. `recoveries` counts recovery entry calls; `probes` counts actual probe IO.
+A stopped TS role may receive a recovery request while performing no probe.
+
+Language-specific expectations retain existing behavior: TS probes a healthy
+connection before a retry and requires `prompt_receipt_v1` for prompt/continue;
+the historical Rust session whitelist retries those commands directly. Rust
+runtime cancellation and a non-retried TS SDK write may also expose different
+error categories. Any unequal expectation requires an explicit `difference`
+note. These cases are executed by both drivers, not removed to obtain a smaller
+common surface.
+
+Each successful case reports only its language and stable ID. The data contains
+public test commands; no credential, invitation secret, key or record bytes are
+printed in reports. A suite's case count is distinct from its framework's test
+declaration count.
+
+Development checks compile/typecheck/lint the drivers only. Under the current
+migration workflow, execution happens during final CI acceptance:
+
+```text
+cargo test -p future-remote-client -- --nocapture
+npm test --workspace @future-os/remote-client
+```

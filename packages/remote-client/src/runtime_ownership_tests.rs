@@ -278,3 +278,6 @@ async fn cancelling_an_old_chunk_waiter_cannot_remove_a_newer_retry() {
     assert!(client.inner.chunks.lock().unwrap().is_empty());
     client.shutdown(Duration::from_secs(1)).await.unwrap();
 }
+
+#[path = "shared_request_tests.rs"]
+mod shared_requests;

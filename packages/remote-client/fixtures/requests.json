@@ -1,0 +1,675 @@
+{
+  "version": 1,
+  "suite": "client.request-policy",
+  "bridgeInstanceId": "bridge_fixture",
+  "requestTimeoutMs": 10000,
+  "clockSlackMs": {
+    "rust": 10,
+    "typescript": 0
+  },
+  "response": {
+    "ok": true
+  },
+  "cases": [
+    {
+      "id": "client.request-policy.first-success",
+      "kind": "request",
+      "command": {
+        "id": "shared_unit_first-success",
+        "type": "get_state",
+        "sessionId": "session_fixture",
+        "message": "public fixture"
+      },
+      "features": [],
+      "outcomes": [
+        "success"
+      ],
+      "cancelAtMs": null,
+      "expected": {
+        "rust": {
+          "attemptAtMs": [
+            0
+          ],
+          "outcome": "success",
+          "recoveries": 0,
+          "completeAtMs": 0,
+          "probes": 0
+        },
+        "typescript": {
+          "attemptAtMs": [
+            0
+          ],
+          "outcome": "success",
+          "recoveries": 0,
+          "completeAtMs": 0,
+          "probes": 0
+        }
+      },
+      "difference": null
+    },
+    {
+      "id": "client.request-policy.one-loss",
+      "kind": "request",
+      "command": {
+        "id": "shared_unit_one-loss",
+        "type": "get_state",
+        "sessionId": "session_fixture",
+        "message": "public fixture"
+      },
+      "features": [],
+      "outcomes": [
+        "transport",
+        "success"
+      ],
+      "cancelAtMs": null,
+      "expected": {
+        "rust": {
+          "attemptAtMs": [
+            0,
+            250
+          ],
+          "outcome": "success",
+          "recoveries": 0,
+          "completeAtMs": 250,
+          "probes": 0
+        },
+        "typescript": {
+          "attemptAtMs": [
+            0,
+            250
+          ],
+          "outcome": "success",
+          "recoveries": 1,
+          "completeAtMs": 250,
+          "probes": 1
+        }
+      },
+      "difference": "TypeScript probes/reuses a healthy serving transport before retrying; Rust session retries on its bound socket and leaves recovery to the outer runtime."
+    },
+    {
+      "id": "client.request-policy.two-losses",
+      "kind": "request",
+      "command": {
+        "id": "shared_unit_two-losses",
+        "type": "list_sessions",
+        "sessionId": "session_fixture",
+        "message": "public fixture"
+      },
+      "features": [],
+      "outcomes": [
+        "transport",
+        "transport",
+        "success"
+      ],
+      "cancelAtMs": null,
+      "expected": {
+        "rust": {
+          "attemptAtMs": [
+            0,
+            250,
+            750
+          ],
+          "outcome": "success",
+          "recoveries": 0,
+          "completeAtMs": 750,
+          "probes": 0
+        },
+        "typescript": {
+          "attemptAtMs": [
+            0,
+            250,
+            750
+          ],
+          "outcome": "success",
+          "recoveries": 2,
+          "completeAtMs": 750,
+          "probes": 2
+        }
+      },
+      "difference": "TypeScript probes/reuses a healthy serving transport before retrying; Rust session retries on its bound socket and leaves recovery to the outer runtime."
+    },
+    {
+      "id": "client.request-policy.upload-complete",
+      "kind": "request",
+      "command": {
+        "id": "shared_unit_upload-complete",
+        "type": "upload_complete",
+        "sessionId": "session_fixture",
+        "message": "public fixture"
+      },
+      "features": [],
+      "outcomes": [
+        "transport",
+        "success"
+      ],
+      "cancelAtMs": null,
+      "expected": {
+        "rust": {
+          "attemptAtMs": [
+            0,
+            250
+          ],
+          "outcome": "success",
+          "recoveries": 0,
+          "completeAtMs": 250,
+          "probes": 0
+        },
+        "typescript": {
+          "attemptAtMs": [
+            0,
+            250
+          ],
+          "outcome": "success",
+          "recoveries": 1,
+          "completeAtMs": 250,
+          "probes": 1
+        }
+      },
+      "difference": "TypeScript probes/reuses a healthy serving transport before retrying; Rust session retries on its bound socket and leaves recovery to the outer runtime."
+    },
+    {
+      "id": "client.request-policy.write-once",
+      "kind": "request",
+      "command": {
+        "id": "shared_unit_write-once",
+        "type": "delete_session",
+        "sessionId": "session_fixture",
+        "message": "public fixture"
+      },
+      "features": [],
+      "outcomes": [
+        "transport",
+        "success"
+      ],
+      "cancelAtMs": null,
+      "expected": {
+        "rust": {
+          "attemptAtMs": [
+            0
+          ],
+          "outcome": "transport",
+          "recoveries": 0,
+          "completeAtMs": 0,
+          "probes": 0
+        },
+        "typescript": {
+          "attemptAtMs": [
+            0
+          ],
+          "outcome": "transport",
+          "recoveries": 0,
+          "completeAtMs": 0,
+          "probes": 0
+        }
+      },
+      "difference": null
+    },
+    {
+      "id": "client.request-policy.business-refusal",
+      "kind": "request",
+      "command": {
+        "id": "shared_unit_business-refusal",
+        "type": "get_state",
+        "sessionId": "session_fixture",
+        "message": "public fixture"
+      },
+      "features": [],
+      "outcomes": [
+        "business",
+        "success"
+      ],
+      "cancelAtMs": null,
+      "expected": {
+        "rust": {
+          "attemptAtMs": [
+            0
+          ],
+          "outcome": "business",
+          "recoveries": 0,
+          "completeAtMs": 0,
+          "probes": 0
+        },
+        "typescript": {
+          "attemptAtMs": [
+            0
+          ],
+          "outcome": "business",
+          "recoveries": 0,
+          "completeAtMs": 0,
+          "probes": 0
+        }
+      },
+      "difference": null
+    },
+    {
+      "id": "client.request-policy.authorization-refusal",
+      "kind": "request",
+      "command": {
+        "id": "shared_unit_authorization-refusal",
+        "type": "list_sessions",
+        "sessionId": "session_fixture",
+        "message": "public fixture"
+      },
+      "features": [],
+      "outcomes": [
+        "authorization",
+        "success"
+      ],
+      "cancelAtMs": null,
+      "expected": {
+        "rust": {
+          "attemptAtMs": [
+            0
+          ],
+          "outcome": "authorization",
+          "recoveries": 0,
+          "completeAtMs": 0,
+          "probes": 0
+        },
+        "typescript": {
+          "attemptAtMs": [
+            0
+          ],
+          "outcome": "authorization",
+          "recoveries": 0,
+          "completeAtMs": 0,
+          "probes": 0
+        }
+      },
+      "difference": null
+    },
+    {
+      "id": "client.request-policy.budget-exhausted",
+      "kind": "request",
+      "command": {
+        "id": "shared_unit_budget-exhausted",
+        "type": "get_state",
+        "sessionId": "session_fixture",
+        "message": "public fixture"
+      },
+      "features": [],
+      "outcomes": [
+        "transport",
+        "transport",
+        "transport",
+        "transport"
+      ],
+      "cancelAtMs": null,
+      "expected": {
+        "rust": {
+          "attemptAtMs": [
+            0,
+            250,
+            750
+          ],
+          "outcome": "transport",
+          "recoveries": 0,
+          "completeAtMs": 750,
+          "probes": 0
+        },
+        "typescript": {
+          "attemptAtMs": [
+            0,
+            250,
+            750
+          ],
+          "outcome": "transport",
+          "recoveries": 2,
+          "completeAtMs": 750,
+          "probes": 2
+        }
+      },
+      "difference": "TypeScript probes/reuses a healthy serving transport before retrying; Rust session retries on its bound socket and leaves recovery to the outer runtime."
+    },
+    {
+      "id": "client.request-policy.receipt-prompt",
+      "kind": "request",
+      "command": {
+        "id": "shared_unit_receipt-prompt",
+        "type": "prompt",
+        "sessionId": "session_fixture",
+        "message": "public fixture"
+      },
+      "features": [
+        "prompt_receipt_v1"
+      ],
+      "outcomes": [
+        "transport",
+        "success"
+      ],
+      "cancelAtMs": null,
+      "expected": {
+        "rust": {
+          "attemptAtMs": [
+            0,
+            250
+          ],
+          "outcome": "success",
+          "recoveries": 0,
+          "completeAtMs": 250,
+          "probes": 0
+        },
+        "typescript": {
+          "attemptAtMs": [
+            0,
+            250
+          ],
+          "outcome": "success",
+          "recoveries": 1,
+          "completeAtMs": 250,
+          "probes": 1
+        }
+      },
+      "difference": "TypeScript probes/reuses a healthy serving transport before retrying; Rust session retries on its bound socket and leaves recovery to the outer runtime."
+    },
+    {
+      "id": "client.request-policy.legacy-prompt",
+      "kind": "request",
+      "command": {
+        "id": "shared_unit_legacy-prompt",
+        "type": "prompt",
+        "sessionId": "session_fixture",
+        "message": "public fixture"
+      },
+      "features": [],
+      "outcomes": [
+        "transport",
+        "success"
+      ],
+      "cancelAtMs": null,
+      "expected": {
+        "rust": {
+          "attemptAtMs": [
+            0,
+            250
+          ],
+          "outcome": "success",
+          "recoveries": 0,
+          "completeAtMs": 250,
+          "probes": 0
+        },
+        "typescript": {
+          "attemptAtMs": [
+            0
+          ],
+          "outcome": "transport",
+          "recoveries": 0,
+          "completeAtMs": 0,
+          "probes": 0
+        }
+      },
+      "difference": "Rust retains its pre-existing prompt/continue whitelist; TypeScript requires negotiated prompt_receipt_v1 before retrying those writes."
+    },
+    {
+      "id": "client.request-policy.legacy-continue",
+      "kind": "request",
+      "command": {
+        "id": "shared_unit_legacy-continue",
+        "type": "continue_run",
+        "sessionId": "session_fixture",
+        "message": "public fixture"
+      },
+      "features": [],
+      "outcomes": [
+        "transport",
+        "success"
+      ],
+      "cancelAtMs": null,
+      "expected": {
+        "rust": {
+          "attemptAtMs": [
+            0,
+            250
+          ],
+          "outcome": "success",
+          "recoveries": 0,
+          "completeAtMs": 250,
+          "probes": 0
+        },
+        "typescript": {
+          "attemptAtMs": [
+            0
+          ],
+          "outcome": "transport",
+          "recoveries": 0,
+          "completeAtMs": 0,
+          "probes": 0
+        }
+      },
+      "difference": "Rust retains its pre-existing prompt/continue whitelist; TypeScript requires negotiated prompt_receipt_v1 before retrying those writes."
+    },
+    {
+      "id": "client.request-policy.one-timeout",
+      "kind": "request",
+      "command": {
+        "id": "shared_unit_one-timeout",
+        "type": "get_state",
+        "sessionId": "session_fixture",
+        "message": "public fixture"
+      },
+      "features": [],
+      "outcomes": [
+        "timeout",
+        "success"
+      ],
+      "cancelAtMs": null,
+      "expected": {
+        "rust": {
+          "attemptAtMs": [
+            0,
+            10250
+          ],
+          "outcome": "success",
+          "recoveries": 0,
+          "completeAtMs": 10250,
+          "probes": 0
+        },
+        "typescript": {
+          "attemptAtMs": [
+            0,
+            10250
+          ],
+          "outcome": "success",
+          "recoveries": 1,
+          "completeAtMs": 10250,
+          "probes": 1
+        }
+      },
+      "difference": "TypeScript probes/reuses a healthy serving transport before retrying; Rust session retries on its bound socket and leaves recovery to the outer runtime."
+    },
+    {
+      "id": "client.request-policy.timeout-budget",
+      "kind": "request",
+      "command": {
+        "id": "shared_unit_timeout-budget",
+        "type": "get_state",
+        "sessionId": "session_fixture",
+        "message": "public fixture"
+      },
+      "features": [],
+      "outcomes": [
+        "timeout",
+        "timeout",
+        "timeout",
+        "timeout"
+      ],
+      "cancelAtMs": null,
+      "expected": {
+        "rust": {
+          "attemptAtMs": [
+            0,
+            10250,
+            20750
+          ],
+          "outcome": "transport",
+          "recoveries": 0,
+          "completeAtMs": 30750,
+          "probes": 0
+        },
+        "typescript": {
+          "attemptAtMs": [
+            0,
+            10250,
+            20750
+          ],
+          "outcome": "transport",
+          "recoveries": 2,
+          "completeAtMs": 30750,
+          "probes": 2
+        }
+      },
+      "difference": "TypeScript probes/reuses a healthy serving transport before retrying; Rust session retries on its bound socket and leaves recovery to the outer runtime."
+    },
+    {
+      "id": "client.request-policy.close-in-backoff",
+      "kind": "request",
+      "command": {
+        "id": "shared_unit_close-in-backoff",
+        "type": "get_state",
+        "sessionId": "session_fixture",
+        "message": "public fixture"
+      },
+      "features": [],
+      "outcomes": [
+        "transport",
+        "success"
+      ],
+      "cancelAtMs": 100,
+      "expected": {
+        "rust": {
+          "attemptAtMs": [
+            0
+          ],
+          "outcome": "cancelled",
+          "recoveries": 0,
+          "completeAtMs": 100,
+          "probes": 0
+        },
+        "typescript": {
+          "attemptAtMs": [
+            0
+          ],
+          "outcome": "cancelled",
+          "recoveries": 1,
+          "completeAtMs": 100,
+          "probes": 1
+        }
+      },
+      "difference": "TypeScript probes/reuses a healthy serving transport before retrying; Rust session retries on its bound socket and leaves recovery to the outer runtime."
+    },
+    {
+      "id": "client.request-policy.close-in-flight",
+      "kind": "request",
+      "command": {
+        "id": "shared_unit_close-in-flight",
+        "type": "get_state",
+        "sessionId": "session_fixture",
+        "message": "public fixture"
+      },
+      "features": [],
+      "outcomes": [
+        "timeout",
+        "success"
+      ],
+      "cancelAtMs": 100,
+      "expected": {
+        "rust": {
+          "attemptAtMs": [
+            0
+          ],
+          "outcome": "cancelled",
+          "recoveries": 0,
+          "completeAtMs": 100,
+          "probes": 0
+        },
+        "typescript": {
+          "attemptAtMs": [
+            0
+          ],
+          "outcome": "cancelled",
+          "recoveries": 1,
+          "completeAtMs": 100,
+          "probes": 0
+        }
+      },
+      "difference": "Rust runtime cancellation drops the pending operation. TypeScript observes SDK closure and requests recovery, but the stopped role performs no probe or resend before cancelling its retry."
+    },
+    {
+      "id": "client.request-policy.close-write",
+      "kind": "request",
+      "command": {
+        "id": "shared_unit_close-write",
+        "type": "delete_session",
+        "sessionId": "session_fixture",
+        "message": "public fixture"
+      },
+      "features": [],
+      "outcomes": [
+        "timeout",
+        "success"
+      ],
+      "cancelAtMs": 100,
+      "expected": {
+        "rust": {
+          "attemptAtMs": [
+            0
+          ],
+          "outcome": "cancelled",
+          "recoveries": 0,
+          "completeAtMs": 100,
+          "probes": 0
+        },
+        "typescript": {
+          "attemptAtMs": [
+            0
+          ],
+          "outcome": "transport",
+          "recoveries": 0,
+          "completeAtMs": 100,
+          "probes": 0
+        }
+      },
+      "difference": "Rust outer runtime cancellation drops the pending operation; a non-retried TypeScript write surfaces the SDK closed-connection transport error. Neither may send again."
+    },
+    {
+      "id": "client.request-policy.explicit-bridge",
+      "kind": "request",
+      "command": {
+        "id": "shared_unit_explicit-bridge",
+        "type": "get_state",
+        "sessionId": "session_fixture",
+        "message": "public fixture",
+        "bridgeInstanceId": "caller_bridge"
+      },
+      "features": [],
+      "outcomes": [
+        "transport",
+        "success"
+      ],
+      "cancelAtMs": null,
+      "expected": {
+        "rust": {
+          "attemptAtMs": [
+            0,
+            250
+          ],
+          "outcome": "success",
+          "recoveries": 0,
+          "completeAtMs": 250,
+          "probes": 0
+        },
+        "typescript": {
+          "attemptAtMs": [
+            0,
+            250
+          ],
+          "outcome": "success",
+          "recoveries": 1,
+          "completeAtMs": 250,
+          "probes": 1
+        }
+      },
+      "difference": "TypeScript probes/reuses a healthy serving transport before retrying; Rust session retries on its bound socket and leaves recovery to the outer runtime."
+    }
+  ]
+}

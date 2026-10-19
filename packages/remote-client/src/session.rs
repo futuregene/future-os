@@ -122,16 +122,19 @@ fn handshake_budget() -> Duration {
 pub const COMMAND_TIMEOUT: Duration = PHONE_REQUEST_TIMEOUT;
 
 /// How many attempts a retryable command gets in total, and the base of the
-/// `250·2ⁿ ms` backoff between them. The phone's numbers
-/// (`mobile/src/remote/client.ts::requestRetry`), kept identical so the two
-/// clients fail, and recover, at the same pace.
+/// `250·2ⁿ ms` backoff between them, matching `client.ts::requestRetry`.
+/// TS may add a transport-probe wait; Rust's outer runtime owns recovery.
 pub const COMMAND_ATTEMPTS: usize = 3;
 pub const RETRY_BACKOFF_BASE: Duration = Duration::from_millis(250);
 
 /// Whether a command may be re-sent after a transport failure.
 ///
-/// The phone's whitelist, adopted as-is: reads (`get_*`, `list_`) and the two
-/// commands that extend a conversation (`prompt`, `continue_run`). A read has no
+/// The Rust client's historical whitelist: reads (`get_*`, `list_`) and the two
+/// commands that extend a conversation (`prompt`, `continue_run`), plus
+/// `upload_complete`. Unlike TS,
+/// this existing Rust policy does not condition those two writes on capability
+/// negotiation; shared request fixtures record that compatibility difference.
+/// A read has no
 /// side effect to duplicate; `prompt`/`continue_run` do, and are safe here only
 /// because the host deduplicates on the command `id` (`remote::commands`'
 /// `ReplySlots`, single-flight, 600 s TTL) — a re-send gets the cached reply
@@ -147,6 +150,41 @@ pub fn retryable_command(payload: &Value) -> bool {
         || kind.starts_with("list_")
         || kind == "upload_complete"
         || matches!(kind, "prompt" | "continue_run")
+}
+
+/// One immutable command body for the initial attempt and every retry.
+pub(crate) fn command_plaintext(mut payload: Value, bridge: &str) -> Result<Vec<u8>, crate::Error> {
+    if let Some(object) = payload.as_object_mut() {
+        object
+            .entry("bridgeInstanceId")
+            .or_insert_with(|| json!(bridge));
+    }
+    serde_json::to_vec(&payload)
+        .map_err(|error| crate::Error::Message(format!("encode command: {error}")))
+}
+
+/// The production loop accepts the serving exchange; unit drivers supply only
+/// transport outcomes and advance Tokio's virtual clock, not a second policy.
+pub(crate) async fn retry_request<'a, T, F, Fut>(
+    plaintext: &'a [u8],
+    attempts: usize,
+    mut exchange: F,
+) -> Result<T, crate::Error>
+where
+    F: FnMut(&'a [u8]) -> Fut,
+    Fut: std::future::Future<Output = Result<T, crate::Error>>,
+{
+    let mut attempt = 1;
+    loop {
+        match exchange(plaintext).await {
+            Err(error) if attempt < attempts && transient(&error) => {
+                // Between attempt n and n+1: 250 ms, then 500 ms.
+                tokio::time::sleep(RETRY_BACKOFF_BASE * 2u32.pow(attempt as u32 - 1)).await;
+                attempt += 1;
+            }
+            outcome => return outcome,
+        }
+    }
 }
 
 /// A failure worth another attempt: the transport (a reply that never arrived,
@@ -555,19 +593,13 @@ impl PeerSession {
     pub async fn request(
         &self,
         subject: &str,
-        mut payload: Value,
+        payload: Value,
         timeout: Duration,
     ) -> Result<Value, crate::Error> {
         // Read before the envelope fields are added: the whitelist is a property
         // of the command, not of the lane it is sent on.
         let retryable = retryable_command(&payload);
-        if let Some(object) = payload.as_object_mut() {
-            object
-                .entry("bridgeInstanceId")
-                .or_insert_with(|| json!(self.bridge_instance_id));
-        }
-        let plaintext = serde_json::to_vec(&payload)
-            .map_err(|error| crate::Error::Message(format!("encode command: {error}")))?;
+        let plaintext = command_plaintext(payload, &self.bridge_instance_id)?;
         if retryable {
             self.exchange_retrying(subject, &plaintext, timeout, COMMAND_ATTEMPTS)
                 .await
@@ -611,17 +643,10 @@ impl PeerSession {
         timeout: Duration,
         attempts: usize,
     ) -> Result<Value, crate::Error> {
-        let mut attempt = 1;
-        loop {
-            match self.exchange(subject, plaintext, timeout).await {
-                Err(error) if attempt < attempts && transient(&error) => {
-                    // Between attempt n and n+1: 250 ms, then 500 ms.
-                    tokio::time::sleep(RETRY_BACKOFF_BASE * 2u32.pow(attempt as u32 - 1)).await;
-                    attempt += 1;
-                }
-                outcome => return outcome,
-            }
-        }
+        retry_request(plaintext, attempts, |body| {
+            self.exchange(subject, body, timeout)
+        })
+        .await
     }
 
     /// Seal a request, await its reply, and unwrap the host's envelope.
