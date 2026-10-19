@@ -1990,6 +1990,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "future-remote-protocol"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "flate2",
+ "future-remote-crypto",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "url",
+]
+
+[[package]]
 name = "future-rpc"
 version = "0.0.0"
 dependencies = [
@@ -2070,6 +2083,7 @@ dependencies = [
  "future-app-settings",
  "future-app-workspaces",
  "future-remote-crypto",
+ "future-remote-protocol",
  "future-rpc",
  "future-tasks",
  "futures",

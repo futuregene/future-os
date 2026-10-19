@@ -36,7 +36,8 @@ const vectors = ['XXpsk0', 'IK'].map(pattern => {
   const context = 'p.pair_1.cmd.session_1', plaintext = 'private prompt';
   const request = record(i, 0, context, plaintext);
   const replyContext = `reply:${context}:${request.slice(8, 56)}`;
-  return { pattern, desktopPublicKey: hex(b.publicKey), messages, hash: hex(i.hash),
+  return { id: `crypto.noise.${pattern.toLowerCase()}.records.v2`, pattern, desktopPublicKey: hex(b.publicKey), messages, hash: hex(i.hash),
     context, plaintext, request, replyContext, reply: record(r, 0, replyContext, 'private reply') };
 });
-console.log(JSON.stringify(vectors, null, 2));
+const { recordCases } = require('./vectors.json');
+console.log(JSON.stringify({ version: 1, cases: vectors, recordCases }, null, 2));

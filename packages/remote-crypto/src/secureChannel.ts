@@ -1,6 +1,6 @@
 import { chacha20poly1305 } from "@noble/ciphers/chacha";
 import Noise from "noise-handshake";
-import { decodeBase64Url, encodeBase64Url } from "./codec";
+import { decodeBase64Url, encodeBase64Url } from "./base64";
 
 const encoder = new TextEncoder();
 const MAGIC = new Uint8Array([70, 82, 69, 50]); // FRE2

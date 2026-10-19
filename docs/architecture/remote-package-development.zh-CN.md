@@ -3,7 +3,7 @@
 > [English](remote-package-development.md)
 >
 > 设计日期：2026-10-19。源码基线：`4a64b65e`。
-> 状态：待实施。本文确定目标边界、迁移步骤和验收条件，不代表下列新包或入口已经存在。
+> 状态：实施中，阶段 1 已开始；实际落地、检查证据和待办见第 8 节。阶段 0～5 尚未整体完成。
 
 将远程能力拆成协议、主控、被控三个职责包，保留独立的安全通道基础库。Rust 与 TypeScript 使用相同的职责模型，各自维护实现，通过共同的协议契约、测试向量和互通测试保证兼容。Desktop、Mobile、CLI、TUI 负责界面、环境和本地业务适配；远程库不依赖某个应用入口。
 
@@ -207,3 +207,27 @@ CI 根据真实依赖选择改动包及受影响消费者，并记录共享 sche
 - [ ] 以同条件基线报告编译/测试变化；没有用减少必要覆盖冒充性能收益。
 
 文档中的现有包清单在各阶段落地时更新。[共享包约定](packages.zh-CN.md)继续约束新包；完成后本计划记录实际接口、阶段状态和测量结果。
+
+## 8 实施记录
+
+### 2026-10-19：基线与第一批 Crypto/Protocol 迁移
+
+实施分支：`refactor/remote-packages`；范围仍为阶段 0～5，第 6 阶段未启动。本轮不创建 PR；最终通过工作分支 CI 统一执行自动化验收。开发期间只执行编译、类型检查、lint、fmt 和生成文件检查；人工验收确认前不标记整体完成。
+
+| 阶段 | 实际状态 | 证据与剩余工作 |
+|---|---|---|
+| 0 | 已固定源码/测试清单和历史 CI 参考；性能对照待最终 CI | [原测试迁移清单](remote-test-migration.json)记录基线文件、Rust 用例名和迁移目标；`target: null` 表示尚未归位。[历史 CI 参考](remote-ci-baseline.json)记录原提交、作业、runner、步骤及 Windows 编译/测试日志时间。该运行不是本分支的同条件性能结果。 |
+| 1 | 实施中，已接回现有消费者 | TS Crypto 与两语言 Protocol 包已建立；Mobile 使用包内 Crypto/线上 DTO，Desktop 使用公共命令、邀请解析和 JSON 解码。其余握手封装、能力/分块常量及角色中散落的线协议 DTO 随后续迁移继续归位，自动化结果待最终 CI。 |
+| 2～5 | 待实施 | Rust Client/Server、TS Client、运行实例与宿主接口、独立互通工程、CI affected 调度和最终验收仍未完成。 |
+
+已落地的包入口与检查约定：
+
+- Rust Crypto 保持 `future-remote-crypto`，Protocol 为普通库 `future-remote-protocol`。可分别使用 `cargo clippy -p <包名> --all-targets -- -D warnings` 检查；最终 CI 使用各自的 `cargo test -p <包名> -- --show-output`，输出共享用例 ID。
+- TS 包使用 `npm run typecheck|lint|test --workspace @future-os/remote-crypto` 和对应的 `@future-os/remote-protocol` 入口；其中 `typecheck|lint|test` 表示分别选择脚本，并非一条 shell 命令。各自使用 Node/Vitest 配置，不加载 Expo 或 Desktop 配置。源码直接导出，无需额外空 build。
+- [命令 schema](../../packages/remote-protocol/command.schema.json)是 62 个命令字段、Rust 缺省值和 TS 生产者类型的事实源。仓库内的生成器只使用 Python 标准库和固定工具链的 rustfmt：`python3 packages/remote-protocol/scripts/generate.py`；追加 `--check` 检查是否过期。不得手改生成文件。其余响应/事件 DTO 当前作为协议包内的手写线上类型维护，后续扩展 schema 时再迁入生成范围。
+- [安全素材](../../packages/remote-crypto/tests/vectors.json)使用 `version: 1`、稳定 ID、两种握手的原始字节向量及共享负向记录步骤；原握手、密文、摘要未改变。[协议素材](../../packages/remote-protocol/fixtures/protocol.json)覆盖邀请、命令、JSON/gzip 和大小边界。两语言驱动拒绝未知素材版本/类型，并报告执行 ID。
+- 原 Crypto、邀请、JSON/gzip 和 codec 核心测试迁入所属包；协作式 JSON 解析的调度/取消测试暂留 Mobile，阶段 4 随 Client 迁移。原测试去向继续更新清单，不以新 mock 替代真实宿主业务覆盖。
+
+保留的历史解析差异：Rust 的邀请解析包含完整 code/claim URL/过期校验；TS 的 `parsePairingInvitation` 只是 Mobile 配对流程的前置格式解析，完整策略仍在应用配对流程执行。旧格式的前置解析结果不等于允许使用旧安全协议。共享素材为此显式记录语言预期和差异原因，本次迁移不借机改变认证、HTTP 例外或凭据语义。
+
+本批静态验证使用固定 Rust 1.97.0、Node 24.21.0，在隔离 macOS arm64 工作目录执行。Rust Crypto/Protocol 与 Desktop GUI/headless 的 Clippy（包含测试目标编译）、两 npm 包和 Mobile 的 typecheck/lint 已通过。单元测试和共享素材尚未执行，不能据此宣称协议或产品验收通过。历史 Windows CI 显示测试执行与编译耗时差异较大，但尚无本次重构的性能收益结论。

@@ -9,9 +9,8 @@
 //! Format (v2), all in the query string:
 //!   `v=2&code=…&desktopId=…&desktopKey=…&secureKey=…&secret=…`
 //!
-//! Only `v=2` is accepted. A v1 link carries no Noise material and cannot
-//! authenticate anything, so it is rejected rather than silently downgraded —
-//! the same rule the mobile client applies.
+//! Versions `v=2` and `v=3` are accepted. A v1 link carries no Noise material and cannot
+//! authenticate anything, so it is rejected rather than silently downgraded .
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::Value;
@@ -20,7 +19,7 @@ use serde_json::Value;
 /// key shapes) is checked here; *authority* is not — the platform claim and the
 /// Noise handshake are what actually decide whether it is still good.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Invitation {
+pub struct Invitation {
     /// One-time platform claim code (base64url of a JSON payload).
     pub code: String,
     /// Host desktop identity, `desktop_…`.
@@ -45,7 +44,7 @@ pub(crate) struct Invitation {
 /// codes mirror the mobile client's `PA*` support codes so both platforms can
 /// explain the same failure the same way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LinkError {
+pub enum LinkError {
     /// Not a `futureos://remote/pair` URL at all.
     Malformed,
     /// A well-formed invitation, but not `v=2` (an old link + PSK-less pair).
@@ -58,14 +57,14 @@ pub(crate) enum LinkError {
 
 impl LinkError {
     /// Stable support code (`PA*`), matching the mobile client's table.
-    pub(crate) fn support_code(self) -> &'static str {
+    pub fn support_code(self) -> &'static str {
         match self {
             Self::UnsupportedVersion | Self::InvalidField => "PA002",
             Self::Expired => "PA002",
             Self::Malformed => "PA002",
         }
     }
-    pub(crate) fn message(self) -> &'static str {
+    pub fn message(self) -> &'static str {
         match self {
             Self::Malformed => "pairing_link_malformed",
             Self::UnsupportedVersion => "pairing_link_unsupported_version",
@@ -82,7 +81,7 @@ impl LinkError {
 /// below exists so a non-HTTP scheme (a `data:` URL, or a typo like `htps:`) is
 /// refused rather than handed to `reqwest`, which would reject it later with a
 /// message that names no cause.
-fn is_acceptable_claim_url(url: &reqwest::Url) -> bool {
+fn is_acceptable_claim_url(url: &url::Url) -> bool {
     match url.scheme() {
         "https" => true,
         "http" => url.host_str().is_some_and(|host| {
@@ -111,8 +110,8 @@ fn is_key32(value: &str) -> bool {
 }
 
 /// `now` is passed in so the expiry rule is testable without a clock seam.
-pub(crate) fn parse_invitation(value: &str, now: i64) -> Result<Invitation, LinkError> {
-    let url = reqwest::Url::parse(value.trim()).map_err(|_| LinkError::Malformed)?;
+pub fn parse_invitation(value: &str, now: i64) -> Result<Invitation, LinkError> {
+    let url = url::Url::parse(value.trim()).map_err(|_| LinkError::Malformed)?;
     if url.scheme() != "futureos" || url.host_str() != Some("remote") || url.path() != "/pair" {
         return Err(LinkError::Malformed);
     }
@@ -156,7 +155,7 @@ pub(crate) fn parse_invitation(value: &str, now: i64) -> Result<Invitation, Link
         .get("claim_url")
         .and_then(Value::as_str)
         .ok_or(LinkError::InvalidField)?;
-    let claim = reqwest::Url::parse(claim_url).map_err(|_| LinkError::InvalidField)?;
+    let claim = url::Url::parse(claim_url).map_err(|_| LinkError::InvalidField)?;
     if !is_acceptable_claim_url(&claim) {
         return Err(LinkError::InvalidField);
     }
@@ -199,7 +198,7 @@ mod tests {
             fields.retain(|(key, _)| key != name);
             fields.push((name, (*value).to_string()));
         }
-        let mut url = reqwest::Url::parse("futureos://remote/pair").unwrap();
+        let mut url = url::Url::parse("futureos://remote/pair").unwrap();
         for (name, value) in fields {
             url.query_pairs_mut().append_pair(name, &value);
         }
@@ -357,7 +356,7 @@ mod tests {
     /// would otherwise reject later with an unhelpful message.
     #[test]
     fn only_https_or_loopback_http_is_an_acceptable_claim_endpoint() {
-        let url = |value: &str| reqwest::Url::parse(value).expect("test url");
+        let url = |value: &str| url::Url::parse(value).expect("test url");
         assert!(is_acceptable_claim_url(&url("https://future-os.cn/x")));
         assert!(is_acceptable_claim_url(&url("http://127.0.0.1:1/x")));
         assert!(is_acceptable_claim_url(&url("http://localhost/x")));

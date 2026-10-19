@@ -1,5 +1,5 @@
 import { remoteHttp } from "./http";
-import { createSecureIdentity, keyBytes } from "./secureChannel";
+import { createSecureIdentity, keyBytes } from "@future-os/remote-crypto";
 import * as Device from "expo-device";
 import { Platform } from "react-native";
 import { createUser, fromSeed } from "nkeys.js";

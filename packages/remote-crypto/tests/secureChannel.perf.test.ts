@@ -1,5 +1,6 @@
+import { test } from "vitest";
 import { performance } from "node:perf_hooks";
-import { SecureChannel } from "../secureChannel";
+import { SecureChannel } from "../src/secureChannel";
 
 // Reproducible desktop-JS microbenchmark, not a handset/battery claim. Fixed
 // keys are test-only and each case allocates fresh channel state/counters.

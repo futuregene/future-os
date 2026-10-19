@@ -1,4 +1,48 @@
+import type { HistoryAttachment, ApprovalPayload } from "@future-os/remote-protocol";
 import type { ShellResult } from "@future-os/thread-projection";
+export {
+  PairingCode,
+  RemoteSession,
+  RemoteWorkspace,
+  PresenceSession,
+  SnapshotVersion,
+  SessionActivity,
+  CatalogRevisions,
+  Presence,
+  RemoteSkill,
+  DesktopSettings,
+  RemoteBuiltinProvider,
+  RemoteProviderModel,
+  RemoteCustomProvider,
+  CUSTOM_PROVIDER_APIS,
+  ProvidersView,
+  CustomProviderUpsert,
+  BuiltinProviderUpdate,
+  InstalledSkill,
+  AvailableSkill,
+  RemoteModel,
+  modelReference,
+  modelProviderFromReference,
+  RemoteSessionUsage,
+  RemoteSessionState,
+  ThinkingLevel,
+  HistoryMessage,
+  HistoryAttachment,
+  SessionFileEntry,
+  SessionFileListing,
+  DownloadInfo,
+  HistoryEntry,
+  StreamEvent,
+  ApprovalPayload,
+  RpcResponse,
+  SessionsData,
+  ModelsData,
+  WorkspacesData,
+  HistoryData,
+  EntriesData,
+  PromptAck,
+  RemoteCommand,
+} from "@future-os/remote-protocol";
 
 export type ConnectionPhase =
   | "booting"
@@ -12,20 +56,6 @@ export type ConnectionPhase =
   | "refreshing"
   | "failed"
   | "revoked";
-
-export interface PairingCode {
-  v: 2;
-  nonce: string;
-  claim_url: string;
-  exp: number;
-  /**
-   * Present when the invitation was minted by a self-hosted relay instead of
-   * the Future platform: the origin the claim endpoint belongs to. The payload
-   * keeps `v: 2` because its *shape* did not change; the invitation URL says
-   * `v=3`, which is what a v2-only client refuses.
-   */
-  relay?: string;
-}
 
 /**
  * A desktop this phone has paired with. Selecting one drives the connection;
@@ -60,132 +90,6 @@ export interface RemoteCredentials {
   expectedDesktopPublicKey: string;
 }
 
-export interface RemoteSession {
-  sessionId: string;
-  threadId: string;
-  title: string;
-  mode?: "chat" | "workspace";
-  workspaceId?: string;
-  /** Agent lineage, omitted by older desktops. */
-  parentSessionId?: string | null;
-  /** Pinned to the top of the session list (desktop `threads.pinned`). */
-  pinned?: boolean;
-  streaming: boolean;
-  status?: string;
-  /**
-   * The name of the workspace this conversation sits in, as its own machine
-   * calls it. Sent per session row (a client grouping a merged list needs the
-   * name for its heading), omitted by a desktop older than the field.
-   */
-  workspaceName?: string | null;
-  /** Whether that workspace is pinned *on its own machine*. */
-  workspacePinned?: boolean | null;
-  /** When that workspace itself was last touched on its own machine. */
-  workspaceOrderedAt?: number | null;
-  /**
-   * Last activity (unix millis), from the desktop's own
-   * `COALESCE(last_message_at, updated_at, created_at)`. Absent on a desktop
-   * older than the field, in which case the session sorts below dated ones
-   * rather than pretending to be current.
-   */
-  lastMessageAt?: number | null;
-}
-
-export interface RemoteWorkspace {
-  id: string;
-  name: string;
-  path: string;
-  description?: string;
-  /** Pinned to the top of the workspace list (desktop `workspaces.pinned`). */
-  pinned?: boolean;
-}
-
-export interface PresenceSession {
-  sessionId: string;
-  threadId: string;
-  title: string;
-  mode?: "chat" | "workspace";
-  workspaceId?: string;
-  parentSessionId?: string | null;
-  /** Desktop `threads.pinned` — hoisted to the top of the session list. */
-  pinned?: boolean;
-  streaming: boolean;
-  status?: string;
-  /** The workspace's own name, pin and place, as the host reports them per row. */
-  workspaceName?: string | null;
-  workspacePinned?: boolean | null;
-  workspaceOrderedAt?: number | null;
-}
-
-export interface SnapshotVersion {
-  epoch: string;
-  revision: number;
-}
-
-/**
- * One row of a catalog activity packet: the session, and the activity
- * timestamp it now has.
- *
- * A streaming run rewrites its conversation's activity timestamp about once a
- * second, and that value is the list's ordering key. Sending the whole session
- * list for it cost ~95 KB per second on a desktop with a few hundred
- * conversations; this packet carries only the rows that moved.
- */
-export interface SessionActivity {
-  sessionId: string;
-  lastMessageAt: number;
-}
-
-/** Per-domain catalog revisions advertised on a presence heartbeat. */
-export interface CatalogRevisions {
-  epoch?: string;
-  sessions?: number;
-  workspaces?: number;
-}
-
-export interface Presence {
-  catalogEpoch?: string;
-  sessionsVersion?: SnapshotVersion;
-  workspacesVersion?: SnapshotVersion;
-  /**
-   * Catalog revisions as of this heartbeat. A revision newer than the one this
-   * client applied proves a pushed snapshot was lost (core NATS is
-   * at-most-once), so the client pulls the catalogue itself. The desktop no
-   * longer re-sends an unchanged snapshot on a timer, which is what makes an
-   * idle directory cost only this packet.
-   */
-  catalogVersion?: CatalogRevisions;
-  agentAvailable?: boolean;
-  online: boolean;
-  /** An intentional desktop disconnect; `online: false` is authoritative. */
-  disconnected?: boolean;
-  /** Why Desktop explicitly ended the remote session. */
-  reason?: string;
-  /** Immediate desktop-originated unpair notice; server revocation backs it up. */
-  unpaired?: boolean;
-  pairId: string;
-  bridgeInstanceId: string;
-  /**
-   * Whether this device may drive the desktop right now.
-   *
-   * `standby` means another paired device holds it. Additive on the wire: a
-   * desktop that predates this field sends nothing, and an absent value is read
-   * as "in control" — that is what every older desktop meant by being connected.
-   */
-  control?: "active" | "standby";
-  /**
-   * Who holds the desktop, when it is not this device.
-   *
-   * This is what lets the phone ask "taking over disconnects <name>?" instead of
-   * either stealing the machine silently or refusing without saying why. A
-   * holder that never declared a name is described neutrally.
-   */
-  holder?: { pairId?: string | null; name?: string; kind?: string } | null;
-  lastHeartbeatTs: number;
-  sessions?: PresenceSession[];
-  workspaces?: RemoteWorkspace[];
-}
-
 /**
  * A conversation the composer's draft refers to. The draft carries it as a
  * compact token (`#title`) and the message it sends carries the link
@@ -202,164 +106,6 @@ export interface SessionReferenceTarget {
  * carry the id: losing the map would turn a reference back into plain text.
  */
 export type SessionReferenceMap = Record<string, SessionReferenceTarget>;
-
-/** Installed skills discovered by the connected Agent (same catalogue as desktop). */
-export interface RemoteSkill {
-  name: string;
-  description: string;
-  nameZh?: string | null;
-  descriptionZh?: string | null;
-}
-
-/** Authoritative desktop preferences. Never write these to phone storage. */
-export interface DesktopSettings {
-  autoUpgradeSkills: boolean;
-  autoTitleFirstTurn: boolean;
-  autoConnectRemote: boolean;
-  hiddenModels: string[];
-  /**
-   * Offer a fitting skill before sending a message (PRD v1.6 §3). On by
-   * default, so an older desktop that omits it must not read as "off".
-   */
-  skillRecommend?: boolean;
-}
-
-/**
- * A catalog provider on the desktop. `hasApiKey` is all the phone ever learns
- * about the credential: keys are write-only from here (set or cleared, never
- * read back).
- */
-export interface RemoteBuiltinProvider {
-  id: string;
-  name: string;
-  baseUrl: string;
-  hasApiKey: boolean;
-  modelCount: number;
-  /** The catalog base URL is a placeholder; the user must supply their own. */
-  requiresBaseUrl: boolean;
-}
-
-/** One model of a custom provider. Absent fields mean the desktop default. */
-export interface RemoteProviderModel {
-  id: string;
-  name?: string;
-  supportsImages?: boolean;
-  reasoning?: boolean;
-  contextWindow?: number;
-  maxTokens?: number;
-  /** Per-1M-token prices; 0 means unpriced (adds nothing to the amount). */
-  inputCost?: number;
-  outputCost?: number;
-  cacheReadCost?: number;
-  cacheWriteCost?: number;
-}
-
-export interface RemoteCustomProvider {
-  id: string;
-  name: string;
-  api: string;
-  baseUrl: string;
-  hasApiKey: boolean;
-  models: RemoteProviderModel[];
-}
-
-/** API shapes a custom provider may speak (mirrors the desktop's choices). */
-export const CUSTOM_PROVIDER_APIS = ["openai-completions", "openai-responses", "anthropic"] as const;
-
-export interface ProvidersView {
-  builtin: RemoteBuiltinProvider[];
-  custom: RemoteCustomProvider[];
-}
-
-/** The write payload of one custom provider (mirrors UpsertCustomProviderInput). */
-export interface CustomProviderUpsert {
-  id: string;
-  name: string;
-  api: string;
-  baseUrl: string;
-  /** Absent keeps the stored key; the desktop writes it only when non-empty. */
-  apiKey?: string | null;
-  models: RemoteProviderModel[];
-  create: boolean;
-}
-
-/**
- * One atomic built-in provider write (mirrors UpdateBuiltinProviderInput):
- * `updateApiKey` decides whether `apiKey` is applied at all, and a null/empty
- * `apiKey` then clears the stored credential.
- */
-export interface BuiltinProviderUpdate {
-  id: string;
-  baseUrl?: string;
-  apiKey?: string | null;
-  updateApiKey: boolean;
-}
-
-export interface InstalledSkill extends RemoteSkill {
-  id: string;
-  version?: string | null;
-}
-
-export interface AvailableSkill {
-  id: string;
-  name: string;
-  description: string;
-  nameZh?: string;
-  descriptionZh?: string;
-  latestVersion?: string | null;
-}
-
-export interface RemoteModel {
-  id: string;
-  label?: string;
-  provider?: string;
-  isDefault?: boolean;
-  /** Whether the model's input modality accepts images (agent catalogue). */
-  supportsImages?: boolean;
-}
-
-/** Stable agent model identifier; model ids are only unique within a provider. */
-export function modelReference(model: Pick<RemoteModel, "id" | "provider">): string {
-  // Catalogue ids are raw provider-local ids, even when they contain '/' or
-  // already begin with the provider's name (for example openrouter/auto).
-  return model.provider ? `${model.provider}/${model.id}` : model.id;
-}
-
-export function modelProviderFromReference(modelReference: string): string | undefined {
-  const separator = modelReference.indexOf("/");
-  return separator > 0 ? modelReference.slice(0, separator) : undefined;
-}
-
-/**
- * Session-level token usage and the amount it represents, mirroring the
- * agent's get_state `usage` object. The per-category amounts are priced by the
- * agent from the model's rates; a model with no rates on file reports zeros.
- */
-export interface RemoteSessionUsage {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  /** Total spent (¥): the provider's own billing, or the priced estimate. */
-  costCny: number;
-  costInputCny: number;
-  costOutputCny: number;
-  costCacheReadCny: number;
-  costCacheWriteCny: number;
-}
-
-export interface RemoteSessionState {
-  isCompacting?: boolean;
-  model?: string;
-  thinkingLevel?: ThinkingLevel;
-  /** Token usage + amount for the session; absent until the agent reports it. */
-  usage?: RemoteSessionUsage | null;
-  /** The session's active (in-flight) run, if any — the tail of its events
-   *  can be backfilled from `get_events_since` to resync on open/reconnect. */
-  activeRun?: { runId?: string } | null;
-}
-
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 /**
  * Terminal result of a context compaction, correlated by operation id.
@@ -378,22 +124,6 @@ export type CompactionOutcome =
   | { status: "cancelled" }
   | { status: "timeout" };
 
-export interface HistoryMessage {
-  role: "user" | "assistant" | "tool" | string;
-  blocks: import("@future-os/thread-projection").SessionEntry["blocks"];
-  metadata?: Record<string, unknown> | null;
-  runId?: string | null;
-}
-
-/** Attachment chip on a user entry — mirrors the desktop `meta.attachments`. */
-export interface HistoryAttachment {
-  path: string;
-  name: string;
-  kind?: "image" | "file" | null;
-  /** Local optimistic hint; durable desktop history enforces this server-side. */
-  mobilePreviewUnsupported?: boolean;
-}
-
 export interface MobileAttachment {
   localUri: string;
   /** Original user-facing name; remains unchanged after JPEG conversion. */
@@ -410,63 +140,6 @@ export interface MobileAttachment {
   mobilePreviewUnsupported?: boolean;
   uploadId?: string;
   contentHash?: string;
-}
-
-export interface SessionFileEntry {
-  name: string;
-  path: string;
-  isDir: boolean;
-  size: number;
-}
-
-export interface SessionFileListing {
-  rootPath: string;
-  path: string;
-  entries: SessionFileEntry[];
-}
-
-export interface DownloadInfo {
-  transferId: string;
-  name: string;
-  mimeType: string;
-  size: number;
-  contentHash: string;
-  previewKind: "image" | "markdown" | "text" | "json" | "file";
-  variant: "preview" | "original";
-  chunkBytes: number;
-}
-
-/**
- * Display-shaped session entry from `get_session_entries` (the agent's JSONL,
- * same source the desktop app renders). Content is plain text; user entries
- * carry attachments on `meta`, and assistant entries may carry the model's
- * thinking and the tool calls it introduced.
- */
-export type HistoryEntry = import("@future-os/thread-projection").SessionEntry;
-
-export interface StreamEvent {
-  type: string;
-  data: string;
-  runId?: string;
-  idx?: number;
-  /**
-   * How many source events this one carries, when the desktop merged a run's
-   * text fragments (see `event_coalescing_v1`). The merged event occupies the
-   * newest source index and its text is the concatenation of all of them, so a
-   * client must treat `idx` as the end of a range instead of a single step.
-   */
-  coalescedCount?: number;
-}
-
-export interface ApprovalPayload {
-  approval_request_id: string;
-  tool_name?: string;
-  risk_level?: string;
-  kind?: string;
-  title?: string;
-  summary?: string;
-  /** Agent-built action object (writes/paths/command) — path is surfaced to the user. */
-  action?: unknown;
 }
 
 /**
@@ -586,137 +259,3 @@ export type TimelineItem =
       text: string;
       runId?: string;
     };
-
-export interface RpcResponse<T = unknown> {
-  success: boolean;
-  data: T;
-  error?: string;
-}
-
-export interface RemoteCommand {
-  chunkedRead?: boolean;
-  /** Opt out of the desktop bridge's backward-page byte-budget trim (the
-   * gap-fill integrity check needs a page flush with the requested cursor). */
-  untrimmed?: boolean;
-  /** Cold run bootstrap from a resumable semantic snapshot, when supported. */
-  preferSnapshot?: boolean;
-  /** Client capabilities declared on `secure_ready` (additive, opt-in). */
-  features?: string[];
-  /**
-   * What this device is, declared on `secure_ready`.
-   *
-   * Beside `features` rather than inside it: a capability is something a client
-   * asks for, and this is something it *is*. The desktop shows it to the user,
-   * which is the only reason it exists — an older desktop ignores both fields.
-   */
-  deviceName?: string;
-  deviceKind?: string;
-  replyId?: string;
-  replayUntilIdx?: number;
-  bridgeInstanceId?: string;
-  id?: string;
-  type: string;
-  sessionId?: string;
-  message?: string;
-  entryId?: string;
-  /** fork_session: the persisted user entry whose settled turn to fork at. */
-  sourceEntryId?: string;
-  mode?: string;
-  runId?: string;
-  promptId?: string;
-  sinceIdx?: number;
-  offset?: number;
-  limit?: number;
-  /** get_tool_call_args: the call whose arguments a lean client asks back. */
-  toolCallId?: string;
-  /** Exclusive cursor for backward, user-exchange-based history pages. */
-  before?: number;
-  modelId?: string;
-  providerId?: string;
-  level?: string;
-  tier?: string;
-  settings?: Partial<DesktopSettings>;
-  /** Provider configuration (see `list_providers` in the desktop bridge). */
-  provider?: CustomProviderUpsert | BuiltinProviderUpdate;
-  skillId?: string;
-  version?: string;
-  /** Task management: one whole task write (like `provider`), plus the ids a
-   * run/revision command addresses. */
-  task?: Record<string, unknown>;
-  taskId?: string;
-  revisionId?: string;
-  /** set_task_enabled */
-  enabled?: boolean;
-  /** set_task_dep: the upstream to wait for, and the condition it fires on. */
-  upstreamTaskId?: string;
-  on?: string;
-  /** suggest_skill: the draft to recommend for, and the candidates to choose from. */
-  query?: string;
-  candidates?: { name: string; description: string }[];
-  /** record_skill_reco: the message that produced a shown recommendation. */
-  messageHash?: string;
-  name?: string;
-  transferName?: string;
-  workspaceId?: string;
-  /** create_workspace: the desktop-side directory path the phone typed. */
-  path?: string;
-  /** Thread-scoped mutating commands (delete_session / set_session_pinned). */
-  threadId?: string;
-  pinned?: boolean;
-  protocolVersion?: number;
-  pairId?: string;
-  deviceId?: string;
-  clientPublicKey?: string;
-  clientNonce?: string;
-  desktopNonce?: string;
-  expectedDesktopId?: string;
-  expectedDesktopPublicKey?: string;
-  clientSignature?: string;
-  mimeType?: string;
-  kind?: string;
-  originalSize?: number;
-  transferSize?: number;
-  transferId?: string;
-  filePath?: string;
-  attachments?: { uploadId: string }[];
-}
-
-export interface SessionsData {
-  version?: SnapshotVersion;
-  sessions: RemoteSession[];
-}
-
-export interface ModelsData {
-  models: RemoteModel[];
-  /** Desktop deliberately hid every model; unlike warm-up, this is final. */
-  allModelsHidden?: boolean;
-}
-
-export interface WorkspacesData {
-  version?: SnapshotVersion;
-  workspaces: RemoteWorkspace[];
-  /** create_workspace echoes the created row; the catalogue list omits it. */
-  workspace?: RemoteWorkspace;
-}
-
-export interface HistoryData {
-  messages: HistoryMessage[];
-  total?: number;
-  hasMore?: boolean;
-  nextOffset?: number;
-}
-
-export interface EntriesData {
-  entries: HistoryEntry[];
-  total?: number;
-  hasMore?: boolean;
-  nextOffset?: number;
-  /** The bridge shed whole oldest exchanges to fit its page byte budget. */
-  trimmed?: boolean;
-}
-
-export interface PromptAck {
-  sessionId: string;
-  threadId: string;
-  runId: string;
-}

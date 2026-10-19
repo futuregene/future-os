@@ -3,7 +3,7 @@ import type { Msg, NatsConnection } from "@nats-io/nats-core";
 import { MsgImpl, QueuedIteratorImpl } from "@nats-io/nats-core/internal";
 import { ConnectionGeneration } from "../connectionGeneration";
 import { RemoteClient, type RemoteClientCallbacks } from "../client";
-import { createSecureIdentity, keyBytes, replyContext, SecureChannel, securePrologue } from "../secureChannel";
+import { createSecureIdentity, keyBytes, replyContext, SecureChannel, securePrologue } from "@future-os/remote-crypto";
 import { decodeBase64Url, encodeBase64Url } from "../codec";
 import type { RemoteCredentials } from "../types";
 

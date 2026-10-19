@@ -23,9 +23,9 @@
 //! Nothing about the protocol is desktop-specific, so a desktop pairs with any
 //! host the phone can pair with.
 
-pub(crate) mod codec;
+pub(crate) use future_remote_protocol::json as codec;
 pub(crate) mod creds;
-pub(crate) mod link;
+pub(crate) use future_remote_protocol::invitation as link;
 pub(crate) mod platform;
 pub(crate) mod runtime;
 pub(crate) mod session;

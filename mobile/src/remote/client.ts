@@ -2,7 +2,7 @@ import { ConnectionGeneration } from "./connectionGeneration";
 import type { Msg, NatsConnection, Subscription } from "@nats-io/nats-core";
 import { wsconnect, jwtAuthenticator } from "@nats-io/nats-core";
 import { classifyNatsError } from "./natsErrors";
-import { SecureChannel, SecureHandshake, replyContext, type SecureIdentity } from "./secureChannel";
+import { SecureChannel, SecureHandshake, replyContext, type SecureIdentity } from "@future-os/remote-crypto";
 import { deviceName, ensureFreshCredentials, refreshCredentials } from "./pairing";
 import { jwtExpiry, randomId, encodeBase64Url, decodeBase64Url } from "./codec";
 import { backoffDelayMs, classifyError, transition, type ConnectionState } from "./connectionState";

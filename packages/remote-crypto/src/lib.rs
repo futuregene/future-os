@@ -264,7 +264,14 @@ mod tests {
     fn javascript_noise_and_record_vectors() {
         let vectors: serde_json::Value =
             serde_json::from_str(include_str!("../tests/vectors.json")).unwrap();
-        for vector in vectors.as_array().unwrap() {
+        assert_eq!(vectors["version"], 1, "unsupported crypto fixture version");
+        let cases = vectors["cases"].as_array().unwrap();
+        assert!(!cases.is_empty());
+        let mut ids = std::collections::HashSet::new();
+        for vector in cases {
+            let id = vector["id"].as_str().unwrap();
+            assert!(!id.is_empty() && ids.insert(id), "invalid fixture ID: {id}");
+            println!("shared-case {id}");
             let name = vector["pattern"].as_str().unwrap();
             let protocol = format!("Noise_{name}_25519_ChaChaPoly_BLAKE2b");
             let prologue = prologue("pair_1", "desktop_1").unwrap();
@@ -320,6 +327,37 @@ mod tests {
             );
             let (mut i, mut r) = (i.finish().unwrap(), r.finish().unwrap());
             let context = vector["context"].as_str().unwrap();
+            for scenario in vectors["recordCases"].as_array().unwrap() {
+                let case_id = format!("{id}/{}", scenario["id"].as_str().unwrap());
+                let mut receiver = Channel::new(*r.send, *r.receive, r.id);
+                for step in scenario["steps"].as_array().unwrap() {
+                    let mut wire = if let Some(plaintext) = step["plaintext"].as_str() {
+                        plaintext.as_bytes().to_vec()
+                    } else {
+                        hex::decode(vector["request"].as_str().unwrap()).unwrap()
+                    };
+                    if let Some(offset) = step["mutateOffset"].as_u64() {
+                        wire[offset as usize] ^= 1;
+                    }
+                    if let Some(length) = step["truncate"].as_u64() {
+                        wire.truncate(length as usize);
+                    }
+                    if let Some(length) = step["resize"].as_u64() {
+                        wire.resize(length as usize, 0);
+                    }
+                    let result = receiver.open(step["context"].as_str().unwrap_or(context), &wire);
+                    if step["accept"].as_bool().unwrap() {
+                        assert_eq!(
+                            result.unwrap(),
+                            vector["plaintext"].as_str().unwrap().as_bytes(),
+                            "{case_id}"
+                        );
+                    } else {
+                        assert!(result.is_err(), "{case_id}");
+                    }
+                }
+                println!("shared-case {case_id}");
+            }
             let wire = i.seal(context, b"private prompt").unwrap();
             assert_eq!(hex::encode(&wire), vector["request"].as_str().unwrap());
             assert_eq!(r.open(context, &wire).unwrap(), b"private prompt");

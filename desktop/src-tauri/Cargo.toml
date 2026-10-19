@@ -68,6 +68,7 @@ future-rpc = { path = "../../packages/rpc" }
 future-agent = { path = "../../agent" }
 anyhow = "1"
 future-remote-crypto = { path = "../../packages/remote-crypto" }
+future-remote-protocol = { path = "../../packages/remote-protocol" }
 future-app-settings = { path = "../../packages/app-settings" }
 # The desktop app's workspace records, shared with `future workspace` in the
 # CLI so the two writers cannot drift apart.

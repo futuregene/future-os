@@ -3,7 +3,7 @@
 > [中文](remote-package-development.zh-CN.md)
 >
 > Design date: 2026-10-19. Source baseline: `4a64b65e`.
-> Status: planned. This document defines target boundaries, migration steps and acceptance criteria; the new packages and entry points below are not implemented yet.
+> Status: in progress; phase 1 has started. Section 8 records implemented boundaries, checks and remaining work. Phases 0–5 are not complete.
 
 Separate Remote into protocol, controller and controlled-endpoint packages, retaining the independent secure-channel foundation. Rust and TypeScript follow the same responsibility model with separate implementations, validated against a common contract, vectors and interoperability tests. Desktop, Mobile, CLI and TUI provide UI, environment and local business adapters; Remote libraries do not depend on a particular application entry point.
 
@@ -207,3 +207,27 @@ Performance acceptance compares compilation, linking, test execution, cache rest
 - [ ] Equivalent baselines report compilation/test changes without treating reduced required coverage as a performance improvement.
 
 Update current package inventories as phases land. [Shared package conventions](packages.md) continue to govern new packages. Record actual interfaces, phase status and measurements here as implementation completes.
+
+## 8 Implementation record
+
+### 2026-10-19: baseline and first Crypto/Protocol extraction
+
+Implementation branch: `refactor/remote-packages`. Scope remains phases 0–5; phase 6 has not started. This run creates no PR: final automated acceptance will use branch CI. Development runs compilation, type checks, lint, fmt and generated-file checks only. Overall completion requires confirmed manual acceptance.
+
+| Phase | Actual status | Evidence and remaining work |
+|---|---|---|
+| 0 | Source/test inventory and historical CI reference captured; performance comparison awaits final CI | The [test migration inventory](remote-test-migration.json) records baseline files, Rust case names and destinations; `target: null` means unresolved ownership. The [historical CI reference](remote-ci-baseline.json) records the original commit, jobs, runner, steps and Windows compile/test log timings. It is not a same-condition performance result for this branch. |
+| 1 | In progress, existing consumers reconnected | TS Crypto and both Protocol packages exist. Mobile consumes package Crypto/wire DTOs; Desktop consumes shared commands, invitations and JSON decoding. Handshake envelopes, capability/chunk constants and remaining role-owned wire DTOs still need extraction during subsequent migration. Automated results await final CI. |
+| 2–5 | Pending | Rust Client/Server, TS Client, runtime instances and host interfaces, standalone interoperability, affected CI scheduling and final acceptance remain unfinished. |
+
+Implemented package entry points and validation:
+
+- Rust Crypto remains `future-remote-crypto`; `future-remote-protocol` is an ordinary library. Check each using `cargo clippy -p <package> --all-targets -- -D warnings`. Final CI uses each package's `cargo test -p <package> -- --show-output` to report shared case IDs.
+- TS packages provide `npm run typecheck|lint|test --workspace @future-os/remote-crypto` and the corresponding `@future-os/remote-protocol` entry. Here `typecheck|lint|test` means selecting each script, not literal shell syntax. Each uses its own Node/Vitest configuration without Expo or Desktop setup. Direct source exports need no empty build step.
+- The [command schema](../../packages/remote-protocol/command.schema.json) owns 62 command fields, Rust missing-field defaults and TS producer types. The repository generator uses Python's standard library and pinned rustfmt: `python3 packages/remote-protocol/scripts/generate.py`; append `--check` to verify freshness. Never edit generated bindings. Other response/event DTOs are currently handwritten wire types owned by Protocol; further schema expansion will migrate those definitions into generation.
+- [Security fixtures](../../packages/remote-crypto/tests/vectors.json) have `version: 1`, stable IDs, original byte vectors for both handshake patterns and shared negative record steps. Existing messages, ciphertexts and hashes are unchanged. [Protocol fixtures](../../packages/remote-protocol/fixtures/protocol.json) cover invitations, commands, JSON/gzip and size boundaries. Both drivers reject unknown fixture versions/kinds and report executed IDs.
+- Original Crypto, invitation, JSON/gzip and codec core tests move with their owning package. Cooperative JSON scheduling/cancellation tests temporarily remain in Mobile and will move with Client in phase 4. Continue recording destinations without replacing real host business coverage with mocks.
+
+Preserved parser difference: Rust invitation parsing validates the complete code, claim URL and expiry. TS `parsePairingInvitation` is only Mobile's preliminary shape parser; the application pairing flow still applies the full policy. Parsing a legacy shape does not authorize an older security protocol. Shared fixtures explicitly record language expectations and reasons; extraction does not change authentication, plaintext HTTP exceptions or credential semantics.
+
+This batch uses pinned Rust 1.97.0 and Node 24.21.0 in an isolated macOS arm64 checkout. Crypto/Protocol and Desktop GUI/headless Clippy (including test compilation), both npm packages and Mobile typecheck/lint have passed. Unit tests and shared fixtures have not run, so this is not protocol/product acceptance. Historical Windows logs distinguish compilation from test execution, but no performance benefit is claimed for this refactor yet.

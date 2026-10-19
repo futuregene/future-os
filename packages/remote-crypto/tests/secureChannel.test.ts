@@ -1,6 +1,7 @@
+import { describe, expect, test } from "vitest";
 import Noise from "noise-handshake";
-import { createSecureIdentity, keyBytes, MAX_SECURE_PLAINTEXT, replyContext, SecureChannel, SecureHandshake, securePrologue } from "../secureChannel";
-import { encodeBase64Url } from "../codec";
+import { createSecureIdentity, keyBytes, MAX_SECURE_PLAINTEXT, replyContext, SecureChannel, SecureHandshake, securePrologue } from "../src/secureChannel";
+import { encodeBase64Url } from "../src/base64";
 
 function pair() {
   const desktop = createSecureIdentity();
@@ -19,15 +20,21 @@ function pair() {
 }
 
 // The same deterministic vectors are checked independently by Rust/snow.
-const vectors = require("../../../../packages/remote-crypto/tests/vectors.json") as {
-  pattern: "XXpsk0" | "IK"; desktopPublicKey: string; messages: string[]; hash: string;
+import fixture from "./vectors.json";
+const vectors = fixture.cases as {
+  id: string; pattern: "XXpsk0" | "IK"; desktopPublicKey: string; messages: string[]; hash: string;
   context: string; plaintext: string; request: string; replyContext: string; reply: string;
 }[];
 const unhex = (value: string) => Uint8Array.from(value.match(/../g)!, byte => parseInt(byte, 16));
 const hex = (value: Uint8Array) => Array.from(value, b => b.toString(16).padStart(2, "0")).join("");
 
 describe("remote v2 secure records", () => {
-  test.each(vectors)("matches Rust/snow for $pattern, including record AAD and replies", vector => {
+  test("validates the shared fixture version and unique case IDs", () => {
+    expect(fixture.version).toBe(1);
+    expect(vectors.length).toBeGreaterThan(0);
+    expect(new Set(vectors.map(v => v.id)).size).toBe(vectors.length);
+  });
+  test.each(vectors)("$id: matches Rust/snow including record AAD and replies", vector => {
     const responder = new Noise(vector.pattern, false, { secretKey: new Uint8Array(32).fill(2), publicKey: unhex(vector.desktopPublicKey) },
       vector.pattern === "XXpsk0" ? { psk: new Uint8Array(32).fill(7) } : undefined);
     responder.e = { secretKey: new Uint8Array(32).fill(4), publicKey: unhex(vector.messages[1]!.slice(0, 64)) };
@@ -37,6 +44,21 @@ describe("remote v2 secure records", () => {
     if (vector.messages[2]) responder.recv(unhex(vector.messages[2]));
     expect(hex(responder.hash!)).toBe(vector.hash);
     const channel = new SecureChannel(responder.tx!, responder.rx!, responder.hash!.subarray(0, 16));
+    for (const scenario of fixture.recordCases) {
+      const receiver = new SecureChannel(responder.tx!, responder.rx!, responder.hash!.subarray(0, 16));
+      for (const step of scenario.steps) {
+        let wire = "plaintext" in step ? new TextEncoder().encode(step.plaintext) : unhex(vector.request);
+        if ("mutateOffset" in step) wire[step.mutateOffset!] = wire[step.mutateOffset!]! ^ 1;
+        if ("truncate" in step) wire = wire.slice(0, step.truncate);
+        if ("resize" in step && typeof step.resize === "number") { const resized = new Uint8Array(step.resize); resized.set(wire); wire = resized; }
+        const open = () => receiver.open("context" in step ? step.context! : vector.context, wire);
+        if (step.accept) expect(new TextDecoder().decode(open())).toBe(vector.plaintext);
+        else expect(open).toThrow();
+      }
+      // eslint-disable-next-line no-console -- CI records every executed shared case ID.
+      console.info(`shared-case ${vector.id}/${scenario.id}`);
+      receiver.destroy();
+    }
     expect(new TextDecoder().decode(channel.open(vector.context, unhex(vector.request)))).toBe(vector.plaintext);
     expect(replyContext(vector.context, unhex(vector.request))).toBe(vector.replyContext);
     expect(hex(channel.seal(vector.replyContext, new TextEncoder().encode("private reply")))).toBe(vector.reply);

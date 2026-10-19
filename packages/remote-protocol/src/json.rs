@@ -19,7 +19,7 @@ use std::borrow::Cow;
 use std::io::Read;
 
 /// Ceiling for the decoded command reply, matching the phone.
-pub(crate) const MAX_REMOTE_JSON_BYTES: usize = 1024 * 1024;
+pub const MAX_REMOTE_JSON_BYTES: usize = 1024 * 1024;
 
 /// The two bytes every gzip stream starts with. Only these are sniffed, exactly
 /// as on the phone: a `1f 8b` body that is not really gzip must fail while
@@ -27,7 +27,7 @@ pub(crate) const MAX_REMOTE_JSON_BYTES: usize = 1024 * 1024;
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub(crate) enum PeerDecodeError {
+pub enum PeerDecodeError {
     /// A gzip-magic body too short to even carry its footer.
     #[error("remote_json_gzip_invalid")]
     GzipInvalid,
@@ -44,7 +44,7 @@ pub(crate) enum PeerDecodeError {
 }
 
 /// Whether `bytes` starts with the standard gzip magic.
-pub(crate) fn looks_like_gzip(bytes: &[u8]) -> bool {
+pub fn looks_like_gzip(bytes: &[u8]) -> bool {
     bytes.len() >= 2 && bytes[0] == GZIP_MAGIC[0] && bytes[1] == GZIP_MAGIC[1]
 }
 
@@ -55,7 +55,7 @@ pub(crate) fn looks_like_gzip(bytes: &[u8]) -> bool {
 /// refusal of an obvious bomb), and the inflate itself is wrapped in a
 /// `take(MAX + 1)` so a lying footer cannot make the decoder allocate past the
 /// cap. The plain path is held to the same cap before parsing.
-pub(crate) fn plain_json_bytes(bytes: &[u8]) -> Result<Cow<'_, [u8]>, PeerDecodeError> {
+pub fn plain_json_bytes(bytes: &[u8]) -> Result<Cow<'_, [u8]>, PeerDecodeError> {
     if !looks_like_gzip(bytes) {
         if bytes.len() > MAX_REMOTE_JSON_BYTES {
             return Err(PeerDecodeError::TooLarge);
@@ -94,9 +94,7 @@ pub(crate) fn plain_json_bytes(bytes: &[u8]) -> Result<Cow<'_, [u8]>, PeerDecode
 }
 
 /// Decode a reply body into `T`, inflating first when it looks like gzip.
-pub(crate) fn decode_reply<T: serde::de::DeserializeOwned>(
-    bytes: &[u8],
-) -> Result<T, PeerDecodeError> {
+pub fn decode_reply<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, PeerDecodeError> {
     let plain = plain_json_bytes(bytes)?;
     serde_json::from_slice(&plain).map_err(|error| PeerDecodeError::Invalid(error.to_string()))
 }

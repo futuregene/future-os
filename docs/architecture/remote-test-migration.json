@@ -1,0 +1,1405 @@
+{
+  "version": 1,
+  "sourceCommit": "4a64b65e",
+  "note": "Inventory only, not evidence of execution. Targets are filled as tests migrate; mixed files are split without dropping source cases.",
+  "tests": [
+    {
+      "source": "packages/remote-crypto/src/lib.rs",
+      "ownerAtBaseline": "crypto",
+      "rustCases": [
+        "javascript_noise_and_record_vectors",
+        "roundtrip_and_replay",
+        "rejects_tampering_routing_reflection_and_plaintext",
+        "supports_bounded_out_of_order_and_large_records",
+        "replay_window_boundaries_and_nonce_exhaustion",
+        "wrong_psk_and_wrong_prologue_fail",
+        "reconnect_pattern_uses_ik_and_needs_the_remote_static_key",
+        "prologue_rejects_empty_overlong_and_non_alphanumeric_ids",
+        "seal_and_open_reject_unusable_contexts",
+        "handshake_write_read_and_finish_refuse_oversized_or_premature_use",
+        "reply_context_rejects_non_frames_and_oversized_subjects"
+      ],
+      "target": "packages/remote-crypto/src/lib.rs"
+    },
+    {
+      "source": "desktop/src-tauri/src/remote/commands.rs",
+      "ownerAtBaseline": "server",
+      "rustCases": [
+        "oversized_reply_is_an_explicit_bounded_error_even_with_gzip",
+        "model_identity_keeps_raw_slashes_and_distinguishes_providers",
+        "remote_json_gzip_is_automatic_thresholded_and_standard",
+        "the_gzip_override_is_an_operator_switch",
+        "gzip_follows_the_per_connection_capability",
+        "clearing_the_capability_reaches_the_loop_copy",
+        "handshake_transcript_binds_both_device_identities_and_nonces",
+        "handshake_signature_rejects_tampered_transcript",
+        "paginate_small_list_is_one_page",
+        "paginate_respects_limit_and_cursors",
+        "paginate_bounds_by_byte_budget",
+        "backward_history_budget_defers_complete_oldest_exchanges",
+        "paginate_caps_and_includes_oversized_message",
+        "paginate_caps_structured_tool_arguments_and_metadata",
+        "chunked_history_preserves_oversized_entries",
+        "chunked_backward_history_is_bounded_without_truncating_content",
+        "chunked_backward_history_keeps_one_oversized_exchange",
+        "truncate_caps_string_content",
+        "truncate_caps_text_blocks_and_keeps_others",
+        "truncate_leaves_small_messages_alone",
+        "truncate_skips_messages_without_a_content_field",
+        "truncate_skips_non_text_blocks_and_fits_small_ones",
+        "truncate_ignores_non_string_non_array_content",
+        "truncate_skips_text_blocks_without_a_string_text",
+        "byte_cut_is_char_boundary_safe",
+        "paginate_events_pages_a_large_tail",
+        "paginate_events_carries_projection_on_first_page",
+        "paginate_events_carries_truncated_flag",
+        "paginate_events_truncates_a_single_oversized_event_data",
+        "paginate_events_keeps_oversized_tool_outcomes_matchable",
+        "truncated_tool_data_preserves_errors_and_large_input_targets",
+        "truncated_tool_data_bounds_json_escaping_and_error_aliases",
+        "truncate_swaps_oversized_event_data_but_keeps_small",
+        "thread_title_derivation_matches_the_gui_draft",
+        "declared_capability_reaches_the_running_command_loop",
+        "protocol_routes_to_a_substitute_host_and_rejects_a_stale_access_identity",
+        "handshake_rejects_a_bad_desktop_seed",
+        "rejects_garbage_and_requires_handshake",
+        "handshake_roundtrip_activates_the_bridge",
+        "handshake_confirm_rejects_a_device_mismatch",
+        "handshake_confirm_reports_credential_save_failures",
+        "lean_history_trims_only_for_a_client_that_declared_it",
+        "tool_call_args_is_reachable_only_for_a_client_that_declared_lean",
+        "the_mock_answers_an_unknown_tool_call_identity_with_nothing",
+        "presence_and_catalog_commands",
+        "catalog_commands_report_store_failures",
+        "oversized_reads_cross_the_real_reply_path_without_losing_history_or_projection",
+        "history_commands_page_and_fail",
+        "mobile_snapshot_bootstrap_is_opt_in_chunked_and_legacy_safe",
+        "a_missing_agent_session_reports_unavailable_history_and_empty_state",
+        "replay_continuations_keep_agent_has_more_and_stop_at_the_pinned_watermark",
+        "transfer_control_commands",
+        "prompt_creates_threads_and_rejects_busy_sessions",
+        "prompt_workspace_mode_and_prepare_failures",
+        "desktop_settings_management_is_shared_and_allowlisted",
+        "skill_management_forwards_agent_results_without_mutating_desktop_files",
+        "provider_management_reuses_desktop_validation_and_agent_writes",
+        "model_catalog_respects_desktop_visibility",
+        "session_control_commands",
+        "delete_workspace_command_cascades_and_validates",
+        "settings_commands_read_and_update",
+        "continue_run_does_not_ack_before_agent_acceptance",
+        "continue_run_rejects_a_busy_session",
+        "continue_run_rejects_missing_wrong_session_and_nonfailed_sources",
+        "build_continue_prompt_folds_recent_terminal_events",
+        "approval_decision_ownership_and_outcomes",
+        "duplicate_command_ids_get_one_execution_and_cached_replies",
+        "command_loop_exits_for_generation_supervisor_when_stream_ends",
+        "a_pairing_id_that_cannot_form_a_queue_group_returns_instead_of_waiting",
+        "unpair_command_acknowledges_and_spawns_cleanup",
+        "history_keeps_agent_outcome_without_desktop_inference",
+        "skill_and_model_listings_report_an_agent_failure",
+        "a_skill_recommendation_never_blocks_the_message",
+        "recording_a_shown_recommendation_validates_and_persists",
+        "the_approval_tier_reflects_what_the_desktop_can_enforce",
+        "automatic_approval_tier_requires_a_future_account",
+        "desktop_settings_reports_platform_sandbox_availability",
+        "a_client_without_the_capability_is_never_sent_a_page",
+        "generate_session_title_reports_success_and_failure",
+        "a_standby_device_is_refused_and_a_takeover_moves_control",
+        "a_takeover_by_the_controller_changes_nothing",
+        "a_replay_whose_projection_moved_on_is_refused",
+        "an_untrimmed_page_is_marked_as_such",
+        "a_failed_backward_page_is_not_an_empty_conversation",
+        "a_prompt_id_is_the_identity_of_its_run",
+        "a_prompt_receipt_is_null_for_an_unknown_id",
+        "a_paired_phone_gets_its_commands_answered_over_the_encrypted_lane",
+        "an_unopenable_secure_record_is_dropped_without_a_reply",
+        "a_handshake_sealed_inside_a_secure_record_is_never_a_business_command",
+        "a_channel_that_has_not_declared_readiness_is_not_yet_active",
+        "a_handshake_opening_without_a_reply_subject_sends_nothing",
+        "a_secure_connection_admitted_under_a_stale_epoch_answers_nothing",
+        "a_command_admitted_under_a_stale_epoch_never_reaches_the_host",
+        "a_stale_epoch_drops_the_command_before_it_is_decoded",
+        "an_epoch_revoked_while_a_retry_waited_for_its_slot_drops_the_retry",
+        "a_handshake_that_disagrees_on_one_identity_field_is_refused",
+        "the_challenge_table_stops_accepting_a_flood",
+        "a_confirm_commits_only_under_its_own_access_epoch",
+        "a_reply_that_cannot_be_published_is_not_reported_as_delivered",
+        "an_unpair_that_cannot_persist_is_still_acknowledged",
+        "an_unpair_whose_epoch_was_revoked_leaves_the_pairing_alone",
+        "a_standby_device_is_answered_with_its_own_liveness_only",
+        "a_declared_client_is_normalised",
+        "a_blank_name_means_did_not_say",
+        "recording_without_a_runtime_does_nothing",
+        "an_unknown_kind_is_kept_verbatim"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote/control.rs",
+      "ownerAtBaseline": "server",
+      "rustCases": [
+        "an_add_device_request_answers_with_the_scannable_invitation",
+        "a_failed_add_device_reports_the_reason_instead_of_a_link",
+        "a_status_without_an_invitation_is_an_error_reply",
+        "an_unknown_operation_is_refused_without_performing_anything",
+        "a_request_round_trips_through_the_wire_shape",
+        "only_request_files_are_listed_oldest_first",
+        "a_request_can_be_claimed_only_once",
+        "serving_one_request_answers_it_and_removes_every_trace",
+        "an_unreadable_request_is_dropped_without_a_reply_path",
+        "an_abandoned_request_is_deleted_instead_of_served",
+        "the_reply_is_written_atomically_with_no_leftovers",
+        "the_channel_lives_under_the_desktop_app_directory"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote/lifecycle.rs",
+      "ownerAtBaseline": "server",
+      "rustCases": [
+        "stop_invalidates_late_install_even_after_another_start",
+        "cancelled_candidate_aborts_its_subscription_tasks"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote/publisher/coalesce.rs",
+      "ownerAtBaseline": "server",
+      "rustCases": [
+        "fragments_from_different_sessions_never_merge",
+        "interleaved_thinking_blocks_keep_their_own_text_and_ranges",
+        "thinking_block_aliases_merge_but_an_unidentified_block_stays_separate",
+        "fragments_from_different_runs_or_epochs_never_merge",
+        "a_merge_never_spans_a_source_index_hole",
+        "a_merge_stays_within_the_event_byte_budget",
+        "the_window_override_is_what_decides_a_merge",
+        "a_replacing_source_keeps_its_replacement_semantics_through_a_merge",
+        "merged_text_equals_the_concatenation_a_client_would_have_built",
+        "a_non_fragment_event_flushes_first_and_keeps_its_order",
+        "a_window_expiry_publishes_what_it_has_and_a_lone_fragment_is_untouched",
+        "interleaved_tool_streams_never_merge_into_each_other",
+        "snapshot_fragments_replace_instead_of_appending",
+        "the_lane_claims_hold_shrink_equal_and_reject_the_two_failure_shapes",
+        "a_fragment_that_merges_nothing_is_published_byte_identical",
+        "everything_else_passes_through_unchanged",
+        "a_burst_larger_than_the_cap_splits_into_bounded_events",
+        "measure_real_journal",
+        "measure_real_journal_lean",
+        "the_measurement_harnesses_hold_over_a_synthetic_journal",
+        "the_measurement_environment_is_restored_the_way_it_was",
+        "a_panicking_measurement_restores_its_environment"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote/real_network.rs",
+      "ownerAtBaseline": "server",
+      "rustCases": [
+        "real_network_two_process_host_and_client",
+        "real_network_failure_paths"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote/relay.rs",
+      "ownerAtBaseline": "server",
+      "rustCases": [
+        "the_canonical_string_matches_the_relay_side",
+        "a_pair_id_is_subject_and_prologue_safe",
+        "a_join_token_is_unguessable",
+        "cleared_settings_remove_the_file",
+        "a_404_is_an_unknown_room_and_nothing_else_is"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote/relay_e2e.rs",
+      "ownerAtBaseline": "server",
+      "rustCases": [
+        "a_client_pairs_and_works_through_a_self_hosted_relay"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote/secure.rs",
+      "ownerAtBaseline": "server",
+      "rustCases": [
+        "a_refused_handshake_names_the_reason",
+        "malformed_and_incomplete_credentials_are_refused_by_name",
+        "a_consumed_expired_or_undecryptable_challenge_is_refused_by_name",
+        "a_transport_without_a_server_refuses_to_open_or_seal",
+        "readiness_is_an_authenticated_commit_and_stop_invalidates_candidates",
+        "pairing_pins_identity_rejects_reuse_and_recovers_after_restart",
+        "wrong_secret_expiry_and_persistence_failure_never_activate",
+        "a_pairing_identity_never_debugs_its_key_material",
+        "handshake_fields_are_bounded_before_decoding",
+        "a_transport_without_a_server_seals_nothing_and_is_never_active",
+        "activating_the_current_channel_twice_is_idempotent",
+        "an_opening_without_a_known_type_is_refused_by_name",
+        "an_opening_flood_is_refused_once_the_challenge_table_is_full",
+        "a_handshake_that_carries_application_bytes_is_refused",
+        "a_stale_challenge_cannot_bind_a_second_key"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote/supervisor/re_pair.rs",
+      "ownerAtBaseline": "server",
+      "rustCases": [
+        "pairing_a_device_on_an_unpaired_machine_takes_the_replace_path",
+        "a_revoke_queue_that_cannot_be_read_does_not_abort_the_re_pair"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote/supervisor/state.rs",
+      "ownerAtBaseline": "server",
+      "rustCases": [
+        "a_stopped_or_suspended_supervisor_schedules_no_background_work",
+        "a_confirmed_pairing_latches_onto_the_reused_runtime",
+        "an_unreadable_nkey_seed_never_reuses_a_cached_runtime"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote/test_support.rs",
+      "ownerAtBaseline": "server",
+      "rustCases": [
+        "no_body_takes_the_home_guard_before_the_mock_lock",
+        "the_lock_order_scan_flags_an_inverted_body",
+        "a_fn_without_a_body_is_not_a_call_site",
+        "a_nested_block_comment_is_blanked_whole",
+        "fake_nats_tolerates_malformed_frames",
+        "fake_nats_drops_a_connection_with_a_truncated_payload",
+        "fake_nats_drops_a_connection_missing_its_trailing_crlf",
+        "fake_nats_delivers_a_queue_group_to_one_member_only",
+        "await_publish_times_out_when_nothing_matches",
+        "await_publish_matching_times_out_when_no_publish_matches",
+        "wait_until_panics_when_the_condition_never_holds",
+        "set_session_entries_shape_skips_non_object_entries",
+        "the_mock_defaults_satisfy_the_agent_readiness_handshake",
+        "assert_no_publish_fails_when_one_arrives",
+        "mock_platform_handles_broken_requests",
+        "paginate_backward_takes_the_newest_user_exchanges_up_to_the_limit",
+        "install_fake_state_installs_a_live_bridge_and_drives_the_deferred_arm",
+        "install_fake_state_drives_the_failed_arm",
+        "install_fake_state_restores_when_the_test_panics"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote/tests.rs",
+      "ownerAtBaseline": "server",
+      "rustCases": [
+        "drop_log_rate_limits_episodes",
+        "drop_log_reports_recovery_and_resets",
+        "nats_v2_event_keeps_every_v1_field_unchanged",
+        "nats_session_event_has_independent_cursor",
+        "failure_episode_same_category_non_power_of_two_attempt_is_silent",
+        "failure_episode_category_switch_after_quota_exhaustion_reports_nothing",
+        "support_codes_cover_every_category",
+        "nats_health_handles_remaining_event_variants",
+        "runtime_active_classifies_every_phase",
+        "classify_nats_connect_error_covers_server_parse",
+        "start_failure_maps_every_remote_error_code",
+        "web_client_is_limited_to_the_test_platform",
+        "nats_health_classifies_recoverable_and_terminal_events",
+        "power_events_preserve_intent_and_only_resume_rebuilds_a_generation",
+        "failure_logs_are_bounded_across_alternating_episodes",
+        "status_of_stopped_bridge_surfaces_last_error_and_pairing",
+        "stop_without_state_is_an_empty_noop",
+        "graceful_stop_clears_the_bridge_before_sending_presence",
+        "status_of_running_bridge_reports_health_and_pairing_code",
+        "publish_event_mirrors_caps_and_reports_drops",
+        "lean_lane_drops_streamed_content_and_keeps_the_tool_outcome",
+        "a_client_that_did_not_declare_keeps_the_full_lane",
+        "publish_event_reports_offline_and_full_queue_drops",
+        "catalog_lane_keeps_status_and_approvals_but_not_token_traffic",
+        "event_publisher_flushes_in_order_and_reports_failures",
+        "unpair_revokes_and_clears",
+        "stop_during_readiness_cancels_candidate_before_a_new_start",
+        "expired_rotated_credential_is_refreshable_not_a_configuration_failure",
+        "a_reissued_pair_code_for_the_same_pair_id_still_pairs",
+        "a_reissued_pair_code_for_a_new_pair_id_still_pairs",
+        "re_pair_revokes_the_stored_pairing_before_issuing_an_invitation",
+        "re_pair_settles_the_old_revoke_before_minting_the_same_pair_id",
+        "a_new_invitation_retires_a_queued_revoke_for_its_pair_id",
+        "start_runs_the_full_bridge_and_stop_winds_it_down",
+        "start_retries_web_bind_before_reporting_failure",
+        "start_with_existing_credentials_refreshes_instead_of_pairing",
+        "start_replaces_revoked_and_legacy_credentials",
+        "establish_surfaces_a_transient_refresh_failure",
+        "start_failures_map_to_localized_status_or_error",
+        "only_transient_remote_start_failures_arm_background_recovery",
+        "initial_nats_connect_errors_distinguish_authorization_from_network",
+        "desktop_reconnect_backoff_matches_the_shared_policy",
+        "bridge_shared_state_survives_generation_swaps_but_rotates_epoch",
+        "runtime_failure_budget_uses_a_ten_minute_window",
+        "credential_refresh_swaps_generations",
+        "credential_refresh_logs_credential_save_failures",
+        "credential_refresh_stops_the_bridge_when_revoked",
+        "credential_refresh_account_rejection_stops_without_deleting_pairing",
+        "credential_refresh_returns_when_the_broker_rejects_the_refreshed_credential",
+        "credential_refresh_retries_on_transient_failures",
+        "credential_refresh_returns_when_the_world_moved_on",
+        "credential_refresh_aborts_when_state_generation_mismatches",
+        "credential_loop_does_not_compete_with_runtime_supervisor",
+        "heartbeat_publishes_presence_and_catalog_snapshots",
+        "a_declared_client_is_told_the_moved_row_not_the_whole_list",
+        "an_undeclared_client_still_receives_the_whole_list",
+        "idle_catalog_advertises_a_revision_instead_of_resending",
+        "heartbeat_publish_failure_exits_for_generation_supervisor",
+        "web_server_serves_files_and_rejects_bad_requests",
+        "web_server_drops_silent_clients",
+        "lan_ip_returns_an_ipv4_literal_or_none",
+        "presence_payloads_are_built_from_the_store",
+        "cap_event_data_only_truncates_beyond_the_budget",
+        "oversized_live_tool_result_keeps_the_same_outcome_as_replay",
+        "the_coalescing_lane_merges_a_burst_and_ends_on_a_closed_queue",
+        "start_once_returns_empty_when_not_requested",
+        "start_once_without_replace_returns_the_running_bridge",
+        "start_replaces_an_existing_generation",
+        "handle_system_suspend_stops_the_running_generation",
+        "handle_system_resume_rotates_epoch_and_recovers",
+        "status_reports_refreshing_and_network_recovery",
+        "status_none_branch_maps_every_error_code",
+        "stopping_supervisor_cancels_owned_recovery_work",
+        "heartbeat_sessions_publish_failure_exits",
+        "heartbeat_workspaces_publish_failure_exits",
+        "credential_refresh_returns_when_health_is_terminal",
+        "credential_refresh_retries_when_readiness_fails",
+        "start_once_without_replace_falls_through_when_inactive",
+        "notify_mobile_unpair_publishes_offline_presence",
+        "status_presents_an_in_flight_sleep_recovery_as_reconnecting",
+        "spawning_a_runtime_reconnect_is_a_noop_under_test",
+        "an_expired_read_chunk_is_answered_with_the_transport_error",
+        "takeover_moves_and_persists_control",
+        "an_offline_device_cannot_take_control",
+        "reconnecting_restores_the_persisted_controller_and_nothing_else",
+        "unpairing_the_controller_clears_its_pointer",
+        "unpairing_the_controller_of_three_leaves_nobody_in_control",
+        "the_device_list_names_every_paired_device_and_its_control",
+        "a_focused_status_names_that_device_even_when_another_one_controls",
+        "add_device_connects_and_names_the_device_it_paired",
+        "a_single_saved_device_claims_the_machine_at_start",
+        "promotion_leaves_a_claimed_pointer_alone",
+        "a_start_without_replace_keeps_an_installed_slot",
+        "controlling_pair_falls_back_to_the_only_running_device",
+        "a_disconnected_client_is_failed_when_no_start_was_requested",
+        "unpair_notifies_every_connected_device",
+        "unpairing_one_device_notifies_that_device_by_name",
+        "disconnecting_one_device_keeps_it_paired_and_notifies_it",
+        "disconnecting_a_device_that_is_not_running_is_refused",
+        "a_graceful_stop_and_a_notice_call_reach_a_connected_device",
+        "a_slot_without_an_active_secure_channel_announces_nothing",
+        "a_resume_refused_with_a_retryable_status_arms_the_retry",
+        "a_resume_with_a_local_fault_records_reconnect_required",
+        "a_start_whose_transport_cannot_be_built_reports_the_failure",
+        "a_refresh_whose_transport_cannot_be_rebuilt_keeps_the_running_bridge"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote/transport.rs",
+      "ownerAtBaseline": "server",
+      "rustCases": [
+        "a_failed_renewal_retries_fast_only_once_the_credential_expired"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote/trust.rs",
+      "ownerAtBaseline": "server",
+      "rustCases": [
+        "a_successful_load_is_snapshotted_as_a_usable_pem_bundle",
+        "a_failed_load_falls_back_to_the_previous_bundle",
+        "a_failed_load_without_a_bundle_keeps_the_platform_load",
+        "a_stale_non_pem_file_is_not_mistaken_for_a_bundle",
+        "a_failed_write_keeps_the_previous_bundle"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote/verify_e2e.rs",
+      "ownerAtBaseline": "server",
+      "rustCases": [
+        "verify_e2e_lean_lane_real_crypto_round_trip",
+        "verify_e2e_real_broker_round_trip",
+        "measure_real_e2ee_bytes",
+        "measure_real_broker_bytes",
+        "measure_catalog_activity_lane",
+        "a_journal_dump_parses_line_by_line_with_its_defaults",
+        "an_oversized_event_is_measured_as_the_truncated_body",
+        "a_reply_summary_separates_the_wire_size_from_the_decrypted_one",
+        "a_real_broker_reads_its_url_from_the_environment",
+        "the_subscription_probe_round_trips_its_own_echo",
+        "the_phone_accounting_finds_the_connection_by_name",
+        "a_long_replay_drains_the_bounded_queue_while_it_publishes",
+        "the_real_traffic_lane_holds_its_invariants_on_fixture_inputs",
+        "the_catalog_measurement_publishes_activity_only_to_a_declared_client",
+        "that",
+        "the_ignored_measurement_drivers_run_their_own_bodies",
+        "the_ignored_fixture_driver_runs_its_own_body",
+        "the_ignored_catalog_driver_runs_its_own_body",
+        "the_accounting_window_subtracts_the_baseline_and_the_probes",
+        "a_broker_one_byte_over_the_receipt_is_caught",
+        "a_broker_one_message_over_the_receipt_is_caught",
+        "the_accounting_window_reads_the_monitor_and_accepts_a_truthful_broker",
+        "the_baseline_monitor_reading_runs_before_the_traffic",
+        "a_second_device_is_told_who_holds_the_machine_and_only_takes_it_when_asked",
+        "two_simultaneous_reconnects_leave_control_where_it_was"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_peer/codec.rs",
+      "ownerAtBaseline": "client",
+      "rustCases": [
+        "plain_json_passes_through_untouched",
+        "a_large_gzip_reply_decodes_like_the_plain_one",
+        "only_the_gzip_magic_selects_the_inflate_path",
+        "a_gzip_body_shorter_than_its_footer_is_invalid",
+        "an_isize_footer_past_the_cap_is_refused_before_inflating",
+        "a_lying_isize_cannot_inflate_past_the_cap",
+        "an_uncompressed_reply_over_the_cap_is_refused",
+        "corrupt_gzip_is_an_error_not_a_plain_json_fallback"
+      ],
+      "target": "packages/remote-protocol/src/json.rs"
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_peer/creds.rs",
+      "ownerAtBaseline": "client",
+      "rustCases": [
+        "a_missing_book_reads_as_empty_and_round_trips_entries",
+        "re_pairing_one_host_replaces_only_that_host",
+        "a_credential_refresh_keeps_the_users_label",
+        "labels_are_clearable_and_never_invented_for_an_unknown_host",
+        "the_invitation_secret_is_stored_then_cleared_while_the_peer_key_stays",
+        "removing_one_host_leaves_the_rest_and_a_reused_desktop_id_starts_unpinned",
+        "an_unreadable_book_is_an_error_not_an_empty_one",
+        "an_absent_home_is_an_error_not_an_empty_book",
+        "a_credential_refresh_for_an_unknown_host_is_a_no_op",
+        "refresh_is_required_inside_the_sixty_second_margin",
+        "the_revoke_url_is_derived_from_the_token_url"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_peer/link.rs",
+      "ownerAtBaseline": "client",
+      "rustCases": [
+        "parses_a_well_formed_v2_invitation",
+        "rejects_a_v1_invitation_as_unsupported_rather_than_malformed",
+        "rejects_other_urls_and_extra_fragment_forms",
+        "rejects_structurally_invalid_fields",
+        "refuses_a_claim_url_that_is_missing_or_not_https",
+        "plaintext_claims_are_allowed_only_to_loopback",
+        "a_claim_url_with_a_non_http_scheme_is_refused",
+        "only_https_or_loopback_http_is_an_acceptable_claim_endpoint",
+        "every_link_failure_carries_the_shared_support_code_and_message",
+        "rejects_an_expired_code_but_accepts_one_without_an_expiry"
+      ],
+      "target": "packages/remote-protocol/src/invitation.rs"
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_peer/multi_host_tests.rs",
+      "ownerAtBaseline": "client",
+      "rustCases": [
+        "host_process_child",
+        "one_desktop_app_connects_to_several_headless_hosts_at_once",
+        "a_spent_secret_that_cannot_be_dropped_is_only_housekeeping"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_peer/platform.rs",
+      "ownerAtBaseline": "client",
+      "rustCases": [
+        "a_missing_tcp_endpoint_is_an_error_not_a_websocket_fallback",
+        "an_unreadable_seed_is_reported_before_any_request",
+        "an_unreachable_platform_is_reported_as_a_transport_failure",
+        "an_unreachable_claim_endpoint_is_a_transport_failure",
+        "a_refused_refresh_reports_the_platforms_own_error",
+        "a_refresh_without_a_tcp_endpoint_is_an_error",
+        "debug_redacts_the_claim_secrets",
+        "a_claim_without_a_tcp_endpoint_is_not_an_error",
+        "a_claim_with_no_endpoints_at_all_still_yields_its_grant",
+        "a_refused_claim_reports_the_platforms_error_code",
+        "a_missing_websocket_endpoint_falls_back_to_the_tcp_one",
+        "a_blank_websocket_endpoint_falls_back_to_the_tcp_one"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_peer/runtime.rs",
+      "ownerAtBaseline": "client",
+      "rustCases": [
+        "a_command_in_flight_does_not_block_the_peer_list",
+        "a_fresh_socket_attaches_its_stream",
+        "attaching_a_stream_to_a_closed_socket_reports_no_stream",
+        "a_stored_seed_that_cannot_be_read_is_reported",
+        "a_handshake_on_a_closed_socket_is_a_transport_failure",
+        "the_reconnect_schedule_grows_and_is_capped",
+        "reconnect_delays_are_jittered_not_constant",
+        "the_attempt_budget_is_bounded",
+        "the_hostname_is_used_when_present_and_omitted_when_not",
+        "the_live_hostname_resolves_to_a_usable_name",
+        "a_catalogue_reply_that_is_not_an_object_is_refused",
+        "disconnect_aborts_the_supervisor",
+        "reset_for_test_aborts_a_resident_supervisor",
+        "an_event_subject_names_its_session",
+        "a_subject_that_is_not_an_event_is_refused",
+        "only_the_state_events_mirror_is_read_from_the_host_wide_lane",
+        "the_batch_ceilings_are_the_mobile_clients",
+        "a_batch_yields_at_the_count_ceiling",
+        "a_batch_yields_at_the_byte_ceiling",
+        "a_batch_yields_at_the_deadline",
+        "resetting_starts_the_next_batch_empty",
+        "a_full_backlog_drops_the_newest_and_counts_it",
+        "a_zero_capacity_backlog_still_holds_one"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_peer/runtime_tests.rs",
+      "ownerAtBaseline": "client",
+      "rustCases": [
+        "pairing_a_link_connects_and_reports_the_host",
+        "a_claim_without_a_tcp_endpoint_still_pairs",
+        "a_bad_link_is_rejected_with_a_shared_support_code",
+        "an_empty_book_lists_nothing",
+        "a_paired_host_is_listed_before_it_is_ever_connected",
+        "a_failed_connection_is_remembered_against_its_host",
+        "connecting_an_unknown_host_is_an_error_not_an_invention",
+        "ensure_connected_reuses_a_live_connection_and_opens_one_when_missing",
+        "an_expired_grant_is_renewed_before_connecting",
+        "a_revoked_grant_is_reported_rather_than_retried",
+        "disconnect_drops_the_connection_but_keeps_the_pairing",
+        "unpairing_removes_the_host_locally_and_revokes_it_remotely",
+        "unpairing_reports_a_revoke_that_could_not_be_delivered",
+        "unpairing_an_unknown_host_is_a_no_op",
+        "labels_round_trip_through_the_list_and_are_clearable",
+        "catalogue_reads_are_stamped_with_the_host_and_its_pair",
+        "a_page_larger_than_one_reply_arrives_intact",
+        "a_run_scoped_page_repeats_its_run_on_every_chunk",
+        "a_catalogue_read_for_an_unpaired_host_fails",
+        "a_command_connects_on_demand_and_returns_the_payload",
+        "a_command_the_host_does_not_implement_surfaces_its_error",
+        "a_session_command_routes_on_its_own_session",
+        "a_command_against_a_dead_broker_drops_the_host_and_starts_retrying",
+        "a_connected_host_streams_its_events_to_the_emitter",
+        "an_activity_packet_arrives_tagged_with_its_catalogue_domain",
+        "a_lean_event_recovers_its_session_from_the_subject",
+        "opening_a_conversation_moves_the_event_lane_and_closing_it_moves_back",
+        "the_host_wide_mirror_is_read_only_while_the_lane_is_narrow",
+        "re_stating_the_same_conversation_keeps_the_lane_open",
+        "a_burst_of_events_reaches_the_emitter_in_order",
+        "reconnecting_replaces_the_event_stream_rather_than_stacking_it",
+        "disconnecting_stops_the_event_stream",
+        "a_supervisor_reconnects_a_host_that_comes_back",
+        "a_supervisor_reports_a_link_that_came_back",
+        "a_supervisor_stops_when_the_host_is_already_connected",
+        "a_supervisor_gives_up_after_its_window",
+        "a_transient_first_connect_failure_schedules_a_bounded_retry",
+        "connect_retry_policy_is_transient_and_not_stopped_and_not_already_retrying",
+        "handshake_failures_are_retried_only_when_they_are_timeouts",
+        "request_timeouts_are_request_legs_only",
+        "only_the_host_that_failed_is_retried",
+        "a_broken_pairing_does_not_disturb_a_working_one",
+        "connect_all_brings_up_every_pairing_and_names_the_ones_it_cannot",
+        "connect_all_leaves_a_live_host_on_its_own_connection",
+        "a_stopped_host_is_named_as_stopped_until_it_is_asked_for",
+        "connect_all_resumes_a_host_the_user_had_stopped",
+        "a_supervisor_reconnect_keeps_delivering_to_the_registered_emitter",
+        "a_catalogue_row_is_stamped_from_the_live_connection_not_the_file",
+        "a_credential_file_that_cannot_be_written_does_not_break_the_connect",
+        "connecting_replaces_an_existing_retry_loop",
+        "a_stream_ends_when_the_socket_closes",
+        "a_forged_push_is_dropped_without_disturbing_the_stream",
+        "a_command_that_is_not_an_object_is_sent_as_is",
+        "a_connection_that_vanishes_between_connect_and_request_is_reported",
+        "a_push_without_a_session_id_recovers_it_from_the_subject",
+        "an_overfull_event_backlog_resumes_and_drops_the_newest",
+        "a_closed_visibility_watch_parks_instead_of_yielding_a_lane",
+        "a_failed_lane_move_keeps_the_installed_lane"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_peer/session.rs",
+      "ownerAtBaseline": "client",
+      "rustCases": [
+        "command_subjects_use_the_hosts_two_lane_names",
+        "the_client_declares_the_lanes_its_decoders_expect",
+        "the_event_lane_narrows_only_for_a_confirmed_plain_session",
+        "a_wildcard_session_id_cannot_widen_the_subscription",
+        "the_host_wide_state_lane_is_subscribed_by_wildcard",
+        "agent_availability_is_read_from_the_hosts_own_statement",
+        "a_well_formed_confirmation_is_accepted",
+        "a_confirmation_that_does_not_prove_this_pairing_is_refused",
+        "a_missing_presence_is_not_a_protocol_fault",
+        "connect_failures_are_classified_by_their_kind",
+        "production_budgets_are_the_phone_and_the_library"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_peer/tests.rs",
+      "ownerAtBaseline": "client",
+      "rustCases": [
+        "a_desktop_client_pairs_with_a_real_host_and_reads_its_catalog",
+        "a_second_connection_reconnects_with_ik_after_the_secret_is_cleared",
+        "a_swapped_host_key_is_refused_not_adopted",
+        "a_host_event_reaches_a_subscriber_decrypted",
+        "a_command_the_host_does_not_implement_surfaces_its_error",
+        "two_hosts_are_kept_apart_in_the_credential_book",
+        "an_expired_grant_is_refreshed_before_the_connect",
+        "unpairing_removes_the_local_entry_even_when_the_platform_refuses",
+        "an_already_revoked_pairing_is_not_an_error",
+        "a_reply_is_bound_to_its_request_and_subject",
+        "the_host_learns_what_connected_to_it",
+        "a_lost_reply_is_retried_under_the_same_command_identity",
+        "a_command_that_keeps_losing_its_reply_is_abandoned_after_three_attempts",
+        "a_write_command_is_not_retried",
+        "only_reads_and_the_two_conversation_commands_are_retryable"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_peer/transfer.rs",
+      "ownerAtBaseline": "client",
+      "rustCases": [
+        "a_transport_failure_costs_one_retry_and_the_transfer_completes",
+        "a_chunk_that_never_lands_reports_its_first_failure"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_peer/transfer_tests.rs",
+      "ownerAtBaseline": "client",
+      "rustCases": [
+        "a_download_round_trips_a_file_through_the_host",
+        "a_multi_chunk_download_assembles_in_order",
+        "a_download_whose_bytes_do_not_match_the_declared_hash_fails",
+        "a_download_whose_source_shrank_is_refused",
+        "an_unknown_transfer_is_refused_with_the_hosts_reason",
+        "two_downloads_in_flight_pull_independently",
+        "an_oversized_download_is_refused_before_pulling",
+        "a_zero_chunk_size_is_refused",
+        "a_failed_pull_releases_the_hosts_record",
+        "only_a_transport_fault_is_worth_retrying",
+        "a_preview_is_cached_under_its_own_name_and_one_entry_per_source",
+        "the_preview_cache_drops_what_is_old_or_excess",
+        "the_prune_keeps_a_partial_write_and_tolerates_a_cache_it_cannot_read",
+        "the_prune_is_a_no_op_when_no_home_can_be_resolved",
+        "a_chunk_subject_yields_its_transfer_and_index",
+        "a_subject_that_is_not_a_chunk_is_refused",
+        "writing_a_file_leaves_no_partial_neighbour",
+        "a_declaration_that_disagrees_with_the_bytes_is_refused",
+        "an_unwritable_destination_is_reported",
+        "a_failed_rename_leaves_no_partial_file",
+        "a_destination_with_no_file_name_is_refused",
+        "a_pull_without_a_connection_is_refused",
+        "a_chunk_that_never_arrives_gives_up",
+        "a_request_on_a_vanished_connection_is_recorded",
+        "forged_chunk_bytes_are_not_handed_to_a_waiting_pull",
+        "a_chunk_subject_that_is_not_shaped_like_one_is_dropped",
+        "an_upload_round_trips_through_the_host",
+        "a_multi_chunk_upload_keeps_its_order",
+        "an_oversized_upload_is_refused_by_the_host",
+        "an_upload_to_an_unpaired_host_is_refused",
+        "a_hash_that_does_not_match_the_bytes_is_refused",
+        "the_attachment_kind_follows_the_extension",
+        "an_uploaded_file_can_be_claimed_as_an_attachment",
+        "a_zero_chunk_size_is_refused_by_name",
+        "an_enormous_chunk_size_becomes_one_chunk",
+        "a_chunk_write_without_a_connection_is_refused",
+        "a_chunk_write_on_a_dead_socket_is_recorded",
+        "a_request_that_times_out_keeps_a_connection_that_is_still_up",
+        "each_direction_has_its_own_cancel_command",
+        "a_chunk_write_on_a_dropped_broker_is_recorded"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_host/availability.rs",
+      "ownerAtBaseline": "desktop-host",
+      "rustCases": [
+        "availability_requires_a_recent_success",
+        "one_slow_probe_does_not_report_the_agent_unavailable",
+        "repeated_failures_report_it_and_a_success_recovers",
+        "failures_after_expiry_cannot_resurrect_an_old_success"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_host/business/catalog.rs",
+      "ownerAtBaseline": "desktop-host",
+      "rustCases": [
+        "fork_session_creates_and_reports_the_child_conversation",
+        "fork_session_rejects_missing_arguments_before_any_work",
+        "fork_session_refuses_an_unknown_parent_session",
+        "a_created_or_renamed_workspace_is_not_confirmed_from_a_catalogue_we_cannot_read",
+        "a_fork_whose_source_lookup_fails_is_not_reported_as_a_missing_source",
+        "a_refused_fork_is_reported_with_the_agents_reason",
+        "rename_workspace_writes_the_name_and_answers_the_catalogue",
+        "rename_workspace_reports_the_stores_refusal",
+        "rename_workspace_rejects_a_missing_id_before_any_work",
+        "a_store_that_cannot_be_read_is_not_reported_as_an_empty_catalogue",
+        "a_pinned_workspace_whose_snapshot_cannot_be_read_is_not_reported_as_pinned",
+        "create_workspace_registers_a_directory_and_answers_the_catalogue",
+        "create_workspace_rejects_an_empty_path_before_any_work",
+        "create_workspace_refuses_a_directory_that_does_not_exist",
+        "a_failed_lookup_is_not_reported_as_already_deleted",
+        "a_delete_the_store_refuses_is_not_reported_as_deleted",
+        "a_command_from_another_family_is_not_answered"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_host/business/history.rs",
+      "ownerAtBaseline": "desktop-host",
+      "rustCases": [
+        "a_legacy_page_always_pays_the_byte_budget",
+        "only_a_chunked_scroll_up_trades_the_budget_for_fewer_round_trips",
+        "only_the_newest_page_is_a_first_paint",
+        "a_command_from_another_family_is_not_answered"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_host/business/mod.rs",
+      "ownerAtBaseline": "desktop-host",
+      "rustCases": [
+        "every_command_the_phone_sends_is_routed",
+        "routing_is_by_exact_command_name",
+        "the_dependency_commands_reach_the_task_handler_through_the_dispatcher",
+        "an_unknown_command_is_still_unsupported"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_host/business/prompt.rs",
+      "ownerAtBaseline": "desktop-host",
+      "rustCases": [
+        "a_continuation_needs_both_a_session_and_a_source_run",
+        "a_prompt_for_an_unknown_conversation_is_refused_before_it_persists",
+        "an_empty_session_id_is_still_a_draft_not_an_unknown_conversation",
+        "a_prompt_whose_receipt_cannot_be_checked_is_refused",
+        "a_receipt_for_a_thread_that_no_longer_exists_reads_as_no_receipt",
+        "a_retried_continuation_is_answered_from_its_stored_receipt",
+        "a_command_from_another_family_is_not_answered"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_host/business/providers.rs",
+      "ownerAtBaseline": "desktop-host",
+      "rustCases": [
+        "a_command_from_another_family_is_not_answered"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_host/business/settings.rs",
+      "ownerAtBaseline": "desktop-host",
+      "rustCases": [
+        "candidates_skip_unusable_entries",
+        "candidates_tolerate_a_missing_or_wrong_typed_field",
+        "settings_patch_accepts_the_recommendation_toggle",
+        "an_unreadable_store_is_reported_not_defaulted",
+        "a_catalogue_without_a_models_array_is_not_reported_as_all_hidden",
+        "a_command_from_another_family_is_not_answered"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_host/business/tasks.rs",
+      "ownerAtBaseline": "desktop-host",
+      "rustCases": [
+        "the_list_answers_with_each_task_and_its_last_run",
+        "the_detail_carries_the_prompt_and_the_run_settings",
+        "a_version_crosses_the_wire_and_applies_like_the_desktop",
+        "runs_of_an_unknown_task_are_empty",
+        "absent_and_null_fields_are_not_the_same_instruction",
+        "clearing_a_model_from_the_phone_sticks",
+        "an_unknown_task_command_is_unsupported",
+        "editing_a_prompt_from_the_phone_keeps_the_version_it_replaced",
+        "the_dependency_commands_answer_a_removed_feature",
+        "a_summary_longer_than_the_budget_is_cut_on_a_character_boundary",
+        "the_phone_vocabulary_maps_to_the_kernel_enums",
+        "creating_a_task_keeps_the_conversation_and_retention_the_phone_chose",
+        "a_long_run_summary_is_cut_on_the_wire",
+        "pausing_running_and_deleting_answer_the_stored_record",
+        "a_home_that_cannot_hold_a_store_is_reported_by_every_task_command",
+        "an_unknown_task_is_named_by_every_command_that_takes_one",
+        "a_row_that_cannot_be_decoded_is_a_read_failure_not_an_empty_answer",
+        "applying_a_revision_that_does_not_exist_is_refused",
+        "a_task_name_already_in_use_is_refused_by_both_writes"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_host/business/transfers.rs",
+      "ownerAtBaseline": "desktop-host",
+      "rustCases": [
+        "a_command_from_another_family_is_not_answered"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_host/business/wire_limits.rs",
+      "ownerAtBaseline": "desktop-host",
+      "rustCases": [
+        "the_byte_budget_is_what_keeps_a_page_inside_one_reply",
+        "an_oversized_entry_is_reduced_in_stages_until_it_fits",
+        "an_oversized_event_has_its_data_cut_or_marked_missing",
+        "oversized_tool_arguments_are_reduced_to_their_target",
+        "unparsable_tool_arguments_are_marked_not_dropped",
+        "a_parseable_tool_call_keeps_its_target_and_drops_its_content",
+        "an_item_that_fits_once_its_tool_arguments_are_reduced_keeps_its_identity",
+        "a_value_that_is_not_an_item_object_has_nothing_to_rewrite",
+        "measure_phone_page",
+        "the_phone_page_measurement_holds_its_invariants_on_a_fixture_page"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_host/catalog.rs",
+      "ownerAtBaseline": "desktop-host",
+      "rustCases": [
+        "sessions_snapshot_carries_last_message_at",
+        "sessions_snapshot_carries_the_workspace_name",
+        "sessions_snapshot_carries_the_workspaces_own_place",
+        "sessions_snapshot_marks_a_pinned_workspace",
+        "sessions_snapshot_still_omits_unbound_threads",
+        "recency_moves_the_revision_but_not_the_structural_signature",
+        "activity_carries_the_same_coalesce_the_store_orders_by",
+        "versions_follow_exact_snapshot_content_not_read_or_publish_time",
+        "a_snapshot_that_is_not_a_list_has_one_signature"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_host/files.rs",
+      "ownerAtBaseline": "desktop-host",
+      "rustCases": [
+        "sanitizes_upload_names",
+        "name_fallbacks_cover_names_that_clean_to_nothing",
+        "preserves_unicode_display_names_without_path_prefixes",
+        "finds_only_session_attachment_paths",
+        "limits_match_remote_contract",
+        "staging_dir_is_owner_only",
+        "accepts_mobile_images_over_2000_pixels",
+        "detects_apng_and_animated_webp_headers",
+        "prepares_only_selected_in_app_text_types_as_non_image_previews",
+        "mobile_download_allow_list_uses_precise_mimes_and_compound_suffixes",
+        "upload_lifecycle_end_to_end",
+        "init_upload_prefers_a_non_empty_transfer_name_for_the_disk_name",
+        "init_upload_validates_sizes_and_kind",
+        "upload_chunk_and_complete_error_paths",
+        "complete_upload_fails_when_staging_file_is_gone",
+        "claim_uploads_enforces_message_limits",
+        "claim_uploads_enforces_image_rules",
+        "claim_uploads_rolls_back_copies_on_copy_failure",
+        "prune_expired_removes_stale_records_and_files",
+        "clear_all_drains_both_maps",
+        "preview_cache_survives_transfer_cleanup_and_invalidates_on_source_change",
+        "session_attachment_name_falls_back_to_the_path_file_name",
+        "prepare_download_flows",
+        "prepare_download_resolves_workspace_relative_links",
+        "animated_image_detection_edge_cases",
+        "prepare_preview_image_variants",
+        "prepare_preview_rejects_oversized_and_binary_files",
+        "validate_mobile_image_decode_failures",
+        "transfer_loop_handles_chunks_pulls_and_reconnects",
+        "prune_preview_cache_removes_expired_files",
+        "prune_preview_cache_tolerates_a_missing_directory",
+        "prepare_original_rejects_oversized_files",
+        "cached_image_preview_handles_empty_invalid_and_jpeg_caches",
+        "persist_image_preview_cache_skips_when_cache_exists",
+        "a_preview_cache_that_cannot_be_written_leaves_no_debris",
+        "an_unstattable_cache_path_is_reported_not_ignored",
+        "a_rollback_removes_the_thumbnail_as_well_as_the_copy",
+        "prepare_download_variant_rejects_disallowed_types_and_unknown_variants",
+        "transfer_loop_subscribe_failure_records_and_recovers"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_host/lean.rs",
+      "ownerAtBaseline": "desktop-host",
+      "rustCases": [
+        "only_an_explicit_declaration_enables_the_feed",
+        "streamed_content_drops_and_decision_events_do_not",
+        "tool_start_drops_the_bodies_only_write_and_edit_carry",
+        "tool_start_filters_a_stringified_argument_object",
+        "usage_keeps_only_the_counter_a_client_reads",
+        "lean_event_body_keeps_only_the_keys_a_subscriber_reads",
+        "tool_end_keeps_its_outcome_and_identity",
+        "legacy_shell_outcome_keeps_the_footer_that_is_its_only_signal",
+        "unparsable_and_unexpected_shapes_are_forwarded",
+        "run_snapshot_drops_only_the_folded_events",
+        "replay_page_trims_each_shape_the_way_its_consumer_requires",
+        "replay_page_is_untouched_when_the_client_did_not_declare",
+        "lean_entries_trims_the_three_unread_payloads",
+        "lean_entries_preserves_entry_and_block_counts",
+        "lean_entries_leaves_unrecognized_shapes_alone",
+        "a_trimmed_argument_list_keeps_only_what_each_row_label_reads",
+        "generate_render_fixtures",
+        "measure_real_entries",
+        "the_render_fixture_derivation_trims_through_the_shipping_code",
+        "the_trim_measurement_reports_where_the_bytes_went",
+        "replay_page_forwards_raw_events_it_cannot_classify",
+        "folded_events_with_an_unexpected_payload_are_left_alone",
+        "a_page_without_events_is_not_rewritten",
+        "lean_live_and_history_keep_structured_attempts",
+        "unparsable_or_missing_bodies_are_forwarded_untouched"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_host/pairing.rs",
+      "ownerAtBaseline": "desktop-host",
+      "rustCases": [
+        "a_book_without_a_version_decodes_as_the_current_one",
+        "identifies_revoked_credential_error",
+        "platform_account_rejection_is_not_a_retryable_network_error",
+        "classifies_error_codes_without_sniffing_messages",
+        "creds_save_load_clear_roundtrip",
+        "load_creds_returns_none_on_corrupt_file",
+        "a_legacy_single_pairing_is_read_as_the_book_s_only_slot",
+        "the_book_holds_one_slot_per_pairing_and_keeps_their_order",
+        "clearing_removes_the_book_and_the_legacy_file",
+        "public_key_rejects_a_bad_seed",
+        "pairing_path_requires_a_home",
+        "create_pairing_success",
+        "create_pairing_reuses_the_persisted_desktop_id",
+        "adding_a_device_asks_the_platform_to_keep_the_existing_ones",
+        "create_pairing_maps_network_and_server_failures",
+        "create_pairing_rejects_an_invalid_jwt",
+        "create_pairing_rejects_an_undecodable_response",
+        "refresh_bridge_jwt_success_and_failures",
+        "revoke_pairing_success_not_found_and_error",
+        "pairing_code_expiry_decodes_only_valid_codes",
+        "refresh_delay_is_the_time_until_the_lead_before_expiry",
+        "jwt_expiry_rejects_malformed_tokens",
+        "transport_or_message_distinguishes_failure_kinds",
+        "response_error_defaults_and_filters",
+        "remote_error_parts_panics_on_non_remote",
+        "a_pairing_code_without_an_expiry_is_refused_by_name",
+        "pending_revokes_are_skipped_blocked_or_retried_by_error_class"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_host/read_pages.rs",
+      "ownerAtBaseline": "desktop-host",
+      "rustCases": [
+        "oversized_projection_roundtrips_losslessly_with_small_immutable_pages",
+        "snapshot_owner_offset_expiry_and_capacity_are_bounded",
+        "every_pageable_command_family_needs_both_the_declaration_and_its_name",
+        "a_large_reply_is_replaced_by_a_page_that_starts_at_offset_zero",
+        "a_reply_above_the_snapshot_bound_is_refused_not_truncated",
+        "a_small_reply_is_not_paged_and_a_failure_is_not_either"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_host/session_files.rs",
+      "ownerAtBaseline": "desktop-host",
+      "rustCases": [
+        "windows_extended_length_prefix_is_normalized_away",
+        "lists_session_root_and_children_but_rejects_escapes",
+        "protected_credentials_are_not_listed",
+        "symlinks_cannot_escape_the_root",
+        "entries_that_are_neither_files_nor_directories_are_skipped"
+      ],
+      "target": null
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_host/sync_measurement.rs",
+      "ownerAtBaseline": "desktop-host",
+      "rustCases": [
+        "serves_the_probe_shell_bundle_and_samples",
+        "an_unknown_route_is_plain_not_found",
+        "a_foreign_host_header_is_rejected",
+        "a_client_that_disconnects_early_is_not_an_error",
+        "an_oversized_header_block_is_rejected",
+        "a_declared_body_over_the_bound_is_rejected",
+        "a_truncated_body_is_rejected",
+        "storing_a_result_requires_the_probe_header",
+        "a_probe_result_is_stored_verbatim",
+        "rpc_rejects_anything_but_the_read_commands",
+        "rpc_rejects_a_command_outside_the_sample_scope",
+        "rpc_rejects_a_malformed_body",
+        "the_capture_sink_records_the_reply_envelope",
+        "a_body_split_across_two_writes_is_reassembled",
+        "an_rpc_request_without_the_probe_header_is_rejected",
+        "the_gzip_declaration_is_honoured_on_the_measurement_lane",
+        "serve_real_snapshot"
+      ],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/RemoteContext.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/batchedReplay.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/catalogVersion.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/client.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/coalescedLane.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/codec.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": {
+        "protocol": "packages/remote-protocol/tests/codec.test.ts",
+        "client-pending": "mobile/src/remote/__tests__/codec.test.ts"
+      }
+    },
+    {
+      "source": "mobile/src/remote/__tests__/compactionProjection.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/connectionGenerationBudget.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/connectionPresentation.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/connectionState.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/conversationLifetime.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/cooperativeJson.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/desktopStatus.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/disconnectedCopy.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/draftStorage.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/fileHandler.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/fileTypes.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/files.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/foregroundSync.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/handshake.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/http.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/incrementalOpen.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/localPath.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/mergeSessions.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/nativePresentation.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/natsErrors.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/pairing.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/peerIcons.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/pendingContinuationStorage.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/pendingPromptStorage.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/presence.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/readPages.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/recovery.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/recoveryCoordinator.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/remoteJson.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": {
+        "protocol": "packages/remote-protocol/tests/json.test.ts",
+        "client-pending": "mobile/src/remote/__tests__/remoteJson.test.ts"
+      }
+    },
+    {
+      "source": "mobile/src/remote/__tests__/remoteRenderIsolation.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/replay.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/retainedSize.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/secureChannel.perf.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": "packages/remote-crypto/tests/secureChannel.perf.test.ts"
+    },
+    {
+      "source": "mobile/src/remote/__tests__/secureChannel.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": "packages/remote-crypto/tests/secureChannel.test.ts"
+    },
+    {
+      "source": "mobile/src/remote/__tests__/secureClient.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/sessionStatus.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/snapshotBootstrap.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/storage.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/streamingSync.perf.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/syncEngine.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/timeline.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/timelineSyncStatus.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/types.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/useAppLifecycle.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/useConversationController.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/useDesktopConnection.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/useDesktopManagement.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/useDesktopRuntime.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/usePairedDesktops.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/usePromptOutbox.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/useSessionCatalog.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/__tests__/useTimelineController.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    },
+    {
+      "source": "mobile/src/remote/timeline/__tests__/historyPagingCommit.test.ts",
+      "ownerAtBaseline": "ts-client-or-mobile",
+      "rustCases": [],
+      "target": null
+    }
+  ]
+}

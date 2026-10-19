@@ -5,7 +5,8 @@ FutureOS application or service. Package names and public APIs are independent
 of their implementation language.
 
 - `rpc`: Rust wire-contract crate and protobuf source of truth.
-- `remote-crypto`: Rust Noise-protocol end-to-end encryption shared by the desktop/mobile remote channel.
+- `remote-crypto`: Rust/TypeScript Noise secure channels sharing handshake, record and rejection fixtures.
+- `remote-protocol`: Rust/TypeScript wire contracts, command schema/generated types, invitations and JSON/gzip codecs.
 - `app-settings`: the desktop app's own settings document
   (`~/.future/app/app.db`), shared by the Tauri backend and `future desktop`.
 - `app-workspaces`: the desktop app's workspace records in the same database,
@@ -19,6 +20,6 @@ may depend on other packages, but must not depend on product implementations
 such as `desktop`, `mobile`, or `agent`.
 
 The [Remote package development plan](remote-package-development.md) defines
-the planned Rust/TypeScript protocol, client and server boundaries, retaining
-independent Crypto and application host adapters. New package names there are
-targets, not additions to the current inventory above.
+the ongoing Rust/TypeScript protocol, client and server extraction, retaining
+independent Crypto and application host adapters. Client/Server remain planned;
+implemented Crypto/Protocol packages are included in the inventory above.
