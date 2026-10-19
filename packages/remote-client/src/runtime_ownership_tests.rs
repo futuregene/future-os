@@ -14,7 +14,16 @@ struct MemoryHost {
     entered: Notify,
     release: Notify,
     updates: AtomicUsize,
+    refreshes: AtomicUsize,
+    finished_refreshes: AtomicUsize,
     reject_tasks: AtomicBool,
+}
+
+struct RefreshCompletion<'a>(&'a AtomicUsize);
+impl Drop for RefreshCompletion<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
 }
 fn creds() -> PeerCreds {
     PeerCreds {
@@ -103,6 +112,8 @@ impl ClientHost for MemoryHost {
     }
     fn refresh<'a>(&'a self, _: &'a PeerCreds) -> BoxFuture<'a, Result<Refreshed, crate::Error>> {
         async move {
+            self.refreshes.fetch_add(1, Ordering::SeqCst);
+            let _completion = RefreshCompletion(&self.finished_refreshes);
             self.entered.notify_one();
             self.release.notified().await;
             Ok(Refreshed {
@@ -281,3 +292,6 @@ async fn cancelling_an_old_chunk_waiter_cannot_remove_a_newer_retry() {
 
 #[path = "shared_request_tests.rs"]
 mod shared_requests;
+
+#[path = "shared_credentials_tests.rs"]
+mod shared_credentials;

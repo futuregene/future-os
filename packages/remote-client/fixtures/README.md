@@ -6,6 +6,7 @@ TypeScript. They are not copied into Desktop or Mobile.
 | File | Purpose | Drivers |
 |---|---|---|
 | [client.json](client.json) | Real role interoperability: requests/deduplication, pairing, events, file bytes, reconnect and shutdown report IDs | [Independent interoperability project](../../../tests/remote-interop/README.md) |
+| [credentials.json](credentials.json) | Expiry boundaries, late renewal fencing, continuation and instance isolation | Rust `shared_credentials_tests.rs`; Node/Jest `sharedCredentials.test.ts` |
 | [requests.json](requests.json) | Controlled request-policy scenarios: send times, outcomes, retry identity, timeout budgets, recovery/probe counts and cancellation | Rust `shared_request_tests.rs`; Node/Jest `sharedRequests.test.ts` |
 
 Each format has an explicit version and suite/kind checks. Unknown fields,
@@ -48,3 +49,26 @@ migration workflow, execution happens during final CI acceptance:
 cargo test -p future-remote-client -- --nocapture
 npm test --workspace @future-os/remote-client
 ```
+
+`credentials.json` separates metadata policy from authentication: Rust receives
+stored expiry metadata and TS parses JWT metadata; neither decision validates a
+signature. The exact 60-second boundary and nonpositive/malformed metadata keep
+explicit language expectations. Healthy TS metadata retains object identity;
+invalid metadata must not call the refresh service.
+
+Renewal actions map to existing role boundaries: Rust's `renew_credentials`
+with `begin_attempt`/`disconnect`/`shutdown`, and TS's `refreshToken` with
+`cancelAttempt`/background retirement/`shutdown`. `continuations` counts a fresh
+Rust grant returned to the connector, or TS's call to its `open` continuation;
+it does not assert that a network connection was established. The continuation
+is observed without running another handshake. Actual broker reconnects are a
+separate interoperability gate.
+
+Both renewal drivers observe committed grants, writes, continuations and which
+instance closed. They preserve a grant committed before close, reject a result
+from a closed/retired/superseded attempt, and leave the other instance independent.
+Rust additionally observes actual service-future destruction. TS deliberately
+uses a host promise that ignores cancellation and checks ownership remains until
+it settles; no late credential cache or persistent-store adoption is allowed.
+These instance checks do not replace multiple endpoints inside one Rust runtime,
+application SecureStore transactions or live recovery fault coverage.
