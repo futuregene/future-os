@@ -995,6 +995,7 @@ mod tests {
 
     /// Serialize the tests that replace the process-global `PATH` and the agent
     /// endpoint, and restore both.
+    #[cfg(unix)]
     fn with_path_and_broken_agent<T>(directory: &std::path::Path, body: impl FnOnce() -> T) -> T {
         let _lock = crate::TEST_HOME_LOCK
             .lock()

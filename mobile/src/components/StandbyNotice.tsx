@@ -1,9 +1,8 @@
-import { Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
-import { Pressable, StyleSheet } from "react-native";
 import { useState } from "react";
 import { layout, radius, spacing } from "../theme/tokens";
-import { createThemedStyles, useTheme } from "../theme/ThemeContext";
+import { createThemedStyles } from "../theme/ThemeContext";
 
 /**
  * One line where the sending happens: this desktop is taken over, so nothing

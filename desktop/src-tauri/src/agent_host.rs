@@ -480,6 +480,7 @@ mod block_fixtures {
 
     /// A cancelled start returns as soon as it observes the new phase, which can
     /// precede the worker publishing its terminal one; wait for the worker too.
+    #[cfg(unix)]
     fn settled(host: &AgentHost, want: impl Fn(&Phase) -> bool) -> bool {
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut phase = host.phase();
