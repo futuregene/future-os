@@ -684,3 +684,18 @@ TS Crypto failed because Node Buffer.slice aliases memory whereas Uint8Array.sli
 Explicit Client connect now removes/cancels an old supervisor before allocating its new epoch; internal supervisor recovery uses an entry that does not cancel itself. A core regression checks cancellation during pending renewal even when public connect cannot load credentials, with no late persistence. Initial subscriptions await a request-budget-bounded flush/PONG before returning, closing the race with immediate publication on a different connection. The heartbeat-failure fixture awaits actual tracked completion with a five-second failure bound instead of assuming 100ms suffices for its 9MB data; its original finished assertion remains.
 
 These fixes require CI revalidation on the new candidate. Local work remains static type/lint/Clippy/compilation/fmt/generated-file/boundary checks only; no unit or interoperability execution. Manual and performance results remain pending.
+
+### 2026-10-20: First matched Windows observation (no full-check speedup)
+
+Actual logs and [artifact 12202960069](https://github.com/futuregene/future-os/actions/runs/39281256679/artifacts/12202960069) from [run 39281256679](https://github.com/futuregene/future-os/actions/runs/39281256679) establish completion despite the queued metadata. The [original JSON report and provenance](../testing/remote-windows-compilation-2026-10-20.json) are retained in the repository. Baseline is `7eb94d52`, candidate is `ca5a9b77`; this is not a final measurement of the later `bf8f0c31` fix.
+
+| Sequential check on one runner | Baseline seconds | Candidate seconds | Delta seconds | Relative change |
+|---|---:|---:|---:|---:|
+| Workspace excluding futureos | 157.17 | 180.57 | +23.40 | +14.89% |
+| Desktop GUI + CLI | 159.45 | 165.82 | +6.37 | +3.99% |
+| Desktop headless | 54.86 | 52.38 | -2.48 | -4.53% |
+| Sum of three commands | 371.48 | 398.77 | +27.28 | +7.34% |
+
+Both used one four-core Windows Server 2025 runner, Rust/Cargo 1.97.0 and identical Cargo configuration. Each revision began with its own empty target, reused within its three commands. All commands exited zero. Dependency preparation took 50.56s baseline and 0.66s candidate before either compilation; those registry-order effects are excluded from the table and are not compilation gains.
+
+This sample does not establish a Windows full-check speedup: total cost increased about 27s. Additional workspace members change the graph and are part of the measured full-workspace cost, not a cost to subtract from the report. Package boundaries and affected selection can omit unrelated jobs, but that implemented mechanism is not evidence of total time saved in this sample. OS caches, machine load and sequential-order effects remain uncontrolled. Executable linking/release builds and matched test-execution/cache/queue benefits were not measured. Final-candidate runtime acceptance and required performance evidence remain pending.
