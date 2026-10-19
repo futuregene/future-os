@@ -1,6 +1,8 @@
 {
   "agentUnavailable": "Trying to connect. If this continues, restart FutureOS.",
   "description": "Let a phone, tablet, or another computer use this machine's conversations remotely (tools still run here). Once enabled, local conversations are mirrored to the connected devices, and they can drive the same session.",
+  "hostToggleTitle": "Remote desktop",
+  "hostToggleDescription": "Let other devices connect to and use this computer remotely. Off means this computer accepts no remote connections.",
   "downloadMobile": "Download mobile app",
   "connect": "Connect",
   "pairAgain": "Pair again",
