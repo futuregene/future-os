@@ -1,3 +1,4 @@
+use anyhow::Context;
 use future_remote_client::{host::ClientHost, Client};
 use future_remote_interop::{contract, Broker, Fixture, MemoryClientHost, DESKTOP};
 use serde_json::json;
@@ -81,7 +82,19 @@ async fn public_rust_roles_pair_request_publish_transfer_and_reconnect() -> anyh
         )
         .await?;
     assert_eq!(download.bytes, suite.file_bytes);
-    // Download cancellation is part of the actual Client transfer operation.
+    // Successful Rust downloads retain the host record until expiry or an
+    // explicit cancel. Exercise that cancellation over the real Client/Server
+    // connection rather than changing the existing transfer lifetime policy.
+    assert_eq!(fixture.metrics()["downloads"], 1);
+    let ids = fixture.host.download_ids();
+    assert_eq!(ids.len(), 1);
+    client
+        .request(
+            DESKTOP,
+            json!({"type":"download_cancel", "transferId":ids[0]}),
+            "transfer",
+        )
+        .await?;
     assert_eq!(fixture.metrics()["downloads"], 0);
     println!("remote-interop rust {} PASS", suite.flow_ids.transfer);
 
@@ -238,11 +251,16 @@ async fn stopping_a_client_finishes_download_before_a_late_host_read() -> anyhow
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             })
-            .await?;
+            .await
+            .context("Server did not enter the held chunk read")?;
             let attempts = host.connection_attempts();
-            client.shutdown(Duration::from_secs(1)).await?;
-            let stopped =
-                tokio::time::timeout(Duration::from_secs(1), operation.as_mut().unwrap()).await??;
+            client
+                .shutdown(Duration::from_secs(1))
+                .await
+                .context("Client shutdown did not finish while the host read was held")?;
+            let stopped = tokio::time::timeout(Duration::from_secs(1), operation.as_mut().unwrap())
+                .await
+                .context("download caller did not finish after Client shutdown")??;
             operation.take();
             assert!(stopped.is_err());
             let delivered = match stopped {
@@ -260,7 +278,8 @@ async fn stopping_a_client_finishes_download_before_a_late_host_read() -> anyhow
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             })
-            .await?;
+            .await
+            .context("Server chunk read did not finish after gate release")?;
             fixture.shutdown().await?;
             assert_eq!(
                 host.connection_attempts() - attempts,

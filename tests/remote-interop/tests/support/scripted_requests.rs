@@ -610,8 +610,8 @@ async fn a_failed_lane_move_keeps_the_installed_lane() {
         .shutdown(Duration::from_secs(1))
         .await
         .expect("stream owner stopped");
-    if session.is_connected() {
-        session.close_socket().await.expect("session drained");
-    }
+    // This session was deliberately drained before the lane-move attempt.
+    // ConnectionState is not a completion signal for async-nats' drain command;
+    // issuing a second drain can fail after the command channel has closed.
     host.shutdown().await;
 }

@@ -92,6 +92,9 @@ impl MemoryServerHost {
             chunk_gate: ChunkGate::default(),
         }
     }
+    pub fn download_ids(&self) -> Vec<String> {
+        self.downloads.lock().unwrap().keys().cloned().collect()
+    }
     pub fn metrics(&self) -> Value {
         let gate = self.chunk_gate.state.lock().unwrap();
         json!({ "executions": self.counts.lock().unwrap().clone(), "uploads": self.uploads.lock().unwrap().len(), "downloads": self.downloads.lock().unwrap().len(),
