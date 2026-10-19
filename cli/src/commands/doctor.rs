@@ -1697,6 +1697,20 @@ mod tests {
         agent
             .responses
             .insert("list_sessions".into(), "{\"sessions\":[]}".into());
+        // The Sessions check asks the storage owner, not the JSONL directory;
+        // without this response the check is a warning and the all-clear below
+        // is unreachable even on a host whose sandbox probe passes.
+        agent.responses.insert(
+            "get_storage_health".into(),
+            serde_json::json!({
+                "databaseId":"mock-db","restoreGeneration":"mock-restore",
+                "schemaVersion":future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION,
+                "sessions":0,"deletedSessions":0,"failedImports":0,
+                "unrecoverableQueuedInputs":0,"pendingQueuedInputs":0,
+                "pendingHistoryIndexes":0,"catalogueConflicts":0,
+            })
+            .to_string(),
+        );
         let addr = crate::test_server::spawn_mock(agent).await;
         // All five binaries resolvable on PATH; prepend so the `which` binary
         // itself stays resolvable. Windows looks for `.exe` files and doctor
