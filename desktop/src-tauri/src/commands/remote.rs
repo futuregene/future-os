@@ -276,6 +276,7 @@ mod tests {
             nats_url: "nats://127.0.0.1:9".into(),
             nats_ws_url: "ws://127.0.0.1:9".into(),
             jwt_expires_at: 3600,
+            control_url: None,
         })
         .expect("write the legacy credential");
         let creds_path = std::path::Path::new(&std::env::var("HOME").unwrap())

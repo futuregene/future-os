@@ -122,6 +122,10 @@ pub(crate) fn ca_path() -> Option<PathBuf> {
     (!value.is_empty()).then(|| PathBuf::from(value))
 }
 
+/// Whether a relay is configured. Only the tests ask this: the runtime code
+/// always needs the URL itself (`endpoint()`), so a separate predicate would be
+/// a second, silently divergent answer.
+#[cfg(test)]
 pub(crate) fn enabled() -> bool {
     endpoint().is_some()
 }
