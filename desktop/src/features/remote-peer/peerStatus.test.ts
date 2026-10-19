@@ -180,10 +180,17 @@ describe("peersDotState", () => {
     ])).toBe("partial");
   });
 
-  it("stays green while at least one machine is drivable", () => {
+  it("stays green only while every machine is drivable", () => {
+    // Held is a machine the list cannot show rows from, like offline: one of
+    // them is enough to stop claiming the set is whole — the same line the
+    // phone's dot draws (`drivable === total`).
     expect(peersDotState([
       peer({ control: "standby" }),
       peer({ desktopId: "desktop_b" }),
+    ])).toBe("partial");
+    expect(peersDotState([
+      peer({ control: "active" }),
+      peer({ desktopId: "desktop_b", control: "active" }),
     ])).toBe("up");
   });
 });

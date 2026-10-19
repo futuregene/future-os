@@ -151,11 +151,12 @@ export type PeersDotState = "up" | "partial" | "down";
  * `null` rather than "down": an unpaired machine has no client-role status to
  * show, and a red dot there would report a failure that does not exist.
  *
- * Green needs a second condition beyond "every one of them answers": at least
- * one must actually be drivable. A set that is entirely in standby answers every
- * heartbeat and cannot be read from — painting that green says the merged list
- * is complete while none of those machines' conversations can appear in it. It
- * is the same rule the phone's dot follows (`machinesConnected().drivable`).
+ * Green needs *every* machine up **and** drivable. A machine another paired
+ * device holds answers every heartbeat and cannot be read from, so the merged
+ * list is short of its conversations exactly as it is short of an offline
+ * machine's — and a green dot over a short list is the one claim this dot exists
+ * to avoid. The phone's set dot draws the same line (`drivable === total`);
+ * "somewhere to work" is the rows' answer, not the header's.
  */
 export function peersDotState(peers: readonly RemotePeer[]): PeersDotState | null {
   if (peers.length === 0)
@@ -163,5 +164,5 @@ export function peersDotState(peers: readonly RemotePeer[]): PeersDotState | nul
   const counts = peersConnected(peers);
   if (!counts.all)
     return counts.any ? "partial" : "down";
-  return peers.some(peerDrivable) ? "up" : "partial";
+  return peers.every(peerDrivable) ? "up" : "partial";
 }
