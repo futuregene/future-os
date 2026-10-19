@@ -476,3 +476,11 @@ Client 默认/测试辅助特性、互通网络特性，以及 Desktop GUI/headl
 原 Desktop 的 `gzip_follows_the_per_connection_capability` 与 `clearing_the_capability_reaches_the_loop_copy` 已迁到 Server 包的 `commands/context_tests.rs`，从 Desktop 单例构造改为显式内存命令宿主/运行时，保留 v1 legacy 连接形状、原测试名字和全部断言：默认不压缩、声明后压缩、未声明者仍收到原始 JSON、离开命令作用域恢复默认，以及权限重置对命令循环 clone 立即可见。比较仅排除原凭据/单例 fixture 构造后，断言块一致。产品 operator 环境变量测试和真实网络命令循环测试仍留在应用；不在 GUI/headless 中重复执行这两个纯核心用例。[迁移清单](remote-test-migration.json)已更新，基线名字的当前归属为独立核心/互通 204、应用 525。
 
 Server 默认及 test-support、Desktop GUI/headless 的 Clippy `--all-targets` 和相关 fmt/文档静态检查通过；本地没有运行测试。最终 CI、剩余迁移/行为核对、性能与人工确认继续进行。
+
+### 2026-10-19：共用恢复预算与停止场景
+
+新增 [`recovery.json`](../../packages/remote-client/fixtures/recovery.json)，两语言报告同一组 4 个 ID：预算自然结束、首轮前关闭、一次失败后关闭、三次失败后关闭。双方校验版本、suite、字段、ID、时钟和次数范围；共享预期保留 Rust 的 18 次尝试和 TS 的 180000ms 恢复窗口，TS 在确定性中点 jitter 下应发起 10 次连接。关闭后的全部尝试次数和实际任务清理也必须符合预期。
+
+Rust 驱动运行真实 supervisor → resume → connect 流程，只在显式宿主 load 边界返回 transport 错误，因此不会创建网络连接。使用既有测试构建的毫秒退避单位与 Tokio 暂停时钟，观察真正的任务结束；自然耗尽不把整个 Client 改成 terminal。TS 驱动提供“角色曾就绪”的明确前置状态，通过公开 open/shutdown 运行实际 deadline、退避、失败与停止，宿主连接工厂明确拒绝；不替换恢复调度。TS 在预算到期应进入 failed，后续 open 也不能复活该实例。两端再推进十分钟，仍不能出现额外尝试。真实握手、重连和事件补齐由独立互通及原有应用/同步回归承担，不能用这批模拟失败替代。
+
+只增加共享素材、测试驱动和测试宿主 load 失败计数，产品逻辑未变，原 7 个 Rust 运行时归属测试函数体逐一确认未改变。新增一个 Rust 驱动声明与一个 Jest `.each` 声明，各覆盖同一组 4 个 ID。Client 默认/测试辅助特性的 Clippy `--all-targets`、fmt、TS typecheck/lint、协议生成及文档静态检查通过；Babel/Jest 仅静态编译 58 个文件，未执行产物或本地测试。运行结果仍待最终 CI，整体目标未完成。

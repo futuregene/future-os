@@ -8,6 +8,7 @@ TypeScript. They are not copied into Desktop or Mobile.
 | [client.json](client.json) | Real role interoperability: requests/deduplication, pairing, events, file bytes, reconnect and shutdown report IDs | [Independent interoperability project](../../../tests/remote-interop/README.md) |
 | [isolation.json](isolation.json) | Two real endpoints: request/deduplication, catalog/event ownership, stop and reconnect independence | Independent Rust and TS interoperability drivers |
 | [credentials.json](credentials.json) | Expiry boundaries, late renewal fencing, continuation and instance isolation | Rust `shared_credentials_tests.rs`; Node/Jest `sharedCredentials.test.ts` |
+| [recovery.json](recovery.json) | Actual bounded retry loop, shutdown before/after retries and no late restart | Rust `shared_recovery_tests.rs`; Node/Jest `sharedRecovery.test.ts` |
 | [requests.json](requests.json) | Controlled request-policy scenarios: send times, outcomes, retry identity, timeout budgets, recovery/probe counts and cancellation | Rust `shared_request_tests.rs`; Node/Jest `sharedRequests.test.ts` |
 
 Each format has an explicit version and suite/kind checks. Unknown fields,
@@ -86,3 +87,15 @@ Stopping one endpoint leaves the other answering; the stopped endpoint reconnect
 with its persisted IK identity without changing the survivor. These topologies
 are deliberately stated and do not claim cross-process application integration,
 relay JWT/ACL enforcement, automatic failure recovery or shared timeline dedup.
+
+`recovery.json` drives the actual Rust supervisor through resume/connect until
+an explicit host load fails, before any socket IO. Its production attempt count
+is retained; existing test builds scale backoff units to milliseconds. TS drives
+actual `open`/retry/deadline/shutdown, with a rejecting transport factory and the
+explicit precondition of a previously ready role. It does not stub the scheduler.
+TS uses midpoint jitter and the existing three-minute budget; Rust exhausts its
+18-attempt task without making the entire Client terminal. These differences are
+recorded in the shared material instead of changing either product policy.
+Both clocks are controlled, and both drivers observe a further ten minutes
+without new attempts after exhaustion/stop. This is loop ownership/budget
+coverage, not evidence of successful pairing, live reconnection or event replay.

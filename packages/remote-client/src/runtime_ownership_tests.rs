@@ -17,6 +17,8 @@ struct MemoryHost {
     refreshes: AtomicUsize,
     finished_refreshes: AtomicUsize,
     reject_tasks: AtomicBool,
+    reject_load: AtomicBool,
+    rejected_loads: AtomicUsize,
 }
 
 struct RefreshCompletion<'a>(&'a AtomicUsize);
@@ -51,6 +53,10 @@ impl ClientHost for MemoryHost {
         "cmd_fixture".into()
     }
     fn load(&self) -> Result<PeerBook, crate::Error> {
+        if self.reject_load.load(Ordering::SeqCst) {
+            self.rejected_loads.fetch_add(1, Ordering::SeqCst);
+            return Err(crate::Error::RemoteTransport("fixture unavailable".into()));
+        }
         Ok(self.book.lock().unwrap().clone())
     }
     fn upsert(&self, creds: PeerCreds) -> Result<(), crate::Error> {
@@ -295,3 +301,6 @@ mod shared_requests;
 
 #[path = "shared_credentials_tests.rs"]
 mod shared_credentials;
+
+#[path = "shared_recovery_tests.rs"]
+mod shared_recovery;

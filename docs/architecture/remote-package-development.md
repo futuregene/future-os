@@ -492,3 +492,29 @@ pending.
 Moved `gzip_follows_the_per_connection_capability` and `clearing_the_capability_reaches_the_loop_copy` from Desktop into Server `commands/context_tests.rs`. Explicit memory command services replace the Desktop singleton fixture while retaining the v1 legacy shape, names and every original assertion: default plain JSON, declared gzip, undeclared/plain behavior, scope restoration and shared clone permission reset. Source comparison excluding fixture construction confirms assertion equivalence. Operator environment configuration and real application command-loop integrations remain in Desktop. The inventory now locates 204 baseline names in independent core/interop and 525 in applications; this is source evidence only.
 
 Server default/test-support and Desktop GUI/headless Clippy `--all-targets`, relevant fmt and documentation static checks pass. No local tests ran. Final CI, remaining migration/behavior review, matched performance and manual acceptance are pending.
+
+### 2026-10-19: Shared recovery budget and stop scenarios
+
+Added [`recovery.json`](../../packages/remote-client/fixtures/recovery.json) with
+four common IDs: natural budget exhaustion, close before the first attempt, and
+close after one/three failures. Both validators check version, suite, fields,
+IDs, clock/count ranges and retain language-specific expectations: Rust's
+18-attempt supervisor and TS's 180000ms recovery window, producing ten connection
+attempts with deterministic midpoint jitter.
+
+Rust runs the actual supervisor/resume/connect flow with explicit failing host
+load, before socket creation, under Tokio virtual time and existing millisecond
+test backoff units. Exhaustion finishes that task without making the Client
+terminal. TS supplies the explicit precondition of a previously ready role and
+runs public open/shutdown with actual deadline/backoff/failure scheduling and a
+rejecting transport factory. Deadline exhaustion makes TS failed; later open
+cannot revive it. Both observe another ten virtual minutes without new attempts
+after exhaustion/close. These failing-host scenarios do not substitute for real
+pairing/reconnection, replay or application integration.
+
+Only fixture/driver/test-host instrumentation changes; production logic remains.
+All seven previous Rust ownership test bodies are unchanged. One Rust driver and
+one Jest `.each` declaration each cover four IDs. Client default/test-support
+Clippy `--all-targets`, fmt, TS typecheck/lint, generation and documentation static
+checks pass. Babel/Jest statically transforms 58 files without executing output.
+No local tests or final CI ran; the overall objective remains incomplete.
