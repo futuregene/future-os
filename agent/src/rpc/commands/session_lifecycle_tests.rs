@@ -748,6 +748,76 @@ fn new_session_generates_id_and_registers() {
 }
 
 #[test]
+fn new_session_is_present_and_reloadable_before_its_first_prompt() {
+    let state = make_app_state();
+    let mut command = make_cmd_for("new_session", "first-hello");
+    command.cwd = state.welcome_cwd.clone();
+    command.created_by = "desktop".into();
+    command.creator_id = "desktop-device".into();
+    command.level = "low".into();
+    command.system_prompt = "Keep answers brief.".into();
+    let response = parse_response(&handle_command_internal(&state, command));
+    assert_eq!(response["success"], true, "{response}");
+
+    let mut presence = make_cmd("get_session_presence");
+    presence.session_ids = vec!["first-hello".into()];
+    let response = parse_response(&handle_command_internal(&state, presence));
+    assert_eq!(response["success"], true, "{response}");
+    assert_eq!(response["data"]["sessions"][0]["status"], "present");
+
+    // Read through a new manager, without relying on the live session map.
+    let manager = crate::session::Manager::new(state.session_manager.dir.clone());
+    let saved = manager.load("first-hello").unwrap();
+    assert_eq!(saved.entries.len(), 1);
+    assert_eq!(saved.entries[0].entry_type, "session_info");
+    let info = saved.get_session_info().unwrap();
+    assert_eq!(info["cwd"], state.welcome_cwd);
+    assert_eq!(info["thinking_level"], "low");
+    assert_eq!(info["created_by"], "desktop");
+    assert_eq!(info["creator_id"], "desktop-device");
+    assert_eq!(info["append_system_prompt"], "Keep answers brief.");
+}
+
+#[test]
+fn new_session_does_not_register_or_announce_a_failed_save() {
+    let state = make_app_state();
+    let mut events = state.control_plane.global_events_broadcaster().subscribe();
+    state
+        .session_manager
+        .fail_saves_remaining
+        .store(1, std::sync::atomic::Ordering::Release);
+    let response = parse_response(&handle_command_internal(
+        &state,
+        make_cmd_for("new_session", "failed-creation"),
+    ));
+    assert_eq!(response["success"], false, "{response}");
+    assert_eq!(response["error_code"], "session_storage_unavailable");
+    assert!(!state.sessions.read().contains_key("failed-creation"));
+    assert!(!state.session_manager.contains("failed-creation").unwrap());
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+}
+
+#[test]
+fn new_session_cannot_recreate_an_explicitly_deleted_identity() {
+    let state = make_app_state();
+    state.session_manager.delete("deleted-creation").unwrap();
+    let response = parse_response(&handle_command_internal(
+        &state,
+        make_cmd_for("new_session", "deleted-creation"),
+    ));
+    assert_eq!(response["success"], false, "{response}");
+    assert!(!state.sessions.read().contains_key("deleted-creation"));
+    let presence = state
+        .session_manager
+        .session_presence(&["deleted-creation".into()])
+        .unwrap();
+    assert_eq!(presence["sessions"][0]["status"], "deleted");
+}
+
+#[test]
 fn new_session_reports_a_model_the_protocol_layer_cannot_build() {
     // `set_model` validates a *resolvable* model's protocol shape before it
     // publishes the identity, so a model the registry knows but the protocol

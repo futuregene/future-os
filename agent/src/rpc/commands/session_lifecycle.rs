@@ -464,11 +464,31 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
 
     // If this session ID already exists on disk (e.g. a forked session),
     // load the existing entries and restore them after creating the session.
-    let existing_entries = session_manager
-        .load(&new_session_id)
-        .ok()
-        .filter(|s| !s.entries.is_empty())
-        .map(|s| (s.entries, s.model.clone()));
+    let existing_entries = match session_manager.contains(&new_session_id) {
+        Ok(false) => None,
+        Ok(true) => match session_manager.load(&new_session_id) {
+            Ok(session) => Some((session.entries, session.model)),
+            Err(error) => {
+                return RpcResponse::build_fail_code(
+                    id,
+                    "new_session",
+                    "session_storage_unavailable",
+                    &format!("Unable to load existing session: {error:#}"),
+                    serde_json::json!({"sessionId": new_session_id}),
+                );
+            }
+        },
+        Err(error) => {
+            return RpcResponse::build_fail_code(
+                id,
+                "new_session",
+                "session_storage_unavailable",
+                &format!("Unable to inspect session storage: {error:#}"),
+                serde_json::json!({"sessionId": new_session_id}),
+            );
+        }
+    };
+    let is_new = existing_entries.is_none();
 
     let mut new_sess = ServerSession::new_with_queue_budget(
         new_session_id.clone(),
@@ -598,7 +618,48 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
         tracing::warn!("[new_session] could not sync agent loop model: {e}");
     }
 
-    // Add to sessions map
+    // Commit a new session before announcing it or returning its identity.
+    // Journal binding only reserves a revision=-1 row; clients verify the
+    // durable catalogue before the first prompt, so waiting until that prompt
+    // to save the transcript would make every fresh session look missing.
+    if is_new {
+        let info = crate::session::SessionEntry::session_info(
+            serde_json::json!({
+                "cwd": new_sess.cwd,
+                "model": new_sess.model,
+                "thinking_level": new_sess.thinking_level,
+                "session_name": new_sess.session_name(),
+                "parent_session_id": new_sess.parent_session_id,
+                "created_by": new_sess.created_by,
+                "creator_id": new_sess.creator_id,
+                "source_meta": new_sess.source_meta,
+                "auto_compaction": new_sess.auto_compaction,
+                "system_prompt": new_sess.custom_system_prompt,
+                "append_system_prompt": new_sess.append_system_prompt,
+            }),
+            new_sess.model.clone(),
+            new_sess.thinking_level.clone(),
+        );
+        let snapshot = crate::session::Session::snapshot(
+            new_session_id.clone(),
+            new_sess.cwd.clone(),
+            new_sess.model.clone(),
+            new_sess.session_name().to_string(),
+            new_sess.parent_session_id.clone(),
+            vec![info],
+        );
+        if let Err(error) = session_manager.save(&snapshot) {
+            return RpcResponse::build_fail_code(
+                id,
+                "new_session",
+                "session_storage_unavailable",
+                &format!("Unable to persist new session: {error:#}"),
+                serde_json::json!({"sessionId": new_session_id}),
+            );
+        }
+    }
+
+    // Add to sessions map only after durable creation succeeds.
     let new_id = state.create_session(new_sess);
 
     RpcResponse::ok(id, "new_session", serde_json::json!({"sessionId": new_id}))

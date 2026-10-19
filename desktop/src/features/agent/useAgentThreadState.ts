@@ -239,10 +239,9 @@ export function useAgentThreadState({
       attachments: pendingPrompt.attachments ?? [],
       content: pendingPrompt.content,
     }, () => onPromptConsumed(promptId)).catch(() => {
-      // Pre-send validation/acceptance failures keep the prompt staged so
-      // revisiting the conversation can retry instead of losing its first message.
-      if (consumedPromptRef.current === promptId)
-        consumedPromptRef.current = null;
+      // Keep the prompt staged for a later visit, but retain this view's
+      // attempt marker. Clearing it here makes run/status updates resubmit a
+      // rejected first message indefinitely, creating failed runs and toasts.
     }).finally(() => pendingPromptSends.delete(promptId));
   }, [
     handleSend,
