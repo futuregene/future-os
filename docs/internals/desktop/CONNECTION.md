@@ -11,6 +11,12 @@
 > entry; this file is the only maintenance location for this domain's design
 > and contract.
 
+The [Remote package development plan](../../architecture/remote-package-development.md)
+tracks the proposed Rust/TypeScript protocol, client and server extraction and
+its host interfaces. Those package and future CLI/TUI integration targets are
+planned; this document continues to describe the existing product and connection
+contract, with E2EE governed by the security document linked above.
+
 Review date: 2026-09-14. Source baseline: FutureOS `2774e4a9` plus this
 document's own change candidate, and the local future-server `bbd6c23`; the
 server-side baseline does not represent the actual online deployment. The text

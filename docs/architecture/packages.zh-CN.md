@@ -11,3 +11,7 @@
 
 一个包应有自己的 manifest、公开入口点与测试。包可以依赖其他包，但不得依赖
 `desktop`、`mobile`、`agent` 等产品实现。
+
+[Remote 拆包开发计划](remote-package-development.zh-CN.md)定义待实施的
+Rust/TypeScript 协议、主控、被控边界，并保留独立 Crypto 和应用宿主适配。
+计划中的新包名是目标，不代表已加入上述现有包清单。

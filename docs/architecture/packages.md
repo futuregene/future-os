@@ -17,3 +17,8 @@ of their implementation language.
 A package should have its own manifest, public entry point, and tests. Packages
 may depend on other packages, but must not depend on product implementations
 such as `desktop`, `mobile`, or `agent`.
+
+The [Remote package development plan](remote-package-development.md) defines
+the planned Rust/TypeScript protocol, client and server boundaries, retaining
+independent Crypto and application host adapters. New package names there are
+targets, not additions to the current inventory above.

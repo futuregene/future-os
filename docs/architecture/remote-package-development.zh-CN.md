@@ -1,0 +1,209 @@
+# Remote 拆包开发计划
+
+> [English](remote-package-development.md)
+>
+> 设计日期：2026-10-19。源码基线：`4a64b65e`。
+> 状态：待实施。本文确定目标边界、迁移步骤和验收条件，不代表下列新包或入口已经存在。
+
+将远程能力拆成协议、主控、被控三个职责包，保留独立的安全通道基础库。Rust 与 TypeScript 使用相同的职责模型，各自维护实现，通过共同的协议契约、测试向量和互通测试保证兼容。Desktop、Mobile、CLI、TUI 负责界面、环境和本地业务适配；远程库不依赖某个应用入口。
+
+本计划的直接目标是建立可独立编译、测试和静态检查的包边界，缩小无关改动的验证范围，减少 GUI/headless 对相同核心测试的重复执行。现有被控能力继续由 Desktop GUI 或前台 headless 宿主管理。CLI/TUI 接入所需的扩展点属于本次设计，新命令和交互在后续宿主接入阶段实施。
+
+现有产品行为见[远程连接设计](../internals/desktop/CONNECTION.zh-CN.md)，安全与线协议以 [Remote E2EE](../internals/desktop/REMOTE_E2EE.zh-CN.md) 为准。本计划维护拆包与迁移安排，不复制这两份文档的安全参数或历史兼容规则。
+
+## 1 当前实现与拆分依据
+
+| 当前位置 | 已有职责 | 需要解除的耦合 |
+|---|---|---|
+| [remote](../../desktop/src-tauri/src/remote/mod.rs) | 被控侧协议处理、NATS 通信、安全通道、连接监督、命令路由、事件发布 | 直接取得 Desktop 宿主，使用应用错误、运行时、退出状态和部分配置工具 |
+| [remote_host](../../desktop/src-tauri/src/remote_host/mod.rs) | 将远程命令接入本地 Agent、会话、设置、审批、任务和文件系统；提供配对和状态能力 | 业务实现留在应用适配层；通用 HTTP、JWT 和协议工具重新归位 |
+| [remote_peer](../../desktop/src-tauri/src/remote_peer/mod.rs) | Desktop 主控客户端，连接其他机器、维护远端投影、收发请求和文件 | 依赖 Desktop 的身份、配置、文件落盘，以及 remote_host 中的 HTTP 工具 |
+| [Mobile client](../../mobile/src/remote/client.ts) | TypeScript 主控连接、请求、事件与恢复 | 间接绑定 Expo 设备信息、Mobile 存储及应用配置 |
+| [Mobile remote context](../../mobile/src/remote/RemoteContext.tsx) | React 状态、连接编排、界面与设备生命周期适配 | 与通用客户端核心分离，应用 hooks 不进入核心包 |
+| [remote crypto](../../packages/remote-crypto/src/lib.rs) | 独立 Rust Noise 握手和加密记录层 | 保持独立；与 TS 实现共用的向量继续维护 |
+
+[RemoteHost 接口](../../desktop/src-tauri/src/remote/services.rs)已分出业务、配对、状态和文件四组能力，[DesktopHost](../../desktop/src-tauri/src/remote_host/mod.rs)已有实现。迁移复用这些边界，不另建通用插件框架。
+
+当前 CLI 的 `future remote devices` 主要管理本机被控配对，并通过文件请求运行中的 Desktop 添加设备；它尚不是通用的远端主控客户端。当前 Mobile 只有主控产品能力。上述现状不能在改包名时被写成新能力已完成。
+
+## 2 目标包与依赖方向
+
+| 层次 | Rust 包 | npm 包 | 实施范围 |
+|---|---|---|---|
+| 安全通道 | `future-remote-crypto` | `@future-os/remote-crypto` | 保留现有 Rust 包；从 Mobile 提取 TS 实现 |
+| 协议 | `future-remote-protocol` | `@future-os/remote-protocol` | 两种语言均建立 |
+| 主控 | `future-remote-client` | `@future-os/remote-client` | 两种语言均建立 |
+| 被控 | `future-remote-server` | `@future-os/remote-server` | 本轮建立 Rust 实现；有 JS 被控产品需求时再建立 npm 包 |
+
+三个远程职责包共用 Crypto 基础库。TS 被控包暂不创建空实现；Mobile 继续作为主控使用协议、Crypto 和 Client 包。
+
+建议目录为 `packages/remote-crypto`、`packages/remote-protocol`、`packages/remote-client` 和 `packages/remote-server`。同一目录可以同时拥有 `Cargo.toml` 和 `package.json`，分别使用 Rust 与 TS 入口；源码、测试、lint 和发布匹配规则必须明确区分语言。新 npm 包先保持 private，Rust 包不因本轮迁移新增对外发布流程。共同使用根锁文件和现有 workspace。
+
+Rust 新包使用普通库目标；不因源自 futureos 就沿用其 `staticlib`/`cdylib` 产物配置。只有实际的 FFI 消费者需要时才增加相应产物。
+
+```mermaid
+flowchart TB
+    RustHost[Desktop CLI TUI 宿主] --> RC[future-remote-client]
+    RustHost --> RS[future-remote-server]
+    RC --> RP[future-remote-protocol]
+    RS --> RP
+    RP --> RK[future-remote-crypto]
+    Mobile[Mobile 宿主适配] --> TC[TS remote-client]
+    TC --> TP[TS remote-protocol]
+    TP --> TK[TS remote-crypto]
+    RP -.共同契约与向量.-> TP
+    RK -.共同安全向量.-> TK
+```
+
+Client 与 Server 不相互依赖；协议与 Crypto 不依赖角色运行时。共享包不导入 Desktop、Mobile、CLI、TUI 或 Agent 产品实现。库需要的本地业务通过接口提供，宿主负责使用现有 Agent RPC/服务接口。
+
+## 3 各层职责与宿主接口
+
+### 3.1 安全通道
+
+Crypto 负责既有握手模式、密钥派生、认证加密记录、序列号、防重放和相关边界检查。保留现有算法与安全参数；不把它扩展为通用密码学框架。
+
+Crypto 不依赖 NATS、HTTP、业务命令、数据库或 UI。协议层负责消息封装、握手消息交换约定及安全通道协商。TS 的 Base64/JSON 封装与 Mobile 安全随机数环境初始化须正确归位，避免 Crypto 反向依赖协议包或 React Native。沿用[现有安全向量](../../packages/remote-crypto/tests/vectors.json)。
+
+### 3.2 协议
+
+协议包负责公共消息、命令、回复、事件、错误码、版本、能力标识、邀请编码、主题/上下文绑定和分块约定。只收录线上契约；凭据落盘格式、UI 展示类型、重试策略及本地业务实现不因位于现有 `types.ts` 中就进入协议包。
+
+在 `packages/remote-protocol` 中建立双方共同维护的契约与兼容样例。将可表达的消息结构归入公共 schema；Rust/TS 类型生成工具在协议阶段选定，编码行为仍由共同样例和互通测试验证。生成代码不得成为第二份可手改的事实源。现有 Agent gRPC protobuf 仍由 `future-rpc` 管理，Remote 契约不与其合并。
+
+协议包不建立连接、读取全局 HOME、访问存储或启动后台任务。首次拆分保持现有 wire format、字段 casing、可选字段语义和兼容策略。
+
+现有 `desktopId` 等线协议字段即使名称带有产品背景，也先保持兼容；宿主内部可以使用通用命名，不将跨入口复用扩展成一次协议重命名。
+
+### 3.3 主控
+
+Client 负责连接被控端、配对交换、握手、请求与回复匹配、事件订阅、恢复、远端目录和会话投影，以及客户端文件传输。远端会话仍由远端拥有，本地缓存不能变成本机会话的第二份权威记录。
+
+身份/凭据读写、设备名称、配置、信任设置、传输创建和本地文件访问通过宿主适配提供。主控核心输出事件流或回调，不导入 React、Tauri、Expo，不直接更新界面。Rust 复用 Tokio；TS 使用普通类和函数，网络传输按平台适配，保留当前 TLS/WSS 要求。
+
+Mobile 的前后台和网络监听向 Client 输入生命周期事件；连接状态机在 Client 中执行。系统文件选择、分享、文件打开、SecureStore 和界面 hooks 留在 Mobile。现有 thread-projection 中的通用投影继续复用，不在新包中复制。
+
+### 3.4 被控
+
+Server 负责被控入口、安全握手、控制权检查、接入限额、请求去重、命令路由、回复和事件发布、被控侧传输及连接监督。它通过宿主接口执行本地业务，不直接依赖应用 Store、Agent 实现或 Tauri 命令。
+
+继续使用业务、配对、状态、文件四组能力作为接口起点，整理应用无关的 DTO 和错误类型。宿主提供凭据持久化、配对服务调用、本地目录和业务授权；Server 保留连接级和控制权级检查。现有审批、沙箱和路径访问约束不能因接口迁移被绕过。
+
+Desktop 的 remote_host 成为该接口的应用实现。远程 prompt 继续复用现有会话持久化与 Agent 调用路径；不在 Server 中重新实现 prompt、审批或任务执行。
+
+### 3.5 运行时与退出
+
+宿主显式启动角色运行时，持有句柄并负责停止与等待清理。库不解析进程参数、不注册全局退出信号、不调用进程退出，也不自行把前台能力变成后台服务。
+
+运行实例接收明确的配置、数据位置、身份和执行环境。逐步消除对 Desktop 全局单例、全局 HOME 和静态宿主查询的依赖。任务必须有归属，停止后旧连接、晚到的回调和恢复定时器不能重新开启入口；保留现有任务登记、取消、清理等待和总截止时间语义。
+
+第一阶段保持 GUI/headless 的启停行为。CLI/TUI 后续接入时，将“Desktop 拥有 Remote”推广为“显式启用被控功能的宿主拥有 Remote”；新增命令需另行定义可见状态、审批交互、占用和退出行为。库可复用不等于所有入口已自动具备被控能力。
+
+## 4 源码与测试迁移映射
+
+| 当前内容 | 目标位置 |
+|---|---|
+| remote/protocol、公共能力标识、客户端 invitation/codec 中的线上格式 | Rust/TS 协议包 |
+| 现有 Rust Crypto、Mobile secureChannel 中的通用安全实现 | 各语言 Crypto 包 |
+| remote_peer 的连接、会话投影和传输核心；Mobile client、恢复和通用同步 | 各语言 Client 包 |
+| remote 的传输、连接监督、路由、事件发布及被控侧传输 | Rust Server 包 |
+| remote_host 的 Store、Agent、任务、文件和本地配对适配 | Desktop 宿主适配 |
+| Tauri commands、remote/control 本地管理入口、headless 输出 | Desktop 入口与适配层；通用邀请编码下沉协议包 |
+| Mobile RemoteContext、hooks、设备/存储/文件/网络生命周期 | Mobile 应用适配 |
+
+按函数职责迁移，不整目录复制。当前 relay 和 peer 借用的 remote_host HTTP/JWT 代码需明确归入角色服务或宿主平台适配，消除跨角色借用。应用错误在边界转换，保留用户可见消息与机器错误码；不通过共享 Desktop AppError 把 SQLite 等依赖带回核心库。
+
+纯协议、状态机、去重、加密、分页和模拟传输测试随核心迁移。真实业务持久化、审批/Agent 调用、GUI 关闭和 headless 退出测试留在宿主集成层。测试不能通过把 Desktop 设为新库的 dev-dependency 来重新引入耦合。
+
+## 5 分阶段实施
+
+每阶段独立可验证、可合并。旧路径可短期保留薄转发以迁移调用方，但只有一份实现；阶段完成后删除转发和重复类型。
+
+| 阶段 | 工作与交付物 | 完成条件 |
+|---|---|---|
+| 0 基线与契约清单 | 记录依赖、角色入口、wire/存储格式、宿主行为和 CI 时间；为测试标记包内、互通、应用集成归属 | 固定源码、工具链、runner、命令、特性组合和缓存状态，分别记录编译与测试时间；列出各包独立测试入口 |
+| 1 Crypto 与协议 | 保留 Rust Crypto，抽 TS Crypto；建立两语言协议包、共同 schema/样例和类型生成策略 | 两语言执行同一份安全/协议素材并报告用例 ID；邀请、握手、字段、编码、错误与未知能力兼容；包测试不依赖应用配置 |
+| 2 Rust 主控 | 从 remote_peer 提取核心，显式提供身份、凭据、传输和事件接口；Desktop 接回 | 配对、刷新、恢复、会话与文件行为保持；Client 可脱离 futureos 独立测试 |
+| 3 Rust 被控 | 从 remote 提取运行时；remote_host 实现宿主接口；接回 GUI/headless | 本地业务与控制权行为保持；取消、退出、晚到结果和凭据保存边界通过；核心无 Tauri/Agent 实现依赖 |
+| 4 TS 主控 | 提取 Mobile client 与通用同步；React Native 依赖改由应用适配提供；接入共用主控场景 | Rust/TS 验证同一组请求、事件和恢复行为；TS Client 在非 Expo 环境独立测试；Mobile 宿主交互通过 |
+| 5 互通与 CI | 建立独立 Remote 互通测试工程，覆盖 Rust Client↔Rust Server、TS Client↔Rust Server；调整 affected 图和任务 | 无需 Desktop 即可验证真实两端；各包独立报告，GUI/headless 保留宿主差异覆盖；报告实测收益 |
+| 6 后续宿主 | 按实际产品需求接入 CLI/TUI 主控或被控；JS 被控另立实现任务 | 每个新入口有显式启动/停止、身份、存储、审批、可见状态和退出验收 |
+
+阶段 1 的 schema/生成工具、阶段 2/3 的最小公开接口、阶段 5 的批次与并发限制，在对应阶段根据迁移原型确定并记录；不在实施前承诺未验证的函数签名。
+
+## 6 验证与 CI 组织
+
+### 6.1 Rust 与 TypeScript 共用测试素材
+
+安全通道、协议和主控行为共用一份素材与预期契约，两种语言分别执行自己的实现。保持一致的是输入、预期结果和行为语义，不要求测试源码、框架或平台补充用例完全相同。
+
+| 层次 | 共同维护的素材 | 两语言必须一致的结果 |
+|---|---|---|
+| Crypto | 密钥、握手消息、认证上下文、预期密文、损坏记录、防重放和序列边界向量 | 密钥/握手摘要/记录等约定字节结果，以及应接受或拒绝的条件 |
+| Protocol | 命令、回复、事件、邀请、版本、能力、分块、可选字段和错误输入样例 | 编解码语义与兼容行为；协议规定字节格式时逐字节比较 |
+| Client | 请求/响应记录、事件序列、断线/刷新/恢复步骤、超时/取消和重试场景 | 相同的可观察状态变化、发送次数、事件顺序及成功/失败结果 |
+
+Crypto 沿用现有 `packages/remote-crypto/tests/vectors.json`。协议和主控素材建议分别放入 `packages/remote-protocol/fixtures/` 与 `packages/remote-client/fixtures/`，不复制到 Desktop 或 Mobile。素材定义稳定的用例 ID、输入、操作序列和预期结果；公共结构需要版本与校验。两语言适配器报告已执行的用例 ID，对未支持的共享用例明确失败或记录具体的平台差异，不能静默跳过。
+
+Client 测试驱动各自模拟传输并推进可控时间，例如“发送请求、断线、恢复、收到重复回复”，不依赖两端真实时钟恰好一致。JSON 比较遵循协议语义，不对无顺序约定的对象字段强加字节顺序。语言/平台特有测试可以独立增加；已有加密、错误和兼容边界不能为了取两种实现的交集而删减。
+
+### 6.2 每个包独立拥有和执行测试
+
+Rust/TS Crypto、Protocol、Client 以及 Rust Server 各有自己的测试源码、入口、命令和依赖声明。核心测试随所属包维护，迁出 `desktop/`、`mobile/`；单独选择一个包即可执行，不要求编译 futureos、加载 Tauri、启动 Expo 或导入应用模块。
+
+TS 包提供独立测试脚本和配置，不借用 Desktop 的 Vitest 配置、Mobile 的 Jest/Expo preset 或 React Native mock 环境。测试工具可由根 workspace 统一管理，但包的运行入口与依赖必须明确。Rust 包通过 Cargo 包选择运行，测试代码不依赖应用 crate。薄应用包装不能再完整重跑同一套核心用例。
+
+根 workspace 可以统一安装依赖、复用构建产物并批量调度；测试独立不要求每包有单独的 node_modules、target 目录或 runner。CI 分别报告包名、测试结果、数量和耗时，包失败可以单独复现与重跑。
+
+### 6.3 测试归属与集成边界
+
+| 测试归属 | 验证内容 | 测试宿主 |
+|---|---|---|
+| 包内测试 | 加密、协议、状态机、去重、请求匹配、恢复、通用同步、投影与传输 | 所属包提供的测试驱动、模拟传输及假的宿主服务 |
+| Remote 互通测试 | Rust Client↔Rust Server、TS Client↔Rust Server 的真实握手、请求、事件及传输 | 独立 Remote 测试工程，使用假的本地业务实现，不要求 Desktop |
+| 应用适配测试 | Tauri commands、React hooks/Context、设备信息、安全存储、文件与前后台/网络事件接线 | 对应 Desktop/Mobile；后续 CLI/TUI 各自维护 |
+| 应用产品集成测试 | 真实 Store/Agent/审批/文件语义；GUI 关闭、headless 退出和产品入口 | 实际应用与隔离的本地服务/数据目录 |
+
+共享素材和各自 mock 通过不能代替真实互通。独立互通工程通过公开 API 组合两端，具体目录和语言驱动在阶段 5 落地；生产 Client/Server 不为测试互相引入依赖。应用仍验证宿主是否正确启动、调用、取消并清理库，但不承担库内部所有协议场景。
+
+迁移基线建立“原测试 → 新包或互通/应用测试”的归属清单，确认覆盖去向后再删除原测试。跨包真实业务用例仍留在应用集成层，不能为了包独立将其替换成没有验证业务结果的 mock。
+
+### 6.4 必须覆盖的行为
+
+| 验证层 | 必须覆盖 |
+|---|---|
+| Crypto | 既有双语言向量、双方握手模式、损坏记录、防重放、序列边界和密钥/候选清理 |
+| Protocol | JSON/二进制/邀请编码、版本与未知能力、可选字段、大小上限、分块、错误和旧客户端兼容 |
+| Client | 请求超时与重试、凭据刷新、恢复预算、事件去重/补齐、目录投影、多远端隔离和文件取消 |
+| Server | 控制权、未提交握手不可执行业务、请求去重、刷新/重连竞争、撤销/停机、回复与事件顺序 |
+| 跨语言与角色 | Rust Client↔Rust Server、TS Client↔Rust Server；共享样例加真实互通，不只测试各自 mock |
+| 宿主集成 | 真实 Store/Agent/审批/文件语义；GUI/headless runtime、CLI/TUI 后续入口；Mobile 前后台与原生存储 |
+
+### 6.5 检查调度与性能验收
+
+各包定义自己的静态检查和测试目标。Rust 使用 scoped rustfmt、Clippy `--all-targets` 与包测试；TS 使用类型检查、lint 和包测试。直接导出 TS 源码的包按实际需要定义 build，不添加没有产物意义的构建步骤。测试已覆盖的构建不重复执行；产品入口、打包特性组合和平台行为保留验证。
+
+CI 根据真实依赖选择改动包及受影响消费者，并记录共享 schema、向量、配置、生成脚本和锁文件输入。包边界不等于每个任务都单独分配 runner；按平台、工具链和耗时批量执行，在 runner 限额内复用依赖与产物。不新增 main 缓存预热或每次发布后的全量工作。
+
+测试夹具优先使用显式实例、独立数据根和随机端口，不能连接或停止用户运行中的 Agent。迁移期间保留已知锁顺序和任务清理约束，再用实例隔离消除全局 HOME/单例导致的串行竞争。单元测试由 PR CI 执行，不在本地运行单元测试。
+
+性能验收分别比较编译、链接、测试执行、缓存恢复和排队时间；对照相同 runner、工具链、特性、命令与冷热缓存状态。先验证核心测试不再随 GUI/headless 重复，再评估慢测试和 Windows 构建。测试数量、代码行数及跨次 CI 差值不能直接作为节省时间的证明。
+
+## 7 兼容性与完成清单
+
+- [ ] Rust 协议、主控、被控包与独立 Crypto 建立，依赖方向无环，无应用反向依赖。
+- [ ] TS Crypto、协议、主控包建立；React Native、Expo、React hooks 和 UI 留在 Mobile。
+- [ ] Rust/TS 共用契约和安全/协议样例；既有 wire format、TLS/WSS、身份绑定及安全策略保持。
+- [ ] 安全、协议、主控共享素材只有一份；两语言报告共同用例 ID，平台差异显式记录且保留原有边界覆盖。
+- [ ] 各包有独立测试命令、配置和依赖，核心测试迁出应用目录，不借用 Desktop/Mobile 测试环境。
+- [ ] 配对/Peer 凭据、待撤销记录、设备身份和相关文件格式兼容；无迁移原因不改变路径或使已配对设备重新配对。
+- [ ] Mobile 两槽凭据提交、安全存储及密钥清理语义保持；凭据、完整邀请和私钥不进入日志或测试快照。
+- [ ] 本地会话、远端投影、Agent、任务与文件的数据权威不改变；审批与沙箱约束保持。
+- [ ] 角色运行时可显式启动、停止、等待清理；断开和取消不被旧重试或回调撤销。
+- [ ] 核心测试脱离 Tauri/Expo；真实业务、宿主生命周期、平台差异和角色互通测试仍有覆盖。
+- [ ] 独立 Remote 互通工程通过公开 API 验证真实两端；应用测试只承担自身适配与产品集成，原测试迁移归属可追踪。
+- [ ] CI affected 图包含新包、消费者及非源码输入；未扩大为每个包的无条件全平台任务。
+- [ ] 生成文件可复现，旧转发和重复实现清理，中英文索引及现有设计入口更新。
+- [ ] 以同条件基线报告编译/测试变化；没有用减少必要覆盖冒充性能收益。
+
+文档中的现有包清单在各阶段落地时更新。[共享包约定](packages.zh-CN.md)继续约束新包；完成后本计划记录实际接口、阶段状态和测量结果。
