@@ -11,8 +11,8 @@ use std::time::Duration;
 /// deterministic test drivers can supply their own without application cfg flags.
 #[derive(Clone, Copy)]
 pub struct PublisherTiming {
-    presence: Duration,
-    catalog: Duration,
+    pub(super) presence: Duration,
+    pub(super) catalog: Duration,
 }
 impl Default for PublisherTiming {
     fn default() -> Self {

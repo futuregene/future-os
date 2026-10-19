@@ -336,6 +336,7 @@ pub(crate) fn reset_for_test() {
     OWNED.lock().unwrap().clear();
     crate::tasks::reset_for_test();
     crate::remote_peer::runtime::reset_after_shutdown_for_test();
+    crate::remote::reset_after_shutdown_for_test();
 }
 
 /// Test-only RAII guard that closes admission for as long as it lives and hands the

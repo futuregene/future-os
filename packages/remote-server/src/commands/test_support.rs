@@ -48,7 +48,11 @@ pub fn insert_reply_slot(
     );
     response
 }
-pub fn record_client_identity(runtime: &dyn CommandRuntime, pair: &str, command: &IncomingCmd) {
+pub(crate) fn record_client_identity(
+    runtime: &dyn CommandRuntime,
+    pair: &str,
+    command: &IncomingCmd,
+) {
     super::record_client_identity(runtime, pair, command);
 }
 pub async fn handle_command(

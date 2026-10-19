@@ -1,5 +1,5 @@
 //! Application-independent Remote controlled endpoint.
-//! Security, transport loops and wire policy are implemented; role supervision is migrating.
+//! Explicit host services, role supervision, secure transport and bounded shutdown.
 pub mod commands;
 pub mod connection;
 mod credentials;
@@ -9,6 +9,7 @@ pub mod events;
 pub mod health;
 pub mod lean;
 pub mod lifecycle;
+pub mod pairing;
 pub mod reply;
 pub mod secure;
 pub mod services;

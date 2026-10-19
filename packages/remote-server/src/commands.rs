@@ -159,7 +159,7 @@ struct PendingHandshake {
 }
 
 impl HandshakeState {
-    pub fn new(
+    pub(crate) fn new(
         creds: crate::PairingCreds,
         confirmed: Arc<AtomicBool>,
         bridge_instance_id: String,
@@ -184,6 +184,10 @@ impl HandshakeState {
     pub fn with_access(mut self, epoch: u64) -> Self {
         self.access_epoch = Some(epoch);
         self
+    }
+
+    pub(crate) fn access_epoch(&self) -> Option<u64> {
+        self.access_epoch
     }
 
     fn access_current(&self) -> bool {
@@ -1021,12 +1025,12 @@ tokio::task_local! { static COMMAND_RUNTIME: Arc<dyn CommandRuntime>; }
 
 /// Inputs to one pairing's command endpoint. Runtime state is migrating into
 /// Server; this interface carries the existing context without product imports.
-pub struct CommandServices {
+pub(crate) struct CommandServices {
     pub runtime: Arc<dyn CommandRuntime>,
     pub business: Arc<dyn BusinessHost>,
     pub reply_ttl: Duration,
 }
-pub trait CommandRuntime: crate::secure::HandshakeHost {
+pub(crate) trait CommandRuntime: crate::secure::HandshakeHost {
     fn access(&self) -> &crate::lifecycle::AccessEpoch;
     fn client_identity(
         &self,

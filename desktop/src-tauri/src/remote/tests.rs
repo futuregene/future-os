@@ -133,36 +133,6 @@ mod runtime_tests {
         SUPERVISOR.restore_active(Some(pair_id));
     }
 
-    #[test]
-    fn power_events_preserve_intent_and_only_resume_rebuilds_a_generation() {
-        assert_eq!(
-            power_transition(PowerEvent::Suspend, true),
-            PowerTransition {
-                stop_generation: true,
-                start_generation: false,
-                rotate_epoch: false,
-            }
-        );
-        assert_eq!(
-            power_transition(PowerEvent::Resume, true),
-            PowerTransition {
-                stop_generation: false,
-                start_generation: true,
-                rotate_epoch: true,
-            }
-        );
-        for event in [PowerEvent::Suspend, PowerEvent::Resume] {
-            assert_eq!(
-                power_transition(event, false),
-                PowerTransition {
-                    stop_generation: false,
-                    start_generation: false,
-                    rotate_epoch: false,
-                }
-            );
-        }
-    }
-
     /// Wait until WEB_PORT is bindable again (stop() aborts the web task
     /// asynchronously — the socket lingers briefly).
     async fn wait_for_web_port_free() {
@@ -237,7 +207,7 @@ mod runtime_tests {
         let _home = HomeGuard::new("remote-status");
         let nats = FakeNats::start().await;
         let mut state = fake_state(&nats, "pair_status").await;
-        state.web_task = Some(tokio::spawn(std::future::pending()));
+        state.web_task = Some(SUPERVISOR.spawn_fixture_task(std::future::pending()));
         state.web_url = Some("http://localhost:8022".to_string());
         state.pairing_code = Some("code-123".to_string());
         state.pairing_code_expires_at = Some(now_secs() + 600);
@@ -272,7 +242,7 @@ mod runtime_tests {
             let mut guard = SUPERVISOR.state.lock().unwrap();
             let state = guard.as_mut().unwrap();
             state.cmd_task.abort();
-            state.cmd_task = tokio::spawn(async {});
+            state.cmd_task = SUPERVISOR.spawn_fixture_task(async {});
         }
         SUPERVISOR.start_requested.store(true, Ordering::Release);
         SUPERVISOR
@@ -360,7 +330,7 @@ mod runtime_tests {
             let mut guard = SUPERVISOR.state.lock().unwrap();
             let state = guard.as_mut().unwrap();
             state.web_task = None;
-            state.cmd_task = tokio::spawn(std::future::pending());
+            state.cmd_task = SUPERVISOR.spawn_fixture_task(std::future::pending());
         }
         assert_eq!(status().warning_code, None);
         SUPERVISOR
@@ -851,7 +821,7 @@ mod runtime_tests {
         platform.respond_pair_code(nats.url());
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        *READINESS_PAUSE.lock().unwrap() = Some((entered_tx, release_rx));
+        *SUPERVISOR.hooks.readiness_pause.lock().unwrap() = Some((entered_tx, release_rx));
         let opening = tokio::spawn(start(RemoteStartInput {}));
         tokio::time::timeout(Duration::from_secs(5), entered_rx)
             .await
@@ -1426,31 +1396,6 @@ mod runtime_tests {
         assert!(!reissued.pairing_confirmed.load(Ordering::Acquire));
         assert_ne!(first.bridge_instance_id, reissued.bridge_instance_id);
         SUPERVISOR.bridge_shared.lock().unwrap().clear();
-    }
-
-    #[test]
-    fn runtime_failure_budget_uses_a_ten_minute_window() {
-        let _home = HomeGuard::new("remote-runtime-budget");
-        SUPERVISOR
-            .runtime_failure_window_started
-            .store(0, Ordering::Release);
-        SUPERVISOR
-            .runtime_reconnect_attempts
-            .store(0, Ordering::Release);
-        assert_eq!(record_runtime_failure(1_000), 1);
-        assert_eq!(record_runtime_failure(2_000), 2);
-        assert_eq!(record_runtime_failure(3_000), 3);
-        assert_eq!(record_runtime_failure(4_000), 4);
-        assert_eq!(
-            record_runtime_failure(1_000 + RUNTIME_FAILURE_WINDOW_MS + 1),
-            1
-        );
-        SUPERVISOR
-            .runtime_failure_window_started
-            .store(0, Ordering::Release);
-        SUPERVISOR
-            .runtime_reconnect_attempts
-            .store(0, Ordering::Release);
     }
 
     #[tokio::test]
@@ -4026,12 +3971,15 @@ mod slot_tests {
         let creds = test_creds("pair_build_failure", nats.url(), 3600);
         pairing::save_creds(&creds).unwrap();
         platform.respond_refresh(nats.url());
-        transport::INJECT_BUILD_FAILURE.store(1, Ordering::SeqCst);
+        SUPERVISOR
+            .hooks
+            .inject_build_failure
+            .store(1, Ordering::SeqCst);
 
         let status = start(RemoteStartInput {}).await.expect("categorized");
 
         assert_eq!(
-            transport::INJECT_BUILD_FAILURE.load(Ordering::SeqCst),
+            SUPERVISOR.hooks.inject_build_failure.load(Ordering::SeqCst),
             0,
             "the injected failure must be the one that was consumed"
         );
@@ -4070,7 +4018,10 @@ mod slot_tests {
             pairing_confirmed.clone(),
             format!("bridge_{}", crate::remote::test_support::unique("refresh")),
         );
-        transport::INJECT_BUILD_FAILURE.store(1, Ordering::SeqCst);
+        SUPERVISOR
+            .hooks
+            .inject_build_failure
+            .store(1, Ordering::SeqCst);
 
         let task = transport::spawn_credential_refresh(
             slot.pair_id.clone(),
@@ -4082,7 +4033,7 @@ mod slot_tests {
         wait_until(
             "the refresh to attempt its rebuild",
             Duration::from_secs(10),
-            || transport::INJECT_BUILD_FAILURE.load(Ordering::SeqCst) == 0,
+            || SUPERVISOR.hooks.inject_build_failure.load(Ordering::SeqCst) == 0,
         )
         .await;
         wait_until(

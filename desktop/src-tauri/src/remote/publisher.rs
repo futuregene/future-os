@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(test)]
 use std::sync::atomic::AtomicBool;
 
 /// Capability a client declares on `secure_ready` to receive the coalesced
@@ -25,6 +26,7 @@ pub(super) use future_remote_protocol::EVENT_COALESCING_FEATURE;
 #[cfg(test)]
 pub(super) use future_remote_protocol::CATALOG_ACTIVITY_FEATURE;
 
+#[cfg(test)]
 pub(super) use future_remote_server::events::EventPublish;
 #[cfg(test)]
 pub(super) use future_remote_server::events::{build_event_body, MAX_EVENT_BYTES};
@@ -116,7 +118,7 @@ pub(super) use future_remote_server::events::cap_event_data;
 pub(super) fn spawn_event_publisher(
     client: async_nats::Client,
     rx: tokio::sync::mpsc::Receiver<EventPublish>,
-) -> tokio::task::JoinHandle<()> {
+) -> future_remote_server::supervisor::TaskHandle {
     spawn_secure_event_publisher(
         client,
         rx,
@@ -131,13 +133,14 @@ pub(super) fn spawn_event_publisher(
 /// (rather than per publisher) is what makes "any non-fragment flushes first" a
 /// property of the code instead of a hope. A client that never declares the
 /// capability takes the pass-through path unchanged.
+#[cfg(test)]
 pub(super) fn spawn_secure_event_publisher(
     client: async_nats::Client,
     rx: tokio::sync::mpsc::Receiver<EventPublish>,
     security: secure::Transport,
     coalesce: Arc<AtomicBool>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(future_remote_server::events::run_event_publisher(
+) -> future_remote_server::supervisor::TaskHandle {
+    SUPERVISOR.spawn_fixture_task(future_remote_server::events::run_event_publisher(
         client, rx, security, coalesce,
     ))
 }
@@ -149,6 +152,7 @@ pub(super) fn spawn_secure_event_publisher(
 /// 3s keeps a 5x margin while cutting the idle packet rate to a third. Tests
 /// shrink it to milliseconds so publish patterns can be observed without a
 /// wall-clock wait.
+#[cfg(test)]
 pub(super) fn presence_tick() -> std::time::Duration {
     #[cfg(test)]
     const TICK: std::time::Duration = std::time::Duration::from_millis(10);
@@ -162,6 +166,7 @@ pub(super) fn presence_tick() -> std::time::Duration {
 /// did before — only the presence packet got slower. Each tick recomputes the
 /// snapshot signature from the store, so this cadence is the detection latency
 /// for any change; the snapshots themselves are published only on a change.
+#[cfg(test)]
 pub(super) fn catalog_tick() -> std::time::Duration {
     #[cfg(test)]
     const TICK: std::time::Duration = std::time::Duration::from_millis(10);
@@ -170,22 +175,12 @@ pub(super) fn catalog_tick() -> std::time::Duration {
     TICK
 }
 
-/// Credential-refresh / health-check cadence. Tests shrink it to milliseconds
-/// so the generation swap can run without a 15s wall-clock wait per tick.
-pub(super) fn refresh_tick() -> std::time::Duration {
-    #[cfg(test)]
-    const TICK: std::time::Duration = std::time::Duration::from_millis(10);
-    #[cfg(not(test))]
-    const TICK: std::time::Duration = std::time::Duration::from_secs(15);
-    TICK
-}
-
 #[cfg(test)]
 pub(super) fn spawn_presence_heartbeat(
     client: async_nats::Client,
     pair_id: String,
     bridge_instance_id: String,
-) -> tokio::task::JoinHandle<()> {
+) -> future_remote_server::supervisor::TaskHandle {
     spawn_secure_presence_heartbeat(
         client,
         pair_id,
@@ -194,17 +189,18 @@ pub(super) fn spawn_presence_heartbeat(
     )
 }
 
+#[cfg(test)]
 pub(super) fn spawn_secure_presence_heartbeat(
     client: async_nats::Client,
     pair_id: String,
     bridge_instance_id: String,
     security: secure::Transport,
-) -> tokio::task::JoinHandle<()> {
+) -> future_remote_server::supervisor::TaskHandle {
     let supervisor = SUPERVISOR.clone();
     let timing =
         future_remote_server::supervisor::PublisherTiming::new(presence_tick(), catalog_tick())
             .expect("desktop publisher intervals are nonzero");
-    tokio::spawn(supervisor.run_presence_heartbeat(
+    supervisor.spawn_fixture_task(supervisor.run_presence_heartbeat(
         client,
         pair_id,
         bridge_instance_id,

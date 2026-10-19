@@ -23,20 +23,11 @@ impl HandshakeHost for DesktopHandshakeHost {
         super::build_presence_payload(pair, bridge)
     }
 }
+#[cfg(test)]
 pub(super) use future_remote_server::secure::Transport;
 #[cfg(test)]
 pub(super) fn new_transport(creds: &PairingCreds) -> Transport {
     Transport::new(creds, Arc::new(DesktopHandshakeHost))
-}
-pub(super) async fn publish(
-    client: &async_nats::Client,
-    transport: &Transport,
-    subject: String,
-    bytes: Vec<u8>,
-) -> Result<bool, crate::AppError> {
-    future_remote_server::secure::publish(client, transport, subject, bytes)
-        .await
-        .map_err(Into::into)
 }
 #[cfg(test)]
 mod tests {

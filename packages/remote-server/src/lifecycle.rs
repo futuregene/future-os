@@ -25,6 +25,12 @@ impl AccessEpoch {
         *self.epoch.lock().unwrap()
     }
 
+    /// A non-locking observation for callbacks invoked inside `commit`.
+    /// It does not replace the exclusion boundary used by admission/install.
+    pub(crate) fn published(&self) -> u64 {
+        *self.changed.borrow()
+    }
+
     pub fn invalidate<T>(&self, stop: impl FnOnce() -> T) -> T {
         let mut epoch = self.epoch.lock().unwrap();
         *epoch = epoch.wrapping_add(1);
@@ -51,20 +57,30 @@ impl AccessEpoch {
 
 /// Dropping a cancelled readiness future must also stop the tasks it spawned.
 #[derive(Default)]
-pub struct CandidateTasks(Vec<AbortHandle>);
+pub struct CandidateTasks {
+    joined: Vec<AbortHandle>,
+    owned: Vec<crate::tasks::TaskHandle>,
+}
 
 impl CandidateTasks {
     pub fn track<T>(&mut self, task: &tokio::task::JoinHandle<T>) {
-        self.0.push(task.abort_handle());
+        self.joined.push(task.abort_handle());
+    }
+    pub fn track_owned(&mut self, task: &crate::tasks::TaskHandle) {
+        self.owned.push(task.clone());
     }
     pub fn installed(&mut self) {
-        self.0.clear();
+        self.joined.clear();
+        self.owned.clear();
     }
 }
 
 impl Drop for CandidateTasks {
     fn drop(&mut self) {
-        for task in &self.0 {
+        for task in &self.joined {
+            task.abort();
+        }
+        for task in &self.owned {
             task.abort();
         }
     }

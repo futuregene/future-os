@@ -72,30 +72,28 @@ pub(super) fn lan_ip() -> Option<String> {
 /// Serve the web client from `desktop/web/` on the already-bound listener.
 /// Reads each file per request so edits are picked up on browser refresh
 /// without rebuilding. Aborts on `stop()`.
-pub(super) fn spawn_web_server(listener: tokio::net::TcpListener) -> tokio::task::JoinHandle<()> {
+pub(super) async fn run_web_server(listener: tokio::net::TcpListener) {
     let web_dir = web_dir();
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(WEB_MAX_CONNECTIONS));
-    tokio::spawn(async move {
-        eprintln!(
-            "remote: web client at http://localhost:{WEB_PORT} (serving {})",
-            web_dir.display()
-        );
-        loop {
-            // Acquire the permit BEFORE accepting: at capacity the loop blocks
-            // here instead of accepting sockets it can't serve. The semaphore
-            // is never closed, so acquisition cannot fail.
-            let permit = semaphore
-                .clone()
-                .acquire_owned()
-                .await
-                .expect("web connection semaphore is never closed");
-            // An accept failure drops the permit with the temporary and tries
-            // the next connection.
-            if let Ok((stream, _)) = listener.accept().await {
-                spawn_web_connection(permit, stream, web_dir.clone());
-            }
+    eprintln!(
+        "remote: web client at http://localhost:{WEB_PORT} (serving {})",
+        web_dir.display()
+    );
+    loop {
+        // Acquire the permit BEFORE accepting: at capacity the loop blocks
+        // here instead of accepting sockets it can't serve. The semaphore
+        // is never closed, so acquisition cannot fail.
+        let permit = semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("web connection semaphore is never closed");
+        // An accept failure drops the permit with the temporary and tries
+        // the next connection.
+        if let Ok((stream, _)) = listener.accept().await {
+            spawn_web_connection(permit, stream, web_dir.clone());
         }
-    })
+    }
 }
 
 pub(super) fn spawn_web_connection(

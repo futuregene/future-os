@@ -525,6 +525,13 @@
             "classify_nats_connect_error_covers_server_parse",
             "initial_nats_connect_errors_distinguish_authorization_from_network"
           ]
+        },
+        "server-lifecycle-policy": {
+          "path": "packages/remote-server/src/supervisor/shutdown.rs",
+          "cases": [
+            "power_events_preserve_intent_and_only_resume_rebuilds_a_generation",
+            "runtime_failure_budget_uses_a_ten_minute_window"
+          ]
         }
       }
     },
@@ -534,7 +541,9 @@
       "rustCases": [
         "a_failed_renewal_retries_fast_only_once_the_credential_expired"
       ],
-      "target": null
+      "target": {
+        "server": "packages/remote-server/src/supervisor/transport.rs"
+      }
     },
     {
       "source": "desktop/src-tauri/src/remote/trust.rs",
@@ -1164,13 +1173,23 @@
         "pending_revokes_are_skipped_blocked_or_retried_by_error_class"
       ],
       "target": {
+        "server-policy": {
+          "path": "packages/remote-server/src/pairing.rs",
+          "cases": [
+            "identifies_revoked_credential_error",
+            "platform_account_rejection_is_not_a_retryable_network_error",
+            "classifies_error_codes_without_sniffing_messages",
+            "refresh_delay_is_the_time_until_the_lead_before_expiry",
+            "public_key_rejects_a_bad_seed"
+          ]
+        },
+        "application-persistence-and-http": "desktop/src-tauri/src/remote_host/pairing.rs",
         "protocol-jwt": {
           "path": "packages/remote-protocol/src/jwt.rs",
           "cases": [
             "jwt_expiry_rejects_malformed_tokens"
           ]
-        },
-        "host-pairing-and-http-integration": "desktop/src-tauri/src/remote_host/pairing.rs"
+        }
       }
     },
     {

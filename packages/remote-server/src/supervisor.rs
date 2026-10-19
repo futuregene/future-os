@@ -1,5 +1,5 @@
 //! Runtime state and control arbitration owned by one Server supervisor.
-//! Public state fields are transitional wiring for the remaining runtime migration.
+//! Production state is encapsulated; test-support exposes fixture installation.
 use crate::{
     commands,
     diagnostics::DropCounters,
@@ -7,7 +7,7 @@ use crate::{
     health::NatsHealth,
     lifecycle, secure,
     services::RemoteHost,
-    tasks::{self, NativeHandle, TaskHandle},
+    tasks::{self, NativeHandle},
     types::ClientIdentity,
     PairingCreds,
 };
@@ -20,16 +20,23 @@ use std::{
     },
 };
 
+pub use crate::tasks::TaskHandle;
 mod publisher;
 mod status;
 pub use publisher::PublisherTiming;
 pub use status::StatusProjection;
 
-pub trait TaskExecutor: Send + Sync {
-    fn spawn(&self, future: BoxFuture<'static, ()>);
-    /// Execute off the calling thread, registering its actual native completion.
-    fn spawn_native(&self, job: Box<dyn FnOnce() + Send + 'static>);
-}
+mod context;
+mod runtime;
+mod shutdown;
+mod start;
+mod transport;
+pub use runtime::{RuntimeOptions, TaskExecutor, ValidationSurface};
+pub use shutdown::{
+    abort_generation, power_transition, send_mobile_disconnect_notice, PowerEvent, PowerTransition,
+};
+pub use start::SlotPlan;
+pub use transport::TransportTasks;
 
 pub use crate::connection::ConnectedNats;
 
@@ -51,14 +58,14 @@ pub struct RemoteState {
     /// flight.
     pub event_tx: tokio::sync::mpsc::Sender<EventPublish>,
     pub drop_counters: Arc<DropCounters>,
-    pub event_task: tokio::task::JoinHandle<()>,
-    pub cmd_task: tokio::task::JoinHandle<()>,
-    pub transfer_task: tokio::task::JoinHandle<()>,
-    pub heartbeat_task: tokio::task::JoinHandle<()>,
-    pub refresh_task: tokio::task::JoinHandle<()>,
+    pub event_task: TaskHandle,
+    pub cmd_task: TaskHandle,
+    pub transfer_task: TaskHandle,
+    pub heartbeat_task: TaskHandle,
+    pub refresh_task: TaskHandle,
     /// `None` outside the test environment, or when the optional test web
     /// server failed to bind. The phone bridge remains available either way.
-    pub web_task: Option<tokio::task::JoinHandle<()>>,
+    pub web_task: Option<TaskHandle>,
     /// Test-only web client URL for THIS machine; `None` outside the test
     /// environment or when bind failed.
     pub web_url: Option<String>,
@@ -75,55 +82,71 @@ pub struct RemoteState {
     pub pairing_confirmed: Arc<AtomicBool>,
 }
 
-/// One instance owns remote intent, access epochs, connections, recovery
-/// budgets and scheduled work. Applications consume its status projection.
-pub struct Supervisor {
-    pub access: Arc<lifecycle::AccessEpoch>,
-    /// One runtime per paired device, keyed by `pair_id`.
-    ///
-    /// Every slot keeps its own NATS connection, presence, credential refresh
-    /// and command loop, so a device losing its link — or losing its JWT — is
-    /// that device's problem and never the other one's. What the slots do *not*
-    /// share is the right to drive this machine; see [`Supervisor::active`].
-    pub state: Mutex<HashMap<String, RemoteState>>,
-    pub bridge_shared: Mutex<HashMap<String, BridgeRuntimeShared>>,
-    /// The one device allowed to drive this machine.
-    ///
-    /// Mirrored from the pairing book, and only ever moved by an explicit claim
-    /// — a confirmed pairing handshake or a `takeover` request. It is
-    /// deliberately *not* moved by a reconnect: a device that was superseded
-    /// must come back as a standby, or the two devices would take turns
-    /// evicting each other for as long as either one keeps reconnecting.
-    pub active: Arc<Mutex<Option<String>>>,
-    /// The devices this process has a credential for.
-    ///
-    /// Kept in memory so [`Supervisor::in_control`] — which every command and
-    /// every presence packet reads — never touches the filesystem. It is
-    /// written by start (the slots it served), by a slot being added, and by an
-    /// unpair.
-    pub known: Mutex<std::collections::HashSet<String>>,
-    pub last_error_code: Mutex<Option<String>>,
-    pub start_lock: tokio::sync::Mutex<()>,
-    pub start_requested: AtomicBool,
-    pub suspended: AtomicBool,
-    pub resume_recovery_running: AtomicBool,
-    pub start_retry_running: AtomicBool,
-    pub start_retry_attempts: AtomicU64,
-    pub start_retry_since: AtomicU64,
-    pub start_retry_next_at: AtomicU64,
-    pub credential_refreshing: AtomicBool,
-    pub runtime_reconnect_attempts: AtomicU8,
-    pub runtime_failure_window_started: AtomicU64,
-    pub web_reconnect_running: AtomicBool,
-    pub web_reconnect_attempts: AtomicU8,
-    tasks: Mutex<Vec<TaskHandle>>,
-    retiring: Mutex<Vec<TaskHandle>>,
-    native_tasks: Mutex<Vec<NativeHandle>>,
-    control: Arc<ControlPersistence>,
-    host: Arc<dyn RemoteHost>,
-    executor: Arc<dyn TaskExecutor>,
-    publisher_failures: crate::diagnostics::FailureEpisode,
+macro_rules! define_supervisor {
+    ($visibility:vis) => {
+        /// One instance owns remote intent, access epochs, connections, recovery
+        /// budgets and scheduled work. Applications consume its status projection.
+        pub struct Supervisor {
+            $visibility access: Arc<lifecycle::AccessEpoch>,
+            /// One runtime per paired device, keyed by `pair_id`.
+            ///
+            /// Every slot keeps its own NATS connection, presence, credential refresh
+            /// and command loop, so a device losing its link — or losing its JWT — is
+            /// that device's problem and never the other one's. What the slots do *not*
+            /// share is the right to drive this machine; see [`Supervisor::active`].
+            $visibility state: Mutex<HashMap<String, RemoteState>>,
+            $visibility bridge_shared: Mutex<HashMap<String, BridgeRuntimeShared>>,
+            /// The one device allowed to drive this machine.
+            ///
+            /// Mirrored from the pairing book, and only ever moved by an explicit claim
+            /// — a confirmed pairing handshake or a `takeover` request. It is
+            /// deliberately *not* moved by a reconnect: a device that was superseded
+            /// must come back as a standby, or the two devices would take turns
+            /// evicting each other for as long as either one keeps reconnecting.
+            $visibility active: Arc<Mutex<Option<String>>>,
+            /// The devices this process has a credential for.
+            ///
+            /// Kept in memory so [`Supervisor::in_control`] — which every command and
+            /// every presence packet reads — never touches the filesystem. It is
+            /// written by start (the slots it served), by a slot being added, and by an
+            /// unpair.
+            $visibility known: Mutex<std::collections::HashSet<String>>,
+            $visibility last_error_code: Mutex<Option<String>>,
+            $visibility start_lock: tokio::sync::Mutex<()>,
+            $visibility start_requested: AtomicBool,
+            $visibility suspended: AtomicBool,
+            $visibility resume_recovery_running: AtomicBool,
+            $visibility start_retry_running: AtomicBool,
+            $visibility start_retry_attempts: AtomicU64,
+            $visibility start_retry_since: AtomicU64,
+            $visibility start_retry_next_at: AtomicU64,
+            $visibility credential_refreshing: AtomicBool,
+            $visibility runtime_reconnect_attempts: AtomicU8,
+            $visibility runtime_failure_window_started: AtomicU64,
+            $visibility web_reconnect_running: AtomicBool,
+            $visibility web_reconnect_attempts: AtomicU8,
+            tasks: Mutex<Vec<TaskHandle>>,
+            retiring: Mutex<Vec<TaskHandle>>,
+            generation_tasks: Mutex<Vec<TaskHandle>>,
+            native_tasks: Mutex<Vec<NativeHandle>>,
+            control: Arc<ControlPersistence>,
+            host: Arc<dyn RemoteHost>,
+            executor: Arc<dyn TaskExecutor>,
+            publisher_failures: crate::diagnostics::FailureEpisode,
+            start_failures: Arc<crate::diagnostics::FailureEpisode>,
+            credential_failures: crate::diagnostics::FailureEpisode,
+            maintenance: Mutex<Option<TaskHandle>>,
+            closed: AtomicBool,
+            #[cfg(any(test, feature = "test-support"))]
+            $visibility hooks: runtime::RuntimeHooks,
+        }
+    };
 }
+#[cfg(any(test, feature = "test-support"))]
+define_supervisor!(pub);
+#[cfg(not(any(test, feature = "test-support")))]
+define_supervisor!(pub(crate));
+
 #[derive(Default)]
 struct ControlPersistence {
     write_lock: Mutex<()>,
@@ -156,11 +179,18 @@ impl Supervisor {
             web_reconnect_attempts: AtomicU8::new(0),
             tasks: Mutex::new(Vec::new()),
             retiring: Mutex::new(Vec::new()),
+            generation_tasks: Mutex::new(Vec::new()),
             native_tasks: Mutex::new(Vec::new()),
             control: Arc::new(ControlPersistence::default()),
             host,
             executor,
             publisher_failures: Default::default(),
+            start_failures: Default::default(),
+            credential_failures: Default::default(),
+            maintenance: Mutex::new(None),
+            closed: AtomicBool::new(false),
+            #[cfg(any(test, feature = "test-support"))]
+            hooks: Default::default(),
         })
     }
 }
@@ -168,7 +198,10 @@ impl Supervisor {
 impl Supervisor {
     pub fn spawn(&self, future: impl std::future::Future<Output = ()> + Send + 'static) {
         let mut tasks = self.tasks.lock().unwrap();
-        if !self.start_requested.load(Ordering::Acquire) || self.suspended.load(Ordering::Acquire) {
+        if self.closed.load(Ordering::Acquire)
+            || !self.start_requested.load(Ordering::Acquire)
+            || self.suspended.load(Ordering::Acquire)
+        {
             return;
         }
         tasks.retain(|task| !task.is_finished());
@@ -177,9 +210,11 @@ impl Supervisor {
         self.executor.spawn(future);
     }
     /// After cancellation, wait for future destruction and real native completion
-    /// within one total budget. Transport-generation handles migrate separately.
+    /// within one total budget, including retired transport generations.
     pub async fn wait_tasks(&self, budget: std::time::Duration) -> Result<(), crate::Error> {
-        let handles = std::mem::take(&mut *self.retiring.lock().unwrap());
+        let mut handles = std::mem::take(&mut *self.retiring.lock().unwrap());
+        let generation_start = handles.len();
+        handles.extend(std::mem::take(&mut *self.generation_tasks.lock().unwrap()));
         let native = std::mem::take(&mut *self.native_tasks.lock().unwrap());
         let result = tokio::time::timeout(budget, async {
             for task in &handles {
@@ -191,6 +226,12 @@ impl Supervisor {
         })
         .await;
         if result.is_err() {
+            self.generation_tasks.lock().unwrap().extend(
+                handles
+                    .split_off(generation_start)
+                    .into_iter()
+                    .filter(|task| !task.is_finished()),
+            );
             self.retiring
                 .lock()
                 .unwrap()
@@ -373,6 +414,9 @@ impl Supervisor {
     /// after a crash, which is exactly the decision the user made and must not
     /// be lost. Callers on a reply path use [`Supervisor::claim_control_soon`].
     pub fn claim_control(&self, pair_id: &str) -> Option<String> {
+        if self.closed.load(Ordering::Acquire) {
+            return None;
+        }
         let epoch = self.access.current();
         let (changed, previous, revision) =
             self.access.commit(epoch, || self.move_control(pair_id))?;
@@ -388,6 +432,9 @@ impl Supervisor {
         self.claim_control_for(pair_id, Some(self.access.current()))
     }
     pub fn claim_control_for(&self, pair_id: &str, expected: Option<u64>) -> Option<String> {
+        if self.closed.load(Ordering::Acquire) {
+            return None;
+        }
         let epoch = expected.unwrap_or_else(|| self.access.current());
         self.access
             .commit(epoch, || {
@@ -761,11 +808,8 @@ impl Supervisor {
 
     /// Send one control-state packet on `pair_id`'s own channel.
     ///
-    /// Awaited rather than spawned: it is one small publish on a client the caller
-    /// already holds, and the process-lifetime task registry is for work that
-    /// outlives the call. Registering a control push there made a *test* wait on a
-    /// detached publish before it could change HOME — and the wait belongs to
-    /// someone else's test, which is exactly how this failed.
+    /// Advisory and bounded: the reply path never waits on this notification.
+    /// Its completion remains owned by this instance and the host registry.
     pub fn publish_control(&self, pair_id: &str, control: &str) {
         let Some((client, security, bridge_instance_id)) =
             self.state.lock().unwrap().get(pair_id).map(|state| {
@@ -791,13 +835,15 @@ impl Supervisor {
         let Ok(bytes) = serde_json::to_vec(&payload) else {
             return;
         };
-        // Fire-and-forget, on a task the process registry does not own: this is a
-        // notification, and no caller — a handshake reply, a takeover answer — may
-        // wait on it. The client finds out the same fact from its next presence
-        // packet if this one is lost.
-        self.executor.spawn(Box::pin(async move {
-            let _ = crate::secure::publish(&client, &security, subject, bytes).await;
-        }));
+        // The next presence packet carries the same state if this advisory
+        // notification is lost. Shutdown still observes its actual completion.
+        self.spawn_notice(async move {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(750),
+                crate::secure::publish(&client, &security, subject, bytes),
+            )
+            .await;
+        });
     }
 
     /// Heartbeat payload: liveness plus the catalog revision.

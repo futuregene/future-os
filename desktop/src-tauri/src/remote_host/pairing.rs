@@ -6,9 +6,7 @@
 //! copy because the server credential is bound to that exact identity.
 
 #[cfg(test)]
-use crate::remote::pairing::{
-    error_code, is_invalid_or_revoked_error, public_key, refresh_delay, REFRESH_LEAD,
-};
+use crate::remote::pairing::{error_code, is_invalid_or_revoked_error, public_key};
 #[cfg(test)]
 use crate::remote_platform::is_transport_error;
 use crate::remote_platform::{
@@ -690,78 +688,6 @@ mod tests {
             "the default is the constant the writer uses"
         );
     }
-
-    #[test]
-    fn identifies_revoked_credential_error() {
-        assert!(is_invalid_or_revoked_error(&crate::AppError::Remote {
-            status: 401,
-            code: Some("invalid_remote_credential".to_string()),
-            message: "Remote credential is invalid or revoked.".to_string(),
-        }));
-        // A human message that merely reads like a revocation must NOT match —
-        // only the machine code is authoritative.
-        assert!(!is_invalid_or_revoked_error(&crate::AppError::Remote {
-            status: 401,
-            code: Some("unauthorized".to_string()),
-            message: "Remote credential is invalid or revoked.".to_string(),
-        }));
-        assert!(!is_invalid_or_revoked_error(&crate::AppError::Message(
-            "Failed to refresh remote credential: timeout".to_string(),
-        )));
-    }
-
-    #[test]
-    fn platform_account_rejection_is_not_a_retryable_network_error() {
-        for status in [401, 403] {
-            let error = crate::AppError::Remote {
-                status,
-                code: None,
-                message: "rejected".into(),
-            };
-            assert_eq!(error_code(&error), Some("account_authorization"));
-            assert!(!is_invalid_or_revoked_error(&error));
-        }
-    }
-
-    #[test]
-    fn classifies_error_codes_without_sniffing_messages() {
-        // Offline / unreachable → network, regardless of the human message.
-        assert_eq!(
-            error_code(&crate::AppError::RemoteTransport(
-                "Failed to create pairing code: error sending request".to_string(),
-            )),
-            Some("network"),
-        );
-        // Server revocation is read from the machine code, not the message.
-        assert_eq!(
-            error_code(&crate::AppError::Remote {
-                status: 401,
-                code: Some("invalid_remote_credential".to_string()),
-                message: "gone".to_string(),
-            }),
-            Some("revoked"),
-        );
-        // Any other server status → generic server category.
-        assert_eq!(
-            error_code(&crate::AppError::Remote {
-                status: 500,
-                code: None,
-                message: "boom".to_string(),
-            }),
-            Some("server"),
-        );
-        // A missing account credential is the account's problem, and the type
-        // says so — no message is consulted.
-        assert_eq!(
-            error_code(&crate::AppError::NotSignedIn),
-            Some("account_authorization"),
-        );
-        // Local failures carry no remote category.
-        assert_eq!(
-            error_code(&crate::AppError::Message("disk full".to_string())),
-            None,
-        );
-    }
 }
 
 #[cfg(test)]
@@ -890,14 +816,6 @@ mod http_tests {
         assert!(!book_path().unwrap().exists());
         assert!(!legacy.exists(), "unpair must not leave a file behind");
         assert!(load_creds().is_none());
-    }
-
-    #[test]
-    fn public_key_rejects_a_bad_seed() {
-        let _home = HomeGuard::new("pairing-bad-seed");
-        let mut creds = fixture_creds();
-        creds.nkey_seed = "not-a-seed".to_string();
-        assert!(public_key(&creds).is_err());
     }
 
     #[test]
@@ -1133,25 +1051,6 @@ mod http_tests {
             pairing_code_expiry(&URL_SAFE_NO_PAD.encode(json!({ "nope": 1 }).to_string())),
             None
         );
-    }
-
-    #[test]
-    fn refresh_delay_is_the_time_until_the_lead_before_expiry() {
-        let mut creds = fixture_creds();
-        // Renewal starts REFRESH_LEAD before expiry (minutes, not the previous
-        // 60 seconds): the HTTPS round trip, TLS connect and transport rebuild
-        // have to fit inside the old credential's lifetime.
-        creds.jwt_expires_at = now_secs() + 3600;
-        let delay = refresh_delay(&creds).as_secs();
-        let expected = 3600 - REFRESH_LEAD.as_secs();
-        assert!(
-            delay <= expected && delay + 5 >= expected,
-            "delay was {delay}"
-        );
-        // Already expired → due now, so the renewal loop retries at its fast
-        // cadence instead of idling out a tick with the bridge unable to publish.
-        creds.jwt_expires_at = now_secs() - 10;
-        assert_eq!(refresh_delay(&creds), std::time::Duration::ZERO);
     }
 
     #[tokio::test]

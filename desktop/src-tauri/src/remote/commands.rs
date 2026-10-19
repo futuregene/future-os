@@ -1,4 +1,4 @@
-//! Desktop context adapter for the Server-owned command endpoint.
+//! Desktop operator settings and real application command integration tests.
 #[cfg(test)]
 use super::protocol::IncomingCmd;
 #[cfg(test)]
@@ -7,81 +7,19 @@ use super::services::ReplySink;
 pub(super) use future_remote_server::commands::new_reply_slots;
 #[cfg(test)]
 pub(super) use future_remote_server::commands::{apply_declared_features, REPLY_GZIP_FEATURE};
-pub(super) use future_remote_server::commands::{
-    command_loop_with_ready, HandshakeState, ReplySlots,
-};
-use future_remote_server::commands::{CommandRuntime, CommandServices};
+#[cfg(test)]
+pub(super) use future_remote_server::commands::{HandshakeState, ReplySlots};
 #[cfg(test)]
 use serde_json::json;
+#[cfg(test)]
 use serde_json::Value;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
-use std::sync::{atomic::AtomicBool, Arc, Mutex};
-use std::time::Duration;
+#[cfg(test)]
+use std::sync::{atomic::AtomicBool, Arc};
 
-struct DesktopCommandRuntime;
-impl future_remote_server::secure::HandshakeHost for DesktopCommandRuntime {
-    fn save_binding(
-        &self,
-        creds: &super::pairing::PairingCreds,
-    ) -> Result<(), future_remote_server::Error> {
-        super::pairing::save_creds(creds).map_err(Into::into)
-    }
-    fn presence(&self, pair: &str, bridge: &str) -> Value {
-        super::build_presence_payload(pair, bridge)
-    }
-}
-impl CommandRuntime for DesktopCommandRuntime {
-    fn access(&self) -> &future_remote_server::lifecycle::AccessEpoch {
-        &super::SUPERVISOR.access
-    }
-    fn client_identity(&self, pair: &str) -> Option<Arc<Mutex<Option<super::ClientIdentity>>>> {
-        super::SUPERVISOR.client_identity(pair)
-    }
-    fn coalesce_events(&self, pair: &str) -> Arc<AtomicBool> {
-        super::SUPERVISOR.coalesce_events(pair)
-    }
-    fn catalog_activity(&self, pair: &str) -> Arc<AtomicBool> {
-        super::SUPERVISOR.catalog_activity(pair)
-    }
-    fn lean_events(&self, pair: &str) -> Arc<AtomicBool> {
-        super::SUPERVISOR.lean_events(pair)
-    }
-    fn in_control(&self, pair: &str) -> bool {
-        super::SUPERVISOR.in_control(pair)
-    }
-    fn held_by_another(&self, pair: &str) -> bool {
-        super::SUPERVISOR.held_by_another(pair)
-    }
-    fn claim_control_soon(&self, pair: &str, epoch: Option<u64>) -> Option<String> {
-        super::SUPERVISOR.claim_control_for(pair, epoch)
-    }
-    fn light_presence(&self, pair: &str, bridge: &str) -> Value {
-        super::light_presence_payload(pair, bridge)
-    }
-    fn publish_control(&self, pair: &str, control: &str) {
-        super::publish_control(pair, control);
-    }
-    fn unpair_slot<'a>(
-        &'a self,
-        pair: &'a str,
-    ) -> futures::future::BoxFuture<'a, Result<(), future_remote_server::Error>> {
-        Box::pin(async move {
-            super::unpair_slot(pair)
-                .await
-                .map(|_| ())
-                .map_err(Into::into)
-        })
-    }
-    fn gzip_override(&self) -> bool {
-        operator_gzip_enabled()
-    }
-    fn spawn(&self, future: futures::future::BoxFuture<'static, ()>) {
-        crate::runtime::spawn(future);
-    }
-}
 const REMOTE_JSON_GZIP_ENV: &str = "FUTURE_REMOTE_JSON_GZIP";
-fn operator_gzip_enabled() -> bool {
+pub(super) fn operator_gzip_enabled() -> bool {
     std::env::var(REMOTE_JSON_GZIP_ENV).is_ok_and(|value| {
         matches!(
             value.trim().to_ascii_lowercase().as_str(),
@@ -89,26 +27,15 @@ fn operator_gzip_enabled() -> bool {
         )
     })
 }
+#[cfg(test)]
 pub(super) fn new_handshake_state(
     creds: super::pairing::PairingCreds,
     confirmed: Arc<AtomicBool>,
     bridge: String,
 ) -> HandshakeState {
-    #[cfg(test)]
-    let reply_ttl = Duration::from_millis(500);
-    #[cfg(not(test))]
-    let reply_ttl = Duration::from_secs(600);
-    HandshakeState::new(
-        creds,
-        confirmed,
-        bridge,
-        CommandServices {
-            runtime: Arc::new(DesktopCommandRuntime),
-            business: crate::remote_host::owned_host(),
-            reply_ttl,
-        },
-    )
+    super::SUPERVISOR.new_handshake_state(creds, confirmed, bridge)
 }
+
 #[cfg(test)]
 use crate::remote_host::business::*;
 #[cfg(test)]
@@ -128,7 +55,7 @@ fn remote_json_gzip_enabled() -> bool {
 }
 #[cfg(test)]
 fn record_client_identity(pair: &str, command: &IncomingCmd) {
-    test_support::record_client_identity(&DesktopCommandRuntime, pair, command);
+    super::SUPERVISOR.record_client_identity(pair, command);
 }
 #[cfg(test)]
 struct BorrowedBusiness(&'static dyn super::services::BusinessHost);
@@ -326,6 +253,7 @@ mod bridge_tests {
     use std::io::Read as _;
     #[cfg(test)]
     use std::sync::atomic::Ordering;
+    #[cfg(test)]
     use std::time::Duration;
 
     #[test]

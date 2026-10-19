@@ -3,9 +3,14 @@ use super::*;
 use crate::services::*;
 use serde_json::Value;
 
+type InvitePause = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<Invitation>,
+);
 #[derive(Default)]
 pub(super) struct MemoryHost {
     pub slots: Mutex<Vec<PairingCreds>>,
+    pub invitation: Mutex<Option<InvitePause>>,
     pub active: Mutex<Option<String>>,
     pub catalog_reads: Mutex<Vec<String>>,
     pub catalog_pause: Mutex<
@@ -57,7 +62,16 @@ impl PairingHost for MemoryHost {
         Ok(())
     }
     fn invite(&self, _: bool) -> BoxFuture<'_, Result<Invitation, crate::Error>> {
-        Box::pin(async { Err(crate::Error::Message("unused fixture invitation".into())) })
+        let pause = self.invitation.lock().unwrap().take();
+        Box::pin(async move {
+            let Some((entered, result)) = pause else {
+                return Err(crate::Error::Message("unused fixture invitation".into()));
+            };
+            let _ = entered.send(());
+            result
+                .await
+                .map_err(|_| crate::Error::Message("fixture invitation cancelled".into()))
+        })
     }
     fn refresh(&self, creds: PairingCreds) -> BoxFuture<'_, Result<PairingCreds, crate::Error>> {
         Box::pin(async { Ok(creds) })

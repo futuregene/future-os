@@ -167,3 +167,117 @@ async fn rejected_unpolled_work_and_timeout_retries_keep_real_completion() {
     supervisor.wait_tasks(Duration::from_secs(1)).await.unwrap();
     assert!(held.load(Ordering::Acquire));
 }
+
+#[tokio::test]
+async fn a_late_generation_is_rejected_before_the_executor_can_poll_it() {
+    let executor = Arc::new(QueueExecutor::default());
+    let server = Supervisor::new(Arc::new(MemoryHost::default()), executor.clone());
+    let epoch = server.access.current();
+    server.stop();
+    let destroyed = Arc::new(AtomicBool::new(false));
+    let guard = Dropped(destroyed.clone());
+    let task = server.spawn_generation_for(epoch, async move {
+        let _guard = guard;
+        std::future::pending::<()>().await;
+    });
+    assert!(destroyed.load(Ordering::Acquire));
+    assert!(task.is_finished());
+    assert!(task.await.is_err());
+    assert!(executor.futures.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_generation_keeps_its_cancellation_owner_after_a_wait_timeout() {
+    let executor = Arc::new(QueueExecutor::default());
+    let server = Supervisor::new(Arc::new(MemoryHost::default()), executor.clone());
+    let destroyed = Arc::new(AtomicBool::new(false));
+    let guard = Dropped(destroyed.clone());
+    let task = server.spawn_generation_for(server.access.current(), async move {
+        let _guard = guard;
+        std::future::pending::<()>().await;
+    });
+    assert!(server.wait_tasks(Duration::from_millis(1)).await.is_err());
+    assert_eq!(server.generation_tasks.lock().unwrap().len(), 1);
+    server.stop();
+    assert!(
+        !destroyed.load(Ordering::Acquire),
+        "queued future destruction is still pending"
+    );
+    executor.futures.lock().unwrap().clear();
+    server.wait_tasks(Duration::from_secs(1)).await.unwrap();
+    assert!(destroyed.load(Ordering::Acquire));
+    assert!(task.await.is_err());
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_an_old_drain_even_after_its_generation_handle_was_dropped() {
+    let server = Supervisor::new(Arc::new(MemoryHost::default()), Arc::new(TokioExecutor));
+    let destroyed = Arc::new(AtomicBool::new(false));
+    let guard = Dropped(destroyed.clone());
+    let (entered, observed) = tokio::sync::oneshot::channel();
+    let task = server.spawn_generation_for(server.access.current(), async move {
+        let _guard = guard;
+        let _ = entered.send(());
+        std::future::pending::<()>().await;
+    });
+    observed.await.unwrap();
+    drop(task);
+    server.shutdown(Duration::from_secs(1)).await.unwrap();
+    assert!(destroyed.load(Ordering::Acquire));
+}
+
+#[tokio::test]
+async fn a_final_shutdown_refuses_new_starts_and_late_background_work() {
+    let executor = Arc::new(QueueExecutor::default());
+    let server = Supervisor::new(Arc::new(MemoryHost::default()), executor.clone());
+    server.shutdown(Duration::from_secs(1)).await.unwrap();
+    assert!(server.start().await.is_err());
+    assert!(server.add_device().await.is_err());
+    server.handle_system_resume();
+    let task = server.spawn_generation_for(server.access.current(), async {
+        panic!("closed runtime executed a late task");
+    });
+    assert!(task.await.is_err());
+    assert!(!server.start_requested.load(Ordering::Acquire));
+    assert!(executor.futures.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn stopping_during_an_add_device_request_cancels_the_host_invitation() {
+    let host = Arc::new(MemoryHost::default());
+    let (entered, observed) = tokio::sync::oneshot::channel();
+    let (deliver, invited) = tokio::sync::oneshot::channel();
+    *host.invitation.lock().unwrap() = Some((entered, invited));
+    let server = Supervisor::new(host, Arc::new(TokioExecutor));
+    let running = server.clone();
+    let add = tokio::spawn(async move { running.add_device().await });
+    observed.await.unwrap();
+    server.stop();
+    let result = tokio::time::timeout(Duration::from_secs(1), add)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.phase, RemotePhase::Stopped);
+    assert!(
+        deliver.is_closed(),
+        "the cancelled host future cannot deliver a late invitation"
+    );
+    assert!(!server.start_requested.load(Ordering::Acquire));
+    assert!(server.state.lock().unwrap().is_empty());
+    server.shutdown(Duration::from_secs(1)).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_drained_application_fixture_reset_invalidates_every_old_context() {
+    let server = Supervisor::new(Arc::new(MemoryHost::default()), Arc::new(TokioExecutor));
+    server.shutdown(Duration::from_secs(1)).await.unwrap();
+    let closed_epoch = server.access.current();
+    server.reset_after_shutdown_for_test();
+    assert!(!server.closed.load(Ordering::Acquire));
+    assert!(server
+        .access
+        .commit(closed_epoch, || panic!("fixture reused a closed context"))
+        .is_none());
+    server.shutdown(Duration::from_secs(1)).await.unwrap();
+}

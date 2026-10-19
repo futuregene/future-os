@@ -1,5 +1,5 @@
 use futures::{
-    future::{AbortHandle, Abortable, BoxFuture},
+    future::{AbortHandle, Abortable, BoxFuture, Shared},
     FutureExt,
 };
 use tokio::sync::watch;
@@ -10,6 +10,7 @@ use tokio::sync::watch;
 pub struct TaskHandle {
     abort: AbortHandle,
     done: watch::Receiver<Outcome>,
+    completion: Shared<BoxFuture<'static, Outcome>>,
 }
 
 #[derive(Clone, Copy)]
@@ -45,23 +46,18 @@ impl TaskHandle {
     }
 }
 
-impl std::future::IntoFuture for TaskHandle {
+impl std::future::Future for TaskHandle {
     type Output = Result<(), crate::Error>;
-    type IntoFuture = BoxFuture<'static, Self::Output>;
-    fn into_future(self) -> Self::IntoFuture {
-        async move {
-            let outcome = self.done.clone();
-            self.completed().await;
-            let outcome = *outcome.borrow();
-            match outcome {
-                Outcome::Completed => Ok(()),
-                Outcome::Panicked => {
-                    Err(crate::Error::Message("remote_server_task_panicked".into()))
-                }
-                _ => Err(crate::Error::Message("remote_server_task_cancelled".into())),
-            }
-        }
-        .boxed()
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let outcome = std::task::ready!(self.completion.poll_unpin(cx));
+        std::task::Poll::Ready(match outcome {
+            Outcome::Completed => Ok(()),
+            Outcome::Panicked => Err(crate::Error::Message("remote_server_task_panicked".into())),
+            _ => Err(crate::Error::Message("remote_server_task_cancelled".into())),
+        })
     }
 }
 
@@ -89,10 +85,22 @@ pub(crate) fn tracked(future: BoxFuture<'static, ()>) -> (TaskHandle, BoxFuture<
         }
     }
     .boxed();
+    let mut status = completed.clone();
+    let completion = async move {
+        while matches!(*status.borrow_and_update(), Outcome::Pending) {
+            if status.changed().await.is_err() {
+                break;
+            }
+        }
+        *status.borrow()
+    }
+    .boxed()
+    .shared();
     (
         TaskHandle {
             abort,
             done: completed,
+            completion,
         },
         wrapped,
     )
