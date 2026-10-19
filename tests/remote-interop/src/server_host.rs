@@ -320,3 +320,47 @@ impl TaskExecutor for Executor {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    // No broker or socket: isolate whether the synchronous host gate itself
+    // prevents another task from observing/releasing it on the fixture runtime.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn held_chunk_gate_remains_observable_and_releasable() {
+        let gate = Arc::new(ChunkGate::default());
+        gate.state.lock().unwrap().armed = true;
+        let reader = gate.clone();
+        let read = tokio::spawn(async move {
+            let _held = reader.enter().expect("gate released before its deadline");
+        });
+        let observed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                {
+                    let state = gate.state.lock().unwrap();
+                    if state.waiting {
+                        assert_eq!(state.reads, 1);
+                        assert_eq!(state.finished, 0);
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        // Release before assertions, including an observation timeout. A failing
+        // test must not leave the worker held for the gate's full timeout.
+        gate.release();
+        let completed = tokio::time::timeout(Duration::from_secs(1), read).await;
+        observed.expect("held read remains observable from the test task");
+        completed
+            .expect("released read finishes promptly")
+            .expect("reader did not panic");
+        let state = gate.state.lock().unwrap();
+        assert!(!state.waiting);
+        assert!(!state.armed);
+        assert_eq!(state.finished, 1);
+    }
+}

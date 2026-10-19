@@ -605,3 +605,9 @@ GUI 与 headless 选择各自完整 `--lib` 套件并顺序运行，避免应用
 进一步核对 async-nats 0.49.1 的接收处理：它按连接输入顺序处理消息，并逐条 `try_send` 到对应订阅队列。积压测试现在先在事件接收连接上建立独立 marker 订阅；同一事件发布连接在全部 12 条加密事件之后发送 marker，测试收到 marker 后才启动真实 Client 事件循环。marker 主题位于角色订阅范围之外，不进入事件/状态/传输逻辑。此条件替代原本仅靠两端 flush 和 `yield_now` 猜测事件全部预装的安排，保留容量 8、一次 resumed、最新 4 条被丢弃的断言；未修改运行时代码或降低覆盖。
 
 本轮互通工程 network-feature `--all-targets` Clippy、fmt 和文档检查通过；没有启动 NATS 或 CI，首次运行仍为 6 通过、4 失败。此屏障修正尚未运行复验；持有文件读取时的退出超时根因也仍未确认，整体互通不能标记完成。
+
+### 2026-10-20：无 broker 的读取门诊断
+
+按用户允许本地单元测试的安排，新增并执行 `held_chunk_gate_remains_observable_and_releasable`：在与互通夹具相同的两 worker Tokio runtime 上挂起同步读取，确认另一个任务可观察到 waiting/reads/finished，再释放并确认真实读取结束。1 通过、0 失败，执行 0.01 秒，不启动 broker 或 socket。失败路径也先释放门再断言，避免测试自身遗留长时间阻塞。互通工程 `--all-targets` Clippy 和 fmt 通过。
+
+此证据仅验证隔离后的读取门，不能证明真实下载链路或退出路径；原互通超时仍未定位，不据此修改产品取消逻辑。完整 Rust/TS 互通复验继续受“不再测 NATS、不启动 CI”的当前安排限制；人工候选与真机结果仍待确认。
